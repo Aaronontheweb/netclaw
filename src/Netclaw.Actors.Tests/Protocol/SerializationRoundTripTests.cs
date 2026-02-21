@@ -1,14 +1,9 @@
-using Akka.Agents.Protocol;
+using Netclaw.Actors.Protocol;
 using ProtoBuf;
 using Xunit;
 
-namespace Akka.Agents.Tests.Protocol;
+namespace Netclaw.Actors.Tests.Protocol;
 
-/// <summary>
-/// Integration tests verifying protobuf-net serialization round-trips for all
-/// framework protocol types. These tests prove that the wire format is stable
-/// and each type can survive the persistence lifecycle.
-/// </summary>
 public sealed class SerializationRoundTripTests
 {
     private static T RoundTrip<T>(T value)
@@ -23,7 +18,7 @@ public sealed class SerializationRoundTripTests
     public void SourceMetadata_round_trips()
     {
         var original = SourceMetadata.Create(
-            adapterType: "slack",
+            adapterType: AdapterTypes.Slack,
             senderIdentity: "U12345",
             channelId: "C99999",
             timestamp: new DateTimeOffset(2026, 2, 21, 10, 0, 0, TimeSpan.Zero));
@@ -42,15 +37,15 @@ public sealed class SerializationRoundTripTests
     {
         var original = new SendUserMessage
         {
-            EntityKey = "C99999/1708531200.000100",
+            SessionId = "C99999/1708531200.000100",
             Content = "Hello, Netclaw!",
-            Source = SourceMetadata.Create("slack", "U12345", "C99999",
+            Source = SourceMetadata.Create(AdapterTypes.Slack, "U12345", "C99999",
                 new DateTimeOffset(2026, 2, 21, 10, 0, 0, TimeSpan.Zero))
         };
 
         var result = RoundTrip(original);
 
-        Assert.Equal(original.EntityKey, result.EntityKey);
+        Assert.Equal(original.SessionId, result.SessionId);
         Assert.Equal(original.Content, result.Content);
         Assert.Equal(original.Source.AdapterType, result.Source.AdapterType);
         Assert.Equal(original.Source.SenderIdentity, result.Source.SenderIdentity);
@@ -97,7 +92,7 @@ public sealed class SerializationRoundTripTests
         var ts = new DateTimeOffset(2026, 2, 21, 10, 1, 0, TimeSpan.Zero);
         var original = new TurnRecorded
         {
-            EntityKey = "C99999/1708531200.000100",
+            SessionId = "C99999/1708531200.000100",
             UserMessage = new SerializableChatMessage
             {
                 Role = ChatRole.User,
@@ -113,7 +108,7 @@ public sealed class SerializationRoundTripTests
 
         var result = RoundTrip(original);
 
-        Assert.Equal(original.EntityKey, result.EntityKey);
+        Assert.Equal(original.SessionId, result.SessionId);
         Assert.Equal(ChatRole.User, result.UserMessage.Role);
         Assert.Equal("Hello", result.UserMessage.Content);
         Assert.Equal(ChatRole.Assistant, result.AssistantReply.Role);
@@ -127,7 +122,7 @@ public sealed class SerializationRoundTripTests
         var ts = new DateTimeOffset(2026, 2, 21, 11, 0, 0, TimeSpan.Zero);
         var original = new SessionCompacted
         {
-            EntityKey = "C99999/1708531200.000100",
+            SessionId = "C99999/1708531200.000100",
             Summary = "The user asked about system status; all services healthy.",
             CompactedMessages = new List<SerializableChatMessage>
             {
@@ -139,7 +134,7 @@ public sealed class SerializationRoundTripTests
 
         var result = RoundTrip(original);
 
-        Assert.Equal(original.EntityKey, result.EntityKey);
+        Assert.Equal(original.SessionId, result.SessionId);
         Assert.Equal(original.Summary, result.Summary);
         Assert.Single(result.CompactedMessages);
         Assert.Equal(ChatRole.System, result.CompactedMessages[0].Role);
@@ -154,7 +149,7 @@ public sealed class SerializationRoundTripTests
         var ts = new DateTimeOffset(2026, 2, 21, 10, 1, 5, TimeSpan.Zero);
         var original = new TurnBroadcast
         {
-            EntityKey = "C99999/1708531200.000100",
+            SessionId = "C99999/1708531200.000100",
             AssistantReply = new SerializableChatMessage
             {
                 Role = ChatRole.Assistant,
@@ -165,7 +160,7 @@ public sealed class SerializationRoundTripTests
 
         var result = RoundTrip(original);
 
-        Assert.Equal(original.EntityKey, result.EntityKey);
+        Assert.Equal(original.SessionId, result.SessionId);
         Assert.Equal(ChatRole.Assistant, result.AssistantReply.Role);
         Assert.Equal("Here is your answer.", result.AssistantReply.Content);
         Assert.Equal(original.BroadcastAtMs, result.BroadcastAtMs);
@@ -177,14 +172,14 @@ public sealed class SerializationRoundTripTests
         var ts = new DateTimeOffset(2026, 2, 21, 11, 0, 1, TimeSpan.Zero);
         var original = new CompactionBroadcast
         {
-            EntityKey = "C99999/1708531200.000100",
+            SessionId = "C99999/1708531200.000100",
             Summary = "Context compacted after 42 turns.",
             CompactedAtMs = ts.ToUnixTimeMilliseconds()
         };
 
         var result = RoundTrip(original);
 
-        Assert.Equal(original.EntityKey, result.EntityKey);
+        Assert.Equal(original.SessionId, result.SessionId);
         Assert.Equal(original.Summary, result.Summary);
         Assert.Equal(original.CompactedAtMs, result.CompactedAtMs);
     }

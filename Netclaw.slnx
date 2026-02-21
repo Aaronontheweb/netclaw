@@ -1,7 +1,7 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="src/Akka.Agents/Akka.Agents.csproj" />
+    <Project Path="src/Netclaw.Actors/Netclaw.Actors.csproj" />
     <Project Path="src/Netclaw.App/Netclaw.App.csproj" />
-    <Project Path="src/Akka.Agents.Tests/Akka.Agents.Tests.csproj" />
+    <Project Path="src/Netclaw.Actors.Tests/Netclaw.Actors.Tests.csproj" />
   </Folder>
 </Solution>

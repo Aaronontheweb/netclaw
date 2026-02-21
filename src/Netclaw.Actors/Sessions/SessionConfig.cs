@@ -1,4 +1,4 @@
-namespace Akka.Agents.Sessions;
+namespace Netclaw.Actors.Sessions;
 
 public sealed record SessionConfig(
     int SnapshotInterval,

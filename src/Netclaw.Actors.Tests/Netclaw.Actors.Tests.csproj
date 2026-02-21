@@ -15,7 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../Akka.Agents/Akka.Agents.csproj"/>
+    <ProjectReference Include="../Netclaw.Actors/Netclaw.Actors.csproj"/>
   </ItemGroup>
 
 </Project>
