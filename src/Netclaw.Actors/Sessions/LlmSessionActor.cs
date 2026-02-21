@@ -16,12 +16,12 @@ namespace Netclaw.Actors.Sessions;
 public sealed class LlmSessionActor : ReceiveActor
 {
     private readonly SessionId _sessionId;
-    private readonly IPubSubMediator _pubSub;
+    private readonly IActorRef _pubSub;
     private readonly ILoggingAdapter _log = Context.GetLogger();
 
     private readonly List<SerializableChatMessage> _history = new();
 
-    public LlmSessionActor(string entityId, IPubSubMediator pubSub)
+    public LlmSessionActor(string entityId, IActorRef pubSub)
     {
         _sessionId = new SessionId(entityId);
         _pubSub = pubSub;
@@ -52,11 +52,11 @@ public sealed class LlmSessionActor : ReceiveActor
         _history.Add(reply);
 
         // Publish turn broadcast for adapters
-        _pubSub.Publish(_sessionId.Value, new TurnBroadcast
+        _pubSub.Tell(new Publish(_sessionId.Value, new TurnBroadcast
         {
             SessionId = _sessionId,
             AssistantReply = reply,
             BroadcastAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-        });
+        }));
     }
 }

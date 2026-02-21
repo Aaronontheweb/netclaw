@@ -104,6 +104,15 @@ If discovery artifacts conflict with each other, update them before implementing
 - persistence types remain framework-owned and serialization-safe
 - no new Slopwatch violations: run `/dotnet-skills:slopwatch` after code changes
 
+## Testing Guidelines
+
+- Do not write tests for trivial code — string formatting, simple concatenation,
+  constructor assignment, and other zero-logic paths are not worth testing.
+- Tests should exercise meaningful behavior: state transitions, error handling,
+  serialization round-trips, routing decisions, integration boundaries.
+- If the test is just asserting that `$"{a}/{b}"` equals `"a/b"`, delete it.
+- Prefer fewer tests that cover real behavior over many tests that pad coverage.
+
 ## Post-Code Quality Check
 
 After any code changes, run:

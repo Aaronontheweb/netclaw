@@ -3,16 +3,17 @@ using Akka.Actor;
 namespace Netclaw.Actors.PubSub;
 
 /// <summary>
-/// Transport-agnostic pub/sub mediator for string-keyed topic routing.
-/// Adapters subscribe to session topics to receive broadcasts (TurnBroadcast,
-/// CompactionBroadcast). Session actors publish to their topic after each turn.
-///
-/// Local implementation uses in-memory routing. A future clustered implementation
-/// would delegate to Akka.Cluster.Tools DistributedPubSub.
+/// Subscribe to a string-keyed topic. The mediator will DeathWatch
+/// the subscriber and automatically unsubscribe on termination.
 /// </summary>
-public interface IPubSubMediator
-{
-    void Publish(string topic, object message);
-    void Subscribe(string topic, IActorRef subscriber);
-    void Unsubscribe(string topic, IActorRef subscriber);
-}
+public sealed record Subscribe(string Topic, IActorRef Subscriber);
+
+/// <summary>
+/// Unsubscribe from a string-keyed topic.
+/// </summary>
+public sealed record Unsubscribe(string Topic, IActorRef Subscriber);
+
+/// <summary>
+/// Publish a message to all subscribers of a topic.
+/// </summary>
+public sealed record Publish(string Topic, object Message);

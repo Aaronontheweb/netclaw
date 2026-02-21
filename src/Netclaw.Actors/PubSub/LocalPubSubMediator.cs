@@ -1,59 +1,67 @@
-using System.Collections.Concurrent;
 using Akka.Actor;
+using Akka.Event;
 
 namespace Netclaw.Actors.PubSub;
 
 /// <summary>
-/// In-memory pub/sub mediator for single-process execution.
-/// Thread-safe — multiple actors can publish/subscribe concurrently.
+/// In-memory pub/sub mediator actor for single-process execution.
+/// Manages string-keyed topic subscriptions and uses DeathWatch to
+/// automatically clean up terminated subscribers.
+///
+/// A future clustered implementation would delegate to
+/// Akka.Cluster.Tools DistributedPubSub.
 /// </summary>
-public sealed class LocalPubSubMediator : IPubSubMediator
+public sealed class LocalPubSubMediator : ReceiveActor
 {
-    private readonly ConcurrentDictionary<string, HashSet<IActorRef>> _subscriptions = new();
+    private readonly Dictionary<string, HashSet<IActorRef>> _topicSubscribers = new();
+    private readonly ILoggingAdapter _log = Context.GetLogger();
 
-    public void Publish(string topic, object message)
+    public LocalPubSubMediator()
     {
-        ArgumentNullException.ThrowIfNull(topic);
-        ArgumentNullException.ThrowIfNull(message);
+        Receive<Subscribe>(OnSubscribe);
+        Receive<Unsubscribe>(OnUnsubscribe);
+        Receive<Publish>(OnPublish);
+    }
 
-        if (!_subscriptions.TryGetValue(topic, out var subscribers))
+    private void OnSubscribe(Subscribe cmd)
+    {
+        if (!_topicSubscribers.TryGetValue(cmd.Topic, out var subscribers))
+        {
+            subscribers = new HashSet<IActorRef>();
+            _topicSubscribers[cmd.Topic] = subscribers;
+        }
+
+        if (subscribers.Add(cmd.Subscriber))
+        {
+            Context.WatchWith(cmd.Subscriber, new Unsubscribe(cmd.Topic, cmd.Subscriber));
+            _log.Debug("Subscribed {0} to topic [{1}]", cmd.Subscriber, cmd.Topic);
+        }
+    }
+
+    private void OnUnsubscribe(Unsubscribe cmd)
+    {
+        if (!_topicSubscribers.TryGetValue(cmd.Topic, out var subscribers))
             return;
 
-        IActorRef[] snapshot;
-        lock (subscribers)
+        if (subscribers.Remove(cmd.Subscriber))
         {
-            snapshot = [.. subscribers];
-        }
+            if (subscribers.Count == 0)
+                _topicSubscribers.Remove(cmd.Topic);
 
-        foreach (var subscriber in snapshot)
-        {
-            subscriber.Tell(message);
+            _log.Debug("Unsubscribed {0} from topic [{1}]", cmd.Subscriber, cmd.Topic);
         }
     }
 
-    public void Subscribe(string topic, IActorRef subscriber)
+    private void OnPublish(Publish cmd)
     {
-        ArgumentNullException.ThrowIfNull(topic);
-        ArgumentNullException.ThrowIfNull(subscriber);
-
-        var subscribers = _subscriptions.GetOrAdd(topic, _ => new HashSet<IActorRef>());
-        lock (subscribers)
-        {
-            subscribers.Add(subscriber);
-        }
-    }
-
-    public void Unsubscribe(string topic, IActorRef subscriber)
-    {
-        ArgumentNullException.ThrowIfNull(topic);
-        ArgumentNullException.ThrowIfNull(subscriber);
-
-        if (!_subscriptions.TryGetValue(topic, out var subscribers))
+        if (!_topicSubscribers.TryGetValue(cmd.Topic, out var subscribers))
             return;
 
-        lock (subscribers)
+        foreach (var subscriber in subscribers)
         {
-            subscribers.Remove(subscriber);
+            subscriber.Tell(cmd.Message);
         }
     }
+
+    public static Props CreateProps() => Props.Create<LocalPubSubMediator>();
 }
