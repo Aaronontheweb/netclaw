@@ -1,3 +1,4 @@
+using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Routing;
 using Xunit;
 
@@ -8,7 +9,8 @@ public sealed class SessionKeysTests
     [Fact]
     public void Slack_produces_channelId_slash_threadTs()
     {
-        Assert.Equal("C0123456/1708531200.000100", SessionKeys.Slack("C0123456", "1708531200.000100"));
+        var id = SessionKeys.Slack("C0123456", "1708531200.000100");
+        Assert.Equal("C0123456/1708531200.000100", id.Value);
     }
 
     [Theory]
@@ -16,13 +18,14 @@ public sealed class SessionKeysTests
     [InlineData("G0123456", "1708531200.123456", "G0123456/1708531200.123456")]
     public void Slack_formats_correctly(string channelId, string threadTs, string expected)
     {
-        Assert.Equal(expected, SessionKeys.Slack(channelId, threadTs));
+        Assert.Equal(expected, SessionKeys.Slack(channelId, threadTs).Value);
     }
 
     [Fact]
     public void Schedule_produces_schedule_slash_taskId_slash_runTs()
     {
-        Assert.Equal("schedule/ebay-check/1708531200000", SessionKeys.Schedule("ebay-check", 1708531200000L));
+        var id = SessionKeys.Schedule("ebay-check", 1708531200000L);
+        Assert.Equal("schedule/ebay-check/1708531200000", id.Value);
     }
 
     [Theory]
@@ -30,17 +33,17 @@ public sealed class SessionKeysTests
     [InlineData("price-watch", 0L, "schedule/price-watch/0")]
     public void Schedule_formats_correctly(string taskId, long runTs, string expected)
     {
-        Assert.Equal(expected, SessionKeys.Schedule(taskId, runTs));
+        Assert.Equal(expected, SessionKeys.Schedule(taskId, runTs).Value);
     }
 
     [Fact]
     public void Tui_produces_tui_slash_sessionId()
     {
-        Assert.Equal("tui/a1b2c3", SessionKeys.Tui("a1b2c3"));
+        Assert.Equal("tui/a1b2c3", SessionKeys.Tui("a1b2c3").Value);
     }
 
     [Fact]
-    public void Same_inputs_produce_same_Slack_key()
+    public void Same_inputs_produce_equal_SessionIds()
     {
         var key1 = SessionKeys.Slack("C99999", "1708531200.000100");
         var key2 = SessionKeys.Slack("C99999", "1708531200.000100");
@@ -48,10 +51,18 @@ public sealed class SessionKeysTests
     }
 
     [Fact]
-    public void Different_runTs_produces_different_Schedule_keys()
+    public void Different_runTs_produces_different_SessionIds()
     {
         var key1 = SessionKeys.Schedule("task-a", 1000L);
         var key2 = SessionKeys.Schedule("task-a", 2000L);
         Assert.NotEqual(key1, key2);
+    }
+
+    [Fact]
+    public void SessionId_implicit_string_conversion()
+    {
+        SessionId id = SessionKeys.Slack("C99999", "123.456");
+        string value = id;
+        Assert.Equal("C99999/123.456", value);
     }
 }

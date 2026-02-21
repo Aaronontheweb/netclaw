@@ -6,5 +6,5 @@ namespace Netclaw.Actors.Protocol;
 /// </summary>
 public interface IWithSessionId
 {
-    string SessionId { get; }
+    SessionId SessionId { get; }
 }

@@ -15,6 +15,15 @@ public sealed class SerializationRoundTripTests
     }
 
     [Fact]
+    public void SessionId_round_trips()
+    {
+        var original = new SessionId("C99999/1708531200.000100");
+        var result = RoundTrip(original);
+        Assert.Equal(original, result);
+        Assert.Equal("C99999/1708531200.000100", result.Value);
+    }
+
+    [Fact]
     public void SourceMetadata_round_trips()
     {
         var original = SourceMetadata.Create(
@@ -37,7 +46,7 @@ public sealed class SerializationRoundTripTests
     {
         var original = new SendUserMessage
         {
-            SessionId = "C99999/1708531200.000100",
+            SessionId = new SessionId("C99999/1708531200.000100"),
             Content = "Hello, Netclaw!",
             Source = SourceMetadata.Create(AdapterTypes.Slack, "U12345", "C99999",
                 new DateTimeOffset(2026, 2, 21, 10, 0, 0, TimeSpan.Zero))
@@ -92,7 +101,7 @@ public sealed class SerializationRoundTripTests
         var ts = new DateTimeOffset(2026, 2, 21, 10, 1, 0, TimeSpan.Zero);
         var original = new TurnRecorded
         {
-            SessionId = "C99999/1708531200.000100",
+            SessionId = new SessionId("C99999/1708531200.000100"),
             UserMessage = new SerializableChatMessage
             {
                 Role = ChatRole.User,
@@ -122,7 +131,7 @@ public sealed class SerializationRoundTripTests
         var ts = new DateTimeOffset(2026, 2, 21, 11, 0, 0, TimeSpan.Zero);
         var original = new SessionCompacted
         {
-            SessionId = "C99999/1708531200.000100",
+            SessionId = new SessionId("C99999/1708531200.000100"),
             Summary = "The user asked about system status; all services healthy.",
             CompactedMessages = new List<SerializableChatMessage>
             {
@@ -149,7 +158,7 @@ public sealed class SerializationRoundTripTests
         var ts = new DateTimeOffset(2026, 2, 21, 10, 1, 5, TimeSpan.Zero);
         var original = new TurnBroadcast
         {
-            SessionId = "C99999/1708531200.000100",
+            SessionId = new SessionId("C99999/1708531200.000100"),
             AssistantReply = new SerializableChatMessage
             {
                 Role = ChatRole.Assistant,
@@ -172,7 +181,7 @@ public sealed class SerializationRoundTripTests
         var ts = new DateTimeOffset(2026, 2, 21, 11, 0, 1, TimeSpan.Zero);
         var original = new CompactionBroadcast
         {
-            SessionId = "C99999/1708531200.000100",
+            SessionId = new SessionId("C99999/1708531200.000100"),
             Summary = "Context compacted after 42 turns.",
             CompactedAtMs = ts.ToUnixTimeMilliseconds()
         };

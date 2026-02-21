@@ -9,15 +9,8 @@ namespace Netclaw.Actors.Protocol;
 [ProtoContract]
 public sealed class SendUserMessage : IWithSessionId
 {
-    /// <summary>
-    /// Session identity key.
-    /// Formats:
-    ///   Slack thread:   {channelId}/{threadTs}
-    ///   Scheduled task: schedule/{taskId}/{runTs}
-    ///   TUI session:    tui/{sessionId}
-    /// </summary>
     [ProtoMember(1)]
-    public string SessionId { get; set; } = string.Empty;
+    public SessionId SessionId { get; set; }
 
     /// <summary>Message content to deliver to the LLM session.</summary>
     [ProtoMember(2)]

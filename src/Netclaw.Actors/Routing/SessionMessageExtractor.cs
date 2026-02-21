@@ -17,7 +17,7 @@ public sealed class SessionMessageExtractor : HashCodeMessageExtractor
 
     public override string? EntityId(object message) => message switch
     {
-        IWithSessionId msg => msg.SessionId,
+        IWithSessionId msg => msg.SessionId.Value,
         _ => null
     };
 }

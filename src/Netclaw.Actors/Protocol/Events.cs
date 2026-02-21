@@ -9,7 +9,7 @@ namespace Netclaw.Actors.Protocol;
 public sealed class TurnRecorded
 {
     [ProtoMember(1)]
-    public string SessionId { get; set; } = string.Empty;
+    public SessionId SessionId { get; set; }
 
     [ProtoMember(2)]
     public SerializableChatMessage UserMessage { get; set; } = new();
@@ -30,7 +30,7 @@ public sealed class TurnRecorded
 public sealed class SessionCompacted
 {
     [ProtoMember(1)]
-    public string SessionId { get; set; } = string.Empty;
+    public SessionId SessionId { get; set; }
 
     [ProtoMember(2)]
     public string Summary { get; set; } = string.Empty;

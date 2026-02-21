@@ -1,4 +1,11 @@
 <Solution>
+  <Folder Name="/build/">
+    <File Path="build.ps1" />
+    <File Path="coverlet.runsettings" />
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="NuGet.Config" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/Netclaw.Actors/Netclaw.Actors.csproj" />
     <Project Path="src/Netclaw.App/Netclaw.App.csproj" />
