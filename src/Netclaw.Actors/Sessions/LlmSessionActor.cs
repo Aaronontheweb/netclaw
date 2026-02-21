@@ -33,8 +33,7 @@ public sealed class LlmSessionActor : ReceiveActor
 
     private void OnSendUserMessage(SendUserMessage cmd)
     {
-        _log.Info("Session {0}: received message from {1}",
-            _sessionId, cmd.Source.SenderIdentity);
+        _log.Info("Session {0}: received user message", _sessionId);
 
         // Record user message in history
         var userMsg = new SerializableChatMessage

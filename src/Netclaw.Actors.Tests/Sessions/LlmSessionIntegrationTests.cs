@@ -42,12 +42,7 @@ public class LlmSessionIntegrationTests : TestKit
         sessionManager.Tell(new SendUserMessage
         {
             SessionId = sessionId,
-            Content = "Hello, Netclaw!",
-            Source = SourceMetadata.Create(
-                adapterType: AdapterTypes.Slack,
-                senderIdentity: "U12345",
-                channelId: "test-channel",
-                timestamp: DateTimeOffset.UtcNow)
+            Content = "Hello, Netclaw!"
         });
 
         // Assert — subscriber receives TurnBroadcast via pub/sub
@@ -76,13 +71,11 @@ public class LlmSessionIntegrationTests : TestKit
         {
             SessionId = session1,
             Content = "Message for session 1",
-            Source = SourceMetadata.Create(AdapterTypes.Slack, "U1", "channel-A", DateTimeOffset.UtcNow)
         });
         sessionManager.Tell(new SendUserMessage
         {
             SessionId = session2,
-            Content = "Message for session 2",
-            Source = SourceMetadata.Create(AdapterTypes.Tui, "U2", "channel-B", DateTimeOffset.UtcNow)
+            Content = "Message for session 2"
         });
 
         // Assert — each subscriber only gets its own session's broadcast

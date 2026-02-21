@@ -24,42 +24,18 @@ public sealed class SerializationRoundTripTests
     }
 
     [Fact]
-    public void SourceMetadata_round_trips()
-    {
-        var original = SourceMetadata.Create(
-            adapterType: AdapterTypes.Slack,
-            senderIdentity: "U12345",
-            channelId: "C99999",
-            timestamp: new DateTimeOffset(2026, 2, 21, 10, 0, 0, TimeSpan.Zero));
-
-        var result = RoundTrip(original);
-
-        Assert.Equal(original.AdapterType, result.AdapterType);
-        Assert.Equal(original.SenderIdentity, result.SenderIdentity);
-        Assert.Equal(original.ChannelId, result.ChannelId);
-        Assert.Equal(original.TimestampMs, result.TimestampMs);
-        Assert.Equal(original.Timestamp, result.Timestamp);
-    }
-
-    [Fact]
     public void SendUserMessage_round_trips()
     {
         var original = new SendUserMessage
         {
             SessionId = new SessionId("C99999/1708531200.000100"),
-            Content = "Hello, Netclaw!",
-            Source = SourceMetadata.Create(AdapterTypes.Slack, "U12345", "C99999",
-                new DateTimeOffset(2026, 2, 21, 10, 0, 0, TimeSpan.Zero))
+            Content = "Hello, Netclaw!"
         };
 
         var result = RoundTrip(original);
 
         Assert.Equal(original.SessionId, result.SessionId);
         Assert.Equal(original.Content, result.Content);
-        Assert.Equal(original.Source.AdapterType, result.Source.AdapterType);
-        Assert.Equal(original.Source.SenderIdentity, result.Source.SenderIdentity);
-        Assert.Equal(original.Source.ChannelId, result.Source.ChannelId);
-        Assert.Equal(original.Source.TimestampMs, result.Source.TimestampMs);
     }
 
     [Fact]
