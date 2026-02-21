@@ -199,11 +199,11 @@ Full task breakdowns:
 **Verification:** L2
 
 Done when:
-- [ ] `SendUserMessage`, `TurnRecorded`, `SessionCompacted`, `TurnBroadcast`, `CompactionBroadcast` implemented with protobuf-net serialization.
-- [ ] `SerializableChatMessage` framework-owned type implemented (no direct persistence of MEAI types).
-- [ ] `SessionMessageExtractor` supports entity key patterns: `{channelId}/{threadTs}` and `schedule/{taskId}/{runTs}`.
-- [ ] Source metadata (adapter type, sender identity, channel, timestamp) on all commands.
-- [ ] Integration tests verify serialization round-trip and entity key extraction.
+- [x] `SendUserMessage`, `TurnRecorded`, `SessionCompacted`, `TurnBroadcast`, `CompactionBroadcast` implemented with protobuf-net serialization.
+- [x] `SerializableChatMessage` framework-owned type implemented (no direct persistence of MEAI types).
+- [x] `SessionMessageExtractor` supports entity key patterns: `{channelId}/{threadTs}` and `schedule/{taskId}/{runTs}`.
+- [x] Source metadata (adapter type, sender identity, channel, timestamp) on all commands.
+- [x] Integration tests verify serialization round-trip and entity key extraction.
 
 ### Task 1.2: Session actor core with persistence and turn loop
 

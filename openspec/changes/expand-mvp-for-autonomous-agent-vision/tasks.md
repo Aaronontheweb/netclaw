@@ -2,14 +2,14 @@
 
 ## 1. Framework Protocol and Persistence Envelopes
 
-- [ ] 1.1 Implement `SendUserMessage`, `TurnRecorded`, `SessionCompacted`,
+- [x] 1.1 Implement `SendUserMessage`, `TurnRecorded`, `SessionCompacted`,
   `TurnBroadcast`, and `CompactionBroadcast` concrete types with protobuf-net
   serialization.
-- [ ] 1.2 Implement `SerializableChatMessage` framework-owned chat type (no
+- [x] 1.2 Implement `SerializableChatMessage` framework-owned chat type (no
   direct persistence of `Microsoft.Extensions.AI` types).
-- [ ] 1.3 Implement `SessionMessageExtractor` supporting entity key patterns:
+- [x] 1.3 Implement `SessionMessageExtractor` supporting entity key patterns:
   `{channelId}/{threadTs}` for Slack, `schedule/{taskId}/{runTs}` for timers.
-- [ ] 1.4 Write integration tests verifying event serialization round-trip and
+- [x] 1.4 Write integration tests verifying event serialization round-trip and
   entity key extraction for both Slack and timer patterns.
 
 ## 2. Session Actor Core

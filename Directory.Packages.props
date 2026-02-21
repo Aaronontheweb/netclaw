@@ -9,7 +9,16 @@
     <PackageVersion Include="Akka.Hosting" Version="$(AkkaHostingVersion)"/>
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.2"/>
   </ItemGroup>
+  <!-- Serialization -->
+  <ItemGroup>
+    <PackageVersion Include="protobuf-net" Version="3.2.30"/>
+  </ItemGroup>
   <!-- Test dependencies -->
+  <ItemGroup>
+    <PackageVersion Include="xunit.v3" Version="3.0.0"/>
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.0.2"/>
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.12.0"/>
+  </ItemGroup>
   <!-- SourceLink support for all Akka.NET projects -->
   <ItemGroup>
     <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.102"/>
