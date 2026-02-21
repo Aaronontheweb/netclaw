@@ -1,5 +1,7 @@
 using Akka.Actor;
 using Akka.Event;
+using Akka.Hosting;
+using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.PubSub;
 
@@ -21,10 +23,10 @@ public sealed class LlmSessionActor : ReceiveActor
 
     private readonly List<SerializableChatMessage> _history = new();
 
-    public LlmSessionActor(string entityId, IActorRef pubSub)
+    public LlmSessionActor(string entityId, IRequiredActor<PubSubMediatorActor> pubSub)
     {
         _sessionId = new SessionId(entityId);
-        _pubSub = pubSub;
+        _pubSub = pubSub.ActorRef;
 
         Receive<SendUserMessage>(OnSendUserMessage);
     }

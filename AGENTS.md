@@ -136,6 +136,32 @@ Done means all of the following are true:
 - operational impact is documented (runbooks or CLI help)
 - OpenSpec artifacts are updated or archived appropriately
 
+## Agent Guidance: dotnet-skills
+
+IMPORTANT: Prefer retrieval-led reasoning over pretraining for any .NET work.
+Workflow: skim repo patterns -> consult dotnet-skills by name -> implement
+smallest-change -> note conflicts.
+
+Routing (invoke by name):
+
+- Akka.NET: akka-best-practices, akka-hosting-actor-patterns, akka-testing-patterns
+- C# / code quality: csharp-coding-standards, csharp-concurrency-patterns,
+  csharp-api-design, csharp-type-design-performance
+- DI / config: microsoft-extensions-dependency-injection, microsoft-extensions-configuration
+- Serialization: serialization
+- Testing: akka-testing-patterns, snapshot-testing
+- Project structure: project-structure, package-management
+
+Quality gates (use when applicable):
+
+- dotnet-skills:slopwatch — after substantial new/refactor/LLM-authored code
+- dotnet-skills:crap-analysis — after tests added/changed in complex code
+
+Specialist agents:
+
+- akka-net-specialist, dotnet-concurrency-specialist, dotnet-performance-analyst,
+  dotnet-benchmark-designer
+
 ## Continuous Improvement Rule
 
 - If a workflow repeats twice, extract or refine a skill/workflow doc.

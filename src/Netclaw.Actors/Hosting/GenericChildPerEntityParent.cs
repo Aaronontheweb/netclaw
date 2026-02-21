@@ -28,10 +28,14 @@ public sealed class GenericChildPerEntityParent : ReceiveActor
 
         ReceiveAny(o =>
         {
-            var result = _extractor.EntityId(o);
-            if (result is null) return;
-            Context.Child(result)
-                .GetOrElse(() => Context.ActorOf(_propsFactory(result), result))
+            var entityId = _extractor.EntityId(o);
+            if (entityId is null) return;
+            // Entity IDs may contain characters illegal in actor names (e.g. '/').
+            // Use URI-encoded form for the actor name while passing the original
+            // entity ID to the props factory.
+            var actorName = Uri.EscapeDataString(entityId);
+            Context.Child(actorName)
+                .GetOrElse(() => Context.ActorOf(_propsFactory(entityId), actorName))
                 .Forward(_extractor.EntityMessage(o));
         });
     }
