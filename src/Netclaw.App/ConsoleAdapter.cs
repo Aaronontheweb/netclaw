@@ -187,6 +187,8 @@ public sealed class ConsoleSubscriberActor : ReceiveActor
             Console.WriteLine($"  [error] {msg.Message}");
             Console.ResetColor();
             Log($"ERROR: {msg.Message}");
+            if (msg.Cause is not null)
+                Log($"EXCEPTION: {msg.Cause}");
         });
 
         Receive<TurnCompleted>(msg =>

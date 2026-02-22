@@ -202,7 +202,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor
             EmitOutput(new ErrorOutput
             {
                 SessionId = _sessionId,
-                Message = errorMessage
+                Message = errorMessage,
+                Cause = msg.Cause
             });
             EmitOutput(new TurnCompleted
             {
@@ -224,7 +225,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor
             EmitOutput(new ErrorOutput
             {
                 SessionId = _sessionId,
-                Message = errorMessage
+                Message = errorMessage,
+                Cause = msg.Cause
             });
             EmitOutput(new TurnCompleted
             {

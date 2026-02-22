@@ -123,6 +123,12 @@ public sealed record SessionTitleOutput : SessionOutput
 public sealed record ErrorOutput : SessionOutput
 {
     public required string Message { get; init; }
+
+    /// <summary>
+    /// The underlying exception, if available. Not user-facing — intended
+    /// for diagnostic logging by subscribers and adapters.
+    /// </summary>
+    public Exception? Cause { get; init; }
 }
 
 /// <summary>
