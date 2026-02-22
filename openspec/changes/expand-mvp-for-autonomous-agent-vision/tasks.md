@@ -14,18 +14,18 @@
 
 ## 2. Session Actor Core
 
-- [ ] 2.1 Implement `LlmSessionActor` with persistent state recovery from
-  PostgreSQL journal/snapshots.
-- [ ] 2.2 Implement turn processing loop: receive `SendUserMessage`, invoke
-  `IChatClient`, persist `TurnRecorded`, emit `TurnBroadcast` via pub/sub.
-- [ ] 2.3 Implement snapshot strategy and compaction trigger via
-  `SummarizingChatReducer`.
-- [ ] 2.4 Implement pre-compaction memory flush: silent agentic turn that saves
-  durable memories before context resets (spec: netclaw-agent-memory).
+- [x] 2.1 Implement `LlmSessionActor` with persistent state recovery from
+  journal/snapshots (in-memory for MVP, PostgreSQL deferred).
+- [x] 2.2 Implement turn processing loop: receive `SendUserMessage`, invoke
+  `IChatClient`, persist `TurnRecorded`, emit typed outputs to subscribers.
+- [x] 2.3 Implement snapshot strategy, tiered compaction (tool result clearing +
+  structured summarization), and `Compacting` behavior state.
+- [x] 2.4 Implement pre-compaction memory flush: memory extraction LLM call
+  persisted via `IMemoryExtractor` interface before compaction.
 - [ ] 2.5 Add source metadata to `SendUserMessage` (adapter type, sender
   identity, channel, timestamp) per netclaw-input-adapters spec.
-- [ ] 2.6 Write integration tests proving restart recovery preserves context
-  and pre-compaction flush executes before compaction.
+- [x] 2.6 Write integration tests proving restart recovery preserves context
+  and compaction trigger/execution/recovery.
 
 ## 3. Session Parent and Entity Routing
 
@@ -37,15 +37,14 @@
 
 ## 4. Layered System Prompt and Personality
 
-- [ ] 4.1 Create `~/.netclaw/` standard directory structure (soul/, projects/,
-  environment/, schedules/, config/) with creation-on-startup behavior.
-- [ ] 4.2 Implement system prompt assembly from layered sources:
-  PERSONALITY.md → INSTRUCTIONS.md → USER.md → project AGENTS.md → session
-  context.
-- [ ] 4.3 Implement project AGENTS.md overlay loading from registered project
-  paths.
-- [ ] 4.4 Write tests for prompt assembly with missing layers and project
-  overlay injection.
+- [x] 4.1 Create `~/.netclaw/` standard directory structure (soul/, projects/,
+  environment/, schedules/, config/) via `NetclawPaths`.
+- [x] 4.2 Implement system prompt assembly from layered sources via
+  `SystemPromptAssembler` and pluggable `ISystemPromptProvider` interface.
+- [x] 4.3 Implement `FileSystemPromptProvider` for loading from disk and
+  `StaticSystemPromptProvider` for testing.
+- [x] 4.4 Write tests for prompt assembly with missing layers, whitespace-only
+  layers, single layer, and project overlay injection.
 
 ## 5. ACL and Policy Engine
 
@@ -62,15 +61,17 @@
 
 ## 6. Tool Framework and MEAI Registration
 
-- [ ] 6.1 Implement tool registry that registers `AIFunction` definitions
-  through `Microsoft.Extensions.AI`.
-- [ ] 6.2 Implement policy-filtered tool loading: session receives only tools
-  matching its ACL grants.
-- [ ] 6.3 Implement tool invocation audit logging (tool name, session ID,
-  timestamp, allow/deny).
-- [ ] 6.4 Add tool context to session state at initialization.
-- [ ] 6.5 Write tests for tool registration, policy filtering, and audit
-  logging.
+- [x] 6.1 Implement `ToolRegistry` that registers `AITool` definitions through
+  `Microsoft.Extensions.AI` with ACL grant categories.
+- [x] 6.2 Implement policy-filtered tool loading: `GetToolsForGrants()` returns
+  only tools matching granted categories.
+- [x] 6.3 Implement `IToolAuditLogger` with `ToolAuditEntry` recording tool
+  name, session ID, call ID, timestamp, allow/deny, and duration.
+- [x] 6.4 Implement agentic tool execution loop in `LlmSessionActor`: detect
+  tool calls, execute via `IToolExecutor`, feed results back, fire follow-up
+  LLM call.
+- [x] 6.5 Write tests for tool registration, grant filtering, audit logging,
+  tool call/result round-trip, and multi-tool execution integration.
 
 ## 7. First-Party Tools
 
