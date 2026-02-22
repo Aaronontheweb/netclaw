@@ -552,3 +552,57 @@ Tasks to be defined when Phase 3 is complete.
 
 Web UI for config, sessions, diagnostics (PRD-003).
 Tasks to be defined when Phase 4 is complete.
+
+---
+
+## Future Considerations
+
+Patterns identified during implementation research that are deferred from
+current phases but should inform future design decisions. Full analysis in
+the linked research documents.
+
+### Near-Term (incorporate during Phase 1)
+
+- **Max tool iterations circuit breaker** — `MaxToolIterationsPerTurn` in
+  `SessionConfig` to prevent unbounded agentic loops. Safety concern.
+  See: `docs/research/actor-llm-optimization-patterns.md` §2
+- **Parallel tool execution** — `Task.WhenAll` for independent tool calls
+  in `ExecuteToolsAsync`. Easy performance win for I/O-bound tools.
+  See: `docs/research/actor-llm-optimization-patterns.md` §3
+- **Retry with exponential backoff** — `IChatClient` decorator or actor-level
+  retry for transient LLM errors. Critical for scheduled task reliability.
+  See: `docs/research/actor-llm-optimization-patterns.md` §5
+
+### Medium-Term (Phase 1 provider abstraction + TUI)
+
+- **IChatClient decorator pipeline** — `CachingChatClient → RetryingChatClient
+  → RateLimitingChatClient → ProviderChatClient`. Transparent to actor code.
+  Natural fit for Task 1.8 (provider abstraction).
+  See: `docs/research/actor-llm-optimization-patterns.md` §1 (Tier 3)
+- **Streaming responses** — Actor-level vs adapter-level streaming for TUI
+  and Slack UX. Design decision needed before Task 1.14 (TUI adapter).
+  See: `docs/research/actor-llm-optimization-patterns.md` §4
+
+### Long-Term (Phase 2+)
+
+- **Prompt cache warming** — Shared system prompt cache warmer actor. Low
+  cost, benefits all sessions. Requires provider abstraction.
+  See: `docs/research/actor-llm-optimization-patterns.md` §1 (Tier 1)
+- **Cache-aware compaction** — Anthropic cache control breakpoints on
+  system prompt and compaction summary boundaries.
+  See: `docs/research/actor-llm-optimization-patterns.md` §1 (Tier 2)
+- **Sub-agent isolation** — Child task actors with independent context
+  windows. Architecture already supports it (`SessionState` is decoupled).
+  Natural entry point at Phase 3 (Delegated Coding).
+  See: `docs/research/actor-llm-optimization-patterns.md` §6
+
+### Research Documents
+
+- `docs/research/context-management-patterns.md` — Cross-SDK compaction
+  and memory patterns (OpenAI, LangChain, Semantic Kernel, Anthropic,
+  Google ADK, LlamaIndex, CrewAI, Haystack)
+- `docs/research/agent-patterns.md` — Agent soul, personality, tooling,
+  and onboarding patterns from comparable projects
+- `docs/research/actor-llm-optimization-patterns.md` — Prompt caching,
+  safety circuit breakers, parallel execution, streaming, retry, and
+  sub-agent isolation patterns for actor-based LLM systems
