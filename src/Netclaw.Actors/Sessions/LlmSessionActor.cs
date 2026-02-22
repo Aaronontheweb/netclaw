@@ -34,6 +34,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
     private readonly IToolExecutor? _toolExecutor;
     private readonly IToolAuditLogger? _auditLogger;
     private readonly IMemoryExtractor _memoryExtractor;
+    private readonly TimeProvider _timeProvider;
     private readonly ILoggingAdapter _log;
 
     // Transient state (not persisted)
@@ -63,7 +64,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         IToolExecutor? toolExecutor = null,
         IToolAuditLogger? auditLogger = null,
         ToolRegistry? toolRegistry = null,
-        IMemoryExtractor? memoryExtractor = null)
+        IMemoryExtractor? memoryExtractor = null,
+        TimeProvider? timeProvider = null)
     {
         _sessionId = new SessionId(entityId);
         _chatClient = chatClient;
@@ -72,6 +74,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         _toolExecutor = toolExecutor;
         _auditLogger = auditLogger;
         _memoryExtractor = memoryExtractor ?? NullMemoryExtractor.Instance;
+        _timeProvider = timeProvider ?? TimeProvider.System;
         PersistenceId = $"session-{entityId}";
 
         // Enrich logger with session context — all log messages automatically include SessionId
@@ -294,7 +297,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
                 Summary = msg.Summary,
                 CompactedMessages = compactedMessages,
                 TurnCountBefore = _state.TurnCount,
-                CompactedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+                CompactedAtMs = NowMs()
             };
 
             Persist(compactedEvent, evt =>
@@ -455,7 +458,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         var executor = _toolExecutor!;
         var sessionId = _sessionId;
         var auditLogger = _auditLogger;
-        _ = ExecuteToolsAsync(executor, toolCalls, sessionId, auditLogger, self);
+        var tp = _timeProvider;
+        _ = ExecuteToolsAsync(executor, toolCalls, sessionId, auditLogger, tp, self);
     }
 
     private void HandleTextResponse(AiChatMessage lastMessage, UsageDetails? usage)
@@ -480,7 +484,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
                 Content = string.Empty
             },
             AssistantReply = reply,
-            RecordedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            RecordedAtMs = NowMs()
         };
 
         Persist(turnEvent, evt =>
@@ -580,6 +584,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor
 
     // ── Helpers ──
 
+    private long NowMs() => _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+
     private void SetSystemPrompt()
     {
         var content = _promptProvider.GetSystemPrompt();
@@ -593,7 +599,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         {
             SessionId = _sessionId,
             Content = content,
-            SetAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            SetAtMs = NowMs()
         };
 
         Persist(evt, e =>
@@ -640,12 +646,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         List<FunctionCallContent> toolCalls,
         SessionId sessionId,
         IToolAuditLogger? auditLogger,
+        TimeProvider timeProvider,
         IActorRef self)
     {
         try
         {
             // Execute all tool calls in parallel — each is independent
-            var tasks = toolCalls.Select(tc => ExecuteSingleToolAsync(executor, tc, sessionId, auditLogger));
+            var tasks = toolCalls.Select(tc => ExecuteSingleToolAsync(executor, tc, sessionId, auditLogger, timeProvider));
             var results = await Task.WhenAll(tasks);
 
             self.Tell(new ToolExecutionCompleted { ToolResults = results.ToList() });
@@ -660,7 +667,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         IToolExecutor executor,
         FunctionCallContent tc,
         SessionId sessionId,
-        IToolAuditLogger? auditLogger)
+        IToolAuditLogger? auditLogger,
+        TimeProvider timeProvider)
     {
         var sw = Stopwatch.StartNew();
         string resultText;
@@ -674,7 +682,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
                 SessionId = sessionId.Value,
                 ToolName = tc.Name,
                 CallId = tc.CallId,
-                Timestamp = DateTimeOffset.UtcNow,
+                Timestamp = timeProvider.GetUtcNow(),
                 Allowed = true,
                 Duration = sw.Elapsed
             });
@@ -689,7 +697,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
                 SessionId = sessionId.Value,
                 ToolName = tc.Name,
                 CallId = tc.CallId,
-                Timestamp = DateTimeOffset.UtcNow,
+                Timestamp = timeProvider.GetUtcNow(),
                 Allowed = true,
                 Duration = sw.Elapsed
             });
@@ -797,7 +805,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         {
             SessionId = _sessionId,
             Title = title,
-            SetAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            SetAtMs = NowMs()
         };
 
         Persist(evt, e =>
