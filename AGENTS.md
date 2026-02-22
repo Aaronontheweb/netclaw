@@ -103,6 +103,11 @@ If discovery artifacts conflict with each other, update them before implementing
 - actor boundaries remain transport-agnostic (pub/sub over direct transport asks)
 - persistence types remain framework-owned and serialization-safe
 - no new Slopwatch violations: run `/dotnet-skills:slopwatch` after code changes
+- **NEVER add implicit conversions to/from primitive types on value objects.**
+  Value objects exist to prevent accidental misuse — an implicit conversion back
+  to the primitive defeats the purpose. Use `.Value` for explicit access and
+  explicit casts where truly needed. If a value object can silently become a
+  string, it provides no more safety than a raw string.
 
 ## Testing Guidelines
 

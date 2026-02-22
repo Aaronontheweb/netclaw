@@ -14,12 +14,12 @@ namespace Netclaw.Actors.Sessions;
 /// persists <see cref="TurnRecorded"/> events, and sends strongly-typed
 /// <see cref="SessionOutput"/> events to subscribers filtered by <see cref="OutputFilter"/>.
 ///
+/// Conversation state is held in an immutable <see cref="SessionState"/> record.
+/// The actor owns only transient concerns: subscribers, message buffer, and behavior.
+///
 /// Uses two command behaviors:
 /// - Ready: accepts user messages and fires async LLM call
 /// - Processing: buffers incoming messages while LLM call is in flight
-///
-/// State is recovered from the journal on startup. Snapshots are taken
-/// periodically per <see cref="SessionConfig.SnapshotInterval"/> and after compaction.
 /// </summary>
 public sealed class LlmSessionActor : ReceivePersistentActor
 {
@@ -28,12 +28,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor
     private readonly SessionConfig _config;
     private readonly ILoggingAdapter _log = Context.GetLogger();
 
-    private readonly List<SerializableChatMessage> _history = new();
+    // Transient state (not persisted)
     private readonly List<SendUserMessage> _buffer = new();
     private readonly Dictionary<IActorRef, OutputFilter> _subscribers = new();
 
-    private string? _title;
-    private int _turnCount;
+    // Persistent state (immutable — replaced on each event)
+    private SessionState _state = SessionState.Empty;
 
     public override string PersistenceId { get; }
 
@@ -45,80 +45,25 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         PersistenceId = $"session-{entityId}";
 
         // ── Recovery handlers ──
-        Recover<SystemPromptSet>(ApplySystemPromptSet);
-        Recover<TurnRecorded>(ApplyTurnRecorded);
-        Recover<SessionTitleSet>(ApplySessionTitleSet);
-        Recover<SessionCompacted>(ApplySessionCompacted);
+        Recover<SystemPromptSet>(evt => _state = _state.Apply(evt));
+        Recover<TurnRecorded>(evt => _state = _state.Apply(evt));
+        Recover<SessionTitleSet>(evt => _state = _state.Apply(evt));
+        Recover<SessionCompacted>(evt => _state = _state.Apply(evt));
         Recover<SnapshotOffer>(offer =>
         {
             if (offer.Snapshot is SessionSnapshot snapshot)
             {
-                _history.Clear();
-                _history.AddRange(snapshot.History);
-                _turnCount = snapshot.TurnCount;
-                _title = snapshot.Title;
-                _log.Info("Session {0}: recovered from snapshot (turns={1})", _sessionId, _turnCount);
+                _state = SessionState.FromSnapshot(snapshot);
+                _log.Info("Session {0}: recovered from snapshot (turns={1})",
+                    _sessionId, _state.TurnCount);
             }
         });
         Recover<RecoveryCompleted>(_ =>
         {
             _log.Info("Session {0}: recovery complete (turns={1}, history={2})",
-                _sessionId, _turnCount, _history.Count);
+                _sessionId, _state.TurnCount, _state.History.Count);
             Become(Ready);
         });
-    }
-
-    // ── State application methods (shared by recovery and persist callbacks) ──
-
-    private void ApplySystemPromptSet(SystemPromptSet evt)
-    {
-        // System prompt is always the first message in history.
-        // If one already exists, replace it.
-        if (_history.Count > 0 && _history[0].Role == Protocol.ChatRole.System)
-        {
-            _history[0] = new SerializableChatMessage
-            {
-                Role = Protocol.ChatRole.System,
-                Content = evt.Content
-            };
-        }
-        else
-        {
-            _history.Insert(0, new SerializableChatMessage
-            {
-                Role = Protocol.ChatRole.System,
-                Content = evt.Content
-            });
-        }
-    }
-
-    private void ApplyTurnRecorded(TurnRecorded evt)
-    {
-        _history.Add(evt.UserMessage);
-        _history.Add(evt.AssistantReply);
-        _turnCount++;
-    }
-
-    private void ApplySessionTitleSet(SessionTitleSet evt)
-    {
-        _title = evt.Title;
-    }
-
-    private void ApplySessionCompacted(SessionCompacted evt)
-    {
-        // Preserve system prompt if present
-        SerializableChatMessage? systemPrompt = null;
-        if (_history.Count > 0 && _history[0].Role == Protocol.ChatRole.System)
-        {
-            systemPrompt = _history[0];
-        }
-
-        _history.Clear();
-        if (systemPrompt is not null)
-        {
-            _history.Add(systemPrompt);
-        }
-        _history.AddRange(evt.CompactedMessages);
     }
 
     // ── Command behaviors ──
@@ -132,7 +77,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         {
             _log.Info("Session {0}: received user message", _sessionId);
 
-            AddUserMessageToHistory(cmd);
+            _state = _state.AddUserMessage(cmd.Content);
             Sender.Tell(CommandAck.For(_sessionId));
             FireLlmCall();
             Become(Processing);
@@ -158,8 +103,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
             var reply = ChatMessageConverter.FromAiMessage(lastMessage);
 
             // Build the persistence event
-            // Find the user message that triggered this turn — it's the last user message in history
-            var userMsg = FindLastUserMessage();
+            var userMsg = _state.FindLastUserMessage();
 
             var turnEvent = new TurnRecorded
             {
@@ -173,14 +117,15 @@ public sealed class LlmSessionActor : ReceivePersistentActor
                 RecordedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
             };
 
-            // Persist the event, then apply state + side effects in the callback
             Persist(turnEvent, evt =>
             {
-                // Apply state (same as recovery)
-                // Note: user message is already in _history from AddUserMessageToHistory,
-                // so we only add the assistant reply here
-                _history.Add(evt.AssistantReply);
-                _turnCount++;
+                // Apply state: user message is already in history from AddUserMessage,
+                // so we only add the assistant reply and increment turn count.
+                _state = _state with
+                {
+                    History = _state.History.Add(evt.AssistantReply),
+                    TurnCount = _state.TurnCount + 1
+                };
 
                 // Side effects: emit to subscribers
                 EmitResponseOutputs(lastMessage, response.Usage);
@@ -195,7 +140,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
                         _sessionId, _buffer.Count);
                     foreach (var buffered in _buffer)
                     {
-                        AddUserMessageToHistory(buffered);
+                        _state = _state.AddUserMessage(buffered.Content);
                     }
                     _buffer.Clear();
                     FireLlmCall();
@@ -211,23 +156,18 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         {
             _log.Error(msg.Cause, "Session {0}: LLM call failed", _sessionId);
 
-            var errorReply = new SerializableChatMessage
-            {
-                Role = Protocol.ChatRole.Assistant,
-                Content = "I encountered an error processing your message. Please try again."
-            };
-            _history.Add(errorReply);
-            _turnCount++;
+            const string errorMessage = "I encountered an error processing your message. Please try again.";
+            _state = _state.AddErrorReply(errorMessage);
 
             EmitOutput(new ErrorOutput
             {
                 SessionId = _sessionId,
-                Message = "I encountered an error processing your message. Please try again."
+                Message = errorMessage
             });
             EmitOutput(new TurnCompleted
             {
                 SessionId = _sessionId,
-                TurnNumber = _turnCount
+                TurnNumber = _state.TurnCount
             });
 
             _buffer.Clear();
@@ -249,8 +189,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor
             cmd.Subscriber.Tell(new SessionJoined
             {
                 SessionId = _sessionId,
-                Title = _title,
-                TurnCount = _turnCount
+                Title = _state.Title,
+                TurnCount = _state.TurnCount
             });
         });
 
@@ -289,28 +229,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor
 
     // ── Helpers ──
 
-    private void AddUserMessageToHistory(SendUserMessage cmd)
-    {
-        _history.Add(new SerializableChatMessage
-        {
-            Role = Protocol.ChatRole.User,
-            Content = cmd.Content
-        });
-    }
-
-    private SerializableChatMessage? FindLastUserMessage()
-    {
-        for (var i = _history.Count - 1; i >= 0; i--)
-        {
-            if (_history[i].Role == Protocol.ChatRole.User)
-                return _history[i];
-        }
-        return null;
-    }
-
     private void FireLlmCall()
     {
-        var messages = ChatMessageConverter.ToAiMessages(_history);
+        var messages = ChatMessageConverter.ToAiMessages(_state.History);
         var self = Self;
         var client = _chatClient;
         _ = InvokeLlmAsync(client, messages, self);
@@ -334,12 +255,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
     {
         if (_config.SnapshotInterval > 0 && LastSequenceNr % _config.SnapshotInterval == 0)
         {
-            SaveSnapshot(new SessionSnapshot
-            {
-                History = new List<SerializableChatMessage>(_history),
-                TurnCount = _turnCount,
-                Title = _title
-            });
+            SaveSnapshot(_state.ToSnapshot());
         }
     }
 
@@ -398,7 +314,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         EmitOutput(new TurnCompleted
         {
             SessionId = _sessionId,
-            TurnNumber = _turnCount
+            TurnNumber = _state.TurnCount
         });
     }
 
@@ -428,7 +344,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
 
         Persist(evt, e =>
         {
-            ApplySessionTitleSet(e);
+            _state = _state.Apply(e);
             EmitOutput(new SessionTitleOutput
             {
                 SessionId = _sessionId,
