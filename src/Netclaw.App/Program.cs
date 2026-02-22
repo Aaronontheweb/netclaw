@@ -1,6 +1,7 @@
 using Akka.Hosting;
 using Akka.Persistence.Hosting;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -10,6 +11,9 @@ using Netclaw.Actors.Sessions;
 using OllamaSharp;
 
 var builder = Host.CreateApplicationBuilder(args);
+
+// Load local overrides (appsettings.Local.json is gitignored for machine-specific config)
+builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: false);
 
 builder.Logging.AddSimpleConsole(options =>
 {
