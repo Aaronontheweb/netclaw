@@ -103,6 +103,11 @@ If discovery artifacts conflict with each other, update them before implementing
 - actor boundaries remain transport-agnostic (pub/sub over direct transport asks)
 - persistence types remain framework-owned and serialization-safe
 - no new Slopwatch violations: run `/dotnet-skills:slopwatch` after code changes
+- use `TimeProvider` (not `DateTime.UtcNow` / `DateTimeOffset.UtcNow`) so time
+  can be virtualized in tests. Inject `TimeProvider` via DI; default to
+  `TimeProvider.System` in production. Standardize on `DateTimeOffset`, not
+  `DateTime`. Usage: `_timeProvider.GetUtcNow()` returns `DateTimeOffset`,
+  `.ToUnixTimeMilliseconds()` for persistence timestamps.
 - **NEVER add implicit conversions to/from primitive types on value objects.**
   Value objects exist to prevent accidental misuse — an implicit conversion back
   to the primitive defeats the purpose. Use `.Value` for explicit access and
