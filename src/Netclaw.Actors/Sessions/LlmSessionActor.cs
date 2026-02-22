@@ -1,9 +1,12 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Akka.Actor;
 using Akka.Event;
 using Akka.Persistence;
 using Microsoft.Extensions.AI;
+using Netclaw.Actors.Configuration;
 using Netclaw.Actors.Protocol;
+using Netclaw.Actors.Tools;
 using AiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace Netclaw.Actors.Sessions;
@@ -26,26 +29,56 @@ public sealed class LlmSessionActor : ReceivePersistentActor
     private readonly SessionId _sessionId;
     private readonly IChatClient _chatClient;
     private readonly SessionConfig _config;
-    private readonly ILoggingAdapter _log = Context.GetLogger();
+    private readonly ISystemPromptProvider _promptProvider;
+    private readonly IToolExecutor? _toolExecutor;
+    private readonly IToolAuditLogger? _auditLogger;
+    private readonly ILoggingAdapter _log;
 
     // Transient state (not persisted)
     private readonly List<SendUserMessage> _buffer = new();
     private readonly Dictionary<IActorRef, OutputFilter> _subscribers = new();
+    private IReadOnlyList<AITool> _availableTools = [];
 
     // Persistent state (immutable — replaced on each event)
     private SessionState _state = SessionState.Empty;
 
+    // Track whether system prompt was recovered from journal
+    private bool _systemPromptRecovered;
+
     public override string PersistenceId { get; }
 
-    public LlmSessionActor(string entityId, IChatClient chatClient, SessionConfig config)
+    public LlmSessionActor(
+        string entityId,
+        IChatClient chatClient,
+        SessionConfig config,
+        ISystemPromptProvider promptProvider,
+        IToolExecutor? toolExecutor = null,
+        IToolAuditLogger? auditLogger = null,
+        ToolRegistry? toolRegistry = null)
     {
         _sessionId = new SessionId(entityId);
         _chatClient = chatClient;
         _config = config;
+        _promptProvider = promptProvider;
+        _toolExecutor = toolExecutor;
+        _auditLogger = auditLogger;
         PersistenceId = $"session-{entityId}";
 
+        // Enrich logger with session context — all log messages automatically include SessionId
+        _log = Context.GetLogger().WithContext("SessionId", _sessionId.Value);
+
+        // Load available tools from registry (all tools for now; policy filtering comes in Task 1.5)
+        if (toolRegistry is not null)
+        {
+            _availableTools = toolRegistry.GetAllTools();
+        }
+
         // ── Recovery handlers ──
-        Recover<SystemPromptSet>(evt => _state = _state.Apply(evt));
+        Recover<SystemPromptSet>(evt =>
+        {
+            _state = _state.Apply(evt);
+            _systemPromptRecovered = true;
+        });
         Recover<TurnRecorded>(evt => _state = _state.Apply(evt));
         Recover<SessionTitleSet>(evt => _state = _state.Apply(evt));
         Recover<SessionCompacted>(evt => _state = _state.Apply(evt));
@@ -54,14 +87,21 @@ public sealed class LlmSessionActor : ReceivePersistentActor
             if (offer.Snapshot is SessionSnapshot snapshot)
             {
                 _state = SessionState.FromSnapshot(snapshot);
-                _log.Info("Session {0}: recovered from snapshot (turns={1})",
-                    _sessionId, _state.TurnCount);
+                _systemPromptRecovered = _state.History.Count > 0
+                    && _state.History[0].Role == Protocol.ChatRole.System;
+                _log.Info("Recovered from snapshot (turns={TurnCount})", _state.TurnCount);
             }
         });
         Recover<RecoveryCompleted>(_ =>
         {
-            _log.Info("Session {0}: recovery complete (turns={1}, history={2})",
-                _sessionId, _state.TurnCount, _state.History.Count);
+            _log.Info("Recovery complete (turns={TurnCount}, history={HistoryCount})",
+                _state.TurnCount, _state.History.Count);
+
+            if (!_systemPromptRecovered)
+            {
+                SetSystemPrompt();
+            }
+
             Become(Ready);
         });
     }
@@ -75,7 +115,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
 
         Command<SendUserMessage>(cmd =>
         {
-            _log.Info("Session {0}: received user message", _sessionId);
+            _log.Info("Received user message");
 
             _state = _state.AddUserMessage(cmd.Content);
             Sender.Tell(CommandAck.For(_sessionId));
@@ -91,7 +131,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
 
         Command<SendUserMessage>(cmd =>
         {
-            _log.Info("Session {0}: buffering user message (LLM call in progress)", _sessionId);
+            _log.Info("Buffering user message (LLM call in progress)");
             _buffer.Add(cmd);
             Sender.Tell(CommandAck.For(_sessionId));
         });
@@ -100,61 +140,58 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         {
             var response = msg.Response;
             var lastMessage = response.Messages[^1];
-            var reply = ChatMessageConverter.FromAiMessage(lastMessage);
 
-            // Build the persistence event
-            var userMsg = _state.FindLastUserMessage();
+            // Check for tool calls
+            var toolCalls = lastMessage.Contents.OfType<FunctionCallContent>().ToList();
+            if (toolCalls.Count > 0 && _toolExecutor is not null)
+            {
+                HandleToolCallResponse(lastMessage, toolCalls, response.Usage);
+                return;
+            }
 
-            var turnEvent = new TurnRecorded
+            // Normal text response — persist turn
+            HandleTextResponse(lastMessage, response.Usage);
+        });
+
+        Command<ToolExecutionCompleted>(msg =>
+        {
+            // Add tool results to history
+            foreach (var result in msg.ToolResults)
+            {
+                _state = _state with { History = _state.History.Add(result) };
+            }
+
+            // Fire follow-up LLM call with tool results in context
+            _log.Info("Tool execution complete, firing follow-up LLM call with {ResultCount} results",
+                msg.ToolResults.Count);
+            FireLlmCall();
+        });
+
+        Command<ToolExecutionFailed>(msg =>
+        {
+            _log.Error(msg.Cause, "Tool execution failed");
+
+            const string errorMessage = "I encountered an error executing a tool. Please try again.";
+            _state = _state.AddErrorReply(errorMessage);
+
+            EmitOutput(new ErrorOutput
             {
                 SessionId = _sessionId,
-                UserMessage = userMsg ?? new SerializableChatMessage
-                {
-                    Role = Protocol.ChatRole.User,
-                    Content = string.Empty
-                },
-                AssistantReply = reply,
-                RecordedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
-            };
-
-            Persist(turnEvent, evt =>
-            {
-                // Apply state: user message is already in history from AddUserMessage,
-                // so we only add the assistant reply and increment turn count.
-                _state = _state with
-                {
-                    History = _state.History.Add(evt.AssistantReply),
-                    TurnCount = _state.TurnCount + 1
-                };
-
-                // Side effects: emit to subscribers
-                EmitResponseOutputs(lastMessage, response.Usage);
-
-                // Snapshot check
-                MaybeSnapshot();
-
-                // Drain buffer or return to Ready
-                if (_buffer.Count > 0)
-                {
-                    _log.Info("Session {0}: draining {1} buffered message(s)",
-                        _sessionId, _buffer.Count);
-                    foreach (var buffered in _buffer)
-                    {
-                        _state = _state.AddUserMessage(buffered.Content);
-                    }
-                    _buffer.Clear();
-                    FireLlmCall();
-                }
-                else
-                {
-                    Become(Ready);
-                }
+                Message = errorMessage
             });
+            EmitOutput(new TurnCompleted
+            {
+                SessionId = _sessionId,
+                TurnNumber = _state.TurnCount
+            });
+
+            _buffer.Clear();
+            Become(Ready);
         });
 
         Command<LlmCallFailed>(msg =>
         {
-            _log.Error(msg.Cause, "Session {0}: LLM call failed", _sessionId);
+            _log.Error(msg.Cause, "LLM call failed");
 
             const string errorMessage = "I encountered an error processing your message. Please try again.";
             _state = _state.AddErrorReply(errorMessage);
@@ -175,6 +212,89 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         });
     }
 
+    private void HandleToolCallResponse(
+        AiChatMessage lastMessage,
+        List<FunctionCallContent> toolCalls,
+        UsageDetails? usage)
+    {
+        // Add assistant message (with tool calls) to history
+        var assistantMsg = ChatMessageConverter.FromAiMessage(lastMessage);
+        _state = _state with { History = _state.History.Add(assistantMsg) };
+
+        // Emit tool call outputs to subscribers
+        foreach (var tc in toolCalls)
+        {
+            EmitOutput(new ToolCallOutput
+            {
+                SessionId = _sessionId,
+                CallId = tc.CallId,
+                ToolName = tc.Name,
+                ArgumentsJson = tc.Arguments is not null
+                    ? JsonSerializer.Serialize(tc.Arguments)
+                    : null
+            }, OutputFilter.ToolCalls);
+        }
+
+        // Emit usage if present (intermediate turn)
+        if (usage is not null)
+        {
+            EmitUsageOutput(usage);
+        }
+
+        // Execute tools async — results come back as ToolExecutionCompleted
+        _log.Info("Executing {ToolCount} tool call(s)", toolCalls.Count);
+        var self = Self;
+        var executor = _toolExecutor!;
+        var sessionId = _sessionId;
+        var auditLogger = _auditLogger;
+        _ = ExecuteToolsAsync(executor, toolCalls, sessionId, auditLogger, self);
+    }
+
+    private void HandleTextResponse(AiChatMessage lastMessage, UsageDetails? usage)
+    {
+        var reply = ChatMessageConverter.FromAiMessage(lastMessage);
+        var userMsg = _state.FindLastUserMessage();
+
+        var turnEvent = new TurnRecorded
+        {
+            SessionId = _sessionId,
+            UserMessage = userMsg ?? new SerializableChatMessage
+            {
+                Role = Protocol.ChatRole.User,
+                Content = string.Empty
+            },
+            AssistantReply = reply,
+            RecordedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        };
+
+        Persist(turnEvent, evt =>
+        {
+            _state = _state with
+            {
+                History = _state.History.Add(evt.AssistantReply),
+                TurnCount = _state.TurnCount + 1
+            };
+
+            EmitResponseOutputs(lastMessage, usage);
+            MaybeSnapshot();
+
+            if (_buffer.Count > 0)
+            {
+                _log.Info("Draining {BufferCount} buffered message(s)", _buffer.Count);
+                foreach (var buffered in _buffer)
+                {
+                    _state = _state.AddUserMessage(buffered.Content);
+                }
+                _buffer.Clear();
+                FireLlmCall();
+            }
+            else
+            {
+                Become(Ready);
+            }
+        });
+    }
+
     private void CommandSubscriptionMessages()
     {
         Command<JoinSession>(cmd =>
@@ -183,8 +303,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
             Context.WatchWith(cmd.Subscriber,
                 new LeaveSession { SessionId = _sessionId, Subscriber = cmd.Subscriber });
 
-            _log.Info("Session {0}: {1} joined (filter={2})",
-                _sessionId, cmd.Subscriber, cmd.Filter);
+            _log.Info("{Subscriber} joined (filter={Filter})", cmd.Subscriber, cmd.Filter);
 
             cmd.Subscriber.Tell(new SessionJoined
             {
@@ -198,7 +317,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         {
             if (_subscribers.Remove(cmd.Subscriber))
             {
-                _log.Info("Session {0}: {1} left", _sessionId, cmd.Subscriber);
+                _log.Info("{Subscriber} left", cmd.Subscriber);
             }
         });
     }
@@ -207,12 +326,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor
     {
         Command<SaveSnapshotSuccess>(msg =>
         {
-            _log.Info("Session {0}: snapshot saved (seqNr={1})", _sessionId, msg.Metadata.SequenceNr);
+            _log.Info("Snapshot saved (seqNr={SequenceNr})", msg.Metadata.SequenceNr);
         });
 
         Command<SaveSnapshotFailure>(msg =>
         {
-            _log.Warning("Session {0}: snapshot failed: {1}", _sessionId, msg.Cause.Message);
+            _log.Warning("Snapshot failed: {Reason}", msg.Cause.Message);
         });
     }
 
@@ -229,25 +348,121 @@ public sealed class LlmSessionActor : ReceivePersistentActor
 
     // ── Helpers ──
 
+    private void SetSystemPrompt()
+    {
+        var content = _promptProvider.GetSystemPrompt();
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            _log.Info("No system prompt layers available");
+            return;
+        }
+
+        var evt = new SystemPromptSet
+        {
+            SessionId = _sessionId,
+            Content = content,
+            SetAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+        };
+
+        Persist(evt, e =>
+        {
+            _state = _state.Apply(e);
+            _log.Info("System prompt set ({PromptLength} chars)", content.Length);
+        });
+    }
+
     private void FireLlmCall()
     {
         var messages = ChatMessageConverter.ToAiMessages(_state.History);
         var self = Self;
         var client = _chatClient;
-        _ = InvokeLlmAsync(client, messages, self);
+
+        ChatOptions? options = null;
+        if (_availableTools.Count > 0)
+        {
+            options = new ChatOptions
+            {
+                Tools = _availableTools.ToList()
+            };
+        }
+
+        _ = InvokeLlmAsync(client, messages, options, self);
     }
 
     private static async Task InvokeLlmAsync(
-        IChatClient client, List<AiChatMessage> messages, IActorRef self)
+        IChatClient client, List<AiChatMessage> messages, ChatOptions? options, IActorRef self)
     {
         try
         {
-            var response = await client.GetResponseAsync(messages);
+            var response = await client.GetResponseAsync(messages, options);
             self.Tell(new LlmResponseReceived { Response = response });
         }
         catch (Exception ex)
         {
             self.Tell(new LlmCallFailed { Cause = ex });
+        }
+    }
+
+    private static async Task ExecuteToolsAsync(
+        IToolExecutor executor,
+        List<FunctionCallContent> toolCalls,
+        SessionId sessionId,
+        IToolAuditLogger? auditLogger,
+        IActorRef self)
+    {
+        try
+        {
+            var results = new List<SerializableChatMessage>(toolCalls.Count);
+
+            foreach (var tc in toolCalls)
+            {
+                var sw = Stopwatch.StartNew();
+                string resultText;
+                try
+                {
+                    resultText = await executor.ExecuteAsync(tc);
+                    sw.Stop();
+
+                    auditLogger?.Log(new ToolAuditEntry
+                    {
+                        SessionId = sessionId.Value,
+                        ToolName = tc.Name,
+                        CallId = tc.CallId,
+                        Timestamp = DateTimeOffset.UtcNow,
+                        Allowed = true,
+                        Duration = sw.Elapsed
+                    });
+                }
+                catch (Exception ex)
+                {
+                    sw.Stop();
+                    resultText = $"Error executing tool: {ex.Message}";
+
+                    auditLogger?.Log(new ToolAuditEntry
+                    {
+                        SessionId = sessionId.Value,
+                        ToolName = tc.Name,
+                        CallId = tc.CallId,
+                        Timestamp = DateTimeOffset.UtcNow,
+                        Allowed = true,
+                        Duration = sw.Elapsed
+                    });
+                }
+
+                results.Add(new SerializableChatMessage
+                {
+                    Role = Protocol.ChatRole.Tool,
+                    Content = resultText,
+                    ToolCallId = tc.CallId,
+                    Name = tc.Name
+                });
+            }
+
+            self.Tell(new ToolExecutionCompleted { ToolResults = results });
+        }
+        catch (Exception ex)
+        {
+            self.Tell(new ToolExecutionFailed { Cause = ex });
         }
     }
 
@@ -259,9 +474,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         }
     }
 
-    /// <summary>
-    /// Decompose the MEAI ChatMessage into strongly-typed session output events.
-    /// </summary>
     private void EmitResponseOutputs(AiChatMessage message, UsageDetails? usage)
     {
         foreach (var content in message.Contents)
@@ -300,22 +512,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
 
         if (usage is not null)
         {
-            var contextWindow = _config.ContextWindowTokens;
-            double? usagePercent = usage.InputTokenCount.HasValue && contextWindow > 0
-                ? (double)usage.InputTokenCount.Value / contextWindow
-                : null;
-
-            EmitOutput(new UsageOutput
-            {
-                SessionId = _sessionId,
-                InputTokens = usage.InputTokenCount,
-                OutputTokens = usage.OutputTokenCount,
-                TotalTokens = usage.TotalTokenCount,
-                CachedInputTokens = usage.CachedInputTokenCount,
-                ReasoningTokens = usage.ReasoningTokenCount,
-                ContextWindowTokens = contextWindow,
-                UsagePercent = usagePercent
-            }, OutputFilter.Usage);
+            EmitUsageOutput(usage);
         }
 
         EmitOutput(new TurnCompleted
@@ -325,10 +522,26 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         });
     }
 
-    /// <summary>
-    /// Send output to subscribers whose filter includes the required flag.
-    /// Lifecycle messages pass <see cref="OutputFilter.None"/> (default) to reach all subscribers.
-    /// </summary>
+    private void EmitUsageOutput(UsageDetails usage)
+    {
+        var contextWindow = _config.ContextWindowTokens;
+        double? usagePercent = usage.InputTokenCount.HasValue && contextWindow > 0
+            ? (double)usage.InputTokenCount.Value / contextWindow
+            : null;
+
+        EmitOutput(new UsageOutput
+        {
+            SessionId = _sessionId,
+            InputTokens = usage.InputTokenCount,
+            OutputTokens = usage.OutputTokenCount,
+            TotalTokens = usage.TotalTokenCount,
+            CachedInputTokens = usage.CachedInputTokenCount,
+            ReasoningTokens = usage.ReasoningTokenCount,
+            ContextWindowTokens = contextWindow,
+            UsagePercent = usagePercent
+        }, OutputFilter.Usage);
+    }
+
     private void EmitOutput(SessionOutput output, OutputFilter requiredFlag = OutputFilter.None)
     {
         foreach (var (subscriber, filter) in _subscribers)

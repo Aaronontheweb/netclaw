@@ -255,10 +255,10 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] `~/.netclaw/` directory structure created on startup (soul/, projects/, environment/, schedules/, config/).
-- [ ] System prompt assembled from layers: PERSONALITY.md → INSTRUCTIONS.md → USER.md → project AGENTS.md → session context.
-- [ ] Missing layers handled gracefully.
-- [ ] Tests for prompt assembly with missing layers and project overlay injection.
+- [x] `~/.netclaw/` directory structure created on startup (soul/, projects/, environment/, schedules/, config/).
+- [x] System prompt assembled from layers: PERSONALITY.md → INSTRUCTIONS.md → USER.md → project AGENTS.md → session context.
+- [x] Missing layers handled gracefully.
+- [x] Tests for prompt assembly with missing layers and project overlay injection.
 
 ### Task 1.5: ACL and policy engine with tool grants
 
@@ -284,11 +284,11 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] Tool registry registers `AIFunction` definitions through `Microsoft.Extensions.AI`.
-- [ ] Policy-filtered tool loading: session receives only tools matching ACL grants.
-- [ ] Tool invocation audit logging (tool name, session ID, timestamp, allow/deny).
-- [ ] Tool context added to session state at initialization.
-- [ ] Tests for registration, policy filtering, and audit logging.
+- [x] Tool registry registers `AIFunction` definitions through `Microsoft.Extensions.AI`.
+- [x] Policy-filtered tool loading: session receives only tools matching ACL grants.
+- [x] Tool invocation audit logging (tool name, session ID, timestamp, allow/deny).
+- [x] Tool context added to session state at initialization.
+- [x] Tests for registration, policy filtering, and audit logging.
 
 ### Task 1.7: First-party tools (search, fetch, shell, GitHub)
 

@@ -5,6 +5,7 @@ using Akka.Persistence.Hosting;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Netclaw.Actors.Configuration;
 using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Sessions;
@@ -36,6 +37,8 @@ public class LlmSessionIntegrationTests : TestKit
             ContextWindowTokens = 128_000,
             SnapshotInterval = 5
         });
+        services.AddSingleton<ISystemPromptProvider>(new StaticSystemPromptProvider(
+            "You are a test assistant."));
     }
 
     protected override void ConfigureAkka(AkkaConfigurationBuilder builder, IServiceProvider provider)
@@ -327,7 +330,7 @@ public class LlmSessionIntegrationTests : TestKit
 
 /// <summary>
 /// Fake IChatClient that returns canned responses for testing.
-/// Supports configurable thinking tokens and usage data for filter testing.
+/// Supports configurable thinking tokens, usage data, and tool calls.
 /// </summary>
 internal sealed class FakeChatClient : IChatClient
 {
@@ -342,6 +345,12 @@ internal sealed class FakeChatClient : IChatClient
     /// </summary>
     public bool IncludeThinking { get; set; }
 
+    /// <summary>
+    /// When set, the first response returns these tool calls instead of text.
+    /// Subsequent calls return normal text (simulating the LLM completing after tool results).
+    /// </summary>
+    public List<FunctionCallContent>? ToolCallsOnFirstCall { get; set; }
+
     public async Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
@@ -351,6 +360,16 @@ internal sealed class FakeChatClient : IChatClient
 
         if (Delay > TimeSpan.Zero)
             await Task.Delay(Delay, cancellationToken);
+
+        // Return tool calls on first call if configured
+        if (ToolCallsOnFirstCall is not null && _callCount == 1)
+        {
+            var toolCallContents = new List<AIContent>(ToolCallsOnFirstCall);
+            var toolCallMessage = new ChatMessage(
+                Microsoft.Extensions.AI.ChatRole.Assistant,
+                toolCallContents);
+            return new ChatResponse(toolCallMessage);
+        }
 
         var contents = new List<AIContent>();
 

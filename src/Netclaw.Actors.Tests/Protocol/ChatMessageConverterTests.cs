@@ -1,3 +1,4 @@
+using Microsoft.Extensions.AI;
 using Netclaw.Actors.Protocol;
 using Xunit;
 using AiChatMessage = Microsoft.Extensions.AI.ChatMessage;
@@ -112,5 +113,96 @@ public class ChatMessageConverterTests
     {
         var result = ChatMessageConverter.ToAiMessages(Array.Empty<SerializableChatMessage>());
         Assert.Empty(result);
+    }
+
+    // ── Tool call / result round-trip tests ──
+
+    [Fact]
+    public void FromAiMessage_captures_tool_calls_from_assistant()
+    {
+        var contents = new List<AIContent>
+        {
+            new FunctionCallContent("call-1", "web_search",
+                new Dictionary<string, object?> { ["query"] = "test" }),
+            new FunctionCallContent("call-2", "fetch",
+                new Dictionary<string, object?> { ["url"] = "https://example.com" })
+        };
+        var ai = new AiChatMessage(AiChatRole.Assistant, contents);
+
+        var msg = ChatMessageConverter.FromAiMessage(ai);
+
+        Assert.Equal(ChatRole.Assistant, msg.Role);
+        Assert.Equal(2, msg.ToolCalls.Count);
+        Assert.Equal("call-1", msg.ToolCalls[0].CallId);
+        Assert.Equal("web_search", msg.ToolCalls[0].Name);
+        Assert.Equal("call-2", msg.ToolCalls[1].CallId);
+        Assert.Equal("fetch", msg.ToolCalls[1].Name);
+    }
+
+    [Fact]
+    public void ToAiMessage_reconstructs_tool_calls()
+    {
+        var msg = new SerializableChatMessage
+        {
+            Role = ChatRole.Assistant,
+            ToolCalls =
+            {
+                new SerializableToolCall
+                {
+                    CallId = "call-1",
+                    Name = "web_search",
+                    ArgumentsJson = """{"query":"test"}"""
+                }
+            }
+        };
+
+        var ai = ChatMessageConverter.ToAiMessage(msg);
+
+        Assert.Equal(AiChatRole.Assistant, ai.Role);
+        var toolCall = Assert.Single(ai.Contents.OfType<FunctionCallContent>());
+        Assert.Equal("call-1", toolCall.CallId);
+        Assert.Equal("web_search", toolCall.Name);
+    }
+
+    [Fact]
+    public void Tool_result_message_round_trips()
+    {
+        var original = new SerializableChatMessage
+        {
+            Role = ChatRole.Tool,
+            Content = "Found 3 results",
+            ToolCallId = "call-1",
+            Name = "web_search"
+        };
+
+        var ai = ChatMessageConverter.ToAiMessage(original);
+        Assert.Equal(AiChatRole.Tool, ai.Role);
+
+        var resultContent = Assert.Single(ai.Contents.OfType<FunctionResultContent>());
+        Assert.Equal("call-1", resultContent.CallId);
+        Assert.Equal("Found 3 results", resultContent.Result?.ToString());
+
+        var roundTripped = ChatMessageConverter.FromAiMessage(ai);
+        Assert.Equal(ChatRole.Tool, roundTripped.Role);
+        Assert.Equal("call-1", roundTripped.ToolCallId);
+        Assert.Equal("Found 3 results", roundTripped.Content);
+    }
+
+    [Fact]
+    public void Assistant_message_with_text_and_tool_calls_preserves_both()
+    {
+        var contents = new List<AIContent>
+        {
+            new TextContent("Let me search for that."),
+            new FunctionCallContent("call-1", "web_search",
+                new Dictionary<string, object?> { ["query"] = "test" })
+        };
+        var ai = new AiChatMessage(AiChatRole.Assistant, contents);
+
+        var msg = ChatMessageConverter.FromAiMessage(ai);
+
+        Assert.Equal("Let me search for that.", msg.Content);
+        Assert.Single(msg.ToolCalls);
+        Assert.Equal("web_search", msg.ToolCalls[0].Name);
     }
 }
