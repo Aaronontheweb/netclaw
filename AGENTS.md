@@ -103,6 +103,34 @@ If discovery artifacts conflict with each other, update them before implementing
 - actor boundaries remain transport-agnostic (pub/sub over direct transport asks)
 - persistence types remain framework-owned and serialization-safe
 - no new Slopwatch violations: run `/dotnet-skills:slopwatch` after code changes
+- use `TimeProvider` (not `DateTime.UtcNow` / `DateTimeOffset.UtcNow`) so time
+  can be virtualized in tests. Inject `TimeProvider` via DI; default to
+  `TimeProvider.System` in production. Standardize on `DateTimeOffset`, not
+  `DateTime`. Usage: `_timeProvider.GetUtcNow()` returns `DateTimeOffset`,
+  `.ToUnixTimeMilliseconds()` for persistence timestamps.
+- **NEVER add implicit conversions to/from primitive types on value objects.**
+  Value objects exist to prevent accidental misuse — an implicit conversion back
+  to the primitive defeats the purpose. Use `.Value` for explicit access and
+  explicit casts where truly needed. If a value object can silently become a
+  string, it provides no more safety than a raw string.
+
+## Testing Guidelines
+
+- Do not write tests for trivial code — string formatting, simple concatenation,
+  constructor assignment, and other zero-logic paths are not worth testing.
+- Tests should exercise meaningful behavior: state transitions, error handling,
+  serialization round-trips, routing decisions, integration boundaries.
+- If the test is just asserting that `$"{a}/{b}"` equals `"a/b"`, delete it.
+- Prefer fewer tests that cover real behavior over many tests that pad coverage.
+- **NEVER use `Thread.Sleep` or `Task.Delay` in tests to wait for conditions.**
+  This is a design smell, not just a test smell — if you need a sleep to make a
+  test pass, the production code lacks a proper synchronization signal. Fix the
+  design:
+  - Add request/response acks (e.g., `Ask<CommandAck>`) so callers know a state
+    transition has occurred before proceeding.
+  - Use Akka.TestKit's `AwaitAssertAsync` for polling assertions on async state.
+  - `Task.Delay` in fake/mock services to simulate latency is acceptable only in
+    the fake itself, never in test orchestration logic.
 
 ## Post-Code Quality Check
 
@@ -126,6 +154,32 @@ Done means all of the following are true:
 - `dotnet slopwatch analyze` passes (no new violations)
 - operational impact is documented (runbooks or CLI help)
 - OpenSpec artifacts are updated or archived appropriately
+
+## Agent Guidance: dotnet-skills
+
+IMPORTANT: Prefer retrieval-led reasoning over pretraining for any .NET work.
+Workflow: skim repo patterns -> consult dotnet-skills by name -> implement
+smallest-change -> note conflicts.
+
+Routing (invoke by name):
+
+- Akka.NET: akka-best-practices, akka-hosting-actor-patterns, akka-testing-patterns
+- C# / code quality: csharp-coding-standards, csharp-concurrency-patterns,
+  csharp-api-design, csharp-type-design-performance
+- DI / config: microsoft-extensions-dependency-injection, microsoft-extensions-configuration
+- Serialization: serialization
+- Testing: akka-testing-patterns, snapshot-testing
+- Project structure: project-structure, package-management
+
+Quality gates (use when applicable):
+
+- dotnet-skills:slopwatch — after substantial new/refactor/LLM-authored code
+- dotnet-skills:crap-analysis — after tests added/changed in complex code
+
+Specialist agents:
+
+- akka-net-specialist, dotnet-concurrency-specialist, dotnet-performance-analyst,
+  dotnet-benchmark-designer
 
 ## Continuous Improvement Rule
 

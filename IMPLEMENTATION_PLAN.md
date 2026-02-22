@@ -184,14 +184,27 @@ Done when:
 ## Phase 1: Chat + Memory MVP
 
 OpenSpec Changes:
-- `openspec/changes/expand-mvp-for-autonomous-agent-vision/` (Tasks 1.1–1.12)
-- `openspec/changes/add-tui-adapter-and-config-hot-reload/` (Tasks 1.13–1.19, 1.22)
+- `openspec/changes/expand-mvp-for-autonomous-agent-vision/` (Tasks 1.1–1.6, 1.9–1.18)
+- `openspec/changes/add-tui-adapter-and-config-hot-reload/` (Tasks 1.11–1.12, 1.19–1.25)
 
 Full task breakdowns:
 - `openspec/changes/expand-mvp-for-autonomous-agent-vision/tasks.md`
 - `openspec/changes/add-tui-adapter-and-config-hot-reload/tasks.md`
 
-### Task 1.1: Framework protocol and persistence-safe message envelopes
+> **Renumbering note (2026-02-21):** Tasks were reordered for TUI-first
+> validation. The goal is to get a working "type → LLM responds" loop as fast
+> as possible using Ollama, proving the actor system works end-to-end with a
+> real model, then layer on capabilities incrementally. Completed task IDs
+> (1.1–1.4, 1.6) are stable. Remaining tasks were renumbered into priority
+> tiers. See git history for the previous ordering.
+
+> **Gateway note:** Netclaw.App was temporarily changed from `Microsoft.NET.Sdk.Web`
+> to `Microsoft.NET.Sdk` (plain console host) for the proof-of-concept console
+> adapter. The web gateway (health endpoints, future API surface) must be
+> restored before Slack adapter or any multi-client scenario. Track as part of
+> Task 1.11 (CLI scaffold) or earlier if needed.
+
+### Task 1.1: Framework protocol and persistence-safe message envelopes (DONE)
 
 **PRD:** `docs/prd/PRD-001-netclaw-mvp.md`
 **OpenSpec:** `openspec/specs/netclaw-session/spec.md`, `openspec/specs/netclaw-input-adapters/spec.md`
@@ -199,13 +212,41 @@ Full task breakdowns:
 **Verification:** L2
 
 Done when:
-- [ ] `SendUserMessage`, `TurnRecorded`, `SessionCompacted`, `TurnBroadcast`, `CompactionBroadcast` implemented with protobuf-net serialization.
-- [ ] `SerializableChatMessage` framework-owned type implemented (no direct persistence of MEAI types).
-- [ ] `SessionMessageExtractor` supports entity key patterns: `{channelId}/{threadTs}` and `schedule/{taskId}/{runTs}`.
-- [ ] Source metadata (adapter type, sender identity, channel, timestamp) on all commands.
-- [ ] Integration tests verify serialization round-trip and entity key extraction.
+- [x] `SendUserMessage`, `TurnRecorded`, `SessionCompacted`, `TurnBroadcast`, `CompactionBroadcast` implemented with protobuf-net serialization.
+- [x] `SerializableChatMessage` framework-owned type implemented (no direct persistence of MEAI types).
+- [x] `SessionMessageExtractor` supports entity key patterns: `{channelId}/{threadTs}` and `schedule/{taskId}/{runTs}`.
+- [x] Source metadata (adapter type, sender identity, channel, timestamp) on all commands.
+- [x] Integration tests verify serialization round-trip and entity key extraction.
 
-### Task 1.2: Session actor core with persistence and turn loop
+### Task 1.2: Session actor turn loop, persistence, and context management (DONE)
+
+**PRD:** `docs/prd/PRD-001-netclaw-mvp.md`
+**OpenSpec:** `openspec/specs/netclaw-session/spec.md`
+**Research:** `docs/research/context-management-patterns.md`
+**Surface area:** actor runtime
+**Verification:** L2
+
+Design decisions informed by cross-SDK research (OpenAI, LangChain, Semantic
+Kernel, Anthropic, Google ADK, LlamaIndex — see research doc for sources).
+
+Done when:
+- [x] `LlmSessionActor` as `ReceivePersistentActor` with `SessionState` (immutable, decoupled from actor).
+- [x] Turn loop: receive `SendUserMessage`, invoke `IChatClient`, persist `TurnRecorded`, emit typed outputs to subscribers.
+- [x] Ready/Processing behavior states with message buffering during LLM calls.
+- [x] Subscriber model with `OutputFilter` bitmask (Text, Thinking, ToolCalls, Usage).
+- [x] Snapshot strategy per `SessionConfig.SnapshotInterval`.
+- [x] Recovery from journal and snapshots. Kill-and-restore integration test.
+- [x] `UsageOutput` enriched with context window metadata (`ContextWindowTokens`, `UsagePercent`).
+- [x] `ChatMessageConverter` boundary conversion with round-trip tests.
+- [x] `Compacting` behavior state: tiered approach per research findings.
+- [x] Phase 1 of compaction: clear old tool results (replace with placeholder, keep N recent).
+- [x] Phase 2 of compaction: structured summarization with domain-specific sections.
+- [x] Structured compaction prompt template (task overview, current state, decisions, pending actions).
+- [x] Pre-compaction memory flush: silent agentic turn extracts durable memories before context reset.
+- [x] Optional `CompactionModelId` in `SessionConfig` for cheaper compaction model.
+- [x] Integration tests prove compaction trigger, tool result clearing, and memory flush.
+
+### Task 1.3: Session parent and entity routing (PARTIAL)
 
 **PRD:** `docs/prd/PRD-001-netclaw-mvp.md`
 **OpenSpec:** `openspec/specs/netclaw-session/spec.md`
@@ -213,26 +254,13 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] `LlmSessionActor` recovers state from PostgreSQL journal/snapshots.
-- [ ] Turn loop: receive `SendUserMessage`, invoke `IChatClient`, persist `TurnRecorded`, emit `TurnBroadcast` via pub/sub.
-- [ ] Snapshot strategy and compaction via `SummarizingChatReducer`.
-- [ ] Pre-compaction memory flush: silent agentic turn saves durable memories before context resets.
-- [ ] Integration tests prove restart recovery and pre-compaction flush execution.
+- [x] `GenericChildPerEntityParent` routes `IWithSessionId` messages to per-session children.
+- [x] `SessionMessageExtractor` as `HashCodeMessageExtractor`.
+- [x] `NetclawAkkaHostingExtensions.WithSessionManager()` wiring.
+- [ ] Multi-key-pattern support (Slack and timer patterns) — deferred to Task 1.14.
+- [ ] Tests verify entity lifecycle and message routing — deferred to Task 1.14.
 
-### Task 1.3: Session parent and entity routing
-
-**PRD:** `docs/prd/PRD-001-netclaw-mvp.md`
-**OpenSpec:** `openspec/specs/netclaw-session/spec.md`
-**Surface area:** actor runtime
-**Verification:** L2
-
-Done when:
-- [ ] `LlmAgentParentActor` wraps `GenericChildPerEntityParent`.
-- [ ] Session extraction routes same-thread messages to same child actor.
-- [ ] Multi-key-pattern support (Slack and timer patterns).
-- [ ] Tests verify entity lifecycle and message routing.
-
-### Task 1.4: Layered system prompt and personality
+### Task 1.4: Layered system prompt and personality (DONE)
 
 **PRD:** `docs/prd/PRD-007-agent-personality-and-local-memory.md`
 **OpenSpec:** `openspec/specs/netclaw-agent-memory/spec.md`
@@ -240,28 +268,12 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] `~/.netclaw/` directory structure created on startup (soul/, projects/, environment/, schedules/, config/).
-- [ ] System prompt assembled from layers: PERSONALITY.md → INSTRUCTIONS.md → USER.md → project AGENTS.md → session context.
-- [ ] Missing layers handled gracefully.
-- [ ] Tests for prompt assembly with missing layers and project overlay injection.
+- [x] `~/.netclaw/` directory structure created on startup (soul/, projects/, environment/, schedules/, config/).
+- [x] System prompt assembled from layers: PERSONALITY.md → INSTRUCTIONS.md → USER.md → project AGENTS.md → session context.
+- [x] Missing layers handled gracefully.
+- [x] Tests for prompt assembly with missing layers and project overlay injection.
 
-### Task 1.5: ACL and policy engine with tool grants
-
-**PRD:** `docs/prd/PRD-002-gateway-security-envelope.md`
-**OpenSpec:** `openspec/specs/netclaw-acl/spec.md`, `openspec/specs/netclaw-gateway-security/spec.md`
-**Surface area:** security
-**Verification:** L2
-
-Done when:
-- [ ] ACL parser supports channel rules, sender allowlists, mention/ambient mode, and tool grant categories (shell, web_search, web_fetch, github, mcp:{server}, config_write, schedule_write).
-- [ ] Default deny enforced when no explicit allow.
-- [ ] Self-configuration prohibition: agent cannot modify ACL/security through conversation.
-- [ ] Invalid ACL blocks startup with actionable diagnostics.
-- [ ] Shell execution boundaries enforced (SEC-009): timeout, output truncation, no stdin, working dir.
-- [ ] Tool invocation audit logging.
-- [ ] Policy decision tests cover all grant categories.
-
-### Task 1.6: Tool framework and MEAI registration
+### Task 1.6: Tool framework and MEAI registration (DONE)
 
 **PRD:** `docs/prd/PRD-005-model-provider-strategy.md`, `docs/prd/PRD-007-agent-personality-and-local-memory.md`
 **OpenSpec:** `openspec/specs/netclaw-tools/spec.md`, `openspec/specs/netclaw-model-providers/spec.md`
@@ -269,18 +281,63 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] Tool registry registers `AIFunction` definitions through `Microsoft.Extensions.AI`.
-- [ ] Policy-filtered tool loading: session receives only tools matching ACL grants.
-- [ ] Tool invocation audit logging (tool name, session ID, timestamp, allow/deny).
-- [ ] Tool context added to session state at initialization.
-- [ ] Tests for registration, policy filtering, and audit logging.
+- [x] Tool registry registers `AIFunction` definitions through `Microsoft.Extensions.AI`.
+- [x] Policy-filtered tool loading: session receives only tools matching ACL grants.
+- [x] Tool invocation audit logging (tool name, session ID, timestamp, allow/deny).
+- [x] Tool context added to session state at initialization.
+- [x] Tests for registration, policy filtering, and audit logging.
 
-### Task 1.7: First-party tools (search, fetch, shell, GitHub)
+---
+
+### Tier 1: "Hello World" — prove the actor system works
+
+### Task 1.7: OllamaSharp provider wiring (DONE)
+
+**PRD:** `docs/prd/PRD-005-model-provider-strategy.md`
+**OpenSpec:** `openspec/specs/netclaw-model-providers/spec.md`
+**Surface area:** provider integration
+**Verification:** L1
+**Previously:** Task 1.8 (simplified — no fallback, no multi-provider)
+
+Wire a real `IChatClient` to Ollama. No fallback, no multi-provider — just one
+working connection.
+
+Done when:
+- [x] `OllamaSharp` added to `Directory.Packages.props` and `Netclaw.App.csproj`.
+- [x] `OllamaApiClient` registered as `IChatClient` in DI.
+- [x] `SessionConfig` populated with model defaults.
+- [x] Model ID configurable via `appsettings.json` (`Ollama:Url`, `Ollama:Model`).
+
+### Task 1.8: Bare console chat loop (DONE)
+
+**PRD:** `docs/prd/PRD-004-cli-onboarding-and-config.md`
+**OpenSpec:** `openspec/specs/netclaw-input-adapters/spec.md`, `openspec/specs/netclaw-cli/spec.md`
+**Surface area:** console adapter
+**Verification:** L3
+**Previously:** Tasks 1.13 + 1.14 (simplified — no Cocona, no Termina, no TUI)
+
+Minimal console loop — no Cocona, no Termina, no TUI framework. Just prove the
+actor system works end-to-end with a real LLM.
+
+Done when:
+- [x] `Program.cs` rewritten from `WebApplication` to `IHostBuilder` with Akka.Hosting.
+- [x] Wired: `AddAkka` → `WithInMemoryJournal` → `WithInMemorySnapshotStore` → `WithNetclawActors`.
+- [x] `IChatClient` (Ollama), `SessionConfig`, `ISystemPromptProvider` (static) registered.
+- [x] `ConsoleAdapter` hosted service: generates session ID, sends `JoinSession`, `ReadLine` loop.
+- [x] `ConsoleSubscriberActor` receives session outputs, writes to console.
+- [x] `dotnet build Netclaw.slnx` passes, all existing tests pass.
+
+---
+
+### Tier 2: Make it useful
+
+### Task 1.9: First-party tools (search, fetch, shell, GitHub)
 
 **PRD:** `docs/prd/PRD-007-agent-personality-and-local-memory.md`
 **OpenSpec:** `openspec/specs/netclaw-tools/spec.md`
 **Surface area:** tools
 **Verification:** L2
+**Previously:** Task 1.7
 
 Done when:
 - [ ] Web search tool with Brave Search API and SearXNG backends, configurable via `netclaw.json`.
@@ -289,12 +346,13 @@ Done when:
 - [ ] GitHub CLI tool via `gh` shell-out with structured output parsing and missing dependency handling.
 - [ ] Tests for each tool with mocked HTTP/process dependencies.
 
-### Task 1.8: Provider abstraction with MEAI and fallback
+### Task 1.10: Full provider abstraction with MEAI and fallback
 
 **PRD:** `docs/prd/PRD-005-model-provider-strategy.md`
 **OpenSpec:** `openspec/specs/netclaw-model-providers/spec.md`
 **Surface area:** provider integration
 **Verification:** L2
+**Previously:** Task 1.8 (remainder — multi-provider, fallback)
 
 Done when:
 - [ ] `IChatClient` provider registration via DI (OpenRouter, Anthropic, OpenAI, Ollama).
@@ -303,69 +361,17 @@ Done when:
 - [ ] CI tests pass without live provider credentials.
 - [ ] Tests for provider switching, fallback activation, tool calling round-trip.
 
-### Task 1.9: MCP integration and Memorizer
-
-**PRD:** `docs/prd/PRD-006-mcp-tool-integration.md`
-**OpenSpec:** `openspec/specs/netclaw-mcp/spec.md`
-**Surface area:** integration
-**Verification:** L2
-
-Done when:
-- [ ] MCP server profiles (named, stdio/SSE transport, enable/disable).
-- [ ] Tool discovery at startup: connect, list tools, register as MEAI definitions.
-- [ ] Graceful degradation: unavailable server returns error, agent continues, reconnect on next call.
-- [ ] Memorizer store/search/get cycle works through session.
-- [ ] Tests for connection, discovery, policy gating, degradation.
-
-### Task 1.10: Local memory (project registry, environment inventory)
-
-**PRD:** `docs/prd/PRD-007-agent-personality-and-local-memory.md`
-**OpenSpec:** `openspec/specs/netclaw-agent-memory/spec.md`
-**Surface area:** agent memory
-**Verification:** L2
-
-Done when:
-- [ ] Project registry (`projects/registry.json`): add, remove, list, validate paths, load at startup.
-- [ ] Environment inventory (`environment/inventory.json`): scan for git, gh, claude, opencode, dotnet, node.
-- [ ] Capability self-discovery at startup and on-demand rescan.
-- [ ] Tests for project registry CRUD and environment scan.
-
-### Task 1.11: Self-configuration through conversation
-
-**PRD:** `docs/prd/PRD-007-agent-personality-and-local-memory.md`
-**OpenSpec:** `openspec/specs/netclaw-agent-memory/spec.md`
-**Surface area:** agent config
-**Verification:** L2
-
-Done when:
-- [ ] Agent modifies personality, instructions, user preferences, project registry, and environment through conversation.
-- [ ] Validation-before-write and atomic file writes (temp + rename).
-- [ ] Prohibited modification enforcement: reject ACL, security, tool grants, exposure, credentials.
-- [ ] Tests for allowed modifications, prohibited modifications, validation failures.
-
-### Task 1.12: Scheduling system
-
-**PRD:** `docs/prd/PRD-008-scheduling-and-periodic-tasks.md`
-**OpenSpec:** `openspec/specs/netclaw-scheduling/spec.md`
-**Surface area:** scheduling
-**Verification:** L2
-
-Done when:
-- [ ] `ScheduleManagerActor` loads tasks from `schedules/tasks.json`, manages Akka timers.
-- [ ] Chat-driven creation: interval and cron types, validate tool grants, persist task.
-- [ ] Isolated execution: timer dispatches `SendUserMessage` with `schedule/{taskId}/{runTs}` entity key.
-- [ ] Result reporting: post to configured Slack channel, silent-unless-notable mode.
-- [ ] Guardrails: max concurrent (3), timeout (5min), consecutive failure auto-pause (5).
-- [ ] Task management: list, pause, resume, delete via conversation and CLI.
-- [ ] Tests for persistence, timer lifecycle, isolated execution, failure handling.
-
-### Task 1.13: CLI scaffold with Cocona + Termina hosting
+### Task 1.11: CLI scaffold with Cocona
 
 **PRD:** `docs/prd/PRD-004-cli-onboarding-and-config.md` (CLI-010, CLI-012)
 **OpenSpec:** `openspec/specs/netclaw-cli/spec.md`
 **OpenSpec Changes:** `openspec/changes/add-tui-adapter-and-config-hot-reload/` (Section 1)
 **Surface area:** CLI framework
 **Verification:** L1
+**Previously:** Task 1.13
+
+Replaces the bare console loop with a proper CLI framework. Restore web gateway
+hosting (`Microsoft.NET.Sdk.Web`) if needed for daemon mode.
 
 Done when:
 - [ ] Cocona and Termina package references added to `Directory.Packages.props` and `Netclaw.App.csproj`.
@@ -374,7 +380,7 @@ Done when:
 - [ ] Termina wired as hosted service for TUI commands.
 - [ ] `dotnet build` passes with new dependencies.
 
-### Task 1.14: TUI chat adapter (`netclaw chat`)
+### Task 1.12: TUI chat adapter (`netclaw chat`)
 
 **PRD:** `docs/prd/PRD-004-cli-onboarding-and-config.md` (CLI-011), `docs/prd/PRD-009-input-adapters-and-unified-input.md` (INPUT-005)
 **OpenSpec:** `openspec/specs/netclaw-input-adapters/spec.md`, `openspec/specs/netclaw-cli/spec.md`
@@ -382,6 +388,7 @@ Done when:
 **Surface area:** TUI + adapter
 **Verification:** L3
 **Wireframe:** `docs/ui/TUI-001-command-wireframes.md` (netclaw chat)
+**Previously:** Task 1.14
 
 Done when:
 - [ ] `TuiInputAdapter` implementing adapter contract (`SendUserMessage` with entity key `tui/{sessionId}`).
@@ -392,45 +399,121 @@ Done when:
 - [ ] MCP status indicator in status bar (green/yellow/red).
 - [ ] E2E: user types → `SendUserMessage` → session actor → LLM → streaming response in TUI.
 
-### Task 1.15: TUI onboarding wizard (`netclaw init`)
+---
 
-**PRD:** `docs/prd/PRD-004-cli-onboarding-and-config.md` (CLI-010)
-**OpenSpec:** `openspec/specs/netclaw-onboarding/spec.md`, `openspec/specs/netclaw-cli/spec.md`
-**OpenSpec Changes:** `openspec/changes/add-tui-adapter-and-config-hot-reload/` (Section 3)
-**Surface area:** TUI + onboarding
-**Verification:** L3
-**Wireframe:** `docs/ui/TUI-001-command-wireframes.md` (netclaw init)
+### Tier 3: Production hardening
 
-Done when:
-- [ ] `InitCommand.cs` launches Termina wizard.
-- [ ] `InitWizardPage.cs` with 7-step wizard layout (`PanelNode`, progress bar).
-- [ ] `InitWizardViewModel.cs` with step state machine and back-navigation.
-- [ ] Steps: LLM provider, Slack config, PostgreSQL, ACL bootstrap, MCP servers, exposure mode, health check.
-- [ ] Config file written to `~/.netclaw/config/netclaw.json` on completion.
+### Task 1.13: ACL and policy engine with tool grants
 
-### Task 1.16: Plain CLI commands
+**PRD:** `docs/prd/PRD-002-gateway-security-envelope.md`
+**OpenSpec:** `openspec/specs/netclaw-acl/spec.md`, `openspec/specs/netclaw-gateway-security/spec.md`
+**Surface area:** security
+**Verification:** L2
+**Previously:** Task 1.5
 
-**PRD:** `docs/prd/PRD-004-cli-onboarding-and-config.md`
-**OpenSpec:** `openspec/specs/netclaw-cli/spec.md`
-**OpenSpec Changes:** `openspec/changes/add-tui-adapter-and-config-hot-reload/` (Section 4)
-**Surface area:** CLI
-**Verification:** L1
+Not needed for single-user local testing, but required before Slack adapter or
+any multi-user scenario.
 
 Done when:
-- [ ] `DoctorCommand.cs` — startup checks with remediation guidance, exit codes 0/1/2.
-- [ ] `ConfigCommands.cs` — `config show` and `config validate`.
-- [ ] `AclCommands.cs` — `acl validate`, `acl test`, `acl explain`.
-- [ ] `ProjectCommands.cs` — `project list`, `project add`, `project remove`.
-- [ ] `ScheduleCommands.cs` — `schedule list|show|pause|resume|delete`.
-- [ ] Remaining commands: `environment scan|show`, `mcp list|validate|test`, `memory show`, `tools list|policy`, `test smoke`, `personality reset`.
+- [ ] ACL parser supports channel rules, sender allowlists, mention/ambient mode, and tool grant categories (shell, web_search, web_fetch, github, mcp:{server}, config_write, schedule_write).
+- [ ] Default deny enforced when no explicit allow.
+- [ ] Self-configuration prohibition: agent cannot modify ACL/security through conversation.
+- [ ] Invalid ACL blocks startup with actionable diagnostics.
+- [ ] Shell execution boundaries enforced (SEC-009): timeout, output truncation, no stdin, working dir.
+- [ ] Tool invocation audit logging.
+- [ ] Policy decision tests cover all grant categories.
 
-### Task 1.17: Config hot-reload
+### Task 1.14: Multi-key routing (remaining Task 1.3 items)
+
+**PRD:** `docs/prd/PRD-001-netclaw-mvp.md`
+**OpenSpec:** `openspec/specs/netclaw-session/spec.md`
+**Surface area:** actor runtime
+**Verification:** L2
+**Previously:** Remainder of Task 1.3
+
+Multi-key-pattern support and routing tests. Only matters when multiple adapters
+(TUI + Slack + scheduled tasks) coexist.
+
+Done when:
+- [ ] Multi-key-pattern support (Slack and timer patterns).
+- [ ] Tests verify entity lifecycle and message routing.
+
+---
+
+### Tier 4: Full capability
+
+### Task 1.15: MCP integration and Memorizer
+
+**PRD:** `docs/prd/PRD-006-mcp-tool-integration.md`
+**OpenSpec:** `openspec/specs/netclaw-mcp/spec.md`
+**Surface area:** integration
+**Verification:** L2
+**Previously:** Task 1.9
+
+Done when:
+- [ ] MCP server profiles (named, stdio/SSE transport, enable/disable).
+- [ ] Tool discovery at startup: connect, list tools, register as MEAI definitions.
+- [ ] Graceful degradation: unavailable server returns error, agent continues, reconnect on next call.
+- [ ] Memorizer store/search/get cycle works through session.
+- [ ] Tests for connection, discovery, policy gating, degradation.
+
+### Task 1.16: Local memory (project registry, environment inventory)
+
+**PRD:** `docs/prd/PRD-007-agent-personality-and-local-memory.md`
+**OpenSpec:** `openspec/specs/netclaw-agent-memory/spec.md`
+**Surface area:** agent memory
+**Verification:** L2
+**Previously:** Task 1.10
+
+Done when:
+- [ ] Project registry (`projects/registry.json`): add, remove, list, validate paths, load at startup.
+- [ ] Environment inventory (`environment/inventory.json`): scan for git, gh, claude, opencode, dotnet, node.
+- [ ] Capability self-discovery at startup and on-demand rescan.
+- [ ] Tests for project registry CRUD and environment scan.
+
+### Task 1.17: Self-configuration through conversation
+
+**PRD:** `docs/prd/PRD-007-agent-personality-and-local-memory.md`
+**OpenSpec:** `openspec/specs/netclaw-agent-memory/spec.md`
+**Surface area:** agent config
+**Verification:** L2
+**Previously:** Task 1.11
+
+Done when:
+- [ ] Agent modifies personality, instructions, user preferences, project registry, and environment through conversation.
+- [ ] Validation-before-write and atomic file writes (temp + rename).
+- [ ] Prohibited modification enforcement: reject ACL, security, tool grants, exposure, credentials.
+- [ ] Tests for allowed modifications, prohibited modifications, validation failures.
+
+### Task 1.18: Scheduling system
+
+**PRD:** `docs/prd/PRD-008-scheduling-and-periodic-tasks.md`
+**OpenSpec:** `openspec/specs/netclaw-scheduling/spec.md`
+**Surface area:** scheduling
+**Verification:** L2
+**Previously:** Task 1.12
+
+Done when:
+- [ ] `ScheduleManagerActor` loads tasks from `schedules/tasks.json`, manages Akka timers.
+- [ ] Chat-driven creation: interval and cron types, validate tool grants, persist task.
+- [ ] Isolated execution: timer dispatches `SendUserMessage` with `schedule/{taskId}/{runTs}` entity key.
+- [ ] Result reporting: post to configured Slack channel, silent-unless-notable mode.
+- [ ] Guardrails: max concurrent (3), timeout (5min), consecutive failure auto-pause (5).
+- [ ] Task management: list, pause, resume, delete via conversation and CLI.
+- [ ] Tests for persistence, timer lifecycle, isolated execution, failure handling.
+
+---
+
+### Tier 5: Polish and ship
+
+### Task 1.19: Config hot-reload
 
 **PRD:** `docs/prd/PRD-001-netclaw-mvp.md` (FR-016)
 **OpenSpec:** `openspec/specs/netclaw-config-hot-reload/spec.md`, `openspec/specs/netclaw-session/spec.md`
 **OpenSpec Changes:** `openspec/changes/add-tui-adapter-and-config-hot-reload/` (Section 5)
 **Surface area:** runtime config
 **Verification:** L2
+**Previously:** Task 1.17
 
 Done when:
 - [ ] `ConfigWatcherService` as `IHostedService` with `FileSystemWatcher` per watched file.
@@ -443,13 +526,14 @@ Done when:
 - [ ] Schedule change events published to `ScheduleManagerActor` via Akka pub/sub.
 - [ ] Integration test: config file write → debounce → validate → actor notification.
 
-### Task 1.18: Conversational personality bootstrap
+### Task 1.20: Conversational personality bootstrap
 
 **PRD:** `docs/prd/PRD-007-agent-personality-and-local-memory.md`
 **OpenSpec:** `openspec/specs/netclaw-agent-memory/spec.md`, `openspec/specs/netclaw-onboarding/spec.md`
 **OpenSpec Changes:** `openspec/changes/add-tui-adapter-and-config-hot-reload/` (Section 6)
 **Surface area:** onboarding
 **Verification:** L2
+**Previously:** Task 1.18
 
 Done when:
 - [ ] First-run detection: trigger bootstrap when soul files don't exist on first `netclaw chat`.
@@ -457,26 +541,47 @@ Done when:
 - [ ] PERSONALITY.md, INSTRUCTIONS.md, USER.md written to config directory.
 - [ ] Test: bootstrap triggers when files missing, skips when files exist.
 
-### Task 1.19: Local E2E validation via TUI
+### Task 1.21: Plain CLI commands
 
-**PRD:** `docs/prd/PRD-001-netclaw-mvp.md`
-**OpenSpec:** all Phase 1 specs
-**OpenSpec Changes:** `openspec/changes/add-tui-adapter-and-config-hot-reload/` (Section 7)
-**Surface area:** end-to-end
-**Verification:** L4
+**PRD:** `docs/prd/PRD-004-cli-onboarding-and-config.md`
+**OpenSpec:** `openspec/specs/netclaw-cli/spec.md`
+**OpenSpec Changes:** `openspec/changes/add-tui-adapter-and-config-hot-reload/` (Section 4)
+**Surface area:** CLI
+**Verification:** L1
+**Previously:** Task 1.16
 
 Done when:
-- [ ] E2E: `netclaw chat` → session → tool call → streaming response.
-- [ ] E2E: scheduled task → fresh session → result displayed.
-- [ ] E2E: config change → hot-reload → policy refresh verified.
-- [ ] CI tests pass without live provider credentials.
+- [ ] `DoctorCommand.cs` — startup checks with remediation guidance, exit codes 0/1/2.
+- [ ] `ConfigCommands.cs` — `config show` and `config validate`.
+- [ ] `AclCommands.cs` — `acl validate`, `acl test`, `acl explain`.
+- [ ] `ProjectCommands.cs` — `project list`, `project add`, `project remove`.
+- [ ] `ScheduleCommands.cs` — `schedule list|show|pause|resume|delete`.
+- [ ] Remaining commands: `environment scan|show`, `mcp list|validate|test`, `memory show`, `tools list|policy`, `test smoke`, `personality reset`.
 
-### Task 1.20: Slack Socket Mode adapter
+### Task 1.22: TUI onboarding wizard (`netclaw init`)
+
+**PRD:** `docs/prd/PRD-004-cli-onboarding-and-config.md` (CLI-010)
+**OpenSpec:** `openspec/specs/netclaw-onboarding/spec.md`, `openspec/specs/netclaw-cli/spec.md`
+**OpenSpec Changes:** `openspec/changes/add-tui-adapter-and-config-hot-reload/` (Section 3)
+**Surface area:** TUI + onboarding
+**Verification:** L3
+**Wireframe:** `docs/ui/TUI-001-command-wireframes.md` (netclaw init)
+**Previously:** Task 1.15
+
+Done when:
+- [ ] `InitCommand.cs` launches Termina wizard.
+- [ ] `InitWizardPage.cs` with 7-step wizard layout (`PanelNode`, progress bar).
+- [ ] `InitWizardViewModel.cs` with step state machine and back-navigation.
+- [ ] Steps: LLM provider, Slack config, PostgreSQL, ACL bootstrap, MCP servers, exposure mode, health check.
+- [ ] Config file written to `~/.netclaw/config/netclaw.json` on completion.
+
+### Task 1.23: Slack Socket Mode adapter
 
 **PRD:** `docs/prd/PRD-001-netclaw-mvp.md`
 **OpenSpec:** `openspec/specs/netclaw-slack-socket/spec.md`, `openspec/specs/netclaw-input-adapters/spec.md`
 **Surface area:** integration
 **Verification:** L2
+**Previously:** Task 1.20
 
 Done when:
 - [ ] Socket Mode connection and event handling (`app_mention`, `message`).
@@ -485,25 +590,29 @@ Done when:
 - [ ] Reconnection on disconnect.
 - [ ] End-to-end test proves message → reply loop.
 
-### Task 1.21: Full integration and acceptance
+### Task 1.24: E2E validation
 
 **PRD:** `docs/prd/PRD-001-netclaw-mvp.md`
 **OpenSpec:** all Phase 1 specs
 **Surface area:** end-to-end
 **Verification:** L4
+**Previously:** Tasks 1.19 + 1.21
 
 Done when:
+- [ ] E2E: `netclaw chat` → session → tool call → streaming response.
 - [ ] E2E: Slack message → session → tool call → reply in thread.
 - [ ] E2E: scheduled task fires → fresh session → result posted to Slack.
 - [ ] E2E: restart recovery preserves session context and scheduled tasks.
+- [ ] E2E: config change → hot-reload → policy refresh verified.
 - [ ] CI test suite passes without live provider credentials.
 - [ ] Deploy to pi1 and verify Slack interaction.
 
-### Task 1.22: Spec sync and archive
+### Task 1.25: Spec sync and archive
 
 **OpenSpec Changes:** `openspec/changes/expand-mvp-for-autonomous-agent-vision/`, `openspec/changes/add-tui-adapter-and-config-hot-reload/`
 **Surface area:** process
 **Verification:** L0
+**Previously:** Task 1.22
 
 Done when:
 - [ ] Delta specs synced to main specs for both changes.
@@ -537,3 +646,57 @@ Tasks to be defined when Phase 3 is complete.
 
 Web UI for config, sessions, diagnostics (PRD-003).
 Tasks to be defined when Phase 4 is complete.
+
+---
+
+## Future Considerations
+
+Patterns identified during implementation research that are deferred from
+current phases but should inform future design decisions. Full analysis in
+the linked research documents.
+
+### Near-Term (incorporate during Phase 1)
+
+- ~~**Max tool iterations circuit breaker**~~ — **DONE.** `MaxToolIterationsPerTurn`
+  in `SessionConfig` (default 10). Forces text-only LLM call when limit reached.
+  See: `docs/research/actor-llm-optimization-patterns.md` §2
+- ~~**Parallel tool execution**~~ — **DONE.** `Task.WhenAll` for independent
+  tool calls in `ExecuteToolsAsync`.
+  See: `docs/research/actor-llm-optimization-patterns.md` §3
+- **Retry with exponential backoff** — `IChatClient` decorator or actor-level
+  retry for transient LLM errors. Critical for scheduled task reliability.
+  See: `docs/research/actor-llm-optimization-patterns.md` §5
+
+### Medium-Term (Phase 1 provider abstraction + TUI)
+
+- **IChatClient decorator pipeline** — `CachingChatClient → RetryingChatClient
+  → RateLimitingChatClient → ProviderChatClient`. Transparent to actor code.
+  Natural fit for Task 1.10 (full provider abstraction).
+  See: `docs/research/actor-llm-optimization-patterns.md` §1 (Tier 3)
+- **Streaming responses** — Actor-level vs adapter-level streaming for TUI
+  and Slack UX. Design decision needed before Task 1.12 (TUI adapter).
+  See: `docs/research/actor-llm-optimization-patterns.md` §4
+
+### Long-Term (Phase 2+)
+
+- **Prompt cache warming** — Shared system prompt cache warmer actor. Low
+  cost, benefits all sessions. Requires provider abstraction.
+  See: `docs/research/actor-llm-optimization-patterns.md` §1 (Tier 1)
+- **Cache-aware compaction** — Anthropic cache control breakpoints on
+  system prompt and compaction summary boundaries.
+  See: `docs/research/actor-llm-optimization-patterns.md` §1 (Tier 2)
+- **Sub-agent isolation** — Child task actors with independent context
+  windows. Architecture already supports it (`SessionState` is decoupled).
+  Natural entry point at Phase 3 (Delegated Coding).
+  See: `docs/research/actor-llm-optimization-patterns.md` §6
+
+### Research Documents
+
+- `docs/research/context-management-patterns.md` — Cross-SDK compaction
+  and memory patterns (OpenAI, LangChain, Semantic Kernel, Anthropic,
+  Google ADK, LlamaIndex, CrewAI, Haystack)
+- `docs/research/agent-patterns.md` — Agent soul, personality, tooling,
+  and onboarding patterns from comparable projects
+- `docs/research/actor-llm-optimization-patterns.md` — Prompt caching,
+  safety circuit breakers, parallel execution, streaming, retry, and
+  sub-agent isolation patterns for actor-based LLM systems

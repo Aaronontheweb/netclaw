@@ -413,3 +413,6 @@ FodyWeavers.xsd
 
 # Local Claude permissions
 .claude/settings.local.json
+
+# Local app settings (machine-specific config, not committed)
+**/appsettings.Local.json
