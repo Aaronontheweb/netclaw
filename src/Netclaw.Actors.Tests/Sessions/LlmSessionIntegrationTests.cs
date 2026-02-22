@@ -151,7 +151,10 @@ public class LlmSessionIntegrationTests : TestKit
         // Full: ThinkingOutput + TextOutput + UsageOutput + TurnCompleted
         fullSub.ExpectMsg<ThinkingOutput>(TimeSpan.FromSeconds(3));
         fullSub.ExpectMsg<TextOutput>(TimeSpan.FromSeconds(3));
-        fullSub.ExpectMsg<UsageOutput>(TimeSpan.FromSeconds(3));
+        var usage = fullSub.ExpectMsg<UsageOutput>(TimeSpan.FromSeconds(3));
+        Assert.Equal(128_000, usage.ContextWindowTokens);
+        Assert.NotNull(usage.UsagePercent);
+        Assert.True(usage.UsagePercent > 0);
         fullSub.ExpectMsg<TurnCompleted>(TimeSpan.FromSeconds(3));
         fullSub.ExpectNoMsg(TimeSpan.FromMilliseconds(200));
     }

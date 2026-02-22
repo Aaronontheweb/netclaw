@@ -300,6 +300,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor
 
         if (usage is not null)
         {
+            var contextWindow = _config.ContextWindowTokens;
+            double? usagePercent = usage.InputTokenCount.HasValue && contextWindow > 0
+                ? (double)usage.InputTokenCount.Value / contextWindow
+                : null;
+
             EmitOutput(new UsageOutput
             {
                 SessionId = _sessionId,
@@ -307,7 +312,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor
                 OutputTokens = usage.OutputTokenCount,
                 TotalTokens = usage.TotalTokenCount,
                 CachedInputTokens = usage.CachedInputTokenCount,
-                ReasoningTokens = usage.ReasoningTokenCount
+                ReasoningTokens = usage.ReasoningTokenCount,
+                ContextWindowTokens = contextWindow,
+                UsagePercent = usagePercent
             }, OutputFilter.Usage);
         }
 

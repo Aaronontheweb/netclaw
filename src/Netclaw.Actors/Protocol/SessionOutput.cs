@@ -70,6 +70,8 @@ public sealed record ToolResultOutput : SessionOutput
 /// <summary>
 /// Token usage report for the completed turn.
 /// Requires <see cref="OutputFilter.Usage"/>.
+/// Includes context window metadata so subscribers can display usage
+/// percentage without duplicating session config.
 /// </summary>
 public sealed record UsageOutput : SessionOutput
 {
@@ -82,6 +84,18 @@ public sealed record UsageOutput : SessionOutput
     public long? CachedInputTokens { get; init; }
 
     public long? ReasoningTokens { get; init; }
+
+    /// <summary>
+    /// Total context window capacity from <see cref="Sessions.SessionConfig.ContextWindowTokens"/>.
+    /// </summary>
+    public int ContextWindowTokens { get; init; }
+
+    /// <summary>
+    /// Percentage of context window consumed (0.0–1.0), computed as
+    /// <c>InputTokens / ContextWindowTokens</c>. Null when input tokens
+    /// are unavailable.
+    /// </summary>
+    public double? UsagePercent { get; init; }
 }
 
 /// <summary>
