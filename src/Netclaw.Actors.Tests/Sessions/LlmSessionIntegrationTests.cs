@@ -348,8 +348,17 @@ internal sealed class FakeChatClient : IChatClient
     /// <summary>
     /// When set, the first response returns these tool calls instead of text.
     /// Subsequent calls return normal text (simulating the LLM completing after tool results).
+    /// When <see cref="AlwaysReturnToolCalls"/> is true, every call returns tool calls
+    /// as long as tools are available in options (for testing iteration limits).
     /// </summary>
     public List<FunctionCallContent>? ToolCallsOnFirstCall { get; set; }
+
+    /// <summary>
+    /// When true, every call returns tool calls (from <see cref="ToolCallsOnFirstCall"/>)
+    /// as long as <c>options.Tools</c> is non-empty. When tools are omitted from options
+    /// (circuit breaker fired), returns normal text instead.
+    /// </summary>
+    public bool AlwaysReturnToolCalls { get; set; }
 
     /// <summary>
     /// When set, all responses include this usage data.
@@ -367,14 +376,24 @@ internal sealed class FakeChatClient : IChatClient
         if (Delay > TimeSpan.Zero)
             await Task.Delay(Delay, cancellationToken);
 
-        // Return tool calls on first call if configured
-        if (ToolCallsOnFirstCall is not null && _callCount == 1)
+        // Return tool calls if configured
+        if (ToolCallsOnFirstCall is not null)
         {
-            var toolCallContents = new List<AIContent>(ToolCallsOnFirstCall);
-            var toolCallMessage = new ChatMessage(
-                Microsoft.Extensions.AI.ChatRole.Assistant,
-                toolCallContents);
-            return new ChatResponse(toolCallMessage);
+            var returnToolCalls = AlwaysReturnToolCalls
+                ? options?.Tools?.Count > 0   // Every call, as long as tools are available
+                : _callCount == 1;            // First call only (existing behavior)
+
+            if (returnToolCalls)
+            {
+                var toolCallContents = new List<AIContent>(ToolCallsOnFirstCall);
+                var toolCallMessage = new ChatMessage(
+                    Microsoft.Extensions.AI.ChatRole.Assistant,
+                    toolCallContents);
+                var toolResponse = new ChatResponse(toolCallMessage);
+                if (UsageOverride is not null)
+                    toolResponse.Usage = UsageOverride;
+                return toolResponse;
+            }
         }
 
         var contents = new List<AIContent>();

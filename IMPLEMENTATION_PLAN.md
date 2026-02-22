@@ -563,11 +563,11 @@ the linked research documents.
 
 ### Near-Term (incorporate during Phase 1)
 
-- **Max tool iterations circuit breaker** — `MaxToolIterationsPerTurn` in
-  `SessionConfig` to prevent unbounded agentic loops. Safety concern.
+- ~~**Max tool iterations circuit breaker**~~ — **DONE.** `MaxToolIterationsPerTurn`
+  in `SessionConfig` (default 10). Forces text-only LLM call when limit reached.
   See: `docs/research/actor-llm-optimization-patterns.md` §2
-- **Parallel tool execution** — `Task.WhenAll` for independent tool calls
-  in `ExecuteToolsAsync`. Easy performance win for I/O-bound tools.
+- ~~**Parallel tool execution**~~ — **DONE.** `Task.WhenAll` for independent
+  tool calls in `ExecuteToolsAsync`.
   See: `docs/research/actor-llm-optimization-patterns.md` §3
 - **Retry with exponential backoff** — `IChatClient` decorator or actor-level
   retry for transient LLM errors. Critical for scheduled task reliability.

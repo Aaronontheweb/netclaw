@@ -44,6 +44,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor
     // Last observed input token count from LLM response (for compaction trigger)
     private long _lastInputTokenCount;
 
+    // Tool iteration counter (reset per turn, incremented on each ToolExecutionCompleted)
+    private int _toolIterationCount;
+
     // Persistent state (immutable — replaced on each event)
     private SessionState _state = SessionState.Empty;
 
@@ -124,6 +127,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         {
             _log.Info("Received user message");
 
+            _toolIterationCount = 0;
             _state = _state.AddUserMessage(cmd.Content);
             Sender.Tell(CommandAck.For(_sessionId));
             FireLlmCall();
@@ -168,9 +172,20 @@ public sealed class LlmSessionActor : ReceivePersistentActor
                 _state = _state with { History = _state.History.Add(result) };
             }
 
+            _toolIterationCount++;
+
+            // Safety circuit breaker: force text response when tool iteration limit reached
+            if (_toolIterationCount >= _config.MaxToolIterationsPerTurn)
+            {
+                _log.Warning("Tool iteration limit reached ({Count}/{Max}), forcing text response",
+                    _toolIterationCount, _config.MaxToolIterationsPerTurn);
+                FireLlmCall(forceNoTools: true);
+                return;
+            }
+
             // Fire follow-up LLM call with tool results in context
-            _log.Info("Tool execution complete, firing follow-up LLM call with {ResultCount} results",
-                msg.ToolResults.Count);
+            _log.Info("Tool execution complete ({Iteration}/{Max}), firing follow-up LLM call with {ResultCount} results",
+                _toolIterationCount, _config.MaxToolIterationsPerTurn, msg.ToolResults.Count);
             FireLlmCall();
         });
 
@@ -445,6 +460,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor
 
     private void HandleTextResponse(AiChatMessage lastMessage, UsageDetails? usage)
     {
+        _toolIterationCount = 0; // Reset for potential buffer drain (new logical turn)
+
         var reply = ChatMessageConverter.FromAiMessage(lastMessage);
         var userMsg = _state.FindLastUserMessage();
 
@@ -586,14 +603,14 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         });
     }
 
-    private void FireLlmCall()
+    private void FireLlmCall(bool forceNoTools = false)
     {
         var messages = ChatMessageConverter.ToAiMessages(_state.History);
         var self = Self;
         var client = _chatClient;
 
         ChatOptions? options = null;
-        if (_availableTools.Count > 0)
+        if (!forceNoTools && _availableTools.Count > 0)
         {
             options = new ChatOptions
             {
@@ -627,58 +644,64 @@ public sealed class LlmSessionActor : ReceivePersistentActor
     {
         try
         {
-            var results = new List<SerializableChatMessage>(toolCalls.Count);
+            // Execute all tool calls in parallel — each is independent
+            var tasks = toolCalls.Select(tc => ExecuteSingleToolAsync(executor, tc, sessionId, auditLogger));
+            var results = await Task.WhenAll(tasks);
 
-            foreach (var tc in toolCalls)
-            {
-                var sw = Stopwatch.StartNew();
-                string resultText;
-                try
-                {
-                    resultText = await executor.ExecuteAsync(tc);
-                    sw.Stop();
-
-                    auditLogger?.Log(new ToolAuditEntry
-                    {
-                        SessionId = sessionId.Value,
-                        ToolName = tc.Name,
-                        CallId = tc.CallId,
-                        Timestamp = DateTimeOffset.UtcNow,
-                        Allowed = true,
-                        Duration = sw.Elapsed
-                    });
-                }
-                catch (Exception ex)
-                {
-                    sw.Stop();
-                    resultText = $"Error executing tool: {ex.Message}";
-
-                    auditLogger?.Log(new ToolAuditEntry
-                    {
-                        SessionId = sessionId.Value,
-                        ToolName = tc.Name,
-                        CallId = tc.CallId,
-                        Timestamp = DateTimeOffset.UtcNow,
-                        Allowed = true,
-                        Duration = sw.Elapsed
-                    });
-                }
-
-                results.Add(new SerializableChatMessage
-                {
-                    Role = Protocol.ChatRole.Tool,
-                    Content = resultText,
-                    ToolCallId = tc.CallId,
-                    Name = tc.Name
-                });
-            }
-
-            self.Tell(new ToolExecutionCompleted { ToolResults = results });
+            self.Tell(new ToolExecutionCompleted { ToolResults = results.ToList() });
         }
         catch (Exception ex)
         {
             self.Tell(new ToolExecutionFailed { Cause = ex });
         }
+    }
+
+    private static async Task<SerializableChatMessage> ExecuteSingleToolAsync(
+        IToolExecutor executor,
+        FunctionCallContent tc,
+        SessionId sessionId,
+        IToolAuditLogger? auditLogger)
+    {
+        var sw = Stopwatch.StartNew();
+        string resultText;
+        try
+        {
+            resultText = await executor.ExecuteAsync(tc);
+            sw.Stop();
+
+            auditLogger?.Log(new ToolAuditEntry
+            {
+                SessionId = sessionId.Value,
+                ToolName = tc.Name,
+                CallId = tc.CallId,
+                Timestamp = DateTimeOffset.UtcNow,
+                Allowed = true,
+                Duration = sw.Elapsed
+            });
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            resultText = $"Error executing tool: {ex.Message}";
+
+            auditLogger?.Log(new ToolAuditEntry
+            {
+                SessionId = sessionId.Value,
+                ToolName = tc.Name,
+                CallId = tc.CallId,
+                Timestamp = DateTimeOffset.UtcNow,
+                Allowed = true,
+                Duration = sw.Elapsed
+            });
+        }
+
+        return new SerializableChatMessage
+        {
+            Role = Protocol.ChatRole.Tool,
+            Content = resultText,
+            ToolCallId = tc.CallId,
+            Name = tc.Name
+        };
     }
 
     private void MaybeSnapshot()

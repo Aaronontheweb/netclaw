@@ -228,13 +228,13 @@ Priority: **low** — Phase 3 (Delegated Coding) is the natural entry point.
 
 ## Summary
 
-| Pattern | Priority | Depends On | Phase |
-|---------|----------|------------|-------|
-| Max tool iterations | High | None (SessionConfig change) | 1 |
-| Parallel tool execution | Medium | None (ExecuteToolsAsync change) | 1 |
-| Retry with backoff | Medium-High | Task 1.8 (provider abstraction) | 1 |
-| Streaming responses | Medium | Task 1.14 (TUI adapter) | 1 |
-| Prompt cache warming | Low-Medium | Task 1.8 (provider abstraction) | 2+ |
-| Cache-aware compaction | Low | Task 1.8 | 2+ |
-| IChatClient decorator chain | Medium | Task 1.8 | 1 |
-| Sub-agent isolation | Low | Phase 3 architecture | 3 |
+| Pattern | Priority | Depends On | Phase | Status |
+|---------|----------|------------|-------|--------|
+| Max tool iterations | High | None (SessionConfig change) | 1 | **DONE** |
+| Parallel tool execution | Medium | None (ExecuteToolsAsync change) | 1 | **DONE** |
+| Retry with backoff | Medium-High | Task 1.8 (provider abstraction) | 1 | Deferred |
+| Streaming responses | Medium | Task 1.14 (TUI adapter) | 1 | Deferred |
+| Prompt cache warming | Low-Medium | Task 1.8 (provider abstraction) | 2+ | Deferred |
+| Cache-aware compaction | Low | Task 1.8 | 2+ | Deferred |
+| IChatClient decorator chain | Medium | Task 1.8 | 1 | Deferred |
+| Sub-agent isolation | Low | Phase 3 architecture | 3 | Deferred |

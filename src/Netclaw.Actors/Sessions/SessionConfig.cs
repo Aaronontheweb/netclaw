@@ -44,6 +44,13 @@ public sealed record SessionConfig
     public int KeepRecentToolResults { get; init; } = 3;
 
     /// <summary>
+    /// Maximum number of tool execution iterations allowed per turn.
+    /// When the limit is reached, the next LLM call omits tools to force a text response.
+    /// Prevents unbounded agentic loops from runaway tool chains.
+    /// </summary>
+    public int MaxToolIterationsPerTurn { get; init; } = 10;
+
+    /// <summary>
     /// Effective token limit at which compaction fires.
     /// </summary>
     public int CompactionTokenLimit => (int)(ContextWindowTokens * CompactionThreshold);
