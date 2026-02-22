@@ -7,24 +7,27 @@
   </PropertyGroup>
   <!-- App dependencies -->
   <ItemGroup>
-    <PackageVersion Include="Akka.Hosting" Version="$(AkkaHostingVersion)"/>
-    <PackageVersion Include="Akka.Cluster.Sharding" Version="$(AkkaHostingVersion)"/>
-    <PackageVersion Include="Aaron.Akka.Reminders" Version="$(AkkaRemindersVersion)"/>
-    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.2"/>
+    <PackageVersion Include="Akka.Hosting" Version="$(AkkaHostingVersion)" />
+    <PackageVersion Include="Akka.Cluster.Sharding" Version="$(AkkaHostingVersion)" />
+    <PackageVersion Include="Akka.Persistence" Version="$(AkkaHostingVersion)" />
+    <PackageVersion Include="Akka.Persistence.Hosting" Version="$(AkkaHostingVersion)" />
+    <PackageVersion Include="Aaron.Akka.Reminders" Version="$(AkkaRemindersVersion)" />
+    <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.3.0" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.2" />
   </ItemGroup>
   <!-- Serialization -->
   <ItemGroup>
-    <PackageVersion Include="protobuf-net" Version="3.2.30"/>
+    <PackageVersion Include="protobuf-net" Version="3.2.30" />
   </ItemGroup>
   <!-- Test dependencies -->
   <ItemGroup>
-    <PackageVersion Include="Akka.Hosting.TestKit" Version="$(AkkaHostingVersion)"/>
-    <PackageVersion Include="xunit" Version="2.9.3"/>
-    <PackageVersion Include="xunit.runner.visualstudio" Version="3.0.0"/>
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.12.0"/>
+    <PackageVersion Include="Akka.Hosting.TestKit" Version="$(AkkaHostingVersion)" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.0.0" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
   </ItemGroup>
   <!-- SourceLink support for all Akka.NET projects -->
   <ItemGroup>
-    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.102"/>
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.102" />
   </ItemGroup>
 </Project>

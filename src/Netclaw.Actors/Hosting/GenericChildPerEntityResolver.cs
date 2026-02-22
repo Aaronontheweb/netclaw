@@ -29,7 +29,7 @@ public sealed class GenericChildPerEntityResolver : IShardRegionResolver
 
     public IActorRef? TryResolve(ReminderEntity entity) => entity.ShardRegionName switch
     {
-        SessionManagerRegion => Registry.TryGet<SessionManagerActor>(out var mgr) ? mgr : null,
+        SessionManagerRegion => Registry.TryGet<SessionManagerActorKey>(out var mgr) ? mgr : null,
         _ => null
     };
 

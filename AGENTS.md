@@ -112,6 +112,15 @@ If discovery artifacts conflict with each other, update them before implementing
   serialization round-trips, routing decisions, integration boundaries.
 - If the test is just asserting that `$"{a}/{b}"` equals `"a/b"`, delete it.
 - Prefer fewer tests that cover real behavior over many tests that pad coverage.
+- **NEVER use `Thread.Sleep` or `Task.Delay` in tests to wait for conditions.**
+  This is a design smell, not just a test smell — if you need a sleep to make a
+  test pass, the production code lacks a proper synchronization signal. Fix the
+  design:
+  - Add request/response acks (e.g., `Ask<CommandAck>`) so callers know a state
+    transition has occurred before proceeding.
+  - Use Akka.TestKit's `AwaitAssertAsync` for polling assertions on async state.
+  - `Task.Delay` in fake/mock services to simulate latency is acceptable only in
+    the fake itself, never in test orchestration logic.
 
 ## Post-Code Quality Check
 

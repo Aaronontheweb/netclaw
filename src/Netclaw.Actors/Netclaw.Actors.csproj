@@ -7,9 +7,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Akka.Cluster.Sharding"/>
-    <PackageReference Include="Aaron.Akka.Reminders"/>
-    <PackageReference Include="protobuf-net"/>
+    <PackageReference Include="Akka.Cluster.Sharding" />
+    <PackageReference Include="Akka.Persistence" />
+    <PackageReference Include="Aaron.Akka.Reminders" />
+    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" />
+    <PackageReference Include="protobuf-net" />
   </ItemGroup>
 
 </Project>

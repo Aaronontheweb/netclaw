@@ -4,9 +4,4 @@ namespace Netclaw.Actors.Hosting;
 /// Marker type for ActorRegistry lookup of the session manager
 /// (GenericChildPerEntityParent routing to LlmSessionActors).
 /// </summary>
-public sealed class SessionManagerActor;
-
-/// <summary>
-/// Marker type for ActorRegistry lookup of the pub/sub mediator.
-/// </summary>
-public sealed class PubSubMediatorActor;
+public sealed class SessionManagerActorKey;
