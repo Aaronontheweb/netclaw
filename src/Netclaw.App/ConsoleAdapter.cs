@@ -2,6 +2,7 @@ using Akka.Actor;
 using Akka.Hosting;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Netclaw.Actors.Configuration;
 using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Protocol;
 
@@ -12,6 +13,9 @@ using Netclaw.Actors.Protocol;
 /// Creates a subscriber actor to receive session outputs and a while loop
 /// that reads user input from stdin and sends it to the session actor.
 ///
+/// All session activity is logged to ~/.netclaw/logs/{sessionId}.log.
+/// Console output is reserved exclusively for the chat UI.
+///
 /// This is a temporary proof-of-concept adapter. It will be replaced by
 /// a proper CLI framework (Cocona) and TUI (Termina) in later tasks.
 /// </summary>
@@ -19,6 +23,7 @@ public sealed class ConsoleAdapter : IHostedService
 {
     private readonly IRequiredActor<SessionManagerActorKey> _sessionManagerProvider;
     private readonly ActorSystem _actorSystem;
+    private readonly NetclawPaths _paths;
     private readonly IHostApplicationLifetime _lifetime;
     private readonly ILogger<ConsoleAdapter> _logger;
 
@@ -27,11 +32,13 @@ public sealed class ConsoleAdapter : IHostedService
     public ConsoleAdapter(
         IRequiredActor<SessionManagerActorKey> sessionManagerProvider,
         ActorSystem actorSystem,
+        NetclawPaths paths,
         IHostApplicationLifetime lifetime,
         ILogger<ConsoleAdapter> logger)
     {
         _sessionManagerProvider = sessionManagerProvider;
         _actorSystem = actorSystem;
+        _paths = paths;
         _lifetime = lifetime;
         _logger = logger;
     }
@@ -60,9 +67,17 @@ public sealed class ConsoleAdapter : IHostedService
             var sessionManager = await _sessionManagerProvider.GetAsync(stopping);
             var sessionId = new SessionId($"tui/{Guid.NewGuid():N}");
 
-            // Create subscriber actor that writes session output to the console
+            // Set up session log file
+            _paths.EnsureDirectoriesExist();
+            var logFileName = $"{sessionId.Value.Replace("/", "-")}.log";
+            var logPath = Path.Combine(_paths.LogsDirectory, logFileName);
+            var logWriter = new StreamWriter(logPath, append: false) { AutoFlush = true };
+
+            logWriter.WriteLine($"[{DateTimeOffset.UtcNow:o}] Session started: {sessionId}");
+
+            // Create subscriber actor that writes session output to console + log
             var subscriber = _actorSystem.ActorOf(
-                Props.Create(() => new ConsoleSubscriberActor()),
+                Props.Create(() => new ConsoleSubscriberActor(logWriter)),
                 $"console-subscriber-{sessionId.Value.Replace("/", "-")}");
 
             // Join the session
@@ -73,9 +88,10 @@ public sealed class ConsoleAdapter : IHostedService
                 Filter = OutputFilter.Full
             });
 
-            _logger.LogInformation("Session started: {SessionId}", sessionId);
+            _logger.LogInformation("Session started: {SessionId} (log: {LogPath})", sessionId, logPath);
             Console.WriteLine();
-            Console.WriteLine("Netclaw console chat (type 'exit' to quit)");
+            Console.WriteLine($"Netclaw console chat (log: {logPath})");
+            Console.WriteLine("Type 'exit' to quit.");
             Console.WriteLine("──────────────────────────────────────────");
             Console.WriteLine();
 
@@ -86,13 +102,15 @@ public sealed class ConsoleAdapter : IHostedService
 
                 if (input is null || string.Equals(input.Trim(), "exit", StringComparison.OrdinalIgnoreCase))
                 {
-                    _logger.LogInformation("User exited chat");
+                    logWriter.WriteLine($"[{DateTimeOffset.UtcNow:o}] User exited chat");
                     _lifetime.StopApplication();
                     break;
                 }
 
                 if (string.IsNullOrWhiteSpace(input))
                     continue;
+
+                logWriter.WriteLine($"[{DateTimeOffset.UtcNow:o}] USER: {input}");
 
                 sessionManager.Tell(new SendUserMessage
                 {
@@ -101,9 +119,9 @@ public sealed class ConsoleAdapter : IHostedService
                 });
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex)
         {
-            // Expected on shutdown
+            _logger.LogDebug(ex, "Console chat loop cancelled (shutdown)");
         }
         catch (Exception ex)
         {
@@ -114,16 +132,21 @@ public sealed class ConsoleAdapter : IHostedService
 }
 
 /// <summary>
-/// Minimal actor that receives session outputs and writes them to the console.
-/// Needed because session outputs are delivered via Akka Tell to an IActorRef subscriber.
+/// Minimal actor that receives session outputs and writes them to the console
+/// and a per-session log file. Needed because session outputs are delivered via
+/// Akka Tell to an IActorRef subscriber.
 /// </summary>
 public sealed class ConsoleSubscriberActor : ReceiveActor
 {
-    public ConsoleSubscriberActor()
+    private readonly StreamWriter _log;
+
+    public ConsoleSubscriberActor(StreamWriter logWriter)
     {
+        _log = logWriter;
+
         Receive<SessionJoined>(msg =>
         {
-            // Session joined ack — no visible output needed
+            Log($"SESSION_JOINED turn_count={msg.TurnCount} title={msg.Title ?? "(none)"}");
         });
 
         Receive<TextOutput>(msg =>
@@ -131,6 +154,7 @@ public sealed class ConsoleSubscriberActor : ReceiveActor
             Console.WriteLine();
             Console.WriteLine($"Netclaw> {msg.Text}");
             Console.WriteLine();
+            Log($"ASSISTANT: {msg.Text}");
         });
 
         Receive<ThinkingOutput>(msg =>
@@ -138,6 +162,7 @@ public sealed class ConsoleSubscriberActor : ReceiveActor
             Console.ForegroundColor = ConsoleColor.DarkGray;
             Console.WriteLine($"  [thinking] {msg.Text}");
             Console.ResetColor();
+            Log($"THINKING: {msg.Text}");
         });
 
         Receive<ToolCallOutput>(msg =>
@@ -145,16 +170,15 @@ public sealed class ConsoleSubscriberActor : ReceiveActor
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine($"  [tool] {msg.ToolName}({msg.ArgumentsJson ?? ""})");
             Console.ResetColor();
+            Log($"TOOL_CALL: {msg.ToolName} call_id={msg.CallId} args={msg.ArgumentsJson ?? "{}"}");
         });
 
         Receive<UsageOutput>(msg =>
         {
-            Console.ForegroundColor = ConsoleColor.DarkGray;
             var usage = msg.UsagePercent.HasValue
                 ? $" ({msg.UsagePercent.Value:P0} context)"
                 : "";
-            Console.WriteLine($"  [usage] in={msg.InputTokens} out={msg.OutputTokens}{usage}");
-            Console.ResetColor();
+            Log($"USAGE: in={msg.InputTokens} out={msg.OutputTokens} total={msg.TotalTokens} cached={msg.CachedInputTokens} reasoning={msg.ReasoningTokens} context_window={msg.ContextWindowTokens}{usage}");
         });
 
         Receive<ErrorOutput>(msg =>
@@ -162,11 +186,12 @@ public sealed class ConsoleSubscriberActor : ReceiveActor
             Console.ForegroundColor = ConsoleColor.Red;
             Console.WriteLine($"  [error] {msg.Message}");
             Console.ResetColor();
+            Log($"ERROR: {msg.Message}");
         });
 
-        Receive<TurnCompleted>(_ =>
+        Receive<TurnCompleted>(msg =>
         {
-            // Turn boundary — prompt is handled by the main loop
+            Log($"TURN_COMPLETED: turn={msg.TurnNumber}");
         });
 
         Receive<CompactionOutput>(msg =>
@@ -174,6 +199,19 @@ public sealed class ConsoleSubscriberActor : ReceiveActor
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine($"  [compaction] {msg.MessagesBefore} → {msg.MessagesAfter} messages");
             Console.ResetColor();
+            Log($"COMPACTION: before={msg.MessagesBefore} after={msg.MessagesAfter} tool_results_cleared={msg.ToolResultsCleared} summarized={msg.Summarized}");
         });
+    }
+
+    private void Log(string message)
+    {
+        _log.WriteLine($"[{DateTimeOffset.UtcNow:o}] {message}");
+    }
+
+    protected override void PostStop()
+    {
+        Log("SESSION_ENDED");
+        _log.Dispose();
+        base.PostStop();
     }
 }

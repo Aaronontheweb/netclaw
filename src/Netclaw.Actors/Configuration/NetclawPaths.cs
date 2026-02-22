@@ -17,6 +17,7 @@ public sealed class NetclawPaths
     public string EnvironmentDirectory => Path.Combine(BasePath, "environment");
     public string SchedulesDirectory => Path.Combine(BasePath, "schedules");
     public string ConfigDirectory => Path.Combine(BasePath, "config");
+    public string LogsDirectory => Path.Combine(BasePath, "logs");
 
     public NetclawPaths(string? basePath = null)
     {
@@ -36,5 +37,6 @@ public sealed class NetclawPaths
         Directory.CreateDirectory(EnvironmentDirectory);
         Directory.CreateDirectory(SchedulesDirectory);
         Directory.CreateDirectory(ConfigDirectory);
+        Directory.CreateDirectory(LogsDirectory);
     }
 }

@@ -15,11 +15,20 @@ var builder = Host.CreateApplicationBuilder(args);
 // Load local overrides (appsettings.Local.json is gitignored for machine-specific config)
 builder.Configuration.AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: false);
 
+// Suppress all framework console logging — session logs go to disk,
+// console is reserved for the chat UI
+builder.Logging.ClearProviders();
+builder.Logging.SetMinimumLevel(LogLevel.Warning);
 builder.Logging.AddSimpleConsole(options =>
 {
     options.SingleLine = true;
     options.TimestampFormat = "HH:mm:ss ";
 });
+
+// -- Netclaw paths (creates ~/.netclaw/ structure) --
+var paths = new NetclawPaths();
+paths.EnsureDirectoriesExist();
+builder.Services.AddSingleton(paths);
 
 // -- Ollama IChatClient --
 var ollamaUrl = builder.Configuration["Ollama:Url"] ?? "http://localhost:11434";
@@ -52,9 +61,4 @@ builder.Services.AddAkka("netclaw", (akkaBuilder, sp) =>
 // -- Console adapter (TUI proof-of-concept) --
 builder.Services.AddHostedService<ConsoleAdapter>();
 
-var app = builder.Build();
-
-var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Netclaw");
-logger.LogInformation("Netclaw starting (model={Model}, endpoint={Endpoint})", ollamaModel, ollamaUrl);
-
-await app.RunAsync();
+await builder.Build().RunAsync();
