@@ -225,13 +225,13 @@ Done when:
 - [x] Recovery from journal and snapshots. Kill-and-restore integration test.
 - [x] `UsageOutput` enriched with context window metadata (`ContextWindowTokens`, `UsagePercent`).
 - [x] `ChatMessageConverter` boundary conversion with round-trip tests.
-- [ ] `Compacting` behavior state: tiered approach per research findings.
-- [ ] Phase 1 of compaction: clear old tool results (replace with placeholder, keep N recent).
-- [ ] Phase 2 of compaction: structured summarization with domain-specific sections.
-- [ ] Structured compaction prompt template (task overview, current state, decisions, pending actions).
-- [ ] Pre-compaction memory flush: silent agentic turn extracts durable memories before context reset.
-- [ ] Optional `CompactionModelId` in `SessionConfig` for cheaper compaction model.
-- [ ] Integration tests prove compaction trigger, tool result clearing, and memory flush.
+- [x] `Compacting` behavior state: tiered approach per research findings.
+- [x] Phase 1 of compaction: clear old tool results (replace with placeholder, keep N recent).
+- [x] Phase 2 of compaction: structured summarization with domain-specific sections.
+- [x] Structured compaction prompt template (task overview, current state, decisions, pending actions).
+- [x] Pre-compaction memory flush: silent agentic turn extracts durable memories before context reset.
+- [x] Optional `CompactionModelId` in `SessionConfig` for cheaper compaction model.
+- [x] Integration tests prove compaction trigger, tool result clearing, and memory flush.
 
 ### Task 1.3: Session parent and entity routing
 

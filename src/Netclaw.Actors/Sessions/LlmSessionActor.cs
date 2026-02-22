@@ -20,9 +20,10 @@ namespace Netclaw.Actors.Sessions;
 /// Conversation state is held in an immutable <see cref="SessionState"/> record.
 /// The actor owns only transient concerns: subscribers, message buffer, and behavior.
 ///
-/// Uses two command behaviors:
+/// Uses three command behaviors:
 /// - Ready: accepts user messages and fires async LLM call
 /// - Processing: buffers incoming messages while LLM call is in flight
+/// - Compacting: runs tiered context compaction when usage exceeds threshold
 /// </summary>
 public sealed class LlmSessionActor : ReceivePersistentActor
 {
@@ -32,12 +33,16 @@ public sealed class LlmSessionActor : ReceivePersistentActor
     private readonly ISystemPromptProvider _promptProvider;
     private readonly IToolExecutor? _toolExecutor;
     private readonly IToolAuditLogger? _auditLogger;
+    private readonly IMemoryExtractor _memoryExtractor;
     private readonly ILoggingAdapter _log;
 
     // Transient state (not persisted)
     private readonly List<SendUserMessage> _buffer = new();
     private readonly Dictionary<IActorRef, OutputFilter> _subscribers = new();
     private IReadOnlyList<AITool> _availableTools = [];
+
+    // Last observed input token count from LLM response (for compaction trigger)
+    private long _lastInputTokenCount;
 
     // Persistent state (immutable — replaced on each event)
     private SessionState _state = SessionState.Empty;
@@ -54,7 +59,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         ISystemPromptProvider promptProvider,
         IToolExecutor? toolExecutor = null,
         IToolAuditLogger? auditLogger = null,
-        ToolRegistry? toolRegistry = null)
+        ToolRegistry? toolRegistry = null,
+        IMemoryExtractor? memoryExtractor = null)
     {
         _sessionId = new SessionId(entityId);
         _chatClient = chatClient;
@@ -62,6 +68,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         _promptProvider = promptProvider;
         _toolExecutor = toolExecutor;
         _auditLogger = auditLogger;
+        _memoryExtractor = memoryExtractor ?? NullMemoryExtractor.Instance;
         PersistenceId = $"session-{entityId}";
 
         // Enrich logger with session context — all log messages automatically include SessionId
@@ -212,6 +219,192 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         });
     }
 
+    private void Compacting()
+    {
+        CommandSubscriptionMessages();
+        CommandSnapshotMessages();
+
+        // Buffer user messages during compaction (same as Processing)
+        Command<SendUserMessage>(cmd =>
+        {
+            _log.Info("Buffering user message (compaction in progress)");
+            _buffer.Add(cmd);
+            Sender.Tell(CommandAck.For(_sessionId));
+        });
+
+        Command<CompactionTriggered>(msg =>
+        {
+            var messagesBefore = _state.History.Count;
+
+            // Phase 1: Clear old tool results
+            var (newState, clearedCount) = _state.ClearOldToolResults(_config.KeepRecentToolResults);
+            _state = newState;
+
+            if (clearedCount > 0)
+            {
+                _log.Info("Phase 1: Cleared {ClearedCount} old tool result(s)", clearedCount);
+            }
+
+            // Phase 2: Fire memory extraction + summarization LLM calls
+            _log.Info("Phase 2: Starting summarization (history={HistoryCount} messages)", _state.History.Count);
+            FireMemoryExtractionCall(messagesBefore, clearedCount > 0);
+        });
+
+        Command<MemoryExtractionCompleted>(msg =>
+        {
+            // Persist extracted memories externally
+            var self = Self;
+            var extractor = _memoryExtractor;
+            var sessionId = _sessionId.Value;
+            _ = PersistMemoriesAsync(extractor, sessionId, msg.ExtractedMemories, self);
+        });
+
+        Command<SummarizationCompleted>(msg =>
+        {
+            var messagesBefore = _state.History.Count;
+
+            // Build compacted history: system prompt + summary as assistant message
+            var compactedMessages = new List<SerializableChatMessage>
+            {
+                new()
+                {
+                    Role = Protocol.ChatRole.Assistant,
+                    Content = msg.Summary
+                }
+            };
+
+            var compactedEvent = new SessionCompacted
+            {
+                SessionId = _sessionId,
+                Summary = msg.Summary,
+                CompactedMessages = compactedMessages,
+                TurnCountBefore = _state.TurnCount,
+                CompactedAtMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
+            };
+
+            Persist(compactedEvent, evt =>
+            {
+                _state = _state.Apply(evt);
+                _lastInputTokenCount = 0; // Reset — next LLM call will provide fresh count
+
+                // Always snapshot after compaction
+                SaveSnapshot(_state.ToSnapshot());
+
+                EmitOutput(new CompactionOutput
+                {
+                    SessionId = _sessionId,
+                    MessagesBefore = messagesBefore,
+                    MessagesAfter = _state.History.Count,
+                    ToolResultsCleared = true,
+                    Summarized = true
+                });
+
+                _log.Info("Compaction complete (before={MessagesBefore}, after={MessagesAfter})",
+                    messagesBefore, _state.History.Count);
+
+                DrainBufferOrReady();
+            });
+        });
+
+        Command<CompactionFailed>(msg =>
+        {
+            _log.Warning(msg.Cause, "Compaction failed, continuing without compaction");
+
+            // Compaction is best-effort — if it fails, drain buffer and continue
+            DrainBufferOrReady();
+        });
+    }
+
+    private void DrainBufferOrReady()
+    {
+        if (_buffer.Count > 0)
+        {
+            _log.Info("Post-compaction: draining {BufferCount} buffered message(s)", _buffer.Count);
+            foreach (var buffered in _buffer)
+            {
+                _state = _state.AddUserMessage(buffered.Content);
+            }
+            _buffer.Clear();
+            FireLlmCall();
+            Become(Processing);
+        }
+        else
+        {
+            Become(Ready);
+        }
+    }
+
+    private void FireMemoryExtractionCall(int messagesBefore, bool toolResultsCleared)
+    {
+        var history = _state.History;
+        var self = Self;
+        var client = _chatClient;
+
+        _ = InvokeCompactionSequenceAsync(client, history, self, messagesBefore, toolResultsCleared);
+    }
+
+    private static async Task InvokeCompactionSequenceAsync(
+        IChatClient client,
+        IReadOnlyList<SerializableChatMessage> history,
+        IActorRef self,
+        int messagesBefore,
+        bool toolResultsCleared)
+    {
+        try
+        {
+            // Step 1: Memory extraction (optional — if it fails, we still summarize)
+            try
+            {
+                var extractionMessages = new List<AiChatMessage>
+                {
+                    new(Microsoft.Extensions.AI.ChatRole.System,
+                        CompactionPromptBuilder.BuildMemoryExtractionSystemPrompt()),
+                    new(Microsoft.Extensions.AI.ChatRole.User,
+                        CompactionPromptBuilder.BuildMemoryExtractionUserPrompt(history))
+                };
+                var extractionResponse = await client.GetResponseAsync(extractionMessages);
+                var extractedText = extractionResponse.Messages[^1].Text ?? string.Empty;
+                self.Tell(new MemoryExtractionCompleted { ExtractedMemories = extractedText });
+            }
+            catch (Exception ex)
+            {
+                // Memory extraction is best-effort — log and continue to summarization
+                Trace.TraceWarning("Memory extraction failed during compaction: {0}", ex.Message);
+            }
+
+            // Step 2: Summarization
+            var summaryMessages = new List<AiChatMessage>
+            {
+                new(Microsoft.Extensions.AI.ChatRole.System,
+                    CompactionPromptBuilder.BuildSummarizationSystemPrompt()),
+                new(Microsoft.Extensions.AI.ChatRole.User,
+                    CompactionPromptBuilder.BuildSummarizationUserPrompt(history))
+            };
+            var summaryResponse = await client.GetResponseAsync(summaryMessages);
+            var summaryText = summaryResponse.Messages[^1].Text ?? string.Empty;
+
+            self.Tell(new SummarizationCompleted { Summary = summaryText });
+        }
+        catch (Exception ex)
+        {
+            self.Tell(new CompactionFailed { Cause = ex });
+        }
+    }
+
+    private static async Task PersistMemoriesAsync(
+        IMemoryExtractor extractor, string sessionId, string memories, IActorRef self)
+    {
+        try
+        {
+            await extractor.PersistAsync(sessionId, memories);
+        }
+        catch (Exception ex)
+        {
+            // Memory persistence is best-effort — log and continue compaction
+            Trace.TraceWarning("Memory persistence failed for session {0}: {1}", sessionId, ex.Message);
+        }
+    }
+
     private void HandleToolCallResponse(
         AiChatMessage lastMessage,
         List<FunctionCallContent> toolCalls,
@@ -255,6 +448,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor
         var reply = ChatMessageConverter.FromAiMessage(lastMessage);
         var userMsg = _state.FindLastUserMessage();
 
+        // Track input token count for compaction threshold check
+        if (usage?.InputTokenCount is > 0)
+        {
+            _lastInputTokenCount = usage.InputTokenCount.Value;
+        }
+
         var turnEvent = new TurnRecorded
         {
             SessionId = _sessionId,
@@ -278,6 +477,16 @@ public sealed class LlmSessionActor : ReceivePersistentActor
             EmitResponseOutputs(lastMessage, usage);
             MaybeSnapshot();
 
+            // Check if compaction should trigger
+            if (ShouldCompact())
+            {
+                _log.Info("Compaction threshold reached ({InputTokens} tokens >= {Threshold} limit), starting compaction",
+                    _lastInputTokenCount, _config.CompactionTokenLimit);
+                Self.Tell(new CompactionTriggered { InputTokenCount = _lastInputTokenCount });
+                Become(Compacting);
+                return;
+            }
+
             if (_buffer.Count > 0)
             {
                 _log.Info("Draining {BufferCount} buffered message(s)", _buffer.Count);
@@ -293,6 +502,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor
                 Become(Ready);
             }
         });
+    }
+
+    private bool ShouldCompact()
+    {
+        return _config.CompactionTokenLimit > 0
+            && _lastInputTokenCount >= _config.CompactionTokenLimit;
     }
 
     private void CommandSubscriptionMessages()

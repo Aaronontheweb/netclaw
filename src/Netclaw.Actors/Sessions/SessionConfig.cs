@@ -29,6 +29,21 @@ public sealed record SessionConfig
     public int SnapshotInterval { get; init; } = 20;
 
     /// <summary>
+    /// Optional model ID for compaction summarization.
+    /// When set, compaction LLM calls use this model (typically cheaper/faster)
+    /// instead of the primary session model. Requires a provider factory that
+    /// can resolve an <see cref="Microsoft.Extensions.AI.IChatClient"/> for this model.
+    /// </summary>
+    public string? CompactionModelId { get; init; }
+
+    /// <summary>
+    /// Number of recent tool call/result pairs to keep in full detail
+    /// during tool result clearing (Phase 1 of compaction).
+    /// Older tool results are replaced with placeholders.
+    /// </summary>
+    public int KeepRecentToolResults { get; init; } = 3;
+
+    /// <summary>
     /// Effective token limit at which compaction fires.
     /// </summary>
     public int CompactionTokenLimit => (int)(ContextWindowTokens * CompactionThreshold);

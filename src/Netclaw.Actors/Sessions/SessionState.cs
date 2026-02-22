@@ -117,6 +117,58 @@ public sealed record SessionState
         return null;
     }
 
+    // ── Compaction helpers ──
+
+    /// <summary>
+    /// Phase 1 of compaction: Clear old tool results while preserving recent ones.
+    /// Replaces old tool result content with a placeholder while keeping the tool
+    /// call structure intact (no orphaned tool calls).
+    /// </summary>
+    /// <param name="keepRecent">Number of recent tool call/result groups to preserve in full.</param>
+    /// <returns>A new state with old tool results cleared, and the count of results that were cleared.</returns>
+    public (SessionState State, int ClearedCount) ClearOldToolResults(int keepRecent)
+    {
+        if (keepRecent < 0) keepRecent = 0;
+
+        // Find all tool result message indices (Role == Tool)
+        var toolResultIndices = new List<int>();
+        for (var i = 0; i < History.Count; i++)
+        {
+            if (History[i].Role == ChatRole.Tool)
+            {
+                toolResultIndices.Add(i);
+            }
+        }
+
+        if (toolResultIndices.Count <= keepRecent)
+        {
+            return (this, 0);
+        }
+
+        // Clear all but the last N tool results
+        var indicesToClear = toolResultIndices
+            .Take(toolResultIndices.Count - keepRecent)
+            .ToHashSet();
+
+        var builder = History.ToBuilder();
+        var clearedCount = 0;
+
+        foreach (var idx in indicesToClear)
+        {
+            var msg = builder[idx];
+            builder[idx] = new SerializableChatMessage
+            {
+                Role = ChatRole.Tool,
+                Content = $"[Tool result cleared — {msg.Name ?? "unknown"} call {msg.ToolCallId ?? "?"}]",
+                ToolCallId = msg.ToolCallId,
+                Name = msg.Name
+            };
+            clearedCount++;
+        }
+
+        return (this with { History = builder.ToImmutable() }, clearedCount);
+    }
+
     // ── Snapshot conversion ──
 
     public SessionSnapshot ToSnapshot()

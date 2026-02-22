@@ -124,3 +124,22 @@ public sealed record ErrorOutput : SessionOutput
 {
     public required string Message { get; init; }
 }
+
+/// <summary>
+/// Session context was compacted to stay within the context window.
+/// Lifecycle — always delivered regardless of <see cref="OutputFilter"/>.
+/// </summary>
+public sealed record CompactionOutput : SessionOutput
+{
+    /// <summary>Number of messages before compaction.</summary>
+    public required int MessagesBefore { get; init; }
+
+    /// <summary>Number of messages after compaction.</summary>
+    public required int MessagesAfter { get; init; }
+
+    /// <summary>Whether tool results were cleared (Phase 1).</summary>
+    public bool ToolResultsCleared { get; init; }
+
+    /// <summary>Whether summarization was applied (Phase 2).</summary>
+    public bool Summarized { get; init; }
+}

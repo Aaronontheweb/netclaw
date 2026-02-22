@@ -351,6 +351,12 @@ internal sealed class FakeChatClient : IChatClient
     /// </summary>
     public List<FunctionCallContent>? ToolCallsOnFirstCall { get; set; }
 
+    /// <summary>
+    /// When set, all responses include this usage data.
+    /// Used to simulate token counts that trigger compaction.
+    /// </summary>
+    public UsageDetails? UsageOverride { get; set; }
+
     public async Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
@@ -386,7 +392,11 @@ internal sealed class FakeChatClient : IChatClient
 
         var response = new ChatResponse(responseMessage);
 
-        if (IncludeThinking)
+        if (UsageOverride is not null)
+        {
+            response.Usage = UsageOverride;
+        }
+        else if (IncludeThinking)
         {
             response.Usage = new UsageDetails
             {
