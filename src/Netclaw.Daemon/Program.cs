@@ -1,9 +1,11 @@
 using Akka.Hosting;
 using Akka.Persistence.Hosting;
+using Akka.Persistence.Sql.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Tools;
@@ -118,6 +120,16 @@ static NetclawPaths ConfigureConfigServices(IServiceCollection services, IConfig
 
 static void ConfigureDaemonServices(IServiceCollection services, IConfigurationManager configuration, NetclawPaths paths)
 {
+    services
+        .AddOptions<DaemonPersistenceOptions>()
+        .Bind(configuration.GetSection("Persistence"))
+        .ValidateOnStart();
+    services.AddSingleton<IValidateOptions<DaemonPersistenceOptions>, DaemonPersistenceOptionsValidator>();
+
+    var persistence = configuration.GetSection("Persistence")
+        .Get<DaemonPersistenceOptions>() ?? new DaemonPersistenceOptions();
+    services.AddSingleton(persistence);
+
     services.Configure<HostOptions>(options =>
     {
         options.ShutdownTimeout = TimeSpan.FromSeconds(10);
@@ -158,19 +170,40 @@ static void ConfigureDaemonServices(IServiceCollection services, IConfigurationM
     services.AddSingleton<ISystemPromptProvider>(
         new FileSystemPromptProvider(paths));
 
+    var sqlitePath = string.IsNullOrWhiteSpace(persistence.Sqlite.Path)
+        ? paths.SqliteDbPath
+        : persistence.Sqlite.Path!;
+
+    // Schema migration for SQLite persistence
+    services.AddSingleton<SchemaMigrator>();
+    services.AddSingleton<SchemaMigrationHostedService>();
+    services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<SchemaMigrationHostedService>());
+
     // Akka.NET actor system
     services.AddAkka("netclaw", (akkaBuilder, sp) =>
     {
-        akkaBuilder
-            .ConfigureLoggers(setup =>
-            {
-                setup.ClearLoggers();
-                setup.AddLoggerFactory();
-                setup.LogLevel = Akka.Event.LogLevel.WarningLevel;
-            })
-            .WithInMemoryJournal()
-            .WithInMemorySnapshotStore()
-            .WithNetclawActors();
+        akkaBuilder = akkaBuilder.ConfigureLoggers(setup =>
+        {
+            setup.ClearLoggers();
+            setup.AddLoggerFactory();
+            setup.LogLevel = Akka.Event.LogLevel.WarningLevel;
+        });
+
+        if (persistence.Provider is PersistenceProvider.Sqlite)
+        {
+            var connectionString = $"Data Source={sqlitePath}";
+            akkaBuilder = akkaBuilder.WithSqlPersistence(
+                connectionString: connectionString,
+                providerName: "SQLite.MS");
+        }
+        else
+        {
+            akkaBuilder = akkaBuilder
+                .WithInMemoryJournal()
+                .WithInMemorySnapshotStore();
+        }
+
+        akkaBuilder.WithNetclawActors();
     });
 
     // Session pipeline (stream API for channels)
