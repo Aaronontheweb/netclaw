@@ -1,0 +1,451 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using Netclaw.Configuration;
+
+namespace Netclaw.Cli.Daemon;
+
+/// <summary>
+/// Manages the netclawd daemon process lifecycle: start, stop, status,
+/// and systemd service registration (Linux only).
+/// </summary>
+public sealed partial class DaemonManager
+{
+    private readonly NetclawPaths _paths;
+    private readonly TimeProvider _timeProvider;
+
+    public DaemonManager(NetclawPaths paths, TimeProvider timeProvider)
+    {
+        _paths = paths;
+        _timeProvider = timeProvider;
+    }
+
+    /// <summary>
+    /// Starts the daemon as a detached background process.
+    /// </summary>
+    public DaemonResult Start()
+    {
+        if (TryGetRunningPid(out var existingPid))
+            return new DaemonResult(false, $"Daemon already running (PID {existingPid}).");
+
+        var binaryPath = FindDaemonBinary();
+        if (binaryPath is null)
+            return new DaemonResult(false,
+                "Cannot find netclawd binary. Set NETCLAW_DAEMON_PATH or ensure it is " +
+                "in the same directory as the CLI.");
+
+        _paths.EnsureDirectoriesExist();
+
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = binaryPath,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            // Don't redirect stdio — holding pipe handles prevents clean CLI exit
+            // and can cause the daemon to get SIGPIPE. The daemon handles its own
+            // logging via the ASP.NET Core logging infrastructure.
+            RedirectStandardOutput = false,
+            RedirectStandardError = false,
+            RedirectStandardInput = false,
+        };
+
+        Process process;
+        try
+        {
+            process = Process.Start(startInfo)!;
+        }
+        catch (Exception ex)
+        {
+            return new DaemonResult(false, $"Failed to start daemon: {ex.Message}");
+        }
+
+        File.WriteAllText(_paths.PidFilePath, process.Id.ToString());
+
+        return new DaemonResult(true, $"Daemon started (PID {process.Id}).");
+    }
+
+    /// <summary>
+    /// Stops the daemon gracefully (SIGTERM on Unix, Kill on Windows).
+    /// </summary>
+    public async Task<DaemonResult> StopAsync()
+    {
+        if (!TryReadPid(out var pid))
+            return new DaemonResult(false, "Daemon is not running (no PID file).");
+
+        Process process;
+        try
+        {
+            process = Process.GetProcessById(pid);
+        }
+        catch (ArgumentException)
+        {
+            // Process already gone — clean up stale PID file
+            CleanupPidFile();
+            return new DaemonResult(true, "Daemon was not running (stale PID file cleaned up).");
+        }
+
+        if (!IsDaemonProcess(process))
+        {
+            CleanupPidFile();
+            return new DaemonResult(false,
+                $"PID {pid} is not a netclawd process (was '{process.ProcessName}'). " +
+                "Stale PID file cleaned up.");
+        }
+
+        // Graceful shutdown: SIGTERM on Unix, Kill on Windows (no SIGTERM equivalent)
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            if (!SendSignal(pid, Signal.SIGTERM))
+            {
+                CleanupPidFile();
+                return new DaemonResult(false, $"Failed to send SIGTERM to PID {pid}.");
+            }
+        }
+        else
+        {
+            // Windows: no graceful signal available via .NET — use Kill
+            process.Kill();
+        }
+
+        // Wait up to 10 seconds for graceful exit
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try
+        {
+            await process.WaitForExitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // Timed out — force kill
+            process.Kill(entireProcessTree: true);
+            await process.WaitForExitAsync();
+        }
+
+        CleanupPidFile();
+        return new DaemonResult(true, $"Daemon stopped (was PID {pid}).");
+    }
+
+    /// <summary>
+    /// Reports daemon status.
+    /// </summary>
+    public DaemonStatus GetStatus()
+    {
+        if (!TryReadPid(out var pid))
+            return new DaemonStatus(IsRunning: false, Pid: null, Message: "Daemon is not running.");
+
+        try
+        {
+            var process = Process.GetProcessById(pid);
+            if (process.HasExited)
+            {
+                CleanupPidFile();
+                return new DaemonStatus(IsRunning: false, Pid: null,
+                    Message: "Daemon is not running (stale PID file cleaned up).");
+            }
+
+            if (!IsDaemonProcess(process))
+            {
+                CleanupPidFile();
+                return new DaemonStatus(IsRunning: false, Pid: null,
+                    Message: "Daemon is not running (PID file pointed to a different process).");
+            }
+
+            var uptime = _timeProvider.GetUtcNow() - new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+            return new DaemonStatus(IsRunning: true, Pid: pid,
+                Message: $"Daemon running (PID {pid}, uptime {FormatUptime(uptime)}).");
+        }
+        catch (ArgumentException)
+        {
+            CleanupPidFile();
+            return new DaemonStatus(IsRunning: false, Pid: null,
+                Message: "Daemon is not running (stale PID file cleaned up).");
+        }
+    }
+
+    /// <summary>
+    /// Installs daemon as a systemd user service (Linux only).
+    /// </summary>
+    public async Task<DaemonResult> InstallAsync()
+    {
+        if (!OperatingSystem.IsLinux())
+            return new DaemonResult(false,
+                "Service installation is currently Linux-only (systemd). " +
+                "See https://github.com/stannardlabs/netclaw/issues for Windows service support.");
+
+        var binaryPath = FindDaemonBinary();
+        if (binaryPath is null)
+            return new DaemonResult(false,
+                "Cannot find netclawd binary. Set NETCLAW_DAEMON_PATH or ensure it is " +
+                "in the same directory as the CLI.");
+
+        var unitDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".config", "systemd", "user");
+        Directory.CreateDirectory(unitDir);
+
+        var unitPath = Path.Combine(unitDir, "netclaw.service");
+        var unitContent = $"""
+            [Unit]
+            Description=Netclaw Daemon
+            After=network.target
+
+            [Service]
+            Type=simple
+            ExecStart={binaryPath}
+            Restart=always
+            RestartSec=5
+            Environment=DOTNET_ENVIRONMENT=Production
+
+            [Install]
+            WantedBy=default.target
+            """;
+
+        await File.WriteAllTextAsync(unitPath, unitContent);
+
+        var reload = await RunCommandAsync("systemctl", "--user daemon-reload");
+        if (!reload.Success)
+            return new DaemonResult(false, $"Failed to reload systemd: {reload.Message}");
+
+        var enable = await RunCommandAsync("systemctl", "--user enable netclaw.service");
+        if (!enable.Success)
+            return new DaemonResult(false, $"Failed to enable service: {enable.Message}");
+
+        // Enable lingering so user services survive logout
+        var linger = await RunCommandAsync("loginctl", $"enable-linger {Environment.UserName}");
+        if (!linger.Success)
+            return new DaemonResult(false, $"Service installed but linger failed: {linger.Message}");
+
+        return new DaemonResult(true,
+            $"Service installed at {unitPath}. Start with: systemctl --user start netclaw");
+    }
+
+    /// <summary>
+    /// Uninstalls the systemd user service (Linux only).
+    /// </summary>
+    public async Task<DaemonResult> UninstallAsync()
+    {
+        if (!OperatingSystem.IsLinux())
+            return new DaemonResult(false,
+                "Service uninstallation is currently Linux-only (systemd). " +
+                "See https://github.com/stannardlabs/netclaw/issues for Windows service support.");
+
+        await RunCommandAsync("systemctl", "--user stop netclaw.service");
+        await RunCommandAsync("systemctl", "--user disable netclaw.service");
+
+        var unitPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".config", "systemd", "user", "netclaw.service");
+
+        if (File.Exists(unitPath))
+            File.Delete(unitPath);
+
+        await RunCommandAsync("systemctl", "--user daemon-reload");
+
+        return new DaemonResult(true, "Service uninstalled.");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Internal helpers
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private string? FindDaemonBinary()
+    {
+        // 1. Explicit environment variable
+        var envPath = Environment.GetEnvironmentVariable("NETCLAW_DAEMON_PATH");
+        if (!string.IsNullOrEmpty(envPath) && File.Exists(envPath))
+            return Path.GetFullPath(envPath);
+
+        // 2. Same directory as CLI binary
+        var cliDir = Path.GetDirectoryName(Environment.ProcessPath);
+        if (cliDir is not null)
+        {
+            var candidate = OperatingSystem.IsWindows()
+                ? Path.Combine(cliDir, "netclawd.exe")
+                : Path.Combine(cliDir, "netclawd");
+
+            if (File.Exists(candidate))
+                return candidate;
+        }
+
+        return null;
+    }
+
+    private bool TryGetRunningPid(out int pid)
+    {
+        if (!TryReadPid(out pid))
+            return false;
+
+        try
+        {
+            var process = Process.GetProcessById(pid);
+            if (process.HasExited || !IsDaemonProcess(process))
+            {
+                CleanupPidFile();
+                return false;
+            }
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            CleanupPidFile();
+            return false;
+        }
+    }
+
+    private static bool IsDaemonProcess(Process process)
+    {
+        try
+        {
+            // ProcessName does not include extension on any platform.
+            if (string.Equals(process.ProcessName, "netclawd", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (!string.Equals(process.ProcessName, "dotnet", StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var commandLine = TryReadProcessCommandLine(process.Id);
+            if (string.IsNullOrWhiteSpace(commandLine))
+                return OperatingSystem.IsWindows();
+
+            return LooksLikeDaemonCommandLine(commandLine);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    internal static bool LooksLikeDaemonCommandLine(string commandLine)
+    {
+        return commandLine.Contains("netclawd.dll", StringComparison.OrdinalIgnoreCase)
+            || commandLine.Contains("/netclawd", StringComparison.OrdinalIgnoreCase)
+            || commandLine.Contains("\\netclawd", StringComparison.OrdinalIgnoreCase)
+            || commandLine.EndsWith(" netclawd", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(commandLine.Trim(), "netclawd", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? TryReadProcessCommandLine(int pid)
+    {
+        if (OperatingSystem.IsLinux())
+            return TryReadLinuxCommandLine(pid);
+
+        if (OperatingSystem.IsMacOS())
+            return TryReadMacOsCommandLine(pid);
+
+        // Windows command-line inspection requires additional APIs; daemon
+        // management on Windows is tracked separately in issue #21.
+        return null;
+    }
+
+    private static string? TryReadLinuxCommandLine(int pid)
+    {
+        try
+        {
+            var procCmdlinePath = $"/proc/{pid}/cmdline";
+            if (!File.Exists(procCmdlinePath))
+                return null;
+
+            var raw = File.ReadAllText(procCmdlinePath);
+            return raw.Replace('\0', ' ').Trim();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string? TryReadMacOsCommandLine(int pid)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "ps",
+                Arguments = $"-p {pid} -o command=",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+
+            using var proc = Process.Start(psi);
+            if (proc is null)
+                return null;
+
+            var stdout = proc.StandardOutput.ReadToEnd();
+            proc.WaitForExit();
+
+            return proc.ExitCode == 0 ? stdout.Trim() : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private bool TryReadPid(out int pid)
+    {
+        pid = 0;
+        if (!File.Exists(_paths.PidFilePath))
+            return false;
+
+        var content = File.ReadAllText(_paths.PidFilePath).Trim();
+        return int.TryParse(content, out pid);
+    }
+
+    private void CleanupPidFile()
+    {
+        try { File.Delete(_paths.PidFilePath); }
+        catch (IOException ex) { Console.Error.WriteLine($"Warning: could not remove PID file: {ex.Message}"); }
+    }
+
+    private static string FormatUptime(TimeSpan uptime)
+    {
+        if (uptime.TotalDays >= 1)
+            return $"{(int)uptime.TotalDays}d {uptime.Hours}h {uptime.Minutes}m";
+        if (uptime.TotalHours >= 1)
+            return $"{uptime.Hours}h {uptime.Minutes}m";
+        return $"{uptime.Minutes}m {uptime.Seconds}s";
+    }
+
+    private static async Task<DaemonResult> RunCommandAsync(string command, string arguments)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = command,
+                Arguments = arguments,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+
+            using var proc = Process.Start(psi)!;
+            var stderr = await proc.StandardError.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+
+            return proc.ExitCode == 0
+                ? new DaemonResult(true, "OK")
+                : new DaemonResult(false, stderr.Trim());
+        }
+        catch (Exception ex)
+        {
+            return new DaemonResult(false, ex.Message);
+        }
+    }
+
+    // SIGTERM via P/Invoke — .NET's Process.Kill() sends SIGKILL
+    private enum Signal { SIGTERM = 15 }
+
+    [LibraryImport("libc", SetLastError = true)]
+    private static partial int kill(int pid, int sig);
+
+    private static bool SendSignal(int pid, Signal signal)
+    {
+        return kill(pid, (int)signal) == 0;
+    }
+}
+
+public sealed record DaemonResult(bool Success, string Message);
+
+public sealed record DaemonStatus(bool IsRunning, int? Pid, string Message);
