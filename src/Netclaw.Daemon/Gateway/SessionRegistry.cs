@@ -82,6 +82,35 @@ public sealed class SessionRegistry
         return sessionId.Value;
     }
 
+    public async Task<SessionEnsureResultDto> EnsureSessionAsync(
+        string connectionId,
+        string? sessionId,
+        string channelType)
+    {
+        var callerConnectionId = ParseConnectionId(connectionId);
+
+        if (!string.IsNullOrWhiteSpace(sessionId))
+        {
+            var requestedSessionId = ParseSessionId(sessionId);
+            if (_sessions.ContainsKey(requestedSessionId))
+            {
+                _connections.AttachSession(requestedSessionId, callerConnectionId);
+                return new SessionEnsureResultDto
+                {
+                    SessionId = requestedSessionId.Value,
+                    Created = false
+                };
+            }
+        }
+
+        var createdSessionId = await CreateSessionAsync(connectionId, channelType);
+        return new SessionEnsureResultDto
+        {
+            SessionId = createdSessionId,
+            Created = true
+        };
+    }
+
     /// <summary>
     /// Attaches the current SignalR connection to an existing session.
     /// Supports reconnect flows where connection IDs rotate.
@@ -138,6 +167,29 @@ public sealed class SessionRegistry
         _connections.Disconnect(ParseConnectionId(connectionId));
 
         return Task.CompletedTask;
+    }
+
+    public async Task ShutdownAsync(CancellationToken cancellationToken)
+    {
+        var sessions = _sessions.ToArray();
+        _sessions.Clear();
+        _connections.Clear();
+
+        var disposeTasks = sessions
+            .Select(x => x.Value.Session.DisposeAsync().AsTask())
+            .ToArray();
+
+        if (disposeTasks.Length == 0)
+            return;
+
+        try
+        {
+            await Task.WhenAll(disposeTasks).WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("Timed out while disposing {Count} active session(s) during shutdown.", disposeTasks.Length);
+        }
     }
 
     private void PublishOutput(SessionId sessionId, SessionOutput output)
