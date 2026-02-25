@@ -10,9 +10,15 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
+using Netclaw.Channels;
+using Netclaw.Channels.Slack;
 using Netclaw.Daemon.Configuration;
 using Netclaw.Daemon.Gateway;
 using Netclaw.Daemon.Services;
+using SlackNet.Events;
+using SlackNet.Extensions.DependencyInjection;
+
+const string SlackChannelKey = "slack";
 
 try
 {
@@ -32,11 +38,15 @@ static async Task RunAsync(string[] args)
     builder.WebHost.UseUrls("http://127.0.0.1:5199");
 
     var paths = ConfigureConfigServices(builder.Services, builder.Configuration);
-    ConfigureDaemonServices(builder.Services, builder.Configuration, paths);
+    var daemonLogLevel = ResolveDaemonLogLevel(builder.Configuration);
+    var consoleLoggingEnabled = ResolveConsoleLoggingEnabled(builder.Configuration);
+    ConfigureDaemonServices(builder.Services, builder.Configuration, paths, daemonLogLevel);
 
     // Suppress framework console logging — session logs go to disk
     builder.Logging.ClearProviders();
-    builder.Logging.SetMinimumLevel(LogLevel.Warning);
+    if (consoleLoggingEnabled)
+        builder.Logging.AddSimpleConsole(options => options.SingleLine = true);
+    builder.Logging.SetMinimumLevel(daemonLogLevel);
 
     // SignalR for remote clients (CLI thin client, Blazor ops console)
     builder.Services.AddSignalR();
@@ -118,7 +128,11 @@ static NetclawPaths ConfigureConfigServices(IServiceCollection services, IConfig
 // Daemon-only services (actor system, tools, persistence)
 // ═══════════════════════════════════════════════════════════════════════
 
-static void ConfigureDaemonServices(IServiceCollection services, IConfigurationManager configuration, NetclawPaths paths)
+static void ConfigureDaemonServices(
+    IServiceCollection services,
+    IConfigurationManager configuration,
+    NetclawPaths paths,
+    LogLevel daemonLogLevel)
 {
     services
         .AddOptions<DaemonPersistenceOptions>()
@@ -186,7 +200,7 @@ static void ConfigureDaemonServices(IServiceCollection services, IConfigurationM
         {
             setup.ClearLoggers();
             setup.AddLoggerFactory();
-            setup.LogLevel = Akka.Event.LogLevel.WarningLevel;
+            setup.LogLevel = ToAkkaLogLevel(daemonLogLevel);
         });
 
         if (persistence.Provider is PersistenceProvider.Sqlite)
@@ -209,6 +223,8 @@ static void ConfigureDaemonServices(IServiceCollection services, IConfigurationM
     // Session pipeline (stream API for channels)
     services.AddSingleton<SessionPipeline>();
 
+    ConfigureSlackChannel(services, configuration);
+
     // Config hot-reload watcher
     services.AddSingleton<ConfigWatcherService>();
     services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<ConfigWatcherService>());
@@ -220,4 +236,67 @@ static void ConfigureDaemonServices(IServiceCollection services, IConfigurationM
     // Active session cleanup during host shutdown
     services.AddSingleton<SessionRegistryShutdownService>();
     services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<SessionRegistryShutdownService>());
+}
+
+static LogLevel ResolveDaemonLogLevel(IConfiguration configuration)
+{
+    var configured = configuration["Logging:LogLevel:Default"];
+    if (Enum.TryParse<LogLevel>(configured, ignoreCase: true, out var level))
+        return level;
+
+    return LogLevel.Warning;
+}
+
+static bool ResolveConsoleLoggingEnabled(IConfiguration configuration)
+{
+    return configuration.GetValue("Logging:Console:Enabled", false);
+}
+
+static Akka.Event.LogLevel ToAkkaLogLevel(LogLevel logLevel)
+{
+    return logLevel switch
+    {
+        LogLevel.Trace => Akka.Event.LogLevel.DebugLevel,
+        LogLevel.Debug => Akka.Event.LogLevel.DebugLevel,
+        LogLevel.Information => Akka.Event.LogLevel.InfoLevel,
+        LogLevel.Warning => Akka.Event.LogLevel.WarningLevel,
+        LogLevel.Error => Akka.Event.LogLevel.ErrorLevel,
+        LogLevel.Critical => Akka.Event.LogLevel.ErrorLevel,
+        LogLevel.None => Akka.Event.LogLevel.ErrorLevel,
+        _ => Akka.Event.LogLevel.WarningLevel
+    };
+}
+
+static void ConfigureSlackChannel(IServiceCollection services, IConfiguration configuration)
+{
+    var slackOptions = configuration.GetSection("Slack").Get<SlackChannelOptions>() ?? new SlackChannelOptions();
+    services.AddSingleton(slackOptions);
+
+    if (!slackOptions.Enabled)
+        return;
+
+    if (string.IsNullOrWhiteSpace(slackOptions.BotToken))
+        throw new InvalidOperationException("Slack is enabled but Slack:BotToken is not configured.");
+
+    if (slackOptions.SocketMode && string.IsNullOrWhiteSpace(slackOptions.AppToken))
+        throw new InvalidOperationException("Slack Socket Mode is enabled but Slack:AppToken is not configured.");
+
+    services.AddSingleton<ISlackReplyClient, SlackReplyClient>();
+    services.AddKeyedSingleton<IChannel, SlackChannel>(SlackChannelKey);
+    services.AddSingleton<SlackChannel>(sp =>
+        (SlackChannel)sp.GetRequiredKeyedService<IChannel>(SlackChannelKey));
+
+    services.AddSlackNet(c =>
+    {
+        c.UseApiToken(slackOptions.BotToken!);
+
+        if (slackOptions.SocketMode)
+            c.UseAppLevelToken(slackOptions.AppToken!);
+
+        c.RegisterEventHandler<MessageEvent, SlackChannel>();
+        c.RegisterEventHandler<AppMention, SlackChannel>();
+    });
+
+    services.AddSingleton<IHostedService>(sp =>
+        (IHostedService)sp.GetRequiredKeyedService<IChannel>(SlackChannelKey));
 }
