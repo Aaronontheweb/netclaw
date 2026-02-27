@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Netclaw.Channels.Slack;
 using Netclaw.Configuration;
 using R3;
 using Termina.Input;
@@ -30,6 +31,7 @@ public partial class InitWizardViewModel : ReactiveViewModel
 
     private readonly NetclawPaths _paths;
     private readonly IProviderProbe _probe;
+    private readonly ISlackProbe _slackProbe;
     private CancellationTokenSource? _probeCts;
 
     public ReactiveProperty<WizardStep> CurrentStep { get; } = new(WizardStep.Provider);
@@ -67,6 +69,8 @@ public partial class InitWizardViewModel : ReactiveViewModel
     public string? SlackBotToken { get; set; }
     public string? SlackAppToken { get; set; }
     public bool SlackEnabled { get; set; }
+    public string? SlackChannelNamesInput { get; set; }
+    internal SlackChannelResolutionResult? LastChannelResolution { get; private set; }
 
     // ── Step 3: ACL ──
     public string? OwnerIdentity { get; set; }
@@ -90,10 +94,11 @@ public partial class InitWizardViewModel : ReactiveViewModel
     /// </summary>
     internal Task? ProbeCompletion { get; private set; }
 
-    public InitWizardViewModel(NetclawPaths paths, IProviderProbe probe)
+    public InitWizardViewModel(NetclawPaths paths, IProviderProbe probe, ISlackProbe slackProbe)
     {
         _paths = paths;
         _probe = probe;
+        _slackProbe = slackProbe;
     }
 
     public override void OnActivated()
@@ -281,6 +286,14 @@ public partial class InitWizardViewModel : ReactiveViewModel
         DiscoveredModels.Clear();
     }
 
+    private static IReadOnlyList<string> ParseChannelNames(string? input)
+        => string.IsNullOrWhiteSpace(input)
+            ? []
+            : input.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(n => n.TrimStart('#').Trim())
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .ToList();
+
     private async Task RunHealthCheckAsync()
     {
         IsHealthCheckRunning.Value = true;
@@ -314,17 +327,64 @@ public partial class InitWizardViewModel : ReactiveViewModel
         // Slack check
         HealthCheckResults.Add(new HealthCheckItem("Slack configuration", null));
         NotifyHealthCheckChanged();
-        await Task.Delay(200);
 
-        var slackOk = !SlackEnabled ||
-                       (!string.IsNullOrWhiteSpace(SlackBotToken) &&
-                        !string.IsNullOrWhiteSpace(SlackAppToken));
-        HealthCheckResults[^1] = new HealthCheckItem(
-            SlackEnabled
-                ? "Slack configuration (Socket Mode)"
-                : "Slack configuration (disabled)",
-            slackOk);
+        var slackAuthOk = false;
+        if (!SlackEnabled)
+        {
+            HealthCheckResults[^1] = new HealthCheckItem(
+                "Slack configuration (disabled)", true);
+        }
+        else if (string.IsNullOrWhiteSpace(SlackBotToken))
+        {
+            HealthCheckResults[^1] = new HealthCheckItem(
+                "Slack configuration (bot token missing)", false);
+        }
+        else
+        {
+            var slackResult = await _slackProbe.ProbeAsync(SlackBotToken!);
+            if (slackResult.Success)
+            {
+                HealthCheckResults[^1] = new HealthCheckItem(
+                    $"Slack bot authenticated (team: {slackResult.TeamName})", true);
+                slackAuthOk = true;
+            }
+            else
+            {
+                HealthCheckResults[^1] = new HealthCheckItem(
+                    $"Slack auth failed: {slackResult.ErrorMessage}", false);
+            }
+        }
         NotifyHealthCheckChanged();
+
+        // Channel resolution — only when auth succeeded and names were provided
+        var parsedChannelNames = ParseChannelNames(SlackChannelNamesInput);
+        if (slackAuthOk && parsedChannelNames.Count > 0)
+        {
+            HealthCheckResults.Add(new HealthCheckItem("Resolving Slack channels", null));
+            NotifyHealthCheckChanged();
+
+            LastChannelResolution = await _slackProbe.ResolveChannelNamesAsync(
+                SlackBotToken!, parsedChannelNames);
+
+            if (LastChannelResolution.ErrorMessage is not null)
+            {
+                HealthCheckResults[^1] = new HealthCheckItem(
+                    $"Slack channel lookup failed: {LastChannelResolution.ErrorMessage}", false);
+            }
+            else if (LastChannelResolution.Unresolved.Count > 0)
+            {
+                var notFound = string.Join(", ", LastChannelResolution.Unresolved.Select(n => $"#{n}"));
+                HealthCheckResults[^1] = new HealthCheckItem(
+                    $"Slack channels: resolved {LastChannelResolution.Resolved.Count}/{parsedChannelNames.Count}, not found: {notFound}",
+                    false);
+            }
+            else
+            {
+                HealthCheckResults[^1] = new HealthCheckItem(
+                    $"Slack channels resolved ({LastChannelResolution.Resolved.Count})", true);
+            }
+            NotifyHealthCheckChanged();
+        }
 
         // Config write
         HealthCheckResults.Add(new HealthCheckItem("Writing configuration", null));
@@ -363,7 +423,10 @@ public partial class InitWizardViewModel : ReactiveViewModel
         _paths.EnsureDirectoriesExist();
 
         // Build netclaw.json (non-secret settings)
-        var config = new Dictionary<string, object>();
+        var config = new Dictionary<string, object>
+        {
+            ["configVersion"] = 1
+        };
 
         // Provider section
         var providers = new Dictionary<string, object>();
@@ -409,11 +472,20 @@ public partial class InitWizardViewModel : ReactiveViewModel
         // Slack section
         if (SlackEnabled)
         {
-            config["Slack"] = new Dictionary<string, object>
+            var slackSection = new Dictionary<string, object>
             {
                 ["Enabled"] = true,
                 ["SocketMode"] = true
             };
+
+            if (LastChannelResolution is { Resolved.Count: > 0 })
+            {
+                var ids = LastChannelResolution.Resolved.Select(r => r.Id).ToArray();
+                slackSection["AllowedChannelIds"] = ids;
+                slackSection["DefaultChannelId"] = ids[0];
+            }
+
+            config["Slack"] = slackSection;
         }
 
         // Write netclaw.json
