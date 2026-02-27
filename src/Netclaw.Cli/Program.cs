@@ -9,6 +9,7 @@ using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Doctor;
 using Netclaw.Cli.Tui;
 using Netclaw.Configuration;
+using Termina.Diagnostics;
 using Termina.Hosting;
 
 try
@@ -75,10 +76,23 @@ static async Task RunAsync(string[] args)
         builder.Logging.ClearProviders();
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
 
-        // TODO: init → Termina TUI wizard (Task 1.22)
         if (mode is "init")
         {
-            Console.WriteLine("netclaw init: not yet implemented");
+            // Enable Termina trace logging for debugging TUI input/rendering issues
+            var traceFile = Path.Combine(Path.GetTempPath(), "netclaw-init-trace.log");
+            builder.Services.AddTerminaFileTracing(traceFile, TerminaTraceCategory.All, TerminaTraceLevel.Trace);
+            Console.Error.WriteLine($"Trace log: {traceFile}");
+
+            // Provider probe for credential validation + model discovery
+            builder.Services.AddHttpClient<IProviderProbe, ProviderProbe>();
+
+            builder.Services.AddTermina("/init", termina =>
+            {
+                termina.RegisterRoute<InitWizardPage, InitWizardViewModel>("/init");
+            });
+
+            var initApp = builder.Build();
+            await initApp.RunAsync();
             return;
         }
 
