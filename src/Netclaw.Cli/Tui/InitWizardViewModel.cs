@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Netclaw.Channels.Slack;
+using Netclaw.Cli.Daemon;
 using Netclaw.Configuration;
 using R3;
 using Termina.Input;
@@ -16,21 +17,24 @@ public enum WizardStep
     ChatServices = 2,
     Acl = 3,
     Exposure = 4,
-    HealthCheck = 5
+    Identity = 5,
+    HealthCheck = 6
 }
 
 /// <summary>
 /// Reactive ViewModel for the <c>netclaw init</c> onboarding wizard.
-/// Drives a 5-step wizard state machine with back-navigation support.
+/// Drives a 6-step wizard state machine with back-navigation support.
 /// ACL step is conditionally skipped when no chat services are enabled.
 /// </summary>
 public partial class InitWizardViewModel : ReactiveViewModel
 {
-    public const int TotalSteps = 5;
+    public const int TotalSteps = 6;
 
     private readonly NetclawPaths _paths;
     private readonly IProviderProbe _probe;
     private readonly ISlackProbe _slackProbe;
+    private readonly DaemonManager? _daemonManager;
+    private readonly string _daemonEndpoint;
     private CancellationTokenSource? _probeCts;
 
     public ReactiveProperty<WizardStep> CurrentStep { get; } = new(WizardStep.Provider);
@@ -77,7 +81,14 @@ public partial class InitWizardViewModel : ReactiveViewModel
     // ── Step 4: Exposure ──
     public string? ExposureMode { get; set; }
 
-    // ── Step 5: Health Check ──
+    // ── Step 5: Identity ──
+    public string AgentName { get; set; } = "Netclaw";
+    public string? CommunicationStyle { get; set; }
+    public string? UserName { get; set; }
+    public string UserTimezone { get; set; } = TimeZoneInfo.Local.Id;
+    public string? PrimaryUse { get; set; }
+
+    // ── Step 6: Health Check ──
     public List<HealthCheckItem> HealthCheckResults { get; } = [];
 
     /// <summary>
@@ -90,11 +101,18 @@ public partial class InitWizardViewModel : ReactiveViewModel
     /// </summary>
     internal Task? ProbeCompletion { get; private set; }
 
-    public InitWizardViewModel(NetclawPaths paths, IProviderProbe probe, ISlackProbe slackProbe)
+    public InitWizardViewModel(
+        NetclawPaths paths,
+        IProviderProbe probe,
+        ISlackProbe slackProbe,
+        DaemonManager? daemonManager = null,
+        string? daemonEndpoint = null)
     {
         _paths = paths;
         _probe = probe;
         _slackProbe = slackProbe;
+        _daemonManager = daemonManager;
+        _daemonEndpoint = daemonEndpoint ?? "http://127.0.0.1:5199";
     }
 
     public override void OnActivated()
@@ -397,10 +415,83 @@ public partial class InitWizardViewModel : ReactiveViewModel
                 $"Configuration write failed: {ex.Message}", false);
         }
 
+        // Check if all health checks passed so far — only start daemon if config is clean
+        var allPassed = HealthCheckResults.All(h => h.Passed == true);
+        if (allPassed)
+        {
+            // Start daemon and verify it's healthy before navigating to chat
+            HealthCheckResults.Add(new HealthCheckItem("Starting daemon", null));
+            NotifyHealthCheckChanged();
+
+            var daemonOk = await StartAndPollDaemonAsync();
+            if (daemonOk)
+            {
+                HealthCheckResults[^1] = new HealthCheckItem("Daemon ready", true);
+            }
+            else
+            {
+                HealthCheckResults[^1] = new HealthCheckItem(
+                    "Daemon did not become ready (personality setup skipped)", false);
+            }
+            NotifyHealthCheckChanged();
+        }
+
         IsHealthCheckRunning.Value = false;
         IsComplete.Value = true;
-        StatusMessage.Value = "Setup complete! Run `netclaw daemon start` to begin.";
         NotifyHealthCheckChanged();
+
+        // Navigate to chat if everything is healthy (including daemon)
+        allPassed = HealthCheckResults.All(h => h.Passed == true);
+        if (allPassed)
+        {
+            StatusMessage.Value = "Setup complete! Launching chat...";
+            Navigate?.Invoke("/chat");
+        }
+        else
+        {
+            StatusMessage.Value = "Setup complete with warnings. Run `netclaw daemon start` to begin.";
+        }
+    }
+
+    /// <summary>
+    /// Start the daemon and poll its health endpoint until ready (up to 30s).
+    /// Returns false if DaemonManager is not available or health poll times out.
+    /// </summary>
+    private async Task<bool> StartAndPollDaemonAsync()
+    {
+        if (_daemonManager is null)
+            return false;
+
+        var result = _daemonManager.Start();
+        if (!result.Success && !result.Message.Contains("already running", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        using var httpClient = new HttpClient();
+        var healthUrl = $"{_daemonEndpoint}/api/health/ready";
+
+        for (var i = 0; i < 30; i++)
+        {
+            try
+            {
+                var response = await httpClient.GetAsync(healthUrl);
+                if (response.IsSuccessStatusCode)
+                    return true;
+            }
+            catch (HttpRequestException)
+            {
+                HealthCheckResults[^1] = new HealthCheckItem($"Starting daemon ({i + 1}s)", null);
+                NotifyHealthCheckChanged();
+            }
+            catch (TaskCanceledException)
+            {
+                HealthCheckResults[^1] = new HealthCheckItem($"Starting daemon ({i + 1}s)", null);
+                NotifyHealthCheckChanged();
+            }
+
+            await Task.Delay(1000);
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -484,6 +575,9 @@ public partial class InitWizardViewModel : ReactiveViewModel
             config["Slack"] = slackSection;
         }
 
+        // Write identity files
+        WriteIdentityFiles();
+
         // Write netclaw.json
         var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
         File.WriteAllText(_paths.NetclawConfigPath,
@@ -519,6 +613,74 @@ public partial class InitWizardViewModel : ReactiveViewModel
             File.WriteAllText(_paths.SecretsPath,
                 JsonSerializer.Serialize(secrets, jsonOptions));
         }
+    }
+
+    internal void WriteIdentityFiles()
+    {
+        var styleDescription = CommunicationStyle switch
+        {
+            "Concise & casual" => "Be concise and casual. Keep responses short and conversational.",
+            "Concise & formal" => "Be concise and formal. Keep responses brief and professional.",
+            "Detailed & casual" => "Be detailed and casual. Give thorough explanations in a friendly tone.",
+            "Detailed & formal" => "Be detailed and formal. Give thorough, professional explanations.",
+            _ => "Be concise and casual. Keep responses short and conversational."
+        };
+
+        var name = AgentName;
+        var userName = string.IsNullOrWhiteSpace(UserName) ? "User" : UserName;
+        var timezone = UserTimezone;
+        var primaryUse = string.IsNullOrWhiteSpace(PrimaryUse) ? "General purpose" : PrimaryUse;
+
+        File.WriteAllText(_paths.SoulPath,
+            $"""
+            # {name}
+
+            ## Communication Style
+            {styleDescription}
+
+            ## User
+            - Name: {userName}
+            - Timezone: {timezone}
+            - Primary use: {primaryUse}
+            """);
+
+        File.WriteAllText(_paths.AgentsPath,
+            $"""
+            # Operating Rules
+
+            - Ask before making destructive changes to files or infrastructure
+            - Prefer concise tool usage — avoid unnecessary search_tools calls
+
+            ## Identity Files
+
+            Identity configuration lives in `{_paths.IdentityDirectory}/`:
+
+            | File | Purpose |
+            |------|---------|
+            | `{_paths.SoulPath}` | Personality, tone, user profile |
+            | `{_paths.AgentsPath}` | Operating rules, meta-guidance (this file) |
+            | `{_paths.ToolingPath}` | Host environment capabilities |
+
+            Update these files directly as you learn more about the user and their environment.
+
+            ### Progressive Disclosure
+
+            Keep top-level files concise — a quick summary the system prompt can load every turn.
+            When a topic needs more depth, create a detail file in the matching subdirectory:
+
+            - `{_paths.SoulDetailDirectory}/` — e.g., `communication-preferences.md`, `work-context.md`
+            - `{_paths.AgentsDetailDirectory}/` — e.g., `tool-policies.md`, `safety-rules.md`
+            - `{_paths.ToolingDetailDirectory}/` — e.g., `docker.md`, `kubernetes.md`
+
+            The top-level file should reference detail files so they can be loaded on demand.
+            """);
+
+        File.WriteAllText(_paths.ToolingPath,
+            """
+            # Environment Capabilities
+
+            No capabilities discovered yet. Run `netclaw doctor` or ask Netclaw to probe your environment.
+            """);
     }
 
     public override void Dispose()
