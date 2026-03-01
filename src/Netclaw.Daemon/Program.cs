@@ -53,6 +53,8 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
 
     // SignalR for remote clients (CLI thin client, Blazor ops console)
     builder.Services.AddSignalR();
+    builder.Services.AddSingleton<SessionCatalogService>();
+    builder.Services.AddSingleton<ISessionLifecycleObserver>(sp => sp.GetRequiredService<SessionCatalogService>());
     builder.Services.AddSingleton<SessionRegistry>();
     builder.Services.AddSingleton<DaemonRuntimeStatusService>();
 
@@ -63,6 +65,8 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
     app.MapGet("/api/health/ready", () => Results.Ok("healthy"));
     app.MapGet("/api/health/status", async (DaemonRuntimeStatusService statusService, CancellationToken cancellationToken) =>
         Results.Ok(await statusService.GetStatusAsync(cancellationToken)));
+    app.MapGet("/api/sessions", (SessionCatalogService catalog) =>
+        Results.Ok(catalog.ListRecent(limit: 50)));
 
     await app.RunAsync();
 }
@@ -185,8 +189,6 @@ static void ConfigureDaemonServices(
         OutputModalities = outputModalities ?? ModelModality.Text,
     };
     services.AddSingleton(resolvedSessionConfig);
-    services.AddSingleton<IChatReducer>(
-        new ExtractiveSessionReducer(resolvedSessionConfig.KeepRecentMessages));
 
     // Tools (auto-bound, no required properties)
     var toolConfig = configuration.GetSection("Tools")

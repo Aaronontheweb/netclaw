@@ -417,7 +417,10 @@ public sealed class DaemonClient : IAsyncDisposable
                 SessionId = sessionId,
                 TimestampMs = dto.TimestampMs,
                 MessagesBefore = dto.MessagesBefore ?? 0,
-                MessagesAfter = dto.MessagesAfter ?? 0
+                MessagesAfter = dto.MessagesAfter ?? 0,
+                ContextWindowTokens = dto.ContextWindowTokens ?? 0,
+                PreCompactionInputTokens = dto.PreCompactionInputTokens ?? 0,
+                KeepCountUsed = dto.KeepCountUsed ?? 0
             },
             "session_joined" => new SessionJoined
             {
