@@ -10,6 +10,8 @@ using Microsoft.Extensions.AI;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Sessions;
+using Netclaw.Actors.Memory;
+using Netclaw.Actors.Skills;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Providers;
@@ -256,9 +258,21 @@ static void ConfigureDaemonServices(
     var searchBackend = CreateSearchBackend(searchConfig);
 
     var toolRegistry = new ToolRegistry();
-    toolRegistry.WithFirstPartyTools(toolConfig, searchBackend, paths);
+    toolRegistry.WithFirstPartyTools(toolConfig, searchBackend);
+
+    // Skills system: copy built-in skills, scan, expose via file-based index
+    CopyBuiltInSkills(paths.SkillsDirectory);
+    var skillRegistry = new SkillRegistry();
+    foreach (var skill in SkillScanner.Scan(paths.SkillsDirectory))
+        skillRegistry.Register(skill);
+    services.AddSingleton(skillRegistry);
+
+    // Cross-session memory: search_memories wraps Memorizer MCP tool
+    toolRegistry.Register(new SearchMemoriesTool(toolRegistry));
+
     services.AddSingleton(toolRegistry);
-    services.AddSingleton<IToolExecutor>(new DispatchingToolExecutor(toolRegistry));
+    services.AddSingleton<IToolExecutor>(sp =>
+        new DispatchingToolExecutor(toolRegistry, sp.GetRequiredService<ILogger<DispatchingToolExecutor>>()));
 
     // MCP server lifecycle management
     var mcpServers = configuration.GetSection("McpServers")
@@ -275,6 +289,17 @@ static void ConfigureDaemonServices(
     services.AddSingleton<McpShadowCatalogWriter>();
     services.AddSingleton<IContextLayerProvider>(_ =>
         new FileContextLayerProvider(paths.ToolIndexShadowPath));
+
+    // Skill index context layer
+    var skillIndexLayer = new SkillIndexContextLayer();
+    skillIndexLayer.Update(skillRegistry.GenerateCompressedIndex());
+    services.AddSingleton(skillIndexLayer);
+    services.AddSingleton<IContextLayerProvider>(skillIndexLayer);
+
+    // Memory context layer — status is updated by ToolIndexUpdater after MCP discovery
+    var memoryIndexLayer = new MemoryIndexContextLayer();
+    services.AddSingleton(memoryIndexLayer);
+    services.AddSingleton<IContextLayerProvider>(memoryIndexLayer);
 
     // Expose all context layers as IReadOnlyList for actor DI resolution
     services.AddSingleton<IReadOnlyList<IContextLayerProvider>>(sp =>
@@ -436,6 +461,35 @@ static ResolvedModelCapabilities? ResolveStartupCapabilities(string modelId, Log
     {
         // Startup capability detection is best-effort — don't crash the daemon
         return null;
+    }
+}
+
+/// <summary>
+/// Copies built-in skill files from embedded resources to the skills directory.
+/// Only writes a file if it does not already exist (user edits are preserved).
+/// </summary>
+static void CopyBuiltInSkills(string skillsDirectory)
+{
+    var assembly = typeof(Program).Assembly;
+    var prefix = "Netclaw.Daemon.BuiltInSkills.";
+
+    foreach (var resourceName in assembly.GetManifestResourceNames())
+    {
+        if (!resourceName.StartsWith(prefix, StringComparison.Ordinal))
+            continue;
+
+        var fileName = resourceName[prefix.Length..];
+        var targetPath = Path.Combine(skillsDirectory, fileName);
+
+        if (File.Exists(targetPath))
+            continue;
+
+        using var stream = assembly.GetManifestResourceStream(resourceName);
+        if (stream is null)
+            continue;
+
+        using var fileStream = File.Create(targetPath);
+        stream.CopyTo(fileStream);
     }
 }
 
