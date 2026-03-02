@@ -30,6 +30,7 @@ public sealed class DaemonClient : IAsyncDisposable
     private readonly Subject<SessionOutput> _outputSubject = new();
     private readonly Subject<DaemonConnectionEvent> _connectionSubject = new();
     private readonly HttpClient _httpClient = new();
+    private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _connectGate = new(1, 1);
     private readonly SemaphoreSlim _sessionGate = new(1, 1);
     private readonly CancellationTokenSource _lifetimeCts = new();
@@ -39,13 +40,14 @@ public sealed class DaemonClient : IAsyncDisposable
     private bool _hasConnected;
     private bool _disposed;
 
-    public DaemonClient(string daemonEndpoint)
+    public DaemonClient(string daemonEndpoint, TimeProvider? timeProvider = null)
     {
         if (string.IsNullOrWhiteSpace(daemonEndpoint))
             throw new ArgumentException("Daemon endpoint cannot be empty.", nameof(daemonEndpoint));
 
         _daemonEndpoint = daemonEndpoint.TrimEnd('/');
         _hubUrl = BuildHubUrl(_daemonEndpoint);
+        _timeProvider = timeProvider ?? TimeProvider.System;
 
         _connection = new HubConnectionBuilder()
             .WithUrl(_hubUrl)
@@ -158,8 +160,8 @@ public sealed class DaemonClient : IAsyncDisposable
 
     private async Task WaitForStableConnectionStateAsync(CancellationToken cancellationToken)
     {
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(15);
-        while (DateTimeOffset.UtcNow < deadline)
+        var deadline = _timeProvider.GetUtcNow().AddSeconds(15);
+        while (_timeProvider.GetUtcNow() < deadline)
         {
             if (_connection.State is HubConnectionState.Connected or HubConnectionState.Disconnected)
                 return;
@@ -368,112 +370,6 @@ public sealed class DaemonClient : IAsyncDisposable
 
     internal static SessionOutput FromDto(SessionOutputDto dto)
     {
-        var sessionId = new SessionId(dto.SessionId);
-
-        return dto.Type switch
-        {
-            "text" => new TextOutput
-            {
-                SessionId = sessionId,
-                TimestampMs = dto.TimestampMs,
-                Text = dto.Text ?? string.Empty
-            },
-            "text_delta" => new TextDeltaOutput
-            {
-                SessionId = sessionId,
-                TimestampMs = dto.TimestampMs,
-                Delta = dto.Text ?? string.Empty
-            },
-            "thinking" => new ThinkingOutput
-            {
-                SessionId = sessionId,
-                TimestampMs = dto.TimestampMs,
-                Text = dto.Text ?? string.Empty
-            },
-            "thinking_delta" => new ThinkingDeltaOutput
-            {
-                SessionId = sessionId,
-                TimestampMs = dto.TimestampMs,
-                Delta = dto.Text ?? string.Empty
-            },
-            "tool_call" => new ToolCallOutput
-            {
-                SessionId = sessionId,
-                TimestampMs = dto.TimestampMs,
-                CallId = dto.CallId ?? string.Empty,
-                ToolName = dto.ToolName ?? "unknown",
-                ArgumentsJson = dto.ArgumentsJson
-            },
-            "tool_result" => new ToolResultOutput
-            {
-                SessionId = sessionId,
-                TimestampMs = dto.TimestampMs,
-                CallId = dto.CallId ?? string.Empty,
-                ToolName = dto.ToolName ?? "unknown",
-                Result = dto.Result ?? string.Empty
-            },
-            "usage" => new UsageOutput
-            {
-                SessionId = sessionId,
-                TimestampMs = dto.TimestampMs,
-                InputTokens = dto.InputTokens,
-                OutputTokens = dto.OutputTokens,
-                TotalTokens = dto.TotalTokens,
-                ContextWindowTokens = dto.ContextWindowTokens ?? 0,
-                UsagePercent = dto.UsagePercent
-            },
-            "turn_completed" => new TurnCompleted
-            {
-                SessionId = sessionId,
-                TimestampMs = dto.TimestampMs,
-                TurnNumber = dto.TurnNumber ?? 0
-            },
-            "session_title" => new SessionTitleOutput
-            {
-                SessionId = sessionId,
-                TimestampMs = dto.TimestampMs,
-                Title = dto.Title ?? string.Empty
-            },
-            "error" => new ErrorOutput
-            {
-                SessionId = sessionId,
-                TimestampMs = dto.TimestampMs,
-                Message = dto.ErrorMessage ?? "Unknown daemon error",
-                Cause = dto.ErrorDetail is not null
-                    ? new Exception(dto.ErrorDetail) : null
-            },
-            "file" => new FileOutput
-            {
-                SessionId = sessionId,
-                TimestampMs = dto.TimestampMs,
-                FilePath = dto.FilePath ?? string.Empty,
-                FileName = dto.FileName ?? "file",
-                MimeType = dto.MimeType ?? "application/octet-stream"
-            },
-            "compaction" => new CompactionOutput
-            {
-                SessionId = sessionId,
-                TimestampMs = dto.TimestampMs,
-                MessagesBefore = dto.MessagesBefore ?? 0,
-                MessagesAfter = dto.MessagesAfter ?? 0,
-                ContextWindowTokens = dto.ContextWindowTokens ?? 0,
-                PreCompactionInputTokens = dto.PreCompactionInputTokens ?? 0,
-                KeepCountUsed = dto.KeepCountUsed ?? 0
-            },
-            "session_joined" => new SessionJoined
-            {
-                SessionId = sessionId,
-                TimestampMs = dto.TimestampMs,
-                Title = dto.Title,
-                TurnCount = dto.TurnCount ?? 0,
-                RecentMessages = dto.RecentMessages
-            },
-            _ => new ErrorOutput
-            {
-                SessionId = sessionId,
-                TimestampMs = dto.TimestampMs,
-                Message = $"Unknown output type from daemon: {dto.Type}"
-            }
-        };
+        return SessionOutputDtoMapper.FromDto(dto);
     }
 }
