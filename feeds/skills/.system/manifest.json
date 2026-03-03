@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "feedType": "system",
-  "updatedAt": "2026-03-03T13:22:51Z",
+  "updatedAt": "2026-03-03T13:44:42Z",
   "skills": [
     {
       "name": "identity-management",
@@ -25,13 +25,13 @@
     },
     {
       "name": "memory-usage",
-      "version": "1.0.1",
+      "version": "1.1.0",
       "minimumDaemonVersion": "0.1.0",
-      "sha256": "a8ec72982b36980e524aae8ace7adcc08648feca455aa7ffa610814730b00015",
-      "sizeBytes": 4683,
-      "url": "https://feeds.netclaw.dev/skills/.system/files/memory-usage/1.0.1.md",
+      "sha256": "d48733b04e4657f746449a89c4506f6ff919051aecf37987a038e2e757547bd9",
+      "sizeBytes": 5574,
+      "url": "https://feeds.netclaw.dev/skills/.system/files/memory-usage/1.1.0.md",
       "category": null,
-      "description": "SAVE user facts, decisions, and solutions to memory. RETRIEVE at conversation start before answering from scratch."
+      "description": "How to use cross-session memory (file-backed or Memorizer)"
     },
     {
       "name": "self-diagnostics",

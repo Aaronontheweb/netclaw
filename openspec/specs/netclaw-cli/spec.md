@@ -322,3 +322,17 @@ exit with code 0 (all pass), 1 (errors), or 2 (warnings only).
 - **AND** a startup check fails
 - **THEN** output shows the failure with a remediation command
 - **AND** exit code is 1
+
+### Requirement: Memory provider in status output
+
+The `netclaw status` command SHALL display the active memory provider and
+its health status.
+
+#### Scenario: Status shows memory provider
+
+- **WHEN** the operator runs `netclaw status`
+- **THEN** the output includes a `memory:` line showing:
+  - Provider name (`files` or `memorizer`)
+  - Health status (`healthy`, `degraded`, or `unavailable`)
+  - For Memorizer: endpoint URL and tool count
+  - For files: memory count and index path
