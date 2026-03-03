@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using System.Text.Json;
 using Netclaw.Channels.Slack;
 using Netclaw.Cli.Daemon;
@@ -20,9 +21,10 @@ public enum WizardStep
     Acl = 3,
     Search = 4,
     BrowserAutomation = 5,
-    Exposure = 6,
-    Identity = 7,
-    HealthCheck = 8
+    Memory = 6,
+    Exposure = 7,
+    Identity = 8,
+    HealthCheck = 9
 }
 
 /// <summary>
@@ -32,7 +34,7 @@ public enum WizardStep
 /// </summary>
 public partial class InitWizardViewModel : ReactiveViewModel
 {
-    public const int TotalSteps = 8;
+    public const int TotalSteps = 9;
 
     private readonly NetclawPaths _paths;
     private readonly IProviderProbe _probe;
@@ -61,6 +63,21 @@ public partial class InitWizardViewModel : ReactiveViewModel
     /// validation spinner and show a live timer.
     /// </summary>
     public ReactiveProperty<int> ProbeElapsedSeconds { get; } = new(0);
+
+    /// <summary>
+    /// True while the Memorizer connectivity probe is running.
+    /// </summary>
+    public ReactiveProperty<bool> IsMemorizerProbing { get; } = new(false);
+
+    /// <summary>
+    /// Result of the Memorizer connectivity probe. Null before first probe.
+    /// </summary>
+    public ReactiveProperty<bool?> MemorizerProbeResult { get; } = new(null);
+
+    /// <summary>
+    /// Completes when the Memorizer probe finishes. Used for testing without polling.
+    /// </summary>
+    internal Task? MemorizerProbeCompletion { get; private set; }
 
     /// <summary>
     /// Monotonically increasing counter that ticks whenever health check results
@@ -100,17 +117,21 @@ public partial class InitWizardViewModel : ReactiveViewModel
     public bool BrowserAutomationEnabled { get; set; }
     public string SelectedBrowserAutomationBackend { get; set; } = BrowserAutomationMcpProfiles.ChromeDevToolsBackend;
 
-    // ── Step 6: Exposure ──
+    // ── Step 6: Memory ──
+    public string SelectedMemoryBackend { get; set; } = "files";
+    public string? MemorizerUrl { get; set; }
+
+    // ── Step 7: Exposure ──
     public string? ExposureMode { get; set; }
 
-    // ── Step 7: Identity ──
+    // ── Step 8: Identity ──
     public string AgentName { get; set; } = "Netclaw";
     public string? CommunicationStyle { get; set; }
     public string? UserName { get; set; }
     public string UserTimezone { get; set; } = TimeZoneInfo.Local.Id;
     public string? PrimaryUse { get; set; }
 
-    // ── Step 8: Health Check ──
+    // ── Step 9: Health Check ──
     public List<HealthCheckItem> HealthCheckResults { get; } = [];
 
     /// <summary>
@@ -318,6 +339,57 @@ public partial class InitWizardViewModel : ReactiveViewModel
         }
     }
 
+    /// <summary>
+    /// Start the Memorizer connectivity probe. Updates reactive properties
+    /// so the page can show a spinner and auto-advance on success.
+    /// </summary>
+    public void StartMemorizerProbe()
+    {
+        MemorizerProbeCompletion = ProbeMemorizerAsync();
+    }
+
+    /// <summary>
+    /// Probe the Memorizer endpoint for connectivity. Returns true if reachable.
+    /// </summary>
+    internal async Task<bool> ProbeMemorizerAsync()
+    {
+        if (string.IsNullOrWhiteSpace(MemorizerUrl))
+        {
+            MemorizerProbeResult.Value = false;
+            IsMemorizerProbing.Value = false;
+            RequestRedraw();
+            return false;
+        }
+
+        IsMemorizerProbing.Value = true;
+        MemorizerProbeResult.Value = null;
+        RequestRedraw();
+
+        bool reachable;
+        try
+        {
+            // TCP connect to verify the server is alive. MCP endpoints only accept
+            // POST, so an HTTP GET would return 405. A simple TCP handshake is the
+            // most reliable liveness check.
+            var baseUri = new Uri(MemorizerUrl);
+            var port = baseUri.Port > 0 ? baseUri.Port : (baseUri.Scheme == "https" ? 443 : 80);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var tcp = new TcpClient();
+            await tcp.ConnectAsync(baseUri.Host, port, cts.Token);
+            reachable = true;
+        }
+        catch
+        {
+            reachable = false;
+        }
+
+        MemorizerProbeResult.Value = reachable;
+        IsMemorizerProbing.Value = false;
+        RequestRedraw();
+        return reachable;
+    }
+
     private void HandleGlobalKey(KeyPressed key)
     {
         if (key.KeyInfo.Key == ConsoleKey.Q &&
@@ -446,6 +518,25 @@ public partial class InitWizardViewModel : ReactiveViewModel
             }
             NotifyHealthCheckChanged();
         }
+
+        // Memory backend check
+        HealthCheckResults.Add(new HealthCheckItem("Memory backend", null));
+        NotifyHealthCheckChanged();
+        await Task.Delay(200);
+
+        if (SelectedMemoryBackend == "memorizer")
+        {
+            // For Memorizer, check reachability — degraded (not failed) if unreachable
+            var memorizerReachable = await ProbeMemorizerAsync();
+            HealthCheckResults[^1] = memorizerReachable
+                ? new HealthCheckItem("Memory backend (Memorizer connected)", true)
+                : new HealthCheckItem("Memorizer unreachable \u2014 memory will use local files", true); // warning, not failure
+        }
+        else
+        {
+            HealthCheckResults[^1] = new HealthCheckItem("Memory backend (local files)", true);
+        }
+        NotifyHealthCheckChanged();
 
         // Browser automation prerequisites (optional)
         if (BrowserAutomationEnabled)
@@ -685,23 +776,44 @@ public partial class InitWizardViewModel : ReactiveViewModel
             config["Search"] = searchSection;
         }
 
-        // Browser automation MCP profile (optional)
+        // Memory section
+        config["Memory"] = new Dictionary<string, object>
+        {
+            ["Provider"] = SelectedMemoryBackend
+        };
+
+        // MCP servers: browser automation + memorizer (both optional)
+        var mcpServers = new Dictionary<string, object>();
+
         if (BrowserAutomationEnabled)
         {
             var (profileName, entry) = BrowserAutomationMcpProfiles.Create(SelectedBrowserAutomationBackend);
-
-            config["McpServers"] = new Dictionary<string, object>
+            mcpServers[profileName] = new Dictionary<string, object?>
             {
-                [profileName] = new Dictionary<string, object?>
-                {
-                    ["Transport"] = entry.Transport,
-                    ["Command"] = entry.Command,
-                    ["Arguments"] = entry.Arguments,
-                    ["Enabled"] = entry.Enabled,
-                    ["GrantCategory"] = entry.GrantCategory
-                }
+                ["Transport"] = entry.Transport,
+                ["Command"] = entry.Command,
+                ["Arguments"] = entry.Arguments,
+                ["Enabled"] = entry.Enabled,
+                ["GrantCategory"] = entry.GrantCategory
             };
         }
+
+        if (SelectedMemoryBackend == "memorizer")
+        {
+            var memorizerEntry = new Dictionary<string, object>
+            {
+                ["Enabled"] = true,
+                ["Transport"] = "http"
+            };
+
+            if (!string.IsNullOrWhiteSpace(MemorizerUrl))
+                memorizerEntry["Url"] = MemorizerUrl;
+
+            mcpServers["memorizer"] = memorizerEntry;
+        }
+
+        if (mcpServers.Count > 0)
+            config["McpServers"] = mcpServers;
 
         // Write identity files
         WriteIdentityFiles();
@@ -855,6 +967,8 @@ public partial class InitWizardViewModel : ReactiveViewModel
         IsProbing.Dispose();
         ProbeResult.Dispose();
         ProbeElapsedSeconds.Dispose();
+        IsMemorizerProbing.Dispose();
+        MemorizerProbeResult.Dispose();
         HealthCheckResultVersion.Dispose();
         base.Dispose();
     }

@@ -269,6 +269,11 @@ static void ConfigureDaemonServices(
         skillRegistry.Register(skill);
     services.AddSingleton(skillRegistry);
 
+    // Subagent timeout configuration
+    var subAgentConfig = configuration.GetSection("SubAgents")
+        .Get<SubAgentConfig>() ?? new SubAgentConfig();
+    services.AddSingleton(subAgentConfig);
+
     // Cross-session memory: provider-based wiring
     var memoryConfig = configuration.GetSection("Memory")
         .Get<MemoryConfig>() ?? new MemoryConfig();
@@ -276,7 +281,9 @@ static void ConfigureDaemonServices(
 
     if (memoryConfig.Provider.Equals("memorizer", StringComparison.OrdinalIgnoreCase))
     {
-        // Memorizer path: no builtin memory tools — MCP discovery handles everything
+        // Memorizer path: subagent-backed memory tools (store_memory, search_memories) are
+        // registered later by ToolIndexUpdater after MCP discovery completes and Memorizer
+        // connectivity is confirmed. The compaction extractor still uses direct MCP delegation.
         services.AddSingleton<IMemoryExtractor>(sp =>
             new MemorizerMemoryExtractor(sp.GetRequiredService<ToolRegistry>()));
     }
@@ -284,8 +291,10 @@ static void ConfigureDaemonServices(
     {
         // File path: register builtin memory tools backed by local markdown files
         var fileStore = new FileMemoryStore(paths.MemoriesDirectory, TimeProvider.System);
-        toolRegistry.Register(new SearchMemoriesTool(fileStore));
+        toolRegistry.Register(new FileFindMemoriesTool(fileStore));
+        toolRegistry.Register(new FileGetMemoriesTool(fileStore));
         toolRegistry.Register(new StoreMemoryTool(fileStore));
+        toolRegistry.Register(new FileUpdateMemoryTool(fileStore));
         services.AddSingleton<IMemoryExtractor>(new FileMemoryExtractor(fileStore));
     }
 
