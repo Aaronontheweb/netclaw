@@ -1,4 +1,4 @@
-name: Release
+name: Publish Release Binaries
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - '*'
 
 permissions:
-   contents: write
+  contents: write
 
 jobs:
   # ────────────────────────────────────────────────────────────────────
@@ -16,8 +16,6 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    outputs:
-      version: ${{ github.ref_name }}
     steps:
     - name: Checkout
       uses: actions/checkout@v6
@@ -56,47 +54,7 @@ jobs:
         GITHUB_TOKEN: ${{ github.token }}
 
   # ────────────────────────────────────────────────────────────────────
-  # Job 2: Build and publish NuGet packages
-  # ────────────────────────────────────────────────────────────────────
-  publish-nuget:
-    name: Publish NuGet
-    needs: create-release
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v6
-      with:
-        lfs: true
-        fetch-depth: 0
-
-    - name: Install .NET SDK
-      uses: actions/setup-dotnet@v5.1.0
-      with:
-        global-json-file: "./global.json"
-
-    - name: Restore .NET tools
-      run: dotnet tool restore
-
-    - name: Update release notes
-      shell: pwsh
-      run: ./build.ps1
-
-    - name: Create Packages
-      run: dotnet pack /p:PackageVersion=${{ github.ref_name }} -c Release -o ./output
-
-    - name: Push Packages
-      run: dotnet nuget push "output/*.nupkg" -k ${{ secrets.NUGET_KEY }} -s https://api.nuget.org/v3/index.json
-
-    - name: Upload NuGet to Release
-      uses: AButler/upload-release-assets@v3.0
-      with:
-          repo-token: ${{ github.token }}
-          release-tag: ${{ github.ref_name }}
-          files: 'output/*.nupkg'
-
-  # ────────────────────────────────────────────────────────────────────
-  # Job 3: Build self-contained binaries (matrix: linux-x64, linux-arm64, win-x64)
+  # Job 2: Build self-contained binaries (matrix: linux-x64, linux-arm64, win-x64)
   # ────────────────────────────────────────────────────────────────────
   publish-binaries:
     name: Build ${{ matrix.rid }}
@@ -242,7 +200,7 @@ jobs:
         path: ./checksums/
 
   # ────────────────────────────────────────────────────────────────────
-  # Job 4: Generate binary manifest and deploy to Cloudflare Pages
+  # Job 3: Generate binary manifest and deploy to Cloudflare Pages
   # ────────────────────────────────────────────────────────────────────
   publish-binary-manifest:
     name: Publish Binary Manifest
