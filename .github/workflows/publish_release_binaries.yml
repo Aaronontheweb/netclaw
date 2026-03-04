@@ -217,10 +217,10 @@ jobs:
     - name: Fetch existing manifest
       run: |
         mkdir -p ./feeds/releases
-        status=$(curl -sSL -o ./feeds/releases/manifest.json -w "%{http_code}" https://feeds.netclaw.dev/releases/manifest.json || true)
+        status=$(curl -sSL -o ./feeds/releases/manifest.json -w "%{http_code}" https://releases.netclaw.dev/manifest.json || true)
 
         if [ "$status" = "200" ]; then
-          echo "Fetched existing manifest from feeds.netclaw.dev"
+          echo "Fetched existing manifest from releases.netclaw.dev"
         elif [ "$status" = "404" ]; then
           echo "No existing manifest published yet (first release)"
           rm -f ./feeds/releases/manifest.json
@@ -270,17 +270,65 @@ jobs:
           -m ./feeds/releases/manifest.json \
           -x ./feeds/releases/manifest.json.sig
 
-    - name: Copy install scripts to feeds
+    - name: Prepare release feed artifacts
       run: |
-        cp scripts/install.sh feeds/install.sh
-        cp scripts/install.ps1 feeds/install.ps1
+        cp scripts/install.sh ./feeds/releases/install.sh
+        cp scripts/install.ps1 ./feeds/releases/install.ps1
 
-    - name: Deploy feeds to Cloudflare Pages
+    - name: Upload release manifest to R2
       uses: cloudflare/wrangler-action@v3
       with:
         apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        command: pages deploy feeds --project-name=netclaw-feeds
+        command: >
+          r2 object put
+          netclaw-releases/manifest.json
+          --file=./feeds/releases/manifest.json
+          --content-type=application/json
+
+    - name: Upload release manifest signature to R2
+      uses: cloudflare/wrangler-action@v3
+      with:
+        apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        command: >
+          r2 object put
+          netclaw-releases/manifest.json.sig
+          --file=./feeds/releases/manifest.json.sig
+          --content-type=text/plain
+
+    - name: Upload manifest public key to R2
+      uses: cloudflare/wrangler-action@v3
+      with:
+        apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        command: >
+          r2 object put
+          netclaw-releases/manifest.pub
+          --file=./feeds/releases/manifest.pub
+          --content-type=text/plain
+
+    - name: Upload Linux install script to R2
+      uses: cloudflare/wrangler-action@v3
+      with:
+        apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        command: >
+          r2 object put
+          netclaw-releases/install.sh
+          --file=./feeds/releases/install.sh
+          --content-type=text/x-shellscript
+
+    - name: Upload Windows install script to R2
+      uses: cloudflare/wrangler-action@v3
+      with:
+        apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        command: >
+          r2 object put
+          netclaw-releases/install.ps1
+          --file=./feeds/releases/install.ps1
+          --content-type=text/plain
 
     - name: Cleanup signing key
       if: always()
