@@ -4,6 +4,7 @@ using Netclaw.Actors.Memory;
 using Netclaw.Channels;
 using Netclaw.Channels.Slack;
 using Netclaw.Configuration;
+using Netclaw.Configuration.Feeds;
 using Netclaw.Daemon.Configuration;
 using Netclaw.Daemon.Mcp;
 
@@ -72,6 +73,7 @@ internal sealed class DaemonRuntimeStatusService(
                 OutputModalities = sessionConfig.OutputModalities.ToString(),
                 ContextWindow = sessionConfig.ContextWindowTokens
             },
+            Update = BuildUpdateStatus(),
             Memory = await BuildMemoryStatusAsync(cancellationToken)
         };
     }
@@ -178,6 +180,21 @@ internal sealed class DaemonRuntimeStatusService(
                     ? "Failed to connect to MCP server."
                     : status.ErrorMessage
             }
+        };
+    }
+
+    private static DaemonRuntimeStatus.Update? BuildUpdateStatus()
+    {
+        var result = UpdateCheckService.GetLastResult();
+        if (result is null)
+            return null;
+
+        return new DaemonRuntimeStatus.Update
+        {
+            Available = result.IsUpdateAvailable,
+            CurrentVersion = result.CurrentVersion,
+            LatestVersion = result.IsUpdateAvailable ? result.LatestVersion : null,
+            ReleaseNotesUrl = result.IsUpdateAvailable ? result.ReleaseNotesUrl : null,
         };
     }
 

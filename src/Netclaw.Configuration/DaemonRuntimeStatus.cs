@@ -22,6 +22,8 @@ public static class DaemonRuntimeStatus
 
         public Model? Model { get; init; }
 
+        public Update? Update { get; init; }
+
         public Memory? Memory { get; init; }
     }
 
@@ -79,6 +81,17 @@ public static class DaemonRuntimeStatus
         public required string OutputModalities { get; init; }
 
         public int ContextWindow { get; init; }
+    }
+
+    public sealed class Update : IWireType
+    {
+        public bool Available { get; init; }
+
+        public required string CurrentVersion { get; init; }
+
+        public string? LatestVersion { get; init; }
+
+        public string? ReleaseNotesUrl { get; init; }
     }
 
     public sealed class Memory : IWireType

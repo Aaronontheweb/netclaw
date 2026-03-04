@@ -13,6 +13,7 @@ using Netclaw.Cli.Secrets;
 using Netclaw.Cli.Model;
 using Netclaw.Cli.Provider;
 using Netclaw.Cli.Tui;
+using Netclaw.Cli.Update;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Providers;
 using Netclaw.Configuration.Secrets;
@@ -382,6 +383,15 @@ static async Task RunAsync(string[] args)
         return;
     }
 
+    // ── Self-update ──
+    if (mode is "update")
+    {
+        var paths = new NetclawPaths();
+        paths.EnsureDirectoriesExist();
+        Environment.ExitCode = await UpdateCommand.RunAsync(args, paths);
+        return;
+    }
+
     // ── Parse --resume flag for chat mode ──
     string? resumeSessionId = null;
     if (mode is "chat")
@@ -467,6 +477,10 @@ static async Task RunAsync(string[] args)
 
     var app = webBuilder.Build();
 
+    // Fire-and-forget update check for interactive modes
+    if (mode is "chat" or "sessions")
+        _ = UpdateCommand.BackgroundUpdateCheckAsync();
+
     await app.RunAsync();
 }
 
@@ -504,6 +518,7 @@ static void WriteGeneralHelp()
     Console.WriteLine("  model                    Manage model assignments (TUI) or use subcommands");
     Console.WriteLine("  secrets                  Manage encrypted secrets (set key/value pairs)");
     Console.WriteLine("  init                     First-run setup wizard");
+    Console.WriteLine("  update                   Check for and install updates");
     Console.WriteLine("  config                   Configuration management (planned)");
     Console.WriteLine();
     Console.WriteLine("Run `netclaw <command> --help` for details on any command.");
@@ -771,6 +786,15 @@ static void WriteStatusResult(DaemonRuntimeStatus.Response status, string endpoi
         Console.WriteLine($"- {connector.Key}: {connector.Status} ({enabled})");
         if (!string.IsNullOrWhiteSpace(connector.Message))
             Console.WriteLine($"    {connector.Message}");
+    }
+
+    if (status.Update is { Available: true } update)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"UPDATE AVAILABLE: v{update.CurrentVersion} → v{update.LatestVersion}");
+        Console.WriteLine("  Run: netclaw update");
+        if (update.ReleaseNotesUrl is not null)
+            Console.WriteLine($"  Release notes: {update.ReleaseNotesUrl}");
     }
 }
 
