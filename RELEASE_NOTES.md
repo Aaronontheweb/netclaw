@@ -1,3 +1,13 @@
+#### 0.1.1 2026-03-04 ####
+
+Netclaw v0.1.1 — Release Feed and Installer Fixes
+
+* Removed NuGet package publishing from the release workflow and renamed it to focus on binary release artifacts.
+* Fixed release pipeline R2 upload command sequencing and stabilized reruns.
+* Updated Linux and Windows install scripts to read from `https://releases.netclaw.dev/manifest.json`.
+* Updated README install commands to use `releases.netclaw.dev`.
+* Published release feed artifacts (manifest, minisign signature, public key, install scripts) directly to the releases host.
+
 #### 0.1.0 2026-03-04 ####
 
 Netclaw v0.1.0 — Initial Release
