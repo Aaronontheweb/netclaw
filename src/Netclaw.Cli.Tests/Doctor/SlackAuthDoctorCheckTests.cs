@@ -3,6 +3,7 @@ using Netclaw.Channels.Slack;
 using Netclaw.Cli.Doctor;
 using Netclaw.Cli.Tests.Tui;
 using Netclaw.Configuration;
+using Netclaw.Configuration.Secrets;
 using Xunit;
 
 namespace Netclaw.Cli.Tests.Doctor;
@@ -81,6 +82,37 @@ public sealed class SlackAuthDoctorCheckTests
         Assert.Equal(DoctorSeverity.Error, result.Severity);
         Assert.Contains("invalid", result.Message, StringComparison.OrdinalIgnoreCase);
         Assert.NotNull(result.Remediation);
+    }
+
+    [Fact]
+    public async Task DecryptsEncryptedBotToken_BeforeProbe()
+    {
+        var (paths, _) = CreateTempPaths();
+        WriteConfig(paths, slackEnabled: true);
+
+        var secrets = new Dictionary<string, object>
+        {
+            ["Slack"] = new Dictionary<string, object>
+            {
+                ["BotToken"] = "xoxb-valid-token"
+            }
+        };
+
+        var protector = SecretsProtection.CreateProtector(paths);
+        SecretsFileWriter.Write(paths.SecretsPath, secrets,
+            options: new JsonSerializerOptions { WriteIndented = true },
+            protector: protector);
+
+        var probe = new FakeSlackProbe
+        {
+            NextResult = new SlackProbeResult(true, null, "Test Team", new SlackUserId("U12345"))
+        };
+
+        var check = new SlackAuthDoctorCheck(paths, probe);
+        var result = await check.RunAsync();
+
+        Assert.Equal(DoctorSeverity.Pass, result.Severity);
+        Assert.Equal("xoxb-valid-token", probe.LastBotToken);
     }
 
     private static (NetclawPaths paths, string basePath) CreateTempPaths()
