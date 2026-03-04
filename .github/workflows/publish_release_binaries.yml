@@ -163,13 +163,6 @@ jobs:
         release-tag: ${{ github.ref_name }}
         files: 'archives/*'
 
-    - name: Upload archives to R2
-      uses: cloudflare/wrangler-action@v3
-      with:
-        apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        command: |
-          r2 object put netclaw-releases/${{ github.ref_name }}/ --pipe < /dev/null
       # Upload each archive individually
     - name: Upload CLI archive to R2
       uses: cloudflare/wrangler-action@v3
