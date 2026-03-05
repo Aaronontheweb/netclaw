@@ -9,6 +9,7 @@ using Netclaw.Cli;
 using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Doctor;
 using Netclaw.Cli.Mcp;
+using Netclaw.Cli.Reminder;
 using Netclaw.Cli.Secrets;
 using Netclaw.Cli.Model;
 using Netclaw.Cli.Provider;
@@ -394,6 +395,34 @@ static async Task RunAsync(string[] args)
         return;
     }
 
+    // ── Reminder management ──
+    if (mode is "reminder")
+    {
+        if (args.Length == 1)
+        {
+            var builder = Host.CreateApplicationBuilder(args);
+            ConfigureConfigServices(builder.Services, builder.Configuration);
+            builder.Logging.ClearProviders();
+            builder.Logging.SetMinimumLevel(LogLevel.Warning);
+            builder.Services.AddHttpClient("ReminderApi", client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(10);
+            });
+
+            var traceFile = Path.Combine(Path.GetTempPath(), "netclaw-reminder-trace.log");
+            builder.Services.AddTerminaFileTracing(traceFile, TerminaTraceCategory.All, TerminaTraceLevel.Trace);
+
+            builder.Services.AddTermina("/reminder", t =>
+                t.RegisterRoute<ReminderCreatePage, ReminderCreateViewModel>("/reminder"));
+
+            await builder.Build().RunAsync();
+            return;
+        }
+
+        Environment.ExitCode = await ReminderCommand.RunAsync(args);
+        return;
+    }
+
     // ── Secrets management ──
     if (mode is "secrets")
     {
@@ -543,6 +572,7 @@ static void WriteGeneralHelp()
     Console.WriteLine("  mcp                      Manage MCP server profiles");
     Console.WriteLine("  provider                 Manage LLM providers (TUI) or use subcommands");
     Console.WriteLine("  model                    Manage model assignments (TUI) or use subcommands");
+    Console.WriteLine("  reminder                 Manage scheduled reminders (daemon-required)");
     Console.WriteLine("  secrets                  Manage encrypted secrets (set key/value pairs)");
     Console.WriteLine("  init                     First-run setup wizard");
     Console.WriteLine("  update                   Check for and install updates");

@@ -1,3 +1,4 @@
+using Akka.Actor;
 using Akka.Hosting;
 using Akka.Persistence.Hosting;
 using Akka.Persistence.Sql.Hosting;
@@ -11,6 +12,7 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Memory;
+using Netclaw.Actors.Reminders;
 using Netclaw.Actors.Skills;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
@@ -139,6 +141,9 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
     // Register channel-specific tools after DI is built (tools need resolved services).
     ChannelToolRegistration.RegisterChannelTools(app.Services);
 
+    // Reminder REST API
+    MapReminderEndpoints(app);
+
     await app.RunAsync();
 }
 
@@ -264,6 +269,12 @@ static void ConfigureDaemonServices(
     var toolConfig = configuration.GetSection("Tools")
         .Get<ToolConfig>() ?? new ToolConfig();
     services.AddSingleton(toolConfig);
+
+    // Reminders
+    var reminderConfig = configuration.GetSection("Reminders")
+        .Get<ReminderConfig>() ?? new ReminderConfig();
+    services.AddSingleton(reminderConfig);
+    services.AddSingleton<ReminderDefinitionStore>();
 
     // Search backend selection
     var searchConfig = configuration.GetSection("Search")
@@ -441,7 +452,25 @@ static void ConfigureDaemonServices(
                 .WithInMemorySnapshotStore();
         }
 
-        akkaBuilder.WithNetclawActors();
+        var reminderStorage = persistence.Provider is PersistenceProvider.Sqlite
+            ? new NetclawAkkaHostingExtensions.ReminderStorageOptions
+            {
+                SqliteConnectionString = $"Data Source={sqlitePath}",
+                TableName = "netclaw_reminders",
+                AutoInitialize = true
+            }
+            : null;
+
+        akkaBuilder.WithNetclawActors(reminderStorage);
+
+        // Register reminder tools after actors start (needs ReminderManagerActor ref)
+        akkaBuilder.StartActors((system, registry, _) =>
+        {
+            var reminderManager = registry.Get<Netclaw.Actors.Hosting.ReminderManagerActorKey>();
+            var tp = sp.GetRequiredService<TimeProvider>();
+            var rc = sp.GetRequiredService<ReminderConfig>();
+            toolRegistry.WithReminderTools(reminderManager, tp, rc);
+        });
     });
 
     // Content security (magic-byte file scanning + prompt-injection detector)
@@ -590,6 +619,179 @@ static void CopyBuiltInSkills(string skillsDirectory)
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Reminder REST API
+// ═══════════════════════════════════════════════════════════════════════
+
+static void MapReminderEndpoints(WebApplication app)
+{
+    app.MapGet("/api/reminders", async (
+        Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
+        CancellationToken ct) =>
+    {
+        var manager = await actor.GetAsync(ct);
+        var response = await manager.Ask<Netclaw.Actors.Reminders.ReminderListResponse>(
+            new Netclaw.Actors.Reminders.ListRemindersCommand(), TimeSpan.FromSeconds(10), ct);
+        return Results.Ok(response.Reminders);
+    });
+
+    app.MapPost("/api/reminders", async (
+        CreateReminderRequest request,
+        Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
+        TimeProvider timeProvider,
+        ReminderConfig reminderConfig,
+        CancellationToken ct) =>
+    {
+        var manager = await actor.GetAsync(ct);
+
+        var tool = new Netclaw.Actors.Reminders.SetReminderTool(manager, timeProvider, reminderConfig);
+        var result = await tool.ExecuteAsync(
+            new Dictionary<string, object?>
+            {
+                ["Name"] = request.Name,
+                ["Prompt"] = request.Prompt,
+                ["ScheduleType"] = request.ScheduleType,
+                ["Schedule"] = request.Schedule,
+                ["ReportToChannel"] = request.ReportToChannel,
+                ["NotifyInstructions"] = request.NotifyInstructions
+            }, ct);
+
+        return result.StartsWith("Error", StringComparison.Ordinal)
+            ? Results.BadRequest(new { error = result })
+            : Results.Ok(new { message = result });
+    });
+
+    app.MapPost("/api/reminders/validate", (
+        CreateReminderRequest request,
+        TimeProvider timeProvider,
+        ReminderConfig reminderConfig) =>
+    {
+        var (schedule, error) = ReminderScheduleParser.Parse(
+            request.ScheduleType,
+            request.Schedule,
+            timeProvider,
+            reminderConfig);
+
+        if (schedule is null)
+            return Results.BadRequest(new { valid = false, error });
+
+        return Results.Ok(new { valid = true, scheduleType = schedule.Type.ToString(), nextFire = schedule.FireAt });
+    });
+
+    app.MapPost("/api/reminders/import", async (
+        ImportReminderRequest request,
+        Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
+        CancellationToken ct) =>
+    {
+        if (request.Definition is null)
+            return Results.BadRequest(new { error = "Reminder definition is required." });
+
+        var mode = request.WriteMode?.Trim().ToLowerInvariant() switch
+        {
+            "replace" => ReminderWriteMode.Replace,
+            "upsert" => ReminderWriteMode.Upsert,
+            null or "" or "create" or "createonly" => ReminderWriteMode.CreateOnly,
+            _ => (ReminderWriteMode?)null
+        };
+
+        if (mode is null)
+            return Results.BadRequest(new { error = "Invalid writeMode. Use create, replace, or upsert." });
+
+        var manager = await actor.GetAsync(ct);
+        var response = await manager.Ask<ReminderSavedResponse>(
+            new SaveReminderCommand(request.Definition, mode.Value),
+            TimeSpan.FromSeconds(10),
+            ct);
+
+        if (!response.Success)
+        {
+            var status = response.Error is ReminderSaveError.Conflict
+                ? StatusCodes.Status409Conflict
+                : response.Error is ReminderSaveError.NotFound
+                    ? StatusCodes.Status404NotFound
+                    : StatusCodes.Status400BadRequest;
+
+            return Results.Json(new
+            {
+                error = response.ErrorMessage ?? "Import failed.",
+                code = response.Error.ToString(),
+                id = response.Id.Value
+            }, statusCode: status);
+        }
+
+        return Results.Ok(new
+        {
+            id = response.Id.Value,
+            title = response.Title,
+            nextFire = response.NextFire,
+            message = $"Imported reminder '{response.Id.Value}'."
+        });
+    });
+
+    app.MapDelete("/api/reminders/{id}", async (
+        string id,
+        Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
+        CancellationToken ct) =>
+    {
+        var manager = await actor.GetAsync(ct);
+        var response = await manager.Ask<Netclaw.Actors.Reminders.ReminderCancelledResponse>(
+            new Netclaw.Actors.Reminders.CancelReminderCommand(new Netclaw.Actors.Reminders.ReminderId(id)),
+            TimeSpan.FromSeconds(10), ct);
+
+        return response.Found
+            ? Results.Ok(new { message = $"Reminder '{id}' cancelled." })
+            : Results.NotFound(new { error = $"Reminder '{id}' not found." });
+    });
+
+    app.MapPost("/api/reminders/{id}/disable", async (
+        string id,
+        Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
+        CancellationToken ct) =>
+    {
+        var manager = await actor.GetAsync(ct);
+        var response = await manager.Ask<ReminderStateResponse>(
+            new DisableReminderCommand(new ReminderId(id)),
+            TimeSpan.FromSeconds(10),
+            ct);
+
+        return !response.Found
+            ? Results.NotFound(new { error = response.ErrorMessage ?? $"Reminder '{id}' not found." })
+            : Results.Ok(new { id = id, enabled = response.Enabled, message = $"Reminder '{id}' disabled." });
+    });
+
+    app.MapPost("/api/reminders/{id}/enable", async (
+        string id,
+        Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
+        CancellationToken ct) =>
+    {
+        var manager = await actor.GetAsync(ct);
+        var response = await manager.Ask<ReminderStateResponse>(
+            new EnableReminderCommand(new ReminderId(id)),
+            TimeSpan.FromSeconds(10),
+            ct);
+
+        if (!response.Found)
+            return Results.NotFound(new { error = response.ErrorMessage ?? $"Reminder '{id}' not found." });
+        if (!response.Enabled && !string.IsNullOrWhiteSpace(response.ErrorMessage))
+            return Results.BadRequest(new { error = response.ErrorMessage, id, enabled = false });
+
+        return Results.Ok(new { id, enabled = response.Enabled, nextFire = response.NextFire, message = $"Reminder '{id}' enabled." });
+    });
+
+    app.MapGet("/api/reminders/{id}", async (
+        string id,
+        Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
+        CancellationToken ct) =>
+    {
+        var manager = await actor.GetAsync(ct);
+        var response = await manager.Ask<Netclaw.Actors.Reminders.GetReminderResponse>(
+            new Netclaw.Actors.Reminders.GetReminderCommand(new Netclaw.Actors.Reminders.ReminderId(id)),
+            TimeSpan.FromSeconds(10), ct);
+
+        return response.Reminder is not null ? Results.Ok(response.Reminder) : Results.NotFound(new { error = $"Reminder '{id}' not found." });
+    });
+}
+
 static Akka.Event.LogLevel ToAkkaLogLevel(LogLevel logLevel)
 {
     return logLevel switch
@@ -600,4 +802,23 @@ static Akka.Event.LogLevel ToAkkaLogLevel(LogLevel logLevel)
         Error or Critical or None => Akka.Event.LogLevel.ErrorLevel,
         _ => Akka.Event.LogLevel.WarningLevel
     };
+}
+
+/// <summary>
+/// REST API request body for creating a reminder.
+/// </summary>
+sealed record CreateReminderRequest
+{
+    public required string Name { get; init; }
+    public required string Prompt { get; init; }
+    public required string ScheduleType { get; init; }
+    public required string Schedule { get; init; }
+    public string? ReportToChannel { get; init; }
+    public string? NotifyInstructions { get; init; }
+}
+
+sealed record ImportReminderRequest
+{
+    public required ReminderDefinition Definition { get; init; }
+    public string? WriteMode { get; init; }
 }
