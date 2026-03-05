@@ -111,6 +111,7 @@ internal sealed class SlackThreadBindingActor : ReceiveActor, IWithUnboundedStas
     private void Active()
     {
         ReceiveAsync<SlackThreadInbound>(HandleInboundAsync);
+        ReceiveAsync<StartProactiveThread>(HandleProactiveThreadAsync);
         ReceiveAsync<ThreadOutput>(HandleOutputAsync);
         Receive<OutputStreamTerminated>(msg =>
         {
@@ -130,6 +131,13 @@ internal sealed class SlackThreadBindingActor : ReceiveActor, IWithUnboundedStas
             _log.Info("Slack thread idle for 1 hour, passivating");
             Context.Stop(Self);
         });
+    }
+
+    private async Task HandleProactiveThreadAsync(StartProactiveThread message)
+    {
+        _log.Info("Initializing proactive thread pipeline for session {0}", message.SessionId.Value);
+        await EnsureInitializedAsync();
+        Sender.Tell(new ProactiveThreadAck(message.SessionId));
     }
 
     private async Task HandleInboundAsync(SlackThreadInbound message)
