@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Netclaw.Channels;
 using Netclaw.Channels.Slack;
 using Netclaw.Cli;
@@ -35,27 +36,39 @@ catch (Exception ex)
 static async Task RunAsync(string[] args)
 {
     // ── Mode selection from CLI args ──
-    var mode = args.Length > 0 ? args[0] : "chat";
+    var parseResult = CliArgsParser.Parse(args);
     string? headlessPrompt = null;
+    string mode;
 
-    if (IsHelpToken(mode))
+    switch (parseResult.Kind)
     {
-        WriteGeneralHelp();
-        return;
-    }
-
-    if (mode is "version" or "--version" or "-V")
-    {
-        Console.WriteLine($"netclaw {BuildInfo.Version} (commit {BuildInfo.CommitHash}, built {BuildInfo.BuildTimestamp})");
-        return;
-    }
-
-    if (mode is "-p" or "--prompt")
-    {
-        headlessPrompt = args.Length > 1
-            ? args[1]
-            : throw new InvalidOperationException("Missing prompt argument after -p/--prompt");
-        mode = "headless";
+        case CliParseKind.NoArgs:
+            WriteGeneralHelp();
+            Environment.ExitCode = 2;
+            return;
+        case CliParseKind.Help:
+            WriteGeneralHelp();
+            return;
+        case CliParseKind.Version:
+            Console.WriteLine($"netclaw {BuildInfo.Version} (commit {BuildInfo.CommitHash}, built {BuildInfo.BuildTimestamp})");
+            return;
+        case CliParseKind.MissingPromptArg:
+            Console.Error.WriteLine("netclaw: -p/--prompt requires an argument.");
+            Console.Error.WriteLine("Usage: netclaw -p \"your prompt here\"");
+            Environment.ExitCode = 1;
+            return;
+        case CliParseKind.Unknown:
+            Console.Error.WriteLine($"netclaw: '{parseResult.Mode}' is not a netclaw command. See 'netclaw --help'.");
+            WriteGeneralHelp();
+            Environment.ExitCode = 2;
+            return;
+        case CliParseKind.Headless:
+            headlessPrompt = parseResult.HeadlessPrompt;
+            mode = "headless";
+            break;
+        default: // CliParseKind.Known
+            mode = parseResult.Mode!;
+            break;
     }
 
     // ── Lightweight modes (no Akka, no persistence) ──
@@ -448,6 +461,44 @@ static async Task RunAsync(string[] args)
         return;
     }
 
+    // ── Sessions single-shot mode ──
+    if (mode is "sessions")
+    {
+        var onceMode = false;
+        var sessionsJsonOutput = false;
+        for (var i = 1; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--once":
+                    onceMode = true;
+                    break;
+                case "--json":
+                    sessionsJsonOutput = true;
+                    onceMode = true;
+                    break;
+                case "--help" or "-h" or "help":
+                    WriteSessionsHelp();
+                    return;
+            }
+        }
+
+        if (onceMode)
+        {
+            var builder = Host.CreateApplicationBuilder(args);
+            ConfigureConfigServices(builder.Services, builder.Configuration);
+            builder.Services.AddHttpClient();
+            builder.Logging.ClearProviders();
+            builder.Logging.SetMinimumLevel(LogLevel.Warning);
+
+            using var host = builder.Build();
+            using var scope = host.Services.CreateScope();
+            Environment.ExitCode = await RunSessionsOnceAsync(
+                scope.ServiceProvider, builder.Configuration, sessionsJsonOutput);
+            return;
+        }
+    }
+
     // ── Parse --resume flag for chat mode ──
     string? resumeSessionId = null;
     if (mode is "chat")
@@ -523,12 +574,9 @@ static async Task RunAsync(string[] args)
             break;
 
         default:
-            // Treat unknown commands as "chat" for backward compatibility
-            webBuilder.Services.AddTermina("/chat", termina =>
-            {
-                termina.RegisterRoute<ChatPage, ChatViewModel>("/chat");
-            });
-            break;
+            Console.Error.WriteLine($"netclaw: internal error: unhandled mode '{mode}'");
+            Environment.ExitCode = 2;
+            return;
     }
 
     var app = webBuilder.Build();
@@ -562,9 +610,10 @@ static void WriteGeneralHelp()
     Console.WriteLine("Usage: netclaw <command> [options]");
     Console.WriteLine();
     Console.WriteLine("Commands:");
-    Console.WriteLine("  chat                     Interactive TUI chat (default)");
+    Console.WriteLine("  chat                     Interactive TUI chat");
     Console.WriteLine("  chat --resume <id>       Resume an existing session by ID");
     Console.WriteLine("  sessions                 Browse and resume recent sessions (TUI)");
+    Console.WriteLine("  sessions --once          List sessions and exit (no TUI, plain text or JSON)");
     Console.WriteLine("  -p, --prompt <text>      Headless single-prompt mode");
     Console.WriteLine("  doctor                   Configuration diagnostics (offline)");
     Console.WriteLine("  status                   Runtime status from daemon health JSON endpoint");
@@ -754,6 +803,12 @@ static async Task<int> RunStatusAsync(IServiceProvider services, IConfiguration 
     var httpClientFactory = services.GetRequiredService<IHttpClientFactory>();
     var client = httpClientFactory.CreateClient();
 
+    // Start CLI update check concurrently with daemon status fetch (3s timeout, non-blocking).
+    // Use a shared CTS so early-return paths can cancel it promptly.
+    using var updateCts = new CancellationTokenSource();
+    var updateClient = httpClientFactory.CreateClient();
+    var updateTask = StatusUpdateChecker.CheckAsync(updateClient, BuildInfo.Version, updateCts.Token);
+
     try
     {
         using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -761,6 +816,7 @@ static async Task<int> RunStatusAsync(IServiceProvider services, IConfiguration 
 
         if (!response.IsSuccessStatusCode)
         {
+            await updateCts.CancelAsync();
             Console.WriteLine($"[FAIL] status: daemon returned {(int)response.StatusCode} from {url}");
             Console.WriteLine("       fix: run `netclaw daemon status` and `netclaw daemon start`.");
             return 1;
@@ -774,20 +830,32 @@ static async Task<int> RunStatusAsync(IServiceProvider services, IConfiguration 
 
         if (status is null)
         {
+            await updateCts.CancelAsync();
             Console.WriteLine("[FAIL] status: daemon returned an empty status payload.");
             return 1;
         }
 
+        // Await the CLI update check (it has its own 3s timeout so this should be fast)
+        var cliUpdate = await updateTask;
+
         if (jsonOutput)
         {
-            Console.WriteLine(JsonSerializer.Serialize(status, new JsonSerializerOptions
-            {
-                WriteIndented = true
-            }));
+            // Merge CLI update result into the JSON output so consumers always see a fresh State.
+            var node = JsonSerializer.SerializeToNode(
+                status, new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+            var updateNode = (node["update"] as JsonObject) ?? new JsonObject();
+            var updateAvailable = string.Equals(cliUpdate.State, "update-available", StringComparison.Ordinal);
+            updateNode["available"] = updateAvailable;
+            updateNode["state"] = cliUpdate.State;
+            updateNode["currentVersion"] = cliUpdate.CurrentVersion;
+            updateNode["latestVersion"] = updateAvailable ? cliUpdate.LatestVersion : null;
+            updateNode["releaseNotesUrl"] = updateAvailable ? cliUpdate.ReleaseNotesUrl : null;
+            node["update"] = updateNode;
+            Console.WriteLine(node.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         }
         else
         {
-            WriteStatusResult(status, endpoint);
+            WriteStatusResult(status, endpoint, cliUpdate);
         }
 
         return status.Overall.ToLowerInvariant() switch
@@ -799,13 +867,96 @@ static async Task<int> RunStatusAsync(IServiceProvider services, IConfiguration 
     }
     catch (Exception ex)
     {
+        await updateCts.CancelAsync();
         Console.WriteLine($"[FAIL] status: unable to reach daemon at {url}: {ex.Message}");
         Console.WriteLine("       fix: run `netclaw daemon start` and retry.");
         return 1;
     }
 }
 
-static void WriteStatusResult(DaemonRuntimeStatus.Response status, string endpoint)
+static async Task<int> RunSessionsOnceAsync(
+    IServiceProvider services,
+    IConfiguration configuration,
+    bool jsonOutput)
+{
+    var endpoint = configuration["Daemon:Endpoint"]
+        ?? Environment.GetEnvironmentVariable("NETCLAW_DAEMON_ENDPOINT")
+        ?? "http://127.0.0.1:5199";
+
+    var url = $"{endpoint.TrimEnd('/')}/api/sessions";
+    var httpClientFactory = services.GetRequiredService<IHttpClientFactory>();
+    var client = httpClientFactory.CreateClient();
+
+    try
+    {
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var response = await client.GetAsync(url, timeoutCts.Token);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            Console.WriteLine($"[FAIL] sessions: daemon returned {(int)response.StatusCode} from {url}");
+            Console.WriteLine("       fix: run `netclaw daemon status` and `netclaw daemon start`.");
+            return 1;
+        }
+
+        var stream = await response.Content.ReadAsStreamAsync(timeoutCts.Token);
+        var sessions = await JsonSerializer.DeserializeAsync<List<SessionCatalogEntryDto>>(
+            stream,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web),
+            timeoutCts.Token) ?? [];
+
+        if (jsonOutput)
+        {
+            Console.WriteLine(JsonSerializer.Serialize(sessions, new JsonSerializerOptions
+            {
+                WriteIndented = true
+            }));
+        }
+        else
+        {
+            if (sessions.Count == 0)
+            {
+                Console.WriteLine("No sessions found.");
+            }
+            else
+            {
+                foreach (var session in sessions)
+                {
+                    var title = string.IsNullOrWhiteSpace(session.Title) ? "(untitled)" : session.Title;
+                    var lastActivity = DateTimeOffset.FromUnixTimeMilliseconds(session.LastActivity)
+                        .ToString("yyyy-MM-dd HH:mm");
+                    Console.WriteLine(
+                        $"{session.SessionId}  {title}  [{session.Status}]  turns={session.TurnCount}  last={lastActivity}");
+                }
+            }
+        }
+
+        return 0;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"[FAIL] sessions: unable to reach daemon at {url}: {ex.Message}");
+        Console.WriteLine("       fix: run `netclaw daemon start` and retry.");
+        return 1;
+    }
+}
+
+static void WriteSessionsHelp()
+{
+    Console.WriteLine("Usage: netclaw sessions [options]");
+    Console.WriteLine();
+    Console.WriteLine("Browse and resume recent sessions.");
+    Console.WriteLine();
+    Console.WriteLine("Options:");
+    Console.WriteLine("  --once          List sessions and exit (no TUI). Requires daemon.");
+    Console.WriteLine("  --json          Output as JSON (implies --once).");
+    Console.WriteLine();
+    Console.WriteLine("Exit codes (--once):");
+    Console.WriteLine("  0  sessions listed successfully");
+    Console.WriteLine("  1  daemon unavailable or request failed");
+}
+
+static void WriteStatusResult(DaemonRuntimeStatus.Response status, string endpoint, StatusUpdateResult? cliUpdate = null)
 {
     Console.WriteLine($"overall: {status.Overall}");
     Console.WriteLine($"version: {status.Build.Version} (commit {status.Build.CommitHash}, built {status.Build.BuildTimestamp})");
@@ -852,13 +1003,27 @@ static void WriteStatusResult(DaemonRuntimeStatus.Response status, string endpoi
             Console.WriteLine($"    {connector.Message}");
     }
 
-    if (status.Update is { Available: true } update)
+    // Resolve update state: prefer CLI check (freshest), fall back to daemon's cached result
+    var updateState = cliUpdate?.State ?? status.Update?.State ?? "unknown";
+    var updateCurrentVersion = cliUpdate?.CurrentVersion ?? status.Update?.CurrentVersion ?? status.Build.Version;
+    var updateLatestVersion = cliUpdate?.LatestVersion ?? status.Update?.LatestVersion;
+    var updateReleaseNotesUrl = cliUpdate?.ReleaseNotesUrl ?? status.Update?.ReleaseNotesUrl;
+
+    Console.WriteLine();
+    switch (updateState)
     {
-        Console.WriteLine();
-        Console.WriteLine($"UPDATE AVAILABLE: v{update.CurrentVersion} → v{update.LatestVersion}");
-        Console.WriteLine("  Run: netclaw update");
-        if (update.ReleaseNotesUrl is not null)
-            Console.WriteLine($"  Release notes: {update.ReleaseNotesUrl}");
+        case "update-available":
+            Console.WriteLine($"update: UPDATE AVAILABLE — v{updateCurrentVersion} → v{updateLatestVersion}");
+            Console.WriteLine("  Run: netclaw update");
+            if (updateReleaseNotesUrl is not null)
+                Console.WriteLine($"  Release notes: {updateReleaseNotesUrl}");
+            break;
+        case "up-to-date":
+            Console.WriteLine($"update: up-to-date (v{updateCurrentVersion})");
+            break;
+        default:
+            Console.WriteLine("update: unknown (check failed — run 'netclaw update --check' to retry)");
+            break;
     }
 }
 

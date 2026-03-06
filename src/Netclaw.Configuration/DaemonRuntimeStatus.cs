@@ -25,6 +25,8 @@ public static class DaemonRuntimeStatus
         public Update? Update { get; init; }
 
         public Memory? Memory { get; init; }
+
+        public Reminders? Reminders { get; init; }
     }
 
     public sealed class Build : IWireType
@@ -104,6 +106,11 @@ public static class DaemonRuntimeStatus
     {
         public bool Available { get; init; }
 
+        /// <summary>
+        /// Update availability state: "up-to-date", "update-available", or "unknown" (check failed or not yet run).
+        /// </summary>
+        public string State { get; init; } = "unknown";
+
         public required string CurrentVersion { get; init; }
 
         public string? LatestVersion { get; init; }
@@ -124,5 +131,17 @@ public static class DaemonRuntimeStatus
         public string? Endpoint { get; init; }
 
         public int? ToolCount { get; init; }
+    }
+
+    public sealed class Reminders : IWireType
+    {
+        /// <summary>Number of enabled reminder definitions currently scheduled.</summary>
+        public int ScheduledCount { get; init; }
+
+        /// <summary>Number of reminder executions currently in flight.</summary>
+        public int ActiveExecutions { get; init; }
+
+        /// <summary>Number of reminders that have recorded at least one consecutive failure.</summary>
+        public int FailedCount { get; init; }
     }
 }

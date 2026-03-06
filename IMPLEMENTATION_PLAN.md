@@ -1,12 +1,29 @@
 # Netclaw Implementation Plan
 
-Last updated: 2026-03-03
+Last updated: 2026-03-06
 Mode: build
 
 This file is RALPH-consumable.
 
+**Active milestone: Milestone 6 (0.3.2) — COMPLETE**
+All M6.x tasks are done. The next active milestone has not been designated.
+Update this header before the next RALPH run.
+
+---
+
+## Review Fix-it: Sessions `--json` flag does not imply `--once`
+
+**Source:** RALPH run 20260306-185029, review-after-iter-06 (finding F.1)
+**Surface area:** `src/Netclaw.Cli/Program.cs`
+**Verification:** L2
+
+Done when:
+- [x] `--json` case in the sessions argument parser also sets `onceMode = true` (line ~463 in Program.cs).
+- [x] `netclaw sessions --json` produces JSON output and exits (does not fall through to TUI).
+- [x] Smoke test updated to verify `sessions --json` exits 0 or 1 (not TUI launch).
+
 Rules for loop execution:
-- RALPH always picks the first task with unchecked `Done when` items.
+- RALPH only picks tasks from the **active milestone** listed above.
 - One iteration completes one task block.
 - Task metadata must include PRD + OpenSpec references.
 - Commits that complete a task must update this file and the referenced
@@ -148,7 +165,7 @@ Done when:
 **Verification:** L3
 
 Done when:
-- [ ] Tests use Termina `VirtualTerminal` + `VirtualInputSource` for headless wizard testing.
+- [x] Tests use Termina `VirtualTerminal` + `VirtualInputSource` for headless wizard testing.
 - [x] Test: full wizard flow with Ollama (no auth) produces valid config file. *(ViewModel-level test via `InitWizardViewModelTests`)*
 - [x] Test: provider selection → back-navigation clears downstream state.
 - [x] Test: API key entry with masked input produces correct secrets.json.
@@ -475,6 +492,115 @@ Done when:
 Done when:
 - [ ] Post-compaction session summaries queryable (not just raw journal).
 - [ ] Tests verify summary persistence and retrieval.
+
+---
+
+## Milestone 6: Stability and CLI Reliability (0.3.2)
+
+**GitHub Milestone:** [0.3.2](https://github.com/Aaronontheweb/netclaw/milestone/1)
+
+**Goal:** Fix post-0.3.1 regressions in search, session catalog, SignalR
+resume, Slack error diagnostics, reminder execution, and CLI ergonomics.
+
+### Task M6.1: Fix Brave Search gzip parse failure
+
+**GitHub Issue:** #161
+**Surface area:** `Netclaw.Search`
+**Verification:** L2
+
+Done when:
+- [x] `BraveSearchBackend` correctly handles gzip-encoded responses (the `0x1F` byte is the gzip magic number; `ReadAsStringAsync` does not auto-decompress when `AcceptEncoding: gzip` is set manually).
+- [x] Response `Content-Encoding` and `Content-Type` validated before JSON parse; unexpected encoding produces a controlled `SearchBackendResult.Error` with response metadata (status, content-type, content-encoding).
+- [x] Tests with mock HTTP handler returning gzip-compressed JSON verify successful parse.
+- [x] Test with mock returning unexpected binary content verifies controlled error path.
+
+### Task M6.2: Harden session catalog schema migration
+
+**GitHub Issue:** #162
+**Surface area:** `Netclaw.Daemon` (`SessionCatalogService`)
+**Verification:** L2
+
+Done when:
+- [x] `SessionCatalogService` auto-creates the `sessions` table using the `003_sessions_table.sql` schema when `DetectSchemaMode` returns `Missing`, instead of silently returning empty results.
+- [x] Legacy schema (`session_id` column without `persistence_id`) is migrated to current schema via `ALTER TABLE` or table recreation on startup.
+- [x] `ListRecent` returns explicit degraded status (empty list + warning log) only when migration itself fails, not on schema mismatch.
+- [x] Tests verify: missing table → auto-create; legacy schema → auto-migrate; current schema → no-op.
+
+### Task M6.3: Fix SignalR session stall after idle passivation
+
+**GitHub Issue:** #163
+**Surface area:** `Netclaw.Daemon` (`SessionRegistry`), `Netclaw.Cli` (`DaemonClient`)
+**Verification:** L2
+
+Done when:
+- [x] `SessionRegistry.PublishOutput` logs when output is dropped due to missing connection binding (currently silently returns).
+- [x] `SessionRegistry.AttachSessionAsync` re-materializes the output stream when attaching to a session whose Akka.Streams output has completed (post-passivation recovery creates new pipeline but old output sink is dead).
+- [x] `DaemonClient` reconnect flow re-attaches to the active session after SignalR reconnection, not just re-establishes the SignalR connection.
+- [x] Correlation logging added: log session attach/detach events with connection ID and session ID for post-mortem tracing.
+- [x] Test: simulate disconnect → reconnect → send message → verify output delivery resumes.
+
+### Task M6.4: Add correlation IDs and cause categories to Slack error fallback
+
+**GitHub Issue:** #164
+**Surface area:** `Netclaw.Channels.Slack` (`SlackThreadBindingActor`), `Netclaw.Actors` (`LlmSessionActor`)
+**Verification:** L2
+
+Done when:
+- [x] `ErrorOutput` includes a `CorrelationId` (GUID) and `ErrorCategory` enum (`ToolFailure`, `ProviderFailure`, `StreamFailure`, `Timeout`, `Unknown`).
+- [x] `SlackThreadBindingActor` includes correlation ID in the Slack fallback message (e.g., `:warning: Error processing your message (ref: abc123). Check logs for details.`).
+- [x] Session log entries for errors include the same correlation ID for cross-referencing.
+- [x] `LlmSessionActor` categorizes errors when emitting `ErrorOutput` (tool execution failure vs provider failure vs timeout).
+- [x] Tests verify correlation ID propagation from error source through to output.
+
+### Task M6.5: Add structured reminder execution diagnostics
+
+**GitHub Issue:** #165
+**Surface area:** `Netclaw.Actors.Reminders` (`ReminderExecutionActor`, `ReminderManagerActor`)
+**Verification:** L2
+
+Done when:
+- [x] `ReminderExecutionActor` logs structured execution lifecycle: `{ReminderId, ExecutionId, Phase, DueAt, DispatchedAt, CompletedAt, Success, ErrorType, ErrorMessage}`.
+- [x] All exceptions in reminder execution (including inner exceptions) are logged with full stack trace, not just `Message`.
+- [x] `ReminderManagerActor.HandleReminderFiredAsync` logs the reminder ID, definition title, and schedule type when a reminder fires.
+- [x] `netclaw status` includes reminder health counters: scheduled count, active executions, failed count (from `ReminderManagerActor` state, exposed via health endpoint).
+- [x] Test: simulate reminder execution failure → verify structured log contains full exception chain.
+
+### Task M6.6: Add single-shot CLI mode and CI smoke coverage
+
+**GitHub Issue:** #166
+**Surface area:** `Netclaw.Cli`
+**Verification:** L2
+
+Done when:
+- [x] `netclaw sessions --once` lists sessions and exits (no TUI, plain text or JSON output, non-zero on failure).
+- [x] `netclaw chat -p "..."` (headless mode, already exists) has deterministic exit code: 0 on success, non-zero on provider/session failure.
+- [x] `netclaw status` already works as single-shot — verify exit codes are correct (0=healthy, 1=error, 2=degraded).
+- [x] Smoke test script (`scripts/smoke/cli-smoke.sh`) exercises: `netclaw version`, `netclaw status`, `netclaw doctor`, `netclaw sessions --once` with expected exit codes.
+- [x] CI workflow runs smoke script (can run without live daemon for offline commands; daemon-dependent commands skipped when daemon unavailable).
+
+### Task M6.7: Make bare `netclaw` show usage error
+
+**GitHub Issue:** #167
+**Surface area:** `Netclaw.Cli` (`Program.cs`)
+**Verification:** L2
+
+Done when:
+- [x] `netclaw` with no arguments prints help text and exits with code 2 (not 0, not 1).
+- [x] Default `mode = "chat"` fallback removed; bare invocation no longer launches chat TUI.
+- [x] Unknown commands print error message + help text and exit with code 2 (currently falls through to chat).
+- [x] Tests verify: no-args → exit 2 + help output; unknown command → exit 2 + error.
+
+### Task M6.8: Include update availability in `netclaw status`
+
+**GitHub Issue:** #168
+**Surface area:** `Netclaw.Cli` (`Program.cs` status output), `Netclaw.Daemon` (health endpoint)
+**Verification:** L2
+
+Done when:
+- [x] `netclaw status` output includes current version, latest available version, and update state (`up-to-date` / `update-available` / `unknown`).
+- [x] Update check is non-blocking with a short timeout (3s); failure results in `update status: unknown` with reason, not a command failure.
+- [x] JSON output mode includes update info in the response payload.
+- [x] Test: mock GitHub releases API → verify `update-available` when newer version exists; verify `unknown` on timeout/error.
 
 ---
 
