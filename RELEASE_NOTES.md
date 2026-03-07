@@ -1,3 +1,12 @@
+#### 0.3.5 2026-03-07 ####
+
+Netclaw v0.3.5 — Reminder Slack notification reliability
+
+**Reminder Notification Delivery**
+
+* Treat reminder notification delivery as part of execution success: `send_slack_message` tool results are now tracked during reminder execution and delivery failures are surfaced as execution failures rather than silently ignored. ([#181](https://github.com/Aaronontheweb/netclaw/pull/181))
+* Made tool argument parsing resilient to common LLM key variants (`Message`/`message`, `ChannelId`/`channel_id`) and added `text` as a `Message` alias for `send_slack_message` to prevent delivery failures caused by argument name mismatches. ([#181](https://github.com/Aaronontheweb/netclaw/pull/181))
+
 #### 0.3.4 2026-03-07 ####
 
 Netclaw v0.3.4 — OAuth device flow sequencing fix
