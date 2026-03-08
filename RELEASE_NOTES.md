@@ -1,3 +1,13 @@
+#### 0.4.0 2026-03-08 ####
+
+Netclaw v0.4.0 — SQLite memory redesign and deterministic memory evals
+
+**Memory Platform Upgrade**
+
+* Replaced file-backed memorizer surfaces with SQLite-backed memory tools and added a policy-first background curation pipeline for checkpoint formation, hygiene, and recall quality. ([#186](https://github.com/Aaronontheweb/netclaw/pull/186))
+* Added deterministic memory eval tooling and suite profiles (`smoke` and `realistic`) with query-trace output to make recall regressions diagnosable without LLM variance. ([#186](https://github.com/Aaronontheweb/netclaw/pull/186))
+* Added memory health diagnostics and runtime status exposure for checkpoint curation, plus a config-backed switch for disabling system skill sync during local validation. ([#186](https://github.com/Aaronontheweb/netclaw/pull/186))
+
 #### 0.3.6 2026-03-07 ####
 
 Netclaw v0.3.6 — Reminder Slack target UX
