@@ -1,3 +1,4 @@
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging.Abstractions;
 using Netclaw.Actors.Memory;
@@ -36,8 +37,35 @@ public sealed class DaemonRuntimeStatusServiceTests : IDisposable
 
     public void Dispose()
     {
-        if (Directory.Exists(_tempBase))
-            Directory.Delete(_tempBase, recursive: true);
+        TryDeleteDirectory(_tempBase);
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        if (!Directory.Exists(path))
+            return;
+
+        SqliteConnection.ClearAllPools();
+
+        for (var i = 0; i < 8; i++)
+        {
+            try
+            {
+                Directory.Delete(path, recursive: true);
+                return;
+            }
+            catch (IOException) when (i < 7)
+            {
+                Thread.Sleep(25 * (i + 1));
+            }
+            catch (UnauthorizedAccessException) when (i < 7)
+            {
+                Thread.Sleep(25 * (i + 1));
+            }
+        }
+
+        // Best effort cleanup: file handles can remain briefly open on Windows CI.
+        // Leaving temp dirs behind is preferable to failing the test run.
     }
 
     [Fact]
@@ -219,6 +247,36 @@ public sealed class DaemonRuntimeStatusServiceTests : IDisposable
         Assert.NotNull(status.Memory);
         Assert.Equal("memorizer", status.Memory.Provider);
         Assert.Equal("unavailable", status.Memory.Status);
+    }
+
+    [Fact]
+    public async Task StatusIncludesMemory_SqliteBackend()
+    {
+        var paths = CreatePaths();
+        paths.EnsureDirectoriesExist();
+
+        var sqliteStore = new SQLiteMemoryStore(paths.MemorySqliteDbPath, TimeProvider.System);
+        await sqliteStore.InitializeAsync();
+
+        var service = new DaemonRuntimeStatusService(
+            TimeProvider.System,
+            channels: Array.Empty<IChannel>(),
+            slackOptions: new SlackChannelOptions { Enabled = false },
+            persistenceOptions: new DaemonPersistenceOptions(),
+            telemetryOptions: Options.Create(new TelemetryOptions()),
+            sessionConfig: DefaultSessionConfig,
+            modelSelection: DefaultModelSelection,
+            memoryConfig: new MemoryConfig { Provider = "sqlite" },
+            paths: paths,
+            sqliteMemoryStore: sqliteStore);
+
+        var status = await service.GetStatusAsync();
+
+        Assert.NotNull(status.Memory);
+        Assert.Equal("sqlite", status.Memory.Provider);
+        Assert.Equal("healthy", status.Memory.Status);
+        Assert.Equal(paths.MemorySqliteDbPath, status.Memory.DatabasePath);
+        Assert.Equal(0, status.Memory.PendingCheckpoints);
     }
 
     [Fact]

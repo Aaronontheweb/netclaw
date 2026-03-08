@@ -1,0 +1,90 @@
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Netclaw.Actors.Memory;
+
+namespace Netclaw.Daemon.Services;
+
+internal sealed class MemoryCurationWorkerService(
+    SQLiteMemoryStore store,
+    MemoryCurationEngine engine,
+    TimeProvider timeProvider,
+    ILogger<MemoryCurationWorkerService> logger) : IHostedService, IDisposable
+{
+    private readonly CancellationTokenSource _cts = new();
+    private Task? _worker;
+    private bool _disposed;
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        _worker = Task.Run(() => RunAsync(_cts.Token), CancellationToken.None);
+        return Task.CompletedTask;
+    }
+
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        if (_disposed)
+            return;
+
+        _cts.Cancel();
+        if (_worker is not null)
+            await _worker;
+    }
+
+    private async Task RunAsync(CancellationToken ct)
+    {
+        await store.ResetProcessingCheckpointsAsync(ct);
+
+        while (!ct.IsCancellationRequested)
+        {
+            var leased = await store.LeaseNextPendingCheckpointAsync(ct);
+            if (leased is null)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
+                continue;
+            }
+
+            try
+            {
+                var started = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+                var operations = await engine.CurateAsync(leased, ct);
+                await store.ApplyCurationBatchAsync(leased.CheckpointId, operations, ct);
+
+                var ended = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+                logger.LogInformation(
+                    "Memory checkpoint curation completed for {CheckpointId} (trigger={TriggerType}, operations={OperationCount}, durationMs={DurationMs})",
+                    leased.CheckpointId,
+                    leased.TriggerType,
+                    operations.Count,
+                    ended - started);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex,
+                    "Memory checkpoint curation failed for {CheckpointId} (trigger={TriggerType}); scheduling retry",
+                    leased.CheckpointId,
+                    leased.TriggerType);
+
+                if (string.Equals(leased.TriggerType, "subagent-findings", StringComparison.OrdinalIgnoreCase))
+                {
+                    logger.LogWarning(
+                        "Subagent-originated memory candidate retry scheduled for checkpoint {CheckpointId}",
+                        leased.CheckpointId);
+                }
+
+                await store.MarkCheckpointRetryAsync(leased.CheckpointId, maxRetries: 5, ct);
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        if (!_cts.IsCancellationRequested)
+            _cts.Cancel();
+        _cts.Dispose();
+    }
+}

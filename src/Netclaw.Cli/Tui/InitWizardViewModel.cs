@@ -134,7 +134,7 @@ public partial class InitWizardViewModel : ReactiveViewModel
     public string ChromeDevToolsUnavailableReason { get; }
 
     // ── Step 6: Memory ──
-    public string SelectedMemoryBackend { get; set; } = "files";
+    public string SelectedMemoryBackend { get; set; } = "sqlite";
     public string? MemorizerUrl { get; set; }
 
     // ── Step 7: Exposure ──
@@ -967,6 +967,12 @@ public partial class InitWizardViewModel : ReactiveViewModel
         config["Memory"] = new Dictionary<string, object>
         {
             ["Provider"] = SelectedMemoryBackend
+        };
+
+        // Skill sync section
+        config["SkillSync"] = new Dictionary<string, object>
+        {
+            ["DisableSystemSkillSync"] = false
         };
 
         // MCP servers: browser automation + memorizer (both optional)
