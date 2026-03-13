@@ -1,7 +1,11 @@
-# Identity Management
-
-<!-- description: How to keep SOUL.md narrowly scoped to identity/profile updates while project facts and evidence stay in SQLite memory -->
-<!-- triggers: learn user preference | update personality | identity profile | save durable fact | soul update -->
+---
+name: identity-management
+description: How to keep SOUL.md narrowly scoped to identity/profile updates while project facts and evidence stay in SQLite memory
+metadata:
+  author: netclaw
+  version: "1.1.0"
+  triggers: learn user preference | update personality | identity profile | save durable fact | soul update
+---
 
 ## Overview
 

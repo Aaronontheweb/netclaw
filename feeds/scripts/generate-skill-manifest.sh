@@ -2,6 +2,9 @@
 # generate-skill-manifest.sh — Builds manifest.json from skill files under feeds/skills/.system/files/
 # Usage: ./feeds/scripts/generate-skill-manifest.sh
 # Outputs: feeds/skills/.system/manifest.json
+#
+# All skills use directory-based layout:
+#   files/skill-name/1.0.0/SKILL.md  (+ optional references/, scripts/, assets/)
 
 set -euo pipefail
 
@@ -27,19 +30,27 @@ for skill_dir in "$FILES_DIR"/*/; do
     [ -d "$skill_dir" ] || continue
     skill_name=$(basename "$skill_dir")
 
-    # Find the highest version file (sort by semver — simple lexicographic works for x.y.z format)
-    latest_file=$(ls -1 "$skill_dir"*.md 2>/dev/null | sort -V | tail -n 1)
-    [ -z "$latest_file" ] && continue
+    # Find the highest version directory containing SKILL.md
+    latest_dir=""
+    for vdir in "$skill_dir"*/; do
+        [ -d "$vdir" ] && [ -f "$vdir/SKILL.md" ] && latest_dir="$vdir"
+    done
 
-    version=$(basename "$latest_file" .md)
-    sha256=$(sha256sum "$latest_file" | cut -d' ' -f1)
-    size_bytes=$(stat -c%s "$latest_file" 2>/dev/null || stat -f%z "$latest_file" 2>/dev/null)
+    [ -z "$latest_dir" ] && continue
 
-    # Extract description from first <!-- description: ... --> comment only
-    description=$(grep -m 1 -oP '<!--\s*description:\s*\K.+?(?=\s*-->)' "$latest_file" 2>/dev/null || echo "System skill: $skill_name")
+    version=$(basename "$latest_dir")
+    main_file="$latest_dir/SKILL.md"
 
-    # Build the relative URL for CDN
-    url="https://feeds.netclaw.dev/skills/.system/files/$skill_name/$version.md"
+    sha256=$(sha256sum "$main_file" | cut -d' ' -f1)
+    size_bytes=$(stat -c%s "$main_file" 2>/dev/null || stat -f%z "$main_file" 2>/dev/null)
+
+    # Extract description from YAML frontmatter
+    description=$(sed -n '/^---$/,/^---$/{/^description:/{s/^description:\s*//;s/^"\(.*\)"$/\1/;p;q}}' "$main_file" 2>/dev/null)
+    if [ -z "$description" ]; then
+        description="System skill: $skill_name"
+    fi
+
+    url="https://feeds.netclaw.dev/skills/.system/files/$skill_name/$version/SKILL.md"
 
     if [ "$FIRST" = true ]; then
         FIRST=false
@@ -47,7 +58,49 @@ for skill_dir in "$FILES_DIR"/*/; do
         ENTRIES="$ENTRIES,"
     fi
 
-    ENTRIES="$ENTRIES
+    # Build files array for resource files (non-SKILL.md files)
+    FILES_JSON=""
+    FILES_FIRST=true
+    while IFS= read -r -d '' resource_file; do
+        rel_path="${resource_file#"$latest_dir"}"
+        [ "$rel_path" = "SKILL.md" ] && continue
+
+        file_sha256=$(sha256sum "$resource_file" | cut -d' ' -f1)
+        file_size=$(stat -c%s "$resource_file" 2>/dev/null || stat -f%z "$resource_file" 2>/dev/null)
+        file_url="https://feeds.netclaw.dev/skills/.system/files/$skill_name/$version/$rel_path"
+
+        if [ "$FILES_FIRST" = true ]; then
+            FILES_FIRST=false
+        else
+            FILES_JSON="$FILES_JSON,"
+        fi
+
+        FILES_JSON="$FILES_JSON
+        {
+          \"path\": \"$rel_path\",
+          \"sha256\": \"$file_sha256\",
+          \"sizeBytes\": $file_size,
+          \"url\": \"$file_url\"
+        }"
+    done < <(find "$latest_dir" -type f -print0 | sort -z)
+
+    # Build the entry JSON
+    if [ -n "$FILES_JSON" ]; then
+        ENTRIES="$ENTRIES
+    {
+      \"name\": \"$skill_name\",
+      \"version\": \"$version\",
+      \"minimumDaemonVersion\": \"0.1.0\",
+      \"sha256\": \"$sha256\",
+      \"sizeBytes\": $size_bytes,
+      \"url\": \"$url\",
+      \"category\": null,
+      \"description\": \"$description\",
+      \"files\": [$FILES_JSON
+      ]
+    }"
+    else
+        ENTRIES="$ENTRIES
     {
       \"name\": \"$skill_name\",
       \"version\": \"$version\",
@@ -58,6 +111,7 @@ for skill_dir in "$FILES_DIR"/*/; do
       \"category\": null,
       \"description\": \"$description\"
     }"
+    fi
 done
 
 cat > "$MANIFEST_PATH" << EOF

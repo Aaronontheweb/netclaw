@@ -1,7 +1,11 @@
-# Memorizer Usage
-
-<!-- description: Memorizer MCP operations for explicit manual memory workflows under SQLite-first Netclaw memory -->
-<!-- triggers: organize memories | workspace management | project tracking | memory relationships | advanced search -->
+---
+name: memorizer-usage
+description: Memorizer MCP operations for explicit manual memory workflows under SQLite-first Netclaw memory
+metadata:
+  author: netclaw
+  version: "1.3.0"
+  triggers: organize memories | workspace management | project tracking | memory relationships | advanced search
+---
 
 ## Position In The Memory Model
 

@@ -1,7 +1,11 @@
-# Self-Diagnostics
-
-<!-- description: Read when sessions timeout, connections fail, tools are missing, or the user reports errors. Covers netclaw doctor, logs, MCP status, and memory health. -->
-<!-- triggers: connection failure | session timeout | missing tools | user reports errors | daemon issues | config change | memory degraded -->
+---
+name: self-diagnostics
+description: "Read when sessions timeout, connections fail, tools are missing, or the user reports errors. Covers netclaw doctor, logs, MCP status, and memory health."
+metadata:
+  author: netclaw
+  version: "1.1.0"
+  triggers: connection failure | session timeout | missing tools | user reports errors | daemon issues | config change | memory degraded
+---
 
 ## Behavioral Triggers
 

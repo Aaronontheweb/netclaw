@@ -1,7 +1,11 @@
-# Memory Usage
-
-<!-- description: How SQLite-backed memory now splits automatic durable recall from intentional evidence search -->
-<!-- triggers: conversation start | user shares durable fact | need prior knowledge | memory error | save information -->
+---
+name: memory-usage
+description: How SQLite-backed memory now splits automatic durable recall from intentional evidence search
+metadata:
+  author: netclaw
+  version: "1.4.0"
+  triggers: conversation start | user shares durable fact | need prior knowledge | memory error | save information
+---
 
 ## Default Model
 

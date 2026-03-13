@@ -72,8 +72,6 @@ internal sealed class SystemSkillSyncService : IHostedService
         {
             Directory.CreateDirectory(_paths.SystemSkillsDirectory);
 
-            MigrateFlatSkills();
-
             var syncState = ReadSyncState();
             var manifest = await FetchManifestAsync(cancellationToken);
 
@@ -93,32 +91,6 @@ internal sealed class SystemSkillSyncService : IHostedService
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-
-    /// <summary>
-    /// One-time migration: move built-in skills from flat <c>skills/*.md</c> into
-    /// <c>skills/.system/</c> and create an initial sync state.
-    /// </summary>
-    private void MigrateFlatSkills()
-    {
-        var builtInNames = new[] { "identity-management", "memory-usage", "memorizer-usage", "self-diagnostics" };
-        var migrated = false;
-
-        foreach (var name in builtInNames)
-        {
-            var flatPath = Path.Combine(_paths.SkillsDirectory, $"{name}.md");
-            var systemPath = Path.Combine(_paths.SystemSkillsDirectory, $"{name}.md");
-
-            if (File.Exists(flatPath) && !File.Exists(systemPath))
-            {
-                File.Move(flatPath, systemPath);
-                _logger.LogInformation("Migrated skill {SkillName} from skills/ to skills/.system/", name);
-                migrated = true;
-            }
-        }
-
-        if (migrated)
-            _logger.LogInformation("Completed one-time migration of built-in skills to .system/ directory");
-    }
 
     private SkillSyncState ReadSyncState()
     {
@@ -212,15 +184,39 @@ internal sealed class SystemSkillSyncService : IHostedService
                 continue;
             }
 
-            // Download the skill
+            // Download skill into its directory (skill-name/SKILL.md)
             try
             {
-                var content = await DownloadSkillAsync(entry, cancellationToken);
-                if (content is null)
-                    continue;
+                var skillDir = Path.Combine(_paths.SystemSkillsDirectory, entry.Name);
+                Directory.CreateDirectory(skillDir);
 
-                var targetPath = Path.Combine(_paths.SystemSkillsDirectory, $"{entry.Name}.md");
-                await File.WriteAllTextAsync(targetPath, content, cancellationToken);
+                // Download main SKILL.md
+                var mainContent = await DownloadAndVerifyAsync(entry.Url, entry.Sha256, entry.Name, cancellationToken);
+                if (mainContent is null)
+                    continue;
+                await File.WriteAllTextAsync(Path.Combine(skillDir, "SKILL.md"), mainContent, cancellationToken);
+
+                // Download resource files if present
+                if (entry.Files is { Count: > 0 })
+                {
+                    var allFilesOk = true;
+                    foreach (var file in entry.Files)
+                    {
+                        var fileContent = await DownloadAndVerifyAsync(file.Url, file.Sha256, $"{entry.Name}/{file.Path}", cancellationToken);
+                        if (fileContent is null)
+                        {
+                            allFilesOk = false;
+                            break;
+                        }
+
+                        var filePath = Path.Combine(skillDir, file.Path.Replace('/', Path.DirectorySeparatorChar));
+                        Directory.CreateDirectory(Path.GetDirectoryName(filePath)!);
+                        await File.WriteAllTextAsync(filePath, fileContent, cancellationToken);
+                    }
+
+                    if (!allFilesOk)
+                        continue;
+                }
 
                 syncState.Skills[entry.Name] = new SyncedSkillState
                 {
@@ -255,22 +251,23 @@ internal sealed class SystemSkillSyncService : IHostedService
         }
     }
 
-    private async Task<string?> DownloadSkillAsync(SkillFeedEntry entry, CancellationToken cancellationToken)
+    private async Task<string?> DownloadAndVerifyAsync(
+        string url, string expectedSha256, string label, CancellationToken cancellationToken)
     {
         try
         {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(FeedConstants.FeedHttpTimeout);
 
-            var content = await _httpClient.GetStringAsync(entry.Url, cts.Token);
+            var content = await _httpClient.GetStringAsync(url, cts.Token);
 
             // Verify SHA-256
             var hash = ComputeSha256(content);
-            if (!string.Equals(hash, entry.Sha256, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(hash, expectedSha256, StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogWarning(
-                    "SHA-256 mismatch for skill {SkillName}: expected {Expected}, got {Actual}",
-                    entry.Name, entry.Sha256, hash);
+                    "SHA-256 mismatch for {Label}: expected {Expected}, got {Actual}",
+                    label, expectedSha256, hash);
                 return null;
             }
 
@@ -278,12 +275,12 @@ internal sealed class SystemSkillSyncService : IHostedService
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogWarning("Download timed out for skill {SkillName}", entry.Name);
+            _logger.LogWarning("Download timed out for {Label}", label);
             return null;
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogWarning("Download failed for skill {SkillName}: {Message}", entry.Name, ex.Message);
+            _logger.LogWarning("Download failed for {Label}: {Message}", label, ex.Message);
             return null;
         }
     }
