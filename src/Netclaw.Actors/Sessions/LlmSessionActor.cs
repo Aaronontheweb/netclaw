@@ -97,6 +97,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly HashSet<string> _autoLoadedSkills = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _autoLoadedSkillContent = new(StringComparer.OrdinalIgnoreCase);
     private readonly SkillRegistry? _skillRegistry;
+    private readonly Telemetry.ISessionMetrics? _sessionMetrics;
 
     // Persistent state (immutable — replaced on each event)
     private SessionState _state = SessionState.Empty;
@@ -121,10 +122,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         TimeProvider? timeProvider = null,
         IReadOnlyList<IContextLayerProvider>? contextLayers = null,
         NetclawPaths? paths = null,
-        SkillRegistry? skillRegistry = null)
+        SkillRegistry? skillRegistry = null,
+        Telemetry.ISessionMetrics? sessionMetrics = null)
     {
         _sessionId = new SessionId(entityId);
         _skillRegistry = skillRegistry;
+        _sessionMetrics = sessionMetrics;
         _chatClient = clientProvider.GetClient(ModelRole.Main);
         _compactionClient = config.CompactionModelId is not null
             ? clientProvider.GetClient(ModelRole.Compaction)
@@ -1606,6 +1609,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         InjectAutomaticRecall(messages, _activeRecall);
 
+        if (_activeRecall.Items.Count > 0)
+        {
+            _sessionMetrics?.RecordMemoriesRecalled(_activeRecall.Items.Count);
+        }
+
         // Skill auto-load: deterministic keyword matching against enriched skill index.
         // Injects matched skill content as transient system messages before the LLM decides.
         var userMessage = _state.FindLastUserMessage()?.Content;
@@ -1768,6 +1776,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 string.Join(",", newMatches.Select(m => m.TokenHits)),
                 string.Join(",", newMatches.Select(m => m.PhraseHits)),
                 details);
+
+            _sessionMetrics?.RecordSkillsLoaded(newMatches.Count);
         }
     }
 
