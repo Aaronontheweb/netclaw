@@ -37,7 +37,8 @@ public sealed class NetclawPaths
     public string CacheDirectory => Path.Combine(BasePath, "cache");
     public string SkillKeywordCacheDirectory => Path.Combine(CacheDirectory, "skill-keywords");
 
-    // ── Memory ──
+    // ── Memory directories ──
+    public string MemoryDirectory => Path.Combine(BasePath, "memory");
     public string MemorySqliteDbPath => SqliteDbPath;
 
     // Legacy file-backed memory paths (kept for migration detection only)
@@ -97,6 +98,7 @@ public sealed class NetclawPaths
         Directory.CreateDirectory(LogsDirectory);
         Directory.CreateDirectory(SessionLogsDirectory);
         Directory.CreateDirectory(AgentsDirectory);
+        Directory.CreateDirectory(MemoryDirectory);
         Directory.CreateDirectory(MemoriesDirectory);
         Directory.CreateDirectory(SessionsDirectory);
         Directory.CreateDirectory(BinDirectory);
