@@ -1,7 +1,8 @@
 using Netclaw.Configuration;
-using Netclaw.Configuration.Providers;
-using Netclaw.Configuration.Providers.OAuth;
+using Netclaw.Providers;
+using Netclaw.Providers.OAuth;
 using R3;
+using Termina.Clipboard;
 using Termina.Extensions;
 using Termina.Input;
 using Termina.Layout;
@@ -19,6 +20,12 @@ namespace Netclaw.Cli.Tui;
 public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
 {
     private static readonly string[] SpinnerFrames = ["\u280b", "\u2819", "\u2838", "\u2834", "\u2826", "\u2807"];
+    private readonly IClipboardService? _clipboardService;
+
+    public ProviderManagerPage(IClipboardService? clipboardService = null)
+    {
+        _clipboardService = clipboardService;
+    }
 
     private SelectionListNode<string>? _providerList;
     private SelectionListNode<string>? _authList;
@@ -77,6 +84,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                 ProviderManagerState.AddSelectAuth => BuildAddAuthView(),
                 ProviderManagerState.AddCredentials => BuildCredentialsView(),
                 ProviderManagerState.AddOAuthDeviceFlow => BuildOAuthDeviceFlowView(),
+                ProviderManagerState.AddBrowserOAuthFlow => BuildBrowserOAuthFlowView(),
                 ProviderManagerState.AddValidating => BuildValidatingView(),
                 ProviderManagerState.AddComplete => BuildAddCompleteView(),
                 ProviderManagerState.Details => BuildDetailsView(),
@@ -88,6 +96,23 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
 
         ViewModel.StateVersion
             .Subscribe(_ => _contentNode.Invalidate())
+            .DisposeWith(Subscriptions);
+
+        // Animate spinners during loading, validation, and OAuth flows
+        ViewModel.SpinnerTick
+            .Subscribe(_ =>
+            {
+                _contentNode.Invalidate();
+                ViewModel.RequestRedraw();
+            })
+            .DisposeWith(Subscriptions);
+
+        ViewModel.EagerProbeElapsedSeconds
+            .Subscribe(_ =>
+            {
+                _contentNode.Invalidate();
+                ViewModel.RequestRedraw();
+            })
             .DisposeWith(Subscriptions);
 
         return _contentNode;
@@ -212,15 +237,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
     {
         var providerType = ViewModel.NewProviderType ?? "unknown";
         var descriptor = ViewModel.Registry.Get(providerType);
-        var supportedMethods = descriptor.SupportedAuthMethods
-            .Where(m => m != AuthMethod.None)
-            .Select(m => m switch
-            {
-                AuthMethod.ApiKey => "API Key",
-                AuthMethod.OAuthDevice => "OAuth Device Flow (recommended)",
-                _ => m.ToString()
-            })
-            .ToList();
+        var supportedMethods = OAuthFlowViews.BuildAuthMethodLabels(descriptor.Auth);
 
         _authList = Layouts.SelectionList(supportedMethods)
             .WithMode(SelectionMode.Single)
@@ -234,10 +251,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
             {
                 if (selected.Count > 0)
                 {
-                    var method = selected[0].StartsWith("API", StringComparison.Ordinal)
-                        ? AuthMethod.ApiKey
-                        : AuthMethod.OAuthDevice;
-                    ViewModel.SelectAuthMethod(method);
+                    ViewModel.SelectAuthMethod(OAuthFlowViews.ParseAuthMethodLabel(selected[0], descriptor.Auth));
                 }
             })
             .DisposeWith(_stepSubs);
@@ -257,7 +271,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
         children.WithChild(new TextNode($"  Provider: {providerType} (name: {ViewModel.NewProviderName})")
             .WithForeground(Color.White));
 
-        if (descriptor.CredentialMode == CredentialInputMode.ApiKey)
+        if (descriptor.Auth is ApiKeyAuth or MultiAuth)
         {
             children.WithChild(new TextNode("").Height(1));
             children.WithChild(new TextNode("  API Key:").WithForeground(Color.White));
@@ -283,14 +297,14 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                 .WithContent(_apiKeyInput)
                 .Height(3));
 
-            if (descriptor.ApiKeyGuidanceUrl is { } guidanceUrl)
+            if (descriptor.Auth.GetApiKeyGuidanceUrl() is { } guidanceUrl)
             {
                 children.WithChild(new TextNode("").Height(1));
                 children.WithChild(new TextNode($"  Get your API key at {guidanceUrl}")
                     .WithForeground(Color.Gray));
             }
         }
-        else if (descriptor.CredentialMode == CredentialInputMode.EndpointOnly)
+        else if (descriptor.Auth is EndpointOnlyAuth)
         {
             children.WithChild(new TextNode("").Height(1));
             children.WithChild(new TextNode($"  Endpoint (default: {descriptor.DefaultEndpoint}):")
@@ -328,7 +342,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
     {
         var children = Layouts.Vertical();
         var providerType = ViewModel.NewProviderType ?? "unknown";
-        var flowState = ViewModel.OAuthFlowState.Value;
+        var flowState = ViewModel.OAuth.FlowState.Value;
 
         children.WithChild(new TextNode($"  OAuth Device Flow for {providerType}")
             .WithForeground(Color.White).Bold());
@@ -347,16 +361,16 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                 var elapsed = ViewModel.ProbeElapsedSeconds.Value;
                 var frame = SpinnerFrames[elapsed % SpinnerFrames.Length];
 
-                if (ViewModel.OAuthVerificationUri is not null)
+                if (ViewModel.OAuth.VerificationUri is not null)
                 {
-                    children.WithChild(new TextNode($"  Visit: {ViewModel.OAuthVerificationUri}")
+                    children.WithChild(new TextNode($"  Visit: {ViewModel.OAuth.VerificationUri}")
                         .WithForeground(Color.Cyan));
                     children.WithChild(new TextNode("").Height(1));
                 }
 
-                if (ViewModel.OAuthUserCode is not null)
+                if (ViewModel.OAuth.UserCode is not null)
                 {
-                    children.WithChild(new TextNode($"  Enter code: {ViewModel.OAuthUserCode}")
+                    children.WithChild(new TextNode($"  Enter code: {ViewModel.OAuth.UserCode}")
                         .WithForeground(Color.White).Bold());
                     children.WithChild(new TextNode("").Height(1));
                 }
@@ -374,7 +388,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
             case DeviceFlowState.Denied:
             case DeviceFlowState.Expired:
             case DeviceFlowState.Error:
-                children.WithChild(new TextNode($"  \u2718 {ViewModel.OAuthErrorMessage ?? "Authorization failed."}")
+                children.WithChild(new TextNode($"  \u2718 {ViewModel.OAuth.ErrorMessage ?? "Authorization failed."}")
                     .WithForeground(Color.Red));
                 children.WithChild(new TextNode("").Height(1));
                 children.WithChild(new TextNode("  Press [Esc] to go back and try again.")
@@ -389,6 +403,32 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
 
         return children;
     }
+
+    private ILayoutNode BuildBrowserOAuthFlowView()
+    {
+        var result = OAuthFlowViews.BuildBrowserOAuthFlow(
+            ViewModel.NewProviderType ?? "unknown",
+            ViewModel.OAuth.FlowState.Value,
+            ViewModel.OAuth.BrowserOpenFailed,
+            ViewModel.OAuth.VerificationUri,
+            ViewModel.SpinnerTick.Value,
+            ViewModel.ProbeElapsedSeconds.Value,
+            ViewModel.OAuth.ErrorMessage,
+            _clipboardService,
+            ref _redirectUrlInput,
+            text => _ = ViewModel.SubmitRedirectUrlAsync(text));
+
+        // Route keyboard input to the redirect URL paste box
+        if (_redirectUrlInput is not null)
+        {
+            _lastFocusedInput = _redirectUrlInput;
+            _redirectUrlInput.OnFocused();
+        }
+
+        return result;
+    }
+
+    private TextInputNode? _redirectUrlInput;
 
     private ILayoutNode BuildValidatingView()
     {
@@ -495,7 +535,33 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                 .WithForeground(Color.Red));
         }
 
-        if (descriptor.CredentialMode == CredentialInputMode.EndpointOnly)
+        if (item.Entry?.AuthMethod is AuthMethod.OAuthPkce or AuthMethod.OAuthDevice
+            || (item.Entry is null && descriptor.Auth is OAuthAuth))
+        {
+            // OAuth provider: route to re-authentication flow
+            children.WithChild(new TextNode("").Height(1));
+            children.WithChild(new TextNode("  This provider uses OAuth authentication.")
+                .WithForeground(Color.White));
+            children.WithChild(new TextNode("  Press [Enter] to re-authenticate.")
+                .WithForeground(Color.Gray));
+
+            // Wire Enter key to start OAuth re-auth via a confirmation list
+            var reAuthItems = new List<string> { "Re-authenticate" };
+            var reAuthList = Layouts.SelectionList(reAuthItems)
+                .WithMode(SelectionMode.Single)
+                .WithHighlightColors(Color.Black, Color.Cyan);
+
+            reAuthList.OnFocused();
+            _lastFocusedList = reAuthList;
+
+            reAuthList.SelectionConfirmed
+                .Subscribe(_ => ViewModel.StartOAuthReAuth())
+                .DisposeWith(_stepSubs);
+
+            children.WithChild(new TextNode("").Height(1));
+            children.WithChild(reAuthList);
+        }
+        else if (descriptor.Auth is EndpointOnlyAuth)
         {
             children.WithChild(new TextNode("").Height(1));
             children.WithChild(new TextNode("  Endpoint:").WithForeground(Color.White));
@@ -522,8 +588,9 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                 .WithContent(_endpointInput)
                 .Height(3));
         }
-        else if (descriptor.SupportedAuthMethods.Contains(AuthMethod.ApiKey))
+        else
         {
+            // API key path (ApiKeyAuth or MultiAuth with API key auth method)
             children.WithChild(new TextNode("").Height(1));
             children.WithChild(new TextNode("  New API Key:").WithForeground(Color.White));
 
@@ -548,7 +615,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                 .WithContent(_apiKeyInput)
                 .Height(3));
 
-            if (descriptor.ApiKeyGuidanceUrl is { } guidanceUrl)
+            if (descriptor.Auth.GetApiKeyGuidanceUrl() is { } guidanceUrl)
             {
                 children.WithChild(new TextNode("").Height(1));
                 children.WithChild(new TextNode($"  Get your API key at {guidanceUrl}")
@@ -611,6 +678,17 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
         if (keyInfo.Key == ConsoleKey.Escape)
         {
             ViewModel.GoBack();
+            return;
+        }
+
+        // Browser OAuth: "C" to copy URL to clipboard
+        if (state == ProviderManagerState.AddBrowserOAuthFlow
+            && keyInfo.Key == ConsoleKey.C
+            && ViewModel.OAuth.BrowserOpenFailed
+            && ViewModel.OAuth.VerificationUri is not null)
+        {
+            if (OAuthFlowViews.TryCopyToClipboard(_clipboardService, ViewModel.OAuth.VerificationUri))
+                ViewModel.StatusMessage.Value = "\u2714 URL copied to clipboard";
             return;
         }
 

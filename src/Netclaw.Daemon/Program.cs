@@ -17,7 +17,11 @@ using Netclaw.Actors.Skills;
 using Netclaw.Actors.SubAgents;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
-using Netclaw.Configuration.Providers;
+using Netclaw.Providers;
+using Netclaw.Providers.OAuth;
+using Netclaw.Providers.OpenAi;
+using Netclaw.Providers.OpenRouter;
+using Netclaw.Providers.SelfHosted;
 using Netclaw.Configuration.Secrets;
 using Netclaw.Configuration.Feeds;
 using Netclaw.Daemon;
@@ -145,6 +149,85 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
         return Results.Ok(new { status = status.ToString() });
     });
 
+    // Provider OAuth endpoints (browser-based Authorization Code + PKCE)
+    app.MapPost("/api/provider/oauth/start", (
+        HttpContext context,
+        OAuthPkceService pkceService,
+        ProviderDescriptorRegistry registry) =>
+    {
+        var providerType = context.Request.Query["provider"].ToString();
+        if (string.IsNullOrEmpty(providerType))
+            return Results.BadRequest(new { error = "Missing 'provider' query parameter" });
+
+        if (!registry.TryGet(providerType, out var descriptor))
+            return Results.NotFound(new { error = $"Unknown provider type: {providerType}" });
+
+        var oauth = descriptor.Auth.GetOAuthConfig();
+        if (oauth is null || oauth.AuthorizationEndpoint is null || oauth.RedirectUri is null)
+            return Results.BadRequest(new { error = $"Provider '{providerType}' does not support browser OAuth" });
+
+        var (authUrl, state) = pkceService.StartAuthorizationFlow(
+            oauth.AuthorizationEndpoint.AbsoluteUri,
+            oauth.TokenEndpoint.AbsoluteUri,
+            oauth.ClientId,
+            oauth.RedirectUri.AbsoluteUri,
+            oauth.Scope,
+            oauth.ExtraAuthParams);
+
+        // Start temporary callback listener on the redirect URI's port
+        _ = pkceService.ListenForCallbackAsync(oauth.RedirectUri.AbsoluteUri, state);
+
+        return Results.Ok(new { authorizationUrl = authUrl, state });
+    });
+
+    app.MapGet("/api/provider/oauth/callback", async (
+        HttpContext context,
+        OAuthPkceService pkceService,
+        CancellationToken ct) =>
+    {
+        var code = context.Request.Query["code"].ToString();
+        var state = context.Request.Query["state"].ToString();
+
+        if (string.IsNullOrEmpty(code) || string.IsNullOrEmpty(state))
+        {
+            context.Response.ContentType = "text/html";
+            await context.Response.WriteAsync(
+                "<html><body><h2>Authorization failed</h2><p>Missing code or state parameter.</p></body></html>", ct);
+            return;
+        }
+
+        try
+        {
+            await pkceService.CompleteAuthorizationAsync(code, state, ct);
+            context.Response.ContentType = "text/html";
+            await context.Response.WriteAsync(
+                "<html><body><h2>Authorization complete</h2><p>You may close this tab and return to the terminal.</p></body></html>", ct);
+        }
+        catch (Exception ex)
+        {
+            context.Response.StatusCode = 500;
+            context.Response.ContentType = "text/html";
+            await context.Response.WriteAsync(
+                $"<html><body><h2>Authorization failed</h2><p>{System.Net.WebUtility.HtmlEncode(ex.Message)}</p></body></html>", ct);
+        }
+    });
+
+    app.MapGet("/api/provider/oauth/status/{state}", (
+        string state,
+        OAuthPkceService pkceService) =>
+    {
+        var status = pkceService.GetFlowStatus(state);
+        var result = pkceService.GetFlowResult(state);
+        return Results.Ok(new
+        {
+            status = status.ToString(),
+            hasToken = result is not null,
+            accessToken = result?.AccessToken.Value,
+            refreshToken = result?.RefreshToken?.Value,
+            expiresAt = result?.ExpiresAt?.ToString("o"),
+        });
+    });
+
     // Register channel-specific tools after DI is built (tools need resolved services).
     ChannelToolRegistration.RegisterChannelTools(app.Services);
 
@@ -196,7 +279,7 @@ static NetclawPaths ConfigureConfigServices(IServiceCollection services, IConfig
     var models = configuration.GetSection("Models")
         .Get<ModelSelection>() ?? new ModelSelection();
 
-    services.AddLlmProviders(providers, models);
+    services.AddDaemonLlmProviders(providers, models);
 
     return paths;
 }
@@ -246,7 +329,7 @@ static void ConfigureDaemonServices(
         : null;
     var ollamaEndpoint = mainProviderType?.Equals("ollama", StringComparison.OrdinalIgnoreCase) == true
         ? (string.IsNullOrWhiteSpace(mainProvider!.Endpoint)
-            ? Netclaw.Configuration.Providers.Descriptors.OllamaDescriptor.DefaultEndpointValue
+            ? OllamaDescriptor.DefaultEndpointValue
             : mainProvider.Endpoint)
         : null;
     var openAiCompatibleEndpoint = mainProviderType?.Equals("openai-compatible", StringComparison.OrdinalIgnoreCase) == true
@@ -362,6 +445,12 @@ static void ConfigureDaemonServices(
     services.AddSingleton(mcpServers);
     services.AddHttpClient<McpOAuthService>();
     services.AddSingleton<McpOAuthService>();
+    services.AddSingleton(sp =>
+    {
+        var httpClient = sp.GetRequiredService<IHttpClientFactory>().CreateClient("ProviderOAuth");
+        return new OAuthPkceService(httpClient);
+    });
+    services.AddHttpClient("ProviderOAuth");
     services.AddSingleton<McpClientManager>();
     services.AddHostedService(sp => sp.GetRequiredService<McpClientManager>());
 
@@ -431,9 +520,12 @@ static void ConfigureDaemonServices(
     services.AddSingleton<SchemaMigrationHostedService>();
     services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<SchemaMigrationHostedService>());
 
-    // Model capability resolution chain: [Ollama →] OpenRouter oracle → HuggingFace → text-only default
-    // When the main provider is Ollama, query it first — it knows the true context window
+    // Model capability resolution chain:
+    // Codex static catalog → [Ollama →] [OpenAI-compat →] OpenRouter oracle → HuggingFace → text-only default
+    // Codex resolver is first: authoritative for Codex models, zero network cost.
+    // When the main provider is Ollama, query it next — it knows the true context window
     // for locally hosted models that may not be indexed by external oracles.
+    services.AddSingleton<OpenAiCodexCapabilityResolver>();
     services.AddHttpClient<OpenRouterOracleResolver>();
     services.AddHttpClient<HuggingFaceCapabilityResolver>();
     if (ollamaEndpoint is not null)
@@ -458,6 +550,7 @@ static void ConfigureDaemonServices(
     services.AddSingleton<IModelCapabilityResolver>(sp =>
     {
         var resolvers = new List<IModelCapabilityResolver>();
+        resolvers.Add(sp.GetRequiredService<OpenAiCodexCapabilityResolver>());
         if (ollamaEndpoint is not null)
             resolvers.Add(sp.GetRequiredService<OllamaCapabilityResolver>());
         if (openAiCompatibleEndpoint is not null)
@@ -632,7 +725,7 @@ static ResolvedModelCapabilities? ResolveStartupCapabilities(
         }
 
         // Fallback: OpenRouter public catalog (works for models from any provider)
-        var openRouterDescriptor = new Netclaw.Configuration.Providers.Descriptors.OpenRouterDescriptor(httpClient);
+        var openRouterDescriptor = new OpenRouterDescriptor(httpClient);
         var registry = new ProviderDescriptorRegistry([openRouterDescriptor]);
         var resolver = new OpenRouterOracleResolver(
             httpClient, loggerFactory.CreateLogger<OpenRouterOracleResolver>(), registry);

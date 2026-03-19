@@ -1,11 +1,12 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Netclaw.Channels.Slack;
+using Netclaw.Cli.Config;
 using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Mcp;
 using Netclaw.Configuration;
-using Netclaw.Configuration.Providers;
-using Netclaw.Configuration.Providers.OAuth;
+using Netclaw.Providers;
+using Netclaw.Providers.OAuth;
 using Netclaw.Configuration.Secrets;
 using R3;
 using Termina.Input;
@@ -51,7 +52,6 @@ public partial class InitWizardViewModel : ReactiveViewModel
     private readonly ChatNavigationState? _navigationState;
     private readonly IBrowserAutomationBootstrapper _browserBootstrapper;
     private readonly DeviceFlowServiceFactory? _oauthFactory;
-    private CancellationTokenSource? _oauthCts;
 
     /// <summary>
     /// The provider descriptor registry. Exposed for use by the page.
@@ -74,6 +74,7 @@ public partial class InitWizardViewModel : ReactiveViewModel
     /// validation spinner and show a live timer.
     /// </summary>
     public ReactiveProperty<int> ProbeElapsedSeconds { get; } = new(0);
+    public ReactiveProperty<int> SpinnerTick { get; } = new(0);
 
     /// <summary>
     /// Monotonically increasing counter that ticks whenever health check results
@@ -88,13 +89,8 @@ public partial class InitWizardViewModel : ReactiveViewModel
     public string? ApiKeyInput { get; set; }
     public string? EndpointInput { get; set; }
 
-    // ── Step 1 (continued): OAuth device flow ──
-    public ReactiveProperty<DeviceFlowState> OAuthFlowState { get; } = new(DeviceFlowState.NotStarted);
-    public string? OAuthUserCode { get; set; }
-    public string? OAuthVerificationUri { get; set; }
-    public string? OAuthErrorMessage { get; set; }
-    internal OAuthDeviceFlowResult? OAuthResult { get; set; }
-    internal Task? OAuthFlowCompletion { get; private set; }
+    // ── Step 1 (continued): OAuth flow ──
+    public OAuthFlowCoordinator OAuth { get; private set; } = null!; // initialized in constructor
 
     // ── Step 1 (continued): Model selection ──
     public string? SelectedModelId { get; set; }
@@ -180,6 +176,12 @@ public partial class InitWizardViewModel : ReactiveViewModel
         _oauthFactory = oauthFactory;
         _daemonManager = daemonManager;
         _daemonApi = daemonApi;
+
+        OAuth = new OAuthFlowCoordinator(
+            registry,
+            oauthFactory,
+            daemonApi,
+            RequestRedraw);
 
         var chromeDetection = BrowserAutomationRuntimeDetector.DetectChrome();
         IsChromeDevToolsAvailable = chromeDetection.IsInstalled;
@@ -320,10 +322,10 @@ public partial class InitWizardViewModel : ReactiveViewModel
         Exception? probeException = null;
         var credential = ApiKeyInput;
         if (string.IsNullOrWhiteSpace(credential)
-            && SelectedAuthMethod == AuthMethod.OAuthDevice
-            && OAuthResult is not null)
+            && SelectedAuthMethod is AuthMethod.OAuthDevice or AuthMethod.OAuthPkce
+            && OAuth.Result is not null)
         {
-            credential = OAuthResult.AccessToken.Value;
+            credential = OAuth.Result.AccessToken.Value;
         }
 
         IsProbing.Value = true;
@@ -352,6 +354,7 @@ public partial class InitWizardViewModel : ReactiveViewModel
                     providerType,
                     EndpointInput,
                     credential,
+                    SelectedAuthMethod,
                     ct)
                 .WaitAsync(ProbeHardTimeout, ct);
         }
@@ -399,18 +402,25 @@ public partial class InitWizardViewModel : ReactiveViewModel
 
     private async Task RunProbeTimerAsync(CancellationToken ct)
     {
+        var tickCount = 0;
         while (!ct.IsCancellationRequested)
         {
             try
             {
-                await Task.Delay(1000, ct);
+                await Task.Delay(120, ct);
             }
             catch (OperationCanceledException)
             {
                 return;
             }
 
-            ProbeElapsedSeconds.Value++;
+            tickCount++;
+            SpinnerTick.Value = tickCount;
+
+            // Update elapsed seconds every ~1 second (every 8 ticks at 120ms)
+            if (tickCount % 8 == 0)
+                ProbeElapsedSeconds.Value++;
+
             RequestRedraw();
         }
     }
@@ -425,112 +435,45 @@ public partial class InitWizardViewModel : ReactiveViewModel
     }
 
     /// <summary>
-    /// Start the OAuth device flow. Called by the page when the user selects OAuth.
+    /// Start the OAuth device flow. Called by the page when the user selects OAuth device flow.
     /// </summary>
     public void StartOAuthFlow()
     {
-        OAuthFlowCompletion = StartOAuthDeviceFlowAsync();
+        if (SelectedProviderType is null) return;
+        ProbeElapsedSeconds.Value = 0;
+        var ct = OAuth.StartDeviceFlow(SelectedProviderType, result =>
+        {
+            ApiKeyInput = result.AccessToken.Value;
+            StartProbe();
+        });
+        _ = RunProbeTimerAsync(ct);
     }
 
     /// <summary>
-    /// Start the OAuth device flow for the selected provider.
-    /// On success, sets ApiKeyInput to the access token and starts the probe.
+    /// Start the browser-based OAuth flow. Called by the page when the user selects OAuth PKCE.
     /// </summary>
-    internal async Task StartOAuthDeviceFlowAsync()
+    public void StartBrowserOAuthFlow()
     {
-        if (_oauthFactory is null || SelectedProviderType is null)
-        {
-            OAuthErrorMessage = "OAuth service not available.";
-            OAuthFlowState.Value = DeviceFlowState.Error;
-            RequestRedraw();
-            return;
-        }
-
-        var descriptor = _registry.Get(SelectedProviderType);
-        if (descriptor.OAuthDeviceEndpoint is null || descriptor.OAuthTokenEndpoint is null
-            || descriptor.OAuthDefaultClientId is null)
-        {
-            OAuthErrorMessage = "Provider does not support OAuth device flow.";
-            OAuthFlowState.Value = DeviceFlowState.Error;
-            RequestRedraw();
-            return;
-        }
-
-        _oauthCts = new CancellationTokenSource();
-        var ct = _oauthCts.Token;
-
+        if (SelectedProviderType is null) return;
         ProbeElapsedSeconds.Value = 0;
-        _ = RunProbeTimerAsync(ct);
-
-        var service = _oauthFactory.GetFor(descriptor);
-        var config = OAuthDeviceFlowConfig.FromDescriptor(descriptor);
-
-        try
+        var ct = OAuth.StartBrowserFlow(SelectedProviderType, result =>
         {
-            var deviceAuth = await service.StartDeviceAuthorizationAsync(config, ct);
-            OAuthUserCode = deviceAuth.UserCode;
-            OAuthVerificationUri = deviceAuth.VerificationUri;
-            OAuthFlowState.Value = DeviceFlowState.WaitingForUser;
-            RequestRedraw();
-
-            var result = await service.PollForTokenAsync(config, deviceAuth,
-                state =>
-                {
-                    if (state == DeviceFlowState.Succeeded)
-                        return;
-
-                    OAuthFlowState.Value = state;
-                    RequestRedraw();
-                }, ct);
-
-            OAuthResult = result;
             ApiKeyInput = result.AccessToken.Value;
-            OAuthFlowState.Value = DeviceFlowState.Succeeded;
-            RequestRedraw();
-        }
-        catch (OAuthDeviceFlowDeniedException)
-        {
-            OAuthErrorMessage = "Authorization was denied.";
-            OAuthFlowState.Value = DeviceFlowState.Denied;
-            RequestRedraw();
-        }
-        catch (OAuthDeviceFlowExpiredException)
-        {
-            OAuthErrorMessage = "The authorization code expired. Please try again.";
-            OAuthFlowState.Value = DeviceFlowState.Expired;
-            RequestRedraw();
-        }
-        catch (OperationCanceledException)
-        {
-            OAuthFlowState.Value = DeviceFlowState.Cancelled;
-            RequestRedraw();
-        }
-        catch (Exception ex)
-        {
-            OAuthErrorMessage = ex.Message;
-            OAuthFlowState.Value = DeviceFlowState.Error;
-            RequestRedraw();
-        }
-        finally
-        {
-            CancelOAuthFlow();
-        }
+            StartProbe();
+        });
+        _ = RunProbeTimerAsync(ct);
     }
 
-    internal void CancelOAuthFlow()
-    {
-        if (_oauthCts is not null)
-        {
-            _oauthCts.Cancel();
-            _oauthCts.Dispose();
-            _oauthCts = null;
-        }
-    }
+    /// <summary>
+    /// Handle a pasted redirect URL for browser OAuth fallback.
+    /// </summary>
+    public Task SubmitRedirectUrlAsync(string? pastedUrl)
+        => OAuth.SubmitRedirectUrlAsync(pastedUrl);
 
     internal void ClearFromProvider()
     {
         CancelProbe();
-        CancelOAuthFlow();
+        OAuth.Reset();
         SelectedAuthMethod = AuthMethod.None;
         ApiKeyInput = null;
         EndpointInput = null;
@@ -538,11 +481,6 @@ public partial class InitWizardViewModel : ReactiveViewModel
         ProbeElapsedSeconds.Value = 0;
         SelectedModelId = null;
         DiscoveredModels.Clear();
-        OAuthFlowState.Value = DeviceFlowState.NotStarted;
-        OAuthUserCode = null;
-        OAuthVerificationUri = null;
-        OAuthErrorMessage = null;
-        OAuthResult = null;
     }
 
     private static IReadOnlyList<string> ParseChannelNames(string? input)
@@ -873,7 +811,7 @@ public partial class InitWizardViewModel : ReactiveViewModel
             if (!string.IsNullOrWhiteSpace(EndpointInput))
                 providerEntry["Endpoint"] = EndpointInput;
             else if (_registry.TryGet(providerName, out var desc)
-                     && desc.CredentialMode == CredentialInputMode.EndpointOnly)
+                     && desc.Auth is EndpointOnlyAuth)
                 providerEntry["Endpoint"] = desc.DefaultEndpoint;
 
             providers[providerName] = providerEntry;
@@ -980,38 +918,23 @@ public partial class InitWizardViewModel : ReactiveViewModel
         File.WriteAllText(_paths.NetclawConfigPath,
             JsonSerializer.Serialize(config, jsonOptions));
 
-        // Build secrets.json (sensitive values)
-        var secrets = new Dictionary<string, object>();
-
+        // Provider credentials — use shared writer (handles OAuthTokenExpiry placement)
         if (!string.IsNullOrWhiteSpace(SelectedProviderType))
         {
-            if (OAuthResult is not null)
-            {
-                var providerSecrets = new Dictionary<string, object>
-                {
-                    ["OAuthAccessToken"] = OAuthResult.AccessToken.Value
-                };
-                if (OAuthResult.RefreshToken is not null)
-                    providerSecrets["OAuthRefreshToken"] = OAuthResult.RefreshToken.Value;
-                if (OAuthResult.ExpiresAt.HasValue)
-                    providerSecrets["OAuthTokenExpiry"] = OAuthResult.ExpiresAt.Value.ToString("o");
-
-                secrets["Providers"] = new Dictionary<string, object>
-                {
-                    [SelectedProviderType.ToLowerInvariant()] = providerSecrets
-                };
-            }
-            else if (!string.IsNullOrWhiteSpace(ApiKeyInput))
-            {
-                secrets["Providers"] = new Dictionary<string, object>
-                {
-                    [SelectedProviderType.ToLowerInvariant()] = new Dictionary<string, object>
-                    {
-                        ["ApiKey"] = ApiKeyInput
-                    }
-                };
-            }
+            ProviderCredentialWriter.WriteProvider(
+                _paths,
+                SelectedProviderType.ToLowerInvariant(),
+                SelectedProviderType.ToLowerInvariant(),
+                SelectedAuthMethod,
+                EndpointInput,
+                OAuth.Result,
+                ApiKeyInput,
+                _registry,
+                SensitiveStringTypeConverter.Protector);
         }
+
+        // Non-provider secrets (Slack, Search)
+        var secrets = new Dictionary<string, object>();
 
         if (SlackEnabled)
         {
@@ -1263,7 +1186,7 @@ public partial class InitWizardViewModel : ReactiveViewModel
     public override void Dispose()
     {
         CancelProbe();
-        CancelOAuthFlow();
+        OAuth.Dispose();
         CurrentStep.Dispose();
         StatusMessage.Dispose();
         IsHealthCheckRunning.Dispose();
@@ -1272,7 +1195,6 @@ public partial class InitWizardViewModel : ReactiveViewModel
         ProbeResult.Dispose();
         ProbeElapsedSeconds.Dispose();
         HealthCheckResultVersion.Dispose();
-        OAuthFlowState.Dispose();
         base.Dispose();
     }
 }

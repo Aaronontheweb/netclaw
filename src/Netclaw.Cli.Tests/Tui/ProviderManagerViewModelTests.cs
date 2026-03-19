@@ -3,7 +3,7 @@ using R3;
 using Netclaw.Cli.Provider;
 using Netclaw.Cli.Tui;
 using Netclaw.Configuration;
-using Netclaw.Configuration.Providers.OAuth;
+using Netclaw.Providers.OAuth;
 using Xunit;
 
 namespace Netclaw.Cli.Tests.Tui;
@@ -505,7 +505,7 @@ public sealed class ProviderManagerViewModelTests : IDisposable
         vm.NewProviderType = "openai";
         vm.NewAuthMethod = AuthMethod.OAuthDevice;
         vm.NewEndpoint = "https://api.openai.com";
-        vm.OAuthResult = new OAuthDeviceFlowResult(
+        vm.OAuth.Result = new OAuthDeviceFlowResult(
             new SensitiveString("oauth-access-token"),
             new SensitiveString("oauth-refresh-token"),
             DateTimeOffset.UtcNow.AddHours(1));

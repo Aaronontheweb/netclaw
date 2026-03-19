@@ -1,11 +1,12 @@
 using Netclaw.Configuration;
-using Netclaw.Configuration.Providers;
-using Netclaw.Configuration.Providers.OAuth;
+using Netclaw.Providers;
+using Netclaw.Providers.OAuth;
 using Netclaw.Cli.Mcp;
 using R3;
 using Termina.Extensions;
 using Termina.Input;
 using Termina.Layout;
+using Termina.Clipboard;
 using Termina.Reactive;
 using Termina.Rendering;
 using Termina.Terminal;
@@ -20,6 +21,12 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
 {
     private const int MaxDisplayedModels = 30;
     private static readonly string[] SpinnerFrames = ["\u280b", "\u2819", "\u2838", "\u2834", "\u2826", "\u2807"];
+    private readonly IClipboardService? _clipboardService;
+
+    public InitWizardPage(IClipboardService? clipboardService = null)
+    {
+        _clipboardService = clipboardService;
+    }
 
     // Step 1: Provider selection list + auth input + model selection
     private SelectionListNode<string>? _providerList;
@@ -177,6 +184,8 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
                 return BuildValidationSubStep();
             if (step == WizardStep.Provider && _providerSubStep == 5)
                 return BuildOAuthDeviceFlowSubStep();
+            if (step == WizardStep.Provider && _providerSubStep == 6)
+                return BuildBrowserOAuthFlowSubStep();
 
             // Clear stale focus references BEFORE building new content.
             // The old components are about to be replaced/disposed by DynamicLayoutNode.
@@ -311,6 +320,7 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
             3 => BuildValidationSubStep(),
             4 => BuildModelSelectionSubStep(),
             5 => BuildOAuthDeviceFlowSubStep(),
+            6 => BuildBrowserOAuthFlowSubStep(),
             _ => Layouts.Empty()
         };
     }
@@ -333,7 +343,7 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
                 {
                     ViewModel.SelectedProviderType = selected[0];
                     var descriptor = registry.Get(selected[0]);
-                    if (descriptor.SupportedAuthMethods is [AuthMethod.None])
+                    if (descriptor.Auth.SupportedAuthMethods is [AuthMethod.None])
                     {
                         ViewModel.SelectedAuthMethod = AuthMethod.None;
                         SetProviderSubStep(2);
@@ -355,15 +365,7 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
     {
         var providerType = ViewModel.SelectedProviderType ?? "unknown";
         var descriptor = ViewModel.Registry.Get(providerType);
-        var supportedMethods = descriptor.SupportedAuthMethods
-            .Where(m => m != AuthMethod.None)
-            .Select(m => m switch
-            {
-                AuthMethod.ApiKey => "API Key",
-                AuthMethod.OAuthDevice => "OAuth Device Flow (recommended)",
-                _ => m.ToString()
-            })
-            .ToList();
+        var supportedMethods = OAuthFlowViews.BuildAuthMethodLabels(descriptor.Auth);
 
         _authMethodList = Layouts.SelectionList(supportedMethods)
             .WithMode(SelectionMode.Single)
@@ -377,12 +379,15 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
             {
                 if (selected.Count > 0)
                 {
-                    var method = selected[0].StartsWith("API", StringComparison.Ordinal)
-                        ? AuthMethod.ApiKey
-                        : AuthMethod.OAuthDevice;
+                    var method = OAuthFlowViews.ParseAuthMethodLabel(selected[0], descriptor.Auth);
                     ViewModel.SelectedAuthMethod = method;
 
-                    if (method == AuthMethod.OAuthDevice)
+                    if (method == AuthMethod.OAuthPkce)
+                    {
+                        SetProviderSubStep(6);
+                        ViewModel.StartBrowserOAuthFlow();
+                    }
+                    else if (method == AuthMethod.OAuthDevice)
                     {
                         SetProviderSubStep(5);
                         ViewModel.StartOAuthFlow();
@@ -412,7 +417,7 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
         var providerType = ViewModel.SelectedProviderType ?? "unknown";
 
         var credDescriptor = ViewModel.Registry.Get(providerType);
-        if (credDescriptor.CredentialMode == CredentialInputMode.EndpointOnly)
+        if (credDescriptor.Auth is EndpointOnlyAuth)
         {
             var defaultEndpoint = credDescriptor.DefaultEndpoint;
             _endpointInput = new TextInputNode()
@@ -606,7 +611,7 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
     {
         var children = Layouts.Vertical();
         var providerType = ViewModel.SelectedProviderType ?? "unknown";
-        var flowState = ViewModel.OAuthFlowState.Value;
+        var flowState = ViewModel.OAuth.FlowState.Value;
 
         children.WithChild(new TextNode($"  OAuth Device Flow for {providerType}")
             .WithForeground(Color.White).Bold());
@@ -625,16 +630,16 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
                 var elapsed = ViewModel.ProbeElapsedSeconds.Value;
                 var frame = SpinnerFrames[elapsed % SpinnerFrames.Length];
 
-                if (ViewModel.OAuthVerificationUri is not null)
+                if (ViewModel.OAuth.VerificationUri is not null)
                 {
-                    children.WithChild(new TextNode($"  Visit: {ViewModel.OAuthVerificationUri}")
+                    children.WithChild(new TextNode($"  Visit: {ViewModel.OAuth.VerificationUri}")
                         .WithForeground(Color.Cyan));
                     children.WithChild(new TextNode("").Height(1));
                 }
 
-                if (ViewModel.OAuthUserCode is not null)
+                if (ViewModel.OAuth.UserCode is not null)
                 {
-                    children.WithChild(new TextNode($"  Enter code: {ViewModel.OAuthUserCode}")
+                    children.WithChild(new TextNode($"  Enter code: {ViewModel.OAuth.UserCode}")
                         .WithForeground(Color.White).Bold());
                     children.WithChild(new TextNode("").Height(1));
                 }
@@ -652,7 +657,7 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
             case DeviceFlowState.Denied:
             case DeviceFlowState.Expired:
             case DeviceFlowState.Error:
-                children.WithChild(new TextNode($"  \u2717 {ViewModel.OAuthErrorMessage ?? "Authorization failed."}")
+                children.WithChild(new TextNode($"  \u2717 {ViewModel.OAuth.ErrorMessage ?? "Authorization failed."}")
                     .WithForeground(Color.Red));
                 children.WithChild(new TextNode("").Height(1));
                 children.WithChild(new TextNode("  Press [Esc] to go back and try again.")
@@ -666,6 +671,32 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
         }
 
         return children;
+    }
+
+    private TextInputNode? _redirectUrlInput;
+
+    private ILayoutNode BuildBrowserOAuthFlowSubStep()
+    {
+        var result = OAuthFlowViews.BuildBrowserOAuthFlow(
+            ViewModel.SelectedProviderType ?? "unknown",
+            ViewModel.OAuth.FlowState.Value,
+            ViewModel.OAuth.BrowserOpenFailed,
+            ViewModel.OAuth.VerificationUri,
+            ViewModel.SpinnerTick.Value,
+            ViewModel.ProbeElapsedSeconds.Value,
+            ViewModel.OAuth.ErrorMessage,
+            _clipboardService,
+            ref _redirectUrlInput,
+            text => _ = ViewModel.SubmitRedirectUrlAsync(text));
+
+        // Route keyboard input to the redirect URL paste box
+        if (_redirectUrlInput is not null)
+        {
+            _lastFocusedInput = _redirectUrlInput;
+            _redirectUrlInput.OnFocused();
+        }
+
+        return result;
     }
 
     private ILayoutNode BuildChatServicesStep()
@@ -1301,6 +1332,18 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
             return;
         }
 
+        // Browser OAuth: "C" to copy URL to clipboard
+        if (ViewModel.CurrentStep.Value == WizardStep.Provider
+            && _providerSubStep == 6
+            && keyInfo.Key == ConsoleKey.C
+            && ViewModel.OAuth.BrowserOpenFailed
+            && ViewModel.OAuth.VerificationUri is not null)
+        {
+            if (OAuthFlowViews.TryCopyToClipboard(_clipboardService, ViewModel.OAuth.VerificationUri))
+                ViewModel.StatusMessage.Value = "\u2714 URL copied to clipboard";
+            return;
+        }
+
         // Route input to active component
         RouteInputToActiveComponent(keyInfo);
     }
@@ -1321,7 +1364,7 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
             if (_providerSubStep == 5)
             {
                 // Going back from OAuth device flow — cancel flow and go to auth selection
-                ViewModel.CancelOAuthFlow();
+                ViewModel.OAuth.Cancel();
                 SetProviderSubStep(1);
                 return true;
             }
@@ -1334,9 +1377,16 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
             }
             if (_providerSubStep == 3)
             {
-                // Going back from validation to credentials — cancel in-flight probe
+                // Going back from validation — cancel in-flight probe and return
+                // to the correct sub-step based on how we got here
                 ViewModel.CancelProbe();
-                SetProviderSubStep(2);
+                var backTo = ViewModel.SelectedAuthMethod switch
+                {
+                    AuthMethod.OAuthPkce => 6,   // browser OAuth
+                    AuthMethod.OAuthDevice => 5, // device flow
+                    _ => 2                       // API key / endpoint input
+                };
+                SetProviderSubStep(backTo);
                 return true;
             }
             SetProviderSubStep(_providerSubStep - 1);
@@ -1477,6 +1527,7 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
             WizardStep.Provider when _providerSubStep == 2 && _endpointInput is not null => _endpointInput,
             WizardStep.Provider when _providerSubStep == 2 => _apiKeyInput,
             WizardStep.Provider when _providerSubStep == 4 && _manualModelEntry => _manualModelInput,
+            WizardStep.Provider when _providerSubStep == 6 => _redirectUrlInput,
             WizardStep.ChatServices when _chatServicesSubStep == 1 => _slackBotTokenInput,
             WizardStep.ChatServices when _chatServicesSubStep == 2 => _slackAppTokenInput,
             WizardStep.ChatServices when _chatServicesSubStep == 3 => _slackChannelNamesInput,
@@ -1580,21 +1631,24 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
             })
             .DisposeWith(Subscriptions);
 
-        // Animate spinner on validation sub-step and OAuth device flow sub-step every second
-        ViewModel.ProbeElapsedSeconds
+        // Animate spinner on validation sub-step and OAuth flow sub-steps
+        ViewModel.SpinnerTick
             .Subscribe(_ =>
             {
                 if (ViewModel.CurrentStep.Value == WizardStep.Provider
-                    && (_providerSubStep == 3 || _providerSubStep == 5))
+                    && (_providerSubStep is 3 or 5 or 6))
+                {
                     _stepContentNode?.Invalidate();
+                    ViewModel.RequestRedraw();
+                }
             })
             .DisposeWith(Subscriptions);
 
         // OAuth device flow state changed — invalidate to show progress, auto-advance on success
-        ViewModel.OAuthFlowState
+        ViewModel.OAuth.FlowState
             .Subscribe(state =>
             {
-                if (ViewModel.CurrentStep.Value != WizardStep.Provider || _providerSubStep != 5)
+                if (ViewModel.CurrentStep.Value != WizardStep.Provider || _providerSubStep is not (5 or 6))
                     return;
 
                 _stepContentNode?.Invalidate();

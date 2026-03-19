@@ -69,4 +69,17 @@ public sealed class FakeProviderProbe : IProviderProbe
 
         return Task.FromResult(result);
     }
+
+    public Task<ProviderProbeResult> ProbeAsync(
+        ProviderEntry entry, CancellationToken ct = default)
+    {
+        return ProbeAsync(entry.Type, entry.Endpoint, entry.ApiKey?.Value ?? entry.OAuthAccessToken?.Value, ct);
+    }
+
+    public Task<ProviderProbeResult> ProbeAsync(
+        string providerType, string? endpoint, string? credential,
+        AuthMethod authMethod, CancellationToken ct = default)
+    {
+        return ProbeAsync(providerType, endpoint, credential, ct);
+    }
 }

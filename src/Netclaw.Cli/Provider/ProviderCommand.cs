@@ -1,8 +1,8 @@
 using System.Text.Json;
 using Netclaw.Cli.Config;
 using Netclaw.Configuration;
-using Netclaw.Configuration.Providers;
-using Netclaw.Configuration.Providers.OAuth;
+using Netclaw.Providers;
+using Netclaw.Providers.OAuth;
 using Netclaw.Configuration.Secrets;
 
 namespace Netclaw.Cli.Provider;
@@ -117,7 +117,7 @@ internal static class ProviderCommand
             }
         }
 
-        var supportedAuth = descriptor.SupportedAuthMethods;
+        var supportedAuth = descriptor.Auth.SupportedAuthMethods;
 
         // Handle --auth oauth-device explicitly
         if (requestedAuthMethod == AuthMethod.OAuthDevice)
@@ -170,31 +170,9 @@ internal static class ProviderCommand
             authMethod = AuthMethod.ApiKey;
         }
 
-        endpoint ??= descriptor.DefaultEndpoint;
-
-        // Write to netclaw.json
-        var (config, secrets) = ConfigFileHelper.LoadConfigFiles(paths);
-
-        var providers = ConfigFileHelper.GetOrCreateSection(config, "Providers");
-        var providerEntry = new Dictionary<string, object>
-        {
-            ["Type"] = type,
-            ["Endpoint"] = endpoint,
-            ["AuthMethod"] = authMethod.ToString()
-        };
-        providers[name] = providerEntry;
-        ConfigFileHelper.WriteConfigFile(paths.NetclawConfigPath, config);
-
-        // Write secret to secrets.json via SecretsFileWriter for encryption-at-rest
-        if (!string.IsNullOrWhiteSpace(apiKey))
-        {
-            var secretProviders = ConfigFileHelper.GetOrCreateSection(secrets, "Providers");
-            secretProviders[name] = new Dictionary<string, object>
-            {
-                ["ApiKey"] = apiKey
-            };
-            ConfigFileHelper.WriteSecretsFile(paths, secrets);
-        }
+        ProviderCredentialWriter.WriteProvider(
+            paths, name, type, authMethod, endpoint,
+            oauthResult: null, apiKey: apiKey, registry);
 
         writer.WriteLine($"Added provider '{name}' ({type})");
         WriteProviderGuidance(descriptor, writer);
@@ -208,10 +186,17 @@ internal static class ProviderCommand
     {
         endpoint ??= descriptor.DefaultEndpoint;
 
+        var oauth = descriptor.Auth.GetOAuthConfig();
+        if (oauth is null)
+        {
+            writer.WriteLine($"Error: Provider '{type}' does not support OAuth.");
+            return 1;
+        }
+
         OAuthDeviceFlowConfig config;
         try
         {
-            config = OAuthDeviceFlowConfig.FromDescriptor(descriptor);
+            config = OAuthDeviceFlowConfig.FromOAuth(oauth);
         }
         catch (ArgumentException)
         {
@@ -220,7 +205,7 @@ internal static class ProviderCommand
         }
 
         using var httpClient = new HttpClient();
-        IDeviceFlowService service = descriptor.UseProprietaryDeviceFlow
+        IDeviceFlowService service = oauth.UseProprietaryDeviceFlow
             ? new OpenAiDeviceFlowService(httpClient)
             : new OAuthDeviceFlowService(httpClient);
 
@@ -247,19 +232,9 @@ internal static class ProviderCommand
             writer.WriteLine();
             writer.WriteLine("Authorization successful!");
 
-            // Write config to netclaw.json
-            var (configDict, _) = ConfigFileHelper.LoadConfigFiles(paths);
-            var providers = ConfigFileHelper.GetOrCreateSection(configDict, "Providers");
-            providers[name] = new Dictionary<string, object>
-            {
-                ["Type"] = type,
-                ["Endpoint"] = endpoint,
-                ["AuthMethod"] = AuthMethod.OAuthDevice.ToString()
-            };
-            ConfigFileHelper.WriteConfigFile(paths.NetclawConfigPath, configDict);
-
-            // Persist tokens to secrets.json with encryption
-            OAuthTokenPersistence.PersistTokens(paths, name, result, SecretsProtection.CreateProtector(paths));
+            ProviderCredentialWriter.WriteProvider(
+                paths, name, type, AuthMethod.OAuthDevice, endpoint,
+                oauthResult: result, apiKey: null);
 
             writer.WriteLine($"Added provider '{name}' ({type}) with OAuth authentication.");
             return 0;
@@ -429,18 +404,24 @@ internal static class ProviderCommand
 
     private static void WriteProviderGuidance(IProviderDescriptor descriptor, TextWriter writer)
     {
-        if (descriptor.CredentialMode == CredentialInputMode.EndpointOnly)
+        if (descriptor.Auth is EndpointOnlyAuth)
         {
             writer.WriteLine($"{descriptor.DisplayName} runs locally. No authentication required.");
             return;
         }
 
-        if (descriptor.ApiKeyGuidanceUrl is { } url)
+        if (descriptor.Auth is OAuthAuth)
         {
-            var oauthNote = descriptor.SupportedAuthMethods.Contains(AuthMethod.OAuthDevice)
-                ? " or use `netclaw provider` for OAuth device flow"
+            writer.WriteLine($"{descriptor.DisplayName} uses OAuth. Run `netclaw provider` to authenticate.");
+            return;
+        }
+
+        if (descriptor.Auth.GetApiKeyGuidanceUrl() is { } guidanceUrl)
+        {
+            var oauthNote = descriptor.Auth.GetOAuthConfig() is not null
+                ? " or use `netclaw provider` for OAuth setup"
                 : "";
-            writer.WriteLine($"Get your API key at {url}{oauthNote}");
+            writer.WriteLine($"Get your API key at {guidanceUrl}{oauthNote}");
         }
     }
 

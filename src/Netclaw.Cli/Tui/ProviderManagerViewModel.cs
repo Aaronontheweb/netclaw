@@ -1,9 +1,9 @@
-using System.Text.Json;
 using System.Diagnostics;
 using Netclaw.Cli.Config;
+using Netclaw.Cli.Daemon;
 using Netclaw.Configuration;
-using Netclaw.Configuration.Providers;
-using Netclaw.Configuration.Providers.OAuth;
+using Netclaw.Providers;
+using Netclaw.Providers.OAuth;
 using Netclaw.Configuration.Secrets;
 using R3;
 using Termina.Input;
@@ -21,6 +21,7 @@ public enum ProviderManagerState
     AddSelectAuth,
     AddCredentials,
     AddOAuthDeviceFlow,
+    AddBrowserOAuthFlow,
     AddValidating,
     AddComplete,
     Details,
@@ -69,13 +70,13 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
     private readonly IProviderProbe _probe;
     private readonly DeviceFlowServiceFactory? _oauthFactory;
     private CancellationTokenSource? _probeCts;
-    private CancellationTokenSource? _oauthCts;
 
     public ReactiveProperty<ProviderManagerState> CurrentState { get; } = new(ProviderManagerState.Loading);
     public ReactiveProperty<string> StatusMessage { get; } = new("");
     public ReactiveProperty<bool> IsProbing { get; } = new(false);
     public ReactiveProperty<ProviderProbeResult?> ProbeResult { get; } = new(null);
     public ReactiveProperty<int> ProbeElapsedSeconds { get; } = new(0);
+    public ReactiveProperty<int> SpinnerTick { get; } = new(0);
     public ReactiveProperty<bool> IsEagerProbing { get; } = new(false);
     public ReactiveProperty<int> EagerProbeElapsedSeconds { get; } = new(0);
 
@@ -105,17 +106,8 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
     public string? NewApiKey { get; set; }
     public string? NewEndpoint { get; set; }
 
-    // ── OAuth device flow state ──
-    public ReactiveProperty<DeviceFlowState> OAuthFlowState { get; } = new(DeviceFlowState.NotStarted);
-    public string? OAuthUserCode { get; set; }
-    public string? OAuthVerificationUri { get; set; }
-    public string? OAuthErrorMessage { get; set; }
-    internal OAuthDeviceFlowResult? OAuthResult { get; set; }
-
-    /// <summary>
-    /// Completes when the OAuth device flow finishes. Used for testing.
-    /// </summary>
-    internal Task? OAuthFlowCompletion { get; private set; }
+    // ── OAuth flow (shared coordinator) ──
+    public OAuthFlowCoordinator OAuth { get; private set; } = null!; // initialized in constructor
 
     // ── Fix flow state ──
     public string? FixApiKey { get; set; }
@@ -141,18 +133,23 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
     public ProviderDescriptorRegistry Registry => _registry;
 
     public ProviderManagerViewModel(NetclawPaths paths, ProviderDescriptorRegistry registry,
-        DeviceFlowServiceFactory? oauthFactory = null)
-        : this(paths, registry, registry, oauthFactory)
+        DeviceFlowServiceFactory? oauthFactory = null, DaemonApi? daemonApi = null)
+        : this(paths, registry, registry, oauthFactory, daemonApi)
     {
     }
 
     public ProviderManagerViewModel(NetclawPaths paths, ProviderDescriptorRegistry registry, IProviderProbe probe,
-        DeviceFlowServiceFactory? oauthFactory = null)
+        DeviceFlowServiceFactory? oauthFactory = null, DaemonApi? daemonApi = null)
     {
         _paths = paths;
         _registry = registry;
         _probe = probe;
         _oauthFactory = oauthFactory;
+        OAuth = new OAuthFlowCoordinator(
+            registry,
+            oauthFactory,
+            daemonApi,
+            requestRedraw: () => NotifyStateChanged());
     }
 
     public override void OnActivated()
@@ -241,11 +238,10 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         {
             try
             {
-                var result = await _probe.ProbeAsync(
-                    item.ProviderType,
-                    item.Entry?.Endpoint,
-                    GetProbeCredential(item.Entry),
-                    CancellationToken.None);
+                var result = item.Entry is not null
+                    ? await _probe.ProbeAsync(item.Entry, CancellationToken.None)
+                    : await _probe.ProbeAsync(item.ProviderType, item.Entry?.Endpoint,
+                        GetProbeCredential(item.Entry), CancellationToken.None);
 
                 item.ProbeResult = result;
                 item.Health = result.Success
@@ -322,7 +318,7 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         NewProviderName = GenerateProviderName(type);
 
         var descriptor = _registry.Get(type);
-        if (descriptor.SupportedAuthMethods is [AuthMethod.None])
+        if (descriptor.Auth.SupportedAuthMethods is [AuthMethod.None])
         {
             NewAuthMethod = AuthMethod.None;
             CurrentState.Value = ProviderManagerState.AddCredentials;
@@ -349,6 +345,27 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
     }
 
     /// <summary>
+    /// Start OAuth re-authentication for an OAuth-only provider in fix-credentials flow.
+    /// Sets up fix-flow state and delegates to <see cref="SelectAuthMethod"/>.
+    /// </summary>
+    public void StartOAuthReAuth()
+    {
+        if (DetailProvider is null) return;
+
+        var type = DetailProvider.ProviderType;
+        var descriptor = _registry.Get(type);
+
+        NewProviderType = type;
+        NewProviderName = DetailProvider.ConfiguredName;
+        IsFixFlow = true;
+
+        var oauthMethod = descriptor.Auth.SupportedAuthMethods
+            .FirstOrDefault(m => m is AuthMethod.OAuthPkce or AuthMethod.OAuthDevice);
+
+        SelectAuthMethod(oauthMethod);
+    }
+
+    /// <summary>
     /// Select auth method and advance to credential input or OAuth device flow.
     /// </summary>
     public void SelectAuthMethod(AuthMethod method)
@@ -359,7 +376,32 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         {
             CurrentState.Value = ProviderManagerState.AddOAuthDeviceFlow;
             NotifyStateChanged();
-            OAuthFlowCompletion = StartOAuthDeviceFlowAsync();
+            ProbeElapsedSeconds.Value = 0;
+            var ct = OAuth.StartDeviceFlow(NewProviderType!, result =>
+            {
+                NewApiKey = result.AccessToken.Value;
+                CurrentState.Value = ProviderManagerState.AddValidating;
+                NotifyStateChanged();
+                StartProbe();
+            });
+            _ = RunProbeTimerAsync(ct);
+            return;
+        }
+
+        if (method == AuthMethod.OAuthPkce)
+        {
+            CurrentState.Value = ProviderManagerState.AddBrowserOAuthFlow;
+            NotifyStateChanged();
+            ProbeElapsedSeconds.Value = 0;
+            var ct = OAuth.StartBrowserFlow(NewProviderType!, result =>
+            {
+                NewApiKey = result.AccessToken.Value;
+                NewAuthMethod = AuthMethod.OAuthPkce;
+                CurrentState.Value = ProviderManagerState.AddValidating;
+                NotifyStateChanged();
+                StartProbe();
+            });
+            _ = RunProbeTimerAsync(ct);
             return;
         }
 
@@ -394,7 +436,7 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         var type = DetailProvider.ProviderType;
         var descriptor = _registry.Get(type);
 
-        if (descriptor.SupportedAuthMethods.Contains(AuthMethod.ApiKey) && string.IsNullOrWhiteSpace(FixApiKey))
+        if (descriptor.Auth.SupportedAuthMethods.Contains(AuthMethod.ApiKey) && string.IsNullOrWhiteSpace(FixApiKey))
         {
             StatusMessage.Value = "API key is required.";
             RequestRedraw();
@@ -516,11 +558,10 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
     {
         try
         {
-            var result = await _probe.ProbeAsync(
-                item.ProviderType,
-                item.Entry?.Endpoint,
-                GetProbeCredential(item.Entry),
-                CancellationToken.None);
+            var result = item.Entry is not null
+                ? await _probe.ProbeAsync(item.Entry, CancellationToken.None)
+                : await _probe.ProbeAsync(item.ProviderType, item.Entry?.Endpoint,
+                    GetProbeCredential(item.Entry), CancellationToken.None);
 
             item.ProbeResult = result;
             item.Health = result.Success
@@ -536,95 +577,16 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
     }
 
     /// <summary>
-    /// Run the OAuth device flow: start device authorization, display user code,
-    /// poll for token, persist tokens on success, then transition to probe validation.
+    /// Handle a pasted redirect URL for browser OAuth fallback.
     /// </summary>
-    internal async Task StartOAuthDeviceFlowAsync()
+    public async Task SubmitRedirectUrlAsync(string? pastedUrl)
     {
-        if (_oauthFactory is null || NewProviderType is null)
+        await OAuth.SubmitRedirectUrlAsync(pastedUrl);
+        if (OAuth.FlowState.Value == DeviceFlowState.Succeeded)
         {
-            OAuthErrorMessage = "OAuth service not available.";
-            OAuthFlowState.Value = DeviceFlowState.Error;
-            NotifyStateChanged();
-            return;
-        }
-
-        var descriptor = _registry.Get(NewProviderType);
-        if (descriptor.OAuthDeviceEndpoint is null || descriptor.OAuthTokenEndpoint is null
-            || descriptor.OAuthDefaultClientId is null)
-        {
-            OAuthErrorMessage = "Provider does not support OAuth device flow.";
-            OAuthFlowState.Value = DeviceFlowState.Error;
-            NotifyStateChanged();
-            return;
-        }
-
-        _oauthCts = new CancellationTokenSource();
-        var ct = _oauthCts.Token;
-
-        ProbeElapsedSeconds.Value = 0;
-        _ = RunProbeTimerAsync(ct);
-
-        var service = _oauthFactory.GetFor(descriptor);
-        var config = OAuthDeviceFlowConfig.FromDescriptor(descriptor);
-
-        try
-        {
-            // Step 1: Start device authorization
-            var deviceAuth = await service.StartDeviceAuthorizationAsync(config, ct);
-            OAuthUserCode = deviceAuth.UserCode;
-            OAuthVerificationUri = deviceAuth.VerificationUri;
-            OAuthFlowState.Value = DeviceFlowState.WaitingForUser;
-            NotifyStateChanged();
-
-            // Step 2: Poll for token
-            var result = await service.PollForTokenAsync(config, deviceAuth,
-                state =>
-                {
-                    if (state == DeviceFlowState.Succeeded)
-                        return;
-
-                    OAuthFlowState.Value = state;
-                    NotifyStateChanged();
-                }, ct);
-
-            // Step 3: Keep tokens in-memory until provider is confirmed
-            OAuthResult = result;
-            OAuthFlowState.Value = DeviceFlowState.Succeeded;
-            NotifyStateChanged();
-
-            // Step 4: Transition to probe validation using the OAuth token
-            NewApiKey = result.AccessToken.Value;
             CurrentState.Value = ProviderManagerState.AddValidating;
             NotifyStateChanged();
             StartProbe();
-        }
-        catch (OAuthDeviceFlowDeniedException)
-        {
-            OAuthErrorMessage = "Authorization was denied.";
-            OAuthFlowState.Value = DeviceFlowState.Denied;
-            NotifyStateChanged();
-        }
-        catch (OAuthDeviceFlowExpiredException)
-        {
-            OAuthErrorMessage = "The authorization code expired. Please try again.";
-            OAuthFlowState.Value = DeviceFlowState.Expired;
-            NotifyStateChanged();
-        }
-        catch (OperationCanceledException)
-        {
-            OAuthFlowState.Value = DeviceFlowState.Cancelled;
-            NotifyStateChanged();
-        }
-        catch (Exception ex)
-        {
-            OAuthErrorMessage = ex.Message;
-            OAuthFlowState.Value = DeviceFlowState.Error;
-            NotifyStateChanged();
-        }
-        finally
-        {
-            CancelOAuthFlow();
         }
     }
 
@@ -651,13 +613,14 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
                 GoBackToList();
                 break;
             case ProviderManagerState.AddOAuthDeviceFlow:
-                CancelOAuthFlow();
+            case ProviderManagerState.AddBrowserOAuthFlow:
+                OAuth.Cancel();
                 CurrentState.Value = ProviderManagerState.AddSelectAuth;
                 NotifyStateChanged();
                 break;
             case ProviderManagerState.AddCredentials:
                 var descriptor = _registry.Get(NewProviderType ?? "");
-                if (descriptor.SupportedAuthMethods is [AuthMethod.None])
+                if (descriptor.Auth.SupportedAuthMethods is [AuthMethod.None])
                     GoBackToList();
                 else
                     CurrentState.Value = ProviderManagerState.AddSelectAuth;
@@ -758,6 +721,7 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
                     providerType,
                     NewEndpoint,
                     NewApiKey,
+                    NewAuthMethod,
                     ct)
                 .WaitAsync(ProbeHardTimeout, ct);
         }
@@ -814,64 +778,36 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
 
     private async Task RunProbeTimerAsync(CancellationToken ct)
     {
+        var tickCount = 0;
         while (!ct.IsCancellationRequested)
         {
-            try { await Task.Delay(1000, ct); }
+            try { await Task.Delay(120, ct); }
             catch (OperationCanceledException) { return; }
 
-            ProbeElapsedSeconds.Value++;
+            tickCount++;
+            SpinnerTick.Value = tickCount;
+
+            if (tickCount % 8 == 0)
+                ProbeElapsedSeconds.Value++;
+
             RequestRedraw();
         }
     }
+
 
     // ── Config writing ──
 
     private void WriteProviderConfig()
     {
-        _paths.EnsureDirectoriesExist();
-
-        var (config, secrets) = ConfigFileHelper.LoadConfigFiles(_paths);
-
-        var providers = ConfigFileHelper.GetOrCreateSection(config, "Providers");
-        var providerEntry = new Dictionary<string, object>
-        {
-            ["Type"] = NewProviderType!
-        };
-
-        if (NewAuthMethod != AuthMethod.None)
-            providerEntry["AuthMethod"] = NewAuthMethod.ToString();
-
-        var endpoint = NewEndpoint;
-        if (string.IsNullOrWhiteSpace(endpoint) && NewProviderType is not null)
-        {
-            var descriptor = _registry.Get(NewProviderType);
-            endpoint = descriptor.DefaultEndpoint;
-        }
-        endpoint ??= "";
-
-        providerEntry["Endpoint"] = endpoint;
-        providers[NewProviderName!] = providerEntry;
-        ConfigFileHelper.WriteConfigFile(_paths.NetclawConfigPath, config);
-
-        // Write secrets via SecretsFileWriter for encryption-at-rest
-        if (OAuthResult is not null)
-        {
-            // OAuth flow: persist tokens only after user confirms add
-            OAuthTokenPersistence.PersistTokens(
-                _paths,
-                NewProviderName!,
-                OAuthResult,
-                SecretsProtection.CreateProtector(_paths));
-        }
-        else if (!string.IsNullOrWhiteSpace(NewApiKey))
-        {
-            var secretProviders = ConfigFileHelper.GetOrCreateSection(secrets, "Providers");
-            secretProviders[NewProviderName!] = new Dictionary<string, object>
-            {
-                ["ApiKey"] = NewApiKey
-            };
-            ConfigFileHelper.WriteSecretsFile(_paths, secrets);
-        }
+        ProviderCredentialWriter.WriteProvider(
+            _paths,
+            NewProviderName!,
+            NewProviderType!,
+            NewAuthMethod,
+            NewEndpoint,
+            OAuth.Result,
+            NewApiKey,
+            _registry);
     }
 
     // ── Helpers ──
@@ -902,7 +838,7 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
     private void ClearAddState()
     {
         CancelProbe();
-        CancelOAuthFlow();
+        OAuth.Reset();
         NewProviderName = null;
         NewProviderType = null;
         NewAuthMethod = AuthMethod.None;
@@ -911,21 +847,6 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         ProbeResult.Value = null;
         ProbeElapsedSeconds.Value = 0;
         IsFixFlow = false;
-        OAuthFlowState.Value = DeviceFlowState.NotStarted;
-        OAuthUserCode = null;
-        OAuthVerificationUri = null;
-        OAuthErrorMessage = null;
-        OAuthResult = null;
-    }
-
-    private void CancelOAuthFlow()
-    {
-        if (_oauthCts is not null)
-        {
-            _oauthCts.Cancel();
-            _oauthCts.Dispose();
-            _oauthCts = null;
-        }
     }
 
     private void NotifyStateChanged()
@@ -933,6 +854,7 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         StateVersion.Value++;
         RequestRedraw();
     }
+
 
     private void HandleGlobalKey(KeyPressed key)
     {
@@ -946,16 +868,16 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
     public override void Dispose()
     {
         CancelProbe();
-        CancelOAuthFlow();
+        OAuth.Dispose();
         CurrentState.Dispose();
         StatusMessage.Dispose();
         IsProbing.Dispose();
         ProbeResult.Dispose();
         ProbeElapsedSeconds.Dispose();
+        SpinnerTick.Dispose();
         IsEagerProbing.Dispose();
         EagerProbeElapsedSeconds.Dispose();
         StateVersion.Dispose();
-        OAuthFlowState.Dispose();
         base.Dispose();
     }
 }
