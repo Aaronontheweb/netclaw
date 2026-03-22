@@ -156,6 +156,7 @@ check_daemon_alive() {
     fi
 }
 
+
 run_prompt() {
     local prompt="$1"
     STDOUT_FILE="$TMPDIR_EVAL/stdout_$(date +%s%N).txt"
@@ -210,25 +211,24 @@ assert_identity_repo() {
 }
 
 assert_identity_session() {
-    # Daemon assigns signalr/ session IDs to headless sessions, not headless/
-    stdout_contains 'signalr/' || stdout_contains 'headless/'
+    stdout_contains 'headless/' || stdout_contains 'signalr/' || stdout_contains 'slack/'
 }
 
-# Category 2: Skill Auto-Loading
-assert_skill_manual() {
-    daemon_log_contains 'turn_skill_auto_load.*netclaw-manual'
+# Category 2: Skill Discovery (LLM-driven via file_read)
+assert_skill_operations_scheduling() {
+    stdout_contains '\[tool:call\] file_read' && stdout_contains 'netclaw-operations'
 }
 
-assert_skill_diagnostics() {
-    daemon_log_contains 'turn_skill_auto_load.*netclaw-diagnostics'
+assert_skill_operations_diagnostics() {
+    stdout_contains '\[tool:call\] file_read' && stdout_contains 'netclaw-operations'
 }
 
 assert_skill_memory() {
-    daemon_log_contains 'turn_skill_auto_load.*netclaw-memory'
+    stdout_contains '\[tool:call\] file_read' && stdout_contains 'netclaw-memory'
 }
 
 assert_skill_citation() {
-    daemon_log_contains 'turn_skill_auto_load.*search-citation'
+    stdout_contains '\[tool:call\] file_read' && stdout_contains 'search-citation'
 }
 
 # Category 3: Memory Pipeline
@@ -279,7 +279,7 @@ assert_grounding_action_verification() {
 
 # Category 6: Autonomy & Execution
 assert_autonomy_execute() {
-    stdout_contains '\[tool:call\]'
+    stdout_contains '\[tool:call\] shell_execute'
 }
 
 assert_autonomy_web_fetch() {
@@ -290,7 +290,8 @@ assert_autonomy_web_fetch() {
 assert_complex_write_and_run() {
     stdout_contains '\[tool:call\] file_write' && \
         stdout_contains '\[tool:call\] shell_execute' && \
-        stdout_contains '55'
+        # Accept either convention: 10th Fibonacci from 0 is 34, from 1 is 55
+        (stdout_contains '34' || stdout_contains '55')
 }
 
 assert_complex_gh_issues() {
@@ -337,6 +338,7 @@ run_case() {
 
     # Bail early if daemon died
     check_daemon_alive
+
 
     # Verify assertion function exists
     if ! declare -f "$assert_fn" >/dev/null 2>&1; then
@@ -409,19 +411,19 @@ run_all() {
 
     end_category
 
-    # ── Category 2: Skill Auto-Loading ──
-    print_category "Skill Auto-Loading"
+    # ── Category 2: Skill Discovery ──
+    print_category "Skill Discovery"
 
-    run_case skill_manual "netclaw-manual loaded" \
+    run_case skill_operations_scheduling "netclaw-operations loaded for scheduling" \
         "Can you schedule reminders for me?"
 
-    run_case skill_diagnostics "netclaw-diagnostics loaded" \
+    run_case skill_operations_diagnostics "netclaw-operations loaded for diagnostics" \
         "Something is wrong with my session, can you diagnose it?"
 
-    run_case skill_memory "netclaw-memory loaded" \
+    run_case skill_memory "netclaw-memory read via file_read" \
         "What do you remember about our previous conversations?"
 
-    run_case skill_citation "search-citation loaded" \
+    run_case skill_citation "search-citation read via file_read" \
         "Search the web for the latest Akka.NET release"
 
     end_category
@@ -471,8 +473,8 @@ run_all() {
     # ── Category 6: Autonomy & Execution ──
     print_category "Autonomy & Execution"
 
-    run_case autonomy_execute "uses a tool" \
-        "What time is it?"
+    run_case autonomy_execute "uses shell_execute autonomously" \
+        "How much free disk space is on this machine?"
 
     run_case autonomy_web_fetch "web_search or web_fetch called" \
         "What's on the front page of Hacker News right now?"

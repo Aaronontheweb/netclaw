@@ -9,7 +9,6 @@ using Microsoft.Extensions.AI;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Memory;
 using Netclaw.Actors.Protocol;
-using Netclaw.Actors.Skills;
 using Netclaw.Actors.Text;
 using Netclaw.Configuration;
 using Netclaw.Actors.Tools;
@@ -51,6 +50,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly string? _sessionsBasePath;
     private readonly string? _sessionLogsBasePath;
     private readonly ISessionLifecycleObserver? _lifecycleObserver;
+    private readonly Memory.SQLiteMemoryStore? _memoryStore;
+    private readonly IChatClientProvider _clientProvider;
     private readonly ILoggingAdapter _log;
 
     // Transient state (not persisted)
@@ -102,6 +103,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // Child actor for per-session log file (created when session logs directory is configured)
     private IActorRef? _logActor;
 
+    // Child actor for per-session memory curation (evaluate-before-write pipeline)
+    private IActorRef? _curationActor;
+
     // Processing watchdog state (non-persistent)
     private static readonly object ProcessingWatchdogTimerKey = new();
     private long _processingOperationId;
@@ -116,10 +120,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // Startup context layers: injected on first LLM call, re-injected after compaction
     private bool _startupContextInjected;
 
-    // Skill auto-load state (transient — cleared on compaction, empty on recovery)
-    private readonly HashSet<string> _autoLoadedSkills = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, string> _autoLoadedSkillContent = new(StringComparer.OrdinalIgnoreCase);
-    private readonly SkillRegistry? _skillRegistry;
+    // Memory recall state (transient — reset at turn boundaries and compaction)
+    private AutomaticRecallResult? _turnRecallCache;
+    private readonly HashSet<string> _injectedMemoryIds = new(StringComparer.Ordinal);
+
     private readonly Telemetry.ISessionMetrics? _sessionMetrics;
 
     // Persistent state (immutable — replaced on each event)
@@ -145,14 +149,14 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         TimeProvider? timeProvider = null,
         IReadOnlyList<IContextLayerProvider>? contextLayers = null,
         NetclawPaths? paths = null,
-        SkillRegistry? skillRegistry = null,
         Telemetry.ISessionMetrics? sessionMetrics = null,
-        ISessionLifecycleObserver? lifecycleObserver = null)
+        ISessionLifecycleObserver? lifecycleObserver = null,
+        Memory.SQLiteMemoryStore? memoryStore = null)
     {
         _sessionId = new SessionId(entityId);
-        _skillRegistry = skillRegistry;
         _sessionMetrics = sessionMetrics;
         _lifecycleObserver = lifecycleObserver;
+        _clientProvider = clientProvider;
         _chatClient = clientProvider.GetClient(ModelRole.Main);
         _compactionClient = config.CompactionModelId is not null
             ? clientProvider.GetClient(ModelRole.Compaction)
@@ -165,6 +169,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _memoryExtractor = memoryExtractor ?? NullMemoryExtractor.Instance;
         _memoryRecallCoordinator = memoryRecallCoordinator ?? NullMemoryRecallCoordinator.Instance;
         _memoryCheckpointSink = memoryCheckpointSink ?? NullMemoryCheckpointSink.Instance;
+        _memoryStore = memoryStore;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _sessionsBasePath = paths?.SessionsDirectory;
         _sessionLogsBasePath = paths?.SessionsDirectory;
@@ -219,6 +224,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 _logActor = Context.ActorOf(
                     SessionLogActor.CreateProps(_sessionId, _sessionLogsBasePath, _timeProvider),
                     "session-log");
+            }
+
+            if (_memoryStore is not null)
+            {
+                _curationActor = Context.ActorOf(
+                    Memory.MemoryCurationActor.CreateProps(_memoryStore, _clientProvider),
+                    "memory-curation");
             }
         });
     }
@@ -320,6 +332,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             var userContent = cmd.Content ?? string.Empty;
             _state = _state.AddUserMessage(userContent, mediaRefs.Count > 0 ? mediaRefs : null);
             TryReplyAck();
+            _turnRecallCache = null; // New user turn — resolve recall fresh
             FireLlmCall(userContent);
             Become(Processing);
         });
@@ -475,40 +488,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         Command<ToolExecutionCompleted>(msg =>
         {
             StopProcessingWatchdog();
-
-            var hasVerifiedToolFinding = msg.ToolResults.Any(r =>
-                r.Name is "web_search" or "webfetch");
-            if (hasVerifiedToolFinding)
-            {
-                var summarized = string.Join("\n", msg.ToolResults
-                    .Where(r => r.Name is "web_search" or "webfetch")
-                    .Take(2)
-                    .Select(r => $"[{r.Name}] {r.Content}"));
-
-                EnqueueCheckpointFireAndForget(new MemoryCheckpointRequest(
-                    SessionId: _sessionId,
-                    TurnId: _activeTurnId,
-                    TriggerType: Memory.CheckpointTriggerType.VerifiedToolFinding,
-                    Priority: 60,
-                    Payload: new MemoryCheckpointPayload(
-                        SessionId: _sessionId.Value,
-                        TriggerType: "verified-tool-finding",
-                        Source: "tool",
-                        Content: summarized,
-                        UserContent: null,
-                        AssistantContent: null,
-                        IsExplicitRequest: false,
-                        HasVerifiedToolFinding: true,
-                        IsCompactionBoundary: false,
-                        HasAcceptedSubAgentFinding: false,
-                        Domain: _sessionId.ToMemoryDomain(),
-                        Sensitivity: Memory.MemorySensitivity.Normal.ToWireValue(),
-                        RecallMode: Memory.MemoryRecallMode.Auto.ToWireValue(),
-                        Confidence: 0.85,
-                        Kind: Memory.MemoryKind.Record.ToWireValue(),
-                        Title: "verified-tool-finding",
-                        UpdateSemantics: Memory.MemoryUpdateSemantics.ImmutableRecord.ToWireValue())));
-            }
 
             var emittedRunIds = new HashSet<string>(StringComparer.Ordinal);
             foreach (var finding in msg.AcceptedSubAgentFindings)
@@ -844,9 +823,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 _state = _state.Apply(evt);
                 _lastInputTokenCount = 0; // Reset — next LLM call will provide fresh count
                 _startupContextInjected = false; // Re-inject static layers on next LLM call
-                // NOTE: do NOT clear _autoLoadedSkills or _autoLoadedSkillContent here.
-                // Skills loaded during this session are still relevant after compaction.
-                // They will be re-injected on the next LLM call from the cache.
+                _turnRecallCache = null; // Force fresh recall after compaction
+                _injectedMemoryIds.Clear(); // Reset progressive recall — all memories eligible again
 
                 EnqueueCheckpointFireAndForget(new MemoryCheckpointRequest(
                     SessionId: _sessionId,
@@ -1462,6 +1440,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             }
 
             _buffer.Clear();
+            _turnRecallCache = null; // New user input — resolve recall fresh
             FireLlmCall();
             Become(Processing);
             return;
@@ -1516,6 +1495,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _deliveryRetryCount);
 
         _state = _state.AddSystemNudge(BuildDeliveryFailureNudge(msg));
+        _turnRecallCache = null; // Delivery feedback changed context — resolve recall fresh
         FireLlmCall();
         Become(Processing);
     }
@@ -1613,22 +1593,48 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 string.Join(" | ", accepted.Select(x =>
                     $"title={x.Title};anchor={x.AnchorCanonicalName};class={x.MemoryClass};aliases={(x.AliasesJson ?? "-")};facets={(x.FacetsJson ?? "-")};slots={(x.SlotsJson ?? "-")}")));
 
-            EnqueueCheckpointFireAndForget(new MemoryCheckpointRequest(
-                SessionId: _sessionId,
-                TurnId: _activeTurnId,
-                TriggerType: Memory.CheckpointTriggerType.ObservedMemoryProposals,
-                Priority: 60,
-                Payload: new ObservedMemoryCheckpointPayload(
-                    _sessionId.Value,
-                    Memory.CheckpointTriggerType.ObservedMemoryProposals.ToWireValue(),
-                    _sessionId.ToMemoryDomain(),
-                    Memory.MemorySensitivity.Normal.ToWireValue(),
-                    accepted)));
+            // Send accepted proposals to the curation actor for evaluate-before-write.
+            // If the curation actor is not available (no SQLiteMemoryStore configured),
+            // fall back to the checkpoint queue for the worker service to process.
+            if (_curationActor is not null)
+            {
+                _curationActor.Tell(new Memory.EvaluateProposals(accepted, _sessionId.ToMemoryDomain()));
+            }
+            else
+            {
+                EnqueueCheckpointFireAndForget(new MemoryCheckpointRequest(
+                    SessionId: _sessionId,
+                    TurnId: _activeTurnId,
+                    TriggerType: Memory.CheckpointTriggerType.ObservedMemoryProposals,
+                    Priority: 60,
+                    Payload: new ObservedMemoryCheckpointPayload(
+                        _sessionId.Value,
+                        Memory.CheckpointTriggerType.ObservedMemoryProposals.ToWireValue(),
+                        _sessionId.ToMemoryDomain(),
+                        Memory.MemorySensitivity.Normal.ToWireValue(),
+                        accepted)));
+            }
         });
 
         Command<MemoryObservationFailed>(msg =>
         {
             TurnLog().Warning("memory_observation_sidecar_failed reason={Reason}", msg.Reason);
+        });
+
+        Command<Memory.CurationCompleted>(msg =>
+        {
+            TurnLog().Info(
+                "memory_curation_completed evaluated={Evaluated} skipped={Skipped} updated={Updated} consolidated={Consolidated} created={Created}",
+                msg.Evaluated,
+                msg.Skipped,
+                msg.Updated,
+                msg.Consolidated,
+                msg.Created);
+        });
+
+        Command<Memory.CurationFailed>(msg =>
+        {
+            TurnLog().Warning("memory_curation_failed reason={Reason}", msg.Reason);
         });
 
         Command<JoinSession>(cmd =>
@@ -1899,35 +1905,57 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         var sessionDir = GetSessionDirectory();
         var messages = ChatMessageConverter.ToAiMessages(_state.History, sessionDir);
 
-        var recallSw = Stopwatch.StartNew();
-        _activeRecall = ResolveRecallBundle(recallQuery);
-        recallSw.Stop();
-
-        var recallIds = _activeRecall.Items.Count == 0
-            ? "-"
-            : string.Join(",", _activeRecall.Items.Select(i => i.Id));
-        TurnLog().Info(
-            "turn_memory_recall degraded={Degraded} stage={Stage} durationMs={DurationMs} itemCount={ItemCount} itemIds={ItemIds}",
-            _activeRecall.Degraded,
-            _activeRecall.DegradeStage ?? "-",
-            recallSw.ElapsedMilliseconds,
-            _activeRecall.Items.Count,
-            recallIds);
-
-        InjectAutomaticRecall(messages, _activeRecall);
-
-        if (_activeRecall.Items.Count > 0)
+        // Recall: only resolve on turn-start calls, reuse cache for tool-loop follow-ups
+        if (_turnRecallCache is null)
         {
-            _sessionMetrics?.RecordMemoriesRecalled(_activeRecall.Items.Count);
+            var recallSw = Stopwatch.StartNew();
+            var resolved = ResolveRecallBundle(recallQuery);
+            recallSw.Stop();
+
+            // Exclusion-based progressive recall: filter out already-injected memories
+            if (_injectedMemoryIds.Count > 0 && resolved.Items.Count > 0)
+            {
+                var filtered = resolved.Items
+                    .Where(i => !_injectedMemoryIds.Contains(i.Id))
+                    .ToArray();
+                resolved = new AutomaticRecallResult(filtered, resolved.Degraded, resolved.DegradeReason, resolved.DegradeStage);
+            }
+
+            _turnRecallCache = resolved;
+
+            // Track injected IDs for progressive recall across turns
+            foreach (var item in resolved.Items)
+                _injectedMemoryIds.Add(item.Id);
+
+            // Persist recalled memories into session history so they survive
+            // across turns. Without this, recalled memories are transient system
+            // messages that vanish after one turn, and the exclusion set prevents
+            // re-injection — making the memory invisible for the rest of the session.
+            if (resolved.Items.Count > 0)
+            {
+                var recallContent = FormatRecallForHistory(resolved);
+                _state = _state.AddSystemNudge(recallContent);
+            }
+
+            var recallIds = resolved.Items.Count == 0
+                ? "-"
+                : string.Join(",", resolved.Items.Select(i => i.Id));
+            TurnLog().Info(
+                "turn_memory_recall degraded={Degraded} stage={Stage} durationMs={DurationMs} itemCount={ItemCount} itemIds={ItemIds}",
+                resolved.Degraded,
+                resolved.DegradeStage ?? "-",
+                recallSw.ElapsedMilliseconds,
+                resolved.Items.Count,
+                recallIds);
+
+            if (resolved.Items.Count > 0)
+                _sessionMetrics?.RecordMemoriesRecalled(resolved.Items.Count);
         }
 
-        // Skill auto-load: deterministic keyword matching against enriched skill index.
-        // Injects matched skill content as transient system messages before the LLM decides.
-        var userMessage = _state.FindLastUserMessage()?.Content;
-        if (!string.IsNullOrWhiteSpace(userMessage))
-            ResolveAndInjectAutoLoadedSkills(messages, userMessage);
+        _activeRecall = _turnRecallCache;
+        InjectAutomaticRecall(messages, _activeRecall);
 
-        // Inject dynamic context layers (e.g. tool index) as transient system messages.
+        // Inject dynamic context layers (e.g. tool index, skill index) as transient system messages.
         // These are NOT persisted — rebuilt on every call so rehydrated sessions stay fresh.
         InjectDynamicContextLayers(messages);
         var self = Self;
@@ -2027,66 +2055,15 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         messages.Insert(index >= 0 ? index + 1 : 0, recallMessage);
     }
 
-    /// <summary>
-    /// Deterministic skill auto-loading: score user message against enriched keywords,
-    /// load matching skill content from disk (first match) or cache (subsequent turns),
-    /// and inject as transient system messages.
-    /// </summary>
-    private void ResolveAndInjectAutoLoadedSkills(List<AiChatMessage> messages, string userMessage)
+    private static string FormatRecallForHistory(AutomaticRecallResult recall)
     {
-        if (_skillRegistry is null) return;
-
-        // 1. Find NEW matches (excludes already-loaded skills)
-        var newMatches = _skillRegistry.MatchByKeywords(userMessage, _autoLoadedSkills);
-        foreach (var match in newMatches)
-        {
-            try
-            {
-                var raw = File.ReadAllText(match.Skill.FilePath);
-                _autoLoadedSkillContent[match.Skill.Name] = Skills.SkillScanner.ExtractBody(raw);
-            }
-            catch (IOException ex)
-            {
-                _log.Warning(ex, "Failed to read skill for auto-load: {SkillName}", match.Skill.Name);
-                continue;
-            }
-
-            _autoLoadedSkills.Add(match.Skill.Name);
-        }
-
-        // 2. Inject ALL loaded skills (new + previously cached)
-        if (_autoLoadedSkillContent.Count == 0) return;
-
         var sb = new StringBuilder();
-        foreach (var (name, content) in _autoLoadedSkillContent)
+        sb.AppendLine("[recalled-memories]");
+        foreach (var item in recall.Items)
         {
-            if (sb.Length > 0) sb.AppendLine();
-            sb.AppendLine($"[skill-auto-loaded: {name}]");
-            sb.AppendLine(content);
+            sb.AppendLine($"- {item.Title}: {item.Content}");
         }
-
-        var msg = new AiChatMessage(Microsoft.Extensions.AI.ChatRole.System, sb.ToString().TrimEnd());
-        var idx = messages.FindLastIndex(m => m.Role == Microsoft.Extensions.AI.ChatRole.System);
-        messages.Insert(idx >= 0 ? idx + 1 : 0, msg);
-
-        if (newMatches.Count > 0)
-        {
-            var details = string.Join(" | ", newMatches.Select(m =>
-                $"{m.Skill.Name}:score={m.Score.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)}"
-                + $"/threshold={m.Threshold.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)}"
-                + $" tokens=[{string.Join(",", m.MatchedTokens)}]"
-                + $" phrases=[{string.Join(",", m.MatchedPhrases)}]"));
-
-            TurnLog().Info(
-                "turn_skill_auto_load new={New} total={Total} skills={Names} tokenHits={TokenHits} phraseHits={PhraseHits} details={Details}",
-                newMatches.Count, _autoLoadedSkillContent.Count,
-                string.Join(",", newMatches.Select(m => m.Skill.Name)),
-                string.Join(",", newMatches.Select(m => m.TokenHits)),
-                string.Join(",", newMatches.Select(m => m.PhraseHits)),
-                details);
-
-            _sessionMetrics?.RecordSkillsLoaded(newMatches.Count);
-        }
+        return sb.ToString().TrimEnd();
     }
 
     /// <summary>

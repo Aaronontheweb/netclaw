@@ -1,10 +1,9 @@
 ---
 name: search-citation
-description: "Guides when to use web search vs. training data and how to cite sources. Ensures specific factual claims include source URLs and the agent does not hallucinate verifiable information."
+description: "REQUIRED before any web_search or web_fetch call. Read this first when the user asks you to search, look up, verify, price-check, or find anything online. Contains citation format rules and source-handling policies."
 metadata:
   author: netclaw
-  version: "0.7.1"
-  triggers: web search needed | cite sources | link results | price check | product search | find near me | verify facts | compare competitors | current information | find flights | find hotels | latest news | what costs | how much does | where to buy | who sells
+  version: "1.0.0"
 ---
 
 ## Critical Rules Summary
@@ -103,6 +102,5 @@ summarization of article body text).
 
 ## Cross-References
 
-- Tool catalog and grant system: read `netclaw-manual` (`Netclaw Manual`)
-- Memory patterns and recall: read `netclaw-memory`
-- Search-type-specific guidance: see `references/` files listed above
+- Tool grants and capabilities: load `netclaw-operations`
+- Search-type-specific guidance: see `references/` files in this skill directory
