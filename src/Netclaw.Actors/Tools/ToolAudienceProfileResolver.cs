@@ -6,10 +6,12 @@ namespace Netclaw.Actors.Tools;
 internal sealed class ToolAudienceProfileResolver
 {
     private readonly ToolConfig _toolConfig;
+    private readonly NetclawPaths? _paths;
 
-    public ToolAudienceProfileResolver(ToolConfig toolConfig)
+    public ToolAudienceProfileResolver(ToolConfig toolConfig, NetclawPaths? paths = null)
     {
         _toolConfig = toolConfig;
+        _paths = paths;
     }
 
     public ToolAudienceProfile ResolveProfile(ToolExecutionContext? context)
@@ -30,17 +32,28 @@ internal sealed class ToolAudienceProfileResolver
         var roots = new List<string>();
         foreach (var root in access.Roots)
         {
-            if (string.IsNullOrWhiteSpace(root))
-                continue;
+            var resolved = ResolveToken(root, context);
+            if (resolved is not null)
+                roots.Add(resolved);
+        }
 
-            if (string.Equals(root.Trim(), ToolAudienceProfileDefaults.SessionDirectoryToken, StringComparison.OrdinalIgnoreCase))
-            {
-                if (!string.IsNullOrWhiteSpace(context.SessionDirectory))
-                    roots.Add(context.SessionDirectory!);
-                continue;
-            }
+        return roots;
+    }
 
-            roots.Add(root.Trim());
+    /// <summary>
+    /// Resolves <see cref="ToolAudienceProfiles.GlobalReadRoots"/> tokens into absolute paths.
+    /// Token-based roots (e.g. <c>{skills_dir}</c>) require <see cref="_paths"/> to resolve;
+    /// literal paths are always included.
+    /// </summary>
+    public IReadOnlyList<string> ResolveGlobalReadRoots()
+    {
+        var profiles = _toolConfig.AudienceProfiles;
+        var roots = new List<string>();
+        foreach (var root in profiles.GlobalReadRoots)
+        {
+            var resolved = ResolvePathToken(root);
+            if (resolved is not null)
+                roots.Add(resolved);
         }
 
         return roots;
@@ -69,6 +82,43 @@ internal sealed class ToolAudienceProfileResolver
     {
         var profile = ResolveProfile(audience);
         return IsMcpServerAllowed(serverName, profile);
+    }
+
+    /// <summary>
+    /// Resolves a path token (e.g. <c>{skills_dir}</c>, <c>{identity_dir}</c>) to an absolute path.
+    /// Returns null for empty input or if <see cref="_paths"/> is not available for path-based tokens.
+    /// Unrecognized values are treated as literal paths.
+    /// </summary>
+    private string? ResolvePathToken(string? token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+            return null;
+
+        var trimmed = token.Trim();
+
+        if (string.Equals(trimmed, ToolAudienceProfileDefaults.SkillsDirectoryToken, StringComparison.OrdinalIgnoreCase))
+            return _paths?.SkillsDirectory;
+
+        if (string.Equals(trimmed, ToolAudienceProfileDefaults.IdentityDirectoryToken, StringComparison.OrdinalIgnoreCase))
+            return _paths?.IdentityDirectory;
+
+        // Literal path
+        return trimmed;
+    }
+
+    private string? ResolveToken(string root, ToolExecutionContext context)
+    {
+        if (string.IsNullOrWhiteSpace(root))
+            return null;
+
+        var trimmed = root.Trim();
+
+        // Session token requires context, not paths
+        if (string.Equals(trimmed, ToolAudienceProfileDefaults.SessionDirectoryToken, StringComparison.OrdinalIgnoreCase))
+            return string.IsNullOrWhiteSpace(context.SessionDirectory) ? null : context.SessionDirectory;
+
+        // Delegate to shared path token resolver
+        return ResolvePathToken(trimmed);
     }
 
     private static TrustAudience ResolveAudience(ToolExecutionContext? context)

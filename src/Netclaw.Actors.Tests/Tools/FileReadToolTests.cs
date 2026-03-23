@@ -143,12 +143,138 @@ public class FileReadToolTests : IDisposable
         Assert.DoesNotContain("do not read", result);
     }
 
+    [Fact]
+    public async Task Team_context_can_read_file_inside_skills_directory_via_global_read_roots()
+    {
+        var skillsDir = Path.Combine(_tempDir, "skills");
+        Directory.CreateDirectory(skillsDir);
+        var skillFile = Path.Combine(skillsDir, "test-skill", "SKILL.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(skillFile)!);
+        await File.WriteAllTextAsync(skillFile, "# Test Skill");
+
+        var paths = new NetclawPaths(_tempDir);
+        var tool = new FileReadTool(new ToolConfig(), paths: paths);
+
+        var args = new Dictionary<string, object?> { ["Path"] = skillFile };
+        var result = await tool.ExecuteAsync(args, CreateTeamContext(), CancellationToken.None);
+
+        Assert.Equal("# Test Skill", result);
+    }
+
+    [Fact]
+    public async Task Team_context_can_read_file_inside_identity_directory_via_global_read_roots()
+    {
+        var identityDir = Path.Combine(_tempDir, "identity");
+        Directory.CreateDirectory(identityDir);
+        var soulFile = Path.Combine(identityDir, "SOUL.md");
+        await File.WriteAllTextAsync(soulFile, "# Soul");
+
+        var paths = new NetclawPaths(_tempDir);
+        var tool = new FileReadTool(new ToolConfig(), paths: paths);
+
+        var args = new Dictionary<string, object?> { ["Path"] = soulFile };
+        var result = await tool.ExecuteAsync(args, CreateTeamContext(), CancellationToken.None);
+
+        Assert.Equal("# Soul", result);
+    }
+
+    [Fact]
+    public async Task Team_context_cannot_read_file_outside_session_and_global_roots()
+    {
+        var secretFile = Path.Combine(_tempDir, "config", "secrets.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(secretFile)!);
+        await File.WriteAllTextAsync(secretFile, "secret data");
+
+        var paths = new NetclawPaths(_tempDir);
+        var tool = new FileReadTool(new ToolConfig(), paths: paths);
+
+        var args = new Dictionary<string, object?> { ["Path"] = secretFile };
+        var result = await tool.ExecuteAsync(args, CreateTeamContext(), CancellationToken.None);
+
+        Assert.Contains("Team trust context", result);
+        Assert.DoesNotContain("secret data", result);
+    }
+
+    [Fact]
+    public async Task Team_context_without_paths_falls_back_to_session_only()
+    {
+        var skillsDir = Path.Combine(_tempDir, "skills");
+        Directory.CreateDirectory(skillsDir);
+        var skillFile = Path.Combine(skillsDir, "test-skill", "SKILL.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(skillFile)!);
+        await File.WriteAllTextAsync(skillFile, "# Test Skill");
+
+        // No paths injected — no global read roots
+        var tool = new FileReadTool(new ToolConfig());
+
+        var args = new Dictionary<string, object?> { ["Path"] = skillFile };
+        var result = await tool.ExecuteAsync(args, CreateTeamContext(), CancellationToken.None);
+
+        Assert.Contains("Team trust context", result);
+    }
+
+    [Fact]
+    public async Task Team_context_can_read_file_inside_literal_global_read_root()
+    {
+        var sharedDir = Path.Combine(_tempDir, "shared-data");
+        Directory.CreateDirectory(sharedDir);
+        var dataFile = Path.Combine(sharedDir, "data.txt");
+        await File.WriteAllTextAsync(dataFile, "shared content");
+
+        var config = new ToolConfig
+        {
+            AudienceProfiles = new ToolAudienceProfiles
+            {
+                GlobalReadRoots = [sharedDir]
+            }
+        };
+        var paths = new NetclawPaths(_tempDir);
+        var tool = new FileReadTool(config, paths: paths);
+
+        var args = new Dictionary<string, object?> { ["Path"] = dataFile };
+        var result = await tool.ExecuteAsync(args, CreateTeamContext(), CancellationToken.None);
+
+        Assert.Equal("shared content", result);
+    }
+
+    [Fact]
+    public async Task Literal_global_read_root_works_without_netclaw_paths()
+    {
+        var sharedDir = Path.Combine(_tempDir, "shared-data");
+        Directory.CreateDirectory(sharedDir);
+        var dataFile = Path.Combine(sharedDir, "data.txt");
+        await File.WriteAllTextAsync(dataFile, "shared content");
+
+        var config = new ToolConfig
+        {
+            AudienceProfiles = new ToolAudienceProfiles
+            {
+                GlobalReadRoots = [sharedDir]
+            }
+        };
+        // No NetclawPaths injected — literal paths should still resolve
+        var tool = new FileReadTool(config);
+
+        var args = new Dictionary<string, object?> { ["Path"] = dataFile };
+        var result = await tool.ExecuteAsync(args, CreateTeamContext(), CancellationToken.None);
+
+        Assert.Equal("shared content", result);
+    }
+
     private ToolExecutionContext CreatePersonalContext()
         => new("signalr/thread-1", _sessionDir)
         {
             Audience = TrustAudience.Personal.ToWireValue(),
             Boundary = SecurityPolicyDefaults.TrustedInstanceBoundary,
             ChannelType = "signalr"
+        };
+
+    private ToolExecutionContext CreateTeamContext()
+        => new("slack/thread-1", _sessionDir)
+        {
+            Audience = TrustAudience.Team.ToWireValue(),
+            Boundary = SecurityPolicyDefaults.TeamBoundary,
+            ChannelType = "slack"
         };
 
     private ToolExecutionContext CreatePublicContext()
