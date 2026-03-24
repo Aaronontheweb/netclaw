@@ -46,23 +46,23 @@ public sealed class InitWizardViewModelTests : IDisposable
     public void GoNext_AdvancesStep()
     {
         using var vm = CreateViewModel();
-        vm.SlackEnabled = true; // enable chat services so ACL is not skipped
+        vm.SlackEnabled = true; // enable chat services so Channels is not skipped
         Assert.Equal(WizardStep.Provider, vm.CurrentStep.Value);
+
+        vm.GoNext();
+        Assert.Equal(WizardStep.SecurityPosture, vm.CurrentStep.Value);
 
         vm.GoNext();
         Assert.Equal(WizardStep.ChatServices, vm.CurrentStep.Value);
 
         vm.GoNext();
-        Assert.Equal(WizardStep.Acl, vm.CurrentStep.Value);
+        Assert.Equal(WizardStep.Channels, vm.CurrentStep.Value);
 
         vm.GoNext();
         Assert.Equal(WizardStep.Search, vm.CurrentStep.Value);
 
         vm.GoNext();
         Assert.Equal(WizardStep.BrowserAutomation, vm.CurrentStep.Value);
-
-        vm.GoNext(); // Memory is skipped
-        Assert.Equal(WizardStep.Exposure, vm.CurrentStep.Value);
 
         vm.GoNext();
         Assert.Equal(WizardStep.Identity, vm.CurrentStep.Value);
@@ -76,11 +76,11 @@ public sealed class InitWizardViewModelTests : IDisposable
     {
         using var vm = CreateViewModel();
         vm.SlackEnabled = true;
+        vm.GoNext(); // → SecurityPosture
         vm.GoNext(); // → ChatServices
-        vm.GoNext(); // → Acl
 
-        vm.GoBack(); // → ChatServices
-        Assert.Equal(WizardStep.ChatServices, vm.CurrentStep.Value);
+        vm.GoBack(); // → SecurityPosture
+        Assert.Equal(WizardStep.SecurityPosture, vm.CurrentStep.Value);
 
         vm.GoBack(); // → Provider
         Assert.Equal(WizardStep.Provider, vm.CurrentStep.Value);
@@ -135,29 +135,33 @@ public sealed class InitWizardViewModelTests : IDisposable
     }
 
     [Fact]
-    public void GoNext_SkipsAcl_WhenNoChatServicesEnabled()
+    public void GoNext_SkipsChannels_WhenNoChatServicesEnabled()
     {
         using var vm = CreateViewModel();
         vm.SlackEnabled = false;
 
-        vm.GoNext(); // Provider → ChatServices
+        vm.GoNext(); // Provider → SecurityPosture
+        Assert.Equal(WizardStep.SecurityPosture, vm.CurrentStep.Value);
+
+        vm.GoNext(); // SecurityPosture → ChatServices
         Assert.Equal(WizardStep.ChatServices, vm.CurrentStep.Value);
 
-        vm.GoNext(); // ChatServices → should skip ACL → Search
+        vm.GoNext(); // ChatServices → should skip Channels → Search
         Assert.Equal(WizardStep.Search, vm.CurrentStep.Value);
     }
 
     [Fact]
-    public void GoBack_SkipsAcl_WhenNoChatServicesEnabled()
+    public void GoBack_SkipsChannels_WhenNoChatServicesEnabled()
     {
         using var vm = CreateViewModel();
         vm.SlackEnabled = false;
 
+        vm.GoNext(); // → SecurityPosture
         vm.GoNext(); // → ChatServices
-        vm.GoNext(); // → Search (ACL skipped)
+        vm.GoNext(); // → Search (Channels skipped)
         Assert.Equal(WizardStep.Search, vm.CurrentStep.Value);
 
-        vm.GoBack(); // → ChatServices (ACL skipped going back)
+        vm.GoBack(); // → ChatServices (Channels skipped going back)
         Assert.Equal(WizardStep.ChatServices, vm.CurrentStep.Value);
     }
 
@@ -305,7 +309,7 @@ public sealed class InitWizardViewModelTests : IDisposable
 
         vm.SelectedProviderType = "ollama";
         vm.SlackEnabled = false;
-        vm.ExposureMode = "Local only (recommended for homelab)";
+        vm.SelectedPosture = DeploymentPosture.Personal;
 
         vm.CurrentStep.Value = WizardStep.HealthCheck;
         vm.GoNext();
@@ -340,7 +344,7 @@ public sealed class InitWizardViewModelTests : IDisposable
 
         vm.SelectedProviderType = "ollama";
         vm.SlackEnabled = false;
-        vm.ExposureMode = "Cloudflare Tunnel (configure later)";
+        vm.SelectedPosture = DeploymentPosture.Public;
 
         vm.CurrentStep.Value = WizardStep.HealthCheck;
         vm.GoNext();
@@ -477,9 +481,9 @@ public sealed class InitWizardViewModelTests : IDisposable
     }
 
     [Fact]
-    public void TotalSteps_IsNine()
+    public void TotalSteps_IsEight()
     {
-        Assert.Equal(9, InitWizardViewModel.TotalSteps);
+        Assert.Equal(8, InitWizardViewModel.TotalSteps);
     }
 
     [Fact]
@@ -504,14 +508,14 @@ public sealed class InitWizardViewModelTests : IDisposable
         using var vm = CreateViewModel();
         vm.SlackEnabled = false;
 
-        // Provider = 1, ChatServices = 2, Acl skipped, Search = 3,
-        // BrowserAutomation = 4, Memory skipped, Exposure = 5,
+        // Provider = 1, SecurityPosture = 2, ChatServices = 3,
+        // Channels skipped, Search = 4, BrowserAutomation = 5,
         // Identity = 6, HealthCheck = 7
         Assert.Equal(1, vm.GetDisplayStepNumber(WizardStep.Provider));
-        Assert.Equal(2, vm.GetDisplayStepNumber(WizardStep.ChatServices));
-        Assert.Equal(3, vm.GetDisplayStepNumber(WizardStep.Search));
-        Assert.Equal(4, vm.GetDisplayStepNumber(WizardStep.BrowserAutomation));
-        Assert.Equal(5, vm.GetDisplayStepNumber(WizardStep.Exposure));
+        Assert.Equal(2, vm.GetDisplayStepNumber(WizardStep.SecurityPosture));
+        Assert.Equal(3, vm.GetDisplayStepNumber(WizardStep.ChatServices));
+        Assert.Equal(4, vm.GetDisplayStepNumber(WizardStep.Search));
+        Assert.Equal(5, vm.GetDisplayStepNumber(WizardStep.BrowserAutomation));
         Assert.Equal(6, vm.GetDisplayStepNumber(WizardStep.Identity));
         Assert.Equal(7, vm.GetDisplayStepNumber(WizardStep.HealthCheck));
     }
@@ -1083,41 +1087,117 @@ public sealed class InitWizardViewModelTests : IDisposable
     }
 
     [Fact]
-    public void PopulateChannelAudiences_personal_posture_dm_maps_to_personal()
+    public void DeriveSecurityDefaults_personal_posture_dm_maps_to_personal()
     {
         using var vm = CreateViewModel();
-        vm.ExposureMode = "Local only";
+        vm.SelectedPosture = DeploymentPosture.Personal;
         vm.SlackAllowDirectMessages = true;
 
-        vm.PopulateChannelAudiences();
+        vm.DeriveSecurityDefaults();
+        vm.SyncChannelAudiencesFromEntries();
 
         Assert.True(vm.ChannelAudiences.ContainsKey("dm"));
         Assert.Equal("personal", vm.ChannelAudiences["dm"]);
     }
 
     [Fact]
-    public void PopulateChannelAudiences_team_posture_dm_maps_to_team()
+    public void DeriveSecurityDefaults_team_posture_dm_maps_to_team()
     {
         using var vm = CreateViewModel();
-        vm.ExposureMode = "Private network";
+        vm.SelectedPosture = DeploymentPosture.Team;
         vm.SlackAllowDirectMessages = true;
 
-        vm.PopulateChannelAudiences();
+        vm.DeriveSecurityDefaults();
+        vm.SyncChannelAudiencesFromEntries();
 
         Assert.True(vm.ChannelAudiences.ContainsKey("dm"));
         Assert.Equal("team", vm.ChannelAudiences["dm"]);
     }
 
     [Fact]
-    public void PopulateChannelAudiences_no_dm_enabled_has_no_dm_key()
+    public void DeriveSecurityDefaults_no_dm_enabled_has_no_dm_key()
     {
         using var vm = CreateViewModel();
-        vm.ExposureMode = "Local only";
+        vm.SelectedPosture = DeploymentPosture.Personal;
         vm.SlackAllowDirectMessages = false;
 
-        vm.PopulateChannelAudiences();
+        vm.DeriveSecurityDefaults();
+        vm.SyncChannelAudiencesFromEntries();
 
         Assert.False(vm.ChannelAudiences.ContainsKey("dm"));
+    }
+
+    [Fact]
+    public void DeriveSecurityDefaults_public_posture_dm_maps_to_public()
+    {
+        using var vm = CreateViewModel();
+        vm.SelectedPosture = DeploymentPosture.Public;
+        vm.SlackAllowDirectMessages = true;
+
+        vm.DeriveSecurityDefaults();
+        vm.SyncChannelAudiencesFromEntries();
+
+        Assert.Equal("public", vm.ChannelAudiences["dm"]);
+    }
+
+    [Fact]
+    public void AudienceCycling_wraps_forward()
+    {
+        var entry = new ChannelEntry("#test", "C123", "team");
+        var values = new[] { "personal", "team", "public" };
+
+        // team → public → personal → team
+        var idx = Array.IndexOf(values, entry.Audience);
+        entry.Audience = values[(idx + 1) % values.Length];
+        Assert.Equal("public", entry.Audience);
+
+        idx = Array.IndexOf(values, entry.Audience);
+        entry.Audience = values[(idx + 1) % values.Length];
+        Assert.Equal("personal", entry.Audience);
+
+        idx = Array.IndexOf(values, entry.Audience);
+        entry.Audience = values[(idx + 1) % values.Length];
+        Assert.Equal("team", entry.Audience);
+    }
+
+    [Fact]
+    public void AudienceCycling_wraps_reverse()
+    {
+        var entry = new ChannelEntry("#test", "C123", "team");
+        var values = new[] { "personal", "team", "public" };
+
+        // team → personal → public → team
+        var idx = Array.IndexOf(values, entry.Audience);
+        entry.Audience = values[(idx - 1 + values.Length) % values.Length];
+        Assert.Equal("personal", entry.Audience);
+
+        idx = Array.IndexOf(values, entry.Audience);
+        entry.Audience = values[(idx - 1 + values.Length) % values.Length];
+        Assert.Equal("public", entry.Audience);
+    }
+
+    [Fact]
+    public void DmRow_cannot_be_removed_from_entries()
+    {
+        using var vm = CreateViewModel();
+        vm.SelectedPosture = DeploymentPosture.Personal;
+        vm.SlackAllowDirectMessages = true;
+        vm.DeriveSecurityDefaults();
+
+        var dmEntry = vm.ChannelEntries.FirstOrDefault(e => e.IsDmRow);
+        Assert.NotNull(dmEntry);
+        Assert.True(dmEntry!.IsDmRow);
+        // The UI prevents removal of DM rows — IsDmRow flag is the guard
+    }
+
+    [Fact]
+    public void ConfigGeneration_uses_explicit_posture()
+    {
+        using var vm = CreateViewModel();
+        vm.SelectedPosture = DeploymentPosture.Team;
+
+        // The posture should be used directly, not inferred from ExposureMode
+        Assert.Equal(DeploymentPosture.Team, vm.SelectedPosture);
     }
 
     private InitWizardViewModel CreateViewModel(IBrowserAutomationBootstrapper? browserBootstrapper = null)

@@ -32,6 +32,7 @@ using Netclaw.Daemon.Providers;
 using Netclaw.Daemon.Services;
 using Netclaw.Search;
 using Netclaw.Security;
+using Netclaw.Security.Skills;
 using static Microsoft.Extensions.Logging.LogLevel;
 
 try
@@ -480,11 +481,16 @@ static void ConfigureDaemonServices(
     services.AddSingleton<IContextLayerProvider>(_ =>
         new FileContextLayerProvider(paths.ToolIndexShadowPath, ContextLayerTiming.OnceAtStart));
 
-    // Skill index context layer
+    // Skill index context layer — uses compressed format, rebuilt by sync/enrichment services
     var skillIndexLayer = new SkillIndexContextLayer();
+    skillRegistry.RebuildAudienceMenus();
     skillIndexLayer.Update(skillRegistry.GenerateDescriptionMenu());
     services.AddSingleton(skillIndexLayer);
     services.AddSingleton<IContextLayerProvider>(skillIndexLayer);
+
+    // Skill tools (skill_load, skill_read_resource, skill_manage)
+    // Scanner is resolved later via DI; use no-op for now (real impl registered in AddContentSecurity)
+    toolRegistry.WithSkillTools(skillRegistry, skillIndexLayer, paths, new NoOpSkillContentScanner());
 
     // Memory context layer — status is updated by ToolIndexUpdater after MCP discovery
     var memoryIndexLayer = new MemoryIndexContextLayer();
@@ -511,6 +517,11 @@ static void ConfigureDaemonServices(
     services.AddHttpClient<SystemSkillSyncService>(client =>
         client.Timeout = FeedConstants.FeedHttpTimeout);
     services.AddHostedService<SystemSkillSyncService>();
+
+    // Skill index enrichment — generates trigger phrases via LLM sidecar.
+    // Runs after system skill sync, non-blocking. Falls back to truncated descriptions.
+    services.AddSingleton<SkillIndexEnrichmentService>();
+    services.AddHostedService<SkillIndexEnrichmentService>();
 
     // Binary update check — logs a warning at startup if a newer version is available.
     // Never blocks startup, never downloads anything.

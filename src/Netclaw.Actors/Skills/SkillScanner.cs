@@ -67,8 +67,8 @@ public static partial class SkillScanner
             if (File.Exists(Path.Combine(subDir, SkillFileName)))
                 continue;
 
-            // Skip hidden directories (except .system/ which contains system skills)
-            if (subDirName.StartsWith('.') && !subDirName.Equals(".system", StringComparison.Ordinal))
+            // Skip hidden directories except known skill tier directories
+            if (subDirName.StartsWith('.') && !IsAllowedHiddenDirectory(subDirName))
                 continue;
 
             foreach (var nestedDir in Directory.GetDirectories(subDir))
@@ -201,7 +201,11 @@ public static partial class SkillScanner
             License = fm.License,
             Compatibility = fm.Compatibility,
             AllowedTools = fm.AllowedTools,
-            ResourcePaths = EnumerateResources(skillDirectory)
+            ResourcePaths = EnumerateResources(skillDirectory),
+            TrustTier = InferTrustTier(category),
+            DisableModelInvocation = fm.DisableModelInvocation,
+            UserInvocable = fm.UserInvocable,
+            ArgumentHint = fm.ArgumentHint
         };
     }
 
@@ -248,6 +252,39 @@ public static partial class SkillScanner
             return value;
         return value[..(maxLength - 3)] + "...";
     }
+
+    /// <summary>
+    /// Single source of truth: maps hidden directory names to their trust tiers.
+    /// Controls both which hidden directories are scanned (Pass 2) and what
+    /// tier the discovered skills receive.
+    /// </summary>
+    private static readonly Dictionary<string, SkillTrustTier> HiddenDirectoryTiers =
+        new(StringComparer.Ordinal)
+        {
+            [".system"] = SkillTrustTier.System,
+            [".community"] = SkillTrustTier.Community,
+            [".external"] = SkillTrustTier.External,
+            [".agent"] = SkillTrustTier.Agent,
+        };
+
+    private static bool IsAllowedHiddenDirectory(string dirName)
+        => HiddenDirectoryTiers.ContainsKey(dirName);
+
+    /// <summary>
+    /// Infers the trust tier from the skill's category (parent directory).
+    /// A skill cannot self-declare its tier — it is determined by directory location.
+    /// </summary>
+    internal static SkillTrustTier InferTrustTier(string? category)
+    {
+        if (category is null)
+            return SkillTrustTier.User;
+
+        // Category may be a path like ".system" or ".community/subcategory"
+        var root = category.Split('/')[0];
+        return HiddenDirectoryTiers.TryGetValue(root, out var tier)
+            ? tier
+            : SkillTrustTier.User;
+    }
 }
 
 /// <summary>
@@ -262,6 +299,15 @@ internal sealed class SkillFrontmatter
 
     [YamlMember(Alias = "allowed-tools")]
     public string? AllowedTools { get; set; }
+
+    [YamlMember(Alias = "disable-model-invocation")]
+    public bool DisableModelInvocation { get; set; }
+
+    [YamlMember(Alias = "user-invocable")]
+    public bool UserInvocable { get; set; } = true;
+
+    [YamlMember(Alias = "argument-hint")]
+    public string? ArgumentHint { get; set; }
 
     public Dictionary<string, string>? Metadata { get; set; }
 }
