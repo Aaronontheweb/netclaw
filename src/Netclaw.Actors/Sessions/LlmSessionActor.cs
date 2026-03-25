@@ -44,7 +44,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly IMemoryExtractor _memoryExtractor;
     private readonly IMemoryRecallCoordinator _memoryRecallCoordinator;
     private readonly IMemoryCheckpointSink _memoryCheckpointSink;
-    private readonly SidecarMemoryObserver _sidecarMemoryObserver = new();
     private readonly MemoryProposalGate _memoryProposalGate = new();
     private readonly TimeProvider _timeProvider;
     private readonly string? _sessionsBasePath;
@@ -108,6 +107,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     // Child actor for per-session memory curation (evaluate-before-write pipeline)
     private IActorRef? _curationActor;
+
+    // Child actor for session-level memory observation (distills transcript on idle)
+    private IActorRef? _observerActor;
 
     // Processing watchdog state (non-persistent)
     private static readonly object ProcessingWatchdogTimerKey = new();
@@ -244,6 +246,17 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 _curationActor = Context.ActorOf(
                     Memory.MemoryCurationActor.CreateProps(_memoryStore, _clientProvider),
                     "memory-curation");
+
+                // Distillation processes a full transcript — allow 5x normal sidecar timeout
+                // for slower local models (e.g., Qwen 3.5 27B)
+                var distillationTimeout = TimeSpan.FromSeconds(Math.Max(1, _config.SidecarLlmTimeoutSeconds) * 5);
+                _observerActor = Context.ActorOf(
+                    SessionMemoryObserverActor.CreateProps(
+                        _sessionId,
+                        _compactionClient,
+                        TimeSpan.FromSeconds(Math.Max(10, _config.MemoryObserverIdleSeconds)),
+                        distillationTimeout),
+                    "memory-observer");
             }
         });
     }
@@ -296,6 +309,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 cmd.MediaReferences.Count > 0,
                 cmd.Content?.Length ?? 0);
             _logActor?.Tell(cmd);
+            _observerActor?.Tell(cmd);
 
             _toolCallCount = 0;
             _toolIterationCount = 0;
@@ -758,6 +772,61 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         });
 
         Command<SpawnChildActorRequest>(msg => Sender.Tell(Context.ActorOf(msg.Props, msg.ActorName)));
+    }
+
+    private void HandleDistillationResult(SessionDistillationCompleted msg)
+    {
+        _log.Info(
+            "session_distillation_completed proposals={ProposalCount} inputTokens={InputTokens} outputTokens={OutputTokens} failure={Failure}",
+            msg.Proposals.Count,
+            msg.InputTokens,
+            msg.OutputTokens,
+            msg.FailureReason ?? "-");
+
+        // Emit sidecar token usage through the standard pipeline
+        if (msg.InputTokens.HasValue || msg.OutputTokens.HasValue)
+        {
+            _sessionMetrics?.RecordTokenUsage(msg.InputTokens ?? 0, msg.OutputTokens ?? 0);
+            EmitOutput(new UsageOutput
+            {
+                SessionId = _sessionId,
+                InputTokens = msg.InputTokens,
+                OutputTokens = msg.OutputTokens,
+                TotalTokens = (msg.InputTokens ?? 0) + (msg.OutputTokens ?? 0)
+            }, OutputFilter.Usage);
+        }
+
+        // Route proposals through the standard gate → curation pipeline
+        if (msg.Proposals.Count > 0 && _curationActor is not null)
+        {
+            // Use session-derived audience when _currentTurnSource is null
+            // (distillation fires after idle, turn context is cleared)
+            var audience = _currentTurnSource?.Audience
+                ?? SecurityPolicyDefaults.ResolveAudienceFromSessionId(_sessionId.Value);
+            var gateResult = _memoryProposalGate.Evaluate(
+                msg.Proposals,
+                _sessionId.ToMemoryDomain(),
+                Memory.MemorySensitivity.Normal.ToWireValue(),
+                NowMs(),
+                boundary: CurrentMemoryBoundary(),
+                audience: audience);
+
+            var accepted = gateResult.MemoryOperations;
+
+            _log.Info(
+                "session_distillation_gate_result total={Total} accepted={Accepted} rejections={Rejections}",
+                gateResult.Summary.Total,
+                gateResult.Summary.Accepted,
+                gateResult.Summary.RejectionReasons.Count == 0
+                    ? "-"
+                    : string.Join("|", gateResult.Summary.RejectionReasons.Select(x => $"{x.Key}:{x.Value}")));
+
+            if (accepted.Count > 0)
+            {
+                _curationActor.Tell(new Memory.EvaluateProposals(accepted, _sessionId.ToMemoryDomain()));
+                _sessionMetrics?.RecordMemoriesFormed(accepted.Count);
+            }
+        }
     }
 
     private void Compacting()
@@ -1409,9 +1478,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             MaybeGenerateTitle();
             _activeRecall = recallResult;
 
-            if (_config.MemorySidecarsEnabled)
-                ObserveTurnForMemory(evt.UserMessage, evt.AssistantReply);
-
             EnqueueCheckpointFireAndForget(new MemoryCheckpointRequest(
                 SessionId: _sessionId,
                 TurnId: _activeTurnId,
@@ -1664,6 +1730,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             TurnLog().Warning("memory_curation_failed reason={Reason}", msg.Reason);
         });
+
+        Command<SessionDistillationCompleted>(msg => HandleDistillationResult(msg));
 
         Command<JoinSession>(cmd =>
         {
@@ -1946,6 +2014,15 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 var filtered = resolved.Items
                     .Where(i => !_injectedMemoryIds.Contains(i.Id))
                     .ToArray();
+
+                if (filtered.Length == 0 && resolved.Items.Count > 0)
+                {
+                    _log.Info(
+                        "progressive_recall_exhausted allCandidatesAlreadyInjected={0} totalInjected={1}",
+                        resolved.Items.Count,
+                        _injectedMemoryIds.Count);
+                }
+
                 resolved = new AutomaticRecallResult(filtered, resolved.Degraded, resolved.DegradeReason, resolved.DegradeStage);
             }
 
@@ -1963,6 +2040,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             {
                 var recallContent = FormatRecallForHistory(resolved);
                 _state = _state.AddSystemNudge(recallContent);
+                _observerActor?.Tell(new ObserverSystemContext("recalled-memory", recallContent));
             }
 
             var recallIds = resolved.Items.Count == 0
@@ -2860,84 +2938,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         });
     }
 
-    private void ObserveTurnForMemory(SerializableChatMessage userMessage, SerializableChatMessage assistantReply)
-    {
-        var userText = userMessage.Content ?? string.Empty;
-        if (string.IsNullOrWhiteSpace(userText))
-            return;
-
-        var recentUser = _state.History
-            .Where(x => x.Role == Protocol.ChatRole.User && !SessionState.IsSystemNudge(x))
-            .Select(x => x.Content)
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .TakeLast(3)
-            .ToArray();
-
-        var recentAssistant = _state.History
-            .Where(x => x.Role == Protocol.ChatRole.Assistant)
-            .Select(x => x.Content)
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .TakeLast(3)
-            .ToArray();
-
-        var strongAssertions = BuildStrongAssertions(userText);
-        var request = _sidecarMemoryObserver.BuildRequest(
-            _sessionId.Value,
-            _activeTurnId ?? $"{_sessionId.Value}:{NowMs()}",
-            "turn_completed",
-            _sessionId.ToMemoryDomain(),
-            Memory.MemorySensitivity.Normal.ToWireValue(),
-            userText,
-            assistantReply.Content ?? string.Empty,
-            strongAssertions,
-            [],
-            recentUser,
-            recentAssistant,
-            [],
-            false,
-            _timeProvider.GetUtcNow());
-
-        var self = Self;
-        var timeout = TimeSpan.FromSeconds(Math.Max(1, _config.SidecarLlmTimeoutSeconds));
-        _ = ObserveMemoryAsync(_compactionClient, request, self, _log, timeout);
-    }
-
-    private static async Task ObserveMemoryAsync(
-        IChatClient client,
-        MemoryObservationRequest request,
-        IActorRef self,
-        ILoggingAdapter log,
-        TimeSpan timeout)
-    {
-        var proposals = await SessionSidecarRunner.RunJsonAsync<IReadOnlyList<MemoryProposal>>(
-            client,
-            MemorySidecarPromptBuilder.BuildMemoryObservationSystemPrompt(),
-            MemorySidecarPromptBuilder.BuildMemoryObservationUserPrompt(request),
-            timeout,
-            message => log.Warning("Memory observation sidecar failed: {0}", message));
-
-        if (proposals is null)
-        {
-            self.Tell(new MemoryObservationFailed { Reason = "sidecar failed or returned null" });
-            return;
-        }
-
-        self.Tell(new MemoryObservationCompleted { Proposals = proposals });
-    }
-
-    private static IReadOnlyList<string> BuildStrongAssertions(string userText)
-    {
-        var assertions = new List<string>();
-        var text = userText.Trim();
-        if (text.StartsWith("I ", StringComparison.OrdinalIgnoreCase)
-            || text.StartsWith("I'm ", StringComparison.OrdinalIgnoreCase)
-            || text.StartsWith("I’m ", StringComparison.OrdinalIgnoreCase))
-        {
-            assertions.Add(text);
-        }
-        return assertions;
-    }
-
     private void EmitUsageOutput(UsageDetails usage)
     {
         _sessionMetrics?.RecordTokenUsage(usage.InputTokenCount ?? 0, usage.OutputTokenCount ?? 0);
@@ -3042,6 +3042,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         }
 
         _logActor?.Tell(output);
+        _observerActor?.Tell(output);
     }
 
     private void BindTurnTelemetry(MessageSource? source)
