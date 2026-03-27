@@ -92,6 +92,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // Processing watchdog (timer management for stuck operations)
     private readonly ProcessingWatchdog _watchdog = new();
 
+    // Timeout retry handler (exponential backoff for LLM call timeouts)
+    private TimeoutRetryHandler _timeoutRetry = null!; // Initialized in constructor from config
+    private static readonly object TimeoutRetryTimerKey = new();
+
     // Per-turn diagnostic correlation (ephemeral)
     private string? _activeTurnId;
     private string? _activeMessageId;
@@ -112,9 +116,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     // Persistent state (immutable — replaced on each event)
     private SessionState _state = SessionState.Empty;
-
-    // Track whether system prompt was recovered from journal
-    private bool _systemPromptRecovered;
 
     // Explicit state machine phase (metadata + validation layer over Become())
     private SessionPhase _currentPhase = SessionPhase.Recovering;
@@ -141,6 +142,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             : _chatClient;
         _model = modelCapabilities;
         _config = config;
+        _timeoutRetry = new TimeoutRetryHandler(
+            config.LlmTimeoutMaxRetries,
+            TimeSpan.FromSeconds(config.LlmTimeoutRetryBaseDelaySeconds));
         _promptProvider = services.PromptProvider;
         _contextLayers = services.ContextLayers;
         _skillRegistry = tools?.SkillRegistry;
@@ -171,11 +175,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _baseToolCount = _availableTools.Count;
 
         // ── Recovery handlers ──
-        Recover<SystemPromptSet>(evt =>
-        {
-            _state = _state.Apply(evt);
-            _systemPromptRecovered = true;
-        });
+        // Backward compat: old journals contain SystemPromptSet events.
+        // Ignore the content — we always read fresh from disk in RecoveryCompleted.
+#pragma warning disable CS0618 // Obsolete type retained for journal deserialization
+        Recover<SystemPromptSet>(_ => { });
+#pragma warning restore CS0618
         Recover<TurnRecorded>(evt => _state = _state.Apply(evt));
         Recover<SessionTitleSet>(evt => _state = _state.Apply(evt));
         Recover<SessionCompacted>(evt => _state = _state.Apply(evt));
@@ -184,8 +188,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             if (offer.Snapshot is SessionSnapshot snapshot)
             {
                 _state = SessionState.FromSnapshot(snapshot);
-                _systemPromptRecovered = _state.History.Count > 0
-                    && _state.History[0].Role == Protocol.ChatRole.System;
                 _log.Info("Recovered from snapshot (turns={TurnCount})", _state.TurnCount);
             }
         });
@@ -194,10 +196,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _log.Info("Recovery complete (turns={TurnCount}, history={HistoryCount})",
                 _state.TurnCount, _state.History.Count);
 
-            if (!_systemPromptRecovered)
-            {
-                SetSystemPrompt();
-            }
+            // Always read fresh from disk — identity file edits take effect immediately
+            SetSystemPrompt();
 
             TransitionTo(SessionPhase.Ready);
 
@@ -305,6 +305,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         });
 
         Command<ProcessingWatchdogExpired>(_ => { });
+        Command<RetryLlmCallAfterBackoff>(_ => { }); // Stale retry from previous turn — ignore
         Command<CompactionWorkCompleted>(_ => { });
         Command<CompactionWorkFailed>(_ => { });
         Command<SpawnChildActorRequest>(msg => Sender.Tell(Context.ActorOf(msg.Props, msg.ActorName)));
@@ -622,20 +623,20 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 return;
             }
 
-            TurnLog().Error(msg.Cause, "turn_llm_call_failed");
+            // Evaluate timeout retry before failing the turn
+            if (HandleTimeoutRetryOrFail(msg.Cause, "turn_llm_call"))
+                return;
 
+            // Non-timeout failure — use the actor's richer error extraction
+            TurnLog().Error(msg.Cause, "turn_llm_call_failed");
             var errorMessage = ExtractLlmErrorMessage(msg.Cause);
-            var category = msg.Cause is TimeoutException ? ErrorCategory.Timeout : ErrorCategory.ProviderFailure;
-            FailCurrentTurn(errorMessage, msg.Cause, category);
+            FailCurrentTurn(errorMessage, msg.Cause, ErrorCategory.ProviderFailure);
         });
 
         Command<ProcessingWatchdogExpired>(msg =>
         {
             if (!_watchdog.IsCurrent(msg))
                 return;
-
-            _log.Error("Processing watchdog expired for operation {OperationName} (opId={OperationId})",
-                msg.OperationName, msg.OperationId);
 
             var timeout = msg.OperationName is "tool-execution"
                 ? _config.ToolExecutionTimeout
@@ -645,7 +646,20 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 $"Session processing operation '{msg.OperationName}' exceeded watchdog timeout of {timeout.TotalSeconds:F0}s");
 
             _watchdog.Stop(Timers);
+
+            // Only retry LLM call timeouts, not tool execution timeouts (tools may have side effects)
+            if (msg.OperationName is "llm-call" && HandleTimeoutRetryOrFail(timeoutCause, "turn_watchdog"))
+                return;
+
+            _log.Error("Processing watchdog expired for operation {OperationName} (opId={OperationId})",
+                msg.OperationName, msg.OperationId);
             FailCurrentTurn("I encountered a timeout while processing your message. Please try again.", timeoutCause, ErrorCategory.Timeout);
+        });
+
+        Command<RetryLlmCallAfterBackoff>(msg =>
+        {
+            TurnLog().Info("turn_timeout_retry_firing attempt={Attempt}", msg.Attempt);
+            FireLlmCall();
         });
 
         Command<SpawnChildActorRequest>(msg => Sender.Tell(Context.ActorOf(msg.Props, msg.ActorName)));
@@ -1340,6 +1354,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _observerActor?.Tell(cmd);
 
         _turnState.ResetForNewTurn();
+        _timeoutRetry.ResetForNewTurn();
+        Timers.Cancel(TimeoutRetryTimerKey);
         _discoveredToolCache.PrepareForNewTurn(
             _availableTools, _baseToolCount,
             _config.Tuning.DiscoveredToolRetentionTurns,
@@ -1723,22 +1739,31 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         var content = _promptProvider.GetSystemPrompt();
         if (string.IsNullOrWhiteSpace(content))
         {
-            _log.Info("No system prompt layers available");
+            // Clear stale prompt from snapshot recovery rather than silently keeping it
+            if (_state.History.Count > 0 && _state.History[0].Role == Protocol.ChatRole.System)
+            {
+                _state = _state with { History = _state.History.RemoveAt(0) };
+                _log.Warning("Identity files missing — cleared stale system prompt from snapshot");
+            }
+            else
+            {
+                _log.Info("No system prompt layers available");
+            }
             return;
         }
 
-        var evt = new SystemPromptSet
+        var systemMsg = new SerializableChatMessage
         {
-            SessionId = _sessionId,
-            Content = content,
-            SetAtMs = NowMs()
+            Role = Protocol.ChatRole.System,
+            Content = content
         };
 
-        Persist(evt, e =>
-        {
-            _state = _state.Apply(e);
-            _log.Info("System prompt set ({PromptLength} chars)", content.Length);
-        });
+        // Replace or insert at position 0 — never persisted, always read fresh from disk
+        _state = _state.History.Count > 0 && _state.History[0].Role == Protocol.ChatRole.System
+            ? _state with { History = _state.History.SetItem(0, systemMsg) }
+            : _state with { History = _state.History.Insert(0, systemMsg) };
+
+        _log.Info("System prompt set ({PromptLength} chars)", content.Length);
     }
 
     private void FireLlmCall(string? recallQuery = null, bool forceNoTools = false)
@@ -2117,9 +2142,52 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         }, OutputFilter.Usage);
     }
 
+    /// <summary>
+    /// Evaluate timeout retry for an LLM call failure. If retryable, emits a status
+    /// indicator and schedules a retry via timer. Returns true if the failure was
+    /// handled (either retry scheduled or turn failed); false if the cause is not
+    /// a timeout and the caller should handle it.
+    /// </summary>
+    private bool HandleTimeoutRetryOrFail(Exception cause, string logPrefix)
+    {
+        switch (_timeoutRetry.Evaluate(cause))
+        {
+            case TimeoutRetryAction.Retry retry:
+                TurnLog().Warning(cause,
+                    "{Prefix}_timeout attempt={Attempt} maxRetries={MaxRetries} backoffMs={BackoffMs}",
+                    logPrefix, retry.Attempt, retry.MaxRetries, (int)retry.Delay.TotalMilliseconds);
+
+                // Status indicator only — do NOT call FailCurrentTurn or AddErrorReply.
+                // Turn stays open in Processing; no TurnCompleted emitted.
+                EmitOutput(new ErrorOutput
+                {
+                    SessionId = _sessionId,
+                    Message = $"The LLM provider timed out. Retrying (attempt {retry.Attempt} of {retry.MaxRetries})...",
+                    Category = ErrorCategory.Timeout,
+                    CorrelationId = Guid.NewGuid(),
+                    Cause = cause
+                });
+
+                Timers.StartSingleTimer(
+                    TimeoutRetryTimerKey,
+                    new RetryLlmCallAfterBackoff(retry.Attempt),
+                    retry.Delay);
+                return true;
+
+            case TimeoutRetryAction.Fail fail:
+                TurnLog().Error(cause, "{Prefix}_failed", logPrefix);
+                FailCurrentTurn(fail.ErrorMessage, cause, ErrorCategory.Timeout);
+                return true;
+
+            default:
+                return false; // Not a timeout — caller handles
+        }
+    }
+
     private void FailCurrentTurn(string errorMessage, Exception cause, ErrorCategory category = ErrorCategory.Unknown)
     {
         _deliveryRetry.Clear();
+        Timers.Cancel(TimeoutRetryTimerKey);
         _state = _state.AddErrorReply(errorMessage);
 
         var correlationId = Guid.NewGuid();
