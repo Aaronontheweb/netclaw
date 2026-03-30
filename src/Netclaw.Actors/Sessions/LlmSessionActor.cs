@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using Akka.Actor;
@@ -115,6 +116,14 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     // Startup context layers: injected on first LLM call, re-injected after compaction
     private bool _startupContextInjected;
+
+    // Guards against infinite compaction loops: if a post-compaction buffer drain
+    // overflows again, fail the turn. Reset at the start of each new user turn.
+    private int _compactionOverflowRetryCount;
+
+    // Per-turn retry counter for transient streaming failures (5xx, 429)
+    private int _streamingRetryAttempt;
+    private static readonly object StreamingRetryTimerKey = new();
 
     // Skill registry for slash-command dispatch
     private readonly Skills.SkillRegistry? _skillRegistry;
@@ -634,15 +643,31 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _watchdog.Stop(Timers);
             CancelAndDisposeLlmCts();
 
-            // Context overflow: compact and recover instead of failing the turn
+            // Context overflow: roll back the failed turn, buffer the user message,
+            // compact the history, and let the normal buffer drain re-deliver it.
             if (IsContextOverflowError(msg.Cause))
             {
-                TurnLog().Warning(msg.Cause, "turn_context_overflow — triggering emergency compaction");
+                if (_compactionOverflowRetryCount > 0)
+                {
+                    _compactionOverflowRetryCount = 0;
+                    TurnLog().Error(msg.Cause, "turn_context_overflow_after_compaction — failing turn");
+                    FailCurrentTurn(
+                        "Context window exceeded even after compaction. The conversation may be too large.",
+                        msg.Cause, ErrorCategory.ProviderFailure);
+                    return;
+                }
+
+                _compactionOverflowRetryCount++;
+                TurnLog().Warning(msg.Cause, "turn_context_overflow — rolling back turn and triggering compaction");
+
+                // Roll back: move the user message (and any recall nudges from this turn)
+                // out of history and into the buffer so the normal drain re-delivers it.
+                RollBackCurrentTurnIntoBuffer();
 
                 EmitOutput(new ErrorOutput
                 {
                     SessionId = _sessionId,
-                    Message = "Context window exceeded — compacting session history. Please resend your last message.",
+                    Message = "Context window exceeded — compacting session history.",
                     Category = ErrorCategory.ProviderFailure,
                     CorrelationId = Guid.NewGuid(),
                     Cause = msg.Cause
@@ -650,9 +675,31 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
                 // Use the configured context window as the token count estimate since
                 // the provider rejected the request without returning usage stats.
+                Timers.Cancel(StreamingRetryTimerKey);
                 Self.Tell(new CompactionTriggered { InputTokenCount = _model.ContextWindowTokens });
                 TransitionTo(SessionPhase.Compacting);
                 return;
+            }
+
+            // Pre-stream transient failure: retry with backoff if no data was streamed yet.
+            // IsTransientStreamingError handles ProviderException (which wraps HTTP status codes)
+            // while RetryPolicy only provides the attempt limit and backoff delay.
+            if (!_firstDeltaReceived && IsTransientStreamingError(msg.Cause))
+            {
+                var policy = _config.Tuning.StreamingRetryPolicy;
+                if (_streamingRetryAttempt < policy.MaxRetries)
+                {
+                    var delay = policy.GetDelay(_streamingRetryAttempt);
+                    _streamingRetryAttempt++;
+                    TurnLog().Warning(msg.Cause,
+                        "turn_llm_transient_failure — retrying in {DelayMs:F0}ms (attempt {Attempt}/{Max})",
+                        delay.TotalMilliseconds, _streamingRetryAttempt, policy.MaxRetries);
+                    Timers.StartSingleTimer(
+                        StreamingRetryTimerKey,
+                        new RetryLlmCallAfterBackoff(_streamingRetryAttempt),
+                        delay);
+                    return; // Stay in Processing, watchdog is already stopped
+                }
             }
 
             TurnLog().Error(msg.Cause, "turn_llm_call_failed");
@@ -660,6 +707,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             var errorMessage = ExtractLlmErrorMessage(msg.Cause);
             var category = msg.Cause is TimeoutException ? ErrorCategory.Timeout : ErrorCategory.ProviderFailure;
             FailCurrentTurn(errorMessage, msg.Cause, category);
+        });
+
+        Command<RetryLlmCallAfterBackoff>(msg =>
+        {
+            TurnLog().Info("turn_streaming_retry attempt={Attempt}", msg.Attempt);
+            FireLlmCall();
         });
 
         Command<ProcessingWatchdogExpired>(msg =>
@@ -944,6 +997,37 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         });
     }
 
+    /// <summary>
+    /// Roll back the current turn's messages from history and buffer the user message
+    /// for re-delivery after compaction. Removes the user message and any system nudges
+    /// (e.g. recall content) that were added after it during this turn.
+    /// </summary>
+    private void RollBackCurrentTurnIntoBuffer()
+    {
+        for (var i = _state.History.Count - 1; i >= 0; i--)
+        {
+            var candidate = _state.History[i];
+            if (candidate.Role != Protocol.ChatRole.User)
+                continue;
+
+            // Skip system nudges (recall content, empty-response nudges) — they use
+            // User role but are not the real user message.
+            if (SessionState.IsSystemNudge(candidate))
+                continue;
+
+            _buffer.Insert(0, new SendUserMessage
+            {
+                SessionId = _sessionId,
+                Content = candidate.Content ?? string.Empty,
+                MediaReferences = candidate.MediaReferences
+            });
+            _state = _state with { History = _state.History.GetRange(0, i) };
+            return;
+        }
+
+        _log.Warning("RollBackCurrentTurnIntoBuffer: no User message found in history");
+    }
+
     private void DrainBufferOrReady()
     {
         if (_restartDrainRequested)
@@ -963,6 +1047,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 _state = _state.AddUserMessage(buffered.Content, refs);
             }
             _buffer.Clear();
+            _streamingRetryAttempt = 0;
             FireLlmCall();
             TransitionTo(SessionPhase.Processing);
         }
@@ -1346,6 +1431,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             _buffer.Clear();
             _recallManager.ResetForNewTurn(); // New user input — resolve recall fresh
+            _streamingRetryAttempt = 0;
             FireLlmCall();
             // Already in Processing — no transition needed, just fired a new LLM call
             return;
@@ -1468,6 +1554,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _state = _state.AddUserMessage(userContent, mediaRefs.Count > 0 ? mediaRefs : null);
         TryReplyAck();
         _recallManager.ResetForNewTurn();
+        _streamingRetryAttempt = 0;
+        _compactionOverflowRetryCount = 0;
         FireInitialTurnLlmCall(userContent);
         TransitionTo(SessionPhase.Processing);
     }
@@ -1760,6 +1848,22 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         || message.Contains("prompt is too long", StringComparison.OrdinalIgnoreCase)
         || message.Contains("token", StringComparison.OrdinalIgnoreCase)
             && message.Contains("exceed", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Detect transient streaming errors that are safe to retry when no data
+    /// has been streamed yet (5xx server errors, 429 rate limits, network failures).
+    /// </summary>
+    internal static bool IsTransientStreamingError(Exception? ex)
+    {
+        if (ex is null) return false;
+        var providerEx = FindException<Configuration.ProviderException>(ex);
+        if (providerEx?.StatusCode is >= 500) return true;
+        if (providerEx?.StatusCode is 429) return true;
+        // Only retry network-level failures (no response from provider).
+        // TimeoutException is NOT retried here — the ProcessingWatchdog is the
+        // authoritative timeout handler and covers that case.
+        return ex is HttpRequestException { StatusCode: null };
+    }
 
     /// <summary>
     /// Extracts the last N user/assistant text messages for session resume display.
@@ -2242,6 +2346,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private void FailCurrentTurn(string errorMessage, Exception cause, ErrorCategory category = ErrorCategory.Unknown)
     {
         _deliveryRetry.Clear();
+        Timers.Cancel(StreamingRetryTimerKey);
         _state = _state.AddErrorReply(errorMessage);
 
         var correlationId = Guid.NewGuid();
