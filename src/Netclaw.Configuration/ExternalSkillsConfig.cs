@@ -7,6 +7,17 @@ namespace Netclaw.Configuration;
 public sealed class ExternalSkillsConfig
 {
     /// <summary>
+    /// Single catalog of well-known external skill sources. Both
+    /// <see cref="ResolveWellKnownPath"/> and <see cref="ProbeWellKnownSources"/>
+    /// consume this so alias/display/symlink metadata stays in one place.
+    /// </summary>
+    private static readonly (string Alias, string DisplayName, string RelativePath, bool DefaultAllowSymlinks)[] WellKnownCatalog =
+    [
+        ("claude-code", "Claude Code", Path.Combine(".claude", "skills"), true),
+        ("open-code", "Open Code", Path.Combine(".open-code", "skills"), false)
+    ];
+
+    /// <summary>
     /// Ordered list of external skill sources. Precedence follows list order —
     /// earlier sources win on name collisions (native Netclaw skills always take
     /// highest precedence regardless of order).
@@ -44,17 +55,39 @@ public sealed class ExternalSkillsConfig
     }
 
     /// <summary>
-    /// Maps well-known source aliases to their standard directory paths.
+    /// Probes the filesystem for well-known external skill directories and returns
+    /// those that exist on disk, with their default configuration values.
     /// </summary>
-    internal static string? ResolveWellKnownPath(string wellKnown)
+    public static IReadOnlyList<WellKnownProbeResult> ProbeWellKnownSources()
     {
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return wellKnown.ToLowerInvariant() switch
+        var results = new List<WellKnownProbeResult>();
+
+        foreach (var (alias, displayName, relativePath, allowSymlinks) in WellKnownCatalog)
         {
-            "claude-code" => Path.Combine(home, ".claude", "skills"),
-            "open-code" => Path.Combine(home, ".open-code", "skills"),
-            _ => null
-        };
+            var path = Path.Combine(home, relativePath);
+            if (Directory.Exists(path))
+                results.Add(new WellKnownProbeResult(alias, displayName, path, allowSymlinks));
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Maps well-known source aliases to their standard directory paths.
+    /// </summary>
+    public static string? ResolveWellKnownPath(string wellKnown)
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var normalized = wellKnown.ToLowerInvariant();
+
+        foreach (var (alias, _, relativePath, _) in WellKnownCatalog)
+        {
+            if (alias == normalized)
+                return Path.Combine(home, relativePath);
+        }
+
+        return null;
     }
 }
 
@@ -97,3 +130,16 @@ public sealed class ExternalSkillSource
 /// A resolved external skill source with an absolute path ready for scanning.
 /// </summary>
 public sealed record ResolvedExternalSource(string Name, string Path, bool AllowSymlinks);
+
+/// <summary>
+/// Result of probing for a well-known external skill directory.
+/// </summary>
+/// <param name="WellKnownAlias">The alias used in config (e.g., "claude-code").</param>
+/// <param name="DisplayName">Human-readable name (e.g., "Claude Code").</param>
+/// <param name="ResolvedPath">Absolute path on disk.</param>
+/// <param name="DefaultAllowSymlinks">Whether this source should allow symlinks by default.</param>
+public sealed record WellKnownProbeResult(
+    string WellKnownAlias,
+    string DisplayName,
+    string ResolvedPath,
+    bool DefaultAllowSymlinks);
