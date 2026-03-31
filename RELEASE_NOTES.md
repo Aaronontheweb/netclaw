@@ -1,3 +1,25 @@
+#### 0.9.3 2026-03-31 ####
+
+Netclaw v0.9.3 — External skill directories, per-tool MCP audience gating, and tool-loop compaction fix
+
+**Features**
+
+* Added support for loading skills from external directories — operators can now configure `ExternalSkills.Sources` in `netclaw.json` to load skills from Claude Code (`~/.claude/skills/`), Open Code, or any custom team directory alongside native Netclaw skills. Per-source `AllowSymlinks` policy controls whether symlinked skill files are followed. External directories are read-only — `skill_manage` rejects all write operations targeting them. Native skills win on name collision. ([#503](https://github.com/Aaronontheweb/netclaw/pull/503))
+
+* Added per-tool audience gating for MCP servers — `ToolAudienceProfile` now accepts a `McpServerToolGrants` dictionary that restricts which tools from a given MCP server are exposed to that audience. Composes with the existing `AllowedMcpServers` gate; omitting grants preserves the current behavior of exposing all tools. New `netclaw mcp tools <server>` CLI command shows the per-audience grant status table, and `--snapshot` baselines grants from the currently discovered tool set. ([#500](https://github.com/Aaronontheweb/netclaw/pull/500))
+
+* Added `netclaw init` wizard step to detect and suggest external skill directories — the init wizard now probes for well-known skill directories (`~/.claude/skills`, `~/.open-code/skills`) and presents a checklist to toggle each detected source. The step auto-skips when neither directory exists on disk. Detected sources are written into the `ExternalSkills.Sources` config section. ([#509](https://github.com/Aaronontheweb/netclaw/pull/509))
+
+* Added MCP tool description capping and configurable schema size warnings — tool descriptions are capped at 2KB at registration time (matching Claude Code's documented limit) to prevent oversized MCP descriptions from bloating the LLM context window. Operators are warned via log when tool schemas exceed 8KB. Both thresholds are configurable via `SessionTuning.MaxToolDescriptionChars` and `SessionTuning.MaxToolSchemaWarnChars`. ([#498](https://github.com/Aaronontheweb/netclaw/pull/498))
+
+**Bug Fixes**
+
+* Fixed compaction never triggering during tool-loop iterations — `_lastInputTokenCount` was updated for metrics but never written to the field checked by `ShouldCompact()`, so the threshold was never crossed during multi-step tool loops. Compaction now checks after each tool response, and the tool loop resumes automatically after mid-loop compaction completes. Closes [#424](https://github.com/Aaronontheweb/netclaw/issues/424). ([#511](https://github.com/Aaronontheweb/netclaw/pull/511))
+
+* Fixed delivery retry eligibility being silently lost on session passivation — `DeliveryRetryHandler._eligibleTurnNumber` was in-memory only; if a channel reported delivery failure after the session stopped, the recovered instance discarded the feedback as stale and silently dropped the retry. Eligibility is now persisted in `SessionSnapshot` and restored on recovery. Backward-compatible with existing snapshots. ([#504](https://github.com/Aaronontheweb/netclaw/pull/504))
+
+* Evict discovered MCP tools on compaction — discovered tools survived compaction and continued consuming context even after the conversation was summarized. Tools are now evicted alongside other compaction resets, forcing re-discovery of only the tools actually needed for the next turn. ([#498](https://github.com/Aaronontheweb/netclaw/pull/498))
+
 #### 0.9.2 2026-03-31 ####
 
 Netclaw v0.9.2 — Schema-driven config migration, load_tool two-step discovery, and security model simplification
