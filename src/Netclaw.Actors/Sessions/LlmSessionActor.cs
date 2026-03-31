@@ -71,6 +71,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // Last observed input token count from LLM response (for compaction trigger)
     private long _lastInputTokenCount;
 
+    // When compaction triggers mid-tool-loop, the turn is still in-progress.
+    // After compaction completes, we need to fire a follow-up LLM call to
+    // continue the turn instead of transitioning to Ready. See #424.
+    private bool _resumeToolLoopAfterCompaction;
+
     // Per-turn transient counters (tool budget, duplicate detection, empty-response retries)
     private readonly TurnStateTracker _turnState = new();
 
@@ -625,6 +630,17 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                     break;
             }
 
+            // Compaction check before follow-up LLM call (#424)
+            if (ShouldCompact())
+            {
+                _log.Info("Compaction threshold reached during tool loop ({InputTokens} tokens >= {Threshold} limit), starting compaction",
+                    _lastInputTokenCount, _model.CompactionTokenLimit(_config.Tuning.CompactionThreshold));
+                _resumeToolLoopAfterCompaction = true;
+                Self.Tell(new CompactionTriggered { InputTokenCount = _lastInputTokenCount });
+                TransitionTo(SessionPhase.Compacting);
+                return;
+            }
+
             // Fire follow-up LLM call with tool results in context
             TurnLog().Info("turn_tool_execution_complete iteration={Iteration} callCount={CallCount} max={Max} resultCount={ResultCount}",
                 _turnState.ToolIterationCount, _turnState.ToolCallCount, _config.MaxToolCallsPerTurn, msg.ToolResults.Count);
@@ -1043,12 +1059,22 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (_restartDrainRequested)
         {
             ClearBufferedMessagesForRestartDrain();
+            _resumeToolLoopAfterCompaction = false;
             TransitionTo(SessionPhase.Ready);
             TransitionTo(SessionPhase.Passivating);
             return;
         }
 
-        if (_buffer.Count > 0)
+        // Mid-tool-loop compaction (#424): the turn is still in-progress,
+        // so we must fire a follow-up LLM call even if the buffer is empty.
+        var resumeToolLoop = _resumeToolLoopAfterCompaction;
+        _resumeToolLoopAfterCompaction = false;
+
+        if (resumeToolLoop)
+            _log.Info("Post-compaction: resuming tool loop with follow-up LLM call");
+
+        var hadBufferedMessages = _buffer.Count > 0;
+        if (hadBufferedMessages)
         {
             _log.Info("Post-compaction: draining {BufferCount} buffered message(s)", _buffer.Count);
             foreach (var buffered in _buffer)
@@ -1057,6 +1083,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 _state = _state.AddUserMessage(buffered.Content, refs);
             }
             _buffer.Clear();
+        }
+
+        if (resumeToolLoop || hadBufferedMessages)
+        {
             _streamingRetryAttempt = 0;
             FireLlmCall();
             TransitionTo(SessionPhase.Processing);
@@ -1280,10 +1310,15 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _turnState.TrackToolCall(tc.Name, argsJson);
         }
 
-        // Emit usage if present (intermediate turn)
+        // Emit usage if present (intermediate turn) and track for compaction
         if (usage is not null)
         {
             EmitUsageOutput(usage);
+
+            if (usage.InputTokenCount is > 0)
+            {
+                _lastInputTokenCount = usage.InputTokenCount.Value;
+            }
         }
 
         // Execute tools async — results come back as ToolExecutionCompleted
