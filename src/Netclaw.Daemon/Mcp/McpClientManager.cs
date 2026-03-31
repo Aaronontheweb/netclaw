@@ -16,6 +16,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
 
     private readonly Dictionary<string, McpServerEntry> _serverEntries;
     private readonly ToolRegistry _toolRegistry;
+    private readonly ToolConfig _toolConfig;
     private readonly McpOAuthService _oauthService;
     private readonly IOperationalNotificationSink _notificationSink;
     private readonly TimeProvider _timeProvider;
@@ -46,6 +47,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
     public McpClientManager(
         Dictionary<string, McpServerEntry> serverEntries,
         ToolRegistry toolRegistry,
+        ToolConfig toolConfig,
         McpOAuthService oauthService,
         IOperationalNotificationSink notificationSink,
         TimeProvider timeProvider,
@@ -54,6 +56,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
     {
         _serverEntries = serverEntries;
         _toolRegistry = toolRegistry;
+        _toolConfig = toolConfig;
         _oauthService = oauthService;
         _notificationSink = notificationSink;
         _timeProvider = timeProvider;
@@ -106,6 +109,17 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
     }
 
     public IReadOnlyDictionary<string, McpServerStatus> GetServerStatuses() => _statuses;
+
+    /// <summary>
+    /// Returns discovered tool names for a connected MCP server.
+    /// </summary>
+    public IReadOnlyList<string> GetToolNames(string serverName)
+    {
+        if (!_sharedToolFunctions.TryGetValue(serverName, out var tools))
+            return [];
+
+        return tools.Keys.Order(StringComparer.Ordinal).ToList();
+    }
 
     public async Task<bool> TryReconnectAsync(string serverName, CancellationToken ct = default)
     {
@@ -401,6 +415,8 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             _toolRegistry.WithMcpTools(name, tools, entry.GrantCategory, this,
                 _maxToolDescriptionChars, _maxToolSchemaWarnChars, _logger);
             _statuses[name] = new McpServerStatus(name, McpConnectionState.Connected, tools.Count, null);
+
+            LogToolDrift(name, tools);
 
             _logger.LogInformation("MCP server '{Name}' connected ({ToolCount} tools)", name, tools.Count);
             return true;
@@ -731,6 +747,55 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
 
     private static string BuildScopedClientKey(string serverName, string scopeId)
         => $"{serverName}::{scopeId}";
+
+    /// <summary>
+    /// Compares discovered tools against <see cref="ToolAudienceProfile.McpServerToolGrants"/>
+    /// across all audience profiles and logs warnings for drift.
+    /// </summary>
+    private void LogToolDrift(string serverName, IList<McpClientTool> discoveredTools)
+    {
+        var profiles = _toolConfig.AudienceProfiles;
+        var allGrantedTools = new HashSet<string>(StringComparer.Ordinal);
+        var hasAnyGrants = false;
+
+        foreach (var profile in profiles.GetAllProfiles())
+        {
+            if (profile.McpServerToolGrants is not { } grants)
+                continue;
+
+            if (!grants.TryGetValue(serverName, out var tools))
+                continue;
+
+            hasAnyGrants = true;
+            foreach (var tool in tools)
+                allGrantedTools.Add(tool);
+        }
+
+        if (!hasAnyGrants)
+            return;
+
+        var discoveredNames = new HashSet<string>(
+            discoveredTools.Select(t => t.Name), StringComparer.Ordinal);
+
+        var ungranted = discoveredNames.Except(allGrantedTools).ToList();
+        var stale = allGrantedTools.Except(discoveredNames).ToList();
+
+        if (ungranted.Count > 0)
+        {
+            _logger.LogWarning(
+                "MCP server '{Name}' exposes {Count} tool(s) not granted to any audience: {Tools}. " +
+                "Review and add to McpServerToolGrants if intended.",
+                serverName, ungranted.Count, string.Join(", ", ungranted));
+        }
+
+        if (stale.Count > 0)
+        {
+            _logger.LogWarning(
+                "McpServerToolGrants for '{Name}' contains {Count} tool(s) not found on server: {Tools}. " +
+                "These may have been removed or renamed.",
+                serverName, stale.Count, string.Join(", ", stale));
+        }
+    }
 
     public void Dispose()
     {

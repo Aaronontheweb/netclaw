@@ -48,6 +48,7 @@ internal static class McpCommand
             "remove" => RunRemove(args, paths, writer),
             "enable" => RunToggle(args, paths, enabled: true, writer),
             "disable" => RunToggle(args, paths, enabled: false, writer),
+            "tools" => await RunToolsAsync(args, paths, daemonApi, writer),
             "help" or "-h" or "--help" => WriteHelp(writer),
             _ => WriteHelp(writer)
         };
@@ -837,6 +838,364 @@ internal static class McpCommand
         return doc.RootElement.Clone();
     }
 
+    private static async Task<int> RunToolsAsync(string[] args, NetclawPaths paths, DaemonApi? daemonApi, TextWriter writer)
+    {
+        // Parse: netclaw mcp tools <server> [--snapshot] [--audience <name>] [--grant t1,t2] [--revoke t1,t2]
+        string? serverName = null;
+        string? audienceFilter = null;
+        var snapshot = false;
+        List<string>? grantTools = null;
+        List<string>? revokeTools = null;
+
+        for (var i = 2; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--snapshot":
+                    snapshot = true;
+                    break;
+                case "--audience" when i + 1 < args.Length:
+                    audienceFilter = args[++i];
+                    break;
+                case "--grant" when i + 1 < args.Length:
+                    grantTools = args[++i].Split(',').Select(t => t.Trim()).Where(t => t.Length > 0).ToList();
+                    break;
+                case "--revoke" when i + 1 < args.Length:
+                    revokeTools = args[++i].Split(',').Select(t => t.Trim()).Where(t => t.Length > 0).ToList();
+                    break;
+                case "--help" or "-h":
+                    WriteToolsHelp(writer);
+                    return 0;
+                default:
+                    if (serverName is null && !args[i].StartsWith('-'))
+                        serverName = args[i];
+                    break;
+            }
+        }
+
+        if (serverName is null)
+        {
+            WriteToolsHelp(writer);
+            return 1;
+        }
+
+        // Validate audience name if provided
+        TrustAudience? targetAudience = null;
+        if (audienceFilter is not null)
+        {
+            if (!SecurityPolicyDefaults.TryParseAudience(audienceFilter, out var parsed))
+            {
+                writer.WriteLine($"Error: unknown audience '{audienceFilter}'. Use public, team, or personal.");
+                return 1;
+            }
+
+            targetAudience = parsed;
+        }
+
+        if (daemonApi is null)
+        {
+            writer.WriteLine("Error: daemon API not available. Is the daemon running?");
+            return 1;
+        }
+
+        // Get discovered tools from daemon
+        List<string> discoveredTools;
+        try
+        {
+            discoveredTools = await daemonApi.GetMcpToolNamesAsync(serverName, CancellationToken.None);
+        }
+        catch (HttpRequestException)
+        {
+            writer.WriteLine("Error: could not reach daemon. Is it running?");
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            writer.WriteLine($"Error: {ex.Message}");
+            return 1;
+        }
+
+        if (discoveredTools.Count == 0)
+        {
+            writer.WriteLine($"No tools discovered for server '{serverName}'.");
+            writer.WriteLine("The server may be disconnected or have no tools. Check `netclaw mcp list`.");
+            return 1;
+        }
+
+        // Load audience profiles for grant status
+        var toolConfig = LoadToolConfig(paths);
+        var profiles = toolConfig.AudienceProfiles;
+
+        // Surgical grant/revoke
+        if (grantTools is not null || revokeTools is not null)
+        {
+            if (targetAudience is null)
+            {
+                writer.WriteLine("Error: --grant and --revoke require --audience.");
+                return 1;
+            }
+
+            return RunToolsGrantRevoke(serverName, targetAudience.Value, discoveredTools,
+                grantTools, revokeTools, profiles, paths, writer);
+        }
+
+        if (snapshot)
+            return RunToolsSnapshot(serverName, targetAudience, discoveredTools, profiles, paths, writer);
+
+        return RunToolsList(serverName, targetAudience, discoveredTools, profiles, writer);
+    }
+
+    private static void WriteToolsHelp(TextWriter writer)
+    {
+        writer.WriteLine("Usage: netclaw mcp tools <server> [options]");
+        writer.WriteLine();
+        writer.WriteLine("Options:");
+        writer.WriteLine("  --audience <name>     Filter to a specific audience (public, team, personal)");
+        writer.WriteLine("  --snapshot            Populate McpServerToolGrants from currently discovered tools");
+        writer.WriteLine("  --grant <tools>       Grant comma-separated tools (requires --audience)");
+        writer.WriteLine("  --revoke <tools>      Revoke comma-separated tools (requires --audience)");
+        writer.WriteLine();
+        writer.WriteLine("Examples:");
+        writer.WriteLine("  netclaw mcp tools memorizer                             Show all tools and grants");
+        writer.WriteLine("  netclaw mcp tools memorizer --audience team             Show Team grants only");
+        writer.WriteLine("  netclaw mcp tools memorizer --snapshot                  Baseline all audiences");
+        writer.WriteLine("  netclaw mcp tools memorizer --snapshot --audience team  Baseline Team only");
+        writer.WriteLine("  netclaw mcp tools memorizer --grant search_memories,get --audience team");
+        writer.WriteLine("  netclaw mcp tools memorizer --revoke delete,archive_memory --audience personal");
+    }
+
+    private static int RunToolsList(
+        string serverName, TrustAudience? audienceFilter, List<string> discoveredTools,
+        ToolAudienceProfiles profiles, TextWriter writer)
+    {
+        writer.WriteLine($"Tools for server '{serverName}' ({discoveredTools.Count} discovered):");
+        writer.WriteLine();
+
+        var maxNameLen = Math.Max(discoveredTools.Max(t => t.Length), 4);
+
+        if (audienceFilter is { } single)
+        {
+            // Single audience view
+            var profile = ResolveProfile(single, profiles);
+            var label = single.ToString();
+            writer.Write("  ");
+            writer.Write("Tool".PadRight(maxNameLen + 2));
+            writer.WriteLine(label);
+            writer.Write("  ");
+            writer.WriteLine(new string('\u2500', maxNameLen + 2 + label.Length));
+
+            foreach (var tool in discoveredTools)
+            {
+                writer.Write("  ");
+                writer.Write(tool.PadRight(maxNameLen + 2));
+                writer.WriteLine(FormatGrantStatus(serverName, tool, profile).TrimEnd());
+            }
+        }
+        else
+        {
+            // All audiences view
+            writer.Write("  ");
+            writer.Write("Tool".PadRight(maxNameLen + 2));
+            writer.Write("Public   Team     Personal");
+            writer.WriteLine();
+            writer.Write("  ");
+            writer.WriteLine(new string('\u2500', maxNameLen + 2 + 26));
+
+            foreach (var tool in discoveredTools)
+            {
+                writer.Write("  ");
+                writer.Write(tool.PadRight(maxNameLen + 2));
+                writer.Write(FormatGrantStatus(serverName, tool, profiles.Public));
+                writer.Write(FormatGrantStatus(serverName, tool, profiles.Team));
+                writer.Write(FormatGrantStatus(serverName, tool, profiles.Personal));
+                writer.WriteLine();
+            }
+        }
+
+        return 0;
+    }
+
+    private static string FormatGrantStatus(string serverName, string toolName, ToolAudienceProfile profile)
+    {
+        if (profile.McpServerToolGrants is null)
+            return "\u2731        "; // ✱ = all (no grants configured)
+
+        if (!profile.McpServerToolGrants.TryGetValue(serverName, out var allowedTools))
+            return "\u2731        "; // ✱ = server not in grants, all tools pass
+
+        return allowedTools.Contains(toolName, StringComparer.Ordinal)
+            ? "\u2713        " // ✓ = granted
+            : "-        ";    // - = blocked
+    }
+
+    private static int RunToolsSnapshot(
+        string serverName, TrustAudience? targetAudience, List<string> discoveredTools,
+        ToolAudienceProfiles profiles, NetclawPaths paths, TextWriter writer)
+    {
+        var (config, _) = LoadConfigFiles(paths);
+        var toolsSection = GetOrCreateSection(config, "Tools");
+        var profilesSection = GetOrCreateSection(toolsSection, "AudienceProfiles");
+
+        var audienceNames = targetAudience switch
+        {
+            TrustAudience.Public => new[] { "Public" },
+            TrustAudience.Team => new[] { "Team" },
+            TrustAudience.Personal => new[] { "Personal" },
+            _ => new[] { "Public", "Team", "Personal" }
+        };
+
+        var updated = 0;
+        foreach (var audienceName in audienceNames)
+        {
+            var profile = audienceName switch
+            {
+                "Public" => profiles.Public,
+                "Team" => profiles.Team,
+                _ => profiles.Personal
+            };
+
+            var serverAllowed = profile.McpServersMode == ToolProfileMode.All
+                || profile.AllowedMcpServers.Contains(serverName, StringComparer.OrdinalIgnoreCase);
+
+            if (!serverAllowed)
+            {
+                if (targetAudience is not null)
+                {
+                    writer.WriteLine($"Server '{serverName}' is not allowed by the {audienceName} audience profile.");
+                    return 1;
+                }
+
+                continue;
+            }
+
+            var audienceSection = GetOrCreateSection(profilesSection, audienceName);
+            var grants = audienceSection.TryGetValue("McpServerToolGrants", out var existing)
+                && existing is Dictionary<string, object> dict
+                    ? dict
+                    : new Dictionary<string, object>();
+
+            grants[serverName] = discoveredTools;
+            audienceSection["McpServerToolGrants"] = grants;
+            updated++;
+        }
+
+        if (updated == 0)
+        {
+            writer.WriteLine($"Server '{serverName}' is not allowed by any audience profile. Nothing to snapshot.");
+            return 1;
+        }
+
+        WriteConfigFile(paths.NetclawConfigPath, config);
+        writer.WriteLine($"Snapshot complete: {discoveredTools.Count} tools from '{serverName}' written to McpServerToolGrants for {updated} audience profile(s).");
+        writer.WriteLine("New tools added by the server will not be exposed until you update the grants.");
+        return 0;
+    }
+
+    private static int RunToolsGrantRevoke(
+        string serverName, TrustAudience audience, List<string> discoveredTools,
+        List<string>? grantTools, List<string>? revokeTools,
+        ToolAudienceProfiles profiles, NetclawPaths paths, TextWriter writer)
+    {
+        var audienceName = audience switch
+        {
+            TrustAudience.Public => "Public",
+            TrustAudience.Team => "Team",
+            _ => "Personal"
+        };
+
+        var profile = ResolveProfile(audience, profiles);
+
+        // Validate tool names exist on the server
+        var unknownGrants = grantTools?.Except(discoveredTools, StringComparer.Ordinal).ToList() ?? [];
+        var unknownRevokes = revokeTools?.Except(discoveredTools, StringComparer.Ordinal).ToList() ?? [];
+        if (unknownGrants.Count > 0 || unknownRevokes.Count > 0)
+        {
+            var unknown = unknownGrants.Concat(unknownRevokes).Distinct().ToList();
+            writer.WriteLine($"Error: tool(s) not found on server '{serverName}': {string.Join(", ", unknown)}");
+            writer.WriteLine("Use `netclaw mcp tools <server>` to see available tools.");
+            return 1;
+        }
+
+        // Build the updated tool set
+        HashSet<string> currentTools;
+        if (profile.McpServerToolGrants is { } existing
+            && existing.TryGetValue(serverName, out var currentList))
+        {
+            currentTools = new HashSet<string>(currentList, StringComparer.Ordinal);
+        }
+        else
+        {
+            // No grants configured yet — start from all discovered tools
+            currentTools = new HashSet<string>(discoveredTools, StringComparer.Ordinal);
+        }
+
+        if (grantTools is not null)
+            foreach (var tool in grantTools)
+                currentTools.Add(tool);
+
+        if (revokeTools is not null)
+            foreach (var tool in revokeTools)
+                currentTools.Remove(tool);
+
+        // Write to config
+        var (config, _) = LoadConfigFiles(paths);
+        var toolsSection = GetOrCreateSection(config, "Tools");
+        var profilesSection = GetOrCreateSection(toolsSection, "AudienceProfiles");
+        var audienceSection = GetOrCreateSection(profilesSection, audienceName);
+
+        var grants = audienceSection.TryGetValue("McpServerToolGrants", out var ex)
+            && ex is Dictionary<string, object> dict
+                ? dict
+                : new Dictionary<string, object>();
+
+        grants[serverName] = currentTools.Order(StringComparer.Ordinal).ToList();
+        audienceSection["McpServerToolGrants"] = grants;
+
+        WriteConfigFile(paths.NetclawConfigPath, config);
+
+        var changes = new List<string>();
+        if (grantTools is { Count: > 0 })
+            changes.Add($"granted {grantTools.Count}");
+        if (revokeTools is { Count: > 0 })
+            changes.Add($"revoked {revokeTools.Count}");
+
+        writer.WriteLine($"Updated {audienceName} profile for '{serverName}': {string.Join(", ", changes)} tool(s). {currentTools.Count} total granted.");
+        return 0;
+    }
+
+    private static ToolAudienceProfile ResolveProfile(TrustAudience audience, ToolAudienceProfiles profiles)
+    {
+        return audience switch
+        {
+            TrustAudience.Public => profiles.Public,
+            TrustAudience.Team => profiles.Team,
+            _ => profiles.Personal
+        };
+    }
+
+    private static ToolConfig LoadToolConfig(NetclawPaths paths)
+    {
+        if (!File.Exists(paths.NetclawConfigPath))
+            return new ToolConfig();
+
+        try
+        {
+            var text = File.ReadAllText(paths.NetclawConfigPath);
+            using var doc = JsonDocument.Parse(text);
+
+            if (!doc.RootElement.TryGetProperty("Tools", out var toolsSection))
+                return new ToolConfig();
+
+            return JsonSerializer.Deserialize<ToolConfig>(toolsSection.GetRawText(),
+                new JsonSerializerOptions { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } })
+                ?? new ToolConfig();
+        }
+        catch
+        {
+            return new ToolConfig();
+        }
+    }
+
     private static int WriteHelp(TextWriter writer)
     {
         writer.WriteLine("Usage: netclaw mcp <subcommand>");
@@ -849,6 +1208,7 @@ internal static class McpCommand
         writer.WriteLine("  remove     Remove an MCP server profile");
         writer.WriteLine("  enable     Enable a disabled MCP server");
         writer.WriteLine("  disable    Disable an MCP server without removing it");
+        writer.WriteLine("  tools      Show and manage per-audience tool grants");
         writer.WriteLine();
         writer.WriteLine("Examples:");
         writer.WriteLine("  netclaw mcp add --transport stdio memorizer -- npx -y @memorizer/mcp-server");
@@ -856,6 +1216,9 @@ internal static class McpCommand
         writer.WriteLine("  netclaw mcp add --transport http textforge https://textforge.net/mcp");
         writer.WriteLine("  netclaw mcp auth forge");
         writer.WriteLine("  netclaw mcp list");
+        writer.WriteLine("  netclaw mcp tools memorizer");
+        writer.WriteLine("  netclaw mcp tools memorizer --snapshot --audience team");
+        writer.WriteLine("  netclaw mcp tools memorizer --grant search_memories,get --audience team");
         return 0;
     }
 }
