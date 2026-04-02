@@ -9,10 +9,12 @@ Netclaw uses a **daemon + thin client** architecture:
 
 - **`netclawd`** (`src/Netclaw.Daemon/`) — always-on daemon process hosting
   the Akka actor system, LLM sessions, tool execution, and persistence.
-  Exposes a SignalR hub at `/hub/session` for remote clients.
+  Exposes a SignalR hub at `/hub/session` plus authenticated management
+  endpoints for remote clients.
 
 - **`netclaw`** (`src/Netclaw.Cli/`) — thin CLI client for interactive chat,
-  daemon management, and configuration. Connects to the daemon via SignalR.
+  daemon management, and configuration. Connects to the daemon via SignalR and
+  authenticated HTTP.
 
 ## Quick Start
 
@@ -135,6 +137,9 @@ mkdir -p ~/.netclaw/config
 chmod 600 ~/.netclaw/config/secrets.json
 ```
 
+`DeviceToken` is added automatically by `netclaw pair` when pairing with a
+remote daemon. Do not edit it manually.
+
 All settings can also be overridden via environment variables using the
 `NETCLAW_` prefix with double-underscore separators for nested keys:
 
@@ -164,6 +169,71 @@ netclaw chat
 
 # Stop the daemon
 netclaw daemon stop
+```
+
+### 7. Remote Access and Device Pairing
+
+If the daemon is exposed over the network (via Tailscale or Cloudflare Tunnel),
+remote devices can authenticate using a two-sided pairing protocol.
+
+`Audience` and `ExposureMode` are separate controls:
+
+- `Audience` controls who can interact with the bot in chat channels
+- `ExposureMode` controls how the daemon is reachable over the network
+
+**Exposure modes** are configured during `netclaw init` or in
+`netclaw.json` under the `Daemon` section:
+
+| Mode | Reachability |
+|------|-------------|
+| `local` (default) | Loopback only |
+| `tailscale-serve` | Within your tailnet |
+| `tailscale-funnel` | Internet-reachable via Tailscale |
+| `cloudflare-tunnel` | Internet-reachable or private via Cloudflare |
+
+Any host-network reachable daemon access must still require authenticated users.
+Selecting a `public` chat audience does not make the daemon anonymously
+accessible over the network.
+
+**Pairing a remote device:**
+
+On the daemon host (requires local/SSH access to the machine):
+
+```bash
+netclaw daemon pair
+# Output: Pairing code: A7K3M2XP (expires in 5 minutes)
+```
+
+On the remote device:
+
+```bash
+netclaw pair https://my-daemon.tail1234.ts.net:5000
+# Prompted for the pairing code
+# On success: token saved to secrets.json, endpoint saved to netclaw.json
+```
+
+Choose a unique device name when prompted. Pairing a second device with the
+same name is rejected until the existing device is revoked.
+
+All subsequent CLI commands from the remote device authenticate automatically
+using the saved bearer token.
+
+**Security properties:**
+
+- Pairing codes are single-use, 8 characters from a 32-char alphabet, with a
+  5-minute TTL
+- Code generation requires local machine access (loopback-only endpoint)
+- The exchange endpoint is rate-limited (5 attempts/min/IP) with a lockout
+  guard (10 failures = 15-minute block)
+- When no code is pending, the exchange endpoint returns 404
+- Tokens are stored as salted SHA-256 hashes on the daemon (raw token is never
+  persisted server-side)
+
+**Managing paired devices:**
+
+```bash
+netclaw daemon devices                  # List all paired devices
+netclaw daemon devices revoke myphone   # Revoke a specific device
 ```
 
 ## Developer Smoke Sandbox (Docker)
@@ -244,7 +314,8 @@ Directories are created automatically on first run.
 ├── netclaw.db                 # SQLite persistence (default)
 ├── config/
 │   ├── netclaw.json           # base settings
-│   └── secrets.json           # credentials (chmod 600)
+│   ├── secrets.json           # credentials (chmod 600)
+│   └── devices.json           # paired device registry
 ├── identity/                  # system prompt layers
 │   ├── SOUL.md
 │   ├── AGENTS.md
@@ -297,6 +368,10 @@ netclaw daemon uninstall      Remove systemd user service (Linux)
 netclaw status                Runtime status from daemon health JSON endpoint
 netclaw config                Configuration management (planned)
 netclaw init                  First-run setup wizard (interactive TUI)
+netclaw pair <endpoint>       Pair this device with a remote daemon
+netclaw daemon pair           Generate a pairing code for remote devices
+netclaw daemon devices        List paired devices
+netclaw daemon devices revoke Remove a paired device
 netclaw doctor                Configuration diagnostics (schema + secrets syntax)
 netclaw doctor --fix          Auto-apply safe configuration fixes
 ```

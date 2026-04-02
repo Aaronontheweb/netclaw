@@ -10,6 +10,67 @@ Three OpenSpec changes: `exposure-modes`, `hub-auth-framework`, `device-pairing`
 
 ---
 
+## Fix-it (Review after iter-15) — NOW
+
+### Task R3.1: Add multi-scheme auth selector for DeviceBearer
+**Source:** Review after iteration 15, finding #1
+**Issue:** `DeviceTokenAuthenticationHandler` is registered but unreachable through the auth pipeline. `AddAuthentication(LoopbackAuthenticationHandler.SchemeName)` makes Loopback the only scheme tried by `[Authorize]`. Non-loopback connections with valid bearer tokens get 401 because DeviceBearer is never invoked. Need a `PolicyScheme` or `ForwardDefaultSelector` that delegates to DeviceBearer when an `Authorization: Bearer` header is present, otherwise falls back to Loopback.
+**Done when:**
+- [x] Auth pipeline uses a selector scheme (e.g., `PolicyScheme` with `ForwardDefaultSelector`) that tries DeviceBearer when `Authorization: Bearer` header is present, otherwise Loopback
+- [x] Integration test: remote connection with valid bearer token authenticates successfully through `[Authorize]` on SessionHub
+- [x] Integration test: loopback connection without bearer token still authenticates via Loopback scheme
+**Verification:** L2
+
+### Task R3.2: Add `.AllowAnonymous()` to exchange endpoint
+**Source:** Review after iteration 15, finding #2
+**Issue:** `POST /api/pair/exchange` is designed as unauthenticated but relies on implicit anonymity (no fallback authorization policy). Adding `options.FallbackPolicy` in the future would silently break pairing. Explicit `.AllowAnonymous()` documents intent and prevents breakage.
+**Done when:**
+- [x] `MapPost("/api/pair/exchange", ...)` chain includes `.AllowAnonymous()`
+**Verification:** L1
+
+### Task R3.3: Narrow DeviceRegistry.VerifyToken catch to FormatException
+**Source:** Review after iteration 15, finding #3
+**Issue:** `DeviceRegistry.VerifyToken()` at line 176 uses bare `catch` that swallows all exceptions. Only `FormatException` (from malformed base64url/hex) is expected. Broader exceptions (e.g., `CryptographicException`) should propagate.
+**Done when:**
+- [x] `catch` in `DeviceRegistry.VerifyToken` narrowed to `catch (FormatException)`
+**Verification:** L1
+
+### Task R3.4: Sync device-pairing/tasks.md section 10 checkboxes
+**Source:** Review after iteration 15, finding #4
+**Issue:** `openspec/changes/device-pairing/tasks.md` section 10 tasks 10.1 (DeviceRegistry tests), 10.2 (PairingCodeService tests), 10.3 (DeviceTokenAuthenticationHandler tests) are unchecked despite being implemented in iterations 14-15.
+**Done when:**
+- [x] Tasks 10.1, 10.2, 10.3 in `openspec/changes/device-pairing/tasks.md` marked `[x]`
+**Verification:** L1
+
+---
+
+## Fix-it (Review after iter-05) — NOW
+
+### Task R1.1: Sync OpenSpec tasks.md checkboxes for exposure-modes
+**Source:** Review after iteration 5, finding #1
+**Issue:** `openspec/changes/exposure-modes/tasks.md` only has tasks 1.1, 1.2, 1.4 checked. All tasks completed in M7.A2-A5 (1.3, 2.1, 2.2, 3.1-3.5, 4.1-4.5, 5.1-5.7, 7.1-7.5) remain unchecked despite being implemented and verified.
+**Done when:**
+- [x] All tasks in `openspec/changes/exposure-modes/tasks.md` that were implemented in iterations 1-5 have their checkboxes marked `[x]`
+**Verification:** L1
+
+### Task R1.2: Eliminate silent fallback in ExposureModeExtensions.ToWireValue()
+**Source:** Review after iteration 5, finding #2
+**Issue:** `ExposureModeExtensions.ToWireValue()` in `WizardConfigBuilder.cs:340-347` uses `_ => "local"` — a silent fallback that violates CLAUDE.md's "No silent fallbacks" rule. Also: `ExposureModeDoctorCheck.ToWireValue()` and `ExposureModeValidationService` inline switch each use different fallback strategies.
+**Done when:**
+- [x] `ExposureModeExtensions.ToWireValue()` in `WizardConfigBuilder.cs` throws on unknown enum values instead of defaulting to "local"
+- [x] `ExposureModeDoctorCheck.ToWireValue()` throws on unknown enum values instead of using `ToString()`
+- [x] `ExposureModeValidationService.StartAsync()` inline wire-value switch at line 60-66 throws on unknown enum values instead of using `ToString()`
+**Verification:** L1
+
+### Task R1.3: DaemonConfig single-bind refactor in Program.cs
+**Source:** Review after iteration 5, finding #3
+**Issue:** `DaemonConfig.BindFromConfiguration()` is called twice in `Program.cs` (line ~100 for WebHost URL, line ~324 for DI singleton), creating two separate instances. If config were modified between calls, WebHost bind address and DI singleton would silently diverge.
+**Done when:**
+- [x] `DaemonConfig` is computed once in `RunDaemonAsync`, used for `UseUrls`, and passed into `ConfigureDaemonServices` for DI registration (instead of re-parsing)
+**Verification:** L1
+
+---
+
 ## Review Fix-it: Sessions `--json` flag does not imply `--once`
 
 **Source:** RALPH run 20260306-185029, review-after-iter-06 (finding F.1)
@@ -627,10 +688,10 @@ Phases below follow this order.
 **Verification:** L1
 
 Done when:
-- [ ] `ExposureMode` enum exists with `Local`, `TailscaleServe`, `TailscaleFunnel`, `CloudflareTunnel` values and `JsonStringEnumConverter` support for kebab-case.
-- [ ] `DaemonConfig` record exists with `Host` (string, default `"127.0.0.1"`), `Port` (int, default `5199`), `ExposureMode` (default `Local`).
-- [ ] `DaemonConfig` is registered in daemon DI bound from `IConfiguration` section `"Daemon"`.
-- [ ] Unit tests verify deserialization from JSON with kebab-case enum values, defaults, and missing section.
+- [x] `ExposureMode` enum exists with `Local`, `TailscaleServe`, `TailscaleFunnel`, `CloudflareTunnel` values and `JsonStringEnumConverter` support for kebab-case.
+- [x] `DaemonConfig` record exists with `Host` (string, default `"127.0.0.1"`), `Port` (int, default `5199`), `ExposureMode` (default `Local`).
+- [x] `DaemonConfig` is registered in daemon DI bound from `IConfiguration` section `"Daemon"`.
+- [x] Unit tests verify deserialization from JSON with kebab-case enum values, defaults, and missing section.
 
 ### Task M7.A2: JSON schema and daemon bind address
 
@@ -642,10 +703,10 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] `Daemon` section added to `netclaw-config.v1.schema.json` with `Host` (string), `Port` (integer), `ExposureMode` (string enum), all with defaults. Section is optional.
-- [ ] `Program.cs` reads `DaemonConfig.Host` and `DaemonConfig.Port` instead of hardcoded `UseUrls("http://127.0.0.1:5199")`.
-- [ ] Existing `DaemonApi.ResolveEndpoint()` in CLI continues to work (reads `Daemon:Endpoint`, unaffected).
-- [ ] Schema validation test verifies valid `Daemon` section accepted, invalid enum rejected, missing section accepted.
+- [x] `Daemon` section added to `netclaw-config.v1.schema.json` with `Host` (string), `Port` (integer), `ExposureMode` (string enum), all with defaults. Section is optional.
+- [x] `Program.cs` reads `DaemonConfig.Host` and `DaemonConfig.Port` instead of hardcoded `UseUrls("http://127.0.0.1:5199")`.
+- [x] Existing `DaemonApi.ResolveEndpoint()` in CLI continues to work (reads `Daemon:Endpoint`, unaffected).
+- [x] Schema validation test verifies valid `Daemon` section accepted, invalid enum rejected, missing section accepted.
 
 ### Task M7.A3: Startup prerequisite validation
 
@@ -657,11 +718,11 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] `ExposureModeValidationService : IHostedService` reads `DaemonConfig` and validates tunnel prerequisites.
-- [ ] Tailscale modes check for `tailscaled` process; Cloudflare mode checks for `cloudflared` process.
-- [ ] On failure: logs descriptive error naming the missing prerequisite and throws to fail startup.
-- [ ] `Local` mode skips all tunnel validation.
-- [ ] Unit tests verify local skips, non-local with missing process throws.
+- [x] `ExposureModeValidationService : IHostedService` reads `DaemonConfig` and validates tunnel prerequisites.
+- [x] Tailscale modes check for `tailscaled` process; Cloudflare mode checks for `cloudflared` process.
+- [x] On failure: logs descriptive error naming the missing prerequisite and throws to fail startup.
+- [x] `Local` mode skips all tunnel validation.
+- [x] Unit tests verify local skips, non-local with missing process throws.
 
 ### Task M7.A4: Doctor check for exposure health
 
@@ -673,12 +734,12 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] `ExposureModeDoctorCheck : IDoctorCheck` reads `DaemonConfig` from `netclaw.json`.
-- [ ] Reports warning when bind address is non-loopback and exposure mode is `local`.
-- [ ] Reports error when exposure mode is non-local and tunnel process not detected.
-- [ ] Reports pass when mode is `local` with loopback or non-local with healthy tunnel.
-- [ ] Registered in `DoctorRegistrationExtensions`.
-- [ ] Unit tests verify warning, error, and pass cases.
+- [x] `ExposureModeDoctorCheck : IDoctorCheck` reads `DaemonConfig` from `netclaw.json`.
+- [x] Reports warning when bind address is non-loopback and exposure mode is `local`.
+- [x] Reports error when exposure mode is non-local and tunnel process not detected.
+- [x] Reports pass when mode is `local` with loopback or non-local with healthy tunnel.
+- [x] Registered in `DoctorRegistrationExtensions`.
+- [x] Unit tests verify warning, error, and pass cases.
 
 ### Task M7.A5: Init wizard exposure mode step
 
@@ -690,14 +751,14 @@ Done when:
 **Verification:** L1
 
 Done when:
-- [ ] `DaemonConfigSection` record added to `WizardConfigBuilder` typed sections.
-- [ ] `ExposureModeStepViewModel : IWizardStepViewModel` with `SelectionListNode` for four modes, `local` pre-selected.
-- [ ] `ExposureModeStepView` renders mode descriptions and risk indicators.
-- [ ] High-risk warning panel with explicit confirmation for `tailscale-funnel` and `cloudflare-tunnel`.
-- [ ] Informational notice for `tailscale-serve`.
-- [ ] `ContributeConfig` writes `Daemon` section only for non-default mode (local = omit).
-- [ ] Step inserted after security posture, before Slack in `InitWizardViewModel`.
-- [ ] Unit tests verify config contribution per mode.
+- [x] `DaemonConfigSection` record added to `WizardConfigBuilder` typed sections.
+- [x] `ExposureModeStepViewModel : IWizardStepViewModel` with `SelectionListNode` for four modes, `local` pre-selected.
+- [x] `ExposureModeStepView` renders mode descriptions and risk indicators.
+- [x] High-risk warning panel with explicit confirmation for `tailscale-funnel` and `cloudflare-tunnel`.
+- [x] Informational notice for `tailscale-serve`.
+- [x] `ContributeConfig` writes `Daemon` section only for non-default mode (local = omit).
+- [x] Step inserted after security posture, before Slack in `InitWizardViewModel`.
+- [x] Unit tests verify config contribution per mode.
 
 ### Task M7.A6: Hot-reload exclusion and spec updates
 
@@ -709,9 +770,9 @@ Done when:
 **Verification:** L1
 
 Done when:
-- [ ] `ConfigWatcherService` / `RestartCoordinator` does not apply `Daemon` section changes during hot-reload; logs warning that restart is required.
-- [ ] `SPEC-006` updated to mark exposure mode configuration as implemented.
-- [ ] `SPEC-011` updated to reference `DaemonConfig` instead of hardcoded URL.
+- [x] `ConfigWatcherService` / `RestartCoordinator` does not apply `Daemon` section changes during hot-reload; logs warning that restart is required.
+- [x] `SPEC-006` updated to mark exposure mode configuration as implemented.
+- [x] `SPEC-011` updated to reference `DaemonConfig` instead of hardcoded URL.
 
 ### Phase B: Hub Auth Framework (hub-auth-framework change)
 
@@ -725,10 +786,10 @@ Done when:
 **Verification:** L1
 
 Done when:
-- [ ] `NetclawClaimTypes` static class exists with `netclaw:principal`, `netclaw:transport`, `netclaw:device-id` constants.
-- [ ] `ConnectionIdentity` record exists with `PrincipalClassification`, `TransportAuthenticity`, `SenderId`.
-- [ ] `ClaimsPrincipalMapper` converts `ClaimsPrincipal` → `ConnectionIdentity`, falling back to `UntrustedExternal` / `Unknown`.
-- [ ] Unit tests cover loopback claims, bearer claims, and missing claims.
+- [x] `NetclawClaimTypes` static class exists with `netclaw:principal`, `netclaw:transport`, `netclaw:device-id` constants.
+- [x] `ConnectionIdentity` record exists with `PrincipalClassification`, `TransportAuthenticity`, `SenderId`.
+- [x] `ClaimsPrincipalMapper` converts `ClaimsPrincipal` → `ConnectionIdentity`, falling back to `UntrustedExternal` / `Unknown`.
+- [x] Unit tests cover loopback claims, bearer claims, and missing claims.
 
 ### Task M7.B2: Loopback authentication scheme
 
@@ -740,11 +801,11 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] `LoopbackAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>` checks `RemoteIpAddress` against `127.0.0.1` and `::1`.
-- [ ] Loopback match returns success with `Operator` + `LocalProcess` claims.
-- [ ] Non-loopback returns `AuthenticateResult.NoResult()`.
-- [ ] Registered as default authentication scheme in daemon DI.
-- [ ] Unit tests verify loopback → success, non-loopback → NoResult.
+- [x] `LoopbackAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>` checks `RemoteIpAddress` against `127.0.0.1` and `::1`.
+- [x] Loopback match returns success with `Operator` + `LocalProcess` claims.
+- [x] Non-loopback returns `AuthenticateResult.NoResult()`.
+- [x] Registered as default authentication scheme in daemon DI.
+- [x] Unit tests verify loopback → success, non-loopback → NoResult.
 
 ### Task M7.B3: Hub authorization and middleware
 
@@ -756,11 +817,11 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] `AddAuthentication()` and `AddAuthorization()` registered in daemon `Program.cs`.
-- [ ] `[Authorize]` attribute added to `SessionHub`.
-- [ ] `app.UseAuthentication()` and `app.UseAuthorization()` in middleware pipeline before hub mapping.
-- [ ] Integration test: unauthenticated non-loopback connection gets 401.
-- [ ] Integration test: loopback connection succeeds.
+- [x] `AddAuthentication()` and `AddAuthorization()` registered in daemon `Program.cs`.
+- [x] `[Authorize]` attribute added to `SessionHub`.
+- [x] `app.UseAuthentication()` and `app.UseAuthorization()` in middleware pipeline before hub mapping.
+- [x] Integration test: unauthenticated non-loopback connection gets 401.
+- [x] Integration test: loopback connection succeeds.
 
 ### Task M7.B4: Identity propagation into MessageSource
 
@@ -772,13 +833,13 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] `SessionRegistry.CreateSessionAsync` and `SendMessageAsync` accept `ClaimsPrincipal` parameter.
-- [ ] `ClaimsPrincipalMapper` injected into `SessionRegistry`.
-- [ ] `MessageSource.Principal`, `Provenance.TransportAuthenticity`, and `SenderId` populated from `ConnectionIdentity`.
-- [ ] `SessionHub` passes `Context.User` to all `SessionRegistry` calls.
-- [ ] CLI `DaemonClient` works without changes for loopback (verified).
-- [ ] `ConfigureAccessToken` extension point on `HubConnectionBuilder` for future bearer token attachment.
-- [ ] Unit test verifies `MessageSource` populated from claims.
+- [x] `SessionRegistry.CreateSessionAsync` and `SendMessageAsync` accept `ClaimsPrincipal` parameter.
+- [x] `ClaimsPrincipalMapper` injected into `SessionRegistry`.
+- [x] `MessageSource.Principal`, `Provenance.TransportAuthenticity`, and `SenderId` populated from `ConnectionIdentity`.
+- [x] `SessionHub` passes `Context.User` to all `SessionRegistry` calls.
+- [x] CLI `DaemonClient` works without changes for loopback (verified).
+- [x] `ConfigureAccessToken` extension point on `HubConnectionBuilder` for future bearer token attachment.
+- [x] Unit test verifies `MessageSource` populated from claims.
 
 ### Phase C: Device Pairing (device-pairing change)
 
@@ -792,13 +853,13 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] `PairedDevice` record with `Name`, `TokenHash`, `Salt`, `CreatedAt`, `LastUsedAt`.
-- [ ] `DeviceRegistry` service reads/writes `devices.json` — list, add, remove, lookup-by-hash, update last-used.
-- [ ] `IRemoteAuthSchemeRegistration` marker interface for startup validation.
-- [ ] `DeviceTokenAuthenticationHandler` reads `Authorization: Bearer` header, hashes with salt, validates against registry.
-- [ ] Valid token → `Operator` / `Verified` / device name; invalid → Fail; missing → NoResult.
-- [ ] Registered alongside loopback scheme in daemon DI.
-- [ ] Unit tests for registry CRUD and auth handler.
+- [x] `PairedDevice` record with `Name`, `TokenHash`, `Salt`, `CreatedAt`, `LastUsedAt`.
+- [x] `DeviceRegistry` service reads/writes `devices.json` — list, add, remove, lookup-by-hash, update last-used.
+- [x] `IRemoteAuthSchemeRegistration` marker interface for startup validation.
+- [x] `DeviceTokenAuthenticationHandler` reads `Authorization: Bearer` header, hashes with salt, validates against registry.
+- [x] Valid token → `Operator` / `Verified` / device name; invalid → Fail; missing → NoResult.
+- [x] Registered alongside loopback scheme in daemon DI.
+- [x] Unit tests for registry CRUD and auth handler.
 
 ### Task M7.C2: Pairing code service and exchange endpoint
 
@@ -810,12 +871,12 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] `PairingCodeService` generates, stores (in-memory), validates, and consumes codes.
-- [ ] Code format: 8 chars from `23456789ABCDEFGHJKLMNPQRSTUVWXYZ` as `XXXX-XXXX`, 5-min TTL, single-use.
-- [ ] Token generation: 32 bytes `RandomNumberGenerator`, base64url.
-- [ ] `POST /api/pair/exchange` endpoint — unauthenticated, accepts `{ code, deviceName }`, returns `{ token }`.
-- [ ] Rate limiting on exchange endpoint.
-- [ ] Unit tests for code lifecycle (generate, expire, consume, replace).
+- [x] `PairingCodeService` generates, stores (in-memory), validates, and consumes codes.
+- [x] Code format: 8 chars from `23456789ABCDEFGHJKLMNPQRSTUVWXYZ` as `XXXX-XXXX`, 5-min TTL, single-use.
+- [x] Token generation: 32 bytes `RandomNumberGenerator`, base64url.
+- [x] `POST /api/pair/exchange` endpoint — unauthenticated, accepts `{ code, deviceName }`, returns `{ token }`.
+- [x] Rate limiting on exchange endpoint.
+- [x] Unit tests for code lifecycle (generate, expire, consume, replace).
 
 ### Task M7.C3: CLI pairing commands
 
@@ -827,13 +888,25 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] `netclaw daemon pair` connects via SignalR, invokes `GeneratePairingCode()`, displays code + expiry.
-- [ ] `GeneratePairingCode()` hub method requires `Operator` principal.
-- [ ] `netclaw daemon devices` lists paired devices (name, created, last-used).
-- [ ] `netclaw daemon devices revoke <name>` removes device.
-- [ ] Daemon logs pairing code to stdout for Docker container log access.
-- [ ] `netclaw pair <endpoint>` prompts for code + device name, POSTs to exchange endpoint.
-- [ ] On success: stores token in `secrets.json`, endpoint in `netclaw.json`.
+- [x] `netclaw daemon pair` connects via SignalR, invokes `GeneratePairingCode()`, displays code + expiry.
+- [x] `GeneratePairingCode()` hub method requires `Operator` principal.
+- [x] `netclaw daemon devices` lists paired devices (name, created, last-used).
+- [x] `netclaw daemon devices revoke <name>` removes device.
+- [x] Daemon logs pairing code to stdout for Docker container log access.
+- [x] `netclaw pair <endpoint>` prompts for code + device name, POSTs to exchange endpoint.
+- [x] On success: stores token in `secrets.json`, endpoint in `netclaw.json`.
+
+### Cleanup (Postmortem 20260401-171023)
+
+### Task CL.1: Rename or fix PairCommandConfigTests
+
+**Source:** Postmortem adversarial review, finding CLEANUP-1
+**Issue:** `src/Netclaw.Cli.Tests/Daemon/PairCommandConfigTests.cs` never calls `PairCommand.RunAsync()`. The test manually re-implements `PairCommand`'s config-write logic and verifies `ConfigFileHelper` round-trips correctly. The underlying test is useful (exercises secrets encryption round-trip), but the class name and XMLdoc falsely claim it tests `PairCommand`.
+**Done when:**
+- [x] Either: (a) rename test class to `ConfigFileHelperSecretsRoundTripTests` and update XMLdoc, or (b) extract config-write logic from `PairCommand` into a testable method and test it directly, or (c) update XMLdoc to remove the claim that it tests `PairCommand`
+**Verification:** L1
+
+---
 
 ### Task M7.C4: CLI token attachment and startup validation
 
@@ -845,11 +918,11 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] `DaemonClient` detects non-loopback endpoint, reads `DeviceToken` from secrets, attaches via `AccessTokenProvider`.
-- [ ] On 401, CLI displays message suggesting `netclaw pair`.
-- [ ] `ExposureModeValidationService` extended: non-local mode fails startup if no paired devices and no `IRemoteAuthSchemeRegistration`.
-- [ ] Unit test: token attachment for non-loopback, skip for loopback.
-- [ ] Integration test: non-local + no devices → startup failure.
+- [x] `DaemonClient` detects non-loopback endpoint, reads `DeviceToken` from secrets, attaches via `AccessTokenProvider`.
+- [x] On 401, CLI displays message suggesting `netclaw pair`.
+- [x] `ExposureModeValidationService` extended: non-local mode fails startup if no paired devices and no `IRemoteAuthSchemeRegistration`.
+- [x] Unit test: token attachment for non-loopback, skip for loopback.
+- [x] Integration test: non-local + no devices → startup failure.
 
 ### Task M7.C5: Pairing smoke test in CI
 
@@ -861,8 +934,8 @@ Done when:
 **Verification:** L2
 
 Done when:
-- [ ] Pairing smoke test section in `scripts/smoke/check.sh` exercises full lifecycle: generate code → exchange → verify device list → connect with token → revoke → verify rejection.
-- [ ] Smoke test runs after existing session/stats tests, before teardown.
+- [x] Pairing smoke test section in `scripts/smoke/check.sh` exercises full lifecycle: generate code → exchange → verify device list → connect with token → revoke → verify rejection.
+- [x] Smoke test runs after existing session/stats tests, before teardown.
 
 ---
 

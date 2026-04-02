@@ -1,7 +1,11 @@
+using System.Buffers.Text;
+using System.Security.Cryptography;
+using System.Threading.RateLimiting;
 using Akka.Actor;
 using Akka.Hosting;
 using Akka.Persistence.Hosting;
 using Akka.Persistence.Sql.Hosting;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -29,6 +33,7 @@ using Netclaw.Daemon.Configuration;
 using Netclaw.Daemon.Gateway;
 using Netclaw.Daemon.Mcp;
 using Netclaw.Daemon.Providers;
+using Netclaw.Daemon.Security;
 using Netclaw.Daemon.Services;
 using Netclaw.Search;
 using Netclaw.Security;
@@ -88,21 +93,54 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
 
     var builder = WebApplication.CreateBuilder(args);
 
-    // Use port 5199 to avoid conflicts with Aspire (5000) and other defaults
-    builder.WebHost.UseUrls("http://127.0.0.1:5199");
-
     // Register process-lifetime restart signal so services can trigger a restart
     builder.Services.AddSingleton(restartSignal);
 
+    // Load configuration first (netclaw.json, secrets.json, env vars) so that
+    // DaemonConfig.Host/Port can be read before binding the WebHost URL.
     var paths = ConfigureConfigServices(builder.Services, builder.Configuration);
+
+    // Bind listen address from DaemonConfig; falls back to 127.0.0.1:5199 if
+    // the Daemon section is absent from netclaw.json.
+    var daemonConfig = DaemonConfig.BindFromConfiguration(builder.Configuration.GetSection("Daemon"));
+    builder.WebHost.UseUrls($"http://{daemonConfig.Host}:{daemonConfig.Port}");
     var daemonLogLevel = builder.ConfigureNetclawLogging();
     builder.AddNetclawTelemetry();
-    ConfigureDaemonServices(builder.Services, builder.Configuration, paths, daemonLogLevel);
+    ConfigureDaemonServices(builder.Services, builder.Configuration, paths, daemonLogLevel, daemonConfig);
+
+    // Authentication — a PolicyScheme selector is the default scheme.
+    // It routes to DeviceBearer when an Authorization: Bearer header is present,
+    // otherwise to Loopback (local operator).  This ensures [Authorize] endpoints
+    // are reachable by both loopback clients and paired remote devices.
+    builder.Services.AddSingleton<DeviceRegistry>();
+    builder.Services.AddSingleton<PairingCodeService>();
+    builder.Services.AddSingleton<PairingExchangeGuard>();
+    builder.Services.AddSingleton<IRemoteAuthSchemeRegistration, DevicePairingSchemeRegistration>();
+    builder.Services.AddNetclawAuthSchemes();
+    builder.Services.AddAuthorization();
+
+    // Rate limiting for the unauthenticated pairing exchange endpoint.
+    // 5 attempts per minute per IP — brute-force defense for the 8-char code space.
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.AddPolicy("pairing-exchange", context =>
+            RateLimitPartition.GetFixedWindowLimiter(
+                context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 5,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                    QueueLimit = 0,
+                }));
+        options.RejectionStatusCode = 429;
+    });
 
     // SignalR for remote clients (CLI thin client, Blazor ops console)
     builder.Services.AddSignalR();
     builder.Services.AddSingleton<SessionCatalogService>();
     builder.Services.AddSingleton<ISessionLifecycleObserver>(sp => sp.GetRequiredService<SessionCatalogService>());
+    builder.Services.AddSingleton<ClaimsPrincipalMapper>();
     builder.Services.AddSingleton<SessionRegistry>();
     builder.Services.AddSingleton<DaemonStartClock>();
     builder.Services.AddSingleton<DaemonRuntimeStatusService>();
@@ -119,15 +157,103 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
     // Eagerly resolve so StartedAt reflects daemon startup, not first request.
     app.Services.GetRequiredService<DaemonStartClock>();
 
+    app.UseAuthentication();
+    app.UseAuthorization();
+    app.UseRateLimiter();
+
     // Gateway surface
     app.MapHub<SessionHub>("/hub/session");
     app.MapGet("/api/health/ready", () => Results.Ok("healthy"));
     app.MapGet("/api/health/status", async (DaemonRuntimeStatusService statusService, CancellationToken cancellationToken) =>
-        Results.Ok(await statusService.GetStatusAsync(cancellationToken)));
+        Results.Ok(await statusService.GetStatusAsync(cancellationToken))).RequireAuthorization();
     app.MapGet("/api/sessions", (SessionCatalogService catalog) =>
-        Results.Ok(catalog.ListRecent(limit: 50)));
+        Results.Ok(catalog.ListRecent(limit: 50))).RequireAuthorization();
     app.MapGet("/api/stats", async (DaemonStatsService statsService, int? days, CancellationToken ct) =>
-        Results.Ok(await statsService.GetStatsAsync(days, ct)));
+        Results.Ok(await statsService.GetStatsAsync(days, ct))).RequireAuthorization();
+
+    // Device pairing exchange — unauthenticated, rate-limited, with per-IP lockout guard.
+    // Accepts a time-limited pairing code and a device name; returns a bearer token on success.
+    app.MapPost("/api/pair/exchange", async (
+        HttpContext httpContext,
+        PairingCodeExchangeRequest request,
+        PairingCodeService pairingCodeService,
+        PairingExchangeGuard exchangeGuard,
+        DeviceRegistry deviceRegistry,
+        TimeProvider timeProvider,
+        CancellationToken ct) =>
+    {
+        var remoteIp = httpContext.Connection.RemoteIpAddress;
+
+        // Layer 1: Per-IP failure lockout — blocked IPs get 429 before any processing.
+        if (exchangeGuard.IsBlocked(remoteIp))
+        {
+            var retryAfter = exchangeGuard.GetRetryAfterSeconds(remoteIp);
+            httpContext.Response.Headers.RetryAfter = retryAfter?.ToString() ?? "900";
+            return Results.Json(
+                new { error = "Too many failed attempts. Try again later." },
+                statusCode: StatusCodes.Status429TooManyRequests);
+        }
+
+        // Layer 2: No-code-pending gate — if no code exists, hide the endpoint entirely.
+        if (pairingCodeService.GetPendingExpiry() is null)
+            return Results.NotFound();
+
+        if (string.IsNullOrWhiteSpace(request.Code) || string.IsNullOrWhiteSpace(request.DeviceName))
+            return Results.BadRequest(new { error = "code and deviceName are required." });
+
+        if (!pairingCodeService.TryConsume(request.Code))
+        {
+            exchangeGuard.RecordFailure(remoteIp);
+            return Results.Json(
+                new { error = "Invalid, expired, or already-used pairing code." },
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        var tokenBytes = RandomNumberGenerator.GetBytes(32);
+        var rawToken = Base64Url.EncodeToString(tokenBytes);
+
+        var saltBytes = RandomNumberGenerator.GetBytes(16);
+        var saltHex = Convert.ToHexString(saltBytes).ToLowerInvariant();
+        var tokenHash = DeviceRegistry.ComputeTokenHash(rawToken, saltHex);
+
+        var now = timeProvider.GetUtcNow();
+        var device = new PairedDevice
+        {
+            Name = request.DeviceName.Trim(),
+            TokenHash = tokenHash,
+            Salt = saltHex,
+            CreatedAt = now,
+            LastUsedAt = now,
+        };
+
+        try
+        {
+            await deviceRegistry.AddAsync(device, ct);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Results.Conflict(new { error = ex.Message });
+        }
+
+        return Results.Ok(new { token = rawToken });
+    }).RequireRateLimiting("pairing-exchange").AllowAnonymous();
+
+    // Device registry management — authenticated (loopback or valid bearer token required).
+    // Returns a sanitized view of paired devices (no TokenHash/Salt).
+    app.MapGet("/api/pair/devices", async (DeviceRegistry deviceRegistry, CancellationToken ct) =>
+    {
+        var devices = await deviceRegistry.ListAsync(ct);
+        var sanitized = devices.Select(d => new PairedDeviceInfoDto(d.Name, d.CreatedAt, d.LastUsedAt));
+        return Results.Ok(sanitized);
+    }).RequireAuthorization();
+
+    app.MapDelete("/api/pair/devices/{name}", async (string name, DeviceRegistry deviceRegistry, CancellationToken ct) =>
+    {
+        var removed = await deviceRegistry.RemoveAsync(name, ct);
+        return removed
+            ? Results.NoContent()
+            : Results.NotFound(new { error = $"Device '{name}' not found." });
+    }).RequireAuthorization();
 
     // MCP OAuth 2.1 endpoints
     app.MapPost("/api/mcp/oauth/start/{name}", async (
@@ -144,7 +270,7 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
 
         var (authUrl, state) = await oauthService.StartAuthorizationFlowAsync(name, entry, ct);
         return Results.Ok(new { authorizationUrl = authUrl, state });
-    });
+    }).RequireAuthorization();
 
     app.MapGet("/api/mcp/oauth/callback", async (
         HttpContext context,
@@ -190,7 +316,7 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
             await context.Response.WriteAsync(
                 $"<html><body><h2>Authorization failed</h2><p>{System.Net.WebUtility.HtmlEncode(ex.Message)}</p></body></html>", ct);
         }
-    });
+    }).AllowAnonymous();
 
     app.MapGet("/api/mcp/statuses", (McpClientManager mcpManager) =>
     {
@@ -204,26 +330,26 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
                 error = kvp.Value.ErrorMessage,
             });
         return Results.Ok(result);
-    });
+    }).RequireAuthorization();
 
     app.MapGet("/api/mcp/tools/{name}", (string name, McpClientManager mcpManager) =>
     {
         var tools = mcpManager.GetToolNames(name);
         return Results.Ok(tools);
-    });
+    }).RequireAuthorization();
 
     app.MapGet("/api/mcp/oauth/status/{name}", (string name, McpOAuthService oauthService) =>
     {
         var status = oauthService.GetFlowStatus(name);
         return Results.Ok(new { status = status.ToString() });
-    });
+    }).RequireAuthorization();
 
     app.MapGet("/api/mcp/oauth/status-by-state/{state}", (string state, McpOAuthService oauthService) =>
     {
         var status = oauthService.GetFlowStatusByState(state);
         // Tokens are persisted daemon-side — never expose them over HTTP.
         return Results.Ok(new { status = status.ToString() });
-    });
+    }).RequireAuthorization();
 
     app.MapProviderOAuthEndpoints();
 
@@ -239,7 +365,7 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
 
         notifier.NotifyShutdown(reason);
         return Results.Ok(new { reason, pid = Environment.ProcessId });
-    });
+    }).RequireAuthorization();
 
     // Register tools that need DI-resolved dependencies after the container is built.
     ChannelToolRegistration.RegisterChannelTools(app.Services);
@@ -314,8 +440,16 @@ static void ConfigureDaemonServices(
     IServiceCollection services,
     IConfigurationManager configuration,
     NetclawPaths paths,
-    LogLevel daemonLogLevel)
+    LogLevel daemonLogLevel,
+    DaemonConfig daemonConfig)
 {
+    // Daemon bind address and exposure mode (computed once in RunDaemonAsync)
+    services.AddSingleton(daemonConfig);
+
+    // Validate tunnel prerequisites before the rest of the daemon starts.
+    // Throws from StartAsync to abort startup if the required process is missing.
+    services.AddHostedService<ExposureModeValidationService>();
+
     services
         .AddOptions<ModelSelection>()
         .Bind(configuration.GetSection("Models"))
@@ -909,7 +1043,10 @@ static void CopyBuiltInSkills(string skillsDirectory)
 
 static void MapReminderEndpoints(WebApplication app)
 {
-    app.MapGet("/api/reminders", async (
+    var reminders = app.MapGroup("/api/reminders")
+        .RequireAuthorization();
+
+    reminders.MapGet("", async (
         Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
         CancellationToken ct) =>
     {
@@ -927,7 +1064,7 @@ static void MapReminderEndpoints(WebApplication app)
         return Results.Ok(projected);
     });
 
-    app.MapPost("/api/reminders", async (
+    reminders.MapPost("", async (
         CreateReminderRequest request,
         Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
         IServiceProvider serviceProvider,
@@ -988,7 +1125,7 @@ static void MapReminderEndpoints(WebApplication app)
             : Results.Ok(new { message = result });
     });
 
-    app.MapPost("/api/reminders/validate", (
+    reminders.MapPost("/validate", (
         CreateReminderRequest request,
         TimeProvider timeProvider,
         ReminderConfig reminderConfig) =>
@@ -1005,7 +1142,7 @@ static void MapReminderEndpoints(WebApplication app)
         return Results.Ok(new { valid = true, scheduleType = schedule.Type.ToString(), nextFire = schedule.FireAt });
     });
 
-    app.MapPost("/api/reminders/import", async (
+    reminders.MapPost("/import", async (
         ImportReminderRequest request,
         Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
         CancellationToken ct) =>
@@ -1055,7 +1192,7 @@ static void MapReminderEndpoints(WebApplication app)
         });
     });
 
-    app.MapDelete("/api/reminders/{id}", async (
+    reminders.MapDelete("/{id}", async (
         string id,
         Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
         CancellationToken ct) =>
@@ -1070,7 +1207,7 @@ static void MapReminderEndpoints(WebApplication app)
             : Results.NotFound(new { error = $"Reminder '{id}' not found." });
     });
 
-    app.MapPost("/api/reminders/{id}/disable", async (
+    reminders.MapPost("/{id}/disable", async (
         string id,
         Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
         CancellationToken ct) =>
@@ -1086,7 +1223,7 @@ static void MapReminderEndpoints(WebApplication app)
             : Results.Ok(new { id = id, enabled = response.Enabled, message = $"Reminder '{id}' disabled." });
     });
 
-    app.MapPost("/api/reminders/{id}/enable", async (
+    reminders.MapPost("/{id}/enable", async (
         string id,
         Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
         CancellationToken ct) =>
@@ -1105,7 +1242,7 @@ static void MapReminderEndpoints(WebApplication app)
         return Results.Ok(new { id, enabled = response.Enabled, nextFire = response.NextFire, message = $"Reminder '{id}' enabled." });
     });
 
-    app.MapGet("/api/reminders/{id}", async (
+    reminders.MapGet("/{id}", async (
         string id,
         Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
         CancellationToken ct) =>
@@ -1134,7 +1271,7 @@ static void MapReminderEndpoints(WebApplication app)
         });
     });
 
-    app.MapGet("/api/reminders/{id}/history", async (
+    reminders.MapGet("/{id}/history", async (
         string id,
         int? last,
         ReminderDefinitionStore definitionStore,
@@ -1184,5 +1321,10 @@ sealed record ImportReminderRequest
     public required ReminderDefinition Definition { get; init; }
     public string? WriteMode { get; init; }
 }
+
+/// <summary>
+/// Request body for <c>POST /api/pair/exchange</c>.
+/// </summary>
+sealed record PairingCodeExchangeRequest(string Code, string DeviceName);
 
 public partial class Program;

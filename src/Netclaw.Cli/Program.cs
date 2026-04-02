@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.SignalR;
+using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -145,7 +147,9 @@ static async Task RunAsync(string[] args)
             // Register DaemonClient, ChatNavigationState, and SessionConfig for ChatPage
             // (uses freshly-written config from the wizard's WriteConfig)
             builder.Services.AddSingleton(new ChatNavigationState());
-            builder.Services.AddSingleton(sp => new DaemonClient(sp.GetRequiredService<DaemonApi>().Endpoint));
+            builder.Services.AddSingleton(sp => DaemonClientFactory.Create(
+                sp.GetRequiredService<DaemonApi>().Endpoint,
+                sp.GetRequiredService<NetclawPaths>()));
             builder.Services.AddSingleton(sp =>
             {
                 // Read the just-written config files for session settings
@@ -462,6 +466,133 @@ static async Task RunAsync(string[] args)
                 WriteDaemonResult(uninstallResult);
                 return;
 
+            case "pair":
+            {
+                if (args.Length > 2 && IsHelpToken(args[2]))
+                {
+                    WriteDaemonPairHelp();
+                    return;
+                }
+
+                var pairBuilder = Host.CreateApplicationBuilder(args);
+                ConfigureConfigServices(pairBuilder.Services, pairBuilder.Configuration);
+                pairBuilder.Logging.ClearProviders();
+                pairBuilder.Logging.SetMinimumLevel(LogLevel.Warning);
+
+                using var pairHost = pairBuilder.Build();
+                var pairApi = pairHost.Services.GetRequiredService<DaemonApi>();
+                var pairHubUrl = $"{pairApi.Endpoint}/hub/session";
+
+                await using var pairConn = new HubConnectionBuilder()
+                    .WithUrl(pairHubUrl)
+                    .Build();
+
+                try
+                {
+                    await pairConn.StartAsync();
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"error: Could not connect to daemon at {pairApi.Endpoint}: {ex.Message}");
+                    Console.Error.WriteLine("Ensure the daemon is running: netclaw daemon start");
+                    Environment.ExitCode = 1;
+                    return;
+                }
+
+                try
+                {
+                    var pairingResult = await pairConn.InvokeAsync<PairingCodeResultDto>("GeneratePairingCode");
+                    Console.WriteLine($"Pairing code:  {pairingResult.FormattedCode}");
+                    Console.WriteLine($"Expires at:    {pairingResult.ExpiresAt.ToLocalTime():HH:mm:ss} (local time)");
+                    Console.WriteLine();
+                    Console.WriteLine("On the remote device, run:");
+                    Console.WriteLine($"  netclaw pair {pairApi.Endpoint}");
+                }
+                catch (HubException ex)
+                {
+                    Console.Error.WriteLine($"error: {ex.Message}");
+                    Environment.ExitCode = 1;
+                }
+
+                return;
+            }
+
+            case "devices":
+            {
+                var devicesSubcmd = args.Length > 2 ? args[2] : "list";
+                if (IsHelpToken(devicesSubcmd))
+                {
+                    WriteDaemonDevicesHelp();
+                    return;
+                }
+
+                var devBuilder = Host.CreateApplicationBuilder(args);
+                ConfigureConfigServices(devBuilder.Services, devBuilder.Configuration);
+                devBuilder.Logging.ClearProviders();
+                devBuilder.Logging.SetMinimumLevel(LogLevel.Warning);
+
+                using var devHost = devBuilder.Build();
+                var devApi = devHost.Services.GetRequiredService<DaemonApi>();
+
+                if (devicesSubcmd is "revoke")
+                {
+                    var deviceName = args.Length > 3 ? args[3] : null;
+                    if (string.IsNullOrWhiteSpace(deviceName))
+                    {
+                        Console.Error.WriteLine("error: device name required.");
+                        Console.Error.WriteLine("Usage: netclaw daemon devices revoke <name>");
+                        Environment.ExitCode = 1;
+                        return;
+                    }
+
+                    try
+                    {
+                        var removed = await devApi.RevokePairedDeviceAsync(deviceName);
+                        if (removed)
+                            Console.WriteLine($"Device '{deviceName}' revoked.");
+                        else
+                        {
+                            Console.Error.WriteLine($"Device '{deviceName}' not found.");
+                            Environment.ExitCode = 1;
+                        }
+                    }
+                    catch (HttpRequestException ex)
+                    {
+                        Console.Error.WriteLine($"error: Could not reach daemon: {ex.Message}");
+                        Environment.ExitCode = 1;
+                    }
+                }
+                else
+                {
+                    // Default: list devices
+                    try
+                    {
+                        var devices = await devApi.ListPairedDevicesAsync();
+                        if (devices.Count == 0)
+                        {
+                            Console.WriteLine("No paired devices.");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"{"Name",-24} {"Created",-22} {"Last Used",-22}");
+                            Console.WriteLine(new string('-', 70));
+                            foreach (var d in devices)
+                            {
+                                Console.WriteLine(
+                                    $"{d.Name,-24} {d.CreatedAt.ToLocalTime():yyyy-MM-dd HH:mm,-22} {d.LastUsedAt.ToLocalTime():yyyy-MM-dd HH:mm,-22}");
+                            }
+                        }
+                    }
+                    catch (HttpRequestException ex)
+                    {
+                        Console.Error.WriteLine($"error: Could not reach daemon: {ex.Message}");
+                        Environment.ExitCode = 1;
+                    }
+                }
+
+                return;
+            }
+
             default:
                 WriteDaemonHelp();
                 Environment.ExitCode = 1;
@@ -637,6 +768,15 @@ static async Task RunAsync(string[] args)
         return;
     }
 
+    // ── Device pairing (remote daemon) ──
+    if (mode is "pair")
+    {
+        var pairPaths = new NetclawPaths();
+        pairPaths.EnsureDirectoriesExist();
+        Environment.ExitCode = await PairCommand.RunAsync(args, pairPaths);
+        return;
+    }
+
     // ── Self-update ──
     if (mode is "update")
     {
@@ -778,10 +918,7 @@ static void WriteDaemonResult(DaemonResult result)
         Environment.ExitCode = 1;
 }
 
-static bool IsHelpToken(string token)
-{
-    return token is "help" or "-h" or "--help";
-}
+static bool IsHelpToken(string token) => CliArgsParser.IsHelpToken(token);
 
 static void WriteGeneralHelp()
 {
@@ -796,7 +933,8 @@ static void WriteGeneralHelp()
     Console.WriteLine("  doctor                   Configuration diagnostics (offline)");
     Console.WriteLine("  status                   Runtime status from daemon health JSON endpoint");
     Console.WriteLine("  stats                    Usage activity statistics from daemon");
-    Console.WriteLine("  daemon <subcommand>      Manage daemon lifecycle");
+    Console.WriteLine("  daemon <subcommand>      Manage daemon lifecycle and paired devices");
+    Console.WriteLine("  pair <endpoint>          Pair this device with a remote daemon");
     Console.WriteLine("  mcp                      Manage MCP server profiles");
     Console.WriteLine("  provider                 Manage LLM providers (TUI) or use subcommands");
     Console.WriteLine("  model                    Manage model assignments (TUI) or use subcommands");
@@ -815,11 +953,39 @@ static void WriteDaemonHelp()
     Console.WriteLine("Usage: netclaw daemon <subcommand>");
     Console.WriteLine();
     Console.WriteLine("Subcommands:");
-    Console.WriteLine("  start       Start daemon as a background process");
-    Console.WriteLine("  stop        Stop daemon gracefully");
-    Console.WriteLine("  status      Show daemon process status");
-    Console.WriteLine("  install     Install systemd user service (Linux)");
-    Console.WriteLine("  uninstall   Remove systemd user service (Linux)");
+    Console.WriteLine("  start                        Start daemon as a background process");
+    Console.WriteLine("  stop                         Stop daemon gracefully");
+    Console.WriteLine("  status                       Show daemon process status");
+    Console.WriteLine("  install                      Install systemd user service (Linux)");
+    Console.WriteLine("  uninstall                    Remove systemd user service (Linux)");
+    Console.WriteLine("  pair                         Generate a pairing code for remote device access");
+    Console.WriteLine("  devices                      List paired devices");
+    Console.WriteLine("  devices revoke <name>        Revoke a paired device by name");
+}
+
+static void WriteDaemonPairHelp()
+{
+    Console.WriteLine("Usage: netclaw daemon pair");
+    Console.WriteLine();
+    Console.WriteLine("Generate a pairing code so a remote device can authenticate with this daemon.");
+    Console.WriteLine();
+    Console.WriteLine("The code expires in 5 minutes. Share it with the remote device operator,");
+    Console.WriteLine("who should run:  netclaw pair <endpoint>");
+    Console.WriteLine();
+    Console.WriteLine("Requires the daemon to be running and the command to be executed from the daemon host.");
+}
+
+static void WriteDaemonDevicesHelp()
+{
+    Console.WriteLine("Usage: netclaw daemon devices [revoke <name>]");
+    Console.WriteLine();
+    Console.WriteLine("Manage devices that have been paired with this daemon.");
+    Console.WriteLine();
+    Console.WriteLine("Subcommands:");
+    Console.WriteLine("  (none)              List all paired devices with name, created, last-used");
+    Console.WriteLine("  revoke <name>       Revoke a device token by device name");
+    Console.WriteLine();
+    Console.WriteLine("After revoking, the device will receive 401 on next connection attempt.");
 }
 
 static void WriteDoctorHelp()
@@ -1391,6 +1557,9 @@ static void ConfigureCliChatServices(IServiceCollection services, IConfiguration
         CompactionModelId = models.Compaction?.ModelId,
     });
 
-    // DaemonClient uses the endpoint from DaemonApi (already registered in ConfigureConfigServices)
-    services.AddSingleton(sp => new DaemonClient(sp.GetRequiredService<DaemonApi>().Endpoint));
+    // DaemonClient uses the endpoint from DaemonApi. For non-loopback (remote) endpoints,
+    // reads DeviceToken from secrets.json and attaches it as a bearer token provider.
+    services.AddSingleton(sp => DaemonClientFactory.Create(
+        sp.GetRequiredService<DaemonApi>().Endpoint,
+        sp.GetRequiredService<NetclawPaths>()));
 }

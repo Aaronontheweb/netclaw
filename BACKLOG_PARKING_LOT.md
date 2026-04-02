@@ -19,4 +19,7 @@
 
 -->
 
-_(No items currently awaiting decision.)_
+### ~~Exchange endpoint integration test timing~~ (RESOLVED)
+- **Source:** RALPH run 20260401-171023, review after iteration 15 (finding #5)
+- **Resolution:** Integration tests added in `PairingExchangeEndpointTests.cs` covering 200/400/401 responses, code consumption semantics, token authentication, expiry, and single-use enforcement.
+- **Date resolved:** 2026-04-01

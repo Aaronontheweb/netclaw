@@ -33,6 +33,7 @@ public sealed class WizardConfigBuilder
     public WorkspacesConfigSection? Workspaces { get; set; }
     public NotificationsConfigSection? Notifications { get; set; }
     public List<ExternalSkillSource>? ExternalSkillSources { get; set; }
+    public DaemonConfigSection? Daemon { get; set; }
 
     /// <summary>
     /// Assemble the typed sections into netclaw.json and write it.
@@ -207,6 +208,15 @@ public sealed class WizardConfigBuilder
             };
         }
 
+        // Daemon section — only written for non-default exposure modes (local = omit)
+        if (Daemon is not null && Daemon.ExposureMode != ExposureMode.Local)
+        {
+            config["Daemon"] = new Dictionary<string, object>
+            {
+                ["ExposureMode"] = Daemon.ExposureMode.ToWireValue()
+            };
+        }
+
         // Notifications
         if (Notifications is { WebhookUrl: not null })
         {
@@ -318,3 +328,9 @@ public sealed class IdentityConfigSection
     public string? UserName { get; init; }
     public required string UserTimezone { get; init; }
 }
+
+public sealed class DaemonConfigSection
+{
+    public ExposureMode ExposureMode { get; init; } = ExposureMode.Local;
+}
+

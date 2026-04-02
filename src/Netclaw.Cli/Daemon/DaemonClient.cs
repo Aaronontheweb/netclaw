@@ -1,3 +1,4 @@
+using System.Net;
 using Microsoft.AspNetCore.SignalR.Client;
 using R3;
 using Microsoft.Extensions.AI;
@@ -27,6 +28,7 @@ public sealed class DaemonClient : IAsyncDisposable
     private readonly HubConnection _connection;
     private readonly string _daemonEndpoint;
     private readonly string _hubUrl;
+    private readonly Func<Task<string?>>? _accessTokenProvider;
     private readonly Subject<SessionOutput> _outputSubject = new();
     private readonly Subject<DaemonConnectionEvent> _connectionSubject = new();
     private readonly TimeProvider _timeProvider;
@@ -45,7 +47,8 @@ public sealed class DaemonClient : IAsyncDisposable
         string daemonEndpoint,
         TimeProvider? timeProvider = null,
         TimeSpan[]? reconnectDelays = null,
-        TimeSpan? serverTimeout = null)
+        TimeSpan? serverTimeout = null,
+        Func<Task<string?>>? accessTokenProvider = null)
     {
         if (string.IsNullOrWhiteSpace(daemonEndpoint))
             throw new ArgumentException("Daemon endpoint cannot be empty.", nameof(daemonEndpoint));
@@ -54,9 +57,10 @@ public sealed class DaemonClient : IAsyncDisposable
         _hubUrl = BuildHubUrl(_daemonEndpoint);
         _timeProvider = timeProvider ?? TimeProvider.System;
         _reconnectDelays = reconnectDelays ?? DefaultReconnectDelays;
+        _accessTokenProvider = accessTokenProvider;
 
         _connection = new HubConnectionBuilder()
-            .WithUrl(_hubUrl)
+            .ConfigureAccessToken(_hubUrl, _accessTokenProvider)
             .WithAutomaticReconnect(_reconnectDelays)
             .Build();
 
@@ -191,6 +195,11 @@ public sealed class DaemonClient : IAsyncDisposable
                     lastError = ex;
                 }
             }
+
+            if (IsAuthenticationFailure(lastError))
+                throw new InvalidOperationException(
+                    "Authentication failed: the daemon rejected the bearer token. " +
+                    "Run 'netclaw pair <endpoint>' to re-pair this device.", lastError);
 
             throw new InvalidOperationException("Failed to connect to daemon SignalR hub.", lastError);
         }
@@ -457,6 +466,11 @@ public sealed class DaemonClient : IAsyncDisposable
                 }
             }
 
+            if (IsAuthenticationFailure(lastError))
+                throw new InvalidOperationException(
+                    "Authentication failed: the daemon rejected the bearer token. " +
+                    "Run 'netclaw pair <endpoint>' to re-pair this device.", lastError);
+
             throw new InvalidOperationException("Failed to connect to daemon SignalR hub.", lastError);
         }
         finally
@@ -464,6 +478,9 @@ public sealed class DaemonClient : IAsyncDisposable
             _connectGate.Release();
         }
     }
+
+    private static bool IsAuthenticationFailure(Exception? ex) =>
+        ex is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized };
 
     private static string BuildHubUrl(string endpoint)
     {
