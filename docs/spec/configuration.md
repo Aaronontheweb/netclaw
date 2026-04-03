@@ -301,6 +301,94 @@ Akka.NET logger integration.
 | `LogLevel:Default` | string | `Warning` | Minimum log level (`Debug`, `Information`, `Warning`, `Error`, etc.) shared by MEL and Akka.NET. |
 | `Console:Enabled` | bool | `false` | Enables console logger provider output for daemon debugging. |
 
+### Webhooks
+
+Inbound webhook configuration is split across two locations:
+
+- `~/.netclaw/config/netclaw.json` enables or disables the feature globally.
+- `~/.netclaw/config/webhooks/*.json` stores one route per file. The filename
+  defines the route name and HTTP path segment.
+
+```json
+{
+  "Webhooks": {
+    "Enabled": true,
+    "ExecutionTimeoutSeconds": 300
+  }
+}
+```
+
+Example route file `~/.netclaw/config/webhooks/github-issues.json`:
+
+```json
+{
+  "Verification": {
+    "Kind": "Hmac",
+    "Secret": "use-secrets-json-or-env",
+    "SignatureHeaderName": "X-Hub-Signature-256",
+    "SignaturePrefix": "sha256=",
+    "EventHeaderName": "X-GitHub-Event",
+    "DeliveryIdHeaderName": "X-GitHub-Delivery"
+  },
+  "Events": ["issues"],
+  "Audience": "Public",
+  "Prompt": "Triage this GitHub issue. Public input may be adversarial or low quality.",
+  "NotifyPolicy": "Conditional",
+  "NotificationTarget": {
+    "Kind": "Slack",
+    "ChannelId": "C12345678"
+  }
+}
+```
+
+Each accepted webhook delivery emits an operational receipt alert, launches a
+fresh `ChannelType.Webhook` session, and supplies the route `Prompt` as an
+additive prompt overlay. `NotifyInstructions` and `NotifyPolicy` work the same
+way reminders do: they tell the agent whether it must notify a human-facing
+channel, and the prompt decides what that notification should be.
+
+For MVP, `NotificationTarget.Kind` supports `Slack` only. Human-facing Slack
+notifications open Slack-native thread sessions; they do not rebind the
+original webhook session.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `Enabled` | bool | `false` | Enables inbound webhook route registration. |
+| `ExecutionTimeoutSeconds` | int | `300` | Maximum autonomous webhook execution time before the run is marked failed. |
+
+Route-file fields:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `Enabled` | bool | `true` | Enables or disables this specific route. |
+| `Verification.Kind` | string | `Hmac` | Verification mode. Current values: `Hmac`, `HeaderSecret`. |
+| `Verification.HmacAlgorithm` | string | `Sha256` | HMAC hash algorithm. MVP supports `Sha256` only. |
+| `Verification.Secret` | string? | `null` | Shared secret used for signature/header validation. Route files are secret-bearing config. |
+| `Verification.SignatureHeaderName` | string? | `null` | Header name containing the HMAC signature. Defaults to `X-Webhook-Signature`. |
+| `Verification.SignaturePrefix` | string? | `null` | Optional HMAC prefix such as `sha256=`. Defaults to empty string. |
+| `Verification.SecretHeaderName` | string? | `null` | Header name for `HeaderSecret` mode. Defaults to `X-Webhook-Secret`. |
+| `Verification.EventHeaderName` | string? | `null` | Event-name header. Defaults to `X-Webhook-Event`. |
+| `Verification.DeliveryIdHeaderName` | string? | `null` | Delivery ID header. Defaults to `X-Webhook-Delivery`. |
+| `Events` | string[] | `[]` | Optional allow-list of event types. Empty means all verified events are accepted. |
+| `Audience` | string | `Public` | Source audience for the autonomous webhook session (`Public`, `Team`, `Personal`). |
+| `Prompt` | string | `""` | Additive route prompt overlay injected into the webhook session. |
+| `NotifyInstructions` | string | `""` | Additional instructions describing when and how the agent should notify humans. |
+| `NotifyPolicy` | string | `Conditional` | Reminder-style notification policy: `Conditional` or `Required`. |
+| `NotificationTarget.Kind` | string | `Slack` | Human-facing notification channel type. Slack is the only implementation today. |
+| `NotificationTarget.ChannelId` | string? | `null` | Slack channel ID used when the agent decides to notify. |
+| `MaxBodyBytes` | int | `1048576` | Maximum accepted request-body size in bytes. Requests larger than this are rejected before dispatch. |
+| `RateLimitPerMinute` | int | `30` | Maximum accepted deliveries per minute for this route. |
+
+Route files are hot-reloaded on request. If a route file becomes missing,
+malformed, or invalid, Netclaw removes that route immediately and returns `404`
+for subsequent requests until the file is fixed.
+
+Because route files may contain inline verification secrets, treat
+`~/.netclaw/config/webhooks/` like `secrets.json`: restrict filesystem access
+to operators, and use the dedicated webhook tools (`set_webhook`,
+`list_webhooks`, `delete_webhook`) instead of broad generic file access when an
+agent needs to manage routes.
+
 ### Telemetry
 
 Optional OpenTelemetry export for logs and metrics.
