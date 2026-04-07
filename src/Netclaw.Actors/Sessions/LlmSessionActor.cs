@@ -139,6 +139,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly Telemetry.ISessionMetrics? _sessionMetrics;
 
     private bool _restartDrainRequested;
+    private bool _passivationCompleted;
     private IActorRef? _restartDrainReplyTo;
     private string? _pendingRestartNotice;
     private string? _turnRestartNotice;
@@ -1184,6 +1185,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void CompletePassivation()
     {
+        _passivationCompleted = true;
         _lifecycleObserver?.OnSessionDeactivated(_sessionId);
         SaveSnapshot(BuildSnapshot());
         _restartDrainReplyTo?.Tell(CommandAck.For(_sessionId));
@@ -1821,6 +1823,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     protected override void PostStop()
     {
         CancelAndDisposeLlmCts();
+
+        // Safety net for non-graceful stop paths (shutdown timeout, OOM, etc.).
+        if (!_passivationCompleted)
+            _lifecycleObserver?.OnSessionDeactivated(_sessionId);
+
         base.PostStop();
     }
 
