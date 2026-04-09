@@ -103,6 +103,14 @@ public sealed record ReminderDefinition
     /// </summary>
     public string? AgentDefinitionId { get; init; }
 
+    /// <summary>
+    /// Persisted execution audience for this reminder.
+    /// Conversational and tool-created reminders inherit the creating
+    /// session/channel audience when omitted at mint time. Reminder save paths
+    /// fail closed if they cannot resolve or authorize this audience.
+    /// </summary>
+    public TrustAudience? Audience { get; init; }
+
     public string CreatedBy { get; init; } = "system";
     public long CreatedAtMs { get; set; }
     public long UpdatedAtMs { get; set; }
@@ -152,7 +160,12 @@ public enum ReminderSaveError
 
 public sealed record SaveReminderCommand(
     ReminderDefinition Definition,
-    ReminderWriteMode WriteMode = ReminderWriteMode.CreateOnly);
+    ReminderWriteMode WriteMode = ReminderWriteMode.CreateOnly,
+    ReminderAudienceAuthorizationContext? Authorization = null);
+
+public sealed record ReminderAudienceAuthorizationContext(
+    TrustAudience? SourceAudience,
+    string? SourceDescription = null);
 
 /// <summary>
 /// Permanently deletes a reminder definition and cancels any active schedule.
@@ -197,7 +210,8 @@ public sealed record ReminderInfo(
     string? SessionId,
     string? ReportToChannel,
     string? ReportToThreadTs,
-    string? AgentDefinitionId);
+    string? AgentDefinitionId,
+    TrustAudience? Audience);
 
 // ── Internal messages ──
 

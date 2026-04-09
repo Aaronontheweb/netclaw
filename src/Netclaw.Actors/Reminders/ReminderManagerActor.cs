@@ -19,6 +19,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
 
     private readonly ReminderConfig _config;
     private readonly ISessionPipeline _pipeline;
+    private readonly EffectivePolicyDefaults _defaults;
     private readonly TimeProvider _timeProvider;
     private readonly ReminderDefinitionStore _definitionStore;
     private readonly ReminderHistoryStore _historyStore;
@@ -34,6 +35,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     public ReminderManagerActor(
         ReminderConfig config,
         ISessionPipeline pipeline,
+        EffectivePolicyDefaults defaults,
         TimeProvider timeProvider,
         ReminderDefinitionStore definitionStore,
         ReminderHistoryStore historyStore,
@@ -41,6 +43,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     {
         _config = config;
         _pipeline = pipeline;
+        _defaults = defaults;
         _timeProvider = timeProvider;
         _definitionStore = definitionStore;
         _historyStore = historyStore;
@@ -73,6 +76,15 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     private async Task HandleSaveAsync(SaveReminderCommand cmd)
     {
         var replyTo = Sender;
+
+        static ReminderSavedResponse ValidationFailure(ReminderId id, string title, string message)
+            => new(
+                id,
+                title,
+                Success: false,
+                NextFire: null,
+                Error: ReminderSaveError.Validation,
+                ErrorMessage: message);
 
         if (cmd.Definition is null)
         {
@@ -129,10 +141,18 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         }
 
         var now = _timeProvider.GetUtcNow();
+        var authorization = ValidateRequestedAudience(cmd.Definition.Audience, cmd.Authorization);
+        if (!authorization.IsSuccess)
+        {
+            replyTo.Tell(ValidationFailure(id, title, authorization.ErrorMessage!));
+            return;
+        }
+
         var normalized = cmd.Definition with
         {
             Id = id.Value,
             Title = title,
+            Audience = authorization.EffectiveAudience,
             CreatedBy = string.IsNullOrWhiteSpace(cmd.Definition.CreatedBy)
                 ? "system"
                 : cmd.Definition.CreatedBy
@@ -192,6 +212,30 @@ public sealed partial class ReminderManagerActor : ReceiveActor
             normalized.Title,
             Success: true,
             NextFire: nextFire));
+    }
+
+    private static ReminderAudienceAuthorizationResult ValidateRequestedAudience(
+        TrustAudience? requestedAudience,
+        ReminderAudienceAuthorizationContext? authorization)
+    {
+        if (authorization?.SourceAudience is not { } sourceAudience)
+        {
+            return ReminderAudienceAuthorizationResult.Fail(
+                "Reminder audience authorization context is required.");
+        }
+
+        var effectiveAudience = requestedAudience ?? sourceAudience;
+        if (effectiveAudience > sourceAudience)
+        {
+            var sourceDescription = string.IsNullOrWhiteSpace(authorization.SourceDescription)
+                ? sourceAudience.ToWireValue()
+                : authorization.SourceDescription;
+
+            return ReminderAudienceAuthorizationResult.Fail(
+                $"Requested audience '{effectiveAudience.ToWireValue()}' exceeds creator authority '{sourceDescription}' ({sourceAudience.ToWireValue()}).");
+        }
+
+        return ReminderAudienceAuthorizationResult.Success(effectiveAudience);
     }
 
     private async Task HandleCancelAsync(CancelReminderCommand cmd)
@@ -740,7 +784,8 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         SessionId: d.SessionId,
         ReportToChannel: d.ReportToChannel,
         ReportToThreadTs: d.ReportToThreadTs,
-        AgentDefinitionId: d.AgentDefinitionId);
+        AgentDefinitionId: d.AgentDefinitionId,
+        Audience: d.Audience);
 
     private static string SanitizeActorName(string raw)
     {
@@ -765,6 +810,15 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     {
         public static ScheduleAttempt Ok(DateTimeOffset? nextFire) => new(true, nextFire, null);
         public static ScheduleAttempt Fail(string message) => new(false, null, message);
+    }
+
+    private sealed record ReminderAudienceAuthorizationResult(bool IsSuccess, TrustAudience? EffectiveAudience, string? ErrorMessage)
+    {
+        public static ReminderAudienceAuthorizationResult Success(TrustAudience effectiveAudience)
+            => new(true, effectiveAudience, null);
+
+        public static ReminderAudienceAuthorizationResult Fail(string errorMessage)
+            => new(false, null, errorMessage);
     }
 
     internal sealed record ReconcileReminders

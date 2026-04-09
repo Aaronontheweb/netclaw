@@ -93,15 +93,18 @@ internal sealed class ReminderExecutionActor : ReceiveActor
                 : new SessionId($"reminder/{_definition.Id}/{_timeProvider.GetUtcNow().ToUnixTimeMilliseconds()}");
 
             _sessionIdValue = sessionId.Value;
+            if (_definition.Audience is not { } audience)
+                throw new InvalidOperationException($"Reminder '{_definition.Id}' is missing a persisted execution audience.");
+
             _log.Info(
-                $"ReminderExecution Initialized: execution_id={_executionId} reminder_id={_definition.Id} session_id={sessionId.Value}");
+                $"ReminderExecution Initialized: execution_id={_executionId} reminder_id={_definition.Id} session_id={sessionId.Value} audience={audience} source=stored-definition");
 
             _materializer = Context.Materializer(namePrefix: "reminder-exec");
 
             var materialized = await _pipeline.CreateAsync(sessionId, new SessionPipelineOptions
             {
                 ChannelType = Channels.ChannelType.Reminder,
-                DefaultAudience = TrustAudience.Team,
+                DefaultAudience = audience,
                 DefaultBoundary = SecurityPolicyDefaults.LocalDaemonBoundary,
                 DefaultPrincipal = PrincipalClassification.VerifiedAutomation,
                 DefaultProvenance = new SourceProvenance

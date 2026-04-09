@@ -1108,6 +1108,17 @@ static void MapReminderEndpoints(WebApplication app)
     var reminders = app.MapGroup("/api/reminders")
         .RequireAuthorization();
 
+    static ReminderAudienceAuthorizationContext? ResolveReminderAuthorizationContext(ClaimsPrincipalMapper mapper, HttpContext httpContext)
+    {
+        var identity = mapper.Map(httpContext.User);
+        if (identity.Principal is not PrincipalClassification.Operator)
+            return null;
+
+        return new ReminderAudienceAuthorizationContext(
+            TrustAudience.Personal,
+            $"{identity.Principal}/{identity.Transport}");
+    }
+
     reminders.MapGet("", async (
         Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
         CancellationToken ct) =>
@@ -1122,6 +1133,7 @@ static void MapReminderEndpoints(WebApplication app)
             enabled = r.Enabled,
             schedule = Netclaw.Actors.Reminders.ListRemindersTool.DescribeSchedule(r.Schedule),
             nextFire = Netclaw.Actors.Reminders.SetReminderTool.FormatNextFire(r.NextFire),
+            audience = r.Audience?.ToWireValue(),
         });
         return Results.Ok(projected);
     });
@@ -1130,11 +1142,14 @@ static void MapReminderEndpoints(WebApplication app)
         CreateReminderRequest request,
         Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
         IServiceProvider serviceProvider,
+        ClaimsPrincipalMapper mapper,
+        HttpContext httpContext,
         TimeProvider timeProvider,
         ReminderConfig reminderConfig,
         CancellationToken ct) =>
     {
         var manager = await actor.GetAsync(ct);
+        var authorization = ResolveReminderAuthorizationContext(mapper, httpContext);
 
         string? reportToChannel = request.ReportToChannel;
         string? notifyInstructions = request.NotifyInstructions;
@@ -1169,6 +1184,9 @@ static void MapReminderEndpoints(WebApplication app)
             : Netclaw.Actors.Reminders.ReminderIdGenerator.Generate(request.Name).Value;
 
         var tool = new Netclaw.Actors.Reminders.SetReminderTool(manager, timeProvider, reminderConfig);
+        var toolContext = new Netclaw.Tools.ToolExecutionContext(sessionId: null, sessionDirectory: null);
+        toolContext.Audience = authorization?.SourceAudience?.ToWireValue();
+        toolContext.ChannelType = "manual";
         var result = await tool.ExecuteAsync(
             new Dictionary<string, object?>
             {
@@ -1179,8 +1197,9 @@ static void MapReminderEndpoints(WebApplication app)
                 ["Schedule"] = request.Schedule,
                 ["ReportToChannel"] = reportToChannel,
                 ["NotifyInstructions"] = notifyInstructions,
-                ["NotifyPolicy"] = request.NotifyPolicy
-            }, ct);
+                ["NotifyPolicy"] = request.NotifyPolicy,
+                ["Audience"] = request.Audience
+            }, toolContext, ct);
 
         return result.StartsWith("Error", StringComparison.Ordinal)
             ? Results.BadRequest(new { error = result })
@@ -1207,10 +1226,14 @@ static void MapReminderEndpoints(WebApplication app)
     reminders.MapPost("/import", async (
         ImportReminderRequest request,
         Akka.Hosting.IRequiredActor<Netclaw.Actors.Hosting.ReminderManagerActorKey> actor,
+        ClaimsPrincipalMapper mapper,
+        HttpContext httpContext,
         CancellationToken ct) =>
     {
         if (request.Definition is null)
             return Results.BadRequest(new { error = "Reminder definition is required." });
+
+        var authorization = ResolveReminderAuthorizationContext(mapper, httpContext);
 
         var mode = request.WriteMode?.Trim().ToLowerInvariant() switch
         {
@@ -1225,7 +1248,7 @@ static void MapReminderEndpoints(WebApplication app)
 
         var manager = await actor.GetAsync(ct);
         var response = await manager.Ask<ReminderSavedResponse>(
-            new SaveReminderCommand(request.Definition, mode.Value),
+            new SaveReminderCommand(request.Definition, mode.Value, authorization),
             TimeSpan.FromSeconds(10),
             ct);
 
@@ -1330,6 +1353,7 @@ static void MapReminderEndpoints(WebApplication app)
             notifyPolicy = r.NotifyPolicy.ToString().ToLowerInvariant(),
             sessionId = r.SessionId,
             reportToChannel = r.ReportToChannel,
+            audience = r.Audience?.ToWireValue(),
         });
     });
 
@@ -1376,6 +1400,7 @@ sealed record CreateReminderRequest
     public string? ReportTarget { get; init; }
     public string? NotifyInstructions { get; init; }
     public string? NotifyPolicy { get; init; }
+    public string? Audience { get; init; }
 }
 
 sealed record ImportReminderRequest

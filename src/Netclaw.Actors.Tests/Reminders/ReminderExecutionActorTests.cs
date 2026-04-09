@@ -248,6 +248,7 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
                 Type = ReminderScheduleType.OneShot,
                 FireAt = now.AddHours(1)
             },
+            Audience = TrustAudience.Team,
             Enabled = true,
             CreatedBy = "test",
             CreatedAt = now,
@@ -261,7 +262,11 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
     /// </summary>
     private sealed class ParentProxy : ReceiveActor
     {
-        public ParentProxy(IActorRef probe, ReminderDefinition definition, ISessionPipeline pipeline, ReminderHistoryStore historyStore)
+        public ParentProxy(
+            IActorRef probe,
+            ReminderDefinition definition,
+            ISessionPipeline pipeline,
+            ReminderHistoryStore historyStore)
         {
             var executionId = Guid.NewGuid();
             Context.ActorOf(
@@ -318,6 +323,81 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
 
         public Task SendFeedbackAsync(IWithSessionId feedback, CancellationToken ct = default) =>
             Task.CompletedTask;
+    }
+
+    // ── Audience resolution tests ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task Execution_uses_definition_audience_when_set()
+    {
+        var pipeline = new ScriptedSessionPipeline(sessionId =>
+        [
+            new TurnCompleted { SessionId = sessionId, TurnNumber = 1 }
+        ]);
+
+        var definition = CreateDefinition("audience-override") with
+        {
+            Audience = TrustAudience.Personal,
+            NotifyInstructions = string.Empty
+        };
+        var probe = CreateTestProbe();
+        Sys.ActorOf(
+            Props.Create(() => new ParentProxy(probe.Ref, definition, pipeline, _historyStore)),
+            "exec-audience-override");
+
+        await probe.ExpectMsgAsync<ReminderExecutionCompleted>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.NotNull(pipeline.CapturedOptions);
+        Assert.Equal(TrustAudience.Personal, pipeline.CapturedOptions!.DefaultAudience);
+    }
+
+    [Fact]
+    public async Task Execution_fails_when_definition_audience_missing()
+    {
+        var pipeline = new ScriptedSessionPipeline(sessionId =>
+        [
+            new TurnCompleted { SessionId = sessionId, TurnNumber = 1 }
+        ]);
+
+        var definition = CreateDefinition("audience-fallback") with
+        {
+            NotifyInstructions = string.Empty,
+            Audience = null
+        };
+        var probe = CreateTestProbe();
+        Sys.ActorOf(
+            Props.Create(() => new ParentProxy(probe.Ref, definition, pipeline, _historyStore)),
+            "exec-audience-fallback");
+
+        var completed = await probe.ExpectMsgAsync<ReminderExecutionCompleted>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.False(completed.Success);
+        Assert.Contains("missing a persisted execution audience", completed.ErrorMessage);
+        Assert.Null(pipeline.CapturedOptions);
+    }
+
+    [Fact]
+    public async Task Execution_uses_stored_audience_directly()
+    {
+        var pipeline = new ScriptedSessionPipeline(sessionId =>
+        [
+            new TurnCompleted { SessionId = sessionId, TurnNumber = 1 }
+        ]);
+
+        var definition = CreateDefinition("audience-team-default") with
+        {
+            NotifyInstructions = string.Empty,
+            Audience = TrustAudience.Team
+        };
+        var probe = CreateTestProbe();
+        Sys.ActorOf(
+            Props.Create(() => new ParentProxy(probe.Ref, definition, pipeline, _historyStore)),
+            "exec-audience-team-default");
+
+        await probe.ExpectMsgAsync<ReminderExecutionCompleted>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.NotNull(pipeline.CapturedOptions);
+        Assert.Equal(TrustAudience.Team, pipeline.CapturedOptions!.DefaultAudience);
     }
 
     // ── History integration tests ─────────────────────────────────────────────
