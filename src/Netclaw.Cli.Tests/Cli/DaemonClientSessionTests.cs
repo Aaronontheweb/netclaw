@@ -53,6 +53,36 @@ public sealed class DaemonClientSessionTests
         await outputReceived.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
     }
 
+    [Fact]
+    public async Task RespondToInteractionAsync_invokes_hub_method()
+    {
+        var port = GetFreeTcpPort();
+        using var host = await StartFakeHubAsync(port);
+        var state = host.Services.GetRequiredService<FakeSessionState>();
+
+        await using var client = new DaemonClient($"http://127.0.0.1:{port}");
+        await client.CreateSessionAsync(Netclaw.Actors.Channels.ChannelType.Tui, TestContext.Current.CancellationToken);
+
+        await client.RespondToInteractionAsync("call-1", ApprovalOptionKeys.ApproveOnce, TestContext.Current.CancellationToken);
+
+        Assert.Equal(("call-1", ApprovalOptionKeys.ApproveOnce), state.LastInteractionResponse);
+    }
+
+    [Fact]
+    public async Task RespondToInteractionAsync_supports_session_scope()
+    {
+        var port = GetFreeTcpPort();
+        using var host = await StartFakeHubAsync(port);
+        var state = host.Services.GetRequiredService<FakeSessionState>();
+
+        await using var client = new DaemonClient($"http://127.0.0.1:{port}");
+        await client.CreateSessionAsync(Netclaw.Actors.Channels.ChannelType.Tui, TestContext.Current.CancellationToken);
+
+        await client.RespondToInteractionAsync("call-2", ApprovalOptionKeys.ApproveSession, TestContext.Current.CancellationToken);
+
+        Assert.Equal(("call-2", ApprovalOptionKeys.ApproveSession), state.LastInteractionResponse);
+    }
+
     private static async Task<IHost> StartFakeHubAsync(int port)
     {
         var builder = WebApplication.CreateBuilder();
@@ -78,6 +108,7 @@ public sealed class DaemonClientSessionTests
         private readonly object _gate = new();
         private readonly HashSet<string> _sessions = [];
         private readonly Dictionary<string, string> _connectionSessions = new();
+        public (string CallId, string SelectedKey)? LastInteractionResponse { get; private set; }
 
         public SessionEnsureResultDto Ensure(string connectionId, string? sessionId)
         {
@@ -99,6 +130,14 @@ public sealed class DaemonClientSessionTests
         public bool IsAttached(string connectionId, string sessionId)
             => _connectionSessions.TryGetValue(connectionId, out var attached)
                && string.Equals(attached, sessionId, StringComparison.Ordinal);
+
+        public void RecordInteractionResponse(string callId, string selectedKey)
+        {
+            lock (_gate)
+            {
+                LastInteractionResponse = (callId, selectedKey);
+            }
+        }
 
         public void Disconnect(string connectionId)
         {
@@ -141,6 +180,15 @@ public sealed class DaemonClientSessionTests
                 TimestampMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
                 TurnNumber = 1
             });
+        }
+
+        public Task RespondToInteraction(string sessionId, string callId, string selectedKey)
+        {
+            if (!_state.IsAttached(Context.ConnectionId, sessionId))
+                throw new HubException("session not attached");
+
+            _state.RecordInteractionResponse(callId, selectedKey);
+            return Task.CompletedTask;
         }
 
         public override Task OnDisconnectedAsync(Exception? exception)

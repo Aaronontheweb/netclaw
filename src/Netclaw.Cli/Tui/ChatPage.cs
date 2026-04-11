@@ -19,6 +19,9 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
 {
     private StreamingTextNode _chatHistory = null!;
     private TextAreaNode _promptInput = null!;
+    private SelectionListNode<string>? _approvalList;
+    private DynamicLayoutNode? _inputContentNode;
+    private readonly CompositeDisposable _inputSubs = new();
 
     private int _nextSegmentId = 1;
 
@@ -71,7 +74,11 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
 
         // Route bracketed paste events directly to the text input node
         ViewModel.Input.OfType<IInputEvent, PasteEvent>()
-            .Subscribe(paste => _promptInput.HandlePaste(paste))
+            .Subscribe(paste =>
+            {
+                if (!ViewModel.HasPendingInteraction)
+                    _promptInput.HandlePaste(paste);
+            })
             .DisposeWith(Subscriptions);
 
         // Route mouse wheel scrolling to chat history
@@ -97,11 +104,51 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                     .WithTitle("Input")
                     .WithBorder(BorderStyle.Rounded)
                     .WithBorderColor(Color.Cyan)
-                    .WithContent(_promptInput)
+                    .WithContent(BuildInputContent())
                     .HeightAuto(min: 3, max: 10))
             // Status bar
             .WithChild(
                 BuildStatusBar());
+    }
+
+    private ILayoutNode BuildInputContent()
+    {
+        _inputContentNode = new DynamicLayoutNode(() =>
+        {
+            _inputSubs.Clear();
+
+            if (!ViewModel.HasPendingInteraction)
+            {
+                _promptInput.OnFocused();
+                return _promptInput;
+            }
+
+            var items = ViewModel.ApprovalOptions.ToList();
+            _approvalList = Layouts.SelectionList(items)
+                .WithMode(SelectionMode.Single)
+                .WithHighlightColors(Color.Black, Color.Yellow);
+
+            _approvalList.SelectionConfirmed
+                .Subscribe(selected =>
+                {
+                    if (selected.Count > 0)
+                        _ = ViewModel.SubmitInteractionOptionAsync(selected[0]);
+                })
+                .DisposeWith(_inputSubs);
+
+            _approvalList.OnFocused();
+
+            return Layouts.Vertical()
+                .WithChild(new TextNode(ViewModel.GetApprovalPrompt()).WithForeground(Color.Yellow))
+                .WithChild(new TextNode(ViewModel.GetApprovalHint() ?? string.Empty).WithForeground(Color.Gray))
+                .WithChild(_approvalList);
+        });
+
+        ViewModel.UiVersion
+            .Subscribe(_ => _inputContentNode.Invalidate())
+            .DisposeWith(Subscriptions);
+
+        return _inputContentNode;
     }
 
     private LayoutNode BuildStatusBar()
@@ -113,7 +160,9 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 ViewModel.UsageDisplay,
                 (isGenerating, isInputEnabled, status, usage) =>
                 {
-                    var keys = isGenerating
+                    var keys = ViewModel.HasPendingInteraction
+                        ? "[Up/Down] Select  [Enter] Confirm  [PgUp/PgDn/Wheel] Scroll  [Ctrl+Q] Quit"
+                        : isGenerating
                         ? "[Ctrl+Q] Quit"
                         : "[Enter] Send  [Ctrl+Enter] Newline  [PgUp/PgDn/Wheel] Scroll  [Ctrl+Q] Quit";
 
@@ -170,6 +219,12 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
             return;
 
         // Everything else goes to the text area
+        if (ViewModel.HasPendingInteraction)
+        {
+            _approvalList?.HandleInput(keyInfo);
+            return;
+        }
+
         _promptInput.HandleInput(keyInfo);
     }
 
@@ -291,6 +346,16 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
             case ErrorOutput msg:
                 RemoveThinkingSpinner();
                 _chatHistory.AppendLine($"  [error] {msg.Message}", Color.Red);
+                break;
+
+            case ToolInteractionRequest msg:
+                RemoveThinkingSpinner();
+                _chatHistory.AppendLine($"System: Approval required for {msg.ToolName}", Color.Yellow);
+                _chatHistory.AppendLine($"  {msg.DisplayText}", Color.White);
+                if (msg.Patterns.Count > 0)
+                    _chatHistory.AppendLine($"  Patterns: {string.Join(", ", msg.Patterns)}", Color.BrightBlack);
+                _chatHistory.AppendLine("  Choose Approve once, Approve for this chat, Approve always, or Deny below.", Color.Yellow);
+                _chatHistory.ScrollToBottom();
                 break;
 
             case TurnCompleted:

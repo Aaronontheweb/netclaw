@@ -21,7 +21,8 @@ public sealed class SecurityPostureStepViewModel : IWizardStepViewModel
     public int SubStepCount => 1;
 
     public string GetHelpText() =>
-        "  This sets the default trust level. You can override per-channel in the Channels step.";
+        "  This sets the default trust level. You can override per-channel in the Channels step.\n" +
+        "  Personal mode enables shell with approval gates — commands require user sign-off on first use.";
 
     public bool TryAdvance()
     {
@@ -60,10 +61,25 @@ public sealed class SecurityPostureStepViewModel : IWizardStepViewModel
             ShellExecutionMode = shellMode
         };
 
+        var profiles = ToolAudienceProfileDefaults.CreateProfiles();
+
+        // Personal posture: enable approval gates for shell by default.
+        // The operator can override this in config if they want unrestricted shell.
+        if (posture == DeploymentPosture.Personal)
+        {
+            profiles.Personal.ApprovalPolicy = new ToolApprovalConfig
+            {
+                ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
+                {
+                    ["shell_execute"] = ToolApprovalMode.Approval
+                }
+            };
+        }
+
         builder.Tools = new ToolConfig
         {
             ShellMode = shellMode,
-            AudienceProfiles = ToolAudienceProfileDefaults.CreateProfiles()
+            AudienceProfiles = profiles
         };
     }
 

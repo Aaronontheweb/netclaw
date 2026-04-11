@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 
 namespace Netclaw.Cli.Doctor;
@@ -84,6 +85,14 @@ public sealed class ToolAudienceProfilesDoctorCheck(NetclawPaths paths) : IDocto
                 warnings.Add("Personal profile also enables host shell, which has a high blast radius.");
         }
 
+        CheckMissingPersonalShellApproval(toolConfig, warnings);
+
+        // Advisory: approval mode configured but shell is off
+        CheckApprovalMismatch(toolConfig, warnings);
+
+        // Advisory: stale patterns in tool-approvals.json
+        CheckStaleApprovals(toolConfig, paths, warnings);
+
         // Advisory: MCP servers allowed by any audience but with no McpServerToolGrants
         var ungatedServers = FindUngatedMcpServers(toolConfig.AudienceProfiles, mcpServers);
         if (ungatedServers.Count > 0)
@@ -166,5 +175,85 @@ public sealed class ToolAudienceProfilesDoctorCheck(NetclawPaths paths) : IDocto
         }
 
         return allowedServers.Except(grantedServers, StringComparer.OrdinalIgnoreCase).Order().ToList();
+    }
+
+    private static void CheckApprovalMismatch(ToolConfig toolConfig, List<string> warnings)
+    {
+        var profiles = new (string Name, ToolAudienceProfile Profile)[]
+        {
+            ("personal", toolConfig.AudienceProfiles.Personal),
+            ("team", toolConfig.AudienceProfiles.Team),
+            ("public", toolConfig.AudienceProfiles.Public)
+        };
+
+        foreach (var (name, profile) in profiles)
+        {
+            if (profile.ApprovalPolicy is null)
+                continue;
+
+            var shellOverride = profile.ApprovalPolicy.GetEffectiveMode(ShellTool.ToolName);
+            if (shellOverride == ToolApprovalMode.Approval && toolConfig.ShellMode == ShellExecutionMode.Off)
+            {
+                warnings.Add(
+                    $"{name} profile has shell_execute in Approval mode but ShellMode is Off — " +
+                    "approval config has no effect.");
+            }
+        }
+    }
+
+    private static void CheckMissingPersonalShellApproval(ToolConfig toolConfig, List<string> warnings)
+    {
+        if (toolConfig.ShellMode != ShellExecutionMode.HostAllowed)
+            return;
+
+        var personal = toolConfig.AudienceProfiles.Personal;
+        if (!PersonalProfileAllowsShell(personal))
+            return;
+
+        var approvalMode = personal.ApprovalPolicy?.GetEffectiveMode(ShellTool.ToolName) ?? ToolApprovalMode.Auto;
+        if (approvalMode is ToolApprovalMode.Approval or ToolApprovalMode.Deny)
+            return;
+
+        warnings.Add(
+            "Personal profile enables host shell without an explicit shell_execute approval gate. " +
+            "Run `netclaw init` again or set Tools.AudienceProfiles.Personal.ApprovalPolicy.ToolOverrides.shell_execute to Approval.");
+    }
+
+    private static bool PersonalProfileAllowsShell(ToolAudienceProfile profile)
+    {
+        if (profile.ToolsMode == ToolProfileMode.All)
+            return true;
+
+        return profile.AllowedTools.Contains(ShellTool.ToolName, StringComparer.Ordinal);
+    }
+
+    private static void CheckStaleApprovals(ToolConfig toolConfig, NetclawPaths netclawPaths, List<string> warnings)
+    {
+        var approvalsPath = netclawPaths.ToolApprovalsPath;
+        if (!File.Exists(approvalsPath))
+            return;
+
+        if (toolConfig.ShellMode != ShellExecutionMode.Off)
+            return;
+
+        try
+        {
+            var store = new ToolApprovalStore(approvalsPath);
+            var data = store.Load();
+
+            foreach (var (audienceKey, tools) in data.Audiences)
+            {
+                if (tools.ContainsKey(ShellTool.ToolName))
+                {
+                    warnings.Add(
+                        $"Persistent approvals exist for {audienceKey}.{ShellTool.ToolName} " +
+                        "but shell is disabled.");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"Could not read tool-approvals.json: {ex.Message}");
+        }
     }
 }

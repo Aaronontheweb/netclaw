@@ -1,13 +1,15 @@
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Channels;
 using Netclaw.Configuration;
+using SlackNet.Blocks;
 
 namespace Netclaw.Channels.Slack;
 
 public enum SlackInboundKind
 {
     Message,
-    AppMention
+    AppMention,
+    BlockAction
 }
 
 public sealed record SlackFileReference(
@@ -48,7 +50,8 @@ public sealed record SlackThreadInbound(
 public sealed record SlackPostMessage(
     SlackChannelId ChannelId,
     SlackThreadTs ThreadTs,
-    string Text);
+    string Text,
+    IReadOnlyList<Block>? Blocks = null);
 
 /// <summary>
 /// Sent to the gateway to wire up the actor hierarchy for a proactively-created thread.
@@ -65,3 +68,16 @@ public sealed record StartProactiveThread(
 /// Returned by <see cref="SlackThreadBindingActor"/> in response to <see cref="StartProactiveThread"/>.
 /// </summary>
 public sealed record ProactiveThreadAck(SessionId SessionId);
+
+/// <summary>
+/// Routes a tool approval response from the Slack Block Kit button handler
+/// back into the Slack actor hierarchy so the thread actor can enforce
+/// requester checks and clear pending approval state consistently.
+/// </summary>
+public sealed record SlackApprovalResponse(
+    SlackChannelId ChannelId,
+    SlackThreadTs ThreadTs,
+    string CallId,
+    string SelectedKey,
+    string SenderId,
+    string? RequesterSenderId = null);

@@ -37,6 +37,13 @@ public sealed class ToolAudienceProfile
     public ToolFilesystemAccessProfile ReadFiles { get; set; } = new();
     public ToolFilesystemAccessProfile WriteFiles { get; set; } = new();
     public ToolFilesystemAccessProfile AttachFiles { get; set; } = new();
+
+    /// <summary>
+    /// Per-audience approval gate configuration. When set, tools listed in
+    /// <see cref="ToolApprovalConfig.ToolOverrides"/> require interactive user
+    /// approval before execution. Null means no approval gates (all tools auto-approved).
+    /// </summary>
+    public ToolApprovalConfig? ApprovalPolicy { get; set; }
 }
 
 public sealed class ToolAudienceProfiles

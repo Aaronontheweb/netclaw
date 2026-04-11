@@ -296,3 +296,41 @@ public sealed record CompactionOutput : SessionOutput
     /// </summary>
     public int KeepCountUsed { get; init; }
 }
+
+/// <summary>
+/// A tool requires interactive user input before it can proceed.
+/// Lifecycle — always delivered regardless of <see cref="OutputFilter"/>.
+/// Channels MUST render this as a structured interaction (buttons, prompts, etc.)
+/// and route the user's response back as a <see cref="ToolInteractionResponse"/>.
+/// </summary>
+public sealed record ToolInteractionRequest : SessionOutput
+{
+    /// <summary>The kind of interaction requested. "approval" for tool approval gates.</summary>
+    public required string Kind { get; init; }
+
+    /// <summary>The tool call ID that triggered this interaction.</summary>
+    public required string CallId { get; init; }
+
+    /// <summary>The tool that requires interaction.</summary>
+    public required string ToolName { get; init; }
+
+    /// <summary>Human-readable description of what the tool wants to do.</summary>
+    public required string DisplayText { get; init; }
+
+    /// <summary>
+    /// Identity of the user who initiated the turn that triggered this request.
+    /// Channels can use this to ensure responses are routed for the correct user.
+    /// </summary>
+    public string? RequesterSenderId { get; init; }
+
+    /// <summary>Patterns requiring approval (for shell: verb chains like "git push").</summary>
+    public IReadOnlyList<string> Patterns { get; init; } = [];
+
+    /// <summary>Available response options (e.g., approve once, approve for this chat, approve always, deny).</summary>
+    public required IReadOnlyList<ToolInteractionOption> Options { get; init; }
+}
+
+/// <summary>
+/// An option presented to the user in a <see cref="ToolInteractionRequest"/>.
+/// </summary>
+public sealed record ToolInteractionOption(string Key, string Label);

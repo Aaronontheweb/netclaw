@@ -56,6 +56,19 @@ public sealed class SlackGatewayActor : ReceiveActor
             _log.Debug("Routing proactive thread to conversation {0}", message.ChannelId);
             conversation.Forward(message);
         });
+
+        Receive<SlackApprovalResponse>(message =>
+        {
+            var actorName = Uri.EscapeDataString(message.ChannelId.Value);
+            var conversationProps = _dependencies.ConversationPropsFactory?.Invoke(message.ChannelId, _dependencies)
+                ?? SlackConversationActor.CreateProps(message.ChannelId, _dependencies);
+            var conversation = Context.Child(actorName)
+                .GetOrElse(() => Context.ActorOf(conversationProps, actorName));
+
+            _log.Info("Routing Slack approval response for channel {0} thread={1} call={2}",
+                message.ChannelId, message.ThreadTs, message.CallId);
+            conversation.Forward(message);
+        });
     }
 
     public static Props CreateProps(SlackGatewayDependencies dependencies) =>

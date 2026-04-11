@@ -30,6 +30,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
     private bool _postedThisTurn;
     private bool _uploadedFileThisTurn;
     private PostResult? _lastFailedPost;
+    private readonly List<PendingApprovalRequest> _pendingApprovalRequests = [];
 
     private ActorMaterializer? _materializer;
     private MaterializedSession? _session;
@@ -121,6 +122,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
     private void Active()
     {
         CommandAsync<SlackThreadInbound>(HandleInboundAsync);
+        CommandAsync<SlackApprovalResponse>(HandleApprovalResponseAsync);
         CommandAsync<StartProactiveThread>(HandleProactiveThreadAsync);
         CommandAsync<ThreadOutput>(HandleOutputAsync);
         Command<OutputStreamTerminated>(msg =>
@@ -138,6 +140,12 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         CommandAsync<ReinitializePipeline>(async msg => await ReinitializePipelineAsync(msg.Reason));
         Command<ReceiveTimeout>(_ =>
         {
+            if (_pendingApprovalRequests.Count > 0)
+            {
+                _log.Info("Slack thread idle but {0} approval(s) are pending; deferring passivation", _pendingApprovalRequests.Count);
+                return;
+            }
+
             _log.Info("Slack thread idle for 1 hour, passivating");
             Context.Stop(Self);
         });
@@ -165,6 +173,14 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
                 message.Files?.Count ?? 0);
 
             var currentTs = new SlackEventId(message.EventId.Value).TryGetEventTs();
+
+            if (!string.IsNullOrWhiteSpace(message.Text)
+                && ToolInteractionResponseParser.TryParseApprovalResponse(message.Text, out var selectedKey)
+                && selectedKey is not null
+                && await TryHandleApprovalResponseAsync(message, selectedKey))
+            {
+                return;
+            }
 
             if (!string.IsNullOrWhiteSpace(message.Text))
             {
@@ -423,7 +439,13 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             if (itemTs.CompareTo(triggerTs) >= 0)
                 continue;
 
-            if (cursor is { } c && itemTs.CompareTo(c) <= 0)
+            // Keep the cursor event itself during fresh-runtime hydration.
+            // If the daemon restarts while a turn is still in-flight, the
+            // session actor may recover with no completed turns even though the
+            // cursor already advanced to the last inbound user message.
+            // Including ts == cursor prevents that newest pre-restart user turn
+            // from being dropped from rebuilt context.
+            if (cursor is { } c && itemTs.CompareTo(c) < 0)
                 continue;
 
             candidates.Add(item);
@@ -695,6 +717,24 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             // BufferFlush and TextDeltaOutput are not received — Slack subscribes
             // to OutputFilter.Text (final assembled text), not TextStreaming.
 
+            case ToolInteractionRequest interaction:
+                var pendingApproval = new PendingApprovalRequest(interaction);
+                _pendingApprovalRequests.Add(pendingApproval);
+                var promptMessageTs = await HandleApprovalRequestAsync(interaction);
+                if (promptMessageTs is not null)
+                {
+                    pendingApproval.PromptMessageTs = promptMessageTs;
+                }
+                else
+                {
+                    // Posting the approval prompt failed. Drop the pending entry and
+                    // route a deny back to the session so the blocked tool task can
+                    // unwind instead of waiting on the infinite-timeout TCS.
+                    _pendingApprovalRequests.Remove(pendingApproval);
+                    await SendApprovalDenyOnFailureAsync(interaction);
+                }
+                break;
+
             case ErrorOutput err:
                 var refId = err.CorrelationId.ToString("N")[..8];
                 var errorResult = await SafePostAsync($":warning: {err.Message} (ref: {refId})");
@@ -724,8 +764,99 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
                 _postedThisTurn = false;
                 _uploadedFileThisTurn = false;
                 _lastFailedPost = null;
+                _pendingApprovalRequests.Clear();
 
                 break;
+        }
+    }
+
+    private async Task<bool> TryHandleApprovalResponseAsync(SlackThreadInbound message, string selectedKey)
+    {
+        if (_pendingApprovalRequests.Count == 0)
+            return false;
+
+        var pendingIndex = _pendingApprovalRequests.FindIndex(request =>
+            string.IsNullOrWhiteSpace(request.Request.RequesterSenderId)
+            || string.Equals(request.Request.RequesterSenderId, message.SenderId, StringComparison.Ordinal));
+
+        if (pendingIndex < 0)
+        {
+            await SafePostAsync(":warning: Only the requesting user can approve this tool action.");
+            return true;
+        }
+
+        var pending = _pendingApprovalRequests[pendingIndex];
+
+        try
+        {
+            await _dependencies.Pipeline.SendFeedbackAsync(new ToolInteractionResponse
+            {
+                SessionId = _sessionId,
+                CallId = pending.Request.CallId,
+                SelectedKey = selectedKey,
+                SenderId = message.SenderId
+            });
+
+            _pendingApprovalRequests.RemoveAt(pendingIndex);
+
+            await TryResolveApprovalPromptAsync(pending, selectedKey, message.SenderId);
+
+            _log.Info(
+                "Recorded Slack approval response for call {CallId} sender={SenderId} selection={SelectedKey}",
+                pending.Request.CallId,
+                message.SenderId,
+                selectedKey);
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Failed to route Slack approval response for call {CallId}", pending.Request.CallId);
+        }
+
+        return true;
+    }
+
+    private async Task HandleApprovalResponseAsync(SlackApprovalResponse message)
+    {
+        if (_pendingApprovalRequests.Count == 0)
+            return;
+
+        var pendingIndex = _pendingApprovalRequests.FindIndex(request =>
+            string.Equals(request.Request.CallId, message.CallId, StringComparison.Ordinal));
+
+        if (pendingIndex < 0)
+            return;
+
+        var pending = _pendingApprovalRequests[pendingIndex];
+        if (!string.IsNullOrWhiteSpace(pending.Request.RequesterSenderId)
+            && !string.Equals(pending.Request.RequesterSenderId, message.SenderId, StringComparison.Ordinal))
+        {
+            await SafePostAsync(":warning: Only the requesting user can approve this tool action.");
+            return;
+        }
+
+        try
+        {
+            await _dependencies.Pipeline.SendFeedbackAsync(new ToolInteractionResponse
+            {
+                SessionId = _sessionId,
+                CallId = pending.Request.CallId,
+                SelectedKey = message.SelectedKey,
+                SenderId = message.SenderId
+            });
+
+            _pendingApprovalRequests.RemoveAt(pendingIndex);
+
+            await TryResolveApprovalPromptAsync(pending, message.SelectedKey, message.SenderId);
+
+            _log.Info(
+                "Recorded Slack button approval response for call {CallId} sender={SenderId} selection={SelectedKey}",
+                pending.Request.CallId,
+                message.SenderId,
+                message.SelectedKey);
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Failed to route Slack button approval response for call {CallId}", pending.Request.CallId);
         }
     }
 
@@ -794,6 +925,90 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         public bool ShouldNotifySession => FailureKind is not null;
     }
 
+    private async Task<string?> HandleApprovalRequestAsync(ToolInteractionRequest request)
+    {
+        try
+        {
+            var text = SlackApprovalBlockBuilder.BuildApprovalText(request);
+            var blocks = SlackApprovalBlockBuilder.BuildApprovalBlocks(request);
+
+            using var cts = new CancellationTokenSource(OperationTimeout);
+            var promptMessageTs = await _dependencies.ReplyClient.PostThreadReplyWithTsAsync(
+                new SlackPostMessage(_channelId, _threadTs, text, blocks),
+                cts.Token);
+
+            _log.Info("Posted approval request for tool {ToolName} call={CallId}",
+                request.ToolName, request.CallId);
+
+            return promptMessageTs;
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Failed to post approval request for {CallId}", request.CallId);
+            return null;
+        }
+    }
+
+    private async Task SendApprovalDenyOnFailureAsync(ToolInteractionRequest request)
+    {
+        _log.Warning(
+            "Auto-denying approval for {CallId} ({ToolName}) because the Slack prompt could not be posted",
+            request.CallId,
+            request.ToolName);
+
+        try
+        {
+            await _dependencies.Pipeline.SendFeedbackAsync(new ToolInteractionResponse
+            {
+                SessionId = _sessionId,
+                CallId = request.CallId,
+                SelectedKey = ApprovalOptionKeys.Deny,
+                SenderId = request.RequesterSenderId ?? string.Empty
+            });
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Failed to send auto-deny feedback for {CallId}", request.CallId);
+        }
+
+        await SafePostAsync(
+            $":warning: I couldn't post the approval prompt for `{request.ToolName}`. The action was automatically denied — please ask me to try again.");
+    }
+
+    private async Task TryResolveApprovalPromptAsync(PendingApprovalRequest pending, string selectedKey, string senderId)
+    {
+        if (string.IsNullOrWhiteSpace(pending.PromptMessageTs))
+            return;
+
+        try
+        {
+            var text = SlackApprovalBlockBuilder.BuildResolvedApprovalText(
+                pending.Request,
+                selectedKey,
+                senderId);
+            var blocks = SlackApprovalBlockBuilder.BuildResolvedApprovalBlocks(
+                pending.Request,
+                selectedKey,
+                senderId);
+
+            using var cts = new CancellationTokenSource(OperationTimeout);
+            await _dependencies.ReplyClient.UpdateThreadMessageAsync(
+                _channelId,
+                pending.PromptMessageTs,
+                text,
+                blocks,
+                cts.Token);
+        }
+        catch (Exception ex)
+        {
+            _log.Warning(
+                ex,
+                "Failed to update resolved approval prompt for call {CallId} messageTs={MessageTs}",
+                pending.Request.CallId,
+                pending.PromptMessageTs);
+        }
+    }
+
     private async Task<PostResult> SafeUploadFileAsync(FileOutput file)
     {
         var startedAt = _dependencies.TimeProvider.GetTimestamp();
@@ -841,6 +1056,13 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
     private sealed record ThreadOutput(SessionOutput Output);
     private sealed record OutputStreamTerminated(int Generation, Exception? Cause);
     private sealed record ReinitializePipeline(string Reason);
+    private sealed class PendingApprovalRequest(ToolInteractionRequest request)
+    {
+        public ToolInteractionRequest Request { get; } = request;
+
+        public string? PromptMessageTs { get; set; }
+    }
+
     private sealed record InitializePipeline
     {
         public static InitializePipeline Instance { get; } = new();

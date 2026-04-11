@@ -548,11 +548,18 @@ static void ConfigureDaemonServices(
     var toolPathPolicy = new ToolPathPolicy([paths.SecretsPath, paths.WebhooksDirectory, paths.KeysDirectory]);
     services.AddSingleton(toolPathPolicy);
 
-    var toolAccessPolicy = new ToolAccessPolicy(toolConfig, effectivePolicyDefaults);
+    var shellCommandPolicy = new ShellCommandPolicy(toolConfig.HardDenyPatterns);
+    services.AddSingleton(shellCommandPolicy);
+
+    var toolAccessPolicy = new ToolAccessPolicy(toolConfig, effectivePolicyDefaults, shellCommandPolicy);
     services.AddSingleton(toolAccessPolicy);
 
+    var toolApprovalStore = new ToolApprovalStore(paths.ToolApprovalsPath);
+    services.AddSingleton(toolApprovalStore);
+    services.AddSingleton<IToolApprovalService, AkkaToolApprovalService>();
+
     var toolRegistry = new ToolRegistry();
-    toolRegistry.WithFirstPartyTools(toolConfig, searchBackend, toolPathPolicy, toolAccessPolicy, paths, webhookRouteStore);
+    toolRegistry.WithFirstPartyTools(toolConfig, searchBackend, toolPathPolicy, shellCommandPolicy, toolAccessPolicy, paths, webhookRouteStore);
 
     // Skills system: seed built-in skills to .system/, register sync service
     CopyBuiltInSkills(paths.SystemSkillsDirectory);
@@ -624,6 +631,7 @@ static void ConfigureDaemonServices(
         new DispatchingToolExecutor(
             toolRegistry,
             toolAccessPolicy,
+            sp.GetService<IToolApprovalService>(),
             sp.GetRequiredService<ILogger<DispatchingToolExecutor>>()));
 
     // Operational notification webhooks
@@ -818,7 +826,8 @@ static void ConfigureDaemonServices(
         sp.GetRequiredService<ToolRegistry>(),
         sp.GetService<ToolAccessPolicy>(),
         sp.GetService<TrustContextDeriver>(),
-        sp.GetService<SkillRegistry>()));
+        sp.GetService<SkillRegistry>(),
+        sp.GetService<IToolApprovalService>()));
 
     services.AddSingleton(sp => new SessionMemoryServices(
         sp.GetService<IMemoryExtractor>() ?? NullMemoryExtractor.Instance,

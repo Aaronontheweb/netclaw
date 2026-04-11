@@ -15,6 +15,7 @@ using Netclaw.Actors.Sessions.Pipelines;
 using Netclaw.Actors.Text;
 using Netclaw.Configuration;
 using Netclaw.Actors.Tools;
+using Netclaw.Security;
 using Netclaw.Tools;
 using AiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -45,6 +46,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly IReadOnlyList<IContextLayerProvider> _contextLayers;
     private readonly IToolExecutor? _toolExecutor;
     private readonly IToolAuditLogger? _auditLogger;
+    private readonly IToolApprovalService? _approvalService;
+    private readonly ApprovalChannel _approvalChannel = new();
     private readonly IMemoryExtractor _memoryExtractor;
     private readonly IMemoryRecallCoordinator _memoryRecallCoordinator;
     private readonly IMemoryCheckpointSink _memoryCheckpointSink;
@@ -61,6 +64,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly List<SendUserMessage> _buffer = new();
     private readonly Dictionary<IActorRef, OutputFilter> _subscribers = new();
     private readonly List<AITool> _availableTools = new();
+    private readonly Dictionary<string, PendingToolInteraction> _pendingToolInteractions = new(StringComparer.Ordinal);
     private MessageSource? _currentTurnSource;
     private readonly ToolRegistry? _fullRegistry;
     private readonly ToolAccessPolicy? _toolAccessPolicy;
@@ -178,6 +182,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _toolExecutor = tools?.ToolExecutor;
         _auditLogger = tools?.AuditLogger;
         _toolAccessPolicy = tools?.AccessPolicy;
+        _approvalService = tools?.ApprovalService;
         _memoryExtractor = memory?.MemoryExtractor ?? NullMemoryExtractor.Instance;
         _memoryRecallCoordinator = memory?.RecallCoordinator ?? NullMemoryRecallCoordinator.Instance;
         _memoryCheckpointSink = memory?.CheckpointSink ?? NullMemoryCheckpointSink.Instance;
@@ -328,6 +333,14 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 _log.Info(
                     "Session idle but {SubscriberCount} subscriber(s) active; deferring passivation",
                     _subscribers.Count);
+                return;
+            }
+
+            if (_pendingToolInteractions.Count > 0)
+            {
+                _log.Info(
+                    "Session idle but {PendingApprovalCount} approval(s) are pending; deferring passivation",
+                    _pendingToolInteractions.Count);
                 return;
             }
 
@@ -651,6 +664,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             }
 
             // Fire follow-up LLM call with tool results in context
+            _pendingToolInteractions.Clear();
             TurnLog().Info("turn_tool_execution_complete iteration={Iteration} callCount={CallCount} max={Max} resultCount={ResultCount}",
                 _turnState.ToolIterationCount, _turnState.ToolCallCount, _config.MaxToolCallsPerTurn, msg.ToolResults.Count);
             FireLlmCall();
@@ -664,6 +678,78 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             const string errorMessage = "I encountered an error executing a tool. Please try again.";
             var category = msg.Cause is TimeoutException ? ErrorCategory.Timeout : ErrorCategory.ToolFailure;
             FailCurrentTurn(errorMessage, msg.Cause, category);
+        });
+
+        Command<ToolInteractionRequest>(msg =>
+        {
+            var audience = _currentTurnSource?.Audience
+                ?? SecurityPolicyDefaults.ResolveAudienceFromSessionId(_sessionId.Value);
+
+            _pendingToolInteractions[msg.CallId] = new PendingToolInteraction(
+                msg.ToolName,
+                msg.Patterns,
+                audience,
+                msg.RequesterSenderId);
+
+            PauseToolExecutionWatchdogForApprovalWait(msg.CallId);
+
+            EmitOutput(msg);
+        });
+
+        CommandAsync<ToolInteractionResponse>(async msg =>
+        {
+            if (!_pendingToolInteractions.TryGetValue(msg.CallId, out var pending))
+            {
+                _log.Warning("Ignoring tool interaction response for unknown call {CallId}", msg.CallId);
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(pending.RequesterSenderId)
+                && !string.Equals(pending.RequesterSenderId, msg.SenderId, StringComparison.Ordinal))
+            {
+                _log.Warning(
+                    "Ignoring tool interaction response for call {CallId} from sender {SenderId}; expected {ExpectedSenderId}",
+                    msg.CallId,
+                    msg.SenderId,
+                    pending.RequesterSenderId);
+
+                EmitOutput(new TextOutput
+                {
+                    SessionId = _sessionId,
+                    Text = "Approval response ignored: only the requesting user can approve this tool action."
+                }, OutputFilter.Text);
+                return;
+            }
+
+            var decision = msg.SelectedKey switch
+            {
+                ApprovalOptionKeys.ApproveOnce => ApprovalDecision.ApprovedOnce,
+                ApprovalOptionKeys.ApproveSession => ApprovalDecision.ApprovedSession,
+                ApprovalOptionKeys.ApproveAlways => ApprovalDecision.ApprovedAlways,
+                ApprovalOptionKeys.Deny => ApprovalDecision.Denied,
+                _ => ApprovalDecision.Denied
+            };
+
+            _log.Info("Approval response for {CallId}: {Decision}", msg.CallId, decision);
+
+            if (decision is ApprovalDecision.ApprovedSession or ApprovalDecision.ApprovedAlways
+                && _approvalService is not null)
+            {
+                await _approvalService.RecordApprovalAsync(
+                    _sessionId.Value,
+                    pending.Audience,
+                    pending.ToolName,
+                    pending.Patterns,
+                    persistent: decision == ApprovalDecision.ApprovedAlways,
+                    CancellationToken.None);
+            }
+
+            _pendingToolInteractions.Remove(msg.CallId);
+
+            ResumeToolExecutionWatchdogAfterApprovalWait();
+
+            // Complete the TCS so the blocked pipeline task can proceed
+            _approvalChannel.Complete(msg.CallId, decision);
         });
 
         Command<LlmCallFailed>(msg =>
@@ -1419,7 +1505,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 timeout: toolExecutionTimeout,
                 cancellationToken: ct);
 
-        _ = SessionToolExecutionPipeline.ExecuteToolsAsync(executor, toolCalls, sessionId, _currentTurnSource, auditLogger, tp, sessionDir, maxInlineToolResultChars, toolExecutionTimeout, self, emitSubAgentOutput, spawnChildActor);
+        _ = SessionToolExecutionPipeline.ExecuteToolsAsync(executor, toolCalls, sessionId, _currentTurnSource, auditLogger, tp, sessionDir, maxInlineToolResultChars, toolExecutionTimeout, self, emitSubAgentOutput, spawnChildActor,
+            approvalChannel: _approvalChannel,
+            emitApprovalRequest: request => self.Tell(request),
+            approvalTimeout: Timeout.InfiniteTimeSpan);
     }
 
     private void HandleTextResponse(
@@ -2378,9 +2467,34 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         }, OutputFilter.Usage);
     }
 
+    private void PauseToolExecutionWatchdogForApprovalWait(string callId)
+    {
+        if (!string.Equals(_watchdog.CurrentOperationName, "tool-execution", StringComparison.Ordinal))
+            return;
+
+        _watchdog.Stop(Timers);
+        _log.Info("Paused tool-execution watchdog while waiting for approval for call {CallId}", callId);
+    }
+
+    private void ResumeToolExecutionWatchdogAfterApprovalWait()
+    {
+        if (_pendingToolInteractions.Count > 0)
+            return;
+
+        if (_currentPhase != SessionPhase.Processing)
+            return;
+
+        if (_watchdog.CurrentOperationName is not null)
+            return;
+
+        _watchdog.Start("tool-execution", _config.ToolExecutionTimeout, Timers);
+        _log.Info("Resumed tool-execution watchdog after approval response");
+    }
+
     private void FailCurrentTurn(string errorMessage, Exception cause, ErrorCategory category = ErrorCategory.Unknown)
     {
         _deliveryRetry.Clear();
+        _pendingToolInteractions.Clear();
         Timers.Cancel(StreamingRetryTimerKey);
         _state = _state.AddErrorReply(errorMessage);
 
@@ -2423,6 +2537,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _logActor?.Tell(output);
         _observerActor?.Tell(output);
     }
+
+    private sealed record PendingToolInteraction(
+        string ToolName,
+        IReadOnlyList<string> Patterns,
+        TrustAudience Audience,
+        string? RequesterSenderId);
 
     private void BindTurnTelemetry(MessageSource? source)
     {

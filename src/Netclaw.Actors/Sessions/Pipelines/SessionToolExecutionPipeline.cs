@@ -3,6 +3,7 @@ using Akka.Actor;
 using Microsoft.Extensions.AI;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
+using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Tools;
@@ -37,12 +38,13 @@ internal static class SessionToolExecutionPipeline
         TimeSpan timeout,
         IActorRef self,
         Action<SubAgentOutput> emitSubAgentOutput,
-        Func<object, string, CancellationToken, Task<object>> spawnChildActor)
+        Func<object, string, CancellationToken, Task<object>> spawnChildActor,
+        IApprovalChannel? approvalChannel = null,
+        Action<ToolInteractionRequest>? emitApprovalRequest = null,
+        TimeSpan? approvalTimeout = null)
     {
         try
         {
-            using var cts = new CancellationTokenSource(timeout);
-
             // Execute all tool calls in parallel -- each is independent
             var tasks = toolCalls.Select(tc => ExecuteSingleToolAsync(
                 executor,
@@ -55,7 +57,11 @@ internal static class SessionToolExecutionPipeline
                 maxInlineToolResultChars,
                 emitSubAgentOutput,
                 spawnChildActor,
-                cts.Token));
+                timeout,
+                CancellationToken.None,
+                approvalChannel,
+                emitApprovalRequest,
+                approvalTimeout ?? TimeSpan.FromMinutes(5)));
             var results = await Task.WhenAll(tasks);
 
             var fileAttachments = results.SelectMany(r => r.FileAttachments).ToList();
@@ -70,6 +76,10 @@ internal static class SessionToolExecutionPipeline
                     .SelectMany(r => r.AcceptedSubAgentFindings)
                     .ToList()
             });
+        }
+        catch (TimeoutException ex)
+        {
+            self.Tell(new ToolExecutionFailed { Cause = ex });
         }
         catch (OperationCanceledException ex)
         {
@@ -97,7 +107,11 @@ internal static class SessionToolExecutionPipeline
         int maxInlineToolResultChars,
         Action<SubAgentOutput> emitSubAgentOutput,
         Func<object, string, CancellationToken, Task<object>> spawnChildActor,
-        CancellationToken ct)
+        TimeSpan timeout,
+        CancellationToken ct,
+        IApprovalChannel? approvalChannel = null,
+        Action<ToolInteractionRequest>? emitApprovalRequest = null,
+        TimeSpan? approvalTimeout = null)
     {
         var sw = Stopwatch.StartNew();
         string resultText;
@@ -105,6 +119,7 @@ internal static class SessionToolExecutionPipeline
         context.Audience = source is null ? null : source.Audience.ToWireValue();
         context.Boundary = source?.Boundary;
         context.ChannelType = source is null ? null : source.ChannelType.ToWireValue();
+        context.SupportsInteractiveApproval = source?.ChannelType.SupportsInteractiveApproval();
         context.SpawnChildActor = spawnChildActor;
         var completedRuns = new List<CompletedSubAgentRun>();
         var acceptedFindings = new List<AcceptedSubAgentFinding>();
@@ -178,7 +193,7 @@ internal static class SessionToolExecutionPipeline
         };
         try
         {
-            resultText = await executor.ExecuteAsync(tc, context, ct);
+            resultText = await ExecuteToolAttemptAsync(executor, tc, context, timeout, ct);
             sw.Stop();
 
             auditLogger?.Log(new ToolAuditEntry
@@ -188,6 +203,102 @@ internal static class SessionToolExecutionPipeline
                 CallId = tc.CallId,
                 Timestamp = timeProvider.GetUtcNow(),
                 Allowed = true,
+                Duration = sw.Elapsed
+            });
+        }
+        catch (ToolApprovalRequiredException approvalEx)
+            when (approvalChannel is not null && emitApprovalRequest is not null)
+        {
+            // Mid-turn approval pause: emit request to channel, block on TCS
+            var ctx = approvalEx.ApprovalContext;
+            var approvalWaitTimeout = approvalTimeout ?? Timeout.InfiniteTimeSpan;
+            var waitTask = approvalChannel.WaitForApprovalAsync(
+                tc.CallId,
+                approvalWaitTimeout,
+                CancellationToken.None);
+
+            emitApprovalRequest(new ToolInteractionRequest
+            {
+                SessionId = sessionId,
+                Kind = "approval",
+                CallId = tc.CallId,
+                ToolName = ctx.ToolName,
+                DisplayText = ctx.DisplayText,
+                RequesterSenderId = source?.SenderId,
+                Patterns = ctx.UnapprovedPatterns,
+                Options = ctx.Options
+                    .Select(o => new ToolInteractionOption(o.Key, o.Label))
+                    .ToList()
+            });
+
+            var decision = await waitTask;
+
+            sw.Stop();
+
+            if (decision is ApprovalDecision.ApprovedOnce or ApprovalDecision.ApprovedSession or ApprovalDecision.ApprovedAlways)
+            {
+                // Retry execution now that approval is granted
+                // (Approve-once is retried through transient context state; broader scopes
+                // are also recorded by the session actor into the shared approval service.)
+                if (decision == ApprovalDecision.ApprovedOnce)
+                {
+                    context.OneTimeApprovedToolName = tc.Name;
+                    context.SetOneTimeApprovedPatterns(ctx.UnapprovedPatterns);
+                }
+
+                sw = Stopwatch.StartNew();
+                resultText = await ExecuteToolAttemptAsync(executor, tc, context, timeout, ct);
+                sw.Stop();
+
+                var patternStr = string.Join(", ", ctx.UnapprovedPatterns);
+                auditLogger?.Log(new ToolAuditEntry
+                {
+                    SessionId = sessionId.Value,
+                    ToolName = tc.Name,
+                    CallId = tc.CallId,
+                    Timestamp = timeProvider.GetUtcNow(),
+                    Allowed = true,
+                    Duration = sw.Elapsed,
+                    ApprovalDecision = decision.ToString(),
+                    ApprovalPattern = patternStr
+                });
+            }
+            else
+            {
+                var reason = decision == ApprovalDecision.TimedOut
+                    ? "Tool access denied: approval_timed_out"
+                    : $"Tool access denied: approval_denied_by_user ({tc.Name} requires interactive approval and the user declined it)";
+                resultText = reason;
+
+                var deniedPatternStr = string.Join(", ", ctx.UnapprovedPatterns);
+                auditLogger?.Log(new ToolAuditEntry
+                {
+                    SessionId = sessionId.Value,
+                    ToolName = tc.Name,
+                    CallId = tc.CallId,
+                    Timestamp = timeProvider.GetUtcNow(),
+                    Allowed = false,
+                    DenyReason = reason,
+                    Duration = sw.Elapsed,
+                    ApprovalDecision = decision.ToString(),
+                    ApprovalPattern = deniedPatternStr
+                });
+            }
+        }
+        catch (ToolApprovalRequiredException approvalEx)
+        {
+            // No approval channel available — treat as denied
+            sw.Stop();
+            resultText = $"Tool requires approval but no approval channel is available: {approvalEx.ApprovalContext.ToolName}";
+
+            auditLogger?.Log(new ToolAuditEntry
+            {
+                SessionId = sessionId.Value,
+                ToolName = tc.Name,
+                CallId = tc.CallId,
+                Timestamp = timeProvider.GetUtcNow(),
+                Allowed = false,
+                DenyReason = "no_approval_channel",
                 Duration = sw.Elapsed
             });
         }
@@ -218,7 +329,8 @@ internal static class SessionToolExecutionPipeline
                 ToolName = tc.Name,
                 CallId = tc.CallId,
                 Timestamp = timeProvider.GetUtcNow(),
-                Allowed = true,
+                Allowed = false,
+                DenyReason = $"tool_execution_error:{ex.GetType().Name}",
                 Duration = sw.Elapsed
             });
         }
@@ -238,6 +350,67 @@ internal static class SessionToolExecutionPipeline
             context.FileAttachments,
             completedRuns,
             acceptedFindings);
+    }
+
+    private static async Task<string> ExecuteToolAttemptAsync(
+        IToolExecutor executor,
+        FunctionCallContent toolCall,
+        ToolExecutionContext context,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var grantedOneTimeToolName = context.OneTimeApprovedToolName;
+        var grantedOneTimePatterns = context.OneTimeApprovedPatterns;
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (timeout != Timeout.InfiniteTimeSpan)
+            timeoutCts.CancelAfter(timeout);
+
+        try
+        {
+            return await executor.ExecuteAsync(toolCall, context, timeoutCts.Token);
+        }
+        catch (OperationCanceledException ex)
+            when (!cancellationToken.IsCancellationRequested
+                  && timeout != Timeout.InfiniteTimeSpan
+                  && timeoutCts.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"Tool execution exceeded timeout of {timeout.TotalSeconds:F0}s",
+                ex);
+        }
+        finally
+        {
+            // One-time approvals are valid for exactly one retry attempt.
+            // Clear any grant we consumed (or attempted to consume), while
+            // preserving whatever baseline state existed before this call.
+            if (!string.IsNullOrWhiteSpace(grantedOneTimeToolName))
+            {
+                if (!string.Equals(context.OneTimeApprovedToolName, grantedOneTimeToolName, StringComparison.Ordinal)
+                    || !SetsEqual(context.OneTimeApprovedPatterns, grantedOneTimePatterns))
+                {
+                    context.OneTimeApprovedToolName = null;
+                    context.SetOneTimeApprovedPatterns([]);
+                }
+            }
+        }
+    }
+
+    private static bool SetsEqual(IReadOnlySet<string> left, IReadOnlySet<string> right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+
+        if (left.Count != right.Count)
+            return false;
+
+        foreach (var item in left)
+        {
+            if (!right.Contains(item))
+                return false;
+        }
+
+        return true;
     }
 
     /// <summary>

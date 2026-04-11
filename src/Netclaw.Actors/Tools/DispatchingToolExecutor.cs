@@ -3,6 +3,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Netclaw.Configuration;
+using Netclaw.Security;
 using Netclaw.Tools;
 
 namespace Netclaw.Actors.Tools;
@@ -15,6 +16,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor
 {
     private readonly ToolRegistry _registry;
     private readonly ToolAccessPolicy _policy;
+    private readonly IToolApprovalService? _approvalService;
     private readonly ILogger _logger;
 
     public DispatchingToolExecutor(ToolRegistry registry, ILogger<DispatchingToolExecutor>? logger = null)
@@ -23,18 +25,22 @@ public sealed class DispatchingToolExecutor : IToolExecutor
             new ToolAccessPolicy(
                 new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed },
                 new EffectivePolicyDefaults(
-                    DeploymentPosture.Personal,
-                    TrustAudience.Personal,
-                    ShellExecutionMode.HostAllowed,
-                    UsedStrictFallback: false)),
+                DeploymentPosture.Personal,
+                TrustAudience.Personal,
+                ShellExecutionMode.HostAllowed,
+                UsedStrictFallback: false),
+                new ShellCommandPolicy()),
+            approvalService: null,
             logger)
     {
     }
 
-    public DispatchingToolExecutor(ToolRegistry registry, ToolAccessPolicy policy, ILogger<DispatchingToolExecutor>? logger = null)
+    public DispatchingToolExecutor(ToolRegistry registry, ToolAccessPolicy policy,
+        IToolApprovalService? approvalService = null, ILogger<DispatchingToolExecutor>? logger = null)
     {
         _registry = registry;
         _policy = policy;
+        _approvalService = approvalService;
         _logger = logger ?? (ILogger)NullLogger.Instance;
     }
 
@@ -47,7 +53,75 @@ public sealed class DispatchingToolExecutor : IToolExecutor
             return $"Unknown tool: {toolCall.Name}";
         }
 
-        var accessDecision = _policy.AuthorizeInvocation(tool, context);
+        if (context is not null
+            && string.Equals(context.OneTimeApprovedToolName, toolCall.Name, StringComparison.Ordinal)
+            && IsOneTimeApprovalSatisfied(context, toolCall))
+        {
+            _logger.LogInformation(
+                "Applying one-time approval bypass for tool {ToolName} in session {SessionId}",
+                toolCall.Name,
+                context.SessionId ?? "unknown");
+
+            var swBypass = Stopwatch.StartNew();
+            try
+            {
+                var bypassResult = await tool.ExecuteAsync(toolCall.Arguments, context, ct);
+                swBypass.Stop();
+                _logger.LogInformation(
+                    "Tool executed via one-time approval bypass: {ToolName} ({Duration}ms, {ResultLength} chars)",
+                    toolCall.Name,
+                    swBypass.ElapsedMilliseconds,
+                    bypassResult.Length);
+                return bypassResult;
+            }
+            catch (Exception ex)
+            {
+                swBypass.Stop();
+                _logger.LogError(
+                    ex,
+                    "Tool execution failed via one-time approval bypass: {ToolName} ({Duration}ms)",
+                    toolCall.Name,
+                    swBypass.ElapsedMilliseconds);
+                throw;
+            }
+        }
+
+        var accessDecision = _policy.AuthorizeInvocation(tool, context, toolCall.Arguments);
+
+        if (accessDecision.NeedsApproval && _approvalService is not null)
+        {
+            var approvalContext = accessDecision.ApprovalContext
+                ?? throw new InvalidOperationException("Approval decision missing approval context.");
+            var audience = SecurityPolicyDefaults.TryParseAudience(context?.Audience, out var parsed)
+                ? parsed
+                : SecurityPolicyDefaults.ResolveAudienceFromSessionId(context?.SessionId);
+            var unapproved = await _approvalService.GetUnapprovedPatternsAsync(
+                context?.SessionId,
+                audience,
+                toolCall.Name,
+                approvalContext.UnapprovedPatterns,
+                ct);
+
+            if (unapproved.Count == 0)
+            {
+                accessDecision = ToolAccessDecision.Allow();
+            }
+            else
+            {
+                accessDecision = ToolAccessDecision.RequiresApproval(new ToolApprovalContext(
+                    approvalContext.ToolName,
+                    approvalContext.DisplayText,
+                    unapproved,
+                    approvalContext.Options));
+            }
+        }
+
+        if (accessDecision.NeedsApproval)
+        {
+            _logger.LogInformation("Tool requires approval: {ToolName}", toolCall.Name);
+            throw new ToolApprovalRequiredException(accessDecision.ApprovalContext!);
+        }
+
         if (!accessDecision.Allowed)
         {
             _logger.LogWarning("Tool denied by policy: {ToolName} reason={Reason}", toolCall.Name, accessDecision.DenyReason);
@@ -76,5 +150,21 @@ public sealed class DispatchingToolExecutor : IToolExecutor
                 toolCall.Name, sw.ElapsedMilliseconds);
             throw;
         }
+    }
+
+    private static bool IsOneTimeApprovalSatisfied(ToolExecutionContext context, FunctionCallContent toolCall)
+    {
+        if (context.OneTimeApprovedPatterns.Count == 0)
+            return false;
+
+        if (!string.Equals(toolCall.Name, "shell_execute", StringComparison.Ordinal))
+            return context.OneTimeApprovedPatterns.Contains(toolCall.Name);
+
+        var matcher = ShellApprovalMatcher.Instance;
+        var commandPatterns = matcher.ExtractPatterns(toolCall.Name, toolCall.Arguments);
+        if (commandPatterns.Count == 0)
+            return false;
+
+        return commandPatterns.All(pattern => context.OneTimeApprovedPatterns.Contains(pattern));
     }
 }

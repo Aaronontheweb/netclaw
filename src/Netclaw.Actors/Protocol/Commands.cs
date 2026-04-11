@@ -27,3 +27,25 @@ public sealed class SendUserMessage : IWithSessionId
     [ProtoIgnore]
     public MessageSource? Source { get; set; }
 }
+
+/// <summary>
+/// User's response to a <see cref="ToolInteractionRequest"/>.
+/// Routed from the channel adapter to the session actor to complete the
+/// blocked tool's <see cref="System.Threading.Tasks.TaskCompletionSource{T}"/>.
+/// </summary>
+public sealed class ToolInteractionResponse : IWithSessionId
+{
+    public required SessionId SessionId { get; init; }
+
+    /// <summary>The tool call ID from the original <see cref="ToolInteractionRequest"/>.</summary>
+    public required string CallId { get; init; }
+
+    /// <summary>The selected option key. See <see cref="ApprovalOptionKeys"/>.</summary>
+    public required string SelectedKey { get; init; }
+
+    /// <summary>
+    /// Identity of the user who selected the option. Used to bind approvals to
+    /// the same principal that initiated the tool request.
+    /// </summary>
+    public required string SenderId { get; init; }
+}
