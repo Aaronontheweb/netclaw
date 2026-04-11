@@ -9,7 +9,6 @@ namespace Netclaw.Actors.Memory;
 /// </summary>
 public sealed class SQLiteMemoryStore
 {
-    private const string MissingMetadataFacet = "needs_metadata_enrichment";
     private readonly string _connectionString;
     private readonly TimeProvider _timeProvider;
 
@@ -138,100 +137,21 @@ public sealed class SQLiteMemoryStore
         cmd.CommandText = schemaSql;
         await cmd.ExecuteNonQueryAsync(ct);
 
-        await EnsureColumnExistsAsync(conn, "memory_documents", "memory_class", "TEXT NOT NULL DEFAULT 'durable_fact'", ct);
-        await EnsureColumnExistsAsync(conn, "memory_documents", "expires_at", "INTEGER NULL", ct);
-        await EnsureColumnExistsAsync(conn, "memory_documents", "aliases_json", "TEXT NULL", ct);
-        await EnsureColumnExistsAsync(conn, "memory_documents", "facets_json", "TEXT NULL", ct);
-        await EnsureColumnExistsAsync(conn, "memory_documents", "slots_json", "TEXT NULL", ct);
-        await EnsureColumnExistsAsync(conn, "memory_documents", "boundary", "TEXT NULL", ct);
-        await EnsureColumnExistsAsync(conn, "memory_documents", "audience", "TEXT NULL", ct);
-        await EnsureColumnExistsAsync(conn, "memory_records", "memory_class", "TEXT NOT NULL DEFAULT 'evidence'", ct);
-        await EnsureColumnExistsAsync(conn, "memory_records", "expires_at", "INTEGER NULL", ct);
-        await EnsureColumnExistsAsync(conn, "memory_records", "aliases_json", "TEXT NULL", ct);
-        await EnsureColumnExistsAsync(conn, "memory_records", "facets_json", "TEXT NULL", ct);
-        await EnsureColumnExistsAsync(conn, "memory_records", "slots_json", "TEXT NULL", ct);
-        await EnsureColumnExistsAsync(conn, "memory_records", "boundary", "TEXT NULL", ct);
-        await EnsureColumnExistsAsync(conn, "memory_records", "audience", "TEXT NULL", ct);
-
-        await DropIndexIfExistsAsync(conn, "idx_memory_anchors_domain_mode", ct);
-        await DropIndexIfExistsAsync(conn, "idx_memory_documents_policy", ct);
-        await DropIndexIfExistsAsync(conn, "idx_memory_records_policy", ct);
-        await DropColumnIfExistsAsync(conn, "memory_anchors", "domain", ct);
-        await DropColumnIfExistsAsync(conn, "memory_documents", "domain", ct);
-        await DropColumnIfExistsAsync(conn, "memory_records", "domain", ct);
-        await DropColumnIfExistsAsync(conn, "memory_edges", "domain", ct);
-
-        await using var recreateIndexesCmd = conn.CreateCommand();
-        recreateIndexesCmd.CommandText = """
-            CREATE INDEX IF NOT EXISTS idx_memory_documents_policy
-              ON memory_documents(sensitivity, recall_mode, updated_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_memory_records_policy
-              ON memory_records(sensitivity, recall_mode, created_at DESC);
-            """;
-        await recreateIndexesCmd.ExecuteNonQueryAsync(ct);
-
-        // Phase A hygiene: conversation turn snapshots are diagnostic trace, not
-        // durable auto-recall memory. This repo is prototype-only; normalize any
-        // existing rows aggressively to prevent recall pollution.
-        await using var hygieneCmd = conn.CreateCommand();
-        hygieneCmd.CommandText = $"""
-            UPDATE memory_documents
-            SET recall_mode = '{MemoryRecallMode.Never.ToWireValue()}'
-            WHERE title = 'turn-completion'
-               OR update_semantics = '{MemoryUpdateSemantics.ConversationTrace.ToWireValue()}';
-            """;
-        await hygieneCmd.ExecuteNonQueryAsync(ct);
-
-        await using var metadataCmd = conn.CreateCommand();
-        metadataCmd.CommandText = $"""
-            UPDATE memory_documents
-            SET recall_mode = '{MemoryRecallMode.Searchable.ToWireValue()}',
-                facets_json = CASE
-                    WHEN facets_json IS NULL OR TRIM(facets_json) = '' THEN '[\"{MissingMetadataFacet}\"]'
-                    ELSE facets_json
-                END
-            WHERE memory_class = '{MemoryClass.DurableFact.ToWireValue()}'
-              AND recall_mode = '{MemoryRecallMode.Auto.ToWireValue()}'
-              AND (
-                    title LIKE 'doc:%'
-                 OR aliases_json IS NULL
-                 OR facets_json IS NULL
-              );
-            """;
-        await metadataCmd.ExecuteNonQueryAsync(ct);
-
-        // FTS5 full-text search indexes — rebuilt on every startup to stay in sync.
-        // Runtime mutations INSERT new rows; stale phantoms are cleaned up here.
-        await using var ftsRebuild = conn.CreateCommand();
-        ftsRebuild.CommandText = $"""
-            DROP TABLE IF EXISTS memory_documents_fts;
-            DROP TABLE IF EXISTS memory_records_fts;
-
-            CREATE VIRTUAL TABLE memory_documents_fts USING fts5(
+        await using var ftsCreate = conn.CreateCommand();
+        ftsCreate.CommandText = """
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_documents_fts USING fts5(
                 document_id UNINDEXED,
                 title, body, aliases, facets,
                 tokenize='porter unicode61 remove_diacritics 2'
             );
 
-            CREATE VIRTUAL TABLE memory_records_fts USING fts5(
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_records_fts USING fts5(
                 record_id UNINDEXED,
                 title, body, aliases, facets,
                 tokenize='porter unicode61 remove_diacritics 2'
             );
-
-            INSERT INTO memory_documents_fts(document_id, title, body, aliases, facets)
-            SELECT document_id, title, markdown_body,
-                   COALESCE(aliases_json, ''), COALESCE(facets_json, '')
-            FROM memory_documents
-            WHERE recall_mode IN ('{MemoryRecallMode.Auto.ToWireValue()}', '{MemoryRecallMode.Searchable.ToWireValue()}');
-
-            INSERT INTO memory_records_fts(record_id, title, body, aliases, facets)
-            SELECT record_id, record_type, payload_json,
-                   COALESCE(aliases_json, ''), COALESCE(facets_json, '')
-            FROM memory_records
-            WHERE recall_mode IN ('{MemoryRecallMode.Auto.ToWireValue()}', '{MemoryRecallMode.Searchable.ToWireValue()}');
             """;
-        await ftsRebuild.ExecuteNonQueryAsync(ct);
+        await ftsCreate.ExecuteNonQueryAsync(ct);
         }, ct);
     }
 
@@ -295,7 +215,7 @@ public sealed class SQLiteMemoryStore
         await cmd.ExecuteNonQueryAsync(ct);
 
         if (IsSearchableRecallMode(document.RecallMode))
-            await InsertDocumentFtsAsync(conn, tx, document.DocumentId, document.Title, document.MarkdownBody, document.AliasesJson, document.FacetsJson, ct);
+            await UpsertDocumentFtsAsync(conn, tx, document.DocumentId, document.Title, document.MarkdownBody, document.AliasesJson, document.FacetsJson, ct);
 
         await tx.CommitAsync(ct);
         }, ct);
@@ -357,8 +277,6 @@ public sealed class SQLiteMemoryStore
               AND d.sensitivity != '{MemorySensitivity.Secret.ToWireValue()}'
               AND ($boundary IS NULL OR COALESCE(d.boundary, '{SecurityPolicyDefaults.LegacyRestrictedBoundary}') = $boundary)
               AND (d.expires_at IS NULL OR d.expires_at > $now)
-              AND d.title != 'turn-completion'
-              AND d.update_semantics != '{MemoryUpdateSemantics.ConversationTrace.ToWireValue()}'
             ORDER BY dh.fts_rank, d.confidence DESC, d.updated_at DESC
             LIMIT $limit;
             """;
@@ -944,8 +862,10 @@ public sealed class SQLiteMemoryStore
     {
         return await WithConnectionAsync(async (conn, ct) =>
         {
+        await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
 
         await using var read = conn.CreateCommand();
+        read.Transaction = tx;
         read.CommandText = "SELECT markdown_body, title, aliases_json, facets_json, recall_mode FROM memory_documents WHERE document_id = $id;";
         read.Parameters.AddWithValue("$id", documentId);
 
@@ -971,6 +891,7 @@ public sealed class SQLiteMemoryStore
         var updated = current.Replace(oldText, newText, StringComparison.Ordinal);
 
         await using var write = conn.CreateCommand();
+        write.Transaction = tx;
         write.CommandText = """
             UPDATE memory_documents
             SET markdown_body = $body,
@@ -983,8 +904,9 @@ public sealed class SQLiteMemoryStore
         var affected = await write.ExecuteNonQueryAsync(ct);
 
         if (affected > 0 && IsSearchableRecallMode(recallMode))
-            await InsertDocumentFtsAsync(conn, null, documentId, title, updated, aliasesJson, facetsJson, ct);
+            await UpsertDocumentFtsAsync(conn, tx, documentId, title, updated, aliasesJson, facetsJson, ct);
 
+        await tx.CommitAsync(ct);
         return affected > 0;
         }, ct);
     }
@@ -993,8 +915,11 @@ public sealed class SQLiteMemoryStore
     {
         return await WithConnectionAsync(async (conn, ct) =>
         {
+        await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
+
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = """
+        cmd.Transaction = tx;
+        cmd.CommandText = $"""
             UPDATE memory_documents
             SET update_semantics = '{MemoryUpdateSemantics.Tombstone.ToWireValue()}',
                 recall_mode = '{MemoryRecallMode.Never.ToWireValue()}',
@@ -1004,6 +929,11 @@ public sealed class SQLiteMemoryStore
         cmd.Parameters.AddWithValue("$id", documentId);
         cmd.Parameters.AddWithValue("$updatedAt", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
         var affected = await cmd.ExecuteNonQueryAsync(ct);
+
+        if (affected > 0)
+            await DeleteDocumentFtsAsync(conn, tx, documentId, ct);
+
+        await tx.CommitAsync(ct);
         return affected > 0;
         }, ct);
     }
@@ -1012,7 +942,10 @@ public sealed class SQLiteMemoryStore
     {
         return await WithConnectionAsync(async (conn, ct) =>
         {
+        await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
+
         await using var read = conn.CreateCommand();
+        read.Transaction = tx;
         read.CommandText = """
             SELECT anchor_id, record_type, sensitivity, recall_mode, confidence, freshness_at, boundary, audience, memory_class
             FROM memory_records
@@ -1020,26 +953,37 @@ public sealed class SQLiteMemoryStore
             """;
         read.Parameters.AddWithValue("$id", recordId);
 
-        await using var reader = await read.ExecuteReaderAsync(ct);
-        if (!await reader.ReadAsync(ct))
-            return false;
+        string anchorId;
+        string recordType;
+        string sensitivity;
+        string recallMode;
+        double confidence;
+        long? freshnessAt;
+        string boundary;
+        string audience;
+        string memoryClass;
+        await using (var reader = await read.ExecuteReaderAsync(ct))
+        {
+            if (!await reader.ReadAsync(ct))
+                return false;
 
-        var anchorId = reader.GetString(0);
-        var recordType = reader.GetString(1);
-        var sensitivity = reader.GetString(2);
-        var recallMode = reader.GetString(3);
-        var confidence = reader.GetDouble(4);
-        var freshnessAt = reader.IsDBNull(5) ? (long?)null : reader.GetInt64(5);
-        var boundary = reader.IsDBNull(6) ? SecurityPolicyDefaults.LegacyRestrictedBoundary : reader.GetString(6);
-        var audience = reader.IsDBNull(7) ? TrustAudience.Personal.ToWireValue() : reader.GetString(7);
-        var memoryClass = reader.IsDBNull(8) ? MemoryClass.Evidence.ToWireValue() : reader.GetString(8);
-        await reader.CloseAsync();
+            anchorId = reader.GetString(0);
+            recordType = reader.GetString(1);
+            sensitivity = reader.GetString(2);
+            recallMode = reader.GetString(3);
+            confidence = reader.GetDouble(4);
+            freshnessAt = reader.IsDBNull(5) ? (long?)null : reader.GetInt64(5);
+            boundary = reader.IsDBNull(6) ? SecurityPolicyDefaults.LegacyRestrictedBoundary : reader.GetString(6);
+            audience = reader.IsDBNull(7) ? TrustAudience.Personal.ToWireValue() : reader.GetString(7);
+            memoryClass = reader.IsDBNull(8) ? MemoryClass.Evidence.ToWireValue() : reader.GetString(8);
+        }
 
         var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
         var newId = $"rec-{Guid.NewGuid():N}";
 
         await using var insert = conn.CreateCommand();
-        insert.CommandText = """
+        insert.Transaction = tx;
+        insert.CommandText = $"""
             INSERT INTO memory_records(
               record_id, anchor_id, memory_class, record_type, payload_json, supersedes_record_id,
               update_semantics, boundary, audience, sensitivity, recall_mode, confidence, freshness_at, created_at)
@@ -1061,9 +1005,12 @@ public sealed class SQLiteMemoryStore
         insert.Parameters.AddWithValue("$createdAt", now);
         await insert.ExecuteNonQueryAsync(ct);
 
-        if (IsSearchableRecallMode(recallMode))
-            await InsertRecordFtsAsync(conn, null, newId, recordType, payloadJson, null, null, ct);
+        await DeleteRecordFtsAsync(conn, tx, recordId, ct);
 
+        if (IsSearchableRecallMode(recallMode))
+            await UpsertRecordFtsAsync(conn, tx, newId, recordType, payloadJson, null, null, ct);
+
+        await tx.CommitAsync(ct);
         return true;
         }, ct);
     }
@@ -1320,7 +1267,7 @@ public sealed class SQLiteMemoryStore
                 await recordCmd.ExecuteNonQueryAsync(ct);
 
                 if (IsSearchableRecallMode(operation.RecallMode))
-                    await InsertRecordFtsAsync(conn, tx, recId, operation.Title, operation.Content, operation.AliasesJson, operation.FacetsJson, ct);
+                    await UpsertRecordFtsAsync(conn, tx, recId, operation.Title, operation.Content, operation.AliasesJson, operation.FacetsJson, ct);
 
                 continue;
             }
@@ -1402,7 +1349,7 @@ public sealed class SQLiteMemoryStore
             await documentCmd.ExecuteNonQueryAsync(ct);
 
             if (IsSearchableRecallMode(resolvedRecallMode))
-                await InsertDocumentFtsAsync(conn, tx, documentId, operation.Title, operation.Content, operation.AliasesJson, operation.FacetsJson, ct);
+                await UpsertDocumentFtsAsync(conn, tx, documentId, operation.Title, operation.Content, operation.AliasesJson, operation.FacetsJson, ct);
         }
 
         await tx.CommitAsync(ct);
@@ -1475,7 +1422,7 @@ public sealed class SQLiteMemoryStore
                 await recordCmd.ExecuteNonQueryAsync(ct);
 
                 if (IsSearchableRecallMode(operation.RecallMode))
-                    await InsertRecordFtsAsync(conn, tx, recId, operation.Title, operation.Content, operation.AliasesJson, operation.FacetsJson, ct);
+                    await UpsertRecordFtsAsync(conn, tx, recId, operation.Title, operation.Content, operation.AliasesJson, operation.FacetsJson, ct);
 
                 continue;
             }
@@ -1560,7 +1507,7 @@ public sealed class SQLiteMemoryStore
             await documentCmd.ExecuteNonQueryAsync(ct);
 
             if (IsSearchableRecallMode(resolvedRecallMode))
-                await InsertDocumentFtsAsync(conn, tx, documentId, operation.Title, operation.Content, operation.AliasesJson, operation.FacetsJson, ct);
+                await UpsertDocumentFtsAsync(conn, tx, documentId, operation.Title, operation.Content, operation.AliasesJson, operation.FacetsJson, ct);
         }
 
         await using var markDone = conn.CreateCommand();
@@ -1662,12 +1609,14 @@ public sealed class SQLiteMemoryStore
         return escaped.Length == 0 ? null : string.Join(" OR ", escaped);
     }
 
-    private static async Task InsertDocumentFtsAsync(
+    private static async Task UpsertDocumentFtsAsync(
         SqliteConnection conn, SqliteTransaction? tx,
         string documentId, string title, string body,
         string? aliasesJson, string? facetsJson,
         CancellationToken ct)
     {
+        await DeleteDocumentFtsAsync(conn, tx, documentId, ct);
+
         await using var cmd = conn.CreateCommand();
         if (tx is not null) cmd.Transaction = tx;
         cmd.CommandText = """
@@ -1682,12 +1631,14 @@ public sealed class SQLiteMemoryStore
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static async Task InsertRecordFtsAsync(
+    private static async Task UpsertRecordFtsAsync(
         SqliteConnection conn, SqliteTransaction? tx,
         string recordId, string title, string body,
         string? aliasesJson, string? facetsJson,
         CancellationToken ct)
     {
+        await DeleteRecordFtsAsync(conn, tx, recordId, ct);
+
         await using var cmd = conn.CreateCommand();
         if (tx is not null) cmd.Transaction = tx;
         cmd.CommandText = """
@@ -1702,64 +1653,28 @@ public sealed class SQLiteMemoryStore
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static async Task EnsureColumnExistsAsync(
-        SqliteConnection conn,
-        string tableName,
-        string columnName,
-        string columnSql,
-        CancellationToken ct)
-    {
-        await using var pragma = conn.CreateCommand();
-        pragma.CommandText = $"PRAGMA table_info({tableName});";
-        await using var reader = await pragma.ExecuteReaderAsync(ct);
-        while (await reader.ReadAsync(ct))
-        {
-            if (string.Equals(reader.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
-                return;
-        }
-
-        await using var alter = conn.CreateCommand();
-        alter.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {columnSql};";
-        await alter.ExecuteNonQueryAsync(ct);
-    }
-
-    private static async Task DropIndexIfExistsAsync(
-        SqliteConnection conn,
-        string indexName,
+    private static async Task DeleteDocumentFtsAsync(
+        SqliteConnection conn, SqliteTransaction? tx,
+        string documentId,
         CancellationToken ct)
     {
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = $"DROP INDEX IF EXISTS {indexName};";
+        if (tx is not null) cmd.Transaction = tx;
+        cmd.CommandText = "DELETE FROM memory_documents_fts WHERE document_id = $id;";
+        cmd.Parameters.AddWithValue("$id", documentId);
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
-    private static async Task DropColumnIfExistsAsync(
-        SqliteConnection conn,
-        string tableName,
-        string columnName,
+    private static async Task DeleteRecordFtsAsync(
+        SqliteConnection conn, SqliteTransaction? tx,
+        string recordId,
         CancellationToken ct)
     {
-        await using var pragma = conn.CreateCommand();
-        pragma.CommandText = $"PRAGMA table_info({tableName});";
-        var exists = false;
-        await using (var reader = await pragma.ExecuteReaderAsync(ct))
-        {
-            while (await reader.ReadAsync(ct))
-            {
-                if (string.Equals(reader.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
-                {
-                    exists = true;
-                    break;
-                }
-            }
-        }
-
-        if (!exists)
-            return;
-
-        await using var alter = conn.CreateCommand();
-        alter.CommandText = $"ALTER TABLE {tableName} DROP COLUMN {columnName};";
-        await alter.ExecuteNonQueryAsync(ct);
+        await using var cmd = conn.CreateCommand();
+        if (tx is not null) cmd.Transaction = tx;
+        cmd.CommandText = "DELETE FROM memory_records_fts WHERE record_id = $id;";
+        cmd.Parameters.AddWithValue("$id", recordId);
+        await cmd.ExecuteNonQueryAsync(ct);
     }
 
     public SQLiteMemoryAnchor CreateDefaultAnchor(string canonicalName)
