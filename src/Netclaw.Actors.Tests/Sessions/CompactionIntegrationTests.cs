@@ -68,13 +68,15 @@ public class CompactionIntegrationTests : TestKit
             "file_read");
         services.AddSingleton(registry);
 
+        services.AddTestNetclawPaths();
+
         // Composite records for LlmSessionActor constructor
         services.AddSingleton(sp => new SessionServices(
             sp.GetRequiredService<IChatClientProvider>(),
             sp.GetRequiredService<ISystemPromptProvider>(),
             sp.GetService<IReadOnlyList<IContextLayerProvider>>() ?? Array.Empty<IContextLayerProvider>(),
             sp.GetService<TimeProvider>() ?? TimeProvider.System,
-            sp.GetService<NetclawPaths>()));
+            sp.GetRequiredService<NetclawPaths>()));
         services.AddSingleton(sp => new SessionToolServices(
             sp.GetRequiredService<IToolExecutor>(),
             sp.GetService<IToolAuditLogger>(),

@@ -53,12 +53,35 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly IMemoryCheckpointSink _memoryCheckpointSink;
     private readonly MemoryProposalGate _memoryProposalGate = new();
     private readonly TimeProvider _timeProvider;
-    private readonly string? _sessionsBasePath;
-    private readonly string? _sessionLogsBasePath;
+    private readonly string _sessionsBasePath;
+    private readonly string _sessionLogsBasePath;
     private readonly ISessionLifecycleObserver? _lifecycleObserver;
     private readonly Memory.SQLiteMemoryStore? _memoryStore;
     private readonly IChatClientProvider _clientProvider;
     private readonly ILoggingAdapter _log;
+
+    /// <summary>
+    /// Attachment-handling hint injected into the dynamic system prompt when
+    /// the resolved <see cref="ToolAudienceProfile"/> grants <c>file_read</c>.
+    /// Source of truth for the netclaw-input-adapters contract's
+    /// agent-facing guidance. Any edits to this string must stay in sync
+    /// with <c>AttachmentNotes</c> and the canonical <c>[attachment]</c>
+    /// line format.
+    /// </summary>
+    internal const string AttachmentContextHint =
+        "[attachments]\n" +
+        "Your session working directory contains an `inbox/` subdirectory where user-uploaded files are placed.\n" +
+        "Each attachment is announced in the inbound message as a single line of the form:\n" +
+        "    [attachment] name=\"...\" mime=\"...\" size=... path=\"inbox/...\" inlined=\"true|false\" [note=\"...\"]\n" +
+        "When `inlined=\"true\"` you can see the file content natively in this turn.\n" +
+        "When `inlined=\"false\"`:\n" +
+        "  - If `note` begins with \"current model has no\": the file exists on disk but you cannot render it natively. " +
+        "Acknowledge the attachment to the user by name in your reply and explain the limitation. Offer tool-based " +
+        "workarounds where applicable (for example, `shell_execute pdftotext` for a PDF on a non-PDF model).\n" +
+        "  - If `note` begins with \"format not inlineable\": use `file_read` or `shell_execute` to process the bytes. " +
+        "This is the normal path for docx, zip, archive, and media files.\n" +
+        "Never silently ignore an attachment the user sent — always acknowledge what you received by name, " +
+        "even if you cannot fully process it.";
 
     // Transient state (not persisted)
     private readonly List<SendUserMessage> _buffer = new();
@@ -188,8 +211,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _memoryCheckpointSink = memory?.CheckpointSink ?? NullMemoryCheckpointSink.Instance;
         _memoryStore = memory?.MemoryStore;
         _timeProvider = services.TimeProvider;
-        _sessionsBasePath = services.Paths?.SessionsDirectory;
-        _sessionLogsBasePath = services.Paths?.SessionsDirectory;
+        _sessionsBasePath = services.Paths.SessionsDirectory;
+        _sessionLogsBasePath = services.Paths.SessionLogsDirectory;
         _trustContextDeriver = tools?.TrustDeriver;
         PersistenceId = $"session-{entityId}";
 
@@ -235,12 +258,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             TransitionTo(SessionPhase.Ready);
 
-            if (_sessionLogsBasePath is not null)
-            {
-                _logActor = Context.ActorOf(
-                    SessionLogActor.CreateProps(_sessionId, _sessionLogsBasePath, _timeProvider),
-                    "session-log");
-            }
+            _logActor = Context.ActorOf(
+                SessionLogActor.CreateProps(_sessionId, _sessionLogsBasePath, _timeProvider),
+                "session-log");
 
             if (_memoryStore is not null)
             {
@@ -1719,39 +1739,31 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _config.Tuning.DiscoveredToolMaxCount,
             _fullRegistry);
 
+        // Strict modality consumer contract: the session actor trusts ingress
+        // to have routed attachments through its own capability gate. If an
+        // unsupported modality still reaches here, the originating channel
+        // skipped the contract in netclaw-input-adapters and that's a bug
+        // the operator needs to see — surface it loudly and continue.
         if (mediaRefs.Count > 0 && !_model.InputModalities.HasFlag(Configuration.ModelModality.Image))
         {
-            var imageRefs = mediaRefs.Where(r => r.Modality == (int)MediaModality.Image).ToList();
-            if (imageRefs.Count > 0)
+            var offendingRefs = mediaRefs.Where(r => r.Modality == (int)MediaModality.Image).ToList();
+            if (offendingRefs.Count > 0)
             {
-                _log.Info("Stripping {Count} image reference(s) — model does not support vision", imageRefs.Count);
+                var offendingDesc = string.Join(",",
+                    offendingRefs.Select(r => $"{r.RelativePath}:modality={r.Modality}"));
+                _log.Error(
+                    "ingress_bug model={ModelId} modalities={Modalities} offending={Offending}",
+                    _model.ModelId, _model.InputModalities, offendingDesc);
+
                 mediaRefs = mediaRefs.Where(r => r.Modality != (int)MediaModality.Image).ToList();
 
-                EmitOutput(new TextOutput
-                {
-                    SessionId = _sessionId,
-                    Text = "[Images removed — the current model does not support vision input]"
-                }, OutputFilter.Text);
+                const string ingressBugNotice =
+                    "[system] An attachment was received but could not be delivered to the model due to an ingress bug. " +
+                    "Please retry, or notify the operator if this persists.";
+                userContent = string.IsNullOrEmpty(userContent)
+                    ? ingressBugNotice
+                    : userContent + "\n\n" + ingressBugNotice;
             }
-        }
-
-        if (string.IsNullOrWhiteSpace(cmd.Content) && mediaRefs.Count == 0
-            && cmd.MediaReferences.Count > 0)
-        {
-            _log.Info("Skipping LLM call — message contained only unsupported media");
-            EmitOutput(new TextOutput
-            {
-                SessionId = _sessionId,
-                Text = "Your message contained only images, but the current model doesn't support vision. Please send a text message instead."
-            }, OutputFilter.Text);
-            EmitOutput(new TurnCompleted
-            {
-                SessionId = _sessionId,
-                TurnNumber = _state.TurnCount,
-                Outcome = TurnOutcome.Skipped
-            });
-            TryReplyAck();
-            return;
         }
 
         if (TryHandleSlashCommand(userContent, mediaRefs))
@@ -2063,9 +2075,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
 
     private string GetSessionDirectory() =>
-        _sessionsBasePath is not null
-            ? SessionDirectoryHelper.GetSessionDirectory(_sessionId, _sessionsBasePath)
-            : SessionDirectoryHelper.GetSessionDirectory(_sessionId);
+        SessionDirectoryHelper.GetSessionDirectory(_sessionId, _sessionsBasePath);
 
     private long NowMs() => _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
 
@@ -2267,6 +2277,16 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private string? _slashCommandSkillContent;
     private string? _sessionPromptOverlay;
 
+    private bool HasFileReadGranted()
+    {
+        foreach (var tool in _availableTools)
+        {
+            if (tool is AIFunction fn && string.Equals(fn.Name, FileReadTool.ToolName, StringComparison.Ordinal))
+                return true;
+        }
+        return false;
+    }
+
     /// <summary>
     /// Inject dynamic context layers as system messages after the persisted system prompt
     /// but before user messages. Static (<see cref="ContextLayerTiming.OnceAtStart"/>) layers
@@ -2298,12 +2318,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             parts.Add(_turnRestartNotice);
 
         // Session identity — allows the agent to reference its own session and media directory
-        var sessionBlock = $"[session]\nid: {_sessionId.Value}";
-        if (_sessionsBasePath is not null)
-        {
-            var sessionDir = SessionDirectoryHelper.GetSessionDirectory(_sessionId, _sessionsBasePath);
-            sessionBlock += $"\nmedia_dir: {Path.Combine(sessionDir, "media")}";
-        }
+        var sessionDir = SessionDirectoryHelper.GetSessionDirectory(_sessionId, _sessionsBasePath);
+        var sessionBlock = $"[session]\nid: {_sessionId.Value}"
+            + $"\nmedia_dir: {Path.Combine(sessionDir, SessionDirectoryHelper.MediaSubdirectory)}";
         parts.Add(sessionBlock);
 
         // Working context — recent files, open goals, progress markers.
@@ -2314,6 +2331,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             parts.Add(_state.WorkingContext.ToContextBlock());
         }
+
+        // Attachment-handling hint: conditional on file_read being in the
+        // resolved tool set. Without file_read the agent cannot inspect
+        // inbox files, and advertising the path would be a lie.
+        if (HasFileReadGranted())
+            parts.Add(AttachmentContextHint);
 
         _startupContextInjected = true;
 
