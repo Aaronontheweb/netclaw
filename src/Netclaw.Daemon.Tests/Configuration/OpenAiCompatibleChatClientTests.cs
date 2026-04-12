@@ -634,6 +634,167 @@ data: [DONE]
     }
 
     [Fact]
+    public void ParseUsage_TimingsSurviveUsageDetailsAdd()
+    {
+        // Simulate what ToChatResponse does: creates a new UsageDetails and calls Add()
+        // with the parsed result. Verify CachedInputTokenCount and AdditionalCounts survive.
+        using var doc = JsonDocument.Parse("""
+        {
+            "usage": { "prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120 },
+            "timings": {
+                "cache_n": 85,
+                "prompt_ms": 139.655,
+                "predicted_per_second": 31.241
+            }
+        }
+        """);
+
+        var parsed = OpenAiCompatibleChatClient.ParseUsage(doc.RootElement)!;
+
+        // This is what ToChatResponse does internally: new UsageDetails().Add(parsed)
+        var aggregated = new UsageDetails();
+        aggregated.Add(parsed);
+
+        Assert.Equal(100, aggregated.InputTokenCount);
+        Assert.Equal(85, aggregated.CachedInputTokenCount);
+        Assert.NotNull(aggregated.AdditionalCounts);
+        Assert.Equal(139655, aggregated.AdditionalCounts["prompt_us"]);
+        Assert.Equal(3124, aggregated.AdditionalCounts["predicted_tok_per_sec_x100"]);
+    }
+
+    [Fact]
+    public void ParseUsage_ReadsTokenCounts_WithoutTimings()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+            "usage": { "prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60 }
+        }
+        """);
+
+        var usage = OpenAiCompatibleChatClient.ParseUsage(doc.RootElement);
+
+        Assert.NotNull(usage);
+        Assert.Equal(50, usage.InputTokenCount);
+        Assert.Equal(10, usage.OutputTokenCount);
+        Assert.Equal(60, usage.TotalTokenCount);
+        Assert.Null(usage.CachedInputTokenCount);
+        Assert.Null(usage.AdditionalCounts);
+    }
+
+    [Fact]
+    public void ParseUsage_ReadsLlamaCppTimings_WhenPresent()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+            "usage": { "prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120 },
+            "timings": {
+                "cache_n": 85,
+                "prompt_n": 15,
+                "prompt_ms": 139.655,
+                "prompt_per_second": 78.766,
+                "predicted_n": 20,
+                "predicted_ms": 160.048,
+                "predicted_per_token_ms": 8.002,
+                "predicted_per_second": 31.241
+            }
+        }
+        """);
+
+        var usage = OpenAiCompatibleChatClient.ParseUsage(doc.RootElement);
+
+        Assert.NotNull(usage);
+        Assert.Equal(100, usage.InputTokenCount);
+        Assert.Equal(20, usage.OutputTokenCount);
+        Assert.Equal(85, usage.CachedInputTokenCount);
+
+        Assert.NotNull(usage.AdditionalCounts);
+        // prompt_ms stored as microseconds for integer precision
+        Assert.Equal(139655, usage.AdditionalCounts["prompt_us"]);
+        // predicted_per_second stored as x100 for integer precision
+        Assert.Equal(3124, usage.AdditionalCounts["predicted_tok_per_sec_x100"]);
+        // prompt_per_second stored as x100
+        Assert.Equal(7876, usage.AdditionalCounts["prompt_tok_per_sec_x100"]);
+        // predicted_ms stored as microseconds
+        Assert.Equal(160048, usage.AdditionalCounts["predicted_us"]);
+    }
+
+    [Fact]
+    public void ParseUsage_GracefullyIgnoresTimings_WhenTimingsObjectAbsent()
+    {
+        using var doc = JsonDocument.Parse("""
+        {
+            "usage": { "prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60 }
+        }
+        """);
+
+        var usage = OpenAiCompatibleChatClient.ParseUsage(doc.RootElement);
+
+        Assert.NotNull(usage);
+        Assert.Equal(50, usage.InputTokenCount);
+        Assert.Null(usage.CachedInputTokenCount);
+        Assert.Null(usage.AdditionalCounts);
+    }
+
+    [Fact]
+    public void ParseUsage_HandlesPartialTimings()
+    {
+        // Some fields present, others missing — should not throw
+        using var doc = JsonDocument.Parse("""
+        {
+            "usage": { "prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60 },
+            "timings": { "cache_n": 30 }
+        }
+        """);
+
+        var usage = OpenAiCompatibleChatClient.ParseUsage(doc.RootElement);
+
+        Assert.NotNull(usage);
+        Assert.Equal(30, usage.CachedInputTokenCount);
+        // No throughput fields → AdditionalCounts should be empty or null
+        Assert.True(usage.AdditionalCounts is null || usage.AdditionalCounts.Count == 0);
+    }
+
+    [Fact]
+    public async Task StreamingResponse_WithTimings_SurfacesCachedTokensAndThroughput()
+    {
+        // Simulate a llama.cpp streaming response where the final chunk includes timings
+        const string sse = """
+            data: {"id":"abc","model":"test","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":"stop"}]}
+
+            data: {"id":"abc","model":"test","choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105},"timings":{"cache_n":80,"prompt_n":20,"prompt_ms":50.5,"predicted_per_second":25.3}}
+
+            data: [DONE]
+
+            """;
+
+        using var handler = new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(sse, Encoding.UTF8, "text/event-stream")
+        });
+        using var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:8000") };
+        var endpoint = OpenAiCompatibleEndpoint.FromBaseUrl("http://localhost:8000");
+        var client = new OpenAiCompatibleChatClient(httpClient, endpoint, "test-model");
+
+        var updates = new List<ChatResponseUpdate>();
+        await foreach (var update in client.GetStreamingResponseAsync(
+            [new ChatMessage(ChatRole.User, "hello")],
+            cancellationToken: TestContext.Current.CancellationToken))
+        {
+            updates.Add(update);
+        }
+
+        var response = updates.ToChatResponse();
+
+        Assert.NotNull(response.Usage);
+        Assert.Equal(100, response.Usage.InputTokenCount);
+        Assert.Equal(5, response.Usage.OutputTokenCount);
+        Assert.Equal(80, response.Usage.CachedInputTokenCount);
+        Assert.NotNull(response.Usage.AdditionalCounts);
+        Assert.Equal(50500, response.Usage.AdditionalCounts["prompt_us"]);
+        Assert.Equal(2530, response.Usage.AdditionalCounts["predicted_tok_per_sec_x100"]);
+    }
+
+    [Fact]
     public async Task StreamingRequest_IncludesStreamOptions()
     {
         const string sse = """
