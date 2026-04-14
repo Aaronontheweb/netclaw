@@ -7,20 +7,24 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <VersionPrefix>0.12.2</VersionPrefix>
-    <PackageReleaseNotes>Netclaw v0.12.2 — Skill load telemetry, PDF attachment handling fix, and session recovery improvements
+    <VersionPrefix>0.13.0</VersionPrefix>
+    <PackageReleaseNotes>Netclaw v0.13.0 — Subagent single-file markdown format, reminder target validation, memory observability, and hardened daemon crash handling
 
 **Features**
 
-* Added skill load telemetry by method and skill name — `SkillLoadTracker` now emits structured metrics for every skill load event, capturing the load method (local, remote, cached) and skill identifier. Enables operators to monitor skill resolution patterns and identify caching inefficiencies or remote feed latency issues. ([#637](https://github.com/Aaronontheweb/netclaw/pull/637))
+* Added single-file markdown format for subagent definitions with YAML frontmatter — subagents now live in single `.md` files with YAML frontmatter instead of JSON+MD sidecar pairs. The frontmatter supports `name`, `description`, `tools`, `modelRole`, `timeoutSeconds`, `visibility`, and `emitStructuredFindings` fields. The `spawn_agent` tool now accepts an optional `context` argument that gets prefixed onto the subagent's first user message as a `Context:/Task:` block, enabling per-call specialization without mutating the agent's system prompt. The `[available-subagents]` discovery context layer is enriched with per-agent descriptions, tools, timeouts, and example invocation patterns. ([#652](https://github.com/Aaronontheweb/netclaw/pull/652))
+
+* Added reminder notification target validation at `set_reminder` time — `SetReminderTool` now resolves `reportToChannel` through a transport-agnostic `IReminderTargetResolver` abstraction before persistence, accepting `#channel`, `@user`, and raw ID formats. Unresolvable targets fail the tool call immediately with an actionable error instead of silently saving a broken reminder that only fails when it fires. The `netclaw-operations` skill is bumped to 1.12.0 to document the new parameter contract, and `SlackReminderTargetResolver` is the single concrete implementation. Multi-transport routing is tracked separately in #644. ([#646](https://github.com/Aaronontheweb/netclaw/pull/646))
+
+* Added memory extraction observability for silent extractor drops — turn-complete checkpoints that don't match the rules-first extractor's project-fact patterns are now logged with a categorized `MemoryExtractionDropReason` (EmptyContent, EphemeralContent, SecretLikeContent, PolicyRejected, TurnCompleteNoProjectFact, TraceNotExplicit, FingerprintDuplicate, PayloadDeserializationFailed). `MemoryCurationEngine` emits `memory_checkpoint_dropped_before_curation` at Information level with structured fields for CheckpointId, SessionId, TriggerType, IsExplicitRequest, content lengths, and drop reason. Enables operators to diagnose "why didn't this memory surface?" without source inspection. ([#653](https://github.com/Aaronontheweb/netclaw/pull/653))
+
+* Expanded subagent delegation guidance in AGENTS.md seed — the init wizard's AGENTS.md template now lowers the delegation threshold from "deep research requiring multiple searches" to "research requiring 2+ sources or multiple searches" and explicitly calls out context-window protection as delegation's primary structural benefit. Adds a "Per-call specialization" paragraph documenting the optional `context` argument, and includes parallelization tips for spawning concurrent subagents on independent topics. Existing users' AGENTS.md files are not mutated automatically — operators should copy the new block into `~/.netclaw/identity/AGENTS.md` manually. ([#656](https://github.com/Aaronontheweb/netclaw/pull/656))
 
 **Bug Fixes**
 
-* Fixed PDF attachments being inlined as DataContent on vision-capable models — PDF files were being converted to inline DataContent instead of being passed as file references, causing vision models to fail or misinterpret the attachment. PDFs and other document types now correctly flow through as file paths that the agent can reference explicitly. ([#638](https://github.com/Aaronontheweb/netclaw/pull/638))
+* Hardened daemon crash handling and diagnostics — `DaemonSupervisor` now implements more aggressive crash recovery with improved error surfacing, better state reconstruction on restart, and enhanced diagnostic logging for failure paths. Reduces daemon downtime and improves observability when crashes occur. ([#650](https://github.com/Aaronontheweb/netclaw/pull/650))
 
-* Fixed session recovery from volatile-tail loop and legacy domain NOT NULL constraint — sessions could enter an infinite loop during message assembly when the volatile tail became unstable, and legacy database records without domain values would fail on insert due to NOT NULL constraints. Both issues are resolved with defensive tail reconstruction and domain migration for legacy records. ([#634](https://github.com/Aaronontheweb/netclaw/pull/634))
-
-* Fixed eval container missing host system skills — the behavioral eval suite running in Docker containers could not access host-mounted system skills, causing evals to fail on skill-dependent test cases. Host system skills are now properly mounted into the eval container at runtime. ([#633](https://github.com/Aaronontheweb/netclaw/pull/633))</PackageReleaseNotes>
+* Fixed subagent streaming LLM path dropping reasoning content — subagents using the non-streaming LLM path were having their reasoning content dropped, causing incomplete responses. Subagents now correctly use the streaming path so reasoning content is preserved in the response. ([#651](https://github.com/Aaronontheweb/netclaw/pull/651))</PackageReleaseNotes>
   </PropertyGroup>
   <PropertyGroup>
     <NetCoreTestVersion>net10.0</NetCoreTestVersion>

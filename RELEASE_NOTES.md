@@ -1,3 +1,33 @@
+#### 0.13.0 2026-04-14 ####
+
+Netclaw v0.13.0 — Subagent single-file markdown format, reminder target validation, memory observability, and hardened daemon crash handling
+
+**Features**
+
+* Added single-file markdown format for subagent definitions with YAML frontmatter — subagents now live in single `.md` files with YAML frontmatter instead of JSON+MD sidecar pairs. The frontmatter supports `name`, `description`, `tools`, `modelRole`, `timeoutSeconds`, `visibility`, and `emitStructuredFindings` fields. The `spawn_agent` tool now accepts an optional `context` argument that gets prefixed onto the subagent's first user message as a `Context:/Task:` block, enabling per-call specialization without mutating the agent's system prompt. The `[available-subagents]` discovery context layer is enriched with per-agent descriptions, tools, timeouts, and example invocation patterns. ([#652](https://github.com/Aaronontheweb/netclaw/pull/652))
+
+* Added reminder notification target validation at `set_reminder` time — `SetReminderTool` now resolves `reportToChannel` through a transport-agnostic `IReminderTargetResolver` abstraction before persistence, accepting `#channel`, `@user`, and raw ID formats. Unresolvable targets fail the tool call immediately with an actionable error instead of silently saving a broken reminder that only fails when it fires. The `netclaw-operations` skill is bumped to 1.12.0 to document the new parameter contract, and `SlackReminderTargetResolver` is the single concrete implementation. Multi-transport routing is tracked separately in #644. ([#646](https://github.com/Aaronontheweb/netclaw/pull/646))
+
+* Added memory extraction observability for silent extractor drops — turn-complete checkpoints that don't match the rules-first extractor's project-fact patterns are now logged with a categorized `MemoryExtractionDropReason` (EmptyContent, EphemeralContent, SecretLikeContent, PolicyRejected, TurnCompleteNoProjectFact, TraceNotExplicit, FingerprintDuplicate, PayloadDeserializationFailed). `MemoryCurationEngine` emits `memory_checkpoint_dropped_before_curation` at Information level with structured fields for CheckpointId, SessionId, TriggerType, IsExplicitRequest, content lengths, and drop reason. Enables operators to diagnose "why didn't this memory surface?" without source inspection. ([#653](https://github.com/Aaronontheweb/netclaw/pull/653))
+
+* Expanded subagent delegation guidance in AGENTS.md seed — the init wizard's AGENTS.md template now lowers the delegation threshold from "deep research requiring multiple searches" to "research requiring 2+ sources or multiple searches" and explicitly calls out context-window protection as delegation's primary structural benefit. Adds a "Per-call specialization" paragraph documenting the optional `context` argument, and includes parallelization tips for spawning concurrent subagents on independent topics. Existing users' AGENTS.md files are not mutated automatically — operators should copy the new block into `~/.netclaw/identity/AGENTS.md` manually. ([#656](https://github.com/Aaronontheweb/netclaw/pull/656))
+
+**Bug Fixes**
+
+* Hardened daemon crash handling and diagnostics — `DaemonSupervisor` now implements more aggressive crash recovery with improved error surfacing, better state reconstruction on restart, and enhanced diagnostic logging for failure paths. Reduces daemon downtime and improves observability when crashes occur. ([#650](https://github.com/Aaronontheweb/netclaw/pull/650))
+
+* Fixed subagent streaming LLM path dropping reasoning content — subagents using the non-streaming LLM path were having their reasoning content dropped, causing incomplete responses. Subagents now correctly use the streaming path so reasoning content is preserved in the response. ([#651](https://github.com/Aaronontheweb/netclaw/pull/651))
+
+**Internal**
+
+* Rewrote subagent runbook for single-file markdown format — `docs/runbooks/subagents.md` is updated end-to-end to reflect the new markdown-with-frontmatter format, enriched discovery context layer, three-argument `spawn_agent` signature, and loader behavior. Replaces the outdated JSON schema + companion-file walkthrough with a single `.md` file template. Also updates `IMPLEMENTATION_PLAN.md` line 969 to reference the new format. ([#655](https://github.com/Aaronontheweb/netclaw/pull/655))
+
+* Consolidated anemic loader and actor tests — replaced nine near-identical subagent loader tests that reduced to `Assert.Empty(results)` with one consolidated test that drops a valid agent alongside eight kinds of invalid siblings, asserts the valid agent still loads, and verifies each invalid sibling produced a specific warning. Deletes three textbook `BuildUserMessage_*` unit tests on `SubAgentActor` that only pinned string interpolation. Net: Configuration.Tests 189 → 181, Actors.Tests SubAgent filter 30 → 27. ([#654](https://github.com/Aaronontheweb/netclaw/pull/654))
+
+* Consolidated scattered `JsonSerializerOptions` into `JsonDefaults` — CLI code now uses a centralized `JsonDefaults` class for JSON serialization configuration instead of scattered inline options, reducing duplication and improving consistency. ([#645](https://github.com/Aaronontheweb/netclaw/pull/645))
+
+* Documented per-argument approval granularity as security gate — skills runbook now explains how approval-mode precedence works for path-aware tool calls with argument-aware control-plane approvals, including `file_write:control-plane:netclaw.json` patterns and approve-once retry behavior. ([#642](https://github.com/Aaronontheweb/netclaw/pull/642))
+
 #### 0.12.2 2026-04-13 ####
 
 Netclaw v0.12.2 — Skill load telemetry, PDF attachment handling fix, and session recovery improvements
