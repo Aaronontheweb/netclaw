@@ -1,30 +1,6 @@
-# slash-command-dispatch Specification
+# slash-command-dispatch Delta Spec — skill-subagent-overlays
 
-## Purpose
-
-Define session-level slash-command dispatch that allows users to
-deterministically invoke skills via `/name` syntax, adopting the Claude Code
-invocation model.
-
-## Requirements
-
-### Requirement: Slash-command registry from skill names
-
-The system SHALL maintain a slash-command registry mapping `/name` to
-`SkillEntry` for all skills where `UserInvocable != false`. The registry
-SHALL be rebuilt when the skill registry is re-populated.
-
-#### Scenario: Skill registered as slash command
-
-- **GIVEN** a skill with `name: netclaw-operations` and `user-invocable` not set (default true)
-- **WHEN** the slash-command registry is built
-- **THEN** `/netclaw-operations` maps to that skill entry
-
-#### Scenario: Non-user-invocable skill excluded
-
-- **GIVEN** a skill with `user-invocable: false`
-- **WHEN** the slash-command registry is built
-- **THEN** the skill does not appear in the slash-command registry
+## MODIFIED Requirements
 
 ### Requirement: Session-level message interception
 
@@ -132,7 +108,7 @@ deterministic configuration errors.
 ### Requirement: Slash commands work with scheduled jobs
 
 The system SHALL support slash-command syntax in scheduled job and reminder
-payloads. When a scheduled job fires with a message starting with `/`, the
+payloads. When a scheduled job fires with a message starting with `/`, the same
 dispatch logic SHALL apply, including deterministic routed subagent behavior
 when `metadata.subagent` is present.
 
@@ -149,5 +125,5 @@ when `metadata.subagent` is present.
 - **GIVEN** a reminder with payload `/netclaw-operations check health`
 - **AND** `netclaw-operations` has no `metadata.subagent`
 - **WHEN** the reminder fires and sends the message to the session
-- **THEN** the slash-command dispatch intercepts it
+- **THEN** slash-command dispatch intercepts it
 - **AND** the operations skill is loaded before the LLM processes the message
