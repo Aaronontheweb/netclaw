@@ -1,6 +1,6 @@
 namespace Netclaw.Channels.Slack;
 
-public static class SlackRoutingPolicy
+internal static class SlackRoutingPolicy
 {
     public static SlackRoutingDecision Evaluate(
         SlackInboundMessage message,
@@ -13,16 +13,18 @@ public static class SlackRoutingPolicy
         var hasContent = !string.IsNullOrWhiteSpace(message.Text)
                         || message.Files is { Count: > 0 };
         if (!hasContent)
-            return SlackRoutingDecision.Ignore;
+            return SlackRoutingDecision.Ignore(SlackRoutingIgnoreReason.NoContent);
 
         if (message.Kind is SlackInboundKind.AppMention)
             return SlackRoutingDecision.StartOrContinue;
 
+        // Defensive: SlackChannel only dispatches Message and AppMention to this
+        // policy, so any other Kind is a routing bug upstream. Drop loudly.
         if (message.Kind is not SlackInboundKind.Message)
-            return SlackRoutingDecision.Ignore;
+            return SlackRoutingDecision.Ignore(SlackRoutingIgnoreReason.WrongKind);
 
         if (message.Hidden)
-            return SlackRoutingDecision.Ignore;
+            return SlackRoutingDecision.Ignore(SlackRoutingIgnoreReason.HiddenMessage);
 
         // Allow file_share subtype through when files are attached — Slack sends
         // user-uploaded files as messages with subtype "file_share". All other
@@ -32,15 +34,15 @@ public static class SlackRoutingPolicy
             var isFileShare = string.Equals(message.Subtype, "file_share", StringComparison.Ordinal)
                 && message.Files is { Count: > 0 };
             if (!isFileShare)
-                return SlackRoutingDecision.Ignore;
+                return SlackRoutingDecision.Ignore(SlackRoutingIgnoreReason.UnsupportedSubtype);
         }
 
         if (message.IsDirectMessage)
         {
             if (!allowDirectMessages)
-                return SlackRoutingDecision.Ignore;
+                return SlackRoutingDecision.Ignore(SlackRoutingIgnoreReason.DmNotAllowed);
             if (mentionRequiredInDm && !containsBotMention)
-                return SlackRoutingDecision.Ignore;
+                return SlackRoutingDecision.Ignore(SlackRoutingIgnoreReason.DmMentionRequired);
             return SlackRoutingDecision.StartOrContinue;
         }
 
@@ -59,13 +61,60 @@ public static class SlackRoutingPolicy
         if (!mentionOnly)
             return SlackRoutingDecision.StartOrContinue;
 
-        return containsBotMention ? SlackRoutingDecision.StartOrContinue : SlackRoutingDecision.Ignore;
+        return containsBotMention
+            ? SlackRoutingDecision.StartOrContinue
+            : SlackRoutingDecision.Ignore(SlackRoutingIgnoreReason.ChannelMentionRequired);
     }
 }
 
-public enum SlackRoutingDecision
+internal enum SlackRoutingDecisionKind
 {
     Ignore,
     ContinueOnly,
     StartOrContinue
+}
+
+internal enum SlackRoutingIgnoreReason
+{
+    NoContent,
+    WrongKind,
+    HiddenMessage,
+    UnsupportedSubtype,
+    DmNotAllowed,
+    DmMentionRequired,
+    ChannelMentionRequired
+}
+
+internal sealed record SlackRoutingDecision(
+    SlackRoutingDecisionKind Kind,
+    SlackRoutingIgnoreReason? IgnoreReason)
+{
+    public static readonly SlackRoutingDecision StartOrContinue =
+        new(SlackRoutingDecisionKind.StartOrContinue, null);
+
+    public static readonly SlackRoutingDecision ContinueOnly =
+        new(SlackRoutingDecisionKind.ContinueOnly, null);
+
+    public static SlackRoutingDecision Ignore(SlackRoutingIgnoreReason reason) =>
+        new(SlackRoutingDecisionKind.Ignore, reason);
+
+    /// <summary>
+    /// Pre-computed telemetry labels keyed by <see cref="SlackRoutingIgnoreReason"/>
+    /// so the <see cref="SlackConversationActor"/> drop path does not allocate a
+    /// new string per dropped event. Matches the shape produced by the other
+    /// <c>ChannelTelemetry.RecordSlackEventFiltered</c> callers (bucket-prefixed
+    /// reason labels) so existing dashboards continue to work.
+    /// </summary>
+    public static string TelemetryLabelFor(SlackRoutingIgnoreReason reason) =>
+        reason switch
+        {
+            SlackRoutingIgnoreReason.NoContent => "routing_policy_ignore:NoContent",
+            SlackRoutingIgnoreReason.WrongKind => "routing_policy_ignore:WrongKind",
+            SlackRoutingIgnoreReason.HiddenMessage => "routing_policy_ignore:HiddenMessage",
+            SlackRoutingIgnoreReason.UnsupportedSubtype => "routing_policy_ignore:UnsupportedSubtype",
+            SlackRoutingIgnoreReason.DmNotAllowed => "routing_policy_ignore:DmNotAllowed",
+            SlackRoutingIgnoreReason.DmMentionRequired => "routing_policy_ignore:DmMentionRequired",
+            SlackRoutingIgnoreReason.ChannelMentionRequired => "routing_policy_ignore:ChannelMentionRequired",
+            _ => "routing_policy_ignore",
+        };
 }
