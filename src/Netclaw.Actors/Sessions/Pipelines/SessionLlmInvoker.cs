@@ -12,6 +12,7 @@ namespace Netclaw.Actors.Sessions.Pipelines;
 /// </summary>
 internal static class SessionLlmInvoker
 {
+    private static readonly TextContent EmptyTextContent = new(string.Empty);
     public static async Task InvokeAsync(
         IChatClient client,
         List<AiChatMessage> messages,
@@ -69,6 +70,7 @@ internal static class SessionLlmInvoker
         await foreach (var update in client.GetStreamingResponseAsync(messages, options, cancellationToken))
         {
             updates.Add(update);
+            var dispatched = false;
 
             if (update.Contents is not null)
             {
@@ -95,6 +97,7 @@ internal static class SessionLlmInvoker
                                 }
 
                                 self.Tell(new LlmResponseDeltaReceived { Content = content, CallId = callId });
+                                dispatched = true;
                             }
                             break;
 
@@ -117,6 +120,7 @@ internal static class SessionLlmInvoker
                                 }
 
                                 self.Tell(new LlmResponseDeltaReceived { Content = content, CallId = callId });
+                                dispatched = true;
                             }
                             break;
 
@@ -127,6 +131,15 @@ internal static class SessionLlmInvoker
                 }
             }
 
+            // No content dispatched — send keepalive to refresh the idle timeout watchdog.
+            if (!dispatched)
+            {
+                self.Tell(new LlmResponseDeltaReceived
+                {
+                    Content = EmptyTextContent,
+                    CallId = callId
+                });
+            }
         }
 
         if (thinkingBuilder.Length > 0)
