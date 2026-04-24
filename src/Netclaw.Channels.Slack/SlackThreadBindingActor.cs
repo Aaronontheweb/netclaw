@@ -34,6 +34,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
     private readonly SessionPipelineHandle _handle;
     private bool _threadHistoryFetchAttempted;
     private SlackEventTs? _cursorTs;
+    private SlackEventTs? _pendingCursorTs;
     private static readonly object ReinitializeTimerKey = new();
     private static readonly TimeSpan InboundProcessingTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(10);
@@ -323,8 +324,13 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
 
                 await writer.WriteAsync(input, queueWriteCts.Token);
 
+                // Defer cursor persistence until TurnCompleted confirms durable turn recording,
+                // otherwise a crash between cursor and turn persist loses messages.
                 if (currentTs is { } ts)
-                    AdvanceCursor(ts);
+                {
+                    if (_pendingCursorTs is not { } pending || ts.CompareTo(pending) > 0)
+                        _pendingCursorTs = ts;
+                }
             }
             catch (OperationCanceledException ex)
             {
@@ -877,10 +883,16 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
 
     private bool IsStaleInboundEvent(SlackEventTs? eventTs)
     {
-        if (_cursorTs is not { } c || eventTs is not { } ts)
+        if (eventTs is not { } ts)
             return false;
 
-        return ts.CompareTo(c) <= 0;
+        if (_cursorTs is { } c && ts.CompareTo(c) <= 0)
+            return true;
+
+        if (_pendingCursorTs is { } p && ts.CompareTo(p) <= 0)
+            return true;
+
+        return false;
     }
 
     private void ApplyCursorAdvanced(CursorAdvanced advanced)
@@ -1002,6 +1014,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
 
     private async Task ReinitializePipelineAsync(string reason)
     {
+        _pendingCursorTs = null;
         await _handle.ReinitializeAsync(
             reason,
             () => Timers.StartSingleTimer(
@@ -1066,6 +1079,10 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
                 break;
 
             case TurnCompleted completed:
+                if (completed.Outcome == TurnOutcome.Completed && _pendingCursorTs is { } pendingTs)
+                    AdvanceCursor(pendingTs);
+                _pendingCursorTs = null;
+
                 if (!string.IsNullOrWhiteSpace(completed.SourceReminderId) && (_postedThisTurn || _uploadedFileThisTurn))
                 {
                     Context.System.EventStream.Publish(new ReminderDeliveryObserved(
