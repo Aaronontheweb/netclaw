@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using Akka.Actor;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Netclaw.Actors.Channels;
+using Netclaw.Actors.Jobs;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Tools;
@@ -41,7 +43,11 @@ internal static class SessionToolExecutionPipeline
         Func<object, string, CancellationToken, Task<object>> spawnChildActor,
         IApprovalChannel? approvalChannel = null,
         Action<ToolInteractionRequest>? emitApprovalRequest = null,
-        TimeSpan? approvalTimeout = null)
+        TimeSpan? approvalTimeout = null,
+        int maxToolTimeoutSeconds = 600,
+        ILogger? logger = null,
+        int shellTimeoutSeconds = 60,
+        IActorRef? backgroundJobManager = null)
     {
         try
         {
@@ -61,7 +67,11 @@ internal static class SessionToolExecutionPipeline
                 CancellationToken.None,
                 approvalChannel,
                 emitApprovalRequest,
-                approvalTimeout ?? TimeSpan.FromMinutes(5)));
+                approvalTimeout ?? TimeSpan.FromMinutes(5),
+                maxToolTimeoutSeconds,
+                logger,
+                shellTimeoutSeconds,
+                backgroundJobManager));
             var results = await Task.WhenAll(tasks);
 
             var fileAttachments = results.SelectMany(r => r.FileAttachments).ToList();
@@ -111,16 +121,25 @@ internal static class SessionToolExecutionPipeline
         CancellationToken ct,
         IApprovalChannel? approvalChannel = null,
         Action<ToolInteractionRequest>? emitApprovalRequest = null,
-        TimeSpan? approvalTimeout = null)
+        TimeSpan? approvalTimeout = null,
+        int maxToolTimeoutSeconds = 600,
+        ILogger? logger = null,
+        int shellTimeoutSeconds = 60,
+        IActorRef? backgroundJobManager = null)
     {
+        var (meta, cleanedTc) = ToolCallMetaExtractor.Extract(tc);
+        tc = cleanedTc;
+
+        if (meta?.TimeoutHintSeconds is not null)
+        {
+            timeout = ToolCallMetaExtractor.ComputeEffectiveTimeout(
+                meta.TimeoutHintSeconds, timeout, maxToolTimeoutSeconds);
+        }
+
         var sw = Stopwatch.StartNew();
         string resultText;
-        var context = new ToolExecutionContext(sessionId.Value, sessionDir);
-        context.Audience = source is null ? null : source.Audience.ToWireValue();
-        context.Boundary = source?.Boundary;
-        context.ChannelType = source is null ? null : source.ChannelType.ToWireValue();
-        context.SupportsInteractiveApproval = source?.ChannelType.SupportsInteractiveApproval();
-        context.SpawnChildActor = spawnChildActor;
+        var context = BuildToolExecutionContext(sessionId, source, sessionDir, spawnChildActor);
+        context.RequestedTimeoutSeconds = (int)timeout.TotalSeconds;
         var completedRuns = new List<CompletedSubAgentRun>();
         var acceptedFindings = new List<AcceptedSubAgentFinding>();
         context.OnSubAgentActivity = info =>
@@ -193,17 +212,40 @@ internal static class SessionToolExecutionPipeline
         };
         try
         {
+            if (meta is { Background: true })
+            {
+                if (!string.Equals(tc.Name, Tools.ShellTool.ToolName, StringComparison.Ordinal))
+                {
+                    logger?.LogWarning(
+                        "Tool {ToolName} (call {CallId}) requested background execution — " +
+                        "only shell_execute supports background mode; executing synchronously",
+                        tc.Name, tc.CallId);
+                }
+                else if (backgroundJobManager is null)
+                {
+                    logger?.LogWarning(
+                        "Tool {ToolName} (call {CallId}) requested background execution — " +
+                        "no background job manager available; executing synchronously",
+                        tc.Name, tc.CallId);
+                }
+                else
+                {
+                    await executor.AuthorizeAsync(tc, context, ct);
+                    sw.Stop();
+                    return await RouteToBackgroundJobAsync(
+                        tc, sessionId, source, auditLogger, timeProvider,
+                        meta, backgroundJobManager,
+                        meta.TimeoutHintSeconds ?? shellTimeoutSeconds,
+                        sw.Elapsed, logger);
+                }
+            }
+
             resultText = await ExecuteToolAttemptAsync(executor, tc, context, timeout, ct);
             sw.Stop();
 
-            auditLogger?.Log(new ToolAuditEntry
+            auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
             {
-                SessionId = sessionId.Value,
-                ToolName = tc.Name,
-                CallId = tc.CallId,
-                Timestamp = timeProvider.GetUtcNow(),
-                Allowed = true,
-                Duration = sw.Elapsed
+                Allowed = true
             });
         }
         catch (ToolApprovalRequiredException approvalEx)
@@ -247,18 +289,28 @@ internal static class SessionToolExecutionPipeline
                 }
 
                 sw = Stopwatch.StartNew();
+                if (meta is { Background: true }
+                    && string.Equals(tc.Name, Tools.ShellTool.ToolName, StringComparison.Ordinal)
+                    && backgroundJobManager is not null)
+                {
+                    await executor.AuthorizeAsync(tc, context, ct);
+                    sw.Stop();
+                    return await RouteToBackgroundJobAsync(
+                        tc, sessionId, source, auditLogger, timeProvider,
+                        meta, backgroundJobManager,
+                        meta.TimeoutHintSeconds ?? shellTimeoutSeconds,
+                        sw.Elapsed, logger,
+                        decision.ToString(),
+                        string.Join(", ", ctx.UnapprovedPatterns));
+                }
+
                 resultText = await ExecuteToolAttemptAsync(executor, tc, context, timeout, ct);
                 sw.Stop();
 
                 var patternStr = string.Join(", ", ctx.UnapprovedPatterns);
-                auditLogger?.Log(new ToolAuditEntry
+                auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
                 {
-                    SessionId = sessionId.Value,
-                    ToolName = tc.Name,
-                    CallId = tc.CallId,
-                    Timestamp = timeProvider.GetUtcNow(),
                     Allowed = true,
-                    Duration = sw.Elapsed,
                     ApprovalDecision = decision.ToString(),
                     ApprovalPattern = patternStr
                 });
@@ -271,15 +323,10 @@ internal static class SessionToolExecutionPipeline
                 resultText = reason;
 
                 var deniedPatternStr = string.Join(", ", ctx.UnapprovedPatterns);
-                auditLogger?.Log(new ToolAuditEntry
+                auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
                 {
-                    SessionId = sessionId.Value,
-                    ToolName = tc.Name,
-                    CallId = tc.CallId,
-                    Timestamp = timeProvider.GetUtcNow(),
                     Allowed = false,
                     DenyReason = reason,
-                    Duration = sw.Elapsed,
                     ApprovalDecision = decision.ToString(),
                     ApprovalPattern = deniedPatternStr
                 });
@@ -291,15 +338,10 @@ internal static class SessionToolExecutionPipeline
             sw.Stop();
             resultText = $"Tool requires approval but no approval channel is available: {approvalEx.ApprovalContext.ToolName}";
 
-            auditLogger?.Log(new ToolAuditEntry
+            auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
             {
-                SessionId = sessionId.Value,
-                ToolName = tc.Name,
-                CallId = tc.CallId,
-                Timestamp = timeProvider.GetUtcNow(),
                 Allowed = false,
-                DenyReason = "no_approval_channel",
-                Duration = sw.Elapsed
+                DenyReason = "no_approval_channel"
             });
         }
         catch (ToolAccessDeniedException ex)
@@ -307,15 +349,10 @@ internal static class SessionToolExecutionPipeline
             sw.Stop();
             resultText = $"Tool access denied: {ex.DenyReason}";
 
-            auditLogger?.Log(new ToolAuditEntry
+            auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
             {
-                SessionId = sessionId.Value,
-                ToolName = tc.Name,
-                CallId = tc.CallId,
-                Timestamp = timeProvider.GetUtcNow(),
                 Allowed = false,
-                DenyReason = ex.DenyReason,
-                Duration = sw.Elapsed
+                DenyReason = ex.DenyReason
             });
         }
         catch (Exception ex)
@@ -323,15 +360,10 @@ internal static class SessionToolExecutionPipeline
             sw.Stop();
             resultText = $"Error executing tool: {ex.Message}";
 
-            auditLogger?.Log(new ToolAuditEntry
+            auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
             {
-                SessionId = sessionId.Value,
-                ToolName = tc.Name,
-                CallId = tc.CallId,
-                Timestamp = timeProvider.GetUtcNow(),
                 Allowed = false,
-                DenyReason = $"tool_execution_error:{ex.GetType().Name}",
-                Duration = sw.Elapsed
+                DenyReason = $"tool_execution_error:{ex.GetType().Name}"
             });
         }
 
@@ -458,6 +490,130 @@ internal static class SessionToolExecutionPipeline
 
         return new(SubAgentFindingReviewDecision.Accepted, null);
     }
+
+    private static async Task<ToolCallResult> RouteToBackgroundJobAsync(
+        FunctionCallContent tc,
+        SessionId sessionId,
+        MessageSource? source,
+        IToolAuditLogger? auditLogger,
+        TimeProvider timeProvider,
+        ToolCallMeta meta,
+        IActorRef backgroundJobManager,
+        int timeoutSeconds,
+        TimeSpan duration,
+        ILogger? logger,
+        string? approvalDecision = null,
+        string? approvalPattern = null)
+    {
+        var command = ToolArgumentHelper.GetString(tc.Arguments ?? new Dictionary<string, object?>(), "Command");
+        var workingDirectory = ToolArgumentHelper.GetString(tc.Arguments ?? new Dictionary<string, object?>(), "WorkingDirectory");
+
+        if (string.IsNullOrWhiteSpace(command))
+        {
+            var message = new SerializableChatMessage
+            {
+                Role = Protocol.ChatRole.Tool,
+                Content = "Error: background shell execution requires a 'command' parameter",
+                ToolCallId = tc.CallId,
+                Name = tc.Name
+            };
+            return new ToolCallResult(message, [], [], []);
+        }
+
+        var startCmd = new StartBackgroundJob
+        {
+            Command = command,
+            WorkingDirectory = workingDirectory,
+            SessionId = sessionId,
+            Rationale = meta.Rationale ?? "background shell execution",
+            Audience = source?.Audience ?? TrustAudience.Personal,
+            Boundary = source?.Boundary ?? SecurityPolicyDefaults.PersonalBoundary,
+            OriginChannelType = source?.ChannelType ?? ChannelType.Tui,
+            TimeoutSeconds = timeoutSeconds,
+            SenderId = source?.SenderId
+        };
+
+        try
+        {
+            var started = await backgroundJobManager.Ask<BackgroundJobStarted>(
+                startCmd, TimeSpan.FromSeconds(30));
+
+            logger?.LogInformation(
+                "Background job {JobId} submitted for shell command (session {SessionId})",
+                started.JobId.Value, sessionId.Value);
+
+            auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, duration, meta) with
+            {
+                Allowed = true,
+                ApprovalDecision = approvalDecision,
+                ApprovalPattern = approvalPattern
+            });
+
+            var resultText = $"Background job {started.JobId.Value} submitted. " +
+                             "Use check_background_job to monitor progress or cancel.";
+            var resultMessage = new SerializableChatMessage
+            {
+                Role = Protocol.ChatRole.Tool,
+                Content = resultText,
+                ToolCallId = tc.CallId,
+                Name = tc.Name
+            };
+            return new ToolCallResult(resultMessage, [], [], []);
+        }
+        catch (Exception ex)
+        {
+            logger?.LogError(ex, "Failed to submit background job for {ToolName}", tc.Name);
+
+            auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, duration, meta) with
+            {
+                Allowed = false,
+                DenyReason = $"background_job_submission_failed:{ex.GetType().Name}",
+                ApprovalDecision = approvalDecision,
+                ApprovalPattern = approvalPattern
+            });
+
+            var errorMessage = new SerializableChatMessage
+            {
+                Role = Protocol.ChatRole.Tool,
+                Content = $"Error submitting background job: {ex.Message}",
+                ToolCallId = tc.CallId,
+                Name = tc.Name
+            };
+            return new ToolCallResult(errorMessage, [], [], []);
+        }
+    }
+
+    private static ToolExecutionContext BuildToolExecutionContext(
+        SessionId sessionId,
+        MessageSource? source,
+        string sessionDir,
+        Func<object, string, CancellationToken, Task<object>> spawnChildActor)
+    {
+        var context = new ToolExecutionContext(sessionId.Value, sessionDir);
+        context.Audience = source is null ? null : source.Audience.ToWireValue();
+        context.Boundary = source?.Boundary;
+        context.ChannelType = source is null ? null : source.ChannelType.ToWireValue();
+        context.SupportsInteractiveApproval = source?.ChannelType.SupportsInteractiveApproval();
+        context.SpawnChildActor = spawnChildActor;
+        return context;
+    }
+
+    private static ToolAuditEntry BuildAuditEntry(
+        SessionId sessionId,
+        FunctionCallContent tc,
+        TimeProvider timeProvider,
+        TimeSpan duration,
+        ToolCallMeta? meta) => new()
+    {
+        SessionId = sessionId.Value,
+        ToolName = tc.Name,
+        CallId = tc.CallId,
+        Timestamp = timeProvider.GetUtcNow(),
+        Allowed = false,
+        Duration = duration,
+        Rationale = meta?.Rationale,
+        TimeoutHintSeconds = meta?.TimeoutHintSeconds
+    };
 
     /// <summary>
     /// Truncates a tool result to fit within the configured inline character limit.

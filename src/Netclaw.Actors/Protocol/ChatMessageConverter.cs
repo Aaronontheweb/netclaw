@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Netclaw.Tools;
 using AiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 using AiChatRole = Microsoft.Extensions.AI.ChatRole;
 
@@ -116,13 +117,15 @@ public static class ChatMessageConverter
                     break;
 
                 case FunctionCallContent toolCall:
+                    var (meta, cleanArgs) = ExtractMeta(toolCall.Arguments);
                     result.ToolCalls.Add(new SerializableToolCall
                     {
                         CallId = toolCall.CallId,
                         Name = toolCall.Name,
-                        ArgumentsJson = toolCall.Arguments is not null
-                            ? JsonSerializer.Serialize(toolCall.Arguments)
-                            : string.Empty
+                        ArgumentsJson = cleanArgs is not null
+                            ? JsonSerializer.Serialize(cleanArgs)
+                            : string.Empty,
+                        MetaJson = meta?.ToJson()
                     });
                     break;
 
@@ -197,4 +200,7 @@ public static class ChatMessageConverter
             return MediaModality.Video;
         return MediaModality.Image; // default fallback
     }
+
+    internal static (ToolCallMeta? Meta, IDictionary<string, object?>? CleanArgs) ExtractMeta(
+        IDictionary<string, object?>? arguments) => ToolCallMeta.ExtractFrom(arguments);
 }
