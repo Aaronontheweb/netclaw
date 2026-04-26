@@ -746,7 +746,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 msg.ToolName,
                 msg.Patterns,
                 audience,
-                msg.RequesterSenderId);
+                msg.RequesterSenderId,
+                msg.RequesterPrincipal);
 
             PauseToolExecutionWatchdogForApprovalWait(msg.CallId);
 
@@ -761,8 +762,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 return;
             }
 
-            if (!string.IsNullOrWhiteSpace(pending.RequesterSenderId)
-                && !string.Equals(pending.RequesterSenderId, msg.SenderId, StringComparison.Ordinal))
+            if (!ApprovalButtonValueCodec.CanApprove(pending.RequesterPrincipal, pending.RequesterSenderId, msg.SenderId))
             {
                 _log.Warning(
                     "Ignoring tool interaction response for call {CallId} from sender {SenderId}; expected {ExpectedSenderId}",
@@ -2998,7 +2998,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         string ToolName,
         IReadOnlyList<string> Patterns,
         TrustAudience Audience,
-        string? RequesterSenderId);
+        string? RequesterSenderId,
+        PrincipalClassification? RequesterPrincipal);
 
     private sealed record RoutedSkillExecutionCompleted(
         string SkillName,
