@@ -1198,7 +1198,10 @@ static void MapReminderEndpoints(WebApplication app)
             title = r.Title,
             enabled = r.Enabled,
             schedule = Netclaw.Actors.Reminders.ListRemindersTool.DescribeSchedule(r.Schedule),
-            nextFire = Netclaw.Actors.Reminders.SetReminderTool.FormatNextFire(r.NextFire),
+            nextFire = Netclaw.Actors.Reminders.SetReminderTool.FormatTimestamp(r.NextFire),
+            expiresAt = r.ExpiresAt is null
+                ? null
+                : Netclaw.Actors.Reminders.SetReminderTool.FormatTimestamp(r.ExpiresAt),
             audience = r.Audience?.ToWireValue(),
         });
         return Results.Ok(projected);
@@ -1242,7 +1245,8 @@ static void MapReminderEndpoints(WebApplication app)
                 ["DeliveryAddress"] = deliveryAddress,
                 ["DeliveryRequired"] = request.DeliveryRequired,
                 ["DeliveryInstructions"] = request.DeliveryInstructions,
-                ["Audience"] = request.Audience
+                ["Audience"] = request.Audience,
+                ["ExpiresIn"] = request.ExpiresIn
             }, toolContext, ct);
 
         return result.StartsWith("Error", StringComparison.Ordinal)
@@ -1389,7 +1393,10 @@ static void MapReminderEndpoints(WebApplication app)
             title = r.Title,
             enabled = r.Enabled,
             schedule = Netclaw.Actors.Reminders.ListRemindersTool.DescribeSchedule(r.Schedule),
-            nextFire = Netclaw.Actors.Reminders.SetReminderTool.FormatNextFire(r.NextFire),
+            nextFire = Netclaw.Actors.Reminders.SetReminderTool.FormatTimestamp(r.NextFire),
+            expiresAt = r.ExpiresAt is null
+                ? null
+                : Netclaw.Actors.Reminders.SetReminderTool.FormatTimestamp(r.ExpiresAt),
             instructions = r.Instructions,
             deliveryKind = r.Delivery.Kind.ToString().ToLowerInvariant(),
             deliveryTransport = r.Delivery.Transport,
@@ -1446,6 +1453,7 @@ sealed record CreateReminderRequest
     public string? DeliveryInstructions { get; init; }
     public ReminderDeliveryRequest? Delivery { get; init; }
     public string? Audience { get; init; }
+    public string? ExpiresIn { get; init; }
 }
 
 sealed record ReminderDeliveryRequest

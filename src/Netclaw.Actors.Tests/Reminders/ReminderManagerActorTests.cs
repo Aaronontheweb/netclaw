@@ -254,6 +254,33 @@ public class ReminderManagerActorTests : TestKit
     }
 
     [Fact]
+    public async Task Save_rejects_expiration_for_oneshot_reminders()
+    {
+        var manager = await GetManagerAsync();
+        var now = TimeProvider.System.GetUtcNow();
+        var definition = CreateDefinition("oneshot-expire", "Check expiry") with
+        {
+            Schedule = new ReminderSchedule
+            {
+                Type = ReminderScheduleType.OneShot,
+                FireAt = now.AddHours(1)
+            },
+            ExpiresAt = now.AddHours(2)
+        };
+
+        var response = await manager.Ask<ReminderSavedResponse>(
+            new SaveReminderCommand(
+                definition,
+                Authorization: new ReminderAudienceAuthorizationContext(TrustAudience.Team, "test")),
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+
+        Assert.False(response.Success);
+        Assert.Equal(ReminderSaveError.Validation, response.Error);
+        Assert.Contains("one-shot", response.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Save_omitted_audience_persists_source_audience()
     {
         var manager = await GetManagerAsync();
@@ -455,6 +482,181 @@ public class ReminderManagerActorTests : TestKit
                     alert.Category == AlertType.ReminderExecutionFailed
                     && alert.Source == definition.Id);
             }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            ReminderExecutionActor.DeliveryObservedTimeout = originalTimeout;
+        }
+    }
+
+    [Fact]
+    public async Task Reconcile_disables_expired_recurring_reminders()
+    {
+        var manager = await GetManagerAsync();
+        var now = TimeProvider.System.GetUtcNow();
+
+        // Drain PreStart reconcile
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        // Write an expired interval reminder directly to the store
+        var expired = new ReminderDefinition
+        {
+            Id = "expired-interval",
+            Title = "Expired interval check",
+            Instructions = "This should be disabled",
+            Delivery = new ReminderDelivery { Kind = DeliveryKind.None },
+            Schedule = new ReminderSchedule
+            {
+                Type = ReminderScheduleType.Interval,
+                Interval = TimeSpan.FromMinutes(30),
+                FireAt = now.AddMinutes(30)
+            },
+            ExpiresAt = now.AddHours(-1),
+            Enabled = true,
+            CreatedBy = "test",
+            CreatedAt = now.AddDays(-1),
+            UpdatedAt = now.AddDays(-1)
+        };
+        _definitionStore.Save(expired);
+
+        var reconcileResult = await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        Assert.Equal(1, reconcileResult.DisabledExpired);
+
+        // Verify definition is still on disk (soft-disable, not delete) but disabled
+        var afterReconcile = _definitionStore.Get(new ReminderId("expired-interval"));
+        Assert.NotNull(afterReconcile);
+        Assert.False(afterReconcile!.Enabled);
+    }
+
+    [Fact]
+    public async Task Expired_reminder_disabled_on_fire_without_executing()
+    {
+        var manager = await GetManagerAsync();
+        var now = TimeProvider.System.GetUtcNow();
+
+        // Drain PreStart reconcile
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        // Write an interval reminder that just expired
+        var expired = new ReminderDefinition
+        {
+            Id = "just-expired",
+            Title = "Just expired check",
+            Instructions = "This should not execute",
+            Delivery = new ReminderDelivery { Kind = DeliveryKind.None },
+            Schedule = new ReminderSchedule
+            {
+                Type = ReminderScheduleType.Interval,
+                Interval = TimeSpan.FromMinutes(20),
+                FireAt = now
+            },
+            ExpiresAt = now.AddSeconds(-1),
+            Enabled = true,
+            CreatedBy = "test",
+            CreatedAt = now.AddDays(-1),
+            UpdatedAt = now.AddDays(-1)
+        };
+        _definitionStore.Save(expired);
+
+        // Fire the reminder
+        manager.Tell(CreateEnvelope("just-expired"));
+
+        // Wait for the fire to be processed — the reminder should be disabled, not executed
+        await AwaitAssertAsync(async () =>
+        {
+            var stored = _definitionStore.Get(new ReminderId("just-expired"));
+            Assert.NotNull(stored);
+            Assert.False(stored!.Enabled);
+        }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        // Verify no execution was started
+        var health = await manager.Ask<ReminderHealthResponse>(
+            GetReminderHealthQuery.Instance, TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+        Assert.Equal(0, health.ActiveExecutions);
+    }
+
+    [Fact]
+    public async Task Deferred_expired_recurring_reminder_is_disabled_before_execution()
+    {
+        var manager = await GetManagerAsync();
+
+        // Drain PreStart reconcile
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        var originalTimeout = ReminderExecutionActor.DeliveryObservedTimeout;
+        ReminderExecutionActor.DeliveryObservedTimeout = TimeSpan.FromMilliseconds(700);
+        try
+        {
+            var gatewayProbe = CreateTestProbe("deferred-expiry-gateway");
+            var autoAckRef = Sys.ActorOf(
+                Props.Create(() => new AutoAckTrustedGateway(gatewayProbe.Ref)),
+                "auto-ack-deferred-expiry");
+            ActorRegistry.For(Sys).Register<SlackGatewayActorKey>(autoAckRef);
+
+            // Saturate execution slots with CurrentSession reminders waiting for
+            // delivery observation timeout.
+            for (var i = 0; i < ReminderManagerActor.MaxConcurrentExecutions; i++)
+            {
+                var id = $"blocking-{i}";
+                _definitionStore.Save(CreateCurrentSessionDefinition(id, deliveryRequired: true));
+                manager.Tell(CreateEnvelope(id));
+            }
+
+            await AwaitAssertAsync(async () =>
+            {
+                var health = await manager.Ask<ReminderHealthResponse>(
+                    GetReminderHealthQuery.Instance,
+                    TimeSpan.FromSeconds(3),
+                    TestContext.Current.CancellationToken);
+
+                Assert.Equal(ReminderManagerActor.MaxConcurrentExecutions, health.ActiveExecutions);
+            }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+            var now = TimeProvider.System.GetUtcNow();
+            var expiringId = "queued-expiring";
+            var expiringReminder = new ReminderDefinition
+            {
+                Id = expiringId,
+                Title = "Queued expiring reminder",
+                Instructions = "Should not execute after expiry",
+                Delivery = new ReminderDelivery { Kind = DeliveryKind.None },
+                Schedule = new ReminderSchedule
+                {
+                    Type = ReminderScheduleType.Interval,
+                    Interval = TimeSpan.FromMinutes(30),
+                    FireAt = now.AddMinutes(30)
+                },
+                ExpiresAt = now.AddMilliseconds(200),
+                Audience = TrustAudience.Team,
+                Enabled = true,
+                CreatedBy = "test",
+                CreatedAt = now,
+                UpdatedAt = now
+            };
+            _definitionStore.Save(expiringReminder);
+
+            manager.Tell(CreateEnvelope(expiringId));
+
+            await AwaitAssertAsync(async () =>
+            {
+                var stored = _definitionStore.Get(new ReminderId(expiringId));
+                Assert.NotNull(stored);
+                Assert.False(stored!.Enabled);
+            }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.DoesNotContain(_notificationSink.Alerts, alert =>
+                alert.Category == AlertType.ReminderExecutionFailed
+                && alert.Source == expiringId);
         }
         finally
         {

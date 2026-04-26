@@ -27,9 +27,10 @@ internal sealed class ReminderExecutionActor : ReceiveActor
     /// <summary>
     /// How long CurrentSession reminders with <c>DeliveryRequired=true</c>
     /// wait for outbound delivery observation after session <see cref="CommandAck"/>.
-    /// Must remain strictly greater than <see cref="ReminderSettings.DefaultAckTimeout"/>.
+    /// Matches <see cref="ExecutionTimeoutSeconds"/> — a delivery-required reminder
+    /// should be allowed the full execution window for the LLM to produce output.
     /// </summary>
-    internal static TimeSpan DeliveryObservedTimeout = TimeSpan.FromSeconds(30);
+    internal static TimeSpan DeliveryObservedTimeout = TimeSpan.FromSeconds(ExecutionTimeoutSeconds);
 
     private readonly Guid _executionId;
     private readonly ReminderDefinition _definition;
@@ -368,7 +369,13 @@ internal sealed class ReminderExecutionActor : ReceiveActor
             _ => throw new ArgumentOutOfRangeException(nameof(definition.Delivery.Kind), definition.Delivery.Kind, "Unexpected DeliveryKind")
         };
 
-        return $"{definition.Instructions}{deliverySection}";
+        var completionGuidance = definition.Schedule.Type is ReminderScheduleType.Interval or ReminderScheduleType.Cron
+            ? $"\n\nThis is a recurring reminder (ID: {definition.Id}). If you determine that its purpose " +
+              "has been permanently fulfilled (e.g., the PR merged, the deploy completed, the issue was " +
+              "resolved), call cancel_reminder to stop future executions."
+            : "";
+
+        return $"{definition.Instructions}{deliverySection}{completionGuidance}";
     }
 
     private void HandleOutput(ExecutionOutput wrapper)
