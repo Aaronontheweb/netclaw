@@ -25,13 +25,15 @@ internal sealed class BinaryUpdateCheckService : BackgroundService
     private readonly IOperationalNotificationSink? _notificationSink;
     private readonly TimeProvider _timeProvider;
     private readonly string _currentVersion;
+    private readonly string _upgradeHint;
 
     public BinaryUpdateCheckService(
         HttpClient httpClient,
         ILogger<BinaryUpdateCheckService> logger,
+        DaemonConfig daemonConfig,
         IOperationalNotificationSink? notificationSink = null,
         TimeProvider? timeProvider = null)
-        : this(httpClient, logger, BuildInfo.Version, notificationSink, timeProvider)
+        : this(httpClient, logger, BuildInfo.Version, daemonConfig.DisableSelfUpdate, notificationSink, timeProvider)
     {
     }
 
@@ -40,12 +42,16 @@ internal sealed class BinaryUpdateCheckService : BackgroundService
         HttpClient httpClient,
         ILogger<BinaryUpdateCheckService> logger,
         string currentVersion,
+        bool selfUpdateDisabled = false,
         IOperationalNotificationSink? notificationSink = null,
         TimeProvider? timeProvider = null)
     {
         _httpClient = httpClient;
         _logger = logger;
         _currentVersion = currentVersion;
+        _upgradeHint = selfUpdateDisabled
+            ? "Pull a newer container image to upgrade."
+            : "Run 'netclaw update' to upgrade.";
         _notificationSink = notificationSink;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -73,10 +79,14 @@ internal sealed class BinaryUpdateCheckService : BackgroundService
             if (result.IsUpdateAvailable)
             {
                 _logger.LogWarning(
-                    "Netclaw update available: {CurrentVersion} → {LatestVersion}. Run 'netclaw update' to upgrade.",
-                    result.CurrentVersion, result.LatestVersion);
+                    "Netclaw update available: {CurrentVersion} → {LatestVersion}. {UpgradeHint}",
+                    result.CurrentVersion, result.LatestVersion, _upgradeHint);
 
                 EmitUpdateAlert(result);
+            }
+            else if (!result.CheckSucceeded)
+            {
+                _logger.LogInformation("Netclaw update check failed: {ErrorDetail}", result.ErrorDetail);
             }
             else
             {
@@ -95,7 +105,7 @@ internal sealed class BinaryUpdateCheckService : BackgroundService
             _timeProvider,
             "update.available",
             AlertType.UpdateAvailable,
-            $"Netclaw update available: {result.CurrentVersion} → {result.LatestVersion}. Run 'netclaw update' to upgrade.",
+            $"Netclaw update available: {result.CurrentVersion} → {result.LatestVersion}. {_upgradeHint}",
             AlertSeverity.Info,
             source: result.LatestVersion,
             context: new Dictionary<string, string>

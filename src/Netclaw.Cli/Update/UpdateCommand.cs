@@ -11,7 +11,9 @@ namespace Netclaw.Cli.Update;
 /// </summary>
 internal static class UpdateCommand
 {
-    public static async Task<int> RunAsync(string[] args, NetclawPaths paths)
+    internal static Func<HttpMessageHandler>? TestHttpMessageHandlerFactory { get; set; }
+
+    public static async Task<int> RunAsync(string[] args, NetclawPaths paths, bool selfUpdateDisabled = false)
     {
         var checkOnly = false;
         var force = false;
@@ -38,7 +40,9 @@ internal static class UpdateCommand
 
         var currentVersion = BuildInfo.Version;
 
-        using var httpClient = new HttpClient();
+        using var httpClient = TestHttpMessageHandlerFactory is { } createHandler
+            ? new HttpClient(createHandler())
+            : new HttpClient();
 
         // Fetch manifest with signature verification
         var fetchResult = await UpdateCheckService.FetchVerifiedManifestAsync(
@@ -46,10 +50,12 @@ internal static class UpdateCommand
 
         if (!fetchResult.IsSuccess)
         {
-            if (fetchResult.Status == ManifestFetchStatus.SignatureFailure)
+            if (fetchResult.Status is ManifestFetchStatus.SignatureFailure or ManifestFetchStatus.PlatformUnavailable)
             {
                 Console.Error.WriteLine($"Error: {fetchResult.ErrorMessage}");
-                Console.Error.WriteLine("The update manifest could not be verified. This may indicate tampering.");
+                Console.Error.WriteLine(fetchResult.Status == ManifestFetchStatus.PlatformUnavailable
+                    ? "The update manifest could not be verified because signature verification is unavailable on this platform."
+                    : "The update manifest could not be verified. This may indicate tampering.");
                 Console.Error.WriteLine("If this persists, report the issue at https://github.com/stannardlabs/netclaw/issues");
                 return 1;
             }
@@ -73,6 +79,14 @@ internal static class UpdateCommand
 
         if (checkOnly)
             return 0;
+
+        if (selfUpdateDisabled)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Self-update is disabled (Daemon.DisableSelfUpdate=true).");
+            Console.WriteLine("Pull a newer container image to upgrade.");
+            return 1;
+        }
 
         // Show what will be downloaded
         Console.WriteLine();
@@ -337,7 +351,7 @@ internal static class UpdateCommand
     /// Quick background update check for CLI startup.
     /// Prints a one-line notification if an update is available.
     /// </summary>
-    internal static async Task BackgroundUpdateCheckAsync()
+    internal static async Task BackgroundUpdateCheckAsync(bool selfUpdateDisabled = false)
     {
         try
         {
@@ -348,8 +362,11 @@ internal static class UpdateCommand
 
             if (result.IsUpdateAvailable)
             {
+                var hint = selfUpdateDisabled
+                    ? "pull a newer container image to upgrade"
+                    : "run 'netclaw update'";
                 Console.Error.WriteLine(
-                    $"Update available: v{result.CurrentVersion} → v{result.LatestVersion} — run 'netclaw update'");
+                    $"Update available: v{result.CurrentVersion} → v{result.LatestVersion} — {hint}");
             }
         }
         catch (Exception ex)

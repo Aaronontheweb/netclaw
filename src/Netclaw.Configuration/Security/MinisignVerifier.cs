@@ -36,6 +36,12 @@ public static class MinisignVerifier
     internal static byte[]? TestPublicKeyOverride { get; set; }
 
     /// <summary>
+    /// Test seam: forces <see cref="Verify"/> to return this result before any parsing
+    /// or cryptographic work. Reset to null after tests.
+    /// </summary>
+    internal static VerifyResult? TestVerifyResultOverride { get; set; }
+
+    /// <summary>
     /// The embedded Ed25519 public key ID (8 bytes) for matching against signatures.
     /// </summary>
     internal static ReadOnlySpan<byte> EmbeddedKeyId => EmbeddedPublicKeyBlob.Slice(2, 8);
@@ -64,6 +70,12 @@ public static class MinisignVerifier
 
         /// <summary>Signature does not match the provided data.</summary>
         InvalidSignature,
+
+        /// <summary>
+        /// The cryptographic platform (NSec) failed to initialize.
+        /// Non-fatal — callers should treat this as equivalent to a network error.
+        /// </summary>
+        PlatformUnavailable,
     }
 
     /// <summary>
@@ -144,6 +156,9 @@ public static class MinisignVerifier
     /// <returns>The verification result.</returns>
     public static VerifyResult Verify(ReadOnlySpan<byte> data, string signatureFileContent)
     {
+        if (TestVerifyResultOverride is { } overrideResult)
+            return overrideResult;
+
         var sig = ParseSignature(signatureFileContent);
         if (sig is null)
             return VerifyResult.MalformedSignature;
@@ -172,7 +187,10 @@ public static class MinisignVerifier
             return VerifyResult.KeyMismatch;
 
         // Try raw Ed25519 first (works with test keys and legacy minisign).
-        if (VerifyEd25519(activePublicKey, data, sig.Signature))
+        var (rawSuccess, rawEarlyReturn) = TryVerifyEd25519(activePublicKey, data, sig.Signature);
+        if (rawEarlyReturn is not null)
+            return rawEarlyReturn.Value;
+        if (rawSuccess)
             return VerifyResult.Valid;
 
         // Modern minisign (1.0.18+) always prehashes with BLAKE2b-512 before
@@ -181,9 +199,23 @@ public static class MinisignVerifier
         Span<byte> hash = stackalloc byte[64];
         Blake2b512(data, hash);
 
-        return VerifyEd25519(activePublicKey, hash, sig.Signature)
-            ? VerifyResult.Valid
-            : VerifyResult.InvalidSignature;
+        var (hashSuccess, hashEarlyReturn) = TryVerifyEd25519(activePublicKey, hash, sig.Signature);
+        if (hashEarlyReturn is not null)
+            return hashEarlyReturn.Value;
+        return hashSuccess ? VerifyResult.Valid : VerifyResult.InvalidSignature;
+    }
+
+    private static (bool success, VerifyResult? earlyReturn) TryVerifyEd25519(
+        ReadOnlySpan<byte> publicKey, ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature)
+    {
+        try
+        {
+            return (VerifyEd25519(publicKey, data, signature), null);
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or TypeInitializationException or PlatformNotSupportedException)
+        {
+            return (false, VerifyResult.PlatformUnavailable);
+        }
     }
 
     /// <summary>

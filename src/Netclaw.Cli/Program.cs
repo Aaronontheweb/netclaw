@@ -72,7 +72,11 @@ static async Task RunAsync(string[] args)
     // TUI modes (chat, sessions, headless, init) must not run background checks
     // that write to Console, as it corrupts the terminal UI.
     if (mode is not ("chat" or "sessions" or "headless" or "init"))
-        _ = UpdateCommand.BackgroundUpdateCheckAsync();
+    {
+        var backgroundUpdateConfig = BuildCliConfig();
+        var backgroundDaemonConfig = DaemonConfig.BindFromConfiguration(backgroundUpdateConfig.GetSection("Daemon"));
+        _ = UpdateCommand.BackgroundUpdateCheckAsync(backgroundDaemonConfig.DisableSelfUpdate);
+    }
 
     // ── Lightweight modes (no Akka, no persistence) ──
     if (mode is "init" or "doctor")
@@ -801,9 +805,15 @@ static async Task RunAsync(string[] args)
     // ── Self-update ──
     if (mode is "update")
     {
-        var paths = new NetclawPaths();
-        paths.EnsureDirectoriesExist();
-        Environment.ExitCode = await UpdateCommand.RunAsync(args, paths);
+        var builder = Host.CreateApplicationBuilder(args);
+        ConfigureConfigServices(builder.Services, builder.Configuration);
+        builder.Logging.ClearProviders();
+        builder.Logging.SetMinimumLevel(LogLevel.Warning);
+
+        using var host = builder.Build();
+        var paths = host.Services.GetRequiredService<NetclawPaths>();
+        var daemonConfig = host.Services.GetRequiredService<DaemonConfig>();
+        Environment.ExitCode = await UpdateCommand.RunAsync(args, paths, daemonConfig.DisableSelfUpdate);
         return;
     }
 
@@ -1414,7 +1424,9 @@ static void WriteStatusResult(DaemonRuntimeStatus.Response status, string endpoi
     {
         case "update-available":
             Console.WriteLine($"update: UPDATE AVAILABLE — v{updateCurrentVersion} → v{updateLatestVersion}");
-            Console.WriteLine("  Run: netclaw update");
+            Console.WriteLine((status.Update?.SelfUpdateDisabled).GetValueOrDefault()
+                ? "  Pull a newer container image to upgrade."
+                : "  Run: netclaw update");
             if (updateReleaseNotesUrl is not null)
                 Console.WriteLine($"  Release notes: {updateReleaseNotesUrl}");
             break;
@@ -1682,6 +1694,8 @@ static NetclawPaths ConfigureConfigServices(IServiceCollection services, IConfig
         .AddJsonFile(paths.SecretsPath, optional: true, reloadOnChange: false)
         .AddEnvironmentVariables("NETCLAW_");
 
+    services.AddSingleton(DaemonConfig.BindFromConfiguration(configuration.GetSection("Daemon")));
+
     // TimeProvider (virtualized for testing)
     services.AddSingleton(TimeProvider.System);
 
@@ -1690,6 +1704,18 @@ static NetclawPaths ConfigureConfigServices(IServiceCollection services, IConfig
     services.AddSingleton<DaemonApi>();
 
     return paths;
+}
+
+static IConfigurationRoot BuildCliConfig()
+{
+    var paths = new NetclawPaths();
+    paths.EnsureDirectoriesExist();
+
+    return new ConfigurationBuilder()
+        .AddJsonFile(paths.NetclawConfigPath, optional: true, reloadOnChange: false)
+        .AddJsonFile(paths.SecretsPath, optional: true, reloadOnChange: false)
+        .AddEnvironmentVariables("NETCLAW_")
+        .Build();
 }
 
 // ═══════════════════════════════════════════════════════════════════════

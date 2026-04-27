@@ -51,6 +51,9 @@ public enum ManifestFetchStatus
 
     /// <summary>Manifest signature verification failed — possible tampering.</summary>
     SignatureFailure,
+
+    /// <summary>Cryptographic signature verification is unavailable on this platform.</summary>
+    PlatformUnavailable,
 }
 
 /// <summary>
@@ -173,6 +176,15 @@ public static class UpdateCheckService
         }
 
         var verifyResult = MinisignVerifier.Verify(manifestBytes, signatureContent);
+
+        if (verifyResult == MinisignVerifier.VerifyResult.PlatformUnavailable)
+        {
+            return new ManifestFetchResult
+            {
+                Status = ManifestFetchStatus.PlatformUnavailable,
+                ErrorMessage = "Cryptographic library unavailable on this platform — signature verification could not run",
+            };
+        }
 
         if (verifyResult != MinisignVerifier.VerifyResult.Valid)
         {
