@@ -8,6 +8,7 @@ using Microsoft.Extensions.AI;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Reminders;
+using Netclaw.Channels;
 using Netclaw.Channels.Telemetry;
 using Netclaw.Configuration;
 using Netclaw.Security;
@@ -359,8 +360,12 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         }
     }
 
-    private Task<ReadOnlyMemory<byte>> DownloadSlackFileAsync(SlackFileReference file, CancellationToken ct)
-        => SlackFileDownloader.DownloadAsync(_dependencies.HttpClient!, file.UrlPrivateDownload, _dependencies.Options.BotToken, ct);
+    private Task<AttachmentDownloadResult> DownloadSlackFileToDirectoryAsync(
+        SlackFileReference file, string targetDirectory, long maxBytes, CancellationToken ct)
+        => SlackFileDownloader.DownloadToFileAsync(
+            _dependencies.HttpClient!, file.UrlPrivateDownload, _dependencies.Options.BotToken,
+            targetDirectory, maxBytes, ct,
+            onCleanupFailure: (ex, path) => _log.Error(ex, "Failed to clean up staged download file {0}", path));
 
     /// <summary>
     /// Applies the canonical cross-channel attachment ingress pipeline to
@@ -416,6 +421,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         var rejections = new List<string>();
 
         var inboxDir = SessionDirectoryHelper.GetOrCreateInboxDirectory(_sessionId, _dependencies.Paths.SessionsDirectory);
+        var stagingDir = SessionDirectoryHelper.GetOrCreateAttachmentStagingDirectory(_sessionId, _dependencies.Paths.SessionsDirectory);
 
         foreach (var file in files)
         {
@@ -425,6 +431,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
                 policy,
                 inlineImages,
                 inboxDir,
+                stagingDir,
                 cancellationToken);
 
             switch (attachmentResult)
@@ -462,6 +469,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         ChannelAttachmentPolicy policy,
         bool inlineImages,
         string inboxDir,
+        string stagingDir,
         CancellationToken cancellationToken)
     {
         var category = AttachmentCategories.FromMime(file.MimeType);
@@ -487,12 +495,21 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
                 $"`{file.Name}` ({FormatBytes(file.Size)}) exceeds the {FormatBytes(policy.MaxFileBytes)} per-file limit.");
         }
 
-        ReadOnlyMemory<byte> bytes;
+        AttachmentDownloadResult downloadResult;
         try
         {
             using var downloadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             downloadCts.CancelAfter(OperationTimeout);
-            bytes = await DownloadSlackFileAsync(file, downloadCts.Token);
+            downloadResult = await DownloadSlackFileToDirectoryAsync(
+                file, stagingDir, policy.MaxFileBytes, downloadCts.Token);
+        }
+        catch (AttachmentTooLargeException ex)
+        {
+            _log.Warning(
+                "slack_attachment_rejected name={Name} mime={Mime} audience={Audience} size={Size} limit={Limit} reason=too-large-during-download",
+                file.Name, file.MimeType, audience, ex.BytesReceived, ex.MaxBytes);
+            return new AttachmentIngestResult.Rejected(
+                $"`{file.Name}` ({FormatBytes(ex.BytesReceived)}) exceeds the {FormatBytes(ex.MaxBytes)} per-file limit.");
         }
         catch (OperationCanceledException ex)
         {
@@ -511,11 +528,12 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
                 $"Couldn't download `{file.Name}` — please try again later.");
         }
 
-        if (bytes.Length == 0)
+        if (downloadResult.BytesWritten == 0)
         {
             _log.Warning(
                 "slack_attachment_rejected name={Name} mime={Mime} reason=empty-download",
                 file.Name, file.MimeType);
+            TryDeleteTemp(downloadResult.FilePath);
             return new AttachmentIngestResult.Rejected(
                 $"`{file.Name}` downloaded as zero bytes.");
         }
@@ -525,14 +543,15 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         {
             using var scanCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             scanCts.CancelAfter(OperationTimeout);
-            scanResult = await _dependencies.ContentScanner.ScanAsync(
-                bytes, file.Name, file.MimeType, scanCts.Token);
+            scanResult = await _dependencies.ContentScanner.ScanFileAsync(
+                downloadResult.FilePath, file.Name, file.MimeType, scanCts.Token);
         }
         catch (Exception ex)
         {
             _log.Warning(ex,
                 "slack_attachment_rejected name={Name} mime={Mime} reason=scan-exception",
                 file.Name, file.MimeType);
+            TryDeleteTemp(downloadResult.FilePath);
             return new AttachmentIngestResult.Rejected(
                 $"Couldn't scan `{file.Name}` — please try again later.");
         }
@@ -542,6 +561,8 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             _log.Warning(
                 "slack_attachment_rejected name={Name} mime={Mime} reason=scan-blocked error={ScanError} message={ScanMessage}",
                 file.Name, file.MimeType, scanResult.Error?.ToString(), scanResult.Message ?? scanResult.Error?.ToString());
+
+            TryDeleteTemp(downloadResult.FilePath);
 
             if (scanResult.Error == ContentScanError.ScanFailure)
             {
@@ -553,21 +574,19 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
                 $"Content scanner rejected `{file.Name}`: {scanResult.Message ?? scanResult.Error?.ToString()}.");
         }
 
-        // Write to inbox with filesystem-level collision suffixing and atomic move.
+        // Move temp file to final inbox path with collision suffixing.
         string inboxPath;
         try
         {
-            inboxPath = await InboxWriter.SanitizeReserveAndWriteAsync(
-                inboxDir,
-                file.Name,
-                bytes,
-                cancellationToken);
+            inboxPath = InboxWriter.SanitizeReserveAndMove(
+                inboxDir, file.Name, downloadResult.FilePath);
         }
         catch (InboxWriter.CollisionExhaustedException ex)
         {
             _log.Warning(ex,
                 "slack_attachment_rejected name={Name} reason=collision-exhausted",
                 file.Name);
+            TryDeleteTemp(downloadResult.FilePath);
             return new AttachmentIngestResult.Rejected(
                 $"Too many attachments named `{file.Name}` in this session — please rename and try again.");
         }
@@ -576,112 +595,50 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             _log.Error(ex,
                 "slack_attachment_rejected name={Name} reason=inbox-write-failed",
                 file.Name);
+            TryDeleteTemp(downloadResult.FilePath);
             return new AttachmentIngestResult.Rejected(
                 $"Couldn't save `{file.Name}` — please try again later.");
         }
 
         // Decide inlining based on model modalities and category.
-        var (inlined, note) = ResolveInlineDecision(category, inlineImages);
+        var (inlined, note) = AttachmentIngressFormatting.ResolveInlineDecision(category, inlineImages);
 
         var relativePath = $"{SessionDirectoryHelper.InboxSubdirectory}/{Path.GetFileName(inboxPath)}";
-        var line = BuildAttachmentLine(file.Name, file.MimeType, bytes.Length, relativePath, inlined, note);
+        var line = AttachmentIngressFormatting.BuildAttachmentLine(
+            file.Name, file.MimeType, downloadResult.BytesWritten, relativePath, inlined, note);
 
         DataContent? inlineContent = null;
         if (inlined)
-            inlineContent = new DataContent(bytes, file.MimeType);
+        {
+            var inlineBytes = await File.ReadAllBytesAsync(inboxPath, cancellationToken);
+            inlineContent = new DataContent(inlineBytes, file.MimeType);
+        }
 
         _log.Info(
             "slack_attachment_accepted name={Name} mime={Mime} size={Size} audience={Audience} category={Category} inlined={Inlined}",
-            file.Name, file.MimeType, bytes.Length, audience, category, inlined);
+            file.Name, file.MimeType, downloadResult.BytesWritten, audience, category, inlined);
 
         return new AttachmentIngestResult.Accepted(line, inlineContent);
-    }
-
-    private static (bool Inlined, string? Note) ResolveInlineDecision(
-        AttachmentCategory category,
-        bool inlineImages)
-    {
-        return category switch
-        {
-            AttachmentCategory.Image when inlineImages => (true, null),
-            AttachmentCategory.Image => (false, AttachmentNotes.ModelMissingImage),
-            AttachmentCategory.Pdf => (false, AttachmentNotes.ModelMissingPdf),
-            _ => (false, AttachmentNotes.FormatNotInlineable)
-        };
     }
 
     /// <summary>
     /// Formats a single <c>[attachment]</c> announcement line in the
     /// canonical cross-channel shape defined in netclaw-input-adapters.
     /// </summary>
-    internal static string BuildAttachmentLine(
-        string name,
-        string mimeType,
-        long size,
-        string relativePath,
-        bool inlined,
-        string? note)
+    private void TryDeleteTemp(string tempPath)
     {
-        var inlinedWire = inlined ? "true" : "false";
-        var sb = new StringBuilder(128);
-        sb.Append("[attachment] name=\"").Append(EscapeQuoted(name)).Append('"');
-        sb.Append(" mime=\"").Append(EscapeQuoted(mimeType)).Append('"');
-        sb.Append(" size=").Append(size);
-        sb.Append(" path=\"").Append(EscapeQuoted(relativePath)).Append('"');
-        sb.Append(" inlined=\"").Append(inlinedWire).Append('"');
-        if (!string.IsNullOrEmpty(note))
-            sb.Append(" note=\"").Append(EscapeQuoted(note)).Append('"');
-        return sb.ToString();
-    }
-
-    /// <summary>
-    /// Escapes a metadata value for safe embedding inside a double-quoted
-    /// attribute on an attachment announcement line. Control characters
-    /// (including CR/LF) are replaced with spaces so hostile filenames
-    /// cannot embed newlines in the single-line format.
-    /// </summary>
-    internal static string EscapeQuoted(string value)
-    {
-        // Fast path: skip allocation when no special characters are present.
-        // This covers the common case of ordinary filenames.
-        var needsProcessing = false;
-        foreach (var c in value)
+        try
         {
-            if (c < ' ' || c == '\\' || c == '"')
-            {
-                needsProcessing = true;
-                break;
-            }
+            if (File.Exists(tempPath))
+                File.Delete(tempPath);
         }
-
-        if (!needsProcessing)
-            return value;
-
-        var sb = new StringBuilder(value.Length + 8);
-        foreach (var c in value)
+        catch (Exception ex)
         {
-            if (c < ' ')
-                sb.Append(' ');
-            else if (c == '\\')
-                sb.Append("\\\\");
-            else if (c == '"')
-                sb.Append("\\\"");
-            else
-                sb.Append(c);
+            _log.Error(ex, "Failed to clean up staged attachment file {Path}", tempPath);
         }
-        return sb.ToString();
     }
 
-    private static string FormatBytes(long size)
-    {
-        const long Mib = 1024 * 1024;
-        const long Kib = 1024;
-        if (size >= Mib)
-            return $"{size / (double)Mib:F1} MiB";
-        if (size >= Kib)
-            return $"{size / (double)Kib:F1} KiB";
-        return $"{size} bytes";
-    }
+    private static string FormatBytes(long size) => AttachmentIngressFormatting.FormatBytes(size);
 
     private abstract record AttachmentIngestResult
     {
@@ -827,12 +784,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         if (gap.Count == 0)
             return new InboundBuildResult(baseInput, detectorUnavailable);
 
-        var mergedContents = MergeGapWithLiveContents(
-            gap,
-            liveContents,
-            triggeringMessage.Audience,
-            _dependencies.AudienceProfiles,
-            _dependencies.ModelCapabilities);
+        var mergedContents = MergeGapWithLiveContents(gap, liveContents);
         return new InboundBuildResult(baseInput with { Contents = mergedContents }, detectorUnavailable);
     }
 
@@ -888,97 +840,8 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
 
     private static List<AIContent> MergeGapWithLiveContents(
         IReadOnlyList<ChannelInput> gap,
-        IReadOnlyList<AIContent> liveContents,
-        TrustAudience audience,
-        ToolAudienceProfiles? audienceProfiles,
-        ModelCapabilities modelCapabilities)
-    {
-        var profile = ToolAudienceProfileDefaults.GetResolvedProfile(audienceProfiles, audience);
-        var attachmentPolicy = profile.ChannelAttachments ?? ChannelAttachmentPolicy.Empty;
-        var inlineImages = modelCapabilities.InputModalities.HasFlag(ModelModality.Image);
-
-        var sb = new StringBuilder();
-        sb.AppendLine("[thread history — messages exchanged before this inbound event]");
-        sb.AppendLine();
-
-        var merged = new List<AIContent>();
-        var acceptedBackfillData = new List<AIContent>();
-
-        foreach (var item in gap)
-        {
-            var ts = item.ReceivedAt == default ? string.Empty : $", {item.ReceivedAt:yyyy-MM-dd HH:mm} UTC";
-            sb.AppendLine($"<user: {item.SenderId}{ts}>");
-
-            var imageCount = 0;
-            foreach (var content in item.Contents)
-            {
-                switch (content)
-                {
-                    case TextContent text when !string.IsNullOrWhiteSpace(text.Text):
-                        sb.AppendLine(text.Text);
-                        break;
-
-                    case DataContent data:
-                        var mimeType = data.MediaType ?? "application/octet-stream";
-                        var category = AttachmentCategories.FromMime(mimeType);
-
-                        if (!attachmentPolicy.Allows(category))
-                        {
-                            sb.AppendLine(
-                                $"[attachment rejected: historical attachment ({EscapeQuoted(mimeType)}) category not allowed in {audience}]");
-                            break;
-                        }
-
-                        var (inlined, note) = ResolveInlineDecision(category, inlineImages);
-                        if (!inlined)
-                        {
-                            var effectiveNote = note ?? AttachmentNotes.FormatNotInlineable;
-                            sb.AppendLine(
-                                $"[attachment] mime=\"{EscapeQuoted(mimeType)}\" inlined=\"false\" note=\"{EscapeQuoted(effectiveNote)}\"");
-                            break;
-                        }
-
-                        acceptedBackfillData.Add(data);
-                        if (category == AttachmentCategory.Image)
-                        {
-                            imageCount++;
-                        }
-                        else
-                        {
-                            sb.AppendLine($"[attachment] mime=\"{EscapeQuoted(mimeType)}\" inlined=\"true\"");
-                        }
-                        break;
-                }
-            }
-
-            if (imageCount > 0)
-                sb.AppendLine($"[image attachments: {imageCount}]");
-
-            sb.AppendLine();
-        }
-
-        sb.AppendLine("[end thread history]");
-
-        var liveText = string.Join("\n", liveContents
-            .OfType<TextContent>()
-            .Select(t => t.Text)
-            .Where(t => !string.IsNullOrWhiteSpace(t)));
-
-        var mergedText = string.IsNullOrWhiteSpace(liveText)
-            ? sb.ToString()
-            : $"{sb}\n\n{liveText}";
-
-        merged.Add(new TextContent(mergedText));
-        merged.AddRange(acceptedBackfillData);
-
-        foreach (var content in liveContents)
-        {
-            if (content is not TextContent)
-                merged.Add(content);
-        }
-
-        return merged;
-    }
+        IReadOnlyList<AIContent> liveContents)
+        => ThreadHistoryContentMerger.MergeHistoryWithLiveContents(gap, liveContents);
 
     private async Task ReinitializePipelineAsync(string reason)
     {

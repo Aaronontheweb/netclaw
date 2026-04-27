@@ -104,6 +104,9 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
             httpClient,
             new NullContentScanner(),
+            new NetclawPaths(Path.GetTempPath()),
+            ToolAudienceProfileDefaults.CreateProfiles(),
+            TestSlackGatewayDeps.DefaultVisionCapableModel,
             NullLogger<SlackThreadHistoryFetcher>.Instance);
 
         var deps = new SlackGatewayDependencies(
@@ -166,7 +169,10 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
         Assert.Contains("can you help with this?", mergedText);
         Assert.Equal(1, CountOccurrences(mergedText, "can you help with this?"));
 
-        Assert.Contains("[image attachments:", mergedText);
+        Assert.Contains("[attachment]", mergedText, StringComparison.Ordinal);
+        Assert.Contains("screenshot.png", mergedText, StringComparison.Ordinal);
+        Assert.Contains("path=\"inbox/screenshot", mergedText, StringComparison.Ordinal);
+        Assert.Contains("inlined=\"true\"", mergedText, StringComparison.Ordinal);
         Assert.True(mergedUserTurn.Contents.OfType<DataContent>().Any(),
             "Expected merged user turn to include image DataContent from backfill");
     }
@@ -187,6 +193,9 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
             httpClient,
             new NullContentScanner(),
+            new NetclawPaths(Path.GetTempPath()),
+            ToolAudienceProfileDefaults.CreateProfiles(),
+            TestSlackGatewayDeps.DefaultVisionCapableModel,
             NullLogger<SlackThreadHistoryFetcher>.Instance);
 
         var deps = new SlackGatewayDependencies(
@@ -322,6 +331,9 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
             httpClient,
             new NullContentScanner(),
+            new NetclawPaths(Path.GetTempPath()),
+            ToolAudienceProfileDefaults.CreateProfiles(),
+            TestSlackGatewayDeps.DefaultVisionCapableModel,
             NullLogger<SlackThreadHistoryFetcher>.Instance);
 
         var deps = new SlackGatewayDependencies(
@@ -387,6 +399,9 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
             httpClient,
             new NullContentScanner(),
+            new NetclawPaths(Path.GetTempPath()),
+            ToolAudienceProfileDefaults.CreateProfiles(),
+            TestSlackGatewayDeps.DefaultVisionCapableModel,
             NullLogger<SlackThreadHistoryFetcher>.Instance);
 
         var deps = new SlackGatewayDependencies(
@@ -455,6 +470,8 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
     {
         var pipeline = Host.Services.GetRequiredService<SessionPipeline>();
         var httpClient = new HttpClient(_httpHandler);
+        var profiles = ToolAudienceProfileDefaults.CreateProfiles();
+        profiles.Public.ChannelAttachments = ToolAudienceProfileDefaults.CreatePublicChannelAttachments();
 
         var fetcher = new SlackThreadHistoryFetcher(
             (channelId, threadTs, limit, cursor, ct) =>
@@ -493,10 +510,10 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
             httpClient,
             new NullContentScanner(),
+            new NetclawPaths(Path.GetTempPath()),
+            profiles,
+            TestSlackGatewayDeps.DefaultVisionCapableModel,
             NullLogger<SlackThreadHistoryFetcher>.Instance);
-
-        var profiles = ToolAudienceProfileDefaults.CreateProfiles();
-        profiles.Public.ChannelAttachments = ToolAudienceProfileDefaults.CreatePublicChannelAttachments();
 
         var deps = new SlackGatewayDependencies(
             Pipeline: pipeline,

@@ -2,16 +2,20 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
+using Netclaw.Channels;
 using Netclaw.Configuration;
 using Netclaw.Security;
 using SlackNet;
 using SlackNet.WebApi;
+using IOFile = System.IO.File;
 
 namespace Netclaw.Channels.Slack;
 
 /// <summary>
 /// Fetches prior messages from a Slack thread via <c>conversations.replies</c>
 /// and returns them as <see cref="ChannelInput"/> items in chronological order.
+/// Historical attachments reuse the live ingress security pipeline: policy gates,
+/// staged download, content scan, and inbox promotion before inclusion.
 /// </summary>
 public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
 {
@@ -30,6 +34,9 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
     private readonly SlackChannelOptions _options;
     private readonly HttpClient _httpClient;
     private readonly IContentScanner _contentScanner;
+    private readonly NetclawPaths _paths;
+    private readonly ToolAudienceProfiles _audienceProfiles;
+    private readonly ModelCapabilities _modelCapabilities;
     private readonly ILogger<SlackThreadHistoryFetcher> _logger;
 
     public SlackThreadHistoryFetcher(
@@ -37,12 +44,18 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
         SlackChannelOptions options,
         HttpClient httpClient,
         IContentScanner contentScanner,
+        NetclawPaths paths,
+        ToolAudienceProfiles audienceProfiles,
+        ModelCapabilities modelCapabilities,
         ILogger<SlackThreadHistoryFetcher> logger)
     {
         _repliesFetcher = repliesFetcher;
         _options = options;
         _httpClient = httpClient;
         _contentScanner = contentScanner;
+        _paths = paths;
+        _audienceProfiles = audienceProfiles;
+        _modelCapabilities = modelCapabilities;
         _logger = logger;
     }
 
@@ -54,11 +67,14 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
         SlackChannelOptions options,
         HttpClient httpClient,
         IContentScanner contentScanner,
+        NetclawPaths paths,
+        ToolAudienceProfiles audienceProfiles,
+        ModelCapabilities modelCapabilities,
         ILogger<SlackThreadHistoryFetcher> logger)
         : this(
             (channelId, threadTs, limit, cursor, ct) =>
                 conversationsApi.Replies(channelId.Value, threadTs.Value, limit: limit, cursor: cursor, cancellationToken: ct),
-            options, httpClient, contentScanner, logger)
+            options, httpClient, contentScanner, paths, audienceProfiles, modelCapabilities, logger)
     {
     }
 
@@ -66,7 +82,6 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
         SessionId sessionId,
         CancellationToken cancellationToken = default)
     {
-        // SessionId format: {channelId}/{threadTs}
         var parts = sessionId.Value.Split('/', 2);
         if (parts.Length != 2)
         {
@@ -79,7 +94,7 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
 
         try
         {
-            return await FetchRepliesAsync(channelId, threadTs, cancellationToken);
+            return await FetchRepliesAsync(sessionId, channelId, threadTs, cancellationToken);
         }
         catch (SlackException ex)
         {
@@ -94,12 +109,31 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
     }
 
     private async Task<IReadOnlyList<ChannelInput>> FetchRepliesAsync(
+        SessionId sessionId,
         SlackChannelId channelId,
         SlackThreadTs threadTs,
         CancellationToken cancellationToken)
     {
+        var audienceResult = ResolveHistoricalAudience(channelId, threadTs);
+        if (audienceResult.Error is { } audienceError)
+        {
+            _logger.LogWarning(
+                "Invalid Slack audience configuration while fetching history for {ChannelId}/{ThreadTs}: {Error}",
+                channelId.Value,
+                threadTs.Value,
+                audienceError);
+            return [];
+        }
+
+        var audience = audienceResult.Audience;
+        var profile = ToolAudienceProfileDefaults.GetResolvedProfile(_audienceProfiles, audience);
+        var attachmentPolicy = profile.ChannelAttachments ?? ChannelAttachmentPolicy.Empty;
+        var inlineImages = _modelCapabilities.InputModalities.HasFlag(ModelModality.Image);
+
         var results = new List<ChannelInput>();
         string? cursor = null;
+        var inboxDir = SessionDirectoryHelper.GetOrCreateInboxDirectory(sessionId, _paths.SessionsDirectory);
+        var stagingDir = SessionDirectoryHelper.GetOrCreateAttachmentStagingDirectory(sessionId, _paths.SessionsDirectory);
 
         do
         {
@@ -112,14 +146,21 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
 
             foreach (var message in response.Messages)
             {
-                // Include only human-authored thread messages.
                 if (!string.IsNullOrWhiteSpace(message.BotId))
                     continue;
 
                 if (string.IsNullOrWhiteSpace(message.User))
                     continue;
 
-                var input = await ConvertMessageAsync(message, channelId, cancellationToken);
+                var input = await ConvertMessageAsync(
+                    message,
+                    channelId,
+                    audience,
+                    attachmentPolicy,
+                    inlineImages,
+                    inboxDir,
+                    stagingDir,
+                    cancellationToken);
                 if (input is not null)
                     results.Add(input);
             }
@@ -127,33 +168,61 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
             cursor = response.ResponseMetadata?.NextCursor;
         } while (!string.IsNullOrEmpty(cursor));
 
-        _logger.LogInformation("Fetched {Count} thread history messages for {ChannelId}/{ThreadTs}", results.Count, channelId, threadTs);
+        _logger.LogInformation(
+            "Fetched {Count} thread history messages for {ChannelId}/{ThreadTs}",
+            results.Count,
+            channelId,
+            threadTs);
         return results;
     }
 
     private async Task<ChannelInput?> ConvertMessageAsync(
         SlackNet.Events.MessageEvent message,
         SlackChannelId channelId,
+        TrustAudience audience,
+        ChannelAttachmentPolicy attachmentPolicy,
+        bool inlineImages,
+        string inboxDir,
+        string stagingDir,
         CancellationToken cancellationToken)
     {
         var contents = new List<AIContent>();
 
-        if (!string.IsNullOrEmpty(message.Text))
+        if (!string.IsNullOrWhiteSpace(message.Text))
             contents.Add(new TextContent(message.Text));
 
-        if (message.Files is { Count: > 0 })
+        if (message.Files is { Count: > 0 } files)
         {
-            var downloadableFiles = message.Files
-                .Where(f => f.Mimetype is not null
-                    && !string.IsNullOrWhiteSpace(f.UrlPrivateDownload ?? f.UrlPrivate));
-
-            var downloadTasks = downloadableFiles.Select(file => DownloadAndScanFileAsync(file, cancellationToken));
-            var results = await Task.WhenAll(downloadTasks);
-
-            foreach (var result in results)
+            if (files.Count > attachmentPolicy.MaxFilesPerMessage)
             {
-                if (result is not null)
-                    contents.Add(result);
+                _logger.LogWarning(
+                    "Skipping {Count} historical Slack attachments on {ChannelId}; limit is {Limit} for audience {Audience}",
+                    files.Count,
+                    channelId.Value,
+                    attachmentPolicy.MaxFilesPerMessage,
+                    audience);
+                contents.Add(BuildHistoricalAttachmentRejected(
+                    $"{files.Count} historical attachments exceed the {attachmentPolicy.MaxFilesPerMessage} per-message limit"));
+            }
+            else
+            {
+                var downloadableFiles = files
+                    .Where(f => f.Mimetype is not null
+                        && !string.IsNullOrWhiteSpace(f.UrlPrivateDownload ?? f.UrlPrivate))
+                    .ToArray();
+
+                var downloadTasks = downloadableFiles.Select(file => DownloadAndProjectFileAsync(
+                    file,
+                    audience,
+                    attachmentPolicy,
+                    inlineImages,
+                    inboxDir,
+                    stagingDir,
+                    cancellationToken));
+                var results = await Task.WhenAll(downloadTasks);
+
+                foreach (var result in results)
+                    contents.AddRange(result);
             }
         }
 
@@ -172,45 +241,212 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
         };
     }
 
-    private async Task<DataContent?> DownloadAndScanFileAsync(SlackNet.File file, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<AIContent>> DownloadAndProjectFileAsync(
+        SlackNet.File file,
+        TrustAudience audience,
+        ChannelAttachmentPolicy policy,
+        bool inlineImages,
+        string inboxDir,
+        string stagingDir,
+        CancellationToken cancellationToken)
     {
         var downloadUrl = file.UrlPrivateDownload ?? file.UrlPrivate!;
+        var filename = file.Name ?? "attachment";
+        var mimeType = file.Mimetype ?? "application/octet-stream";
+        var category = AttachmentCategories.FromMime(mimeType);
+        var sourceKey = BuildHistoricalAttachmentSourceKey(file, downloadUrl);
+
+        if (!policy.Allows(category))
+        {
+            _logger.LogWarning(
+                "Historical Slack attachment {Name} rejected: category {Category} not allowed for {Audience}",
+                filename,
+                category,
+                audience);
+            return [BuildHistoricalAttachmentRejected(
+                $"historical attachment ({mimeType}) category not allowed in {audience}")];
+        }
+
+        if (file.Size > policy.MaxFileBytes)
+        {
+            _logger.LogWarning(
+                "Historical Slack attachment {Name} rejected: size {Size} exceeds {Limit}",
+                filename,
+                file.Size,
+                policy.MaxFileBytes);
+            return [BuildHistoricalAttachmentRejected(
+                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" exceeds the {AttachmentIngressFormatting.FormatBytes(policy.MaxFileBytes)} per-file limit")];
+        }
+
+        if (HistoricalAttachmentInbox.TryGetExistingFile(inboxDir, filename, sourceKey, out var existingPath, out var existingSize))
+            return await BuildAcceptedAttachmentContentsAsync(
+                existingPath,
+                filename,
+                mimeType,
+                category,
+                inlineImages,
+                existingSize,
+                cancellationToken);
+
+        AttachmentDownloadResult downloadResult;
         try
         {
-            var bytes = await DownloadFileAsync(downloadUrl, cancellationToken);
-            if (bytes.Length == 0)
-                return null;
+            using var downloadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            downloadCts.CancelAfter(FileDownloadTimeout);
 
-            using var scanCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            scanCts.CancelAfter(ContentScanTimeout);
-            var scanResult = await _contentScanner.ScanAsync(
-                bytes, file.Name ?? "attachment", file.Mimetype!, scanCts.Token);
-
-            if (!scanResult.IsAllowed && scanResult.Error != ContentScanError.ScanFailure)
-            {
-                _logger.LogWarning("Content scan rejected backfill file {Name}: {Message}",
-                    file.Name, scanResult.Message ?? scanResult.Error?.ToString());
-                return null;
-            }
-
-            return new DataContent(bytes.ToArray(), file.Mimetype!);
+            downloadResult = await SlackFileDownloader.DownloadToFileAsync(
+                _httpClient,
+                downloadUrl,
+                _options.BotToken,
+                stagingDir,
+                policy.MaxFileBytes,
+                downloadCts.Token,
+                (ex, path) => _logger.LogError(ex, "Failed to clean up staged download file {Path}", path));
+        }
+        catch (AttachmentTooLargeException ex)
+        {
+            _logger.LogWarning(
+                "Historical Slack attachment {Name} rejected during download: {Size} exceeds {Limit}",
+                filename,
+                ex.BytesReceived,
+                ex.MaxBytes);
+            return [BuildHistoricalAttachmentRejected(
+                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" exceeded the {AttachmentIngressFormatting.FormatBytes(ex.MaxBytes)} per-file limit during download")];
         }
         catch (OperationCanceledException)
         {
-            _logger.LogWarning("Timed out downloading backfill file {Name}, skipping", file.Name);
-            return null;
+            _logger.LogWarning("Timed out downloading historical Slack attachment {Name}", filename);
+            return [BuildHistoricalAttachmentRejected(
+                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" timed out during download")];
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to download backfill file {Name}, skipping", file.Name);
-            return null;
+            _logger.LogWarning(ex, "Failed downloading historical Slack attachment {Name}", filename);
+            return [BuildHistoricalAttachmentRejected(
+                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" could not be downloaded")];
         }
+
+        if (downloadResult.BytesWritten == 0)
+        {
+            AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
+            return [BuildHistoricalAttachmentRejected(
+                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" downloaded as zero bytes")];
+        }
+
+        ContentScanResult scanResult;
+        try
+        {
+            using var scanCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            scanCts.CancelAfter(ContentScanTimeout);
+            scanResult = await _contentScanner.ScanFileAsync(
+                downloadResult.FilePath,
+                filename,
+                mimeType,
+                scanCts.Token);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Historical Slack attachment scan threw for {Name}", filename);
+            AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
+            return [BuildHistoricalAttachmentRejected(
+                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" could not be scanned")];
+        }
+
+        if (!scanResult.IsAllowed)
+        {
+            _logger.LogWarning(
+                "Historical Slack attachment {Name} rejected by scanner: {Error} {Message}",
+                filename,
+                scanResult.Error?.ToString(),
+                scanResult.Message ?? string.Empty);
+            AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
+            return [BuildHistoricalAttachmentRejected(
+                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" was rejected by content scanning: {AttachmentIngressFormatting.EscapeQuoted(scanResult.Message ?? scanResult.Error?.ToString() ?? "unknown error")}")];
+        }
+
+        string inboxPath;
+        try
+        {
+            inboxPath = HistoricalAttachmentInbox.PromoteOrReuse(
+                inboxDir,
+                filename,
+                sourceKey,
+                downloadResult.FilePath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to promote historical Slack attachment {Name} into inbox", filename);
+            AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
+            return [BuildHistoricalAttachmentRejected(
+                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" could not be saved to the session inbox")];
+        }
+
+        return await BuildAcceptedAttachmentContentsAsync(
+            inboxPath,
+            filename,
+            mimeType,
+            category,
+            inlineImages,
+            downloadResult.BytesWritten,
+            cancellationToken);
     }
 
-    private async Task<ReadOnlyMemory<byte>> DownloadFileAsync(string url, CancellationToken cancellationToken)
+    private async Task<IReadOnlyList<AIContent>> BuildAcceptedAttachmentContentsAsync(
+        string inboxPath,
+        string filename,
+        string mimeType,
+        AttachmentCategory category,
+        bool inlineImages,
+        long size,
+        CancellationToken cancellationToken)
     {
-        using var downloadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        downloadCts.CancelAfter(FileDownloadTimeout);
-        return await SlackFileDownloader.DownloadAsync(_httpClient, url, _options.BotToken, downloadCts.Token);
+        var relativePath = $"{SessionDirectoryHelper.InboxSubdirectory}/{Path.GetFileName(inboxPath)}";
+        var (inlined, note) = AttachmentIngressFormatting.ResolveInlineDecision(category, inlineImages);
+        var line = new TextContent(AttachmentIngressFormatting.BuildAttachmentLine(
+            filename,
+            mimeType,
+            size,
+            relativePath,
+            inlined,
+            note));
+
+        if (!inlined)
+        {
+            return [line];
+        }
+
+        var bytes = await IOFile.ReadAllBytesAsync(inboxPath, cancellationToken);
+        return [line, new DataContent(bytes, mimeType)];
     }
+
+    private AudienceResult ResolveHistoricalAudience(SlackChannelId channelId, SlackThreadTs threadTs)
+    {
+        var isExplicitChannel = _options.AllowedChannelIds.Contains(channelId.Value, StringComparer.Ordinal);
+        var syntheticMessage = new SlackInboundMessage(
+            Kind: SlackInboundKind.Message,
+            EventId: new SlackEventId($"history:{threadTs.Value}"),
+            ChannelId: channelId,
+            ThreadTs: threadTs,
+            EventTs: new SlackEventTs(threadTs.Value),
+            UserId: null,
+            BotId: null,
+            Text: string.Empty,
+            Subtype: null,
+            Hidden: false,
+            IsDirectMessage: channelId.Value.StartsWith("D", StringComparison.Ordinal));
+
+        return SlackAclPolicy.ResolveAudience(
+            syntheticMessage,
+            _options,
+            isExplicitUser: false,
+            isExplicitChannel: isExplicitChannel);
+    }
+
+    private static TextContent BuildHistoricalAttachmentRejected(string detail)
+        => new($"[attachment rejected: {detail}]");
+
+    private static string BuildHistoricalAttachmentSourceKey(SlackNet.File file, string downloadUrl)
+        => !string.IsNullOrWhiteSpace(file.Id)
+            ? $"slack:{file.Id}"
+            : $"slack-url:{downloadUrl}";
 }
