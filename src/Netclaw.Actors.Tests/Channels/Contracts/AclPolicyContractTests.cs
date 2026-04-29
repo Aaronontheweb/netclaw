@@ -31,7 +31,7 @@ public abstract class AclPolicyContractTests
         var options = new ChannelOptionsBuilder { AllowDirectMessages = true };
         var result = EvaluateDm("", options);
         Assert.False(result.IsAllowed);
-        Assert.Contains("missing_user_id", result.DenyReason!);
+        Assert.Contains(AclDenyReasons.MissingUserId, result.DenyReason!);
     }
 
     [Fact]
@@ -40,7 +40,7 @@ public abstract class AclPolicyContractTests
         var options = new ChannelOptionsBuilder { AllowDirectMessages = false };
         var result = EvaluateDm("user-1", options);
         Assert.False(result.IsAllowed);
-        Assert.NotNull(result.DenyReason);
+        Assert.Contains(AclDenyReasons.DirectMessagesDisabled, result.DenyReason!);
     }
 
     [Fact]
@@ -52,7 +52,7 @@ public abstract class AclPolicyContractTests
         };
         var result = EvaluateChannel("ch-other", "user-1", options);
         Assert.False(result.IsAllowed);
-        Assert.Contains("channel_not_allowed", result.DenyReason!);
+        Assert.Contains(AclDenyReasons.ChannelNotAllowed, result.DenyReason!);
     }
 
     [Fact]
@@ -65,7 +65,7 @@ public abstract class AclPolicyContractTests
         };
         var result = EvaluateChannel("ch-1", "user-denied", options);
         Assert.False(result.IsAllowed);
-        Assert.Contains("user_not_allowed", result.DenyReason!);
+        Assert.Contains(AclDenyReasons.UserNotAllowed, result.DenyReason!);
     }
 
     // --- Allow cases ---
@@ -199,7 +199,7 @@ public abstract class AclPolicyContractTests
         };
         var result = EvaluateChannel("ch-1", "user-1", options);
         Assert.False(result.IsAllowed);
-        Assert.Contains("invalid_channel_audience", result.DenyReason!);
+        Assert.Contains(AclDenyReasons.InvalidChannelAudiencePrefix, result.DenyReason!);
     }
 
     // --- Provenance ---
