@@ -8,37 +8,14 @@ using Netclaw.Cli.Tui;
 using Netclaw.Cli.Tui.Wizard;
 using Netclaw.Cli.Tui.Wizard.Steps;
 using Netclaw.Configuration;
-using Netclaw.Providers;
 using Xunit;
 
 namespace Netclaw.Cli.Tests.Tui.Wizard;
 
-public sealed class ChannelPickerStepViewModelTests : IDisposable
+public sealed class ChannelPickerStepViewModelTests : WizardStepTestBase
 {
-    private readonly string _tempDir;
-    private readonly WizardContext _context;
     private readonly FakeSlackProbe _fakeProbe = new();
     private readonly FakeDiscordProbe _fakeDiscordProbe = new();
-
-    public ChannelPickerStepViewModelTests()
-    {
-        _tempDir = Path.Combine(Path.GetTempPath(), $"netclaw-test-{Guid.NewGuid():N}");
-        var paths = new NetclawPaths(_tempDir);
-        paths.EnsureDirectoriesExist();
-        _context = new WizardContext
-        {
-            Paths = paths,
-            Registry = new ProviderDescriptorRegistry([]),
-            RequestRedraw = () => { }
-        };
-    }
-
-    public void Dispose()
-    {
-        _context.Dispose();
-        if (Directory.Exists(_tempDir))
-            Directory.Delete(_tempDir, true);
-    }
 
     [Fact]
     public void StepId_IsChannelPicker()
@@ -51,14 +28,14 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
     public void IsApplicable_AlwaysTrue()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        Assert.True(picker.IsApplicable(_context));
+        Assert.True(picker.IsApplicable(Context));
     }
 
     [Fact]
     public void PickerMode_TryAdvance_ReturnsFalse()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         Assert.True(picker.IsInPickerMode);
         Assert.False(picker.TryAdvance());
@@ -68,7 +45,7 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
     public void PickerMode_TryGoBack_ReturnsFalse()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         Assert.False(picker.TryGoBack());
     }
@@ -77,7 +54,7 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
     public void ToggleOn_EntersSubFlow()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         picker.ToggleAdapter(0); // Toggle Slack on
 
@@ -90,7 +67,7 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
     public void SubFlow_TryAdvance_DelegatesToChild()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         picker.ToggleAdapter(0); // Slack sub-flow starts at sub-step 1 (bot token)
         Assert.True(picker.IsInSubFlow);
@@ -104,7 +81,7 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
     public void SubFlow_Complete_ReturnsToPicker_WithSummary()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         picker.ToggleAdapter(0); // Slack sub-flow
 
@@ -129,7 +106,7 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
     public void SubFlow_TryGoBack_AtFirstSubStep_ReturnsToPicker()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         picker.ToggleAdapter(0); // Slack sub-flow at sub-step 1
         Assert.True(picker.IsInSubFlow);
@@ -145,7 +122,7 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
     public void SubFlow_TryGoBack_InMiddle_DelegatesToChild()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         picker.ToggleAdapter(0); // Slack sub-flow at sub-step 1
         picker.TryAdvance(); // sub-step 1 → 2
@@ -159,7 +136,7 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
     public void ToggleOff_ClearsConfig()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         // Complete a full Slack sub-flow
         picker.ToggleAdapter(0);
@@ -178,7 +155,7 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
     public void EditAdapter_ReEntersSubFlow()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         // Complete Slack sub-flow first
         picker.ToggleAdapter(0);
@@ -194,7 +171,7 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
     public void OnLeave_SetsAnyChatServicesEnabled()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         // Complete Slack sub-flow
         picker.ToggleAdapter(0);
@@ -202,26 +179,26 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
 
         picker.OnLeave();
 
-        Assert.True(_context.AnyChatServicesEnabled);
-        Assert.True(_context.ChannelEntries.ContainsKey(ChannelType.Slack));
+        Assert.True(Context.AnyChatServicesEnabled);
+        Assert.True(Context.ChannelEntries.ContainsKey(ChannelType.Slack));
     }
 
     [Fact]
     public void OnLeave_NoneEnabled_AnyChatServicesDisabled()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         picker.OnLeave();
 
-        Assert.False(_context.AnyChatServicesEnabled);
+        Assert.False(Context.AnyChatServicesEnabled);
     }
 
     [Fact]
     public void OnEnter_Back_ResumesPickerMode()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         // Complete Slack sub-flow and leave
         picker.ToggleAdapter(0);
@@ -229,7 +206,7 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
         picker.OnLeave();
 
         // Re-enter from back navigation
-        picker.OnEnter(_context, NavigationDirection.Back);
+        picker.OnEnter(Context, NavigationDirection.Back);
 
         Assert.True(picker.IsInPickerMode);
         Assert.True(picker.IsAdapterEnabled(0));
@@ -239,7 +216,7 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
     public void ContributeConfig_DelegatesToAllAdapters()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         // Configure Slack with a bot token
         picker.ToggleAdapter(0);
@@ -251,7 +228,7 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
 
         picker.OnLeave();
 
-        var builder = new WizardConfigBuilder(_context.Paths);
+        var builder = new WizardConfigBuilder(Context.Paths);
         picker.ContributeConfig(builder);
 
         Assert.NotNull(builder.Slack);
@@ -262,7 +239,7 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
     public void GetHelpText_PickerMode_ReturnsPickerHelp()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         Assert.Contains("channel", picker.GetHelpText(), StringComparison.OrdinalIgnoreCase);
     }
@@ -271,7 +248,7 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
     public void GetHelpText_SubFlowMode_DelegatesToChild()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         picker.ToggleAdapter(0); // Slack sub-flow
 
@@ -283,7 +260,7 @@ public sealed class ChannelPickerStepViewModelTests : IDisposable
     public void CancelSubFlow_OnEdit_PreservesEnabled()
     {
         using var picker = new ChannelPickerStepViewModel(_fakeProbe, _fakeDiscordProbe);
-        picker.OnEnter(_context, NavigationDirection.Forward);
+        picker.OnEnter(Context, NavigationDirection.Forward);
 
         // Complete Slack sub-flow
         picker.ToggleAdapter(0);

@@ -23,12 +23,12 @@ public sealed class DiscordStepView : IWizardStepView
     private TextInputNode? _botTokenInput;
     private TextInputNode? _channelIdsInput;
     private SelectionListNode<string>? _dmEnabledList;
-    private SelectionListNode<string>? _userAccessChoiceList;
+    private IDisposable? _userAccessChoiceList;
     private TextInputNode? _allowedUserIdsInput;
     private IFocusable? _lastFocusedList;
     private TextInputBaseNode? _lastFocusedInput;
 
-    public string StepId => "discord";
+    public string StepId => WizardStepIds.Discord;
 
     public ILayoutNode BuildContent(IWizardStepViewModel stepVm, StepViewCallbacks callbacks)
     {
@@ -96,12 +96,7 @@ public sealed class DiscordStepView : IWizardStepView
 
         return Layouts.Vertical()
             .WithChild(new TextNode("  Discord Bot Token:").WithForeground(Color.White))
-            .WithChild(new PanelNode()
-                .WithTitle("Bot Token")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_botTokenInput)
-                .Height(3));
+            .WithChild(WizardStepHelpers.BuildTextInputPanel(_botTokenInput, "Bot Token"));
     }
 
     private ILayoutNode BuildChannelIdsSubStep(DiscordStepViewModel vm, StepViewCallbacks callbacks)
@@ -126,12 +121,7 @@ public sealed class DiscordStepView : IWizardStepView
 
         return Layouts.Vertical()
             .WithChild(new TextNode("  Allowed channel IDs (press Enter to skip):").WithForeground(Color.White))
-            .WithChild(new PanelNode()
-                .WithTitle("Channel IDs")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_channelIdsInput)
-                .Height(3));
+            .WithChild(WizardStepHelpers.BuildTextInputPanel(_channelIdsInput, "Channel IDs"));
     }
 
     private ILayoutNode BuildDmEnabledSubStep(DiscordStepViewModel vm, StepViewCallbacks callbacks)
@@ -198,12 +188,7 @@ public sealed class DiscordStepView : IWizardStepView
 
         return Layouts.Vertical()
             .WithChild(new TextNode("  Allowed user IDs (at least one required):").WithForeground(Color.White))
-            .WithChild(new PanelNode()
-                .WithTitle("Allowed User IDs")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_allowedUserIdsInput)
-                .Height(3));
+            .WithChild(WizardStepHelpers.BuildTextInputPanel(_allowedUserIdsInput, "Allowed User IDs"));
     }
 
     public bool HandleKeyPress(KeyPressed key)

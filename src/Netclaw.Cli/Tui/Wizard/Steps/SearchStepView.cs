@@ -20,13 +20,13 @@ namespace Netclaw.Cli.Tui.Wizard.Steps;
 /// </summary>
 public sealed class SearchStepView : IWizardStepView
 {
-    private SelectionListNode<string>? _backendList;
+    private IDisposable? _backendList;
     private TextInputNode? _braveApiKeyInput;
     private TextInputNode? _searxngEndpointInput;
     private IFocusable? _lastFocusedList;
     private TextInputBaseNode? _lastFocusedInput;
 
-    public string StepId => "search";
+    public string StepId => WizardStepIds.Search;
 
     public ILayoutNode BuildContent(IWizardStepViewModel stepVm, StepViewCallbacks callbacks)
     {
@@ -42,46 +42,37 @@ public sealed class SearchStepView : IWizardStepView
 
     private ILayoutNode BuildBackendSelection(SearchStepViewModel vm, StepViewCallbacks callbacks)
     {
-        var duckDuckGoLabel = "DuckDuckGo (default \u2014 no config needed, may hit bot detection)";
-        var braveLabel = "Brave Search (API key required \u2014 reliable, fast)";
-        var searxngLabel = "SearXNG (self-hosted \u2014 endpoint required)";
+        var duckDuckGoOption = new SelectionOption<SearchBackend>(SearchBackend.DuckDuckGo,
+            "DuckDuckGo (default — no config needed, may hit bot detection)");
+        var braveOption = new SelectionOption<SearchBackend>(SearchBackend.Brave,
+            "Brave Search (API key required — reliable, fast)");
+        var searxngOption = new SelectionOption<SearchBackend>(SearchBackend.SearXng,
+            "SearXNG (self-hosted — endpoint required)");
 
-        _backendList = Layouts.SelectionList(duckDuckGoLabel, braveLabel, searxngLabel)
+        var backendList = Layouts.SelectionList<SelectionOption<SearchBackend>>(
+                [duckDuckGoOption, braveOption, searxngOption], static o => o.ToString())
             .WithMode(SelectionMode.Single)
             .WithHighlightColors(Color.Black, Color.Cyan);
 
-        _backendList.OnFocused();
-        _lastFocusedList = _backendList;
+        _backendList = backendList;
+        backendList.OnFocused();
+        _lastFocusedList = backendList;
         _lastFocusedInput = null;
 
-        _backendList.SelectionConfirmed
+        backendList.SelectionConfirmed
             .Subscribe(selected =>
             {
                 if (selected.Count > 0)
                 {
-                    var choice = selected[0];
-                    if (choice == duckDuckGoLabel)
-                    {
-                        vm.SelectedBackend = SearchBackend.DuckDuckGo;
-                        callbacks.AdvanceStep(); // step complete, no credentials needed
-                    }
-                    else if (choice == braveLabel)
-                    {
-                        vm.SelectedBackend = SearchBackend.Brave;
-                        callbacks.AdvanceStep(); // → sub-step 1 (handled by TryAdvance)
-                    }
-                    else if (choice == searxngLabel)
-                    {
-                        vm.SelectedBackend = SearchBackend.SearXng;
-                        callbacks.AdvanceStep(); // → sub-step 1
-                    }
+                    vm.SelectedBackend = selected[0].Value;
+                    callbacks.AdvanceStep();
                 }
             })
             .DisposeWith(callbacks.Subscriptions);
 
         return Layouts.Vertical()
             .WithChild(new TextNode("  Choose your web search provider:").WithForeground(Color.White))
-            .WithChild(_backendList);
+            .WithChild(backendList);
     }
 
     private ILayoutNode BuildCredentialInput(SearchStepViewModel vm, StepViewCallbacks callbacks)
@@ -111,12 +102,7 @@ public sealed class SearchStepView : IWizardStepView
 
             return Layouts.Vertical()
                 .WithChild(new TextNode("  Brave Search API key:").WithForeground(Color.White))
-                .WithChild(new PanelNode()
-                    .WithTitle("API Key")
-                    .WithBorder(BorderStyle.Rounded)
-                    .WithBorderColor(Color.Gray)
-                    .WithContent(_braveApiKeyInput)
-                    .Height(3));
+                .WithChild(WizardStepHelpers.BuildTextInputPanel(_braveApiKeyInput, "API Key"));
         }
 
         // SearXNG
@@ -140,12 +126,7 @@ public sealed class SearchStepView : IWizardStepView
 
         return Layouts.Vertical()
             .WithChild(new TextNode("  SearXNG endpoint URL:").WithForeground(Color.White))
-            .WithChild(new PanelNode()
-                .WithTitle("Endpoint")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_searxngEndpointInput)
-                .Height(3));
+            .WithChild(WizardStepHelpers.BuildTextInputPanel(_searxngEndpointInput, "Endpoint"));
     }
 
     public bool HandleKeyPress(KeyPressed key)

@@ -24,12 +24,12 @@ public sealed class SlackStepView : IWizardStepView
     private TextInputNode? _appTokenInput;
     private TextInputNode? _channelNamesInput;
     private SelectionListNode<string>? _dmEnabledList;
-    private SelectionListNode<string>? _userAccessChoiceList;
+    private IDisposable? _userAccessChoiceList;
     private TextInputNode? _allowedUserIdsInput;
     private IFocusable? _lastFocusedList;
     private TextInputBaseNode? _lastFocusedInput;
 
-    public string StepId => "slack";
+    public string StepId => WizardStepIds.Slack;
 
     public ILayoutNode BuildContent(IWizardStepViewModel stepVm, StepViewCallbacks callbacks)
     {
@@ -103,12 +103,7 @@ public sealed class SlackStepView : IWizardStepView
 
         return Layouts.Vertical()
             .WithChild(new TextNode("  Slack Bot Token:").WithForeground(Color.White))
-            .WithChild(new PanelNode()
-                .WithTitle("Bot Token")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_botTokenInput)
-                .Height(3));
+            .WithChild(WizardStepHelpers.BuildTextInputPanel(_botTokenInput, "Bot Token"));
     }
 
     private ILayoutNode BuildAppTokenSubStep(SlackStepViewModel vm, StepViewCallbacks callbacks)
@@ -137,12 +132,7 @@ public sealed class SlackStepView : IWizardStepView
 
         return Layouts.Vertical()
             .WithChild(new TextNode("  Slack App Token (Socket Mode):").WithForeground(Color.White))
-            .WithChild(new PanelNode()
-                .WithTitle("App Token")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_appTokenInput)
-                .Height(3));
+            .WithChild(WizardStepHelpers.BuildTextInputPanel(_appTokenInput, "App Token"));
     }
 
     private ILayoutNode BuildChannelNamesSubStep(SlackStepViewModel vm, StepViewCallbacks callbacks)
@@ -167,12 +157,7 @@ public sealed class SlackStepView : IWizardStepView
 
         return Layouts.Vertical()
             .WithChild(new TextNode("  Channel names (press Enter to skip):").WithForeground(Color.White))
-            .WithChild(new PanelNode()
-                .WithTitle("Channel Names")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_channelNamesInput)
-                .Height(3));
+            .WithChild(WizardStepHelpers.BuildTextInputPanel(_channelNamesInput, "Channel Names"));
     }
 
     private ILayoutNode BuildDmEnabledSubStep(SlackStepViewModel vm, StepViewCallbacks callbacks)
@@ -239,12 +224,7 @@ public sealed class SlackStepView : IWizardStepView
 
         return Layouts.Vertical()
             .WithChild(new TextNode("  Allowed user IDs (at least one required):").WithForeground(Color.White))
-            .WithChild(new PanelNode()
-                .WithTitle("Allowed User IDs")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_allowedUserIdsInput)
-                .Height(3));
+            .WithChild(WizardStepHelpers.BuildTextInputPanel(_allowedUserIdsInput, "Allowed User IDs"));
     }
 
     public bool HandleKeyPress(KeyPressed key)

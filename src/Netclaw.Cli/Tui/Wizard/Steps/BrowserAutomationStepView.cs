@@ -19,11 +19,11 @@ namespace Netclaw.Cli.Tui.Wizard.Steps;
 /// </summary>
 public sealed class BrowserAutomationStepView : IWizardStepView
 {
-    private SelectionListNode<string>? _enabledList;
-    private SelectionListNode<string>? _backendList;
+    private IDisposable? _enabledList;
+    private IDisposable? _backendList;
     private IFocusable? _lastFocusedList;
 
-    public string StepId => "browser-automation";
+    public string StepId => WizardStepIds.BrowserAutomation;
 
     public ILayoutNode BuildContent(IWizardStepViewModel stepVm, StepViewCallbacks callbacks)
     {
@@ -39,30 +39,32 @@ public sealed class BrowserAutomationStepView : IWizardStepView
 
     private ILayoutNode BuildEnableSubStep(BrowserAutomationStepViewModel vm, StepViewCallbacks callbacks)
     {
-        var noLabel = "No \u2014 skip browser automation for now";
-        var yesLabel = "Yes \u2014 configure browser MCP tools";
+        var noOption = new SelectionOption<bool>(false, "No — skip browser automation for now");
+        var yesOption = new SelectionOption<bool>(true, "Yes — configure browser MCP tools");
 
-        _enabledList = Layouts.SelectionList(noLabel, yesLabel)
+        var enabledList = Layouts.SelectionList<SelectionOption<bool>>(
+                [noOption, yesOption], static o => o.ToString())
             .WithMode(SelectionMode.Single)
             .WithHighlightColors(Color.Black, Color.Cyan);
 
-        _enabledList.OnFocused();
-        _lastFocusedList = _enabledList;
+        _enabledList = enabledList;
+        enabledList.OnFocused();
+        _lastFocusedList = enabledList;
 
-        _enabledList.SelectionConfirmed
+        enabledList.SelectionConfirmed
             .Subscribe(selected =>
             {
                 if (selected.Count == 0)
                     return;
 
-                vm.Enabled = selected[0] == yesLabel;
+                vm.Enabled = selected[0].Value;
                 callbacks.AdvanceStep();
             })
             .DisposeWith(callbacks.Subscriptions);
 
         return Layouts.Vertical()
             .WithChild(new TextNode("  Enable browser automation MCP tools?").WithForeground(Color.White))
-            .WithChild(_enabledList);
+            .WithChild(enabledList);
     }
 
     private ILayoutNode BuildBackendSubStep(BrowserAutomationStepViewModel vm, StepViewCallbacks callbacks)
@@ -70,38 +72,38 @@ public sealed class BrowserAutomationStepView : IWizardStepView
         var chromeLabel = vm.IsChromeDevToolsAvailable
             ? "Chrome DevTools MCP"
             : $"Chrome DevTools MCP (disabled - {vm.ChromeDevToolsUnavailableReason})";
-        var playwrightLabel = "Playwright MCP";
+        var chromeOption = new SelectionOption<BrowserAutomationBackend>(BrowserAutomationBackend.ChromeDevTools, chromeLabel);
+        var playwrightOption = new SelectionOption<BrowserAutomationBackend>(BrowserAutomationBackend.Playwright, "Playwright MCP");
 
-        _backendList = Layouts.SelectionList(chromeLabel, playwrightLabel)
+        var backendList = Layouts.SelectionList<SelectionOption<BrowserAutomationBackend>>(
+                [chromeOption, playwrightOption], static o => o.ToString())
             .WithMode(SelectionMode.Single)
             .WithHighlightColors(Color.Black, Color.Cyan);
 
-        _backendList.OnFocused();
-        _lastFocusedList = _backendList;
+        _backendList = backendList;
+        backendList.OnFocused();
+        _lastFocusedList = backendList;
 
-        _backendList.SelectionConfirmed
+        backendList.SelectionConfirmed
             .Subscribe(selected =>
             {
                 if (selected.Count == 0)
                     return;
 
-                if (selected[0] == chromeLabel && !vm.IsChromeDevToolsAvailable)
+                if (selected[0].Value == BrowserAutomationBackend.ChromeDevTools && !vm.IsChromeDevToolsAvailable)
                 {
-                    // Can't select disabled option — show error
+                    // Can't select disabled option
                     return;
                 }
 
-                vm.SelectedBackend = selected[0] == playwrightLabel
-                    ? BrowserAutomationBackend.Playwright
-                    : BrowserAutomationBackend.ChromeDevTools;
-
+                vm.SelectedBackend = selected[0].Value;
                 callbacks.AdvanceStep();
             })
             .DisposeWith(callbacks.Subscriptions);
 
         return Layouts.Vertical()
             .WithChild(new TextNode("  Choose browser MCP backend:").WithForeground(Color.White))
-            .WithChild(_backendList);
+            .WithChild(backendList);
     }
 
     public bool HandleKeyPress(KeyPressed key)

@@ -44,7 +44,7 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
         OAuth = new OAuthFlowCoordinator(registry, oauthFactory, null, () => { });
     }
 
-    public string StepId => "provider";
+    public string StepId => WizardStepIds.Provider;
     public string DisplayTitle => "LLM Provider";
 
     // ── State ──

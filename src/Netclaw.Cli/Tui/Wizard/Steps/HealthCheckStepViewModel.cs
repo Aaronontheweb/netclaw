@@ -31,7 +31,7 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
         _navigationState = navigationState;
     }
 
-    public string StepId => "health-check";
+    public string StepId => WizardStepIds.HealthCheck;
     public string DisplayTitle => "Health Check";
 
     // ── Reactive state ──

@@ -30,7 +30,7 @@ public sealed class SkillFeedsStepViewModel : IWizardStepViewModel, IDisposable
 
     private readonly List<ConfiguredFeed> _feeds = [];
 
-    public string StepId => "skill-feeds";
+    public string StepId => WizardStepIds.SkillFeeds;
     public string DisplayTitle => "Skill Feeds";
 
     public int CurrentSubStep => _currentSubStep;
