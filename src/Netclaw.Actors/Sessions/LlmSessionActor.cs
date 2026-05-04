@@ -2375,6 +2375,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // the end of the list. See SessionMessageAssembler for the full
         // assembly contract. Mark startup injection complete after the
         // first call to preserve the existing OnceAtStart semantics.
+        var skillHint = BuildSkillHint();
         var messages = SessionMessageAssembler.Assemble(new ContextAssemblyInput(
             State: _state,
             ContextLayers: _contextLayers,
@@ -2386,7 +2387,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             SessionsBasePath: _sessionsBasePath,
             FileReadGranted: HasFileReadGranted(),
             ActiveRecall: _activeRecall,
-            Audience: CurrentTurnAudience()));
+            Audience: CurrentTurnAudience(),
+            SkillHint: skillHint));
         _startupContextInjected = true;
 
         var self = Self;
@@ -2434,6 +2436,23 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         return _toolAccessPolicy.FilterExposedTools(_availableTools, _fullRegistry, _currentTrustContext);
     }
 
+
+    private static readonly string SkillHintText =
+        "[skill-hint] Before answering any technical or knowledge question, scan [available-skills] for a relevant skill and call skill_load(name=\"...\"). " +
+        "Skills contain user-specific preferences and project conventions that override your general knowledge — even if you already know a topic, the user may have standards defined in a skill. " +
+        "When in doubt, load — a redundant load is cheap, a missed skill is not.";
+
+    /// <summary>
+    /// Returns a generic per-turn skill reminder when skills are available,
+    /// or null when the skill subsystem is inactive.
+    /// </summary>
+    private string? BuildSkillHint()
+    {
+        if (_skillRegistry is null || _skillRegistry.GetAll().Count == 0)
+            return null;
+
+        return SkillHintText;
+    }
 
     /// <summary>
     /// Handles slash-command dispatch. If the user message starts with / and matches

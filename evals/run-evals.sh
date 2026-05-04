@@ -188,6 +188,9 @@ resolve_eval_target() {
 }
 
 cleanup_eval_env() {
+    # Archive logs and results to a persistent location before teardown.
+    archive_eval_run
+
     # Container is launched with --rm, so `docker stop` also removes it.
     if [[ -n "${EVAL_CONTAINER_NAME:-}" ]]; then
         docker stop "$EVAL_CONTAINER_NAME" >/dev/null 2>&1 || true
@@ -202,6 +205,58 @@ cleanup_eval_env() {
     if [[ -n "${EVAL_HOME:-}" && -d "$EVAL_HOME" ]]; then
         force_rmrf "$EVAL_HOME"
     fi
+}
+
+# Archive daemon logs, results DB, and stdout captures to evals/runs/<run-id>/
+# so they survive the temp-dir teardown and can be inspected after the run.
+archive_eval_run() {
+    # Skip if no run ID (early failure before init completed)
+    if [[ -z "${RUN_ID:-}" ]]; then return 0; fi
+
+    local archive_dir="$REPO_ROOT/evals/runs/$RUN_ID"
+    mkdir -p "$archive_dir"
+
+    # Copy daemon log
+    if [[ -f "${DAEMON_LOG:-}" ]]; then
+        cp "$DAEMON_LOG" "$archive_dir/daemon.log" 2>/dev/null || true
+    fi
+
+    # Copy all container logs (crash logs, session logs)
+    if [[ -d "$EVAL_HOME/data/logs" ]]; then
+        cp -r "$EVAL_HOME/data/logs" "$archive_dir/container-logs" 2>/dev/null || true
+    fi
+    # Also check the direct logs dir (bind-mount layout varies)
+    if [[ -d "$EVAL_HOME/logs" && ! -d "$archive_dir/container-logs" ]]; then
+        cp -r "$EVAL_HOME/logs" "$archive_dir/container-logs" 2>/dev/null || true
+    fi
+
+    # Copy results DB
+    if [[ -f "${RESULTS_DB:-}" ]]; then
+        cp "$RESULTS_DB" "$archive_dir/results.db" 2>/dev/null || true
+    fi
+
+    # Copy stdout captures
+    if [[ -n "${TMPDIR_EVAL:-}" && -d "$TMPDIR_EVAL" ]]; then
+        mkdir -p "$archive_dir/stdout"
+        cp "$TMPDIR_EVAL"/stdout_*.txt "$archive_dir/stdout/" 2>/dev/null || true
+    fi
+
+    # Write run metadata
+    cat > "$archive_dir/run-info.txt" <<RUNEOF
+run_id:    $RUN_ID
+started:   ${STARTED_AT:-unknown}
+model:     ${EVAL_MODEL_ID:-unknown}
+provider:  ${EVAL_PROVIDER_TYPE:-unknown} @ ${EVAL_PROVIDER_ENDPOINT:-unknown}
+version:   ${NETCLAW_VER:-unknown}
+category:  ${FILTER_CATEGORY:-all}
+case:      ${FILTER_CASE:-all}
+timeout:   ${PROMPT_TIMEOUT:-60}s
+runs:      ${RUNS:-5}
+threshold: ${THRESHOLD:-0.80}
+passed:    ${PASSED_CASES:-0}/${TOTAL_CASES:-0}
+RUNEOF
+
+    echo "Archived: $archive_dir"
 }
 
 # Remove a directory even if it contains files owned by a different user
@@ -289,6 +344,11 @@ start_eval_daemon() {
         cp -r "$REPO_ROOT/feeds/skills/.system/files/." "$EVAL_HOME/skills/.system/files/"
     else
         echo "WARN: no system skills at $REPO_ROOT/feeds/skills/.system/files/ — Skill Discovery evals will fail." >&2
+    fi
+
+    # Copy user skills from eval fixtures (non-system skills for activation testing).
+    if [[ -d "$REPO_ROOT/evals/fixtures/skills" ]]; then
+        cp -r "$REPO_ROOT/evals/fixtures/skills/." "$EVAL_HOME/skills/"
     fi
 
     local -a docker_args=(
@@ -564,9 +624,10 @@ finalize_db() {
     local score
     score=$(awk "BEGIN {printf \"%.4f\", $PASSED_CASES / ($TOTAL_CASES > 0 ? $TOTAL_CASES : 1)}")
     local esc_ver="${NETCLAW_VER//\'/\'\'}"
+    local esc_model="${EVAL_MODEL_ID//\'/\'\'}"
     sqlite3 "$RESULTS_DB" \
         "INSERT INTO eval_runs (run_id, started_at, netclaw_ver, model_id, runs_per_case, threshold, total_cases, passed_cases, overall_score)
-         VALUES ('$RUN_ID', '$STARTED_AT', '$esc_ver', NULL, $RUNS, $THRESHOLD, $TOTAL_CASES, $PASSED_CASES, $score);"
+         VALUES ('$RUN_ID', '$STARTED_AT', '$esc_ver', '$esc_model', $RUNS, $THRESHOLD, $TOTAL_CASES, $PASSED_CASES, $score);"
 }
 
 # ─── Utility Functions ────────────────────────────────────────────────────────
@@ -747,6 +808,19 @@ daemon_log_contains() {
     daemon_log_tail | grep -qE "$1" 2>/dev/null
 }
 
+daemon_log_skill_loaded() {
+    local skill_name="$1"
+    daemon_log_tail | grep -qE "turn_skill_loaded skill=$skill_name" 2>/dev/null
+}
+
+daemon_log_no_skill_loaded() {
+    ! daemon_log_tail | grep -qE "turn_skill_loaded" 2>/dev/null
+}
+
+stdout_tool_called() {
+    grep -qE "\\[tool:call\\] $1\\(" "$STDOUT_FILE" 2>/dev/null
+}
+
 # ─── Case Assertion Functions ─────────────────────────────────────────────────
 
 # Category 1: Identity & Self-Awareness
@@ -767,18 +841,13 @@ assert_identity_session() {
 }
 
 # Category 2: Skill Discovery — tests that the model retrieves procedural
-# knowledge from skills when needed, measured by outcome correctness rather
-# than checking for a specific file_read call.
+# knowledge from skills when needed AND actually loaded the skill to get it.
 assert_skill_scheduling_knowledge() {
-    # Scheduling types (once, interval, cron) are only documented in
-    # netclaw-operations/SKILL.md — the model must load the skill to answer.
-    stdout_contains 'cron'
+    stdout_contains 'cron' && daemon_log_skill_loaded 'netclaw-operations'
 }
 
 assert_skill_memory_knowledge() {
-    # Memory classes (durable_fact, evidence, trace) are only documented in
-    # netclaw-memory/SKILL.md — the model must load the skill to answer.
-    stdout_contains 'durable' && stdout_contains 'evidence'
+    stdout_contains 'durable' && stdout_contains 'evidence' && daemon_log_skill_loaded 'netclaw-memory'
 }
 
 assert_skill_operations_diagnostics() {
@@ -792,9 +861,48 @@ assert_skill_citation_search() {
 }
 
 assert_skill_web_content_knowledge() {
-    # The web-content-retrieval skill explains that browser automation is needed
-    # for JS-heavy sites like Twitter. This info is only in the skill file.
-    stdout_contains 'browser'
+    stdout_contains 'browser' && daemon_log_skill_loaded 'web-content-retrieval'
+}
+
+# Category 2b: Skill Activation — measures ONLY whether the model loaded
+# the skill, using prompts where pretraining cannot shortcut the answer.
+assert_skill_activation_scheduling() {
+    daemon_log_skill_loaded 'netclaw-operations'
+}
+
+assert_skill_activation_memory() {
+    daemon_log_skill_loaded 'netclaw-memory'
+}
+
+assert_skill_activation_search() {
+    daemon_log_skill_loaded 'search-citation'
+}
+
+# Soft phrasing — model may load the skill OR use the tool directly from AGENTS.md
+assert_skill_activation_soft_scheduling() {
+    daemon_log_skill_loaded 'netclaw-operations' || stdout_tool_called 'set_reminder'
+}
+
+assert_skill_activation_soft_memory() {
+    daemon_log_skill_loaded 'netclaw-memory' || stdout_tool_called 'find_memories'
+}
+
+# User skills (non-system, from eval fixtures)
+assert_skill_activation_user_coding() {
+    daemon_log_skill_loaded 'modern-csharp-coding-standards'
+}
+
+assert_skill_activation_user_serialization() {
+    daemon_log_skill_loaded 'serialization'
+}
+
+# Negative cases — model should NOT load a skill for unrelated prompts
+assert_skill_no_activation_unrelated() {
+    daemon_log_no_skill_loaded
+}
+
+assert_skill_no_activation_general_code() {
+    daemon_log_no_skill_loaded
 }
 
 # Category 3: Memory Pipeline
@@ -1090,6 +1198,61 @@ run_all() {
     run_case skill_web_content_knowledge "knows browser needed for JS-heavy sites" \
         "What tool should I use to fetch content from a JavaScript-heavy website like Twitter?" \
         "How do you handle fetching content from social media sites like X.com?"
+
+    end_category
+
+    # ── Category 2b: Skill Activation ──
+    # Measures whether the model loads the skill at all, using prompts where
+    # pretraining knowledge cannot shortcut the answer.
+    print_category "Skill Activation"
+
+    run_case skill_activation_scheduling "skill loaded" \
+        "How do I set up a cron job that only fires on weekdays in Netclaw?" \
+        "What are the exact Netclaw reminder delivery_kind options?" \
+        "What schedule type and format does Netclaw use for recurring reminders every 6 hours?"
+
+    run_case skill_activation_memory "skill loaded" \
+        "What are the exact memory class names Netclaw uses and their expiration rules?" \
+        "What is the memory confidence threshold for automatic recall injection?" \
+        "How does Netclaw decide which memories to inject into each turn?"
+
+    run_case skill_activation_search "skill loaded" \
+        "What is Netclaw's exact citation format policy for web search results?" \
+        "What are the rules for when to include inline citations vs not?" \
+        "When should I use web_search versus web_fetch according to Netclaw's policy?"
+
+    # Soft phrasing — natural language, no "Netclaw" mention
+    run_case skill_activation_soft_scheduling "skill loaded" \
+        "Remind me to check the deploy in 2 hours" \
+        "Set up a recurring check every morning at 9am on weekdays" \
+        "Can you ping me about the PR review tomorrow afternoon?"
+
+    run_case skill_activation_soft_memory "skill loaded" \
+        "What did we discuss last time about the API redesign?" \
+        "Do you remember what database we decided to use?" \
+        "What do you know about my project preferences?"
+
+    # User skills (non-system, loaded from eval fixtures)
+    run_case skill_activation_user_coding "skill loaded" \
+        "In C#, should I use a record or a class for this DTO?" \
+        "What's the best way to model a value object in C#?" \
+        "Should I use pattern matching or if-else chains in my C# code?"
+
+    run_case skill_activation_user_serialization "skill loaded" \
+        "What serializer should I use for our new event format?" \
+        "Should I stick with Newtonsoft.Json or migrate to something else?" \
+        "How should I handle serialization for messages between services?"
+
+    # Negative cases — model should NOT load a skill
+    run_case skill_no_activation_unrelated "no skill loaded" \
+        "What's 2 + 2?" \
+        "Tell me a joke" \
+        "What year did World War 2 end?"
+
+    run_case skill_no_activation_general_code "no skill loaded" \
+        "Write a Python hello world script" \
+        "How do I reverse a string in JavaScript?" \
+        "Explain what a linked list is"
 
     end_category
 
