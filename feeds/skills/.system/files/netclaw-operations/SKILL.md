@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "1.21.0"
+  version: "1.23.0"
 ---
 
 # Netclaw Operations
@@ -126,6 +126,37 @@ audience is always allowed.
 
 Other scheduling tools: `list_reminders`, `cancel_reminder`,
 `get_reminder_history`.
+
+### Approval Requirements for Reminders and Webhooks
+
+Reminders and webhooks execute without a human present — they CANNOT prompt for
+tool approval. If a reminder needs `shell_execute` or file tools, those command
+patterns must be pre-approved in `~/.netclaw/config/tool-approvals.json` BEFORE
+the reminder fires.
+
+**Before creating a reminder that uses shell commands:**
+1. Identify what commands the reminder will need (e.g. `git pull`, `curl`,
+   `cat /var/log/app.log`)
+2. Run those commands interactively in the current session — this triggers the
+   approval prompt and persists the grant
+3. Then create the reminder
+
+If the user has already approved the patterns in a previous session, no action is
+needed — grants persist across sessions.
+
+**Path restrictions:** Even with an approved command pattern, reminders are sandboxed to
+trust zone paths (session dir, workspaces, project directory, skills, identity).
+A reminder approved for `cat /srv/app/log.txt` can read that file inside trust
+zones but NOT arbitrary system paths like `/etc/shadow`. If a reminder needs
+access outside trust zones, the user must configure additional trusted roots.
+
+**If a reminder fails with `command_not_pre_approved`:** The command pattern was
+not in the approval store. Run the command interactively to trigger approval,
+then the next reminder firing will succeed.
+
+**If a reminder fails with `path_outside_trust_zone`:** The command targets a
+path outside the allowed roots. Either move the target into a workspace, or ask
+the user to add the path to trusted roots in config.
 
 ## Background Jobs
 
@@ -270,6 +301,23 @@ If a user asks why they're being prompted so often, explain the security
 tradeoff and point them at `netclaw` CLI tooling for reviewing and trimming
 `tool-approvals.json` if the grant list grows unmanageable.
 
+If approval matching seems stale after an upgrade, delete the approval file and
+rebuild grants interactively:
+
+macOS/Linux:
+
+```bash
+rm ~/.netclaw/config/tool-approvals.json
+```
+
+PowerShell:
+
+```powershell
+Remove-Item "$HOME/.netclaw/config/tool-approvals.json" -Force
+```
+
+Then restart the daemon so in-memory session approvals are cleared too.
+
 ## Skill Management
 
 The `netclaw skill` CLI manages skills and skill sources. All subcommands
@@ -332,6 +380,11 @@ Verification kinds are generic:
 
 Route files hot-reload without restarting the daemon. If a route file becomes
 invalid, Netclaw removes that route immediately and emits an operational alert.
+
+**Approval gate:** Webhooks run without a human — they cannot prompt for
+approval. The same rules as reminders apply: commands must be pre-approved in
+`tool-approvals.json` and path arguments must be within trust zones. See
+"Approval Requirements for Reminders and Webhooks" in the Scheduling section.
 
 ### Webhook observability
 

@@ -123,7 +123,8 @@ public sealed class SubAgentSpawner
                     Audience = context.Audience,
                     Boundary = context.Boundary,
                     ChannelType = context.ChannelType,
-                    Cancellation = ct
+                    Cancellation = ct,
+                    ApprovalBridge = context.ApprovalBridge
                 },
                 timeout: subAgentTimeout.Add(TimeSpan.FromSeconds(5)),
                 cancellationToken: ct);

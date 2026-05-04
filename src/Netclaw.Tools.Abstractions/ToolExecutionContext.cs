@@ -102,6 +102,12 @@ public sealed class ToolExecutionContext
     public Func<object, string, CancellationToken, Task<object>>? SpawnChildActor { get; set; }
 
     /// <summary>
+    /// Parent session's approval bridge for sub-agent approval chaining. When set,
+    /// the sub-agent can route approval requests back to the interactive user.
+    /// </summary>
+    public IParentApprovalBridge? ApprovalBridge { get; set; }
+
+    /// <summary>
     /// Tool name granted a one-shot approval for the current execution retry.
     /// This is not persisted and only applies to the current in-memory context.
     /// </summary>

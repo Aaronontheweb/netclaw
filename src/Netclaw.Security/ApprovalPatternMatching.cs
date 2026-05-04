@@ -8,7 +8,8 @@ namespace Netclaw.Security;
 /// <summary>
 /// Shared verb-chain prefix matcher used for tool approval grants. An approved
 /// pattern matches a candidate exactly or as a verb-chain prefix on a space
-/// boundary — so "git" approves "git push" but never "github-cli".
+/// boundary — so "git push" approves "git push origin main" but never
+/// "github-cli".
 /// </summary>
 public static class ApprovalPatternMatching
 {
@@ -19,15 +20,17 @@ public static class ApprovalPatternMatching
             if (string.Equals(candidate, approved, StringComparison.OrdinalIgnoreCase))
                 return true;
 
-            // Only do prefix matching for multi-token patterns (contains space).
-            // Single-token patterns like "gh" should not match "gh pr".
-            if (approved.Contains(" ", StringComparison.Ordinal)
-                && candidate.StartsWith(approved, StringComparison.OrdinalIgnoreCase)
-                && candidate.Length > approved.Length
-                && candidate[approved.Length] == ' ')
-            {
+            if (candidate.Length <= approved.Length || candidate[approved.Length] != ' ')
+                continue;
+
+            if (!candidate.StartsWith(approved, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            // Multi-token patterns prefix-match on a space boundary. Single-token
+            // patterns remain exact-only so grants do not silently widen from
+            // "cat" to every path-bearing cat invocation.
+            if (approved.Contains(' ', StringComparison.Ordinal))
                 return true;
-            }
         }
 
         return false;

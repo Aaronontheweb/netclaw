@@ -141,6 +141,17 @@ internal static class SessionToolExecutionPipeline
         string resultText;
         var context = BuildToolExecutionContext(sessionId, source, sessionDir, spawnChildActor);
         context.RequestedTimeoutSeconds = (int)timeout.TotalSeconds;
+        if (approvalChannel is not null && emitApprovalRequest is not null)
+        {
+            context.ApprovalBridge = new ParentSessionApprovalBridge(
+                approvalChannel,
+                emitApprovalRequest,
+                sessionId,
+                source?.SenderId,
+                source?.Principal,
+                source?.HasAdoptedContext ?? false,
+                source?.AdoptedSpeakerIds ?? []);
+        }
         var completedRuns = new List<CompletedSubAgentRun>();
         var acceptedFindings = new List<AcceptedSubAgentFinding>();
         context.OnSubAgentActivity = info =>

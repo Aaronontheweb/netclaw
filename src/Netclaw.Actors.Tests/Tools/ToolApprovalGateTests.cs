@@ -106,15 +106,18 @@ public sealed class ToolApprovalGateTests
     }
 
     [Fact]
-    public void Unsupported_channel_auto_denies()
+    public void Unsupported_channel_returns_requires_approval_for_store_check()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
         var args = ToolInput.Create("Command", "git push");
 
         var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(supportsApproval: false), args);
 
-        Assert.False(decision.Allowed);
-        Assert.Equal("channel_does_not_support_approval", decision.DenyReason);
+        // Non-interactive channels no longer auto-deny — they fall through to
+        // RequiresApproval so the executor can check the persistent approval store.
+        Assert.True(decision.NeedsApproval);
+        Assert.NotNull(decision.ApprovalContext);
+        Assert.Contains("git push", decision.ApprovalContext!.UnapprovedPatterns);
     }
 
     [Fact]
@@ -515,7 +518,7 @@ public sealed class ToolApprovalGateTests
     }
 
     [Fact]
-    public void Non_safe_list_tool_denied_when_interactive_approval_unsupported()
+    public void Non_safe_list_tool_returns_requires_approval_when_interactive_unsupported()
     {
         var config = new ToolConfig();
         config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
@@ -535,7 +538,221 @@ public sealed class ToolApprovalGateTests
 
         var decision = policy.AuthorizeInvocation(tool, subagentCtx);
 
+        // Non-interactive channels now fall through to RequiresApproval so the
+        // executor can check the persistent approval store before denying.
+        Assert.True(decision.NeedsApproval);
+        Assert.NotNull(decision.ApprovalContext);
+        Assert.Equal("store_memory", decision.ApprovalContext!.ToolName);
+    }
+
+    [Fact]
+    public void Non_interactive_shell_with_path_outside_trust_zone_is_denied()
+    {
+        using var dir = new DisposableTempDir();
+        var trustRoot = CreateTrustZoneRoot(dir.Path);
+        var outsidePath = Path.Combine(dir.Path, "outside", "secrets.txt");
+
+        var trustZone = new FakeShellTrustZonePolicy([trustRoot]);
+        var policy = CreatePolicyWithTrustZone(trustZone);
+        var tool = ShellTool();
+        var ctx = PersonalContext(supportsApproval: false);
+
+        var decision = policy.AuthorizeInvocation(tool, ctx,
+            new Dictionary<string, object?> { ["command"] = $"cat {outsidePath}" });
+
         Assert.False(decision.Allowed);
-        Assert.Equal("channel_does_not_support_approval", decision.DenyReason);
+        Assert.Equal("shell_path_outside_trust_zone", decision.DenyReason);
+    }
+
+    [Fact]
+    public void Non_interactive_shell_with_path_inside_trust_zone_proceeds_to_approval()
+    {
+        using var dir = new DisposableTempDir();
+        var trustRoot = CreateTrustZoneRoot(dir.Path);
+        var insidePath = Path.Combine(trustRoot, "project", "README.md");
+
+        var trustZone = new FakeShellTrustZonePolicy([trustRoot]);
+        var policy = CreatePolicyWithTrustZone(trustZone);
+        var tool = ShellTool();
+        var ctx = PersonalContext(supportsApproval: false);
+
+        var decision = policy.AuthorizeInvocation(tool, ctx,
+            new Dictionary<string, object?> { ["command"] = $"cat {insidePath}" });
+
+        // Path is within trust zone — proceeds to the approval gate (RequiresApproval)
+        Assert.True(decision.NeedsApproval);
+    }
+
+    [Fact]
+    public void Non_interactive_shell_without_path_args_proceeds_to_approval()
+    {
+        using var dir = new DisposableTempDir();
+        var trustRoot = CreateTrustZoneRoot(dir.Path);
+
+        var trustZone = new FakeShellTrustZonePolicy([trustRoot]);
+        var policy = CreatePolicyWithTrustZone(trustZone);
+        var tool = ShellTool();
+        var ctx = PersonalContext(supportsApproval: false);
+
+        // "git status" has no path-like arguments
+        var decision = policy.AuthorizeInvocation(tool, ctx,
+            new Dictionary<string, object?> { ["command"] = "git status" });
+
+        Assert.True(decision.NeedsApproval);
+    }
+
+    [Fact]
+    public void Interactive_shell_skips_trust_zone_check()
+    {
+        using var dir = new DisposableTempDir();
+        var trustRoot = CreateTrustZoneRoot(dir.Path);
+
+        var trustZone = new FakeShellTrustZonePolicy([trustRoot]);
+        var policy = CreatePolicyWithTrustZone(trustZone);
+        var tool = ShellTool();
+        var ctx = PersonalContext(supportsApproval: true);
+
+        // Interactive channels don't enforce trust zones — the human approves
+        var decision = policy.AuthorizeInvocation(tool, ctx,
+            new Dictionary<string, object?> { ["command"] = "cat /etc/passwd" });
+
+        Assert.True(decision.NeedsApproval);
+    }
+
+    [Fact]
+    public void Non_interactive_shell_with_nested_shell_path_outside_trust_zone_is_denied()
+    {
+        using var dir = new DisposableTempDir();
+        var trustRoot = CreateTrustZoneRoot(dir.Path);
+        var outsidePath = Path.Combine(dir.Path, "outside", "shadow.txt");
+
+        var trustZone = new FakeShellTrustZonePolicy([trustRoot]);
+        var policy = CreatePolicyWithTrustZone(trustZone);
+        var tool = ShellTool();
+        var ctx = PersonalContext(supportsApproval: false);
+
+        var decision = policy.AuthorizeInvocation(tool, ctx,
+            new Dictionary<string, object?> { ["command"] = $"bash -c \"cat {outsidePath}\"" });
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("shell_path_outside_trust_zone", decision.DenyReason);
+    }
+
+    [Fact]
+    public void Non_interactive_shell_with_working_directory_outside_trust_zone_is_denied()
+    {
+        using var dir = new DisposableTempDir();
+        var trustRoot = CreateTrustZoneRoot(dir.Path);
+        var outsideDir = Path.Combine(dir.Path, "outside");
+        Directory.CreateDirectory(outsideDir);
+
+        var trustZone = new FakeShellTrustZonePolicy([trustRoot]);
+        var policy = CreatePolicyWithTrustZone(trustZone);
+        var tool = ShellTool();
+        var ctx = PersonalContext(supportsApproval: false);
+
+        var decision = policy.AuthorizeInvocation(tool, ctx,
+            new Dictionary<string, object?>
+            {
+                ["command"] = "cat README.md",
+                ["workingDirectory"] = outsideDir
+            });
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("shell_working_directory_outside_trust_zone", decision.DenyReason);
+    }
+
+    [Fact]
+    public void Non_interactive_shell_with_in_zone_working_directory_and_relative_path_proceeds_to_approval()
+    {
+        using var dir = new DisposableTempDir();
+        var trustRoot = CreateTrustZoneRoot(dir.Path);
+        var workingDirectory = Path.Combine(trustRoot, "project");
+        Directory.CreateDirectory(workingDirectory);
+
+        var trustZone = new FakeShellTrustZonePolicy([trustRoot]);
+        var policy = CreatePolicyWithTrustZone(trustZone);
+        var tool = ShellTool();
+        var ctx = PersonalContext(supportsApproval: false);
+
+        var decision = policy.AuthorizeInvocation(tool, ctx,
+            new Dictionary<string, object?>
+            {
+                ["command"] = "cat README.md",
+                ["workingDirectory"] = workingDirectory
+            });
+
+        Assert.True(decision.NeedsApproval);
+    }
+
+    [Fact]
+    public void Non_interactive_shell_with_path_denied_when_no_trust_zone_configured()
+    {
+        // No trust zone policy = fail-closed for non-interactive path commands
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var tool = ShellTool();
+        var ctx = PersonalContext(supportsApproval: false);
+
+        var decision = policy.AuthorizeInvocation(tool, ctx,
+            new Dictionary<string, object?> { ["command"] = "cat /etc/passwd" });
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("shell_trust_zone_policy_not_configured", decision.DenyReason);
+    }
+
+    [Fact]
+    public void Non_interactive_shell_with_working_directory_denied_when_no_trust_zone_configured()
+    {
+        using var dir = new DisposableTempDir();
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var tool = ShellTool();
+        var ctx = PersonalContext(supportsApproval: false);
+
+        var decision = policy.AuthorizeInvocation(tool, ctx,
+            new Dictionary<string, object?>
+            {
+                ["command"] = "cat README.md",
+                ["workingDirectory"] = dir.Path
+            });
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("shell_trust_zone_policy_not_configured", decision.DenyReason);
+    }
+
+    private static string CreateTrustZoneRoot(string tempDir)
+    {
+        var root = Path.Combine(tempDir, ".netclaw", "workspaces");
+        Directory.CreateDirectory(Path.Combine(root, "project"));
+        return root;
+    }
+
+    private static ToolAccessPolicy CreatePolicyWithTrustZone(IShellTrustZonePolicy trustZone)
+    {
+        var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
+        config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
+        {
+            ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
+            {
+                ["shell_execute"] = ToolApprovalMode.Approval
+            }
+        };
+
+        return new ToolAccessPolicy(
+            config,
+            new EffectivePolicyDefaults(
+                DeploymentPosture.Personal,
+                TrustAudience.Personal,
+                ShellExecutionMode.HostAllowed,
+                UsedStrictFallback: false),
+            shellTrustZonePolicy: trustZone);
+    }
+
+    private sealed class FakeShellTrustZonePolicy : IShellTrustZonePolicy
+    {
+        private readonly IReadOnlyList<string> _roots;
+
+        public FakeShellTrustZonePolicy(IReadOnlyList<string> roots) => _roots = roots;
+
+        public IReadOnlyList<string> GetTrustZoneRoots(ToolExecutionContext context) => _roots;
     }
 }

@@ -47,6 +47,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private int _toolIterationCount;
     private IActorRef _replyTo = ActorRefs.Nobody;
     private CancellationTokenSource? _executionCts;
+    private IParentApprovalBridge? _approvalBridge;
 
     public ITimerScheduler Timers { get; set; } = null!;
     private CancellationTokenRegistration _externalCancellationRegistration;
@@ -98,6 +99,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         {
             _replyTo = Sender;
 
+            _approvalBridge = msg.ApprovalBridge;
+
             var scopeId = !string.IsNullOrWhiteSpace(msg.SessionScopeId)
                 ? msg.SessionScopeId!
                 : $"subagent/{_definition.Name}/{Guid.NewGuid():N}";
@@ -105,7 +108,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             _toolExecutionContext.Audience = msg.Audience ?? TrustAudience.Personal.ToWireValue();
             _toolExecutionContext.Boundary = msg.Boundary;
             _toolExecutionContext.ChannelType = msg.ChannelType;
-            _toolExecutionContext.SupportsInteractiveApproval = false;
+            _toolExecutionContext.SupportsInteractiveApproval = _approvalBridge is not null;
             _executionCts = new CancellationTokenSource();
             var self = Self; // Capture before callback — Self requires active actor context
             _externalCancellationRegistration = msg.Cancellation.Register(() => self.Tell(SubAgentCancelled.Instance));
@@ -231,7 +234,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             toolCalls,
             _toolExecutionContext,
             _executionCts?.Token ?? CancellationToken.None,
-            self);
+            self,
+            _approvalBridge);
     }
 
     private void FireLlmCall(bool forceNoTools = false)
@@ -388,19 +392,65 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         List<FunctionCallContent> toolCalls,
         ToolExecutionContext executionContext,
         CancellationToken ct,
-        IActorRef self)
+        IActorRef self,
+        IParentApprovalBridge? approvalBridge = null)
     {
         try
         {
             var tasks = toolCalls.Select(async tc =>
             {
+                var toolContext = CreatePerToolExecutionContext(executionContext);
                 try
                 {
-                    var result = await executor.ExecuteAsync(tc, executionContext, ct);
+                    var result = await executor.ExecuteAsync(tc, toolContext, ct);
                     return new SerializableChatMessage
                     {
                         Role = Protocol.ChatRole.Tool,
                         Content = result,
+                        ToolCallId = tc.CallId,
+                        Name = tc.Name
+                    };
+                }
+                catch (ToolApprovalRequiredException approvalEx)
+                    when (approvalBridge is not null)
+                {
+                    var ctx = approvalEx.ApprovalContext;
+                    var decision = await approvalBridge.RequestApprovalAsync(
+                        new ToolCallId(tc.CallId),
+                        ctx.ToolName,
+                        ctx.DisplayText,
+                        ctx.UnapprovedPatterns,
+                        ct);
+
+                    if (decision is ParentApprovalDecision.ApprovedOnce
+                        or ParentApprovalDecision.ApprovedSession
+                        or ParentApprovalDecision.ApprovedAlways)
+                    {
+                        // The immediate retry needs a transient grant even for session/always
+                        // approvals because the sub-agent's scope ID differs from the parent
+                        // session's scope. Keep that retry-local so approve-once cannot bleed
+                        // across parallel tool calls or later iterations.
+                        var retryContext = CreatePerToolExecutionContext(executionContext);
+                        retryContext.OneTimeApprovedToolName = tc.Name;
+                        retryContext.SetOneTimeApprovedPatterns(ctx.UnapprovedPatterns);
+
+                        var result = await executor.ExecuteAsync(tc, retryContext, ct);
+                        return new SerializableChatMessage
+                        {
+                            Role = Protocol.ChatRole.Tool,
+                            Content = result,
+                            ToolCallId = tc.CallId,
+                            Name = tc.Name
+                        };
+                    }
+
+                    var reason = decision == ParentApprovalDecision.TimedOut
+                        ? "Tool access denied: approval_timed_out"
+                        : "Tool access denied: approval_denied_by_user";
+                    return new SerializableChatMessage
+                    {
+                        Role = Protocol.ChatRole.Tool,
+                        Content = reason,
                         ToolCallId = tc.CallId,
                         Name = tc.Name
                     };
@@ -428,6 +478,19 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             self.Tell(new ToolExecutionFailed { Cause = ex });
         }
     }
+
+    private static ToolExecutionContext CreatePerToolExecutionContext(ToolExecutionContext source)
+        => new(source.SessionId, source.SessionDirectory)
+        {
+            Audience = source.Audience,
+            Boundary = source.Boundary,
+            RequestedTimeoutSeconds = source.RequestedTimeoutSeconds,
+            ChannelType = source.ChannelType,
+            SupportsInteractiveApproval = source.SupportsInteractiveApproval,
+            OnSubAgentActivity = source.OnSubAgentActivity,
+            SpawnChildActor = source.SpawnChildActor,
+            ApprovalBridge = source.ApprovalBridge
+        };
 
     /// <summary>Singleton timeout marker message.</summary>
     private sealed class SubAgentTimeout

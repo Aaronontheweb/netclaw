@@ -70,6 +70,12 @@ public sealed record RunSubAgent
     public string? Boundary { get; init; }
 
     public string? ChannelType { get; init; }
+
+    /// <summary>
+    /// Parent session's approval bridge. When provided, the sub-agent can route
+    /// approval requests back to the interactive user instead of auto-denying.
+    /// </summary>
+    public IParentApprovalBridge? ApprovalBridge { get; init; }
 }
 
 /// <summary>

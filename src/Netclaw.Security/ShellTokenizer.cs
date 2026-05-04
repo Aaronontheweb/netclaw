@@ -17,6 +17,28 @@ public static class ShellTokenizer
     private static readonly string[] CompoundOperators = ["&&", "||"];
 
     /// <summary>
+    /// Verbs that can exfiltrate or mutate file contents when targeting protected paths.
+    /// Used by <see cref="ToolPathPolicy"/> for the protected-path heuristic.
+    /// </summary>
+    internal static readonly HashSet<string> HighRiskVerbs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "cat", "less", "more", "head", "tail", "grep", "rg", "find", "jq", "awk", "sed", "strings", "xxd", "hexdump",
+        "cp", "mv", "tar", "zip", "unzip", "scp", "rsync", "curl", "wget", "nc", "ncat",
+        "python", "python3", "node", "ruby", "perl", "php",
+        "bash", "sh", "zsh"
+    };
+
+    /// <summary>
+    /// Verbs whose first positional argument is security-relevant for approval
+    /// pattern extraction. Superset of <see cref="HighRiskVerbs"/> — includes
+    /// benign-but-path-consuming verbs like <c>ls</c>.
+    /// </summary>
+    internal static readonly HashSet<string> PathAwareVerbs = new(HighRiskVerbs, StringComparer.OrdinalIgnoreCase)
+    {
+        "ls"
+    };
+
+    /// <summary>
     /// Tokenizes a shell command string, respecting single and double quotes.
     /// Strips quote delimiters from tokens.
     /// </summary>
@@ -129,6 +151,8 @@ public static class ShellTokenizer
     /// command. Stops at the first token that looks like a flag (starts with -)
     /// or an argument (path, URL, etc.), and caps at <paramref name="maxDepth"/>
     /// tokens (default: 2) to avoid capturing positional arguments as subcommands.
+    /// For path-aware verbs (cat, grep, bash, etc.), appends the first non-flag
+    /// argument so the approval pattern captures what the command operates on.
     /// </summary>
     public static string ExtractVerbChain(string command, int maxDepth = 2)
     {
@@ -153,6 +177,22 @@ public static class ShellTokenizer
                 break;
 
             verbParts.Add(trimmed);
+        }
+
+        if (verbParts.Count == 1 && PathAwareVerbs.Contains(verbParts[0]))
+        {
+            for (var i = 1; i < tokens.Count; i++)
+            {
+                var trimmed = TrimShellPunctuation(tokens[i]);
+                if (trimmed.Length == 0)
+                    continue;
+
+                if (trimmed.StartsWith('-'))
+                    continue;
+
+                verbParts.Add(trimmed);
+                break;
+            }
         }
 
         return string.Join(' ', verbParts);
@@ -238,9 +278,118 @@ public static class ShellTokenizer
             || token.Contains('*', StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// Returns true if a token is identifiable as a local filesystem path.
+    /// Uses positive identification (anchored prefixes + extension heuristic)
+    /// rather than broad "contains a slash" matching to avoid false positives
+    /// on URIs, git refs, docker images, sed expressions, and MIME types.
+    /// </summary>
+    public static bool LooksLikePath(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+            return false;
+
+        if (token.StartsWith('-'))
+            return false;
+
+        // URIs
+        if (token.Contains("://", StringComparison.Ordinal))
+            return false;
+
+        // Anchored paths — definitively filesystem references
+        if (token.StartsWith('/'))
+            return true;
+        if (token.StartsWith("./", StringComparison.Ordinal) || token.StartsWith("../", StringComparison.Ordinal))
+            return true;
+        if (token.StartsWith('~'))
+            return true;
+        if (token.StartsWith("$HOME", StringComparison.Ordinal) || token.StartsWith("${HOME}", StringComparison.Ordinal))
+            return true;
+        // Windows drive letter: C:\ or C:/ (case-insensitive)
+        if (token.Length >= 3 && char.IsAsciiLetter(token[0]) && token[1] == ':'
+            && (token[2] == '/' || token[2] == '\\'))
+            return true;
+        // UNC path: \\server\share
+        if (token.StartsWith("\\\\", StringComparison.Ordinal))
+            return true;
+
+        // Backslash always indicates a Windows-style path
+        if (token.Contains('\\', StringComparison.Ordinal))
+            return true;
+
+        // Unanchored tokens with forward slashes — disambiguate using exclusions
+        // and the file-extension heuristic
+        if (token.Contains('/', StringComparison.Ordinal))
+        {
+            // Colon before first slash = docker image, port, or key:value
+            var firstSlash = token.IndexOf('/', StringComparison.Ordinal);
+            if (token.IndexOf(':', StringComparison.Ordinal) is var colonIdx && colonIdx >= 0 && colonIdx < firstSlash)
+                return false;
+
+            // npm scoped package: @scope/name
+            if (token.StartsWith('@') && token.IndexOf('/', 1) == token.LastIndexOf('/'))
+                return false;
+
+            // sed/tr expression: s/pattern/replacement/ or y/abc/xyz/
+            if ((token.StartsWith("s/", StringComparison.Ordinal) || token.StartsWith("y/", StringComparison.Ordinal))
+                && CountChar(token, '/') >= 3)
+                return false;
+
+            // Path traversal component is always a path signal
+            if (token.Contains("/../", StringComparison.Ordinal) || token.EndsWith("/..", StringComparison.Ordinal))
+                return true;
+
+            // File extension in the last component → treat as relative path
+            // (src/main.rs, config/app.json). Git refs and docker images don't
+            // have extensions.
+            var lastSlash = token.LastIndexOf('/');
+            if (lastSlash >= 0 && lastSlash < token.Length - 1)
+            {
+                var lastComponent = token.AsSpan(lastSlash + 1);
+                var dotIdx = lastComponent.LastIndexOf('.');
+                if (dotIdx > 0 && dotIdx < lastComponent.Length - 1)
+                    return true;
+            }
+
+            return false;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Returns true when the pattern is a single-token shell approval for a
+    /// path-aware verb such as <c>cat</c> or <c>bash</c>.
+    /// </summary>
+    public static bool IsSingleTokenPathAwarePattern(string pattern)
+    {
+        var trimmed = TrimShellPunctuation(pattern).Trim();
+        if (trimmed.Length == 0)
+            return false;
+
+        if (trimmed.IndexOfAny([' ', '\t', '\n', '\r']) >= 0)
+        {
+            return false;
+        }
+
+        return PathAwareVerbs.Contains(trimmed);
+    }
+
     internal static string TrimShellPunctuation(string token)
     {
         return token.Trim().TrimStart(';', '|', '&').TrimEnd(';', '|', '&');
+    }
+
+    private static int CountChar(string value, char target)
+    {
+        var count = 0;
+        foreach (var c in value)
+        {
+            if (c == target)
+                count++;
+        }
+
+        return count;
     }
 
     private static void FlushSegment(StringBuilder current, List<string> segments)

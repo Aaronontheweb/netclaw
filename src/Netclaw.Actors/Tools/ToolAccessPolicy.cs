@@ -20,6 +20,7 @@ public sealed class ToolAccessPolicy
     private readonly ToolAudienceProfileResolver _profileResolver;
     private readonly ShellCommandPolicy? _shellCommandPolicy;
     private readonly ToolPathPolicy? _toolPathPolicy;
+    private readonly IShellTrustZonePolicy? _shellTrustZonePolicy;
     private readonly IToolApprovalMatcher _fileApprovalMatcher;
     private readonly FeatureGates _featureGates;
 
@@ -29,13 +30,15 @@ public sealed class ToolAccessPolicy
         ShellCommandPolicy? shellCommandPolicy = null,
         IToolApprovalMatcher? fileApprovalMatcher = null,
         ToolPathPolicy? toolPathPolicy = null,
-        FeatureGates? featureGates = null)
+        FeatureGates? featureGates = null,
+        IShellTrustZonePolicy? shellTrustZonePolicy = null)
     {
         _toolConfig = toolConfig;
         _defaults = defaults;
         _profileResolver = new ToolAudienceProfileResolver(toolConfig);
         _shellCommandPolicy = shellCommandPolicy;
         _toolPathPolicy = toolPathPolicy;
+        _shellTrustZonePolicy = shellTrustZonePolicy;
         _fileApprovalMatcher = fileApprovalMatcher ?? DefaultApprovalMatcher.Instance;
         _featureGates = featureGates ?? FeatureGates.AllEnabled;
     }
@@ -142,7 +145,161 @@ public sealed class ToolAccessPolicy
             && _toolPathPolicy?.CommandReferencesDeniedPath(shellCommand, workingDirectory) == true)
             return ToolAccessDecision.Deny("shell_references_protected_path");
 
+        // Non-interactive channels: sandbox shell commands to trust zone paths.
+        // Even if the verb-chain is pre-approved, path arguments must fall within
+        // the channel's allowed filesystem roots. Fail-closed: if no trust zone
+        // policy is configured, deny any shell command with path arguments.
+        if (context?.SupportsInteractiveApproval == false && shellCommand is not null)
+        {
+            if (_shellTrustZonePolicy is null)
+            {
+                if (ShellCommandHasTrustZoneSensitiveInputs(shellCommand, workingDirectory))
+                    return ToolAccessDecision.Deny("shell_trust_zone_policy_not_configured");
+            }
+            else
+            {
+                var trustZoneDeny = EnforceShellTrustZones(shellCommand, workingDirectory, context);
+                if (trustZoneDeny is not null)
+                    return trustZoneDeny;
+            }
+        }
+
         return CheckApprovalGate(toolName, context, arguments, ShellApprovalMatcher.Instance);
+    }
+
+    /// <summary>
+    /// For non-interactive channels, validates that all path-like arguments in a shell
+    /// command fall within the trust zone roots for the channel's audience. Returns a
+    /// deny decision if any path escapes, or null if all paths are within bounds.
+    /// </summary>
+    private ToolAccessDecision? EnforceShellTrustZones(
+        string shellCommand,
+        string? workingDirectory,
+        ToolExecutionContext context)
+    {
+        var roots = _shellTrustZonePolicy!.GetTrustZoneRoots(context);
+        if (roots.Count == 0)
+            return ToolAccessDecision.Deny("shell_no_trust_zone_roots");
+
+        if (!string.IsNullOrWhiteSpace(workingDirectory))
+        {
+            var expandedWorkingDirectory = ExpandShellPath(workingDirectory, workingDirectory: null);
+            if (expandedWorkingDirectory is null)
+                return ToolAccessDecision.Deny("shell_invalid_working_directory");
+
+            if (!IsPathWithinAnyRoot(expandedWorkingDirectory, roots))
+                return ToolAccessDecision.Deny("shell_working_directory_outside_trust_zone");
+        }
+
+        var pathTokens = ExtractShellPathTokens(shellCommand);
+        if (pathTokens.Count == 0)
+            return null;
+
+        foreach (var pathToken in pathTokens)
+        {
+            var expanded = ExpandShellPath(pathToken, workingDirectory);
+            if (expanded is null)
+                continue;
+
+            if (!IsPathWithinAnyRoot(expanded, roots))
+                return ToolAccessDecision.Deny("shell_path_outside_trust_zone");
+        }
+
+        return null;
+    }
+
+    private static IReadOnlyList<string> ExtractShellPathTokens(string shellCommand)
+    {
+        var pathTokens = new List<string>();
+        foreach (var segment in ShellTokenizer.GetAllCommandSegments(shellCommand))
+        {
+            foreach (var token in ShellTokenizer.Tokenize(segment))
+            {
+                var trimmed = TrimShellTokenPunctuation(token);
+                if (ShellTokenizer.LooksLikePath(trimmed))
+                    pathTokens.Add(trimmed);
+            }
+        }
+
+        return pathTokens;
+    }
+
+    private static string? ExpandShellPath(string token, string? workingDirectory)
+    {
+        var expanded = token;
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+
+        if (expanded.StartsWith('~'))
+        {
+            if (string.IsNullOrWhiteSpace(home))
+                return null;
+            expanded = expanded.Length == 1
+                ? home
+                : Path.Combine(home, expanded[1..].TrimStart('/', '\\'));
+        }
+
+        if (!string.IsNullOrWhiteSpace(home))
+        {
+            expanded = expanded.Replace("$HOME", home, StringComparison.OrdinalIgnoreCase);
+            expanded = expanded.Replace("${HOME}", home, StringComparison.OrdinalIgnoreCase);
+        }
+
+        try
+        {
+            var baseDir = !string.IsNullOrWhiteSpace(workingDirectory)
+                ? workingDirectory
+                : Environment.CurrentDirectory;
+
+            return Path.IsPathRooted(expanded)
+                ? Path.GetFullPath(expanded)
+                : Path.GetFullPath(Path.Combine(baseDir, expanded));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool IsPathWithinAnyRoot(string fullPath, IReadOnlyList<string> roots)
+    {
+        var normalized = NormalizeDirectoryComparisonPath(fullPath);
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
+        foreach (var root in roots)
+        {
+            var normalizedRoot = NormalizeDirectoryComparisonPath(root);
+            if (!normalized.StartsWith(normalizedRoot, comparison))
+                continue;
+            if (normalized.Length == normalizedRoot.Length)
+                return true;
+            var boundary = normalized[normalizedRoot.Length];
+            if (boundary == Path.DirectorySeparatorChar || boundary == Path.AltDirectorySeparatorChar)
+                return true;
+        }
+
+        return false;
+    }
+
+    private static string NormalizeDirectoryComparisonPath(string path)
+        => Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+    private static bool ShellCommandHasTrustZoneSensitiveInputs(string shellCommand, string? workingDirectory)
+        => !string.IsNullOrWhiteSpace(workingDirectory) || ShellCommandHasPathArguments(shellCommand);
+
+    private static string TrimShellTokenPunctuation(string token)
+        => token.Trim().TrimStart(';', '|', '&').TrimEnd(';', '|', '&');
+
+    private static bool ShellCommandHasPathArguments(string shellCommand)
+    {
+        foreach (var token in ExtractShellPathTokens(shellCommand))
+        {
+            if (!string.IsNullOrWhiteSpace(token))
+                return true;
+        }
+
+        return false;
     }
 
     private static string? ExtractShellCommand(IDictionary<string, object?>? arguments)
@@ -191,13 +348,14 @@ public sealed class ToolAccessPolicy
         if (mode == ToolApprovalMode.Auto)
             return ToolAccessDecision.Allow();
 
-        // Subagents can't prompt for approval. Tools on the SubAgentToolPolicy
-        // safe list are auto-granted; everything else is denied.
-        if (context?.SupportsInteractiveApproval == false)
+        // Non-interactive channels (reminders, webhooks, sub-agents without parent
+        // approval channel): tools on the safe list are auto-granted. Everything else
+        // falls through to the normal approval extraction path — the executor will
+        // check the persistent approval store and allow if all patterns are pre-approved.
+        if (context?.SupportsInteractiveApproval == false
+            && SubAgentToolPolicy.IsAllowedForUserFacing(toolName.Value))
         {
-            return SubAgentToolPolicy.IsAllowedForUserFacing(toolName.Value)
-                ? ToolAccessDecision.Allow()
-                : ToolAccessDecision.Deny("channel_does_not_support_approval");
+            return ToolAccessDecision.Allow();
         }
 
         var allPatterns = matcher.ExtractPatterns(toolName, arguments);
