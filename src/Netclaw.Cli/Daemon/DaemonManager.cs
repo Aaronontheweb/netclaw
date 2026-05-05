@@ -54,6 +54,8 @@ public sealed partial class DaemonManager
             RedirectStandardInput = false,
         };
 
+        var startedAt = _timeProvider.GetUtcNow();
+
         Process process;
         try
         {
@@ -62,6 +64,12 @@ public sealed partial class DaemonManager
         catch (Exception ex)
         {
             return new DaemonResult(false, $"Failed to start daemon: {ex.Message}");
+        }
+
+        if (process.WaitForExit(1500))
+        {
+            var startupFailure = TryReadStartupFailureFromCrashLog(startedAt, out var crashLogPath);
+            return new DaemonResult(false, startupFailure ?? $"Failed to start daemon: process exited with code {process.ExitCode}.", crashLogPath);
         }
 
         // Preliminary PID file for immediate status checks. The daemon's PidFileService
@@ -589,8 +597,43 @@ public sealed partial class DaemonManager
             return false;
         }
     }
+
+    private string? TryReadStartupFailureFromCrashLog(DateTimeOffset startedAt, out string? crashLogPath)
+    {
+        crashLogPath = null;
+
+        try
+        {
+            var logsDirectory = _paths.LogsDirectory;
+            if (!Directory.Exists(logsDirectory))
+                return null;
+
+            var latestCrashLog = Doctor.CrashLogHelper
+                .FindCrashLogsSince(logsDirectory, startedAt.UtcDateTime.AddSeconds(-1))
+                .FirstOrDefault();
+
+            if (latestCrashLog is null)
+                return null;
+
+            foreach (var line in File.ReadLines(latestCrashLog.FullName))
+            {
+                if (line.Contains("Daemon startup aborted:", StringComparison.OrdinalIgnoreCase))
+                {
+                    crashLogPath = latestCrashLog.FullName;
+                    return line;
+                }
+            }
+
+            crashLogPath = latestCrashLog.FullName;
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
 }
 
-public sealed record DaemonResult(bool Success, string Message);
+public sealed record DaemonResult(bool Success, string Message, string? CrashLogPath = null);
 
 public sealed record DaemonStatus(bool IsRunning, int? Pid, string Message);
