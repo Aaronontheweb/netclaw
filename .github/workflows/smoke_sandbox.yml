@@ -2,11 +2,12 @@ name: smoke_sandbox
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - dev
   pull_request:
     branches:
-      - master
       - dev
-      - main
     types:
       - opened
       - synchronize
