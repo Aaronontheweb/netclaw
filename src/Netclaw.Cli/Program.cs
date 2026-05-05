@@ -1736,11 +1736,29 @@ static void ConfigureCliChatServices(IServiceCollection services, IConfiguration
     // Session config: bind operator-facing settings
     var sessionConfig = SessionConfig.BindFromConfiguration(configuration.GetSection("Session"));
     services.AddSingleton(sessionConfig);
-    services.AddSingleton(new ModelCapabilities
+    services.AddSingleton(sp =>
     {
-        ModelId = models.Main.ModelId,
-        ContextWindowTokens = models.Main.ContextWindow ?? 32_768,
-        CompactionModelId = models.Compaction?.ModelId,
+        var contextWindow = models.Main.ContextWindow;
+        if (contextWindow is null)
+        {
+            var daemon = sp.GetRequiredService<DaemonApi>();
+            var status = daemon.GetStatusAsync().GetAwaiter().GetResult()
+                ?? throw new InvalidOperationException(
+                    "Daemon returned empty status. Cannot resolve effective context window. " +
+                    "Set Models.Main.ContextWindow in netclaw.json or ensure the daemon is healthy.");
+            contextWindow = status.Model?.ContextWindow is > 0 and var daemonCw
+                ? daemonCw
+                : throw new InvalidOperationException(
+                    $"Daemon reported no context window for model '{models.Main.ModelId}'. " +
+                    "Set Models.Main.ContextWindow in netclaw.json.");
+        }
+
+        return new ModelCapabilities
+        {
+            ModelId = models.Main.ModelId,
+            ContextWindowTokens = contextWindow.Value,
+            CompactionModelId = models.Compaction?.ModelId,
+        };
     });
 
     // DaemonClient uses the endpoint from DaemonApi. For non-loopback (remote) endpoints,
