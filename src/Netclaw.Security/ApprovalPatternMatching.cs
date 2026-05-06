@@ -64,7 +64,7 @@ public static class ApprovalPatternMatching
         {
             return PathUtility.IsWithinRoot(candidatePath, approvedDir);
         }
-        catch
+        catch (Exception ex) when (ex is ArgumentException or IOException)
         {
             return false;
         }

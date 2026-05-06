@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Microsoft.Extensions.AI;
+using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Security;
@@ -754,5 +755,56 @@ public sealed class ToolApprovalGateTests
         public FakeShellTrustZonePolicy(IReadOnlyList<string> roots) => _roots = roots;
 
         public IReadOnlyList<string> GetTrustZoneRoots(ToolExecutionContext context) => _roots;
+    }
+
+    // ── Directory-scoped approval patterns ──
+
+    [Fact]
+    public void Shell_path_command_populates_directory_patterns()
+    {
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var args = ToolInput.Create("Command", "cat /home/user/.netclaw/logs/crash.log");
+
+        var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+
+        Assert.True(decision.NeedsApproval);
+        Assert.NotNull(decision.ApprovalContext);
+        Assert.NotEmpty(decision.ApprovalContext!.DirectoryPatterns);
+        Assert.Contains(decision.ApprovalContext.DirectoryPatterns, p => p.EndsWith("/"));
+    }
+
+    [Fact]
+    public void Shell_path_command_labels_show_directory_scope()
+    {
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var args = ToolInput.Create("Command", "grep 'error' /home/user/.netclaw/logs/app.log");
+
+        var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+
+        Assert.True(decision.NeedsApproval);
+        var options = decision.ApprovalContext!.Options;
+        var sessionOption = options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession);
+        var alwaysOption = options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways);
+        Assert.StartsWith("Approve in ", sessionOption.Label);
+        Assert.Contains("for this chat", sessionOption.Label);
+        Assert.StartsWith("Approve in ", alwaysOption.Label);
+        Assert.Contains("always", alwaysOption.Label);
+    }
+
+    [Fact]
+    public void Non_path_command_uses_default_labels()
+    {
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var args = ToolInput.Create("Command", "git push origin main");
+
+        var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+
+        Assert.True(decision.NeedsApproval);
+        // DirectoryPatterns contains verb-chain fallback ("git push"), but no directory scope
+        Assert.DoesNotContain(decision.ApprovalContext!.DirectoryPatterns, p => p.EndsWith("/"));
+        var sessionOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession);
+        var alwaysOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways);
+        Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, sessionOption.Label);
+        Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, alwaysOption.Label);
     }
 }

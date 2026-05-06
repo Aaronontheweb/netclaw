@@ -384,12 +384,12 @@ public static class ShellTokenizer
             if (!LooksLikePath(trimmed))
                 continue;
 
-            var expanded = PathUtility.ExpandHome(trimmed);
-            var dir = ExtractParentDirectory(expanded);
+            var dir = ExtractParentDirectory(PathUtility.ExpandHome(trimmed));
             if (dir is null)
                 continue;
 
-            if (!PathUtility.TryNormalize(dir, null, out var normalized))
+            var normalized = PathUtility.ExpandAndNormalize(dir);
+            if (normalized is null)
                 continue;
 
             // Enforce minimum depth — reject shallow scopes like / or /etc/

@@ -303,13 +303,13 @@ public sealed class ToolAccessPolicy
 
         var sessionLabel = ApprovalOptionKeys.ApproveSessionLabel;
         var alwaysLabel = ApprovalOptionKeys.ApproveAlwaysLabel;
-        if (directoryPatterns.Count > 0)
+        var firstDirScope = directoryPatterns.FirstOrDefault(p => p.EndsWith('/'));
+        if (firstDirScope is not null)
         {
-            var firstDir = directoryPatterns[0];
-            var spaceIdx = firstDir.IndexOf(' ', StringComparison.Ordinal);
+            var spaceIdx = firstDirScope.IndexOf(' ', StringComparison.Ordinal);
             if (spaceIdx >= 0)
             {
-                var dir = firstDir[(spaceIdx + 1)..];
+                var dir = firstDirScope[(spaceIdx + 1)..];
                 sessionLabel = $"Approve in {dir} for this chat";
                 alwaysLabel = $"Approve in {dir} always";
             }
@@ -473,7 +473,7 @@ public sealed record ToolApprovalContext(
     string DisplayText,
     IReadOnlyList<string> UnapprovedPatterns,
     IReadOnlyList<ToolApprovalOption> Options,
-    IReadOnlyList<string>? DirectoryPatterns = null);
+    IReadOnlyList<string> DirectoryPatterns);
 
 public sealed record ToolApprovalOption(string Key, string Label);
 

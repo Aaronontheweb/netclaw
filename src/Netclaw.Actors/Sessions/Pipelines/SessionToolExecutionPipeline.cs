@@ -284,7 +284,7 @@ internal static class SessionToolExecutionPipeline
                 AdoptedSpeakerIds = source?.AdoptedSpeakerIds ?? [],
                 PersistedAdoptedContext = source?.HasAdoptedContext ?? false,
                 Patterns = ctx.UnapprovedPatterns,
-                DirectoryPatterns = ctx.DirectoryPatterns ?? [],
+                DirectoryPatterns = ctx.DirectoryPatterns,
                 Options = ctx.Options
                     .Select(o => new ToolInteractionOption(o.Key, o.Label))
                     .ToList()

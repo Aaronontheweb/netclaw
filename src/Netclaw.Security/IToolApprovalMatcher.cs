@@ -130,25 +130,13 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         => ApprovalPatternMatching.MatchesAny(pattern, approvedPatterns);
 
     private static void CollectPatterns(string command, ISet<string> patterns)
-    {
-        foreach (var segment in ShellTokenizer.SplitCompoundCommand(command))
-        {
-            var innerCommands = ShellTokenizer.ExtractInnerCommands(segment);
-            if (innerCommands.Count > 0)
-            {
-                foreach (var inner in innerCommands)
-                    CollectPatterns(inner, patterns);
-
-                continue;
-            }
-
-            var verbChain = ShellTokenizer.ExtractVerbChain(segment);
-            if (!string.IsNullOrEmpty(verbChain))
-                patterns.Add(verbChain);
-        }
-    }
+        => TraverseSegments(command, patterns, static segment => ShellTokenizer.ExtractVerbChain(segment));
 
     private static void CollectDirectoryPatterns(string command, ISet<string> patterns)
+        => TraverseSegments(command, patterns, static segment =>
+            ShellTokenizer.ExtractDirectoryScope(segment) ?? ShellTokenizer.ExtractVerbChain(segment));
+
+    private static void TraverseSegments(string command, ISet<string> patterns, Func<string, string?> extractLeaf)
     {
         foreach (var segment in ShellTokenizer.SplitCompoundCommand(command))
         {
@@ -156,22 +144,14 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             if (innerCommands.Count > 0)
             {
                 foreach (var inner in innerCommands)
-                    CollectDirectoryPatterns(inner, patterns);
+                    TraverseSegments(inner, patterns, extractLeaf);
 
                 continue;
             }
 
-            var dirScope = ShellTokenizer.ExtractDirectoryScope(segment);
-            if (dirScope is not null)
-            {
-                patterns.Add(dirScope);
-            }
-            else
-            {
-                var verbChain = ShellTokenizer.ExtractVerbChain(segment);
-                if (!string.IsNullOrEmpty(verbChain))
-                    patterns.Add(verbChain);
-            }
+            var pattern = extractLeaf(segment);
+            if (!string.IsNullOrEmpty(pattern))
+                patterns.Add(pattern);
         }
     }
 }

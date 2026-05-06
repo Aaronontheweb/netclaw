@@ -155,6 +155,58 @@ public sealed class ShellApprovalMatcherTests
         var display = _matcher.FormatForDisplay(new ToolName("shell_execute"), Args("git push origin main"));
         Assert.Equal("git push origin main", display);
     }
+
+    // ── ExtractDirectoryPatterns ──
+
+    [Fact]
+    public void ExtractDirectoryPatterns_simple_path_command()
+    {
+        var patterns = _matcher.ExtractDirectoryPatterns(
+            new ToolName("shell_execute"),
+            Args("cat /home/user/.netclaw/logs/crash.log"));
+        Assert.Single(patterns);
+        Assert.EndsWith("/", patterns[0]);
+        Assert.StartsWith("cat ", patterns[0]);
+    }
+
+    [Fact]
+    public void ExtractDirectoryPatterns_compound_command()
+    {
+        var patterns = _matcher.ExtractDirectoryPatterns(
+            new ToolName("shell_execute"),
+            Args("cat /home/user/.netclaw/logs/crash.log && grep 'error' /home/user/.netclaw/logs/app.log"));
+        Assert.Equal(2, patterns.Count);
+        Assert.Contains(patterns, p => p.StartsWith("cat "));
+        Assert.Contains(patterns, p => p.StartsWith("grep "));
+    }
+
+    [Fact]
+    public void ExtractDirectoryPatterns_falls_back_to_verb_chain_when_no_path()
+    {
+        var patterns = _matcher.ExtractDirectoryPatterns(
+            new ToolName("shell_execute"),
+            Args("git push origin main"));
+        Assert.Single(patterns);
+        Assert.Equal("git push", patterns[0]);
+    }
+
+    [Fact]
+    public void ExtractDirectoryPatterns_empty_command()
+    {
+        var patterns = _matcher.ExtractDirectoryPatterns(new ToolName("shell_execute"), Args(""));
+        Assert.Empty(patterns);
+    }
+
+    [Fact]
+    public void ExtractDirectoryPatterns_mixed_compound_with_fallback()
+    {
+        var patterns = _matcher.ExtractDirectoryPatterns(
+            new ToolName("shell_execute"),
+            Args("cat /home/user/.netclaw/logs/crash.log && git push origin main"));
+        Assert.Equal(2, patterns.Count);
+        Assert.Contains(patterns, p => p.StartsWith("cat ") && p.EndsWith("/"));
+        Assert.Contains(patterns, p => p == "git push");
+    }
 }
 
 public sealed class DefaultApprovalMatcherTests

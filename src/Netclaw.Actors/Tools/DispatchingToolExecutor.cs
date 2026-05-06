@@ -121,7 +121,8 @@ public sealed class DispatchingToolExecutor : IToolExecutor
                     approvalContext.ToolName,
                     approvalContext.DisplayText,
                     unapproved,
-                    approvalContext.Options));
+                    approvalContext.Options,
+                    approvalContext.DirectoryPatterns));
         }
 
         if (accessDecision.NeedsApproval
