@@ -9,15 +9,27 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <VersionPrefix>0.17.2</VersionPrefix>
-    <PackageReleaseNotes>Netclaw v0.17.2 — MCP reconnection resilience and README improvements
+    <PackageReleaseNotes>Netclaw v0.17.2 — Session stability fixes, MCP reconnection, and schema packaging
 
 **Bug Fixes**
 
-* MCP servers that become unreachable (DNS failure, server down) no longer stay permanently stuck in `Unreachable` state — a new `McpReconnectionService` polls every 30 seconds with per-server exponential backoff (30s → 300s cap) and emits an operational alert on recovery. ([#884](https://github.com/netclaw-dev/netclaw/pull/884))
+* Fixed binding actor stream crashes on shutdown — SignalR, Slack, and Discord binding actors now drain their Akka.Streams pipeline before stopping, eliminating `AbruptTerminationException` / `StreamDetachedException` crash logs on graceful shutdown and idle timeout. ([#895](https://github.com/netclaw-dev/netclaw/pull/895))
+
+* Fixed thinking-only LLM responses being classified as empty — the empty response guard now checks `TextReasoningContent` in addition to `TextContent`, so models that emit thinking tokens without text (e.g., Qwen 3) are no longer incorrectly retried with a nudge. ([#895](https://github.com/netclaw-dev/netclaw/pull/895))
+
+* Fixed dropped tool calls from llama.cpp-compatible providers — `OpenAiCompatibleChatClient` now emits accumulated tool calls when `finish_reason` is `"stop"`, not just `"tool_calls"`. ([#895](https://github.com/netclaw-dev/netclaw/pull/895))
+
+* Fixed `netclaw doctor` schema validation failing on `Search.Backend` — schema now matches wire format (`duckduckgo`, `brave`, `searxng`). ([#894](https://github.com/netclaw-dev/netclaw/pull/894))
+
+* Embedded config schema as assembly resource so `netclaw doctor` works in all distribution formats. ([#894](https://github.com/netclaw-dev/netclaw/pull/894))
+
+* Added `CursorAdvanced` serialization bindings for Slack and Discord binding actors. Closes [#887](https://github.com/netclaw-dev/netclaw/issues/887). ([#890](https://github.com/netclaw-dev/netclaw/pull/890))
+
+* MCP servers that become unreachable no longer stay permanently stuck — new `McpReconnectionService` with exponential backoff. ([#884](https://github.com/netclaw-dev/netclaw/pull/884))
 
 **Documentation**
 
-* Refocused README on end-user content — moved architecture, design goals, and build-from-source sections to CONTRIBUTING.md; added Docker quickstart, netclaw.dev documentation links, and Discord link. ([#888](https://github.com/netclaw-dev/netclaw/pull/888))</PackageReleaseNotes>
+* Refocused README on end-user content with Docker quickstart, netclaw.dev links, and Discord link. ([#888](https://github.com/netclaw-dev/netclaw/pull/888))</PackageReleaseNotes>
   </PropertyGroup>
   <PropertyGroup>
     <NetCoreTestVersion>net10.0</NetCoreTestVersion>
