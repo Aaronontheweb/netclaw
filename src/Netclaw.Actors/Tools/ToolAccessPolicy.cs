@@ -298,17 +298,34 @@ public sealed class ToolAccessPolicy
         }
 
         var allPatterns = matcher.ExtractPatterns(toolName, arguments);
+        var directoryPatterns = matcher.ExtractDirectoryPatterns(toolName, arguments);
         var displayText = matcher.FormatForDisplay(toolName, arguments);
+
+        var sessionLabel = ApprovalOptionKeys.ApproveSessionLabel;
+        var alwaysLabel = ApprovalOptionKeys.ApproveAlwaysLabel;
+        if (directoryPatterns.Count > 0)
+        {
+            var firstDir = directoryPatterns[0];
+            var spaceIdx = firstDir.IndexOf(' ', StringComparison.Ordinal);
+            if (spaceIdx >= 0)
+            {
+                var dir = firstDir[(spaceIdx + 1)..];
+                sessionLabel = $"Approve in {dir} for this chat";
+                alwaysLabel = $"Approve in {dir} always";
+            }
+        }
+
         var approvalContext = new ToolApprovalContext(
             toolName.Value,
             displayText,
             allPatterns,
             [
                 new ToolApprovalOption(ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveOnceLabel),
-                new ToolApprovalOption(ApprovalOptionKeys.ApproveSession, ApprovalOptionKeys.ApproveSessionLabel),
-                new ToolApprovalOption(ApprovalOptionKeys.ApproveAlways, ApprovalOptionKeys.ApproveAlwaysLabel),
+                new ToolApprovalOption(ApprovalOptionKeys.ApproveSession, sessionLabel),
+                new ToolApprovalOption(ApprovalOptionKeys.ApproveAlways, alwaysLabel),
                 new ToolApprovalOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
-            ]);
+            ],
+            directoryPatterns);
 
         return ToolAccessDecision.RequiresApproval(approvalContext);
     }
@@ -455,7 +472,8 @@ public sealed record ToolApprovalContext(
     string ToolName,
     string DisplayText,
     IReadOnlyList<string> UnapprovedPatterns,
-    IReadOnlyList<ToolApprovalOption> Options);
+    IReadOnlyList<ToolApprovalOption> Options,
+    IReadOnlyList<string>? DirectoryPatterns = null);
 
 public sealed record ToolApprovalOption(string Key, string Label);
 

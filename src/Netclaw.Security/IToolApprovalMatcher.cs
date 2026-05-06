@@ -48,6 +48,13 @@ public interface IToolApprovalMatcher
     /// Formats the tool call for display in the approval prompt.
     /// </summary>
     string FormatForDisplay(ToolName toolName, IDictionary<string, object?>? arguments);
+
+    /// <summary>
+    /// Extracts directory-scoped patterns for session/persistent approval storage.
+    /// For shell commands, returns <c>"verb /parent-dir/"</c> patterns derived from
+    /// file-path arguments. Returns empty when no directory scope is available.
+    /// </summary>
+    IReadOnlyList<string> ExtractDirectoryPatterns(ToolName toolName, IDictionary<string, object?>? arguments);
 }
 
 /// <summary>
@@ -97,6 +104,17 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         return GetCommand(arguments) ?? "(empty command)";
     }
 
+    public IReadOnlyList<string> ExtractDirectoryPatterns(ToolName toolName, IDictionary<string, object?>? arguments)
+    {
+        var command = GetCommand(arguments);
+        if (string.IsNullOrWhiteSpace(command))
+            return [];
+
+        var patterns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        CollectDirectoryPatterns(command, patterns);
+        return patterns.ToList();
+    }
+
     private static string? GetCommand(IDictionary<string, object?>? arguments)
     {
         if (arguments is null)
@@ -127,6 +145,33 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             var verbChain = ShellTokenizer.ExtractVerbChain(segment);
             if (!string.IsNullOrEmpty(verbChain))
                 patterns.Add(verbChain);
+        }
+    }
+
+    private static void CollectDirectoryPatterns(string command, ISet<string> patterns)
+    {
+        foreach (var segment in ShellTokenizer.SplitCompoundCommand(command))
+        {
+            var innerCommands = ShellTokenizer.ExtractInnerCommands(segment);
+            if (innerCommands.Count > 0)
+            {
+                foreach (var inner in innerCommands)
+                    CollectDirectoryPatterns(inner, patterns);
+
+                continue;
+            }
+
+            var dirScope = ShellTokenizer.ExtractDirectoryScope(segment);
+            if (dirScope is not null)
+            {
+                patterns.Add(dirScope);
+            }
+            else
+            {
+                var verbChain = ShellTokenizer.ExtractVerbChain(segment);
+                if (!string.IsNullOrEmpty(verbChain))
+                    patterns.Add(verbChain);
+            }
         }
     }
 }
@@ -165,4 +210,7 @@ public sealed class DefaultApprovalMatcher : IToolApprovalMatcher
     {
         return toolName.Value;
     }
+
+    public IReadOnlyList<string> ExtractDirectoryPatterns(ToolName toolName, IDictionary<string, object?>? arguments)
+        => [];
 }

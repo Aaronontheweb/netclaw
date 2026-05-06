@@ -73,6 +73,9 @@ public sealed class FilePathApprovalMatcher : IToolApprovalMatcher
         return toolName.Value;
     }
 
+    public IReadOnlyList<string> ExtractDirectoryPatterns(ToolName toolName, IDictionary<string, object?>? arguments)
+        => [];
+
     private bool TryGetControlPlaneRelativePath(
         IDictionary<string, object?>? arguments,
         out string relativePath)

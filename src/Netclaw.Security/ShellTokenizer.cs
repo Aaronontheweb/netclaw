@@ -358,6 +358,94 @@ public static class ShellTokenizer
     }
 
     /// <summary>
+    /// Extracts a directory-scoped approval pattern from a shell command by
+    /// finding the first file-path argument (not just the first positional
+    /// argument) and returning <c>"{verb} {parentDirectory}/"</c>. Returns
+    /// null when the command has no path-aware verb, no recognizable file-path
+    /// argument, or the resulting directory is too shallow (fewer than 2
+    /// path segments below root).
+    /// </summary>
+    public static string? ExtractDirectoryScope(string command)
+    {
+        var tokens = Tokenize(command).ToList();
+        if (tokens.Count == 0)
+            return null;
+
+        var verb = TrimShellPunctuation(tokens[0]);
+        if (verb.Length == 0 || !PathAwareVerbs.Contains(verb))
+            return null;
+
+        for (var i = 1; i < tokens.Count; i++)
+        {
+            var trimmed = TrimShellPunctuation(tokens[i]);
+            if (trimmed.Length == 0 || trimmed.StartsWith('-'))
+                continue;
+
+            if (!LooksLikePath(trimmed))
+                continue;
+
+            var expanded = PathUtility.ExpandHome(trimmed);
+            var dir = ExtractParentDirectory(expanded);
+            if (dir is null)
+                continue;
+
+            if (!PathUtility.TryNormalize(dir, null, out var normalized))
+                continue;
+
+            // Enforce minimum depth — reject shallow scopes like / or /etc/
+            if (CountPathSegments(normalized) < MinDirectoryScopeDepth)
+                return null;
+
+            return verb + " " + normalized + "/";
+        }
+
+        return null;
+    }
+
+    internal const int MinDirectoryScopeDepth = 2;
+
+    private static string? ExtractParentDirectory(string path)
+    {
+        // Already a directory (trailing separator)
+        if (path.EndsWith('/') || path.EndsWith('\\'))
+            return path.TrimEnd('/', '\\');
+
+        // Glob: use directory portion before the glob
+        var globIdx = path.IndexOfAny(['*', '?', '[']);
+        if (globIdx >= 0)
+        {
+            var lastSep = path.LastIndexOf('/', globIdx);
+            if (lastSep < 0)
+                lastSep = path.LastIndexOf('\\', globIdx);
+            return lastSep > 0 ? path[..lastSep] : null;
+        }
+
+        // Regular file: parent directory
+        var dir = Path.GetDirectoryName(path);
+        return string.IsNullOrEmpty(dir) ? null : dir;
+    }
+
+    private static int CountPathSegments(string normalizedPath)
+    {
+        var trimmed = normalizedPath
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+        if (trimmed.Length == 0)
+            return 0;
+
+        // Strip root (e.g., "/" on Linux, "C:\" on Windows)
+        var root = Path.GetPathRoot(trimmed);
+        if (root is not null && trimmed.Length > root.Length)
+            trimmed = trimmed[root.Length..];
+        else if (root is not null)
+            return 0; // path IS the root
+
+        return trimmed.Split(
+            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+            StringSplitOptions.RemoveEmptyEntries).Length;
+    }
+
+    /// <summary>
     /// Returns true when the pattern is a single-token shell approval for a
     /// path-aware verb such as <c>cat</c> or <c>bash</c>.
     /// </summary>

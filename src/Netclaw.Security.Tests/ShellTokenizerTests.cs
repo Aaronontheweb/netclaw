@@ -270,4 +270,53 @@ public sealed class ShellTokenizerTests
     {
         Assert.True(ShellTokenizer.LooksLikePath(token));
     }
+
+    // ── ExtractDirectoryScope ──
+
+    [Theory]
+    [InlineData("cat /home/user/.netclaw/logs/crash.log", "cat", "/home/user/.netclaw/logs/")]
+    [InlineData("ls -la /home/user/.netclaw/logs/", "ls", "/home/user/.netclaw/logs/")]
+    [InlineData("find /home/user/.netclaw/logs -name '*.log'", "find", "/home/user/.netclaw/")]
+    public void ExtractDirectoryScope_returns_verb_and_directory(string command, string expectedVerb, string expectedDirSuffix)
+    {
+        var result = ShellTokenizer.ExtractDirectoryScope(command);
+        Assert.NotNull(result);
+        Assert.StartsWith(expectedVerb + " ", result);
+        Assert.EndsWith("/", result);
+
+        var dir = result[(expectedVerb.Length + 1)..];
+        Assert.EndsWith(expectedDirSuffix, dir.Replace('\\', '/'));
+    }
+
+    [Fact]
+    public void ExtractDirectoryScope_grep_finds_path_not_search_term()
+    {
+        var result = ShellTokenizer.ExtractDirectoryScope(
+            "grep -l \"timeout\" /home/user/.netclaw/logs/daemon.log");
+        Assert.NotNull(result);
+        Assert.StartsWith("grep ", result);
+        Assert.EndsWith("/", result);
+        Assert.Contains(".netclaw/logs/", result.Replace('\\', '/'));
+    }
+
+    [Fact]
+    public void ExtractDirectoryScope_handles_glob_paths()
+    {
+        var result = ShellTokenizer.ExtractDirectoryScope(
+            "ls /home/user/.netclaw/logs/crash-*.log");
+        Assert.NotNull(result);
+        Assert.StartsWith("ls ", result);
+        Assert.EndsWith("/", result);
+        Assert.Contains(".netclaw/logs/", result.Replace('\\', '/'));
+    }
+
+    [Theory]
+    [InlineData("echo hello")]              // not a path-aware verb
+    [InlineData("git push origin main")]    // not in PathAwareVerbs
+    [InlineData("grep --version")]          // no path argument
+    [InlineData("cat /etc/passwd")]         // too shallow (/etc/ = 1 segment)
+    public void ExtractDirectoryScope_returns_null(string command)
+    {
+        Assert.Null(ShellTokenizer.ExtractDirectoryScope(command));
+    }
 }

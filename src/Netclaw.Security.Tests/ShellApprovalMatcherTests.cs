@@ -98,6 +98,12 @@ public sealed class ShellApprovalMatcherTests
     [InlineData("cat /etc/passwd", "cat /etc/shadow", false)]
     [InlineData("bash /home/.netclaw/scripts/monitor.sh", "bash /home/.netclaw/scripts/monitor.sh", true)]
     [InlineData("bash /home/.netclaw/scripts/monitor.sh", "bash /tmp/evil.sh", false)]
+    // Directory-scoped patterns (trailing /) match files under that directory
+    [InlineData("cat /home/user/.netclaw/logs/", "cat /home/user/.netclaw/logs/crash.log", true)]
+    [InlineData("cat /home/user/.netclaw/logs/", "cat /home/user/.netclaw/logs/deep/nested.txt", true)]
+    [InlineData("cat /home/user/.netclaw/logs/", "cat /home/user/.netclaw/config/secret.json", false)]
+    [InlineData("grep /home/user/.netclaw/logs/", "cat /home/user/.netclaw/logs/crash.log", false)] // verb mismatch
+    [InlineData("ls /home/user/.netclaw/", "ls /home/user/.netclaw/logs/deep/file.txt", true)] // nested
     // Single-token path-aware verbs stay exact-only
     [InlineData("cat", "cat /etc/passwd", false)]
     [InlineData("grep", "grep TODO", false)]
