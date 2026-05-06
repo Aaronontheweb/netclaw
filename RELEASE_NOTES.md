@@ -1,3 +1,15 @@
+#### 0.17.2 2026-05-06 ####
+
+Netclaw v0.17.2 — MCP reconnection resilience and README improvements
+
+**Bug Fixes**
+
+* MCP servers that become unreachable (DNS failure, server down) no longer stay permanently stuck in `Unreachable` state — a new `McpReconnectionService` polls every 30 seconds with per-server exponential backoff (30s → 300s cap) and emits an operational alert on recovery. ([#884](https://github.com/netclaw-dev/netclaw/pull/884))
+
+**Documentation**
+
+* Refocused README on end-user content — moved architecture, design goals, and build-from-source sections to CONTRIBUTING.md; added Docker quickstart, netclaw.dev documentation links, and Discord link. ([#888](https://github.com/netclaw-dev/netclaw/pull/888))
+
 #### 0.17.1 2026-05-06 ####
 
 Netclaw v0.17.1 — First public release with Docker support, non-interactive approval, and open-source infrastructure
