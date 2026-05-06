@@ -219,7 +219,6 @@ jobs:
         name: publish-output-${{ matrix.rid }}
         path: |
           ./publish/cli/netclaw
-          ./publish/cli/Schemas/
           ./publish/daemon/netclawd
         retention-days: 1
 
@@ -285,9 +284,6 @@ jobs:
         find_binary() {
           find "$1" -name "$2" -type f | head -1
         }
-        find_dir() {
-          find "$1" -name "$2" -type d | head -1
-        }
 
         for arch_pair in "linux-x64:amd64" "linux-arm64:arm64"; do
           SRC="${arch_pair%%:*}"
@@ -295,15 +291,11 @@ jobs:
 
           CLI=$(find_binary "./artifacts/${SRC}" "netclaw")
           DAEMON=$(find_binary "./artifacts/${SRC}" "netclawd")
-          SCHEMAS=$(find_dir "./artifacts/${SRC}" "Schemas")
 
-          echo "[$DST] CLI=$CLI DAEMON=$DAEMON SCHEMAS=$SCHEMAS"
+          echo "[$DST] CLI=$CLI DAEMON=$DAEMON"
 
           cp "$CLI" "publish/cli-${DST}/netclaw"
           cp "$DAEMON" "publish/daemon-${DST}/netclawd"
-          if [[ -n "$SCHEMAS" ]]; then
-            cp -r "$SCHEMAS" "publish/cli-${DST}/Schemas"
-          fi
         done
 
         chmod +x publish/cli-amd64/netclaw publish/daemon-amd64/netclawd
