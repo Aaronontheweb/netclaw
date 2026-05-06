@@ -26,10 +26,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="Schemas/**/*.json" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
-
-  <ItemGroup>
+    <EmbeddedResource Include="Schemas/**/*.json" />
     <EmbeddedResource Include="Resources/AGENTS.md" />
     <EmbeddedResource Include="Resources/AGENTS.public.md" />
   </ItemGroup>
