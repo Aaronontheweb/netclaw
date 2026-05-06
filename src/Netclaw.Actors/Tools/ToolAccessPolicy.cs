@@ -263,6 +263,30 @@ public sealed class ToolAccessPolicy
         return ToolArgumentHelper.GetString(arguments, "WorkingDirectory");
     }
 
+    private static bool TryGetSingleDirectoryScope(IReadOnlyList<string> directoryPatterns, out string? directoryScope)
+    {
+        directoryScope = null;
+
+        if (directoryPatterns.Count == 0 || directoryPatterns.Any(p => !p.EndsWith('/')))
+            return false;
+
+        var scopes = directoryPatterns
+            .Select(static pattern =>
+            {
+                var spaceIdx = pattern.IndexOf(' ', StringComparison.Ordinal);
+                return spaceIdx >= 0 ? pattern[(spaceIdx + 1)..] : null;
+            })
+            .Where(static scope => !string.IsNullOrWhiteSpace(scope))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (scopes.Count != 1)
+            return false;
+
+        directoryScope = scopes[0];
+        return true;
+    }
+
     private ToolAccessDecision CheckApprovalGate(
         ToolName toolName,
         ToolExecutionContext? context,
@@ -303,16 +327,10 @@ public sealed class ToolAccessPolicy
 
         var sessionLabel = ApprovalOptionKeys.ApproveSessionLabel;
         var alwaysLabel = ApprovalOptionKeys.ApproveAlwaysLabel;
-        var firstDirScope = directoryPatterns.FirstOrDefault(p => p.EndsWith('/'));
-        if (firstDirScope is not null)
+        if (TryGetSingleDirectoryScope(directoryPatterns, out var directoryScope))
         {
-            var spaceIdx = firstDirScope.IndexOf(' ', StringComparison.Ordinal);
-            if (spaceIdx >= 0)
-            {
-                var dir = firstDirScope[(spaceIdx + 1)..];
-                sessionLabel = $"Approve in {dir} for this chat";
-                alwaysLabel = $"Approve in {dir} always";
-            }
+            sessionLabel = $"Approve in {directoryScope} for this chat";
+            alwaysLabel = $"Approve in {directoryScope} always";
         }
 
         var approvalContext = new ToolApprovalContext(

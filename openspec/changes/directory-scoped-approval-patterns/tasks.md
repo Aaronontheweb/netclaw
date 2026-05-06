@@ -1,6 +1,6 @@
 ## 1. Pattern Extraction
 
-- [x] 1.1 Add `ShellTokenizer.ExtractDirectoryScope()` — scan all args for first `LooksLikePath()` token, extract parent directory, normalize, enforce minimum depth
+- [x] 1.1 Add shared path-operand extraction for `ShellTokenizer.ExtractApprovalPattern()` and `ExtractDirectoryScope()` — scan all args for the first resolvable path operand, resolve relatives against `WorkingDirectory`, normalize, and enforce minimum depth for directory scope
 - [x] 1.2 Add `ExtractParentDirectory()` and `CountPathSegments()` helpers to `ShellTokenizer`
 - [x] 1.3 Unit tests for `ExtractDirectoryScope` (verb+directory, grep path vs search term, glob handling, null cases)
 
@@ -19,7 +19,7 @@
 
 - [x] 4.1 Add `DirectoryPatterns` property to `ToolInteractionRequest` in `SessionOutput.cs`
 - [x] 4.2 Add `DirectoryPatterns` to `ToolApprovalContext` record in `ToolAccessPolicy.cs`
-- [x] 4.3 Compute directory patterns and customize B/C labels in `CheckApprovalGate()`
+- [x] 4.3 Compute directory patterns and customize B/C labels in `CheckApprovalGate()` only when the full request maps cleanly to a single directory scope; otherwise keep generic labels
 - [x] 4.4 Pass `DirectoryPatterns` from `ToolApprovalContext` to `ToolInteractionRequest` in `SessionToolExecutionPipeline`
 - [x] 4.5 Propagate `DirectoryPatterns` through `DispatchingToolExecutor` re-approval path
 
@@ -35,4 +35,7 @@
 - [x] 6.2 Unify `CollectPatterns`/`CollectDirectoryPatterns` into shared `TraverseSegments` helper
 - [x] 6.3 Use `PathUtility.ExpandAndNormalize()` in `ExtractDirectoryScope` instead of separate calls
 - [x] 6.4 Make `DirectoryPatterns` non-nullable on `ToolApprovalContext`
-- [x] 6.5 Verify: `dotnet slopwatch analyze` passes, copyright headers present, all tests green
+- [x] 6.5 Preserve existing directory operands like `find logs -name '*.log'` instead of widening them to the parent directory
+- [x] 6.6 Keep pipe/compound traversal MVP-scoped to direct path operands only; do not infer indirect flow through `xargs`, `eval`, or loop variables
+- [x] 6.7 Note Windows-native shell support as out of scope for this change (tracked separately in issue #899)
+- [x] 6.8 Verify: `dotnet slopwatch analyze` passes, copyright headers present, all tests green

@@ -13,6 +13,14 @@ legitimate diagnostic work.
 - "Approve for this chat" (B) and "Approve always" (C) store **directory-scoped
   patterns** (e.g., `grep /home/.netclaw/logs/`) instead of per-file patterns
   when the command targets a recognizable file path.
+- Relative path operands are resolved against the shell tool `WorkingDirectory`
+  before both exact-pattern extraction and directory-scope extraction/matching.
+- Path-aware exact approval patterns use the actual normalized path operand when
+  one exists, including commands like `grep -l "timeout" logs/app.log` where the
+  search term is not the path operand.
+- Existing directory operands keep their directory scope (for example,
+  `find logs -name '*.log'` stores `find <wd>/logs/`) instead of widening to the
+  parent directory.
 - A trailing `/` on a stored approval pattern signals directory scope. Matching
   uses `PathUtility.IsWithinRoot()` for boundary-safe containment instead of
   naive `StartsWith`.
@@ -20,10 +28,16 @@ legitimate diagnostic work.
   scopes like `/` or `/etc/`.
 - `IToolApprovalMatcher` gains `ExtractDirectoryPatterns()` for tool-specific
   directory pattern extraction.
-- Approval option labels dynamically show the directory scope (e.g., "Approve
-  `grep` in /home/.netclaw/logs/ for this chat").
+- Approval option labels only show a directory-specific scope when the full
+  approval set for the request maps cleanly to a single directory; otherwise the
+  labels stay generic.
+- Pipe segments can get directory scope when the segment has a direct path
+  operand, but MVP extraction does not infer indirect path flow through `xargs`,
+  `eval`, loop variables, or similar shell constructs.
 - "Approve once" (A) continues to use exact patterns — directory scope only
   applies to broader grants.
+- Windows-native shell path semantics are out of scope for this change and are
+  tracked separately in issue #899.
 
 ## Capabilities
 

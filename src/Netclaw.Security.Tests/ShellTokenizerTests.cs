@@ -276,7 +276,6 @@ public sealed class ShellTokenizerTests
     [Theory]
     [InlineData("cat /home/user/.netclaw/logs/crash.log", "cat", "/home/user/.netclaw/logs/")]
     [InlineData("ls -la /home/user/.netclaw/logs/", "ls", "/home/user/.netclaw/logs/")]
-    [InlineData("find /home/user/.netclaw/logs -name '*.log'", "find", "/home/user/.netclaw/")]
     public void ExtractDirectoryScope_returns_verb_and_directory(string command, string expectedVerb, string expectedDirSuffix)
     {
         var result = ShellTokenizer.ExtractDirectoryScope(command);
@@ -286,6 +285,26 @@ public sealed class ShellTokenizerTests
 
         var dir = result[(expectedVerb.Length + 1)..];
         Assert.EndsWith(expectedDirSuffix, dir.Replace('\\', '/'));
+    }
+
+    [Fact]
+    public void ExtractDirectoryScope_preserves_existing_directory_operand()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var logs = Path.Combine(root, "logs");
+        Directory.CreateDirectory(logs);
+
+        try
+        {
+            var result = ShellTokenizer.ExtractDirectoryScope($"find {logs} -name '*.log'");
+
+            Assert.NotNull(result);
+            Assert.Equal($"find {PathUtility.Normalize(logs)}/", result);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]

@@ -38,10 +38,8 @@ internal static class SlackApprovalBlockBuilder
 
         lines.Add("");
         lines.Add("Reply with:");
-        lines.Add($"  *A)* {ApprovalOptionKeys.ApproveOnceLabel}");
-        lines.Add($"  *B)* {ApprovalOptionKeys.ApproveSessionLabel}");
-        lines.Add($"  *C)* {ApprovalOptionKeys.ApproveAlwaysLabel}");
-        lines.Add($"  *D)* {ApprovalOptionKeys.DenyLabel}");
+        foreach (var replyOption in EnumerateReplyOptions(request.Options))
+            lines.Add($"  *{replyOption.Letter})* {replyOption.Option.Label}");
 
         return string.Join("\n", lines);
     }
@@ -93,7 +91,7 @@ internal static class SlackApprovalBlockBuilder
 
         blocks.Add(new SectionBlock
         {
-            Text = new Markdown("You can also reply with `A`, `B`, `C`, or `D` in this thread.")
+            Text = new Markdown($"You can also reply with {FormatReplyLetters(request.Options)} in this thread.")
         });
 
         return blocks;
@@ -173,6 +171,18 @@ internal static class SlackApprovalBlockBuilder
 
     private static string BuildAdoptedContextMarkdown(ToolInteractionRequest request)
         => $"*Adopted context:* present\n*Speakers:* `{EscapeMarkdown(string.Join(", ", request.AdoptedSpeakerIds))}`";
+
+    private static IEnumerable<(string Letter, ToolInteractionOption Option)> EnumerateReplyOptions(IReadOnlyList<ToolInteractionOption> options)
+    {
+        for (var i = 0; i < options.Count; i++)
+            yield return (GetReplyLetter(i), options[i]);
+    }
+
+    private static string FormatReplyLetters(IReadOnlyList<ToolInteractionOption> options)
+        => string.Join(", ", EnumerateReplyOptions(options).Select(static x => $"`{x.Letter}`"));
+
+    private static string GetReplyLetter(int index)
+        => ((char)('A' + index)).ToString();
 
     internal static string BuildButtonValue(ToolInteractionRequest request, ToolInteractionOption option)
         => ApprovalButtonValueCodec.Encode(request, option);

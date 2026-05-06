@@ -792,6 +792,49 @@ public sealed class ToolApprovalGateTests
     }
 
     [Fact]
+    public void Mixed_scope_and_fallback_uses_default_labels()
+    {
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var args = ToolInput.Create("Command", "cat /home/user/.netclaw/logs/crash.log | grep error");
+
+        var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+
+        Assert.True(decision.NeedsApproval);
+        Assert.NotNull(decision.ApprovalContext);
+        Assert.Contains(decision.ApprovalContext!.DirectoryPatterns, p => p.EndsWith("/"));
+        Assert.Contains(decision.ApprovalContext.DirectoryPatterns, p => !p.EndsWith("/"));
+        var sessionOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession);
+        var alwaysOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways);
+        Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, sessionOption.Label);
+        Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, alwaysOption.Label);
+    }
+
+    [Fact]
+    public void Relative_path_command_uses_working_directory_for_directory_scope()
+    {
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var logs = Path.Combine(root, "logs");
+        Directory.CreateDirectory(logs);
+        var file = Path.Combine(logs, "app.log");
+        File.WriteAllText(file, "hello");
+
+        try
+        {
+            var args = ToolInput.Create("Command", "cat logs/app.log", "WorkingDirectory", root);
+
+            var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+
+            Assert.True(decision.NeedsApproval);
+            Assert.Contains($"cat {PathUtility.Normalize(logs)}/", decision.ApprovalContext!.DirectoryPatterns);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Non_path_command_uses_default_labels()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);

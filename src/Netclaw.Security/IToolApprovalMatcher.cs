@@ -77,8 +77,9 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (string.IsNullOrWhiteSpace(command))
             return [];
 
+        var workingDirectory = GetWorkingDirectory(arguments);
         var patterns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        CollectPatterns(command, patterns);
+        CollectPatterns(command, workingDirectory, patterns);
 
         return patterns.ToList();
     }
@@ -110,8 +111,9 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (string.IsNullOrWhiteSpace(command))
             return [];
 
+        var workingDirectory = GetWorkingDirectory(arguments);
         var patterns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        CollectDirectoryPatterns(command, patterns);
+        CollectDirectoryPatterns(command, workingDirectory, patterns);
         return patterns.ToList();
     }
 
@@ -129,14 +131,30 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     private static bool PatternMatchesAny(string pattern, IReadOnlyList<string> approvedPatterns)
         => ApprovalPatternMatching.MatchesAny(pattern, approvedPatterns);
 
-    private static void CollectPatterns(string command, ISet<string> patterns)
-        => TraverseSegments(command, patterns, static segment => ShellTokenizer.ExtractVerbChain(segment));
+    private static void CollectPatterns(string command, string? workingDirectory, ISet<string> patterns)
+        => TraverseSegments(command, workingDirectory, patterns,
+            static (segment, wd) => ShellTokenizer.ExtractApprovalPattern(segment, wd));
 
-    private static void CollectDirectoryPatterns(string command, ISet<string> patterns)
-        => TraverseSegments(command, patterns, static segment =>
-            ShellTokenizer.ExtractDirectoryScope(segment) ?? ShellTokenizer.ExtractVerbChain(segment));
+    private static void CollectDirectoryPatterns(string command, string? workingDirectory, ISet<string> patterns)
+        => TraverseSegments(command, workingDirectory, patterns, static (segment, wd) =>
+            ShellTokenizer.ExtractDirectoryScope(segment, wd) ?? ShellTokenizer.ExtractApprovalPattern(segment, wd));
 
-    private static void TraverseSegments(string command, ISet<string> patterns, Func<string, string?> extractLeaf)
+    private static string? GetWorkingDirectory(IDictionary<string, object?>? arguments)
+    {
+        if (arguments is null)
+            return null;
+
+        if (arguments.TryGetValue("WorkingDirectory", out var val) || arguments.TryGetValue("workingDirectory", out val))
+            return val?.ToString();
+
+        return null;
+    }
+
+    private static void TraverseSegments(
+        string command,
+        string? workingDirectory,
+        ISet<string> patterns,
+        Func<string, string?, string?> extractLeaf)
     {
         foreach (var segment in ShellTokenizer.SplitCompoundCommand(command))
         {
@@ -144,12 +162,12 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             if (innerCommands.Count > 0)
             {
                 foreach (var inner in innerCommands)
-                    TraverseSegments(inner, patterns, extractLeaf);
+                    TraverseSegments(inner, workingDirectory, patterns, extractLeaf);
 
                 continue;
             }
 
-            var pattern = extractLeaf(segment);
+            var pattern = extractLeaf(segment, workingDirectory);
             if (!string.IsNullOrEmpty(pattern))
                 patterns.Add(pattern);
         }

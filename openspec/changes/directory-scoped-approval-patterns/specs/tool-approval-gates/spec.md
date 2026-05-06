@@ -9,6 +9,11 @@ the system SHALL store a directory-scoped pattern (e.g., `grep /home/.netclaw/lo
 instead of the exact file-path pattern. "Approve once" (A) SHALL continue to use
 exact patterns.
 
+When a recognizable path operand is relative, the system SHALL resolve it
+against the shell tool `WorkingDirectory` before extracting either exact or
+directory-scoped approval patterns. Existing operands that already denote a
+directory SHALL preserve that directory scope instead of widening to the parent.
+
 A trailing `/` on a stored pattern SHALL signal directory scope. The system SHALL
 use `PathUtility.IsWithinRoot()` for boundary-safe containment matching — not
 naive string prefix comparison.
@@ -36,6 +41,22 @@ Directory-scoped approvals SHALL be verb-isolated: an approval for
 - **THEN** `grep /home/.netclaw/logs/` is written to `tool-approvals.json`
 - **AND** future sessions auto-approve grep commands targeting files under
   `/home/.netclaw/logs/`
+
+#### Scenario: Relative path resolves against working directory
+
+- **GIVEN** the shell tool `WorkingDirectory` is `/workspace/project`
+- **AND** the command is `cat logs/app.log`
+- **WHEN** exact and directory-scoped approval patterns are extracted
+- **THEN** the exact pattern is `cat /workspace/project/logs/app.log`
+- **AND** the directory-scoped pattern is `cat /workspace/project/logs/`
+
+#### Scenario: Existing directory operand preserves its scope
+
+- **GIVEN** the shell tool `WorkingDirectory` is `/workspace/project`
+- **AND** the command is `find logs -name '*.log'`
+- **WHEN** directory-scoped approval extraction runs
+- **THEN** the extracted pattern is `find /workspace/project/logs/`
+- **AND** the scope is not widened to `/workspace/project/`
 
 #### Scenario: Approve Once uses exact pattern
 
@@ -82,11 +103,12 @@ Directory-scoped approvals SHALL be verb-isolated: an approval for
 `IToolApprovalMatcher` SHALL define an `ExtractDirectoryPatterns()` method that
 returns directory-scoped patterns for a tool invocation. `ShellApprovalMatcher`
 SHALL implement this by scanning all non-flag arguments for the first
-`LooksLikePath()` token, expanding home directory tokens, extracting the parent
-directory, normalizing the path, and enforcing minimum depth. For compound
-commands and `bash -c` wrappers, each segment SHALL be processed recursively.
-When no directory scope is available for a segment, the segment's verb-chain
-pattern SHALL be used as fallback.
+recognizable path operand, resolving relative paths against `WorkingDirectory`,
+expanding home directory tokens, extracting the scoped directory, normalizing
+the path, and enforcing minimum depth. For compound commands and `bash -c`
+wrappers, each segment SHALL be processed recursively. When no directory scope
+is available for a segment, the segment's exact approval pattern SHALL be used
+as fallback.
 
 `DefaultApprovalMatcher` and `FilePathApprovalMatcher` SHALL return empty lists.
 
@@ -97,12 +119,35 @@ pattern SHALL be used as fallback.
 - **THEN** the pattern `grep /home/.netclaw/logs/` is extracted
 - **AND** the search term `"timeout"` is skipped (not a path)
 
+#### Scenario: grep exact pattern uses normalized path operand
+
+- **GIVEN** the shell tool `WorkingDirectory` is `/workspace/project`
+- **AND** the command is `grep -l "timeout" logs/daemon.log`
+- **WHEN** exact approval pattern extraction runs
+- **THEN** the pattern is `grep /workspace/project/logs/daemon.log`
+- **AND** the search term `"timeout"` is not used as the exact operand
+
 #### Scenario: Compound command extracts patterns per segment
 
 - **GIVEN** the command `cat /home/.netclaw/logs/crash.log && grep "error" /var/log/syslog`
 - **WHEN** `ExtractDirectoryPatterns` runs
 - **THEN** `cat /home/.netclaw/logs/` is extracted for the first segment
 - **AND** the second segment falls back to its verb chain (depth too shallow)
+
+#### Scenario: Pipe segment can contribute direct directory scope
+
+- **GIVEN** the shell tool `WorkingDirectory` is `/workspace/project`
+- **AND** the command is `cat logs/app.log | jq .message`
+- **WHEN** `ExtractDirectoryPatterns` runs
+- **THEN** `cat /workspace/project/logs/` is extracted for the direct path-aware segment
+- **AND** the `jq` segment does not gain directory scope from piped input alone
+
+#### Scenario: Indirect path flow is not inferred for MVP
+
+- **GIVEN** the command is `find logs -name '*.log' | xargs grep timeout`
+- **WHEN** `ExtractDirectoryPatterns` runs
+- **THEN** the `find` segment may contribute `find <resolved>/logs/`
+- **AND** the downstream `grep` segment does not inherit that directory scope via `xargs`
 
 #### Scenario: Glob paths use parent directory
 
@@ -114,7 +159,8 @@ pattern SHALL be used as fallback.
 ### Requirement: Dynamic approval option labels
 
 When directory patterns are available, the system SHALL customize the approval
-option labels to show the directory scope. The labels SHALL follow the format:
+option labels to show the directory scope only when the full approval set for
+the request maps cleanly to a single directory scope. The labels SHALL follow the format:
 - B: `"Approve in {directory} for this chat"`
 - C: `"Approve in {directory} always"`
 
@@ -134,6 +180,15 @@ Options A ("Approve once") and D ("Deny") SHALL retain their default labels.
 - **WHEN** the approval prompt is generated
 - **THEN** option B reads the default "Approve for this chat"
 - **AND** option C reads the default "Approve always"
+
+#### Scenario: Labels stay generic for mixed approval sets
+
+- **GIVEN** a shell command `cat /home/.netclaw/logs/crash.log && git push origin main`
+  requires approval
+- **WHEN** the approval prompt is generated
+- **THEN** option B reads the default "Approve for this chat"
+- **AND** option C reads the default "Approve always"
+- **AND** no partial directory-specific label is shown for the whole request
 
 ## MODIFIED Requirements
 
@@ -232,6 +287,9 @@ pattern ends with `/`, the system SHALL match any candidate pattern with the sam
 verb whose path argument is within the approved directory, using
 `PathUtility.IsWithinRoot()` for boundary-safe containment.
 
+For path-aware verbs with a recognizable path operand, exact approval pattern
+extraction SHALL use the normalized path operand instead of the raw verb chain.
+
 #### Scenario: Verb chain extracted from simple command
 
 - **GIVEN** the command `git push origin main`
@@ -276,3 +334,10 @@ verb whose path argument is within the approved directory, using
 - **GIVEN** `cat /home/.netclaw/logs/` is in the approved patterns
 - **WHEN** the candidate pattern `cat /home/.netclaw/logs/crash.log` is checked
 - **THEN** `ApprovalPatternMatching.MatchesAny` returns true
+
+#### Scenario: Windows-native shell support is tracked separately
+
+- **GIVEN** this MVP change targets the current shell approval pipeline
+- **WHEN** native Windows shell path semantics are considered
+- **THEN** they are out of scope for this change
+- **AND** follow-up work is tracked separately in issue #899
