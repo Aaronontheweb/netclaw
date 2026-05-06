@@ -115,9 +115,8 @@ public sealed class DoctorFixService(NetclawPaths paths)
         return Task.FromResult(new DoctorFixPlan(fixes));
     }
 
-    private void TryApplySchemaFixes(JsonObject config, List<string> appliedFixes)
+    private static void TryApplySchemaFixes(JsonObject config, List<string> appliedFixes)
     {
-        // Resolve schema version (default to 1 if not present or invalid)
         var version = 1;
         if (config["configVersion"] is JsonValue versionValue
             && versionValue.TryGetValue<int>(out var parsedVersion))
@@ -125,15 +124,14 @@ public sealed class DoctorFixService(NetclawPaths paths)
             version = parsedVersion;
         }
 
-        var schemaPath = ConfigSchemaDoctorCheck.ResolveSchemaPath(version);
-        if (!File.Exists(schemaPath))
+        var schemaText = EmbeddedSchemaLoader.LoadConfigSchema(version);
+        if (schemaText is null)
             return;
 
         JsonSchema schema;
         JsonObject? schemaJson;
         try
         {
-            var schemaText = File.ReadAllText(schemaPath);
             schema = JsonSchema.FromText(schemaText);
             schemaJson = JsonNode.Parse(schemaText) as JsonObject;
         }
