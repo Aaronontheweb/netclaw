@@ -339,8 +339,8 @@
         },
         "Backend": {
           "type": "string",
-          "enum": ["DuckDuckGo", "Brave", "SearXng"],
-          "default": "DuckDuckGo",
+          "enum": ["duckduckgo", "brave", "searxng"],
+          "default": "duckduckgo",
           "description": "Search backend identifier."
         },
         "BraveApiKey": {

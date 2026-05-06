@@ -51,7 +51,7 @@ public sealed class ConfigSchemaDoctorCheck(NetclawPaths paths) : IDoctorCheck
         }
         else if (obj["configVersion"] is null)
         {
-            version = 1;
+            version = EmbeddedSchemaLoader.CurrentSchemaVersion;
             obj["configVersion"] = version;
             syntheticVersion = true;
         }
@@ -63,25 +63,25 @@ public sealed class ConfigSchemaDoctorCheck(NetclawPaths paths) : IDoctorCheck
                 "Set `configVersion` to a supported integer value, e.g. 1."));
         }
 
-        var schemaPath = ResolveSchemaPath(version);
-        if (!File.Exists(schemaPath))
+        var schemaText = EmbeddedSchemaLoader.LoadConfigSchema(version);
+        if (schemaText is null)
         {
             return Task.FromResult(DoctorCheckResult.Error(
                 "Config Schema",
-                $"No schema found for configVersion {version}.",
-                $"Install/update Netclaw schema file: {schemaPath}"));
+                $"No embedded schema found for configVersion {version}.",
+                "This binary may be corrupted or built without embedded schemas. Reinstall Netclaw."));
         }
 
         JsonSchema schema;
         try
         {
-            schema = JsonSchema.FromText(File.ReadAllText(schemaPath));
+            schema = JsonSchema.FromText(schemaText);
         }
         catch (Exception ex)
         {
             return Task.FromResult(DoctorCheckResult.Error(
                 "Config Schema",
-                $"Failed loading schema {schemaPath}: {ex.Message}"));
+                $"Failed parsing embedded schema for v{version}: {ex.Message}"));
         }
 
         var evaluation = schema.Evaluate(obj, new EvaluationOptions
@@ -105,7 +105,7 @@ public sealed class ConfigSchemaDoctorCheck(NetclawPaths paths) : IDoctorCheck
 
             return Task.FromResult(DoctorCheckResult.Error(
                 "Config Schema",
-                $"Config does not match schema (loaded from: {schemaPath}).{errorDetails}",
+                $"Config does not match schema v{version}.{errorDetails}",
                 "Run `netclaw doctor --fix --dry-run` to preview auto-repairs, or check configVersion/schema fields in netclaw.json."));
         }
 
@@ -120,25 +120,5 @@ public sealed class ConfigSchemaDoctorCheck(NetclawPaths paths) : IDoctorCheck
         return Task.FromResult(DoctorCheckResult.Pass(
             "Config Schema",
             $"Config matches schema v{version}."));
-    }
-
-    internal static string ResolveSchemaPath(int version)
-    {
-        var fileName = $"netclaw-config.v{version}.schema.json";
-        var runtimePath = Path.Combine(AppContext.BaseDirectory, "Schemas", fileName);
-        if (File.Exists(runtimePath))
-            return runtimePath;
-
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory is not null)
-        {
-            var candidate = Path.Combine(directory.FullName, "src", "Netclaw.Configuration", "Schemas", fileName);
-            if (File.Exists(candidate))
-                return candidate;
-
-            directory = directory.Parent;
-        }
-
-        return runtimePath;
     }
 }

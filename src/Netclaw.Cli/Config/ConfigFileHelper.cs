@@ -34,11 +34,11 @@ internal static class ConfigFileHelper
     internal static Dictionary<string, object> LoadJsonDict(string path)
     {
         if (!File.Exists(path))
-            return new Dictionary<string, object> { ["configVersion"] = 1 };
+            return new Dictionary<string, object> { ["configVersion"] = EmbeddedSchemaLoader.CurrentSchemaVersion };
 
         var text = File.ReadAllText(path);
         return JsonSerializer.Deserialize<Dictionary<string, object>>(text)
-            ?? new Dictionary<string, object> { ["configVersion"] = 1 };
+            ?? new Dictionary<string, object> { ["configVersion"] = EmbeddedSchemaLoader.CurrentSchemaVersion };
     }
 
     /// <summary>

@@ -461,9 +461,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 return;
             }
 
-            // Guard: empty response (no text, no tool calls) — delegate decision to tracker
-            var hasText = lastMessage.Contents.OfType<TextContent>().Any(t => !string.IsNullOrWhiteSpace(t.Text));
-            if (!hasText)
+            // Guard: empty response (no text, no thinking, no tool calls) — delegate decision to tracker
+            var hasContent = lastMessage.Contents.Any(c =>
+                (c is TextContent tc && !string.IsNullOrWhiteSpace(tc.Text)) ||
+                (c is TextReasoningContent rc && !string.IsNullOrWhiteSpace(rc.Text)));
+            if (!hasContent)
             {
                 switch (_turnState.EvaluateEmptyResponse())
                 {
@@ -967,7 +969,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SessionId = _sessionId,
                 InputTokens = msg.InputTokens,
                 OutputTokens = msg.OutputTokens,
-                TotalTokens = (msg.InputTokens ?? 0) + (msg.OutputTokens ?? 0)
+                TotalTokens = (msg.InputTokens ?? 0) + (msg.OutputTokens ?? 0),
+                ContextWindowTokens = _model.ContextWindowTokens
             }, OutputFilter.Usage);
         }
 
