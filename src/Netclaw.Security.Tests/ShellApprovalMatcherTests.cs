@@ -103,8 +103,6 @@ public sealed class ShellApprovalMatcherTests
     // Path-aware patterns — exact path matches
     [InlineData("cat /etc/passwd", "cat /etc/passwd", true)]
     [InlineData("cat /etc/passwd", "cat /etc/shadow", false)]
-    [InlineData("bash /home/.netclaw/scripts/monitor.sh", "bash /home/.netclaw/scripts/monitor.sh", true)]
-    [InlineData("bash /home/.netclaw/scripts/monitor.sh", "bash /tmp/evil.sh", false)]
     // Directory-scoped patterns (trailing /) match files under that directory
     [InlineData("cat /home/user/.netclaw/logs/", "cat /home/user/.netclaw/logs/crash.log", true)]
     [InlineData("cat /home/user/.netclaw/logs/", "cat /home/user/.netclaw/logs/deep/nested.txt", true)]
@@ -114,9 +112,9 @@ public sealed class ShellApprovalMatcherTests
     // Single-token path-aware verbs stay exact-only
     [InlineData("cat", "cat /etc/passwd", false)]
     [InlineData("grep", "grep TODO", false)]
-    [InlineData("bash", "bash /tmp/script.sh", false)]
     [InlineData("find", "find /var/log", false)]
     // Non-path-aware single tokens still require exact match
+    [InlineData("bash", "bash /tmp/script.sh", false)]
     [InlineData("echo", "echo hello", false)]
     [InlineData("docker", "docker compose", false)]
     public void IsApproved_pattern_matching(string pattern, string command, bool expected)
@@ -187,6 +185,17 @@ public sealed class ShellApprovalMatcherTests
         {
             Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Fact]
+    public void ExtractPatterns_non_allowlisted_find_still_uses_exact_path_pattern()
+    {
+        var patterns = _matcher.ExtractPatterns(
+            new ToolName("shell_execute"),
+            Args("find /home/user/.netclaw/logs -name '*.log'"));
+
+        Assert.Single(patterns);
+        Assert.Equal("find /home/user/.netclaw/logs", patterns[0]);
     }
 
     [Fact]
@@ -284,7 +293,7 @@ public sealed class ShellApprovalMatcherTests
     }
 
     [Fact]
-    public void ExtractDirectoryPatterns_preserve_existing_directory_operand()
+    public void ExtractDirectoryPatterns_non_allowlisted_find_falls_back_to_exact_path_pattern()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var logs = Path.Combine(root, "logs");
@@ -297,7 +306,31 @@ public sealed class ShellApprovalMatcherTests
                 Args("find logs -name '*.log'", root));
 
             Assert.Single(patterns);
-            Assert.Equal($"find {PathUtility.Normalize(logs)}/", patterns[0]);
+            Assert.Equal($"find {PathUtility.Normalize(logs)}", patterns[0]);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ExtractDirectoryPatterns_redirection_falls_back_to_exact_pattern()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var logs = Path.Combine(root, "logs");
+        Directory.CreateDirectory(logs);
+        var file = Path.Combine(logs, "app.log");
+        File.WriteAllText(file, "hello");
+
+        try
+        {
+            var patterns = _matcher.ExtractDirectoryPatterns(
+                new ToolName("shell_execute"),
+                Args("cat logs/app.log > /tmp/out.log", root));
+
+            Assert.Single(patterns);
+            Assert.Equal($"cat {PathUtility.Normalize(file)}", patterns[0]);
         }
         finally
         {

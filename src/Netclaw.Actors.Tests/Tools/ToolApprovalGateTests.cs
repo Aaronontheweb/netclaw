@@ -835,6 +835,38 @@ public sealed class ToolApprovalGateTests
     }
 
     [Fact]
+    public void Non_allowlisted_find_uses_default_labels()
+    {
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var args = ToolInput.Create("Command", "find /home/user/.netclaw/logs -name '*.log'");
+
+        var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+
+        Assert.True(decision.NeedsApproval);
+        Assert.DoesNotContain(decision.ApprovalContext!.DirectoryPatterns, p => p.EndsWith("/"));
+        var sessionOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession);
+        var alwaysOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways);
+        Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, sessionOption.Label);
+        Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, alwaysOption.Label);
+    }
+
+    [Fact]
+    public void Redirection_disables_directory_scope_labels()
+    {
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var args = ToolInput.Create("Command", "cat /home/user/.netclaw/logs/app.log > /tmp/out.log");
+
+        var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+
+        Assert.True(decision.NeedsApproval);
+        Assert.DoesNotContain(decision.ApprovalContext!.DirectoryPatterns, p => p.EndsWith("/"));
+        var sessionOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession);
+        var alwaysOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways);
+        Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, sessionOption.Label);
+        Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, alwaysOption.Label);
+    }
+
+    [Fact]
     public void Non_path_command_uses_default_labels()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);

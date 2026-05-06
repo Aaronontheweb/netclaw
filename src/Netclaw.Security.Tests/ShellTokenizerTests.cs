@@ -288,26 +288,6 @@ public sealed class ShellTokenizerTests
     }
 
     [Fact]
-    public void ExtractDirectoryScope_preserves_existing_directory_operand()
-    {
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var logs = Path.Combine(root, "logs");
-        Directory.CreateDirectory(logs);
-
-        try
-        {
-            var result = ShellTokenizer.ExtractDirectoryScope($"find {logs} -name '*.log'");
-
-            Assert.NotNull(result);
-            Assert.Equal($"find {PathUtility.Normalize(logs)}/", result);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [Fact]
     public void ExtractDirectoryScope_grep_finds_path_not_search_term()
     {
         var result = ShellTokenizer.ExtractDirectoryScope(
@@ -332,7 +312,9 @@ public sealed class ShellTokenizerTests
     [Theory]
     [InlineData("echo hello")]              // not a path-aware verb
     [InlineData("git push origin main")]    // not in PathAwareVerbs
+    [InlineData("find /home/user/.netclaw/logs -name '*.log'")] // not directory-scope eligible
     [InlineData("grep --version")]          // no path argument
+    [InlineData("cat /home/user/.netclaw/logs/app.log > /tmp/out.log")] // redirection disables directory scope
     [InlineData("cat /etc/passwd")]         // too shallow (/etc/ = 1 segment)
     public void ExtractDirectoryScope_returns_null(string command)
     {

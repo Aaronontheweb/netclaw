@@ -3,16 +3,25 @@
 ### Requirement: Directory-scoped approval patterns
 
 The system SHALL support directory-scoped approval patterns for shell commands
-targeting path-aware verbs. When the user selects "Approve for this chat" (B) or
-"Approve always" (C) for a shell command that targets a recognizable file path,
-the system SHALL store a directory-scoped pattern (e.g., `grep /home/.netclaw/logs/`)
-instead of the exact file-path pattern. "Approve once" (A) SHALL continue to use
-exact patterns.
+targeting a narrow direct read/list allowlist: `cat`, `less`, `more`, `head`,
+`tail`, `grep`, and `ls`. When the user selects "Approve for this chat" (B) or
+"Approve always" (C) for one of those shell commands and the command targets a
+recognizable direct path operand, the system SHALL store a directory-scoped
+pattern (e.g., `grep /home/.netclaw/logs/`) instead of the exact file-path
+pattern. "Approve once" (A) SHALL continue to use exact patterns.
 
 When a recognizable path operand is relative, the system SHALL resolve it
 against the shell tool `WorkingDirectory` before extracting either exact or
 directory-scoped approval patterns. Existing operands that already denote a
 directory SHALL preserve that directory scope instead of widening to the parent.
+
+Commands outside that directory-scope allowlist, including `find`, SHALL fall
+back to exact approval patterns and generic B/C labels even when they have a
+recognizable direct path operand.
+
+If a shell segment contains redirection operators, the system SHALL disable
+directory-scoped extraction for that segment even when the verb is allowlisted.
+That segment SHALL fall back to exact approval patterns and generic B/C labels.
 
 A trailing `/` on a stored pattern SHALL signal directory scope. The system SHALL
 use `PathUtility.IsWithinRoot()` for boundary-safe containment matching — not
@@ -53,9 +62,9 @@ Directory-scoped approvals SHALL be verb-isolated: an approval for
 #### Scenario: Existing directory operand preserves its scope
 
 - **GIVEN** the shell tool `WorkingDirectory` is `/workspace/project`
-- **AND** the command is `find logs -name '*.log'`
+- **AND** the command is `ls logs/`
 - **WHEN** directory-scoped approval extraction runs
-- **THEN** the extracted pattern is `find /workspace/project/logs/`
+- **THEN** the extracted pattern is `ls /workspace/project/logs/`
 - **AND** the scope is not widened to `/workspace/project/`
 
 #### Scenario: Approve Once uses exact pattern
@@ -91,6 +100,23 @@ Directory-scoped approvals SHALL be verb-isolated: an approval for
 - **THEN** the parent directory `/etc/` has only 1 segment (below minimum of 2)
 - **AND** the system falls back to exact-pattern behavior
 
+#### Scenario: Non-allowlisted command falls back to exact pattern
+
+- **GIVEN** the shell tool `WorkingDirectory` is `/workspace/project`
+- **AND** the command is `find logs -name '*.log'`
+- **WHEN** exact and directory-scoped approval patterns are extracted
+- **THEN** the exact pattern remains path-aware for the direct operand
+- **AND** the extracted exact pattern is `find /workspace/project/logs`
+- **AND** no directory-scoped pattern is extracted
+
+#### Scenario: Redirection disables directory scope for allowlisted verb
+
+- **GIVEN** the shell tool `WorkingDirectory` is `/workspace/project`
+- **AND** the command is `cat logs/app.log > out.txt`
+- **WHEN** exact and directory-scoped approval patterns are extracted
+- **THEN** the exact pattern is `cat /workspace/project/logs/app.log`
+- **AND** no directory-scoped pattern is extracted
+
 #### Scenario: Boundary-safe path matching prevents prefix collisions
 
 - **GIVEN** `cat /home/user/` is approved
@@ -105,10 +131,12 @@ returns directory-scoped patterns for a tool invocation. `ShellApprovalMatcher`
 SHALL implement this by scanning all non-flag arguments for the first
 recognizable path operand, resolving relative paths against `WorkingDirectory`,
 expanding home directory tokens, extracting the scoped directory, normalizing
-the path, and enforcing minimum depth. For compound commands and `bash -c`
-wrappers, each segment SHALL be processed recursively. When no directory scope
-is available for a segment, the segment's exact approval pattern SHALL be used
-as fallback.
+the path, enforcing minimum depth, and applying directory scope only to the
+allowlisted verbs `cat`, `less`, `more`, `head`, `tail`, `grep`, and `ls`.
+Segments with shell redirection operators SHALL NOT emit directory scope. For
+compound commands and `bash -c` wrappers, each segment SHALL be processed
+recursively. When no directory scope is available for a segment, the segment's
+exact approval pattern SHALL be used as fallback.
 
 `DefaultApprovalMatcher` and `FilePathApprovalMatcher` SHALL return empty lists.
 
@@ -132,7 +160,7 @@ as fallback.
 - **GIVEN** the command `cat /home/.netclaw/logs/crash.log && grep "error" /var/log/syslog`
 - **WHEN** `ExtractDirectoryPatterns` runs
 - **THEN** `cat /home/.netclaw/logs/` is extracted for the first segment
-- **AND** the second segment falls back to its verb chain (depth too shallow)
+- **AND** the second segment falls back to its exact path-aware pattern (depth too shallow)
 
 #### Scenario: Pipe segment can contribute direct directory scope
 
@@ -146,8 +174,22 @@ as fallback.
 
 - **GIVEN** the command is `find logs -name '*.log' | xargs grep timeout`
 - **WHEN** `ExtractDirectoryPatterns` runs
-- **THEN** the `find` segment may contribute `find <resolved>/logs/`
+- **THEN** the `find` segment does not gain directory scope
 - **AND** the downstream `grep` segment does not inherit that directory scope via `xargs`
+
+#### Scenario: Non-allowlisted command keeps exact path-aware extraction
+
+- **GIVEN** the shell tool `WorkingDirectory` is `/workspace/project`
+- **AND** the command is `python3 scripts/check.py data/input.json`
+- **WHEN** exact approval pattern extraction runs
+- **THEN** the pattern uses the normalized direct path operand when one exists
+
+#### Scenario: Redirection blocks directory extraction for allowlisted segment
+
+- **GIVEN** the shell tool `WorkingDirectory` is `/workspace/project`
+- **AND** the command is `grep error logs/app.log > report.txt`
+- **WHEN** `ExtractDirectoryPatterns` runs
+- **THEN** no directory-scoped pattern is extracted for that segment
 
 #### Scenario: Glob paths use parent directory
 
@@ -177,6 +219,21 @@ Options A ("Approve once") and D ("Deny") SHALL retain their default labels.
 #### Scenario: Labels use defaults when no directory scope
 
 - **GIVEN** a shell command `git push origin main` requires approval
+- **WHEN** the approval prompt is generated
+- **THEN** option B reads the default "Approve for this chat"
+- **AND** option C reads the default "Approve always"
+
+#### Scenario: Non-allowlisted path-aware command keeps generic labels
+
+- **GIVEN** a shell command `find logs -name '*.log'` requires approval
+- **WHEN** the approval prompt is generated
+- **THEN** option B reads the default "Approve for this chat"
+- **AND** option C reads the default "Approve always"
+
+#### Scenario: Redirection keeps generic labels for allowlisted verb
+
+- **GIVEN** a shell command `cat /home/.netclaw/logs/app.log > /tmp/report.txt`
+  requires approval
 - **WHEN** the approval prompt is generated
 - **THEN** option B reads the default "Approve for this chat"
 - **AND** option C reads the default "Approve always"

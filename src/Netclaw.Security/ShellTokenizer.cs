@@ -31,11 +31,23 @@ public static class ShellTokenizer
     /// <summary>
     /// Verbs whose first positional argument is security-relevant for approval
     /// pattern extraction. Superset of <see cref="HighRiskVerbs"/> — includes
-    /// benign-but-path-consuming verbs like <c>ls</c>.
+    /// benign-but-path-consuming verbs like <c>ls</c>. This governs exact
+    /// approval patterns, which may be narrower than generic verb-chain grants
+    /// even when directory-scoped approvals are disallowed.
     /// </summary>
     internal static readonly HashSet<string> PathAwareVerbs = new(HighRiskVerbs, StringComparer.OrdinalIgnoreCase)
     {
         "ls"
+    };
+
+    /// <summary>
+    /// Commands eligible for directory-scoped approvals. This stays intentionally
+    /// narrow: only direct read/list shapes are allowed to widen from an exact
+    /// file approval to a directory-scoped grant.
+    /// </summary>
+    private static readonly HashSet<string> DirectoryScopeVerbs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "cat", "less", "more", "head", "tail", "grep", "ls"
     };
 
     /// <summary>
@@ -165,7 +177,7 @@ public static class ShellTokenizer
     /// command. Stops at the first token that looks like a flag (starts with -)
     /// or an argument (path, URL, etc.), and caps at <paramref name="maxDepth"/>
     /// tokens (default: 2) to avoid capturing positional arguments as subcommands.
-    /// For path-aware verbs (cat, grep, bash, etc.), appends the first non-flag
+    /// For path-aware verbs (cat, grep, ls, etc.), appends the first non-flag
     /// argument so the approval pattern captures what the command operates on.
     /// </summary>
     public static string ExtractVerbChain(string command, int maxDepth = 2)
@@ -218,7 +230,7 @@ public static class ShellTokenizer
     /// directory; otherwise falls back to the verb-chain extraction.
     /// </summary>
     public static string ExtractApprovalPattern(string command, string? workingDirectory = null, int maxDepth = 2)
-        => TryExtractPathOperand(command, workingDirectory, out var operand)
+        => TryExtractPathOperand(command, workingDirectory, PathAwareVerbs, requireSimpleDirectoryShape: false, out var operand)
             ? operand.Verb + " " + operand.NormalizedPath
             : ExtractVerbChain(command, maxDepth);
 
@@ -391,7 +403,7 @@ public static class ShellTokenizer
     /// </summary>
     public static string? ExtractDirectoryScope(string command, string? workingDirectory = null)
     {
-        if (!TryExtractPathOperand(command, workingDirectory, out var operand))
+        if (!TryExtractPathOperand(command, workingDirectory, DirectoryScopeVerbs, requireSimpleDirectoryShape: true, out var operand))
             return null;
 
         // Enforce minimum depth — reject shallow scopes like / or /etc/
@@ -403,7 +415,12 @@ public static class ShellTokenizer
 
     internal const int MinDirectoryScopeDepth = 2;
 
-    private static bool TryExtractPathOperand(string command, string? workingDirectory, out PathOperand operand)
+    private static bool TryExtractPathOperand(
+        string command,
+        string? workingDirectory,
+        IReadOnlySet<string> allowedVerbs,
+        bool requireSimpleDirectoryShape,
+        out PathOperand operand)
     {
         operand = default;
 
@@ -412,7 +429,10 @@ public static class ShellTokenizer
             return false;
 
         var verb = TrimShellPunctuation(tokens[0]);
-        if (verb.Length == 0 || !PathAwareVerbs.Contains(verb))
+        if (verb.Length == 0 || !allowedVerbs.Contains(verb))
+            return false;
+
+        if (requireSimpleDirectoryShape && !IsSimpleDirectoryScopeShape(tokens))
             return false;
 
         for (var i = 1; i < tokens.Count; i++)
@@ -434,6 +454,30 @@ public static class ShellTokenizer
         }
 
         return false;
+    }
+
+    private static bool IsSimpleDirectoryScopeShape(IReadOnlyList<string> tokens)
+    {
+        for (var i = 1; i < tokens.Count; i++)
+        {
+            if (IsRedirectionToken(TrimShellPunctuation(tokens[i])))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool IsRedirectionToken(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+            return false;
+
+        if (token[0] is '>' or '<')
+            return true;
+
+        return token.Length >= 2
+            && char.IsAsciiDigit(token[0])
+            && token[1] is '>' or '<';
     }
 
     private static string? TryNormalizePathOperand(string token, string verb, string? workingDirectory)
