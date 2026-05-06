@@ -51,7 +51,7 @@ public sealed class ConfigSchemaDoctorCheck(NetclawPaths paths) : IDoctorCheck
         }
         else if (obj["configVersion"] is null)
         {
-            version = 1;
+            version = EmbeddedSchemaLoader.CurrentSchemaVersion;
             obj["configVersion"] = version;
             syntheticVersion = true;
         }

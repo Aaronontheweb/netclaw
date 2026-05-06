@@ -10,6 +10,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public static class EmbeddedSchemaLoader
 {
+    public const int CurrentSchemaVersion = 1;
+
     private const string ResourcePrefix = "Netclaw.Configuration.Schemas.";
 
     /// <summary>

@@ -41,7 +41,7 @@ public sealed class DoctorFixService(NetclawPaths paths)
 
         if (obj["configVersion"] is null)
         {
-            obj["configVersion"] = 1;
+            obj["configVersion"] = EmbeddedSchemaLoader.CurrentSchemaVersion;
             appliedFixes.Add("configVersion");
         }
 
@@ -117,7 +117,7 @@ public sealed class DoctorFixService(NetclawPaths paths)
 
     private static void TryApplySchemaFixes(JsonObject config, List<string> appliedFixes)
     {
-        var version = 1;
+        var version = EmbeddedSchemaLoader.CurrentSchemaVersion;
         if (config["configVersion"] is JsonValue versionValue
             && versionValue.TryGetValue<int>(out var parsedVersion))
         {
