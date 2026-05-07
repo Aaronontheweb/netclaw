@@ -4,27 +4,28 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Microsoft.Extensions.Logging;
+using Netclaw.Configuration;
 
 namespace Netclaw.Daemon.Configuration;
 
 public static class LoggingRegistrationExtensions
 {
-    public static LogLevel ConfigureNetclawLogging(this WebApplicationBuilder builder)
+    public static LogLevel ConfigureNetclawLogging(this WebApplicationBuilder builder, NetclawPaths? paths = null)
     {
         var level = ResolveLogLevel(builder.Configuration);
         var consoleEnabled = builder.Configuration.GetValue("Logging:Console:Enabled", false);
+        var resolvedPaths = paths ?? new NetclawPaths();
 
         builder.Logging.ClearProviders();
+        builder.Logging.AddConfiguration(builder.Configuration.GetSection("Logging"));
         if (consoleEnabled)
             builder.Logging.AddSimpleConsole(options => options.SingleLine = true);
 
         // Always write to a rolling log file in ~/.netclaw/logs/
-        var logsDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".netclaw", "logs");
-        Directory.CreateDirectory(logsDir);
-        var logFilePath = Path.Combine(logsDir, "daemon.log");
-        builder.Logging.AddProvider(new RollingFileLoggerProvider(logFilePath));
+        Directory.CreateDirectory(resolvedPaths.LogsDirectory);
+        builder.Logging.AddProvider(new RollingFileLoggerProvider(
+            resolvedPaths.DaemonLogPath,
+            resolvedPaths.SessionLogsDirectory));
 
         builder.Logging.SetMinimumLevel(level);
         return level;

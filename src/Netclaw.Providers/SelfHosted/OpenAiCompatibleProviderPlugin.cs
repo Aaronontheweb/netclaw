@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Netclaw.Configuration;
 using Netclaw.Providers;
 
@@ -14,7 +15,14 @@ namespace Netclaw.Providers.SelfHosted;
 /// </summary>
 public sealed class OpenAiCompatibleProviderPlugin : ProviderPluginBase<OpenAiCompatibleDescriptor>
 {
-    public OpenAiCompatibleProviderPlugin(OpenAiCompatibleDescriptor descriptor) : base(descriptor) { }
+    private readonly ILogger<OpenAiCompatibleChatClient> _logger;
+
+    public OpenAiCompatibleProviderPlugin(
+        OpenAiCompatibleDescriptor descriptor,
+        ILogger<OpenAiCompatibleChatClient> logger) : base(descriptor)
+    {
+        _logger = logger;
+    }
 
     public override IChatClient CreateChatClient(ProviderEntry entry, ModelReference model)
     {
@@ -24,6 +32,8 @@ public sealed class OpenAiCompatibleProviderPlugin : ProviderPluginBase<OpenAiCo
 
         return new OpenAiCompatibleChatClient(
             CreateLlmHttpClient(endpoint.BaseUri),
-            endpoint, model.ModelId);
+            endpoint,
+            model.ModelId,
+            _logger);
     }
 }

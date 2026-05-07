@@ -116,7 +116,7 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
     // the Daemon section is absent from netclaw.json.
     var daemonConfig = DaemonConfig.BindFromConfiguration(builder.Configuration.GetSection("Daemon"));
     builder.WebHost.UseUrls($"http://{daemonConfig.Host}:{daemonConfig.Port}");
-    var daemonLogLevel = builder.ConfigureNetclawLogging();
+    var daemonLogLevel = builder.ConfigureNetclawLogging(paths);
     builder.AddNetclawTelemetry();
     ConfigureDaemonServices(builder.Services, builder.Configuration, paths, daemonLogLevel, daemonConfig);
 
