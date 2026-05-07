@@ -252,4 +252,46 @@ public sealed class ToolPathPolicyTests
         Assert.True(policy.CommandReferencesDeniedPath("cat ~/.netclaw/netclaw.lock"));
         Assert.True(policy.CommandReferencesDeniedPath("cat ~/.netclaw/cache/restart-manifest.json"));
     }
+
+    // Regression: directory-scoped approvals let a user grant a single root
+    // (e.g., /home/user/safe/) once, after which all subsequent shell commands
+    // under that root auto-approve. The design promises that ToolPathPolicy
+    // remains a backstop and still blocks protected-path access even after a
+    // root grant. This test verifies that promise specifically against the
+    // symlink-escalation case: an attacker (or a hallucinating agent) plants a
+    // symlink inside the approved root that points at a protected path. The
+    // approval gate sees a path "within" the approved root and waves it
+    // through, so ToolPathPolicy MUST resolve symlinks during command
+    // inspection or the layered defense is paper-only.
+    [Fact]
+    public void CommandReferencesDeniedPath_blocks_symlink_escalation_into_protected_path()
+    {
+        // CreateSymbolicLink without elevation requires Developer Mode on
+        // Windows; the underlying gap is platform-agnostic but the test
+        // surface is unreliable there. POSIX is sufficient for regression.
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var safeRoot = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(safeRoot);
+        var leak = Path.Combine(safeRoot, "leak");
+        Directory.CreateSymbolicLink(leak, "/etc");
+
+        try
+        {
+            var policy = new ToolPathPolicy(deniedPaths: ["/etc"]);
+            var command = $"cat {leak}/passwd";
+
+            Assert.True(
+                policy.CommandReferencesDeniedPath(command),
+                $"ToolPathPolicy must resolve symlinks when inspecting shell commands; otherwise a directory-scoped approval for {safeRoot}/ becomes a read primitive for any protected path reachable via planted symlinks. Command under test: {command}");
+        }
+        finally
+        {
+            // Delete the symlink itself, not its target. File.Delete on a
+            // symlink to a directory removes the link without touching /etc.
+            File.Delete(leak);
+            Directory.Delete(safeRoot);
+        }
+    }
 }
