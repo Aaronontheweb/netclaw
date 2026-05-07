@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="SessionLogActor.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -11,10 +11,13 @@ using Netclaw.Actors.SubAgents;
 namespace Netclaw.Actors.Sessions;
 
 /// <summary>
-/// Per-session child actor that appends user/session output audit lines into the
-/// canonical per-session log file created by <see cref="SessionLogFile"/>.
-/// Created by <see cref="LlmSessionActor"/>.
-/// Not persistent — session logs are best-effort observability.
+/// Per-session writer actor for the canonical <c>session.log</c> file.
+/// Created lazily by <see cref="SessionLogDispatcher"/> on first message and
+/// stopped via <see cref="ReceiveTimeout"/> after idle. Receives session
+/// audit messages (<see cref="SendUserMessage"/>, <see cref="SessionOutput"/>)
+/// and pre-formatted diagnostic lines (<see cref="SessionLogDiagnostic"/>)
+/// from the MEL logger provider, and is the sole writer to the file path
+/// computed by <see cref="SessionLogFile"/>.
 ///
 /// Log files live at <c>{sessionLogsBase}/{sanitized_id}/session.log</c> — a
 /// tree deliberately separate from the agent-accessible session working
@@ -25,19 +28,23 @@ public sealed class SessionLogActor : ReceiveActor
     private readonly SessionId _sessionId;
     private readonly string _sessionLogsBasePath;
     private readonly TimeProvider _timeProvider;
+    private readonly TimeSpan _idleTimeout;
     private readonly ILoggingAdapter _log = Context.GetLogger();
 
-    public static Props CreateProps(SessionId sessionId, string sessionLogsBasePath, TimeProvider timeProvider) =>
-        Props.Create(() => new SessionLogActor(sessionId, sessionLogsBasePath, timeProvider));
+    public static Props CreateProps(SessionId sessionId, string sessionLogsBasePath, TimeProvider timeProvider, TimeSpan? idleTimeout = null) =>
+        Props.Create(() => new SessionLogActor(sessionId, sessionLogsBasePath, timeProvider, idleTimeout ?? TimeSpan.FromMinutes(10)));
 
-    public SessionLogActor(SessionId sessionId, string sessionLogsBasePath, TimeProvider timeProvider)
+    public SessionLogActor(SessionId sessionId, string sessionLogsBasePath, TimeProvider timeProvider, TimeSpan idleTimeout)
     {
         _sessionId = sessionId;
         _sessionLogsBasePath = sessionLogsBasePath;
         _timeProvider = timeProvider;
+        _idleTimeout = idleTimeout;
 
         Receive<SendUserMessage>(OnUserMessage);
         Receive<SessionOutput>(OnOutput);
+        Receive<SessionLogDiagnostic>(OnDiagnostic);
+        Receive<ReceiveTimeout>(_ => Context.Stop(Self));
     }
 
     /// <summary>
@@ -52,6 +59,8 @@ public sealed class SessionLogActor : ReceiveActor
 
     protected override void PreStart()
     {
+        Context.SetReceiveTimeout(_idleTimeout);
+
         try
         {
             var now = _timeProvider.GetUtcNow();
@@ -114,6 +123,18 @@ public sealed class SessionLogActor : ReceiveActor
         catch (Exception ex)
         {
             _log.Debug(ex, "Failed to write session log entry for {SessionId}", _sessionId.Value);
+        }
+    }
+
+    private void OnDiagnostic(SessionLogDiagnostic diagnostic)
+    {
+        try
+        {
+            SessionLogFile.AppendLine(_sessionId, _sessionLogsBasePath, diagnostic.Line);
+        }
+        catch (Exception ex)
+        {
+            _log.Debug(ex, "Failed to write diagnostic log entry for {SessionId}", _sessionId.Value);
         }
     }
 

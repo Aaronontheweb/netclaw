@@ -1037,6 +1037,7 @@ static void ConfigureDaemonServices(
 
         akkaBuilder.WithNetclawSerialization();
         akkaBuilder.WithNetclawActors(reminderStorage);
+        akkaBuilder.WithSessionLogDispatcher(paths.SessionLogsDirectory, sp.GetRequiredService<TimeProvider>());
         akkaBuilder.WithSignalRGateway();
         akkaBuilder.WithDailyStatsActor();
 

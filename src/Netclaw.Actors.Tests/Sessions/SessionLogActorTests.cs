@@ -9,6 +9,7 @@ using Akka.Hosting;
 using Microsoft.Extensions.Time.Testing;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Sessions;
+using Netclaw.Configuration;
 using Xunit;
 
 namespace Netclaw.Actors.Tests.Sessions;
@@ -28,9 +29,9 @@ public sealed class SessionLogActorTests : TestKit
 
         try
         {
-            var actor = Sys.ActorOf(SessionLogActor.CreateProps(sessionId, basePath, timeProvider));
+            var dispatcher = Sys.ActorOf(SessionLogDispatcher.CreateProps(basePath, timeProvider));
 
-            actor.Tell(new ThinkingDeltaOutput
+            dispatcher.Tell(new ThinkingDeltaOutput
             {
                 SessionId = sessionId,
                 Delta = "step by step"
@@ -51,7 +52,7 @@ public sealed class SessionLogActorTests : TestKit
     }
 
     [Fact]
-    public async Task Restarted_session_log_actor_appends_to_same_canonical_file()
+    public async Task Recreated_session_log_actor_appends_to_same_canonical_file()
     {
         var basePath = Path.Combine(Path.GetTempPath(), $"netclaw-session-log-tests-{Guid.NewGuid():N}");
         var timeProvider = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-07T13:10:00Z"));
@@ -59,8 +60,13 @@ public sealed class SessionLogActorTests : TestKit
 
         try
         {
-            var firstActor = Sys.ActorOf(SessionLogActor.CreateProps(sessionId, basePath, timeProvider));
-            firstActor.Tell(new TextOutput
+            // Short idle timeout so the child evicts during the test without sleeping.
+            var dispatcher = Sys.ActorOf(SessionLogDispatcher.CreateProps(
+                basePath,
+                timeProvider,
+                childIdleTimeout: TimeSpan.FromMilliseconds(150)));
+
+            dispatcher.Tell(new TextOutput
             {
                 SessionId = sessionId,
                 Text = "first"
@@ -73,12 +79,10 @@ public sealed class SessionLogActorTests : TestKit
                 Assert.Contains("Assistant: first", text, StringComparison.Ordinal);
             }, cancellationToken: TestContext.Current.CancellationToken);
 
-            Watch(firstActor);
-            Sys.Stop(firstActor);
-            await ExpectTerminatedAsync(firstActor, cancellationToken: TestContext.Current.CancellationToken);
-
-            var secondActor = Sys.ActorOf(SessionLogActor.CreateProps(sessionId, basePath, timeProvider));
-            secondActor.Tell(new TextOutput
+            // Wait for the child to evict via ReceiveTimeout, then send another message
+            // and confirm the recreated actor appends to the same file.
+            timeProvider.Advance(TimeSpan.FromMilliseconds(50));
+            dispatcher.Tell(new TextOutput
             {
                 SessionId = sessionId,
                 Text = "second"
@@ -93,6 +97,75 @@ public sealed class SessionLogActorTests : TestKit
                 var text = await File.ReadAllTextAsync(logFile, TestContext.Current.CancellationToken);
                 Assert.Contains("Assistant: first", text, StringComparison.Ordinal);
                 Assert.Contains("Assistant: second", text, StringComparison.Ordinal);
+            }, cancellationToken: TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            if (Directory.Exists(basePath))
+                Directory.Delete(basePath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatcher_routes_messages_to_per_session_log_files()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"netclaw-session-log-tests-{Guid.NewGuid():N}");
+        var timeProvider = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-07T13:20:00Z"));
+        var sessionA = new SessionId("ch/thread-a");
+        var sessionB = new SessionId("ch/thread-b");
+
+        try
+        {
+            var dispatcher = Sys.ActorOf(SessionLogDispatcher.CreateProps(basePath, timeProvider));
+
+            dispatcher.Tell(new TextOutput { SessionId = sessionA, Text = "alpha" }, ActorRefs.NoSender);
+            dispatcher.Tell(new TextOutput { SessionId = sessionB, Text = "beta" }, ActorRefs.NoSender);
+
+            await AwaitAssertAsync(async () =>
+            {
+                var pathA = SessionLogActor.GetSessionLogPath(sessionA, basePath);
+                var pathB = SessionLogActor.GetSessionLogPath(sessionB, basePath);
+                var textA = await File.ReadAllTextAsync(pathA, TestContext.Current.CancellationToken);
+                var textB = await File.ReadAllTextAsync(pathB, TestContext.Current.CancellationToken);
+
+                Assert.Contains("alpha", textA, StringComparison.Ordinal);
+                Assert.DoesNotContain("beta", textA, StringComparison.Ordinal);
+                Assert.Contains("beta", textB, StringComparison.Ordinal);
+                Assert.DoesNotContain("alpha", textB, StringComparison.Ordinal);
+            }, cancellationToken: TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            if (Directory.Exists(basePath))
+                Directory.Delete(basePath, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Dispatcher_writes_audit_and_diagnostic_to_same_session_log()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"netclaw-session-log-tests-{Guid.NewGuid():N}");
+        var timeProvider = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-07T13:30:00Z"));
+        var sessionId = new SessionId("ch/thread");
+
+        try
+        {
+            var dispatcher = Sys.ActorOf(SessionLogDispatcher.CreateProps(basePath, timeProvider));
+
+            dispatcher.Tell(new TextOutput { SessionId = sessionId, Text = "audit-line" }, ActorRefs.NoSender);
+            timeProvider.Advance(TimeSpan.FromMilliseconds(1));
+            dispatcher.Tell(new SessionLogDiagnostic
+            {
+                SessionId = sessionId,
+                Line = "[2026-05-07T13:30:00.001+00:00] Diagnostic: provider sent request"
+            }, ActorRefs.NoSender);
+
+            await AwaitAssertAsync(async () =>
+            {
+                var path = SessionLogActor.GetSessionLogPath(sessionId, basePath);
+                var text = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
+                Assert.Contains("Assistant: audit-line", text, StringComparison.Ordinal);
+                Assert.Contains("Diagnostic: provider sent request", text, StringComparison.Ordinal);
             }, cancellationToken: TestContext.Current.CancellationToken);
         }
         finally

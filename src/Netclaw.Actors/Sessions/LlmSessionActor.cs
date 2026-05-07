@@ -64,7 +64,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly MemoryConfig _memoryConfig;
     private readonly TimeProvider _timeProvider;
     private readonly string _sessionsBasePath;
-    private readonly string _sessionLogsBasePath;
     private readonly ISessionLifecycleObserver? _lifecycleObserver;
     private readonly Memory.SQLiteMemoryStore? _memoryStore;
     private readonly IChatClientProvider _clientProvider;
@@ -102,7 +101,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // Delivery retry handler (eligibility tracking, retry counting, nudge builders)
     private readonly DeliveryRetryHandler _deliveryRetry = new();
 
-    // Child actor for per-session log file (created when session logs directory is configured)
+    // Reference to the singleton SessionLogDispatcher; resolved lazily on
+    // recovery completion. The dispatcher owns one SessionLogActor child per
+    // session id and is the single writer per session.log file. Audit messages
+    // (SendUserMessage, SessionOutput) are forwarded through it.
     private IActorRef? _logActor;
 
     // Child actor for per-session memory curation (evaluate-before-write pipeline)
@@ -207,7 +209,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _memoryConfig = memory?.MemoryConfig ?? new MemoryConfig();
         _timeProvider = services.TimeProvider;
         _sessionsBasePath = services.Paths.SessionsDirectory;
-        _sessionLogsBasePath = services.Paths.SessionLogsDirectory;
         _trustContextDeriver = tools?.TrustDeriver;
         PersistenceId = $"session-{entityId}";
 
@@ -248,9 +249,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             TransitionTo(SessionPhase.Ready);
 
-            _logActor = Context.ActorOf(
-                SessionLogActor.CreateProps(_sessionId, _sessionLogsBasePath, _timeProvider),
-                "session-log");
+            // Resolve once at recovery time. ActorRegistry returns Nobody if
+            // the dispatcher hasn't been registered (unit-test scenarios that
+            // skip the hosting wiring) — leave _logActor null in that case.
+            var registry = ActorRegistry.For(Context.System);
+            if (registry.TryGet<SessionLogDispatcherActorKey>(out var dispatcher))
+                _logActor = dispatcher;
 
             if (_memoryStore is not null)
             {

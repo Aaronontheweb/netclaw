@@ -3,20 +3,21 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Collections.Concurrent;
-
 namespace Netclaw.Actors.Protocol;
 
 /// <summary>
 /// Shared helper for computing and appending to the canonical per-session log file.
 /// The file lives outside the agent-visible session working directory so the LLM
 /// cannot inspect its own audit trail with file tools.
+///
+/// Concurrency contract: callers must serialize writes externally. In production
+/// the only writer is <c>SessionLogActor</c>, whose mailbox guarantees a single
+/// thread per file path. Tests that exercise this directly must observe the same
+/// invariant.
 /// </summary>
 public static class SessionLogFile
 {
     public const string FileName = "session.log";
-
-    private static readonly ConcurrentDictionary<string, Lock> FileLocks = new(StringComparer.Ordinal);
 
     public static string GetLogsDirectory(SessionId sessionId, string sessionLogsBasePath)
     {
@@ -32,12 +33,8 @@ public static class SessionLogFile
         var logPath = GetLogPath(sessionId, sessionLogsBasePath);
         Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
 
-        var appendLock = FileLocks.GetOrAdd(logPath, static _ => new Lock());
-        lock (appendLock)
-        {
-            using var stream = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
-            using var writer = new StreamWriter(stream) { AutoFlush = true };
-            writer.WriteLine(line);
-        }
+        using var stream = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.Read);
+        using var writer = new StreamWriter(stream) { AutoFlush = true };
+        writer.WriteLine(line);
     }
 }

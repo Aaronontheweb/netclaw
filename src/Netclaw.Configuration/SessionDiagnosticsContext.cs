@@ -26,6 +26,16 @@ public static class SessionDiagnosticsContext
         return new RestoreScope(prior);
     }
 
+    /// <summary>
+    /// Trims whitespace and collapses any nested sub-agent suffix back to the
+    /// owning session id. Sub-agents run as ephemeral children of a parent
+    /// session and reuse its <c>session.log</c> for the audit trail; treating
+    /// their composite ids (<c>{parentId}/subagent/{agentName}</c>) as
+    /// distinct sessions would scatter sub-agent diagnostics into per-agent
+    /// files that operators do not monitor. The split here is the only
+    /// place that decision is made — keep it in sync with how sub-agent
+    /// ids are constructed inside the sub-agent spawner.
+    /// </summary>
     public static string? NormalizeSessionId(string? sessionId)
     {
         if (string.IsNullOrWhiteSpace(sessionId))

@@ -1,10 +1,11 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="RollingFileLoggerProvider.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Collections.Concurrent;
 using System.Globalization;
+using Akka.Actor;
 using Microsoft.Extensions.Logging;
 using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
@@ -14,23 +15,32 @@ namespace Netclaw.Daemon.Configuration;
 /// <summary>
 /// Simple file-based logger that writes to a daily rolling log file.
 /// Uses a background queue to avoid blocking callers.
+///
+/// Session-scoped lines (emitted under a populated
+/// <see cref="SessionDiagnosticsContext"/>) are mirrored to a per-session
+/// <c>session.log</c> by routing through the <c>SessionLogDispatcher</c>
+/// actor. The dispatcher serializes all writes for a given session through
+/// a single mailbox, replacing the in-process file lock that previously
+/// coordinated concurrent writers.
 /// </summary>
 internal sealed class RollingFileLoggerProvider : ILoggerProvider
 {
     private const long MaxFileSizeBytes = 10 * 1024 * 1024; // 10MB per file
+    private const int PreResolutionBufferLimit = 1000;
+
     private readonly string _basePath;
-    private readonly string? _sessionLogsBasePath;
     private readonly TimeProvider _timeProvider;
     private readonly ConcurrentDictionary<string, RollingFileLogger> _loggers = new();
     private readonly BlockingCollection<string> _queue = new(1024);
     private readonly Thread _writerThread;
+    private readonly ConcurrentQueue<SessionLogDiagnostic>? _pendingDiagnostics;
+    private IActorRef? _sessionDispatcher;
     private StreamWriter? _writer;
     private string _currentDate = "";
 
-    public RollingFileLoggerProvider(string basePath, string? sessionLogsBasePath = null, TimeProvider? timeProvider = null)
+    public RollingFileLoggerProvider(string basePath, Func<Task<IActorRef>>? sessionDispatcherFactory = null, TimeProvider? timeProvider = null)
     {
         _basePath = basePath;
-        _sessionLogsBasePath = sessionLogsBasePath;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _writerThread = new Thread(ProcessQueue)
         {
@@ -38,6 +48,12 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider
             Name = "NetclawLogWriter"
         };
         _writerThread.Start();
+
+        if (sessionDispatcherFactory is not null)
+        {
+            _pendingDiagnostics = new ConcurrentQueue<SessionLogDiagnostic>();
+            _ = ResolveSessionDispatcherAsync(sessionDispatcherFactory);
+        }
     }
 
     public ILogger CreateLogger(string categoryName) =>
@@ -47,11 +63,46 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider
     {
         _queue.TryAdd(message);
 
-        var sessionId = SessionDiagnosticsContext.SessionId;
-        if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(_sessionLogsBasePath))
+        if (_pendingDiagnostics is null)
             return;
 
-        TryWriteSessionLog(sessionId, message);
+        var sessionId = SessionDiagnosticsContext.SessionId;
+        if (string.IsNullOrWhiteSpace(sessionId))
+            return;
+
+        var diagnostic = new SessionLogDiagnostic
+        {
+            SessionId = new SessionId(sessionId),
+            Line = $"[{_timeProvider.GetUtcNow():o}] Diagnostic: {message}"
+        };
+
+        var dispatcher = Volatile.Read(ref _sessionDispatcher);
+        if (dispatcher is not null)
+        {
+            dispatcher.Tell(diagnostic);
+            return;
+        }
+
+        if (_pendingDiagnostics.Count >= PreResolutionBufferLimit)
+            return;
+        _pendingDiagnostics.Enqueue(diagnostic);
+    }
+
+    private async Task ResolveSessionDispatcherAsync(Func<Task<IActorRef>> factory)
+    {
+        try
+        {
+            var dispatcher = await factory().ConfigureAwait(false);
+
+            while (_pendingDiagnostics!.TryDequeue(out var pending))
+                dispatcher.Tell(pending);
+
+            Volatile.Write(ref _sessionDispatcher, dispatcher);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[NetclawLogWriter] Failed to resolve session log dispatcher: {ex.Message}");
+        }
     }
 
     private void ProcessQueue()
@@ -98,19 +149,6 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider
         var path = Path.Combine(dir, $"{name}-{today}{ext}");
 
         _writer = new StreamWriter(path, append: true) { AutoFlush = false };
-    }
-
-    private void TryWriteSessionLog(string sessionId, string message)
-    {
-        try
-        {
-            var line = $"[{_timeProvider.GetUtcNow():o}] Diagnostic: {message}";
-            SessionLogFile.AppendLine(new SessionId(sessionId), _sessionLogsBasePath!, line);
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[NetclawSessionLogWriter] Failed to write log for session '{sessionId}': {ex.Message}");
-        }
     }
 
     internal string GetTimestamp()
