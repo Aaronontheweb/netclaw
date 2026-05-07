@@ -70,10 +70,11 @@ public sealed class ShellTokenizerTests
     }
 
     [Fact]
-    public void SplitCompound_splits_on_pipe()
+    public void SplitCompound_keeps_pipeline_in_same_approval_unit()
     {
         var segments = ShellTokenizer.SplitCompoundCommand("cat file.txt | grep error");
-        Assert.Equal(["cat file.txt", "grep error"], segments);
+        Assert.Single(segments);
+        Assert.Equal("cat file.txt | grep error", segments[0]);
     }
 
     [Fact]
@@ -271,52 +272,65 @@ public sealed class ShellTokenizerTests
         Assert.True(ShellTokenizer.LooksLikePath(token));
     }
 
-    // ── ExtractDirectoryScope ──
+    // ── ExtractDirectoryRoots ──
 
-    [Theory]
-    [InlineData("cat /home/user/.netclaw/logs/crash.log", "cat", "/home/user/.netclaw/logs/")]
-    [InlineData("ls -la /home/user/.netclaw/logs/", "ls", "/home/user/.netclaw/logs/")]
-    [InlineData("find /home/user/.netclaw/logs -name '*.log'", "find", "/home/user/.netclaw/")]
-    public void ExtractDirectoryScope_returns_verb_and_directory(string command, string expectedVerb, string expectedDirSuffix)
+    [Fact]
+    public void ExtractDirectoryRoots_returns_normalized_root_for_file_path()
     {
-        var result = ShellTokenizer.ExtractDirectoryScope(command);
-        Assert.NotNull(result);
-        Assert.StartsWith(expectedVerb + " ", result);
-        Assert.EndsWith("/", result);
+        var roots = ShellTokenizer.ExtractDirectoryRoots("cat /home/user/.netclaw/logs/crash.log");
 
-        var dir = result[(expectedVerb.Length + 1)..];
-        Assert.EndsWith(expectedDirSuffix, dir.Replace('\\', '/'));
+        Assert.Single(roots);
+        Assert.Equal("/home/user/.netclaw/logs/", roots[0].ComparisonRoot.Replace('\\', '/'));
+        Assert.Equal("/home/user/.netclaw/logs/", roots[0].DisplayPath.Replace('\\', '/'));
     }
 
     [Fact]
-    public void ExtractDirectoryScope_grep_finds_path_not_search_term()
+    public void ExtractDirectoryRoots_keeps_relative_display_path_and_normalized_comparison_root()
     {
-        var result = ShellTokenizer.ExtractDirectoryScope(
-            "grep -l \"timeout\" /home/user/.netclaw/logs/daemon.log");
-        Assert.NotNull(result);
-        Assert.StartsWith("grep ", result);
-        Assert.EndsWith("/", result);
-        Assert.Contains(".netclaw/logs/", result.Replace('\\', '/'));
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var logs = Path.Combine(root, "logs");
+        Directory.CreateDirectory(logs);
+
+        try
+        {
+            var roots = ShellTokenizer.ExtractDirectoryRoots("grep timeout logs/app.log | wc -l", root);
+
+            Assert.Single(roots);
+            Assert.Equal("logs/", roots[0].DisplayPath.Replace('\\', '/'));
+            Assert.Equal(PathUtility.Normalize(logs) + Path.DirectorySeparatorChar, roots[0].ComparisonRoot);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]
-    public void ExtractDirectoryScope_handles_glob_paths()
+    public void ExtractDirectoryRoots_handles_glob_paths()
     {
-        var result = ShellTokenizer.ExtractDirectoryScope(
-            "ls /home/user/.netclaw/logs/crash-*.log");
-        Assert.NotNull(result);
-        Assert.StartsWith("ls ", result);
-        Assert.EndsWith("/", result);
-        Assert.Contains(".netclaw/logs/", result.Replace('\\', '/'));
+        var roots = ShellTokenizer.ExtractDirectoryRoots("ls /home/user/.netclaw/logs/crash-*.log");
+
+        Assert.Single(roots);
+        Assert.Equal("/home/user/.netclaw/logs/", roots[0].ComparisonRoot.Replace('\\', '/'));
+    }
+
+    [Fact]
+    public void ExtractDirectoryRoots_returns_multiple_roots_for_multi_directory_command()
+    {
+        var roots = ShellTokenizer.ExtractDirectoryRoots("cat /home/user/.netclaw/logs/app.log > /home/user/.netclaw/output/report.txt");
+
+        Assert.Equal(2, roots.Count);
+        Assert.Contains(roots, r => r.ComparisonRoot.Replace('\\', '/') == "/home/user/.netclaw/logs/");
+        Assert.Contains(roots, r => r.ComparisonRoot.Replace('\\', '/') == "/home/user/.netclaw/output/");
     }
 
     [Theory]
-    [InlineData("echo hello")]              // not a path-aware verb
-    [InlineData("git push origin main")]    // not in PathAwareVerbs
-    [InlineData("grep --version")]          // no path argument
-    [InlineData("cat /etc/passwd")]         // too shallow (/etc/ = 1 segment)
-    public void ExtractDirectoryScope_returns_null(string command)
+    [InlineData("echo hello")]
+    [InlineData("git push origin main")]
+    [InlineData("grep --version")]
+    [InlineData("cat /etc/passwd")]
+    public void ExtractDirectoryRoots_returns_empty_when_no_reusable_roots_exist(string command)
     {
-        Assert.Null(ShellTokenizer.ExtractDirectoryScope(command));
+        Assert.Empty(ShellTokenizer.ExtractDirectoryRoots(command));
     }
 }

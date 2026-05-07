@@ -15,6 +15,20 @@ namespace Netclaw.Security;
 /// </summary>
 public static class ApprovalPatternMatching
 {
+    public static bool MatchesShellApprovalEntry(string candidate, IEnumerable<string> approvedEntries)
+    {
+        foreach (var approved in approvedEntries)
+        {
+            if (string.Equals(candidate, approved, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (IsDirectoryRootEntry(candidate) && IsDirectoryRootEntry(approved) && MatchesDirectoryRoot(candidate, approved))
+                return true;
+        }
+
+        return false;
+    }
+
     public static bool MatchesAny(string candidate, IEnumerable<string> approvedPatterns)
     {
         foreach (var approved in approvedPatterns)
@@ -68,5 +82,31 @@ public static class ApprovalPatternMatching
         {
             return false;
         }
+    }
+
+    private static bool MatchesDirectoryRoot(string candidateRoot, string approvedRoot)
+    {
+        try
+        {
+            return PathUtility.IsWithinRoot(
+                candidateRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                approvedRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsDirectoryRootEntry(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        if (!(value.EndsWith(Path.DirectorySeparatorChar) || value.EndsWith(Path.AltDirectorySeparatorChar)))
+            return false;
+
+        var trimmed = value.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return Path.IsPathRooted(trimmed);
     }
 }

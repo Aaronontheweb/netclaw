@@ -147,7 +147,8 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
                 throw new ToolApprovalRequiredException(new ToolApprovalContext(
                     ToolName: toolCall.Name,
                     DisplayText: "git push origin dev",
-                    UnapprovedPatterns: ["git push"],
+                    Patterns: ["git push origin dev"],
+                    ApprovalEntries: ["git push origin dev"],
                     Options:
                     [
                         new ToolApprovalOption(ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveOnceLabel),
@@ -155,7 +156,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
                         new ToolApprovalOption(ApprovalOptionKeys.ApproveAlways, ApprovalOptionKeys.ApproveAlwaysLabel),
                         new ToolApprovalOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
                     ],
-                    DirectoryPatterns: []));
+                    DirectoryRoots: []));
             }
 
             ct.ThrowIfCancellationRequested();

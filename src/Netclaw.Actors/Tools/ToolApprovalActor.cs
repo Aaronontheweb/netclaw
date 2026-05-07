@@ -58,7 +58,7 @@ internal sealed class ToolApprovalActor : ReceiveActor
         if (_persistentStore is null)
             return false;
 
-        return ApprovalPatternMatching.MatchesAny(pattern, _persistentStore.GetApprovedPatterns(audience, toolName.Value));
+        return MatchesApprovedEntry(toolName, pattern, _persistentStore.GetApprovedPatterns(audience, toolName.Value));
     }
 
     private bool IsSessionApproved(SessionId sessionId, TrustAudience audience, ToolName toolName, string pattern)
@@ -71,7 +71,7 @@ internal sealed class ToolApprovalActor : ReceiveActor
             var sessionKey = BuildSessionKey((SessionId)scopeId, audience);
             if (_sessionApprovals.TryGetValue(sessionKey, out var toolMap)
                 && toolMap.TryGetValue(toolName.Value, out var patterns)
-                && ApprovalPatternMatching.MatchesAny(pattern, patterns))
+                && MatchesApprovedEntry(toolName, pattern, patterns))
             {
                 return true;
             }
@@ -103,6 +103,11 @@ internal sealed class ToolApprovalActor : ReceiveActor
 
         patterns.Add(pattern);
     }
+
+    private static bool MatchesApprovedEntry(ToolName toolName, string candidate, IEnumerable<string> approvedEntries)
+        => string.Equals(toolName.Value, ShellTool.ToolName, StringComparison.Ordinal)
+            ? ApprovalPatternMatching.MatchesShellApprovalEntry(candidate, approvedEntries)
+            : ApprovalPatternMatching.MatchesAny(candidate, approvedEntries);
 
     private static string BuildSessionKey(SessionId sessionId, TrustAudience audience)
         => $"{sessionId.Value}|{audience.ToWireValue()}";

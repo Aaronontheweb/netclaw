@@ -88,7 +88,7 @@ public sealed class ToolApprovalActorTests : TestKit
     }
 
     [Fact]
-    public async Task Multi_token_approval_prefix_matches()
+    public async Task Shell_exact_approval_does_not_prefix_match()
     {
         var ct = TestContext.Current.CancellationToken;
         var actor = Sys.ActorOf(ToolApprovalActor.CreateProps());
@@ -96,9 +96,44 @@ public sealed class ToolApprovalActorTests : TestKit
 
         await service.RecordApprovalAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), ["git push"], persistent: false, ct);
 
-        // Multi-token "git push" should match "git push origin" via prefix
         var unapproved = await service.GetUnapprovedPatternsAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), ["git push origin"], ct);
-        Assert.Empty(unapproved);
+        Assert.Equal(["git push origin"], unapproved);
+    }
+
+    [Fact]
+    public async Task Shell_directory_root_approval_covers_other_verbs_under_same_root()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var actor = Sys.ActorOf(ToolApprovalActor.CreateProps());
+        var service = CreateService(actor);
+
+        await service.RecordApprovalAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), ["/home/user/.netclaw/logs/"], persistent: false, ct);
+
+        Assert.Empty(await service.GetUnapprovedPatternsAsync(
+            "session-a",
+            TrustAudience.Personal,
+            new ToolName("shell_execute"),
+            ["/home/user/.netclaw/logs/"],
+            ct));
+    }
+
+    [Fact]
+    public async Task Shell_directory_root_approval_requires_all_roots_to_be_covered()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var actor = Sys.ActorOf(ToolApprovalActor.CreateProps());
+        var service = CreateService(actor);
+
+        await service.RecordApprovalAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), ["/home/user/.netclaw/logs/"], persistent: false, ct);
+
+        var unapproved = await service.GetUnapprovedPatternsAsync(
+            "session-a",
+            TrustAudience.Personal,
+            new ToolName("shell_execute"),
+            ["/home/user/.netclaw/logs/", "/home/user/.netclaw/output/"],
+            ct);
+
+        Assert.Equal(["/home/user/.netclaw/output/"], unapproved);
     }
 
     [Fact]

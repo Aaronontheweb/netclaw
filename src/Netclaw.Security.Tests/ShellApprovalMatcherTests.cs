@@ -14,12 +14,19 @@ public sealed class ShellApprovalMatcherTests
 
     private static Dictionary<string, object?> Args(string command) => new() { ["Command"] = command };
 
+    private static Dictionary<string, object?> Args(string command, string workingDirectory)
+        => new()
+        {
+            ["Command"] = command,
+            ["WorkingDirectory"] = workingDirectory
+        };
+
     [Fact]
     public void ExtractPatterns_simple_command()
     {
         var patterns = _matcher.ExtractPatterns(new ToolName("shell_execute"), Args("git push origin main"));
         Assert.Single(patterns);
-        Assert.Equal("git push", patterns[0]);
+        Assert.Equal("git push origin main", patterns[0]);
     }
 
     [Fact]
@@ -28,8 +35,8 @@ public sealed class ShellApprovalMatcherTests
         var patterns = _matcher.ExtractPatterns(new ToolName("shell_execute"),
             Args("git add . && git commit -m fix && git push"));
         Assert.Equal(3, patterns.Count);
-        Assert.Contains("git add", patterns);
-        Assert.Contains("git commit", patterns);
+        Assert.Contains("git add .", patterns);
+        Assert.Contains("git commit -m fix", patterns);
         Assert.Contains("git push", patterns);
     }
 
@@ -38,9 +45,9 @@ public sealed class ShellApprovalMatcherTests
     {
         var patterns = _matcher.ExtractPatterns(new ToolName("shell_execute"),
             Args("git push && git push --tags"));
-        // Both segments produce "git push", should be deduplicated
-        Assert.Single(patterns);
-        Assert.Equal("git push", patterns[0]);
+        Assert.Equal(2, patterns.Count);
+        Assert.Contains("git push", patterns);
+        Assert.Contains("git push --tags", patterns);
     }
 
     [Fact]
@@ -49,7 +56,7 @@ public sealed class ShellApprovalMatcherTests
         var patterns = _matcher.ExtractPatterns(new ToolName("shell_execute"), Args("bash -c \"git push --force\""));
 
         Assert.Single(patterns);
-        Assert.Equal("git push", patterns[0]);
+        Assert.Equal("git push --force", patterns[0]);
     }
 
     [Fact]
@@ -59,7 +66,7 @@ public sealed class ShellApprovalMatcherTests
 
         Assert.Equal(2, patterns.Count);
         Assert.Contains("echo ok", patterns);
-        Assert.Contains("git push", patterns);
+        Assert.Contains("git push --force", patterns);
     }
 
     [Fact]
@@ -72,7 +79,7 @@ public sealed class ShellApprovalMatcherTests
     [Fact]
     public void IsApproved_all_patterns_approved()
     {
-        var approved = new[] { "git add", "git commit", "git push" };
+        var approved = new[] { "git add .", "git commit -m fix", "git push" };
         Assert.True(_matcher.IsApproved(new ToolName("shell_execute"),
             Args("git add . && git commit -m fix && git push"), approved));
     }
@@ -80,38 +87,18 @@ public sealed class ShellApprovalMatcherTests
     [Fact]
     public void IsApproved_one_pattern_unapproved()
     {
-        var approved = new[] { "git add", "git push" };
+        var approved = new[] { "git add .", "git push" };
         Assert.False(_matcher.IsApproved(new ToolName("shell_execute"),
             Args("git add . && git commit -m fix && git push"), approved));
     }
 
     [Theory]
-    [InlineData("gh", "gh --help", true)]        // Single-token exact match
-    [InlineData("gh", "gh pr create", false)]    // Single-token should NOT prefix match
-    [InlineData("git push", "git push origin main", true)]  // Multi-token prefix match
-    [InlineData("git push", "git pull", false)]  // Multi-token no match
-    [InlineData("git pu", "git push", false)]    // Partial token no match (word boundary)
-    [InlineData("gh pr", "gh pr create", true)]  // Multi-token prefix match
-    [InlineData("gh pr", "gh issue list", false)] // Multi-token no match
-    // Path-aware patterns — exact path matches
-    [InlineData("cat /etc/passwd", "cat /etc/passwd", true)]
-    [InlineData("cat /etc/passwd", "cat /etc/shadow", false)]
-    [InlineData("bash /home/.netclaw/scripts/monitor.sh", "bash /home/.netclaw/scripts/monitor.sh", true)]
-    [InlineData("bash /home/.netclaw/scripts/monitor.sh", "bash /tmp/evil.sh", false)]
-    // Directory-scoped patterns (trailing /) match files under that directory
-    [InlineData("cat /home/user/.netclaw/logs/", "cat /home/user/.netclaw/logs/crash.log", true)]
-    [InlineData("cat /home/user/.netclaw/logs/", "cat /home/user/.netclaw/logs/deep/nested.txt", true)]
-    [InlineData("cat /home/user/.netclaw/logs/", "cat /home/user/.netclaw/config/secret.json", false)]
-    [InlineData("grep /home/user/.netclaw/logs/", "cat /home/user/.netclaw/logs/crash.log", false)] // verb mismatch
-    [InlineData("ls /home/user/.netclaw/", "ls /home/user/.netclaw/logs/deep/file.txt", true)] // nested
-    // Single-token path-aware verbs stay exact-only
-    [InlineData("cat", "cat /etc/passwd", false)]
-    [InlineData("grep", "grep TODO", false)]
-    [InlineData("bash", "bash /tmp/script.sh", false)]
-    [InlineData("find", "find /var/log", false)]
-    // Non-path-aware single tokens still require exact match
-    [InlineData("echo", "echo hello", false)]
-    [InlineData("docker", "docker compose", false)]
+    [InlineData("git push", "git push", true)]
+    [InlineData("git push", "git push origin main", false)]
+    [InlineData("gh", "gh --help", false)]
+    [InlineData("/home/user/.netclaw/logs/", "cat /home/user/.netclaw/logs/crash.log", true)]
+    [InlineData("/home/user/.netclaw/logs/", "grep timeout /home/user/.netclaw/logs/crash.log", true)]
+    [InlineData("/home/user/.netclaw/logs/", "cat /home/user/.netclaw/config/secret.json", false)]
     public void IsApproved_pattern_matching(string pattern, string command, bool expected)
     {
         var approved = new[] { pattern };
@@ -121,32 +108,31 @@ public sealed class ShellApprovalMatcherTests
     [Fact]
     public void IsApproved_recurses_into_bash_c_wrapper()
     {
-        var approved = new[] { "git push" };
+        var approved = new[] { "git push --force" };
 
         Assert.True(_matcher.IsApproved(new ToolName("shell_execute"),
             Args("bash -c \"git push --force\""), approved));
     }
 
     [Fact]
-    public void ExtractPatterns_path_aware_verb_includes_path()
+    public void ExtractPatterns_normalize_paths_but_keep_full_unit_shape()
     {
         var patterns = _matcher.ExtractPatterns(
             new ToolName("shell_execute"),
             Args("cat /etc/hosts && git push origin main"));
         Assert.Equal(2, patterns.Count);
         Assert.Contains("cat /etc/hosts", patterns);
-        Assert.Contains("git push", patterns);
+        Assert.Contains("git push origin main", patterns);
     }
 
     [Fact]
-    public void ExtractPatterns_pipe_with_path_aware_verbs()
+    public void ExtractPatterns_keep_pipeline_together_as_one_unit()
     {
         var patterns = _matcher.ExtractPatterns(
             new ToolName("shell_execute"),
             Args("cat /var/log/syslog | grep error"));
-        Assert.Equal(2, patterns.Count);
-        Assert.Contains("cat /var/log/syslog", patterns);
-        Assert.Contains("grep error", patterns);
+        Assert.Single(patterns);
+        Assert.Equal("cat /var/log/syslog | grep error", patterns[0]);
     }
 
     [Fact]
@@ -156,56 +142,57 @@ public sealed class ShellApprovalMatcherTests
         Assert.Equal("git push origin main", display);
     }
 
-    // ── ExtractDirectoryPatterns ──
+    // ── ExtractDirectoryRoots / ExtractApprovalEntries ──
 
     [Fact]
-    public void ExtractDirectoryPatterns_simple_path_command()
+    public void ExtractDirectoryRoots_simple_path_command()
     {
-        var patterns = _matcher.ExtractDirectoryPatterns(
+        var roots = _matcher.ExtractDirectoryRoots(
             new ToolName("shell_execute"),
             Args("cat /home/user/.netclaw/logs/crash.log"));
-        Assert.Single(patterns);
-        Assert.EndsWith("/", patterns[0]);
-        Assert.StartsWith("cat ", patterns[0]);
+        Assert.Single(roots);
+        Assert.Equal("/home/user/.netclaw/logs/", roots[0].ComparisonRoot.Replace('\\', '/'));
     }
 
     [Fact]
-    public void ExtractDirectoryPatterns_compound_command()
+    public void ExtractDirectoryRoots_pipeline_and_multiple_verbs_share_same_root()
     {
-        var patterns = _matcher.ExtractDirectoryPatterns(
+        var roots = _matcher.ExtractDirectoryRoots(
             new ToolName("shell_execute"),
-            Args("cat /home/user/.netclaw/logs/crash.log && grep 'error' /home/user/.netclaw/logs/app.log"));
-        Assert.Equal(2, patterns.Count);
-        Assert.Contains(patterns, p => p.StartsWith("cat "));
-        Assert.Contains(patterns, p => p.StartsWith("grep "));
+            Args("grep 'error' /home/user/.netclaw/logs/app.log | wc -l"));
+        Assert.Single(roots);
+        Assert.Equal("/home/user/.netclaw/logs/", roots[0].ComparisonRoot.Replace('\\', '/'));
     }
 
     [Fact]
-    public void ExtractDirectoryPatterns_falls_back_to_verb_chain_when_no_path()
+    public void ExtractDirectoryRoots_returns_empty_when_no_reusable_roots_exist()
     {
-        var patterns = _matcher.ExtractDirectoryPatterns(
+        var roots = _matcher.ExtractDirectoryRoots(
             new ToolName("shell_execute"),
             Args("git push origin main"));
-        Assert.Single(patterns);
-        Assert.Equal("git push", patterns[0]);
+        Assert.Empty(roots);
     }
 
     [Fact]
-    public void ExtractDirectoryPatterns_empty_command()
+    public void ExtractApprovalEntries_use_roots_when_available()
     {
-        var patterns = _matcher.ExtractDirectoryPatterns(new ToolName("shell_execute"), Args(""));
-        Assert.Empty(patterns);
+        var entries = _matcher.ExtractApprovalEntries(
+            new ToolName("shell_execute"),
+            Args("grep 'error' /home/user/.netclaw/logs/app.log | wc -l"));
+
+        Assert.Single(entries);
+        Assert.Equal("/home/user/.netclaw/logs/", entries[0].Replace('\\', '/'));
     }
 
     [Fact]
-    public void ExtractDirectoryPatterns_mixed_compound_with_fallback()
+    public void ExtractApprovalEntries_fall_back_to_exact_unit_when_no_roots_exist()
     {
-        var patterns = _matcher.ExtractDirectoryPatterns(
+        var entries = _matcher.ExtractApprovalEntries(
             new ToolName("shell_execute"),
             Args("cat /home/user/.netclaw/logs/crash.log && git push origin main"));
-        Assert.Equal(2, patterns.Count);
-        Assert.Contains(patterns, p => p.StartsWith("cat ") && p.EndsWith("/"));
-        Assert.Contains(patterns, p => p == "git push");
+        Assert.Equal(2, entries.Count);
+        Assert.Contains("/home/user/.netclaw/logs/", entries.Select(p => p.Replace('\\', '/')));
+        Assert.Contains("git push origin main", entries);
     }
 }
 

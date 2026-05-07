@@ -419,7 +419,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         new ToolCallId(tc.CallId),
                         ctx.ToolName,
                         ctx.DisplayText,
-                        ctx.UnapprovedPatterns,
+                        ctx.Patterns,
                         ct);
 
                     if (decision is ParentApprovalDecision.ApprovedOnce
@@ -432,7 +432,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         // across parallel tool calls or later iterations.
                         var retryContext = CreatePerToolExecutionContext(executionContext);
                         retryContext.OneTimeApprovedToolName = tc.Name;
-                        retryContext.SetOneTimeApprovedPatterns(ctx.UnapprovedPatterns);
+                        retryContext.SetOneTimeApprovedPatterns(ctx.Patterns);
 
                         var result = await executor.ExecuteAsync(tc, retryContext, ct);
                         return new SerializableChatMessage

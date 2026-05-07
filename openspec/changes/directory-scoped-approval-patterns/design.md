@@ -1,12 +1,19 @@
 ## Context
 
-Shell command approval patterns are extracted by `ShellTokenizer.ExtractVerbChain()`
-which, for path-aware verbs (`ls`, `cat`, `grep`, `find`, etc.), appends the
-first file-path argument to the verb chain. This produces per-file patterns
-like `cat /home/.netclaw/logs/crash-foo.log`. Combined with the single-token
-exact-match restriction in `ApprovalPatternMatching` (which prevents bare `cat`
-from silently approving `cat /etc/shadow`), each unique file path requires a
-separate interactive approval.
+The current shell approval flow reuses exact command patterns too narrowly for
+diagnostic work. In session `D0AC6CKBK5K/1778163885.517639`, repeated shell work
+inside the same directories still produced repeated prompts because each new
+file path became a new approval target. Issue `#905` is only contextual here:
+it explains why that one session had so many shell calls, but this change does
+not attempt to solve the broader issue volume.
+
+This update shifts broader shell approvals away from command classification and
+toward reusable local directory roots. The approval question becomes: can this
+shell approval unit be shown to stay under roots the user already approved?
+
+When the answer is yes, later shell commands under those roots should not ask
+again. When the answer is no, the system must fall back to exact approval
+behavior.
 
 The approval system has three security layers:
 1. Hard deny list (before approval gate)
@@ -18,73 +25,98 @@ This change only relaxes layer 2. Layers 1 and 3 are unaffected.
 ## Goals / Non-Goals
 
 **Goals:**
-- Reduce per-file approval fatigue for diagnostic shell commands
-- Store directory-scoped patterns when user selects B (session) or C (always)
-- Maintain boundary-safe path matching (no `StartsWith` — use `PathUtility.IsWithinRoot`)
-- Prevent overly broad directory scopes (minimum 2 path segments)
-- Show directory context in approval option labels
+- Reduce repeated shell approval fatigue for later commands under the same local
+  directories
+- Keep `Approve once` exact blocked-call retry only
+- Store reusable directory roots for shell B/C approvals when local roots are
+  extractable
+- Auto-approve later shell approval units only when all recognized local paths
+  stay under already approved roots
+- Keep boundary-safe root matching and minimum-depth enforcement
+- Show root context in approval option labels
 
 **Non-Goals:**
 - Changing the hard deny list or `ToolPathPolicy` behavior
-- Changing "Approve once" (A) behavior — it remains exact-pattern
-- Glob-aware or regex-based pattern matching
-- Cross-verb directory approvals (`cat /dir/` does not approve `grep /dir/`)
+- Changing `Approve once` (A) behavior
+- Classifying shell safety by command verb families
+- Using directory-root approvals when no reusable local roots can be extracted
+- Glob-aware or regex-based approval matching
 
 ## Decisions
 
-### Pattern convention: trailing `/` sentinel
+### Approval units: split on shell control operators, not pipelines
 
-Directory-scoped patterns use a trailing `/` to distinguish from exact patterns:
-`grep /home/.netclaw/logs/` vs `grep /home/.netclaw/logs/daemon.log`.
+The broader approval model operates on shell approval units instead of whole
+commands or individual tokens.
 
-**Why not a separate storage format?** The approval store (`tool-approvals.json`)
-is a flat list of strings per tool per audience. A sentinel convention avoids
-schema changes and keeps backward compatibility — existing non-slash patterns
-work unchanged.
+- `&&`, `||`, and `;` start a new approval unit
+- `|` stays inside the current approval unit
 
-### Extraction: scan all arguments, not just first positional
+This preserves the user's expectation that a pipeline like
+`grep ... /home/.netclaw/logs/app.log | wc -l` is one piece of work, while still
+preventing a later `&& rm ...` segment from inheriting that approval.
 
-`ShellTokenizer.ExtractDirectoryScope()` scans ALL non-flag arguments for the
-first `LooksLikePath()` token, then extracts its parent directory. This solves
-the grep problem where the search term is the first positional arg and the file
-path is second (`grep -l "timeout" /home/.netclaw/logs/daemon.log`).
+### Directory roots replace verb-scoped directory patterns
 
-**Alternative considered:** Always use first positional. Rejected because grep,
-sed, and awk take non-path first arguments.
+For `shell_execute`, B and C approvals store reusable local directory roots, not
+verb-specific patterns. A later `ls`, `cat`, or `grep` can reuse the same root
+approval as long as every recognized local filesystem path in that approval unit
+resolves under approved roots.
 
-### Matching: `PathUtility.IsWithinRoot()` not `StartsWith`
+This is intentionally verb-agnostic. The safety boundary moves from shell verb
+classification to filesystem containment plus the existing backstops.
 
-Directory matching delegates to `PathUtility.IsWithinRoot()` which normalizes
-both paths, uses platform-appropriate case sensitivity, and checks boundary
-characters. This prevents `/home/usersecret` from matching an approval for
-`/home/user`.
+### Extraction: recognized local filesystem paths across the whole unit
+
+Root extraction scans each approval unit for recognized local filesystem paths,
+not just the first positional token. That covers forms like
+`grep -l "timeout" /home/.netclaw/logs/daemon.log`, multiple path arguments, and
+paths inside a pipeline.
+
+If one or more local paths are found, the system derives directory roots from
+them. If none are found, directory-root approval is unavailable and the system
+falls back to exact approval behavior for that unit.
+
+### Matching: all recognized local paths must stay under approved roots
+
+Auto-approval succeeds only when every recognized local filesystem path in the
+candidate approval unit resolves under an already approved root.
+
+This avoids partial matches where one safe path could accidentally approve a
+unit that also touches another directory the user never approved.
+
+### Root comparison remains boundary-safe
+
+Root matching delegates to `PathUtility.IsWithinRoot()`, which normalizes paths,
+applies platform-appropriate case sensitivity, and checks boundaries. This keeps
+`/home/usersecret` from matching a root approval for `/home/user`.
 
 ### Minimum depth: 2 segments below root
 
-`CountPathSegments()` rejects scopes shallower than 2 segments (blocks `/`,
-`/home/`, `/etc/`, `/tmp/`). This is a hard floor — the user cannot approve
-at root-level directories even if they want to.
+Derived roots shallower than 2 segments are rejected. That still blocks broad
+roots such as `/`, `/etc/`, and `/tmp/` from becoming reusable directory
+approvals. Those commands can still proceed through exact approval behavior.
 
-### Verb isolation
+### Tiny internal representation: display path vs comparison root
 
-An approval for `cat /dir/` does NOT approve `grep /dir/`. The verb is part of
-the pattern and checked explicitly. This limits blast radius — approving reads
-doesn't silently approve writes or deletions.
+Internally, each extracted directory root should carry a tiny pair:
+
+- a display path for approval labels
+- a normalized comparison root used for containment checks
+
+This keeps the behavior model focused on roots while avoiding UI drift from the
+path form used for comparisons.
 
 ## Risks / Trade-offs
 
-**[Risk] Directory scope is broader than per-file** → Mitigated by
-`ToolPathPolicy.CommandReferencesDeniedPath()` at execution time, which
-independently blocks access to protected files (`config/netclaw.json`, keys,
-`secrets.json`) regardless of approval state.
+**[Risk] Root approvals are broader than per-file approvals** → Mitigated by
+minimum depth enforcement, normalization, traversal checks, and
+`ToolPathPolicy.CommandReferencesDeniedPath()` at execution time.
 
-**[Risk] `directoryPatterns[0]` drives UI label for compound commands** →
-For compound commands with multiple path-aware segments targeting different
-directories, only the first directory appears in the label. Acceptable because
-compound commands targeting multiple directories are rare, and the approval
-still covers the right patterns.
+**[Risk] Multi-path approval units can be harder to explain in the prompt** →
+The prompt can display the primary extracted roots, but matching still requires
+all recognized local paths in the unit to stay under approved roots.
 
-**[Risk] Minimum depth too restrictive** → A 2-segment minimum blocks
-`/etc/` and `/tmp/` which are legitimate diagnostic targets. This is intentional
-— those directories contain sensitive system files. Users can still approve
-individual files via "Approve once".
+**[Risk] Some shell commands have no reusable local roots** → This is expected.
+When no local roots are extractable, the system falls back to exact approval
+behavior instead of inventing a broader approval class.

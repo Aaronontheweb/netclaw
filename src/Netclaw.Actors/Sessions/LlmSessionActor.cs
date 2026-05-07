@@ -746,7 +746,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _pendingToolInteractions[msg.CallId] = new PendingToolInteraction(
                 msg.ToolName,
                 msg.Patterns,
-                msg.DirectoryPatterns,
+                msg.ApprovalEntries,
+                msg.DirectoryRoots,
                 CurrentTurnAudience(),
                 msg.RequesterSenderId,
                 msg.RequesterPrincipal,
@@ -796,14 +797,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             if (decision is ApprovalDecision.ApprovedSession or ApprovalDecision.ApprovedAlways
                 && _approvalService is not null)
             {
-                var patternsToRecord = pending.DirectoryPatterns.Count > 0
-                    ? pending.DirectoryPatterns
-                    : pending.Patterns;
                 await _approvalService.RecordApprovalAsync(
                     _sessionId.Value,
                     pending.Audience,
                     new ToolName(pending.ToolName),
-                    patternsToRecord,
+                    pending.ApprovalEntries,
                     persistent: decision == ApprovalDecision.ApprovedAlways,
                     CancellationToken.None);
             }
@@ -3046,7 +3044,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private sealed record PendingToolInteraction(
         string ToolName,
         IReadOnlyList<string> Patterns,
-        IReadOnlyList<string> DirectoryPatterns,
+        IReadOnlyList<string> ApprovalEntries,
+        IReadOnlyList<string> DirectoryRoots,
         TrustAudience Audience,
         string? RequesterSenderId,
         PrincipalClassification? RequesterPrincipal,

@@ -297,35 +297,37 @@ public sealed class ToolAccessPolicy
             return ToolAccessDecision.Allow();
         }
 
-        var allPatterns = matcher.ExtractPatterns(toolName, arguments);
-        var directoryPatterns = matcher.ExtractDirectoryPatterns(toolName, arguments);
+        var patterns = matcher.ExtractPatterns(toolName, arguments);
+        var approvalEntries = matcher.ExtractApprovalEntries(toolName, arguments);
+        var directoryRoots = matcher.ExtractDirectoryRoots(toolName, arguments);
         var displayText = matcher.FormatForDisplay(toolName, arguments);
 
         var sessionLabel = ApprovalOptionKeys.ApproveSessionLabel;
         var alwaysLabel = ApprovalOptionKeys.ApproveAlwaysLabel;
-        var firstDirScope = directoryPatterns.FirstOrDefault(p => p.EndsWith('/'));
-        if (firstDirScope is not null)
+        if (directoryRoots.Count == 1)
         {
-            var spaceIdx = firstDirScope.IndexOf(' ', StringComparison.Ordinal);
-            if (spaceIdx >= 0)
-            {
-                var dir = firstDirScope[(spaceIdx + 1)..];
-                sessionLabel = $"Approve in {dir} for this chat";
-                alwaysLabel = $"Approve in {dir} always";
-            }
+            var dir = directoryRoots[0].DisplayPath;
+            sessionLabel = $"Approve shell access in {dir} for this chat";
+            alwaysLabel = $"Approve shell access in {dir} always";
+        }
+        else if (directoryRoots.Count > 1)
+        {
+            sessionLabel = "Approve shell access in these directories for this chat";
+            alwaysLabel = "Approve shell access in these directories always";
         }
 
         var approvalContext = new ToolApprovalContext(
             toolName.Value,
             displayText,
-            allPatterns,
+            patterns,
+            approvalEntries,
             [
                 new ToolApprovalOption(ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveOnceLabel),
                 new ToolApprovalOption(ApprovalOptionKeys.ApproveSession, sessionLabel),
                 new ToolApprovalOption(ApprovalOptionKeys.ApproveAlways, alwaysLabel),
                 new ToolApprovalOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
             ],
-            directoryPatterns);
+            [.. directoryRoots.Select(static x => x.ComparisonRoot)]);
 
         return ToolAccessDecision.RequiresApproval(approvalContext);
     }
@@ -471,9 +473,10 @@ public sealed record ToolAccessDecision(bool Allowed, string? DenyReason = null,
 public sealed record ToolApprovalContext(
     string ToolName,
     string DisplayText,
-    IReadOnlyList<string> UnapprovedPatterns,
+    IReadOnlyList<string> Patterns,
+    IReadOnlyList<string> ApprovalEntries,
     IReadOnlyList<ToolApprovalOption> Options,
-    IReadOnlyList<string> DirectoryPatterns);
+    IReadOnlyList<string> DirectoryRoots);
 
 public sealed record ToolApprovalOption(string Key, string Label);
 

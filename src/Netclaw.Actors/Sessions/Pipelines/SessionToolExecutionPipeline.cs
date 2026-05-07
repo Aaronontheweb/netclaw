@@ -283,8 +283,9 @@ internal static class SessionToolExecutionPipeline
                 HasAdoptedContext = source?.HasAdoptedContext ?? false,
                 AdoptedSpeakerIds = source?.AdoptedSpeakerIds ?? [],
                 PersistedAdoptedContext = source?.HasAdoptedContext ?? false,
-                Patterns = ctx.UnapprovedPatterns,
-                DirectoryPatterns = ctx.DirectoryPatterns,
+                Patterns = ctx.Patterns,
+                ApprovalEntries = ctx.ApprovalEntries,
+                DirectoryRoots = ctx.DirectoryRoots,
                 Options = ctx.Options
                     .Select(o => new ToolInteractionOption(o.Key, o.Label))
                     .ToList()
@@ -302,7 +303,7 @@ internal static class SessionToolExecutionPipeline
                 if (decision == ApprovalDecision.ApprovedOnce)
                 {
                     context.OneTimeApprovedToolName = tc.Name;
-                    context.SetOneTimeApprovedPatterns(ctx.UnapprovedPatterns);
+                    context.SetOneTimeApprovedPatterns(ctx.Patterns);
                 }
 
                 sw = Stopwatch.StartNew();
@@ -318,13 +319,13 @@ internal static class SessionToolExecutionPipeline
                         meta.TimeoutHintSeconds ?? shellTimeoutSeconds,
                         sw.Elapsed, logger,
                         decision.ToString(),
-                        string.Join(", ", ctx.UnapprovedPatterns));
+                        string.Join(", ", ctx.Patterns));
                 }
 
                 resultText = await ExecuteToolAttemptAsync(executor, tc, context, timeout, ct);
                 sw.Stop();
 
-                var patternStr = string.Join(", ", ctx.UnapprovedPatterns);
+                var patternStr = string.Join(", ", ctx.Patterns);
                 auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
                 {
                     Allowed = true,
@@ -339,7 +340,7 @@ internal static class SessionToolExecutionPipeline
                     : $"Tool access denied: approval_denied_by_user ({tc.Name} requires interactive approval and the user declined it)";
                 resultText = reason;
 
-                var deniedPatternStr = string.Join(", ", ctx.UnapprovedPatterns);
+                var deniedPatternStr = string.Join(", ", ctx.Patterns);
                 auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
                 {
                     Allowed = false,

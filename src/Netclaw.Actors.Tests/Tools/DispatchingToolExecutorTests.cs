@@ -434,7 +434,7 @@ public class DispatchingToolExecutorTests
                 executor.ExecuteAsync(toolCall, context, TestContext.Current.CancellationToken));
 
             context.OneTimeApprovedToolName = toolCall.Name;
-            context.SetOneTimeApprovedPatterns(firstAttempt.ApprovalContext.UnapprovedPatterns);
+            context.SetOneTimeApprovedPatterns(firstAttempt.ApprovalContext.Patterns);
 
             var retryResult = await executor.ExecuteAsync(toolCall, context, TestContext.Current.CancellationToken);
             Assert.Contains("once", retryResult);
@@ -493,7 +493,7 @@ public class DispatchingToolExecutorTests
             executor.ExecuteAsync(toolCall, context, TestContext.Current.CancellationToken));
 
         context.OneTimeApprovedToolName = toolCall.Name;
-        context.SetOneTimeApprovedPatterns(firstAttempt.ApprovalContext.UnapprovedPatterns);
+        context.SetOneTimeApprovedPatterns(firstAttempt.ApprovalContext.Patterns);
 
         var retryResult = await executor.ExecuteAsync(toolCall, context, TestContext.Current.CancellationToken);
 
@@ -550,7 +550,7 @@ public class DispatchingToolExecutorTests
                 executor.ExecuteAsync(toolCall, context, TestContext.Current.CancellationToken));
 
             context.OneTimeApprovedToolName = toolCall.Name;
-            context.SetOneTimeApprovedPatterns(firstAttempt.ApprovalContext.UnapprovedPatterns);
+            context.SetOneTimeApprovedPatterns(firstAttempt.ApprovalContext.Patterns);
 
             var retryResult = await executor.ExecuteAsync(toolCall, context, TestContext.Current.CancellationToken);
             Assert.Contains("Successfully wrote", retryResult, StringComparison.Ordinal);
@@ -632,11 +632,11 @@ public class DispatchingToolExecutorTests
             var firstAttempt = await Assert.ThrowsAsync<ToolApprovalRequiredException>(() =>
                 executor.ExecuteAsync(call, context, TestContext.Current.CancellationToken));
 
-            Assert.DoesNotContain("pwd", firstAttempt.ApprovalContext.UnapprovedPatterns);
-            Assert.Contains("ls", firstAttempt.ApprovalContext.UnapprovedPatterns);
+            Assert.Contains("pwd", firstAttempt.ApprovalContext.Patterns);
+            Assert.Contains("ls", firstAttempt.ApprovalContext.Patterns);
 
             context.OneTimeApprovedToolName = call.Name;
-            context.SetOneTimeApprovedPatterns(firstAttempt.ApprovalContext.UnapprovedPatterns);
+            context.SetOneTimeApprovedPatterns(firstAttempt.ApprovalContext.Patterns);
 
             var retryResult = await executor.ExecuteAsync(call, context, TestContext.Current.CancellationToken);
             Assert.Contains("Exit code: 0", retryResult, StringComparison.Ordinal);
@@ -712,7 +712,7 @@ public class DispatchingToolExecutorTests
                 "signalr/thread-1",
                 TrustAudience.Personal,
                 new ToolName(toolCall.Name),
-                firstAttempt.ApprovalContext.UnapprovedPatterns,
+                firstAttempt.ApprovalContext.ApprovalEntries,
                 persistent: false,
                 TestContext.Current.CancellationToken);
 

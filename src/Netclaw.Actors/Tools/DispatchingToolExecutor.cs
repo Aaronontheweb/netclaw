@@ -112,17 +112,12 @@ public sealed class DispatchingToolExecutor : IToolExecutor
                 context?.SessionId,
                 audience,
                 new ToolName(toolCall.Name),
-                approvalContext.UnapprovedPatterns,
+                approvalContext.ApprovalEntries,
                 ct);
 
             accessDecision = unapproved.Count == 0
                 ? ToolAccessDecision.Allow()
-                : ToolAccessDecision.RequiresApproval(new ToolApprovalContext(
-                    approvalContext.ToolName,
-                    approvalContext.DisplayText,
-                    unapproved,
-                    approvalContext.Options,
-                    approvalContext.DirectoryPatterns));
+                : ToolAccessDecision.RequiresApproval(approvalContext);
         }
 
         if (accessDecision.NeedsApproval
@@ -162,12 +157,12 @@ public sealed class DispatchingToolExecutor : IToolExecutor
         if (context.OneTimeApprovedPatterns.Count == 0)
             return false;
 
-        if (approvalContext.UnapprovedPatterns.Count == 0)
+        if (approvalContext.Patterns.Count == 0)
             return false;
 
         if (!string.Equals(context.OneTimeApprovedToolName, toolCall.Name, StringComparison.Ordinal))
             return false;
 
-        return approvalContext.UnapprovedPatterns.All(pattern => context.OneTimeApprovedPatterns.Contains(pattern));
+        return approvalContext.Patterns.All(pattern => context.OneTimeApprovedPatterns.Contains(pattern));
     }
 }

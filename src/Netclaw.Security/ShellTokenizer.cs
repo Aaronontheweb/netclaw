@@ -80,10 +80,10 @@ public static class ShellTokenizer
     }
 
     /// <summary>
-    /// Splits a compound command on <c>&&</c>, <c>||</c>, <c>;</c>, and <c>|</c>
-    /// operators, returning each individual command segment trimmed.
-    /// Pipe (<c>|</c>) is treated as a segment boundary because each side
-    /// may invoke a different program.
+    /// Splits a compound command on <c>&&</c>, <c>||</c>, and <c>;</c>
+    /// operators, returning each approval unit trimmed. Pipes remain inside the
+    /// same unit so shell pipelines can be approved as one piece of directory
+    /// work.
     /// </summary>
     public static IReadOnlyList<string> SplitCompoundCommand(string command)
     {
@@ -132,8 +132,8 @@ public static class ShellTokenizer
                 }
             }
 
-            // Single-char operators: ; and |
-            if (ch is ';' or '|')
+            // Single-char operator: ;
+            if (ch == ';')
             {
                 FlushSegment(current, segments);
                 continue;
@@ -196,6 +196,67 @@ public static class ShellTokenizer
         }
 
         return string.Join(' ', verbParts);
+    }
+
+    /// <summary>
+    /// Produces an exact shell approval unit string with recognizable local paths
+    /// normalized against the working directory. Non-path tokens remain in order.
+    /// </summary>
+    public static string NormalizeApprovalUnit(string command, string? workingDirectory = null)
+    {
+        var tokens = Tokenize(command).ToList();
+        if (tokens.Count == 0)
+            return string.Empty;
+
+        var normalizedTokens = new List<string>(tokens.Count);
+        foreach (var token in tokens)
+        {
+            if (LooksLikePath(token))
+            {
+                var normalized = PathUtility.ExpandAndNormalize(token, workingDirectory);
+                normalizedTokens.Add(normalized ?? token);
+            }
+            else
+            {
+                normalizedTokens.Add(token);
+            }
+        }
+
+        return string.Join(' ', normalizedTokens);
+    }
+
+    /// <summary>
+    /// Extracts reusable directory approval roots from a shell approval unit.
+    /// Returns an empty list when no reusable roots can be extracted.
+    /// </summary>
+    public static IReadOnlyList<DirectoryApprovalRoot> ExtractDirectoryRoots(string command, string? workingDirectory = null)
+    {
+        var tokens = Tokenize(command).ToList();
+        if (tokens.Count == 0)
+            return [];
+
+        var roots = new List<DirectoryApprovalRoot>();
+        var comparisonRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var sawPathToken = false;
+
+        foreach (var token in tokens)
+        {
+            if (token.Length == 0 || token.StartsWith('-'))
+                continue;
+
+            if (!LooksLikePath(token))
+                continue;
+
+            sawPathToken = true;
+            var root = TryCreateDirectoryApprovalRoot(token, workingDirectory);
+            if (root is null)
+                return [];
+
+            if (comparisonRoots.Add(root.ComparisonRoot))
+                roots.Add(root);
+        }
+
+        return sawPathToken ? roots : [];
     }
 
     /// <summary>
@@ -403,6 +464,51 @@ public static class ShellTokenizer
     }
 
     internal const int MinDirectoryScopeDepth = 2;
+
+    private static DirectoryApprovalRoot? TryCreateDirectoryApprovalRoot(string rawPath, string? workingDirectory)
+    {
+        var displayRoot = ExtractDisplayDirectory(rawPath, workingDirectory);
+        if (displayRoot is null)
+            return null;
+
+        var comparisonRoot = PathUtility.ExpandAndNormalize(displayRoot, workingDirectory);
+        if (comparisonRoot is null)
+            return null;
+
+        if (Directory.Exists(comparisonRoot))
+            comparisonRoot = PathUtility.Normalize(new DirectoryInfo(comparisonRoot).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? comparisonRoot);
+
+        if (CountPathSegments(comparisonRoot) < MinDirectoryScopeDepth)
+            return null;
+
+        return new DirectoryApprovalRoot(EnsureTrailingSeparator(displayRoot), EnsureTrailingSeparator(comparisonRoot));
+    }
+
+    private static string? ExtractDisplayDirectory(string path, string? workingDirectory)
+    {
+        if (path.EndsWith('/') || path.EndsWith('\\'))
+            return path.TrimEnd('/', '\\');
+
+        var globIdx = path.IndexOfAny(['*', '?', '[']);
+        if (globIdx >= 0)
+        {
+            var lastSep = path.LastIndexOf('/', globIdx);
+            if (lastSep < 0)
+                lastSep = path.LastIndexOf('\\', globIdx);
+            return lastSep > 0 ? path[..lastSep] : null;
+        }
+
+        var normalizedCandidate = PathUtility.ExpandAndNormalize(path, workingDirectory);
+        if (normalizedCandidate is not null && Directory.Exists(normalizedCandidate))
+            return path;
+
+        return ExtractParentDirectory(path);
+    }
+
+    private static string EnsureTrailingSeparator(string path)
+        => path.EndsWith('/') || path.EndsWith('\\')
+            ? path
+            : path + Path.DirectorySeparatorChar;
 
     private static string? ExtractParentDirectory(string path)
     {

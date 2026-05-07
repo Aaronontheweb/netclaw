@@ -361,12 +361,16 @@ public sealed record ToolInteractionRequest : SessionOutput
     public IReadOnlyList<string> Patterns { get; init; } = [];
 
     /// <summary>
-    /// Directory-scoped patterns for session/persistent approval storage.
-    /// When non-empty and the user selects "Approve for this chat" or "Approve always",
-    /// these patterns are recorded instead of <see cref="Patterns"/> to provide
-    /// directory-level coverage (e.g., "grep /home/.netclaw/logs/").
+    /// Approval entries used for session and persistent approval lookup.
+    /// For shell commands these are directory roots when extractable and exact
+    /// fallback patterns otherwise.
     /// </summary>
-    public IReadOnlyList<string> DirectoryPatterns { get; init; } = [];
+    public IReadOnlyList<string> ApprovalEntries { get; init; } = [];
+
+    /// <summary>
+    /// Directory roots extracted from the invocation for broader B/C shell approvals.
+    /// </summary>
+    public IReadOnlyList<string> DirectoryRoots { get; init; } = [];
 
     /// <summary>Available response options (e.g., approve once, approve for this chat, approve always, deny).</summary>
     public required IReadOnlyList<ToolInteractionOption> Options { get; init; }

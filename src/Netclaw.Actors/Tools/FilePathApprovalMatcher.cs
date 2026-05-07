@@ -43,6 +43,9 @@ public sealed class FilePathApprovalMatcher : IToolApprovalMatcher
         return [toolName.Value];
     }
 
+    public IReadOnlyList<string> ExtractApprovalEntries(ToolName toolName, IDictionary<string, object?>? arguments)
+        => ExtractPatterns(toolName, arguments);
+
     public bool IsApproved(ToolName toolName, IDictionary<string, object?>? arguments, IEnumerable<string> approvedPatterns)
     {
         var patterns = ExtractPatterns(toolName, arguments);
@@ -73,7 +76,7 @@ public sealed class FilePathApprovalMatcher : IToolApprovalMatcher
         return toolName.Value;
     }
 
-    public IReadOnlyList<string> ExtractDirectoryPatterns(ToolName toolName, IDictionary<string, object?>? arguments)
+    public IReadOnlyList<DirectoryApprovalRoot> ExtractDirectoryRoots(ToolName toolName, IDictionary<string, object?>? arguments)
         => [];
 
     private bool TryGetControlPlaneRelativePath(

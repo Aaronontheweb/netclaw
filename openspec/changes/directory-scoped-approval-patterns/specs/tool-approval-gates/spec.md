@@ -1,134 +1,145 @@
 ## ADDED Requirements
 
-### Requirement: Directory-scoped approval patterns
+### Requirement: Directory-root approvals for shell_execute
 
-The system SHALL support directory-scoped approval patterns for shell commands
-targeting path-aware verbs. When the user selects "Approve for this chat" (B) or
-"Approve always" (C) for a shell command that targets a recognizable file path,
-the system SHALL store a directory-scoped pattern (e.g., `grep /home/.netclaw/logs/`)
-instead of the exact file-path pattern. "Approve once" (A) SHALL continue to use
-exact patterns.
+For `shell_execute`, `Approve once` SHALL remain exact blocked-call retry only.
+It SHALL NOT create a reusable session approval, persistent approval, or
+directory-root approval.
 
-A trailing `/` on a stored pattern SHALL signal directory scope. The system SHALL
-use `PathUtility.IsWithinRoot()` for boundary-safe containment matching — not
-naive string prefix comparison.
+For `shell_execute`, when the user selects `Approve for this chat` (B) or
+`Approve always` (C) and the shell approval unit contains one or more
+recognized local filesystem paths, the system SHALL store directory roots for
+that approval unit instead of verb-specific or command-pattern-specific shell
+approvals.
 
-The system SHALL enforce a minimum directory depth of 2 path segments below root.
-Patterns targeting root-level directories (`/`, `/home/`, `/etc/`, `/tmp/`) SHALL
-be rejected, falling back to exact-pattern behavior.
+Directory approvals SHALL be root-based and verb-agnostic. A later shell
+approval unit SHALL be auto-approved only when every recognized local
+filesystem path in that unit resolves under already approved roots.
 
-Directory-scoped approvals SHALL be verb-isolated: an approval for
-`cat /home/.netclaw/logs/` SHALL NOT match `grep /home/.netclaw/logs/`.
+If a shell approval unit yields no reusable local directory roots, directory
+approval SHALL NOT apply and the system SHALL fall back to exact approval
+behavior for that unit.
 
-#### Scenario: Directory-scoped pattern stored on Approve For This Chat
+The system SHALL enforce minimum directory depth, path normalization,
+boundary-safe containment, path traversal checks, and `ToolPathPolicy` as the
+safety backstop for directory-root approvals.
+
+#### Scenario: Approve once retries only the blocked call
+
+- **GIVEN** a shell command `cat /home/.netclaw/logs/crash.log` requires approval
+- **WHEN** the user selects `Approve once`
+- **THEN** only the current blocked call is retried
+- **AND** no reusable approval is recorded
+- **AND** a later `cat /home/.netclaw/logs/other.log` prompts again
+
+#### Scenario: Approve for this chat stores a reusable directory root
 
 - **GIVEN** a shell command `cat /home/.netclaw/logs/crash-foo.log` requires approval
-- **WHEN** the user selects "Approve for this chat"
-- **THEN** the session-scoped approval stores `cat /home/.netclaw/logs/`
-- **AND** a subsequent `cat /home/.netclaw/logs/daemon.log` in the same session
+- **WHEN** the user selects `Approve for this chat`
+- **THEN** the session-scoped approval stores the directory root `/home/.netclaw/logs/`
+- **AND** a later `grep "error" /home/.netclaw/logs/daemon.log` in the same session
   does not prompt
 
-#### Scenario: Directory-scoped pattern stored on Approve Always
+#### Scenario: Approve always stores a reusable directory root
 
 - **GIVEN** a shell command `grep -l "timeout" /home/.netclaw/logs/daemon.log`
   requires approval
-- **WHEN** the user selects "Approve always"
-- **THEN** `grep /home/.netclaw/logs/` is written to `tool-approvals.json`
-- **AND** future sessions auto-approve grep commands targeting files under
-  `/home/.netclaw/logs/`
+- **WHEN** the user selects `Approve always`
+- **THEN** `/home/.netclaw/logs/` is written to `tool-approvals.json` for
+  `shell_execute`
+- **AND** a future-session `ls /home/.netclaw/logs/archive.log` is auto-approved
 
-#### Scenario: Approve Once uses exact pattern
+#### Scenario: All recognized local paths in a unit must be covered
 
-- **GIVEN** a shell command `cat /home/.netclaw/logs/crash.log` requires approval
-- **WHEN** the user selects "Approve once"
-- **THEN** only the current blocked call is retried
-- **AND** a subsequent `cat /home/.netclaw/logs/other.log` prompts again
+- **GIVEN** `/home/.netclaw/logs/` is approved for `shell_execute`
+- **WHEN** the agent runs `cat /home/.netclaw/logs/app.log /home/.netclaw/config/netclaw.json`
+- **THEN** the command still requires approval because not all recognized local
+  filesystem paths fall under approved roots
 
-#### Scenario: Directory scope does not cross verb boundaries
+#### Scenario: No reusable local roots falls back to exact approval behavior
 
-- **GIVEN** `cat /home/.netclaw/logs/` is approved
-- **WHEN** the agent runs `grep "error" /home/.netclaw/logs/app.log`
-- **THEN** the command still requires approval (verb mismatch)
+- **GIVEN** a shell command `git push origin main` requires approval
+- **WHEN** the user selects `Approve for this chat`
+- **THEN** no directory root is stored
+- **AND** the system falls back to exact approval behavior for `git push`
 
-#### Scenario: Nested files match directory scope
-
-- **GIVEN** `ls /home/.netclaw/` is approved
-- **WHEN** the agent runs `ls /home/.netclaw/logs/deep/nested/file.txt`
-- **THEN** the command is auto-approved (path is within approved directory)
-
-#### Scenario: Sibling directory does not match
-
-- **GIVEN** `cat /home/.netclaw/logs/` is approved
-- **WHEN** the agent runs `cat /home/.netclaw/config/netclaw.json`
-- **THEN** the command requires approval (different directory)
-- **AND** `ToolPathPolicy` independently blocks the protected path at execution time
-
-#### Scenario: Shallow directory scope rejected
+#### Scenario: Shallow directory root falls back to exact approval behavior
 
 - **GIVEN** a shell command `cat /etc/passwd` requires approval
-- **WHEN** directory scope extraction runs
-- **THEN** the parent directory `/etc/` has only 1 segment (below minimum of 2)
-- **AND** the system falls back to exact-pattern behavior
+- **WHEN** directory-root extraction runs
+- **THEN** the derived root `/etc/` is rejected as too shallow
+- **AND** the system falls back to exact approval behavior
 
-#### Scenario: Boundary-safe path matching prevents prefix collisions
+#### Scenario: Boundary-safe matching prevents prefix collisions
 
-- **GIVEN** `cat /home/user/` is approved
+- **GIVEN** `/home/user/` is approved for `shell_execute`
 - **WHEN** the agent runs `cat /home/usersecret/data.txt`
 - **THEN** the command requires approval
 - **AND** `PathUtility.IsWithinRoot` prevents the false positive
 
-### Requirement: Directory pattern extraction via IToolApprovalMatcher
+### Requirement: Directory root extraction via IToolApprovalMatcher
 
-`IToolApprovalMatcher` SHALL define an `ExtractDirectoryPatterns()` method that
-returns directory-scoped patterns for a tool invocation. `ShellApprovalMatcher`
-SHALL implement this by scanning all non-flag arguments for the first
-`LooksLikePath()` token, expanding home directory tokens, extracting the parent
-directory, normalizing the path, and enforcing minimum depth. For compound
-commands and `bash -c` wrappers, each segment SHALL be processed recursively.
-When no directory scope is available for a segment, the segment's verb-chain
-pattern SHALL be used as fallback.
+`IToolApprovalMatcher` SHALL define an `ExtractDirectoryRoots()` method that
+returns reusable directory roots for a tool invocation.
+
+For `shell_execute`, extraction SHALL operate on shell approval units. Units
+SHALL split on `&&`, `||`, and `;`. Pipelines joined by `|` SHALL stay inside
+the same approval unit.
+
+`ShellApprovalMatcher` SHALL scan each approval unit for recognized local
+filesystem paths, expand and normalize them, derive reusable parent directory
+roots, and enforce minimum depth and path-safety checks. For `bash -c` or
+`sh -c` wrappers, the inner command SHALL be extracted and scanned recursively.
 
 `DefaultApprovalMatcher` and `FilePathApprovalMatcher` SHALL return empty lists.
 
-#### Scenario: grep extracts path from second argument
+#### Scenario: grep extracts a root from a later argument
 
 - **GIVEN** the command `grep -l "timeout" /home/.netclaw/logs/daemon.log`
-- **WHEN** `ExtractDirectoryPatterns` runs
-- **THEN** the pattern `grep /home/.netclaw/logs/` is extracted
-- **AND** the search term `"timeout"` is skipped (not a path)
+- **WHEN** `ExtractDirectoryRoots` runs
+- **THEN** the root `/home/.netclaw/logs/` is extracted
+- **AND** the search term `"timeout"` is ignored
 
-#### Scenario: Compound command extracts patterns per segment
+#### Scenario: Pipeline stays in one approval unit
 
-- **GIVEN** the command `cat /home/.netclaw/logs/crash.log && grep "error" /var/log/syslog`
-- **WHEN** `ExtractDirectoryPatterns` runs
-- **THEN** `cat /home/.netclaw/logs/` is extracted for the first segment
-- **AND** the second segment falls back to its verb chain (depth too shallow)
+- **GIVEN** the command `grep "error" /home/.netclaw/logs/app.log | wc -l`
+- **WHEN** `ExtractDirectoryRoots` runs
+- **THEN** the pipeline is treated as one approval unit
+- **AND** the root `/home/.netclaw/logs/` is extracted for that unit
 
-#### Scenario: Glob paths use parent directory
+#### Scenario: Control operators split approval units
+
+- **GIVEN** the command `cat /home/.netclaw/logs/app.log && cat /home/.netclaw/config/netclaw.json`
+- **WHEN** `ExtractDirectoryRoots` runs
+- **THEN** the `&&` creates two approval units
+- **AND** each unit is evaluated independently for reusable roots
+
+#### Scenario: Glob paths use parent directory root
 
 - **GIVEN** the command `ls /home/.netclaw/logs/crash-*.log`
-- **WHEN** `ExtractDirectoryPatterns` runs
-- **THEN** the pattern `ls /home/.netclaw/logs/` is extracted
-- **AND** the glob component is stripped
+- **WHEN** `ExtractDirectoryRoots` runs
+- **THEN** the root `/home/.netclaw/logs/` is extracted
+- **AND** the glob component does not become part of the stored root
 
 ### Requirement: Dynamic approval option labels
 
-When directory patterns are available, the system SHALL customize the approval
-option labels to show the directory scope. The labels SHALL follow the format:
-- B: `"Approve in {directory} for this chat"`
-- C: `"Approve in {directory} always"`
+When directory roots are available, the system SHALL customize the approval
+option labels to show the reusable root scope. The labels SHALL follow the
+format:
+- B: `"Approve in {directory-root} for this chat"`
+- C: `"Approve in {directory-root} always"`
 
 Options A ("Approve once") and D ("Deny") SHALL retain their default labels.
 
-#### Scenario: Labels show directory scope for path-aware commands
+#### Scenario: Labels show reusable root scope for shell commands
 
 - **GIVEN** a shell command `grep "error" /home/.netclaw/logs/app.log`
   requires approval
 - **WHEN** the approval prompt is generated
-- **THEN** option B reads "Approve in /home/.netclaw/logs/ for this chat"
-- **AND** option C reads "Approve in /home/.netclaw/logs/ always"
+- **THEN** option B reads `Approve in /home/.netclaw/logs/ for this chat`
+- **AND** option C reads `Approve in /home/.netclaw/logs/ always`
 
-#### Scenario: Labels use defaults when no directory scope
+#### Scenario: Labels use defaults when no reusable directory root exists
 
 - **GIVEN** a shell command `git push origin main` requires approval
 - **WHEN** the approval prompt is generated
@@ -146,10 +157,10 @@ The interaction `Kind` SHALL identify the interaction type (`approval` for v1).
 `ToolInteractionRequest` SHALL be a lifecycle output (always delivered regardless
 of `OutputFilter`).
 
-`ToolInteractionRequest` SHALL include a `DirectoryPatterns` field containing
-directory-scoped patterns extracted from the tool invocation. When non-empty and
-the user selects "Approve for this chat" or "Approve always", the session actor
-SHALL record the directory patterns instead of the exact file-path patterns.
+`ToolInteractionRequest` SHALL include a `DirectoryRoots` field containing
+reusable directory roots extracted from the tool invocation. When non-empty and
+the user selects `Approve for this chat` or `Approve always`, the session actor
+SHALL record the directory roots instead of exact shell approval patterns.
 
 #### Scenario: Approval request emitted as session output
 
@@ -159,13 +170,12 @@ SHALL record the directory patterns instead of the exact file-path patterns.
 - **AND** it includes `CallId`, `ToolName`, the command/pattern, and available
   options (approve once, approve for this chat, approve always, deny)
 
-#### Scenario: Approval request includes directory patterns
+#### Scenario: Approval request includes directory roots
 
 - **GIVEN** a shell command targets a file under `/home/.netclaw/logs/`
 - **WHEN** the approval request is generated
-- **THEN** `ToolInteractionRequest.DirectoryPatterns` contains the directory-scoped
-  pattern (e.g., `cat /home/.netclaw/logs/`)
-- **AND** `ToolInteractionRequest.Patterns` contains the exact file-path pattern
+- **THEN** `ToolInteractionRequest.DirectoryRoots` contains `/home/.netclaw/logs/`
+- **AND** the request still includes the exact blocked approval pattern for retry
 
 #### Scenario: Channel routes response back to session
 
@@ -180,28 +190,28 @@ The system SHALL store persistent approvals ("Approve Always" decisions) in
 `~/.netclaw/config/tool-approvals.json`, separate from `netclaw.json`. The file
 SHALL NOT be monitored by `ConfigWatcherService`. The file SHALL contain
 per-audience sections with per-tool approval lists. For the shipped MVP shell
-flow, the lists SHALL contain command patterns, including directory-scoped
-patterns (trailing `/`). Approval lookup and recording
-SHALL be mediated by `IToolApprovalService`.
+flow, the lists SHALL contain exact approvals and directory roots as applicable.
+Approval lookup and recording SHALL be mediated by `IToolApprovalService`.
 
-#### Scenario: Approve Always persists directory pattern to file
+#### Scenario: Approve always persists directory root to file
 
 - **GIVEN** the user clicks "Approve Always" for a command targeting
   `/home/.netclaw/logs/crash.log`
 - **WHEN** the approval is processed
-- **THEN** `cat /home/.netclaw/logs/` is added to the Personal shell_execute list
+- **THEN** `/home/.netclaw/logs/` is added to the Personal `shell_execute` list
   in `tool-approvals.json`
 - **AND** the daemon does NOT restart
 
 #### Scenario: Persistent approvals loaded at startup
 
 - **GIVEN** `tool-approvals.json` contains
-  `{"personal":{"shell_execute":["git push", "cat /home/.netclaw/logs/"]}}`
+  `{"personal":{"shell_execute":["git push", "/home/.netclaw/logs/"]}}`
 - **WHEN** the daemon starts
 - **THEN** `git push` is pre-approved for Personal audience shell commands
-- **AND** `cat` commands targeting files under `/home/.netclaw/logs/` are pre-approved
+- **AND** later shell approval units whose recognized local paths all stay under
+  `/home/.netclaw/logs/` are pre-approved
 
-#### Scenario: Approve Once is retry-scoped only
+#### Scenario: Approve once is retry-scoped only
 
 - **GIVEN** the user clicks "Approve Once" for pattern `docker build`
 - **WHEN** the approval is processed
@@ -209,12 +219,12 @@ SHALL be mediated by `IToolApprovalService`.
 - **AND** a later `docker build` call in the same session prompts again
 - **AND** `tool-approvals.json` is NOT modified
 
-#### Scenario: Approve For This Chat stores directory pattern in session
+#### Scenario: Approve for this chat stores directory root in session
 
 - **GIVEN** the user clicks "Approve For This Chat" for a command targeting
   `/home/.netclaw/logs/daemon.log`
 - **WHEN** the approval is processed
-- **THEN** the directory-scoped pattern is approved for the current session only
+- **THEN** the directory root is approved for the current session only
 - **AND** `tool-approvals.json` is NOT modified
 - **AND** a new session will prompt again
 
@@ -222,15 +232,14 @@ SHALL be mediated by `IToolApprovalService`.
 
 The system SHALL extract verb-chain prefix patterns from shell commands using
 tokenization. The verb chain SHALL consist of non-flag tokens from the start of
-the command until the first flag (`-`), path, or URL argument. For compound
-commands (`&&`, `||`, `;`, `|`), each segment SHALL be evaluated independently.
+the command until the first flag (`-`), path, or URL argument. For shell
+approval units, `&&`, `||`, and `;` SHALL split into separate units, while `|`
+SHALL remain inside the current unit.
 For `bash -c` or `sh -c` wrappers, the inner command SHALL be extracted and
 scanned recursively.
 
-The system SHALL support directory-scoped pattern matching. When an approved
-pattern ends with `/`, the system SHALL match any candidate pattern with the same
-verb whose path argument is within the approved directory, using
-`PathUtility.IsWithinRoot()` for boundary-safe containment.
+When a shell approval unit has no reusable directory roots, the system SHALL use
+exact approval behavior for that unit.
 
 #### Scenario: Verb chain extracted from simple command
 
@@ -250,12 +259,13 @@ verb whose path argument is within the approved directory, using
 - **WHEN** the pattern is extracted
 - **THEN** the pattern is `docker compose up`
 
-#### Scenario: Compound command segments evaluated independently
+#### Scenario: Control operators create separate approval units
 
 - **GIVEN** the command `git add . && git commit -m "fix" && git push`
 - **WHEN** approval is checked
-- **THEN** patterns `git add`, `git commit`, and `git push` are each checked
-  independently against the approval state surfaced through `IToolApprovalService`
+- **THEN** `git add`, `git commit`, and `git push` are checked as separate
+  approval units against the approval state surfaced through
+  `IToolApprovalService`
 
 #### Scenario: Unapproved compound segments batched in one prompt
 
@@ -271,8 +281,10 @@ verb whose path argument is within the approved directory, using
 - **THEN** the inner command `git push --force` is extracted and scanned
 - **AND** pattern `git push` is checked through `IToolApprovalService`
 
-#### Scenario: Directory-scoped approved pattern matches file within directory
+#### Scenario: Pipeline stays in one approval unit for root matching
 
-- **GIVEN** `cat /home/.netclaw/logs/` is in the approved patterns
-- **WHEN** the candidate pattern `cat /home/.netclaw/logs/crash.log` is checked
-- **THEN** `ApprovalPatternMatching.MatchesAny` returns true
+- **GIVEN** `/home/.netclaw/logs/` is in the approved `shell_execute` roots
+- **WHEN** the agent runs `grep "error" /home/.netclaw/logs/crash.log | wc -l`
+- **THEN** the pipeline is treated as one approval unit
+- **AND** the unit is auto-approved because its recognized local filesystem path
+  stays under the approved root
