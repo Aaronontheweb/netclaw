@@ -420,6 +420,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         ctx.ToolName,
                         ctx.DisplayText,
                         ctx.Patterns,
+                        ctx.ApprovalEntries,
+                        ctx.DirectoryRoots,
                         ct);
 
                     if (decision is ParentApprovalDecision.ApprovedOnce

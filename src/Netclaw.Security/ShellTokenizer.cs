@@ -418,51 +418,6 @@ public static class ShellTokenizer
         return false;
     }
 
-    /// <summary>
-    /// Extracts a directory-scoped approval pattern from a shell command by
-    /// finding the first file-path argument (not just the first positional
-    /// argument) and returning <c>"{verb} {parentDirectory}/"</c>. Returns
-    /// null when the command has no path-aware verb, no recognizable file-path
-    /// argument, or the resulting directory is too shallow (fewer than 2
-    /// path segments below root).
-    /// </summary>
-    public static string? ExtractDirectoryScope(string command)
-    {
-        var tokens = Tokenize(command).ToList();
-        if (tokens.Count == 0)
-            return null;
-
-        var verb = TrimShellPunctuation(tokens[0]);
-        if (verb.Length == 0 || !PathAwareVerbs.Contains(verb))
-            return null;
-
-        for (var i = 1; i < tokens.Count; i++)
-        {
-            var trimmed = TrimShellPunctuation(tokens[i]);
-            if (trimmed.Length == 0 || trimmed.StartsWith('-'))
-                continue;
-
-            if (!LooksLikePath(trimmed))
-                continue;
-
-            var dir = ExtractParentDirectory(PathUtility.ExpandHome(trimmed));
-            if (dir is null)
-                continue;
-
-            var normalized = PathUtility.ExpandAndNormalize(dir);
-            if (normalized is null)
-                continue;
-
-            // Enforce minimum depth — reject shallow scopes like / or /etc/
-            if (CountPathSegments(normalized) < MinDirectoryScopeDepth)
-                return null;
-
-            return verb + " " + normalized + "/";
-        }
-
-        return null;
-    }
-
     internal const int MinDirectoryScopeDepth = 2;
 
     private static DirectoryApprovalRoot? TryCreateDirectoryApprovalRoot(string rawPath, string? workingDirectory)

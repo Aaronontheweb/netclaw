@@ -807,6 +807,35 @@ public sealed class ToolApprovalGateTests
     }
 
     [Fact]
+    public void Shell_relative_path_command_keeps_relative_directory_root_for_prompt()
+    {
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var logs = Path.Combine(root, "logs");
+        Directory.CreateDirectory(logs);
+
+        try
+        {
+            var args = ToolInput.Create(
+                "Command", "grep timeout logs/app.log | wc -l",
+                "WorkingDirectory", root);
+
+            var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+
+            Assert.True(decision.NeedsApproval);
+            Assert.Equal(["logs/"], decision.ApprovalContext!.DirectoryRoots);
+            Assert.Contains(PathUtility.Normalize(logs) + Path.DirectorySeparatorChar, decision.ApprovalContext.ApprovalEntries);
+            Assert.Equal(
+                "Approve shell access in logs/ for this chat",
+                decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession).Label);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Non_path_command_uses_default_labels()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);

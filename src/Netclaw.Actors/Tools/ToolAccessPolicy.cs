@@ -297,6 +297,14 @@ public sealed class ToolAccessPolicy
             return ToolAccessDecision.Allow();
         }
 
+        // Approval prompts carry three related views of the invocation:
+        // - `patterns`: the exact blocked units shown to the user and reused by
+        //   approve-once retries.
+        // - `approvalEntries`: what broader B/C approvals actually record and
+        //   later compare against. For shell this prefers reusable directory
+        //   roots and falls back to the exact unit when no reusable roots exist.
+        // - `directoryRoots`: the human-facing root list used only to explain
+        //   the broader B/C label in the prompt.
         var patterns = matcher.ExtractPatterns(toolName, arguments);
         var approvalEntries = matcher.ExtractApprovalEntries(toolName, arguments);
         var directoryRoots = matcher.ExtractDirectoryRoots(toolName, arguments);
@@ -312,6 +320,9 @@ public sealed class ToolAccessPolicy
         }
         else if (directoryRoots.Count > 1)
         {
+            // Listing only the first root would be misleading for multi-path
+            // commands, so switch to a generic label once the command spans
+            // more than one reusable directory.
             sessionLabel = "Approve shell access in these directories for this chat";
             alwaysLabel = "Approve shell access in these directories always";
         }
@@ -327,7 +338,7 @@ public sealed class ToolAccessPolicy
                 new ToolApprovalOption(ApprovalOptionKeys.ApproveAlways, alwaysLabel),
                 new ToolApprovalOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
             ],
-            [.. directoryRoots.Select(static x => x.ComparisonRoot)]);
+            [.. directoryRoots.Select(static x => x.DisplayPath)]);
 
         return ToolAccessDecision.RequiresApproval(approvalContext);
     }
@@ -476,6 +487,8 @@ public sealed record ToolApprovalContext(
     IReadOnlyList<string> Patterns,
     IReadOnlyList<string> ApprovalEntries,
     IReadOnlyList<ToolApprovalOption> Options,
+    // Human-facing roots shown in the prompt. Approval lookups use
+    // ApprovalEntries instead so display formatting never leaks into matching.
     IReadOnlyList<string> DirectoryRoots);
 
 public sealed record ToolApprovalOption(string Key, string Label);

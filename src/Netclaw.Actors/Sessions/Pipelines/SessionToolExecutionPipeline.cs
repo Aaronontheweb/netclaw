@@ -340,6 +340,9 @@ internal static class SessionToolExecutionPipeline
                     : $"Tool access denied: approval_denied_by_user ({tc.Name} requires interactive approval and the user declined it)";
                 resultText = reason;
 
+                // Denied audit entries should describe the exact blocked units
+                // the user saw in the prompt. Broader reusable approval entries
+                // are only relevant when B/C is granted.
                 var deniedPatternStr = string.Join(", ", ctx.Patterns);
                 auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
                 {

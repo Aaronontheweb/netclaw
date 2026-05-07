@@ -97,6 +97,25 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (string.IsNullOrWhiteSpace(command))
             return [];
 
+        // Shell approvals intentionally keep two parallel views of the same
+        // invocation:
+        //
+        // 1. `Patterns` are the exact normalized approval units shown in the
+        //    prompt and reused only for approve-once retries.
+        // 2. `ApprovalEntries` are the broader entries consulted for session
+        //    and persistent approval reuse.
+        //
+        // The directory-scoping algorithm starts here. We first break the
+        // command into approval units: &&, ||, and ; split into separate units,
+        // while pipelines joined by | stay together as one piece of work.
+        // `bash -c` / `sh -c` wrappers recurse into the inner command and feed
+        // those inner units back through the same logic.
+        //
+        // For each unit we try to derive reusable local directory roots. If we
+        // can do that safely, those roots become the approval entries recorded
+        // for B/C approvals. If we cannot, we fall back to the exact normalized
+        // unit. That keeps approve-once exact while letting broader approvals
+        // reuse local directory access without introducing verb allowlists.
         var workingDirectory = GetWorkingDirectory(arguments);
         var entries = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         TraverseApprovalUnits(command, unit =>
@@ -182,6 +201,9 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
 
     private static void TraverseApprovalUnits(string command, Action<string> visitUnit)
     {
+        // Approval units recurse through shell wrappers but keep the outer
+        // splitting rules stable, so `bash -c "grep ... | wc -l" && git push`
+        // still becomes two independent approval decisions.
         foreach (var segment in ShellTokenizer.SplitCompoundCommand(command))
         {
             var innerCommands = ShellTokenizer.ExtractInnerCommands(segment);

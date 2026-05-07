@@ -6,17 +6,17 @@
 namespace Netclaw.Security;
 
 /// <summary>
-/// Shared verb-chain prefix matcher used for tool approval grants. An approved
-/// pattern matches a candidate exactly or as a verb-chain prefix on a space
-/// boundary — so "git push" approves "git push origin main" but never
-/// "github-cli". Directory-scoped patterns (trailing <c>/</c>) match any
-/// candidate whose path is within the approved directory, using
-/// <see cref="PathUtility.IsWithinRoot"/> for boundary-safe containment.
+/// Shared approval matching helpers. Shell approvals use
+/// <see cref="MatchesShellApprovalEntry"/>, which only compares exact approval
+/// units and normalized directory roots. Other tools continue to use
+/// <see cref="MatchesAny"/> for exact and prefix-style matching.
 /// </summary>
 public static class ApprovalPatternMatching
 {
     public static bool MatchesShellApprovalEntry(string candidate, IEnumerable<string> approvedEntries)
     {
+        // Shell approvals never widen by verb prefix here. Reusable entries are
+        // either exact normalized units or normalized directory roots.
         foreach (var approved in approvedEntries)
         {
             if (string.Equals(candidate, approved, StringComparison.OrdinalIgnoreCase))

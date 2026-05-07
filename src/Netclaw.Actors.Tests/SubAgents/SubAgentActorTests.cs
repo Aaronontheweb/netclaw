@@ -533,11 +533,13 @@ internal sealed class RecordingParentApprovalBridge(ParentApprovalDecision decis
         ToolCallId callId,
         string toolName,
         string displayText,
-        IReadOnlyList<string> unapprovedPatterns,
+        IReadOnlyList<string> patterns,
+        IReadOnlyList<string> approvalEntries,
+        IReadOnlyList<string> directoryRoots,
         CancellationToken ct)
     {
         RequestCount++;
-        RequestedPatterns.AddRange(unapprovedPatterns);
+        RequestedPatterns.AddRange(patterns);
         return Task.FromResult(decisionToReturn);
     }
 }
