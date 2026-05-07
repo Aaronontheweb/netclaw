@@ -77,9 +77,13 @@ public sealed class RollingFileLoggerProviderTests : IDisposable
             if (Directory.Exists(_basePath))
                 Directory.Delete(_basePath, recursive: true);
         }
-        catch
+        catch (IOException ex)
         {
-            // best-effort test cleanup
+            Console.Error.WriteLine($"[RollingFileLoggerProviderTests] cleanup failed: {ex.Message}");
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            Console.Error.WriteLine($"[RollingFileLoggerProviderTests] cleanup failed: {ex.Message}");
         }
     }
 }
