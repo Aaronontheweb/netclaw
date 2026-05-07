@@ -8,8 +8,11 @@ using Akka.Event;
 using Akka.Hosting;
 using Akka.Hosting.TestKit;
 using Microsoft.Extensions.AI;
+using Netclaw.Actors.Memory;
 using Netclaw.Actors.Protocol;
+using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Sessions.Pipelines;
+using Netclaw.Actors.SubAgents;
 using Netclaw.Configuration;
 using Xunit;
 using AiChatMessage = Microsoft.Extensions.AI.ChatMessage;
@@ -76,6 +79,124 @@ public sealed class SidecarDiagnosticsContextTests : TestKit
         Assert.Equal(sessionId.Value, captor.CapturedSessionId);
         Assert.Null(SessionDiagnosticsContext.SessionId);
         Assert.NotNull(observation);
+    }
+
+    [Fact]
+    public async Task MemoryExtraction_populates_session_diagnostics_scope()
+    {
+        var sessionId = new SessionId("ch/memory-extraction-thread");
+        var captor = new SessionContextCapturingChatClient();
+        var probe = CreateTestProbe();
+
+        await LlmSessionActor.InvokeMemoryExtractionCoreAsync(
+            captor,
+            sessionId,
+            history: [],
+            self: probe.Ref,
+            timeout: TimeSpan.FromSeconds(5));
+
+        Assert.Equal(sessionId.Value, captor.CapturedSessionId);
+        Assert.Null(SessionDiagnosticsContext.SessionId);
+    }
+
+    [Fact]
+    public async Task SubAgent_InvokeLlm_populates_session_diagnostics_scope()
+    {
+        var sessionId = new SessionId("ch/subagent-thread");
+        var captor = new SessionContextCapturingChatClient();
+        var probe = CreateTestProbe();
+
+        await SubAgentActor.InvokeLlmAsync(
+            captor,
+            messages: [],
+            options: null,
+            sessionId: sessionId,
+            self: probe.Ref,
+            ct: TestContext.Current.CancellationToken);
+
+        Assert.Equal(sessionId.Value, captor.CapturedSessionId);
+        Assert.Null(SessionDiagnosticsContext.SessionId);
+    }
+
+    [Fact]
+    public async Task SubAgent_InvokeLlm_with_null_sessionId_pushes_null_scope()
+    {
+        // Sub-agents that run outside any session legitimately have no
+        // session id. The Push contract accepts null and the captor should
+        // see null inside the call.
+        var captor = new SessionContextCapturingChatClient();
+        var probe = CreateTestProbe();
+
+        await SubAgentActor.InvokeLlmAsync(
+            captor,
+            messages: [],
+            options: null,
+            sessionId: null,
+            self: probe.Ref,
+            ct: TestContext.Current.CancellationToken);
+
+        Assert.Null(captor.CapturedSessionId);
+        Assert.Null(SessionDiagnosticsContext.SessionId);
+    }
+
+    [Fact]
+    public async Task MemoryObserver_RunDistillation_populates_session_diagnostics_scope()
+    {
+        var sessionId = new SessionId("ch/distillation-thread");
+        var captor = new SessionContextCapturingChatClient();
+        var probe = CreateTestProbe();
+
+        await SessionMemoryObserverActor.RunDistillationAsync(
+            client: captor,
+            sessionId: sessionId,
+            turnCount: 5,
+            transcript: "user: hello\nassistant: hi",
+            existingProposals: [],
+            timeout: TimeSpan.FromSeconds(5),
+            self: probe.Ref,
+            runId: 1,
+            contentVersion: 1,
+            log: NoLogger.Instance);
+
+        Assert.Equal(sessionId.Value, captor.CapturedSessionId);
+        Assert.Null(SessionDiagnosticsContext.SessionId);
+    }
+
+    [Fact]
+    public async Task MemoryCuration_TryLlmEvaluation_populates_session_diagnostics_scope()
+    {
+        var sessionId = new SessionId("ch/curation-thread");
+        var captor = new SessionContextCapturingChatClient();
+        var operation = new SQLiteMemoryCurationOperation(
+            Kind: "document",
+            MemoryClass: "durable_fact",
+            MemoryId: null,
+            AnchorCanonicalName: "test-anchor",
+            AnchorType: "preference",
+            Title: "Test",
+            Content: "Test content for diagnostics scope verification.",
+            AliasesJson: "[]",
+            FacetsJson: "[]",
+            SlotsJson: null,
+            Relations: null,
+            UpdateSemantics: "merge-document",
+            Boundary: SecurityPolicyDefaults.TrustedInstanceBoundary,
+            Audience: TrustAudience.Public,
+            Sensitivity: "normal",
+            RecallMode: "auto",
+            Confidence: 0.9,
+            FreshnessAtMs: TimeProvider.System.GetUtcNow().ToUnixTimeMilliseconds(),
+            ExpiresAtMs: null);
+
+        await MemoryCurationActor.TryLlmEvaluationAsync(
+            captor,
+            sessionId,
+            operation,
+            candidates: [],
+            log: NoLogger.Instance);
+
+        Assert.Equal(sessionId.Value, captor.CapturedSessionId);
+        Assert.Null(SessionDiagnosticsContext.SessionId);
     }
 
     /// <summary>

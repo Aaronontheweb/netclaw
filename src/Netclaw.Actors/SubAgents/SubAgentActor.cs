@@ -253,7 +253,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             };
         }
 
-        _ = InvokeLlmAsync(client, messages, options, _toolExecutionContext.SessionId, _executionCts?.Token ?? CancellationToken.None, self);
+        var sessionId = _toolExecutionContext.SessionId is null ? (SessionId?)null : new SessionId(_toolExecutionContext.SessionId);
+        _ = InvokeLlmAsync(client, messages, options, sessionId, self, _executionCts?.Token ?? CancellationToken.None);
     }
 
     private void Complete(bool success, string output)
@@ -357,15 +358,15 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     // ── Static async helpers (same pattern as LlmSessionActor) ──
 
-    private static async Task InvokeLlmAsync(
-        IChatClient client, List<AiChatMessage> messages, ChatOptions? options, string? sessionId, CancellationToken ct, IActorRef self)
+    internal static async Task InvokeLlmAsync(
+        IChatClient client, List<AiChatMessage> messages, ChatOptions? options, SessionId? sessionId, IActorRef self, CancellationToken ct)
     {
         try
         {
             // Sub-agents share the parent's diagnostics scope: SessionDiagnosticsContext
             // strips the "/subagent/..." suffix back to the parent id. Null is intentional
             // for sub-agents that run outside any session.
-            using var diagnosticsScope = SessionDiagnosticsContext.Push(sessionId);
+            using var diagnosticsScope = SessionDiagnosticsContext.Push(sessionId?.Value);
 
             // Use streaming to match the main session path. The non-streaming
             // GetResponseAsync path drops reasoning content for some providers

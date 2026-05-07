@@ -249,7 +249,7 @@ public sealed class MemoryCurationActor : ReceiveActor, IWithUnboundedStash
         // If rules tier is ambiguous and LLM is available, escalate
         if (rulesDecision.Kind == CurationDecisionKind.Ambiguous && _llmClient is not null)
         {
-            var llmDecision = await TryLlmEvaluationAsync(operation, candidates);
+            var llmDecision = await TryLlmEvaluationAsync(_llmClient, _sessionId, operation, candidates, _log);
             if (llmDecision is not null)
             {
                 _log.Info(
@@ -286,14 +286,17 @@ public sealed class MemoryCurationActor : ReceiveActor, IWithUnboundedStash
         return rulesDecision;
     }
 
-    private async Task<CurationDecision?> TryLlmEvaluationAsync(
+    internal static async Task<CurationDecision?> TryLlmEvaluationAsync(
+        IChatClient llmClient,
+        SessionId sessionId,
         SQLiteMemoryCurationOperation operation,
-        IReadOnlyList<ExistingMemoryCandidate> candidates)
+        IReadOnlyList<ExistingMemoryCandidate> candidates,
+        ILoggingAdapter log)
     {
         try
         {
             using var cts = new CancellationTokenSource(LlmTimeout);
-            using var diagnosticsScope = SessionDiagnosticsContext.Push(_sessionId.Value);
+            using var diagnosticsScope = SessionDiagnosticsContext.Push(sessionId.Value);
 
             var messages = new List<ChatMessage>
             {
@@ -306,7 +309,7 @@ public sealed class MemoryCurationActor : ReceiveActor, IWithUnboundedStash
                 MaxOutputTokens = 50
             };
 
-            var response = await _llmClient!.GetResponseAsync(messages, options, cts.Token);
+            var response = await llmClient.GetResponseAsync(messages, options, cts.Token);
             var responseText = response.Text?.Trim();
 
             if (string.IsNullOrWhiteSpace(responseText))
@@ -316,12 +319,12 @@ public sealed class MemoryCurationActor : ReceiveActor, IWithUnboundedStash
         }
         catch (OperationCanceledException)
         {
-            _log.Warning("curation_llm_timeout anchor={0}", operation.AnchorCanonicalName);
+            log.Warning("curation_llm_timeout anchor={0}", operation.AnchorCanonicalName);
             return null;
         }
         catch (Exception ex)
         {
-            _log.Warning(ex, "curation_llm_error anchor={0}", operation.AnchorCanonicalName);
+            log.Warning(ex, "curation_llm_error anchor={0}", operation.AnchorCanonicalName);
             return null;
         }
     }

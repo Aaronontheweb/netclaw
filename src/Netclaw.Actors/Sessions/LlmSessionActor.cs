@@ -1470,7 +1470,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _ = InvokeMemoryExtractionCoreAsync(client, sessionId, history, self, timeout);
     }
 
-    private static async Task InvokeMemoryExtractionCoreAsync(
+    internal static async Task InvokeMemoryExtractionCoreAsync(
         IChatClient client,
         SessionId sessionId,
         IReadOnlyList<SerializableChatMessage> history,
