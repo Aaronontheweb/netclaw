@@ -13,13 +13,22 @@ namespace Netclaw.Security;
 /// </summary>
 public static class ApprovalPatternMatching
 {
+    // Approval entries embed both filesystem paths (case-sensitive on POSIX,
+    // case-insensitive on Windows) and verb tokens that resolve to executables
+    // via the host's $PATH lookup, which honors filesystem case rules. Folding
+    // case unconditionally on POSIX would let an attacker who plants `Git`
+    // earlier in $PATH inherit the approval the user issued for `git` —
+    // similarly for case-distinct directory pairs like `/data/` vs `/Data/`.
+    private static StringComparison ApprovalEntryComparison =>
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
     public static bool MatchesShellApprovalEntry(string candidate, IEnumerable<string> approvedEntries)
     {
         // Shell approvals never widen by verb prefix here. Reusable entries are
         // either exact normalized units or normalized directory roots.
         foreach (var approved in approvedEntries)
         {
-            if (string.Equals(candidate, approved, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(candidate, approved, ApprovalEntryComparison))
                 return true;
 
             if (IsDirectoryRootEntry(candidate) && IsDirectoryRootEntry(approved) && MatchesDirectoryRoot(candidate, approved))
@@ -33,7 +42,7 @@ public static class ApprovalPatternMatching
     {
         foreach (var approved in approvedPatterns)
         {
-            if (string.Equals(candidate, approved, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(candidate, approved, ApprovalEntryComparison))
                 return true;
 
             if (!approved.Contains(' ', StringComparison.Ordinal))
@@ -48,7 +57,7 @@ public static class ApprovalPatternMatching
             // "cat" to every path-bearing cat invocation.
             if (candidate.Length > approved.Length
                 && candidate[approved.Length] == ' '
-                && candidate.StartsWith(approved, StringComparison.OrdinalIgnoreCase))
+                && candidate.StartsWith(approved, ApprovalEntryComparison))
                 return true;
         }
 
@@ -71,7 +80,7 @@ public static class ApprovalPatternMatching
         var candidateVerb = candidate[..candidateSpaceIdx];
         var candidatePath = candidate[(candidateSpaceIdx + 1)..];
 
-        if (!string.Equals(approvedVerb, candidateVerb, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(approvedVerb, candidateVerb, ApprovalEntryComparison))
             return false;
 
         try

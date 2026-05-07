@@ -180,14 +180,26 @@ public sealed class ToolApprovalActorTests : TestKit
     }
 
     [Fact]
-    public async Task Case_insensitive_match()
+    public async Task Approval_match_follows_host_filesystem_case_rules()
     {
+        // Approval entries embed both filesystem paths and verb tokens that
+        // resolve to executables via $PATH lookup, which honors filesystem case
+        // rules. On POSIX, `Git` and `git` are different executables, and
+        // `/data/` and `/Data/` are different directories — so a grant issued
+        // for one MUST NOT cover the other (binary-substitution / case-distinct
+        // path bypass). On Windows, the filesystem and PATH are
+        // case-insensitive, so the case-folded match is the correct behavior.
         var ct = TestContext.Current.CancellationToken;
         var actor = Sys.ActorOf(ToolApprovalActor.CreateProps());
         var service = CreateService(actor);
 
         await service.RecordApprovalAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), ["Git Push"], persistent: false, ct);
-        Assert.Empty(await service.GetUnapprovedPatternsAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), ["git push"], ct));
+        var unapproved = await service.GetUnapprovedPatternsAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), ["git push"], ct);
+
+        if (OperatingSystem.IsWindows())
+            Assert.Empty(unapproved);
+        else
+            Assert.Equal(["git push"], unapproved);
     }
 
     [Fact]
