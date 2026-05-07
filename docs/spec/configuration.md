@@ -298,7 +298,11 @@ Slack Socket Mode channel configuration.
 ### Logging
 
 Unified daemon logging settings used by both Microsoft.Extensions.Logging and
-Akka.NET logger integration.
+Akka.NET logger integration. Daemon-global logs write to
+`~/.netclaw/logs/daemon-{yyyy-MM-dd}.log`. Session-owned diagnostics and session
+audit lines are consolidated into
+`~/.netclaw/logs/sessions/{sanitized-session-id}/session.log` when they execute
+under a session diagnostics context.
 
 ```json
 {
@@ -315,7 +319,7 @@ Akka.NET logger integration.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `LogLevel:Default` | string | `Warning` | Minimum log level (`Debug`, `Information`, `Warning`, `Error`, etc.) shared by MEL and Akka.NET. |
+| `LogLevel:Default` | string | `Warning` | Minimum log level (`Debug`, `Information`, `Warning`, `Error`, etc.) shared by MEL and Akka.NET. Standard `Logging:LogLevel:{Category}` overrides also apply. |
 | `Console:Enabled` | bool | `false` | Enables console logger provider output for daemon debugging. |
 
 ### Webhooks

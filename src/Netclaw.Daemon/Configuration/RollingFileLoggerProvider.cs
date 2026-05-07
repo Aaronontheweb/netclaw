@@ -6,6 +6,8 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using Microsoft.Extensions.Logging;
+using Netclaw.Actors.Protocol;
+using Netclaw.Configuration;
 
 namespace Netclaw.Daemon.Configuration;
 
@@ -17,6 +19,7 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider
 {
     private const long MaxFileSizeBytes = 10 * 1024 * 1024; // 10MB per file
     private readonly string _basePath;
+    private readonly string? _sessionLogsBasePath;
     private readonly TimeProvider _timeProvider;
     private readonly ConcurrentDictionary<string, RollingFileLogger> _loggers = new();
     private readonly BlockingCollection<string> _queue = new(1024);
@@ -24,9 +27,10 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider
     private StreamWriter? _writer;
     private string _currentDate = "";
 
-    public RollingFileLoggerProvider(string basePath, TimeProvider? timeProvider = null)
+    public RollingFileLoggerProvider(string basePath, string? sessionLogsBasePath = null, TimeProvider? timeProvider = null)
     {
         _basePath = basePath;
+        _sessionLogsBasePath = sessionLogsBasePath;
         _timeProvider = timeProvider ?? TimeProvider.System;
         _writerThread = new Thread(ProcessQueue)
         {
@@ -42,6 +46,12 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider
     internal void Enqueue(string message)
     {
         _queue.TryAdd(message);
+
+        var sessionId = SessionDiagnosticsContext.SessionId;
+        if (string.IsNullOrWhiteSpace(sessionId) || string.IsNullOrWhiteSpace(_sessionLogsBasePath))
+            return;
+
+        TryWriteSessionLog(sessionId, message);
     }
 
     private void ProcessQueue()
@@ -88,6 +98,19 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider
         var path = Path.Combine(dir, $"{name}-{today}{ext}");
 
         _writer = new StreamWriter(path, append: true) { AutoFlush = false };
+    }
+
+    private void TryWriteSessionLog(string sessionId, string message)
+    {
+        try
+        {
+            var line = $"[{_timeProvider.GetUtcNow():o}] Diagnostic: {message}";
+            SessionLogFile.AppendLine(new SessionId(sessionId), _sessionLogsBasePath!, line);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[NetclawSessionLogWriter] Failed to write log for session '{sessionId}': {ex.Message}");
+        }
     }
 
     internal string GetTimestamp()

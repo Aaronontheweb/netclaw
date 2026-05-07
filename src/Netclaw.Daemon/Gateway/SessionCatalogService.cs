@@ -61,7 +61,7 @@ public sealed class SessionCatalogService : ISessionLifecycleObserver
 
         try
         {
-            var logPath = SessionLogActor.GetSessionLogsDirectory(sessionId, _paths.SessionLogsDirectory);
+            var logPath = SessionLogActor.GetSessionLogPath(sessionId, _paths.SessionLogsDirectory);
 
             using var conn = new SqliteConnection(_connectionString);
             conn.Open();

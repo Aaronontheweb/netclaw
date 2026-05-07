@@ -16,14 +16,27 @@ public static class SessionDiagnosticsContext
     public static string? SessionId
     {
         get => Current.Value;
-        set => Current.Value = value;
+        set => Current.Value = NormalizeSessionId(value);
     }
 
     public static IDisposable Push(string? sessionId)
     {
         var prior = Current.Value;
-        Current.Value = sessionId;
+        Current.Value = NormalizeSessionId(sessionId);
         return new RestoreScope(prior);
+    }
+
+    public static string? NormalizeSessionId(string? sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId))
+            return null;
+
+        var value = sessionId.Trim();
+        var subAgentMarker = value.IndexOf("/subagent/", StringComparison.Ordinal);
+        if (subAgentMarker > 0)
+            value = value[..subAgentMarker];
+
+        return value;
     }
 
     private sealed class RestoreScope(string? prior) : IDisposable

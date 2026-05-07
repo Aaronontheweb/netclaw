@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "1.24.0"
+  version: "1.25.0"
 ---
 
 # Netclaw Operations
@@ -455,7 +455,13 @@ When something seems wrong with Netclaw itself:
    preview auto-repairs (schema-driven: stale properties, enum coercion, missing defaults)
 3. Run `netclaw status` via `shell_execute` — live runtime state from daemon
 3. Check daemon logs at `~/.netclaw/logs/daemon-{yyyy-MM-dd}.log`
-4. Check session logs at `~/.netclaw/sessions/{session-id}/logs/`
+4. Check session logs at `~/.netclaw/logs/sessions/{sanitized-session-id}/session.log`
+
+Log split:
+
+- Daemon-global diagnostics stay in the daemon log.
+- Session-owned diagnostics and session output audit trails append to `~/.netclaw/logs/sessions/{sanitized-session-id}/session.log`.
+- Session log directories use the sanitized session ID (`/`, `.`, spaces, etc. replaced with `_`).
 
 | Symptom | Check |
 |---------|-------|

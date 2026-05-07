@@ -86,7 +86,7 @@ public sealed class NetclawPaths
     public string BootstrapStatePath => Path.Combine(ConfigDirectory, "bootstrap-state.json");
     public string LogsDirectory => Path.Combine(BasePath, "logs");
     /// <summary>
-    /// Per-session log files live at <c>{SessionLogsDirectory}/{sanitized_id}/{timestamp}.log</c>.
+    /// Per-session log files live at <c>{SessionLogsDirectory}/{sanitized_id}/session.log</c>.
     /// This tree is deliberately kept outside <see cref="SessionsDirectory"/> so
     /// the agent's file_read tool (scoped to <c>{session_dir}</c>) cannot observe
     /// its own audit trail.

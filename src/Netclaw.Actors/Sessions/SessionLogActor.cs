@@ -11,16 +11,14 @@ using Netclaw.Actors.SubAgents;
 namespace Netclaw.Actors.Sessions;
 
 /// <summary>
-/// Per-session child actor that owns the log file lifecycle.
+/// Per-session child actor that appends user/session output audit lines into the
+/// canonical per-session log file created by <see cref="SessionLogFile"/>.
 /// Created by <see cref="LlmSessionActor"/>.
-/// Not persistent — log files are best-effort observability.
-/// The actor opens the log file in <see cref="PreStart"/> and disposes it in <see cref="PostStop"/>,
-/// ensuring the file handle is properly released when the session actor passivates.
+/// Not persistent — session logs are best-effort observability.
 ///
-/// Log files live at <c>{sessionLogsBase}/{sanitized_id}/{timestamp}.log</c> — a
+/// Log files live at <c>{sessionLogsBase}/{sanitized_id}/session.log</c> — a
 /// tree deliberately separate from the agent-accessible session working
 /// directory so the LLM cannot read its own audit trail via the file_read tool.
-/// Multiple log files in the same directory indicate passivation/rehydration cycles.
 /// </summary>
 public sealed class SessionLogActor : ReceiveActor
 {
@@ -28,7 +26,6 @@ public sealed class SessionLogActor : ReceiveActor
     private readonly string _sessionLogsBasePath;
     private readonly TimeProvider _timeProvider;
     private readonly ILoggingAdapter _log = Context.GetLogger();
-    private StreamWriter? _writer;
 
     public static Props CreateProps(SessionId sessionId, string sessionLogsBasePath, TimeProvider timeProvider) =>
         Props.Create(() => new SessionLogActor(sessionId, sessionLogsBasePath, timeProvider));
@@ -48,50 +45,33 @@ public sealed class SessionLogActor : ReceiveActor
     /// <c>{sessionLogsBase}/{sanitized_id}/</c>
     /// </summary>
     public static string GetSessionLogsDirectory(SessionId sessionId, string sessionLogsBasePath)
-    {
-        var sanitized = SessionDirectoryHelper.SanitizeSessionId(sessionId);
-        return Path.Combine(sessionLogsBasePath, sanitized);
-    }
+        => SessionLogFile.GetLogsDirectory(sessionId, sessionLogsBasePath);
+
+    public static string GetSessionLogPath(SessionId sessionId, string sessionLogsBasePath)
+        => SessionLogFile.GetLogPath(sessionId, sessionLogsBasePath);
 
     protected override void PreStart()
     {
         try
         {
             var now = _timeProvider.GetUtcNow();
-            var logsDir = GetSessionLogsDirectory(_sessionId, _sessionLogsBasePath);
-            var logPath = Path.Combine(logsDir, $"{now:yyyyMMdd-HHmmss}.log");
-            Directory.CreateDirectory(logsDir);
-            _writer = new StreamWriter(logPath, append: true) { AutoFlush = true };
-            _writer.WriteLine($"[{now:o}] Session log started: {_sessionId.Value}");
+            SessionLogFile.AppendLine(_sessionId, _sessionLogsBasePath, $"[{now:o}] Session log attached: {_sessionId.Value}");
         }
         catch (Exception ex)
         {
-            _log.Warning(ex, "Failed to open session log file for {SessionId}", _sessionId.Value);
-        }
-    }
-
-    protected override void PostStop()
-    {
-        try
-        {
-            _writer?.Dispose();
-        }
-        catch (Exception ex)
-        {
-            _log.Debug(ex, "Failed to dispose session log writer for {SessionId}", _sessionId.Value);
+            _log.Warning(ex, "Failed to initialize session log file for {SessionId}", _sessionId.Value);
         }
     }
 
     private void OnUserMessage(SendUserMessage msg)
     {
-        if (_writer is null) return;
-
         try
         {
             var mediaNote = msg.MediaReferences.Count > 0
                 ? $" (+{msg.MediaReferences.Count} media)"
                 : string.Empty;
-            _writer.WriteLine($"[{_timeProvider.GetUtcNow():o}] User: {TextTruncation.EllipsisAppend(msg.Content, 1000)}{mediaNote}");
+            SessionLogFile.AppendLine(_sessionId, _sessionLogsBasePath,
+                $"[{_timeProvider.GetUtcNow():o}] User: {TextTruncation.EllipsisAppend(msg.Content, 1000)}{mediaNote}");
         }
         catch (Exception ex)
         {
@@ -101,8 +81,6 @@ public sealed class SessionLogActor : ReceiveActor
 
     private void OnOutput(SessionOutput output)
     {
-        if (_writer is null) return;
-
         try
         {
             var line = output switch
@@ -111,6 +89,7 @@ public sealed class SessionLogActor : ReceiveActor
                 ToolCallOutput toolCall => FormatToolCall(toolCall),
                 ToolResultOutput toolResult => $"Tool result: {toolResult.ToolName} (call={toolResult.CallId}) → {TextTruncation.EllipsisAppend(toolResult.Result, 1000)}",
                 ThinkingOutput thinking => $"Thinking: {TextTruncation.EllipsisAppend(thinking.Text, 1000)}",
+                ThinkingDeltaOutput thinkingDelta => $"Thinking delta: {TextTruncation.EllipsisAppend(thinkingDelta.Delta, 1000)}",
                 UsageOutput usage => $"Usage: in={usage.InputTokens} out={usage.OutputTokens} cached={usage.CachedInputTokens} reasoning={usage.ReasoningTokens} context={usage.UsagePercent:P0}",
                 TurnCompleted tc => $"Turn {tc.TurnNumber} {tc.Outcome.ToString().ToLowerInvariant()}",
                 SessionTitleOutput title => $"Title set: {title.Title}",
@@ -128,7 +107,8 @@ public sealed class SessionLogActor : ReceiveActor
 
             if (line is not null)
             {
-                _writer.WriteLine($"[{_timeProvider.GetUtcNow():o}] {line}");
+                SessionLogFile.AppendLine(_sessionId, _sessionLogsBasePath,
+                    $"[{_timeProvider.GetUtcNow():o}] {line}");
             }
         }
         catch (Exception ex)
