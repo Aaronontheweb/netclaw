@@ -518,13 +518,16 @@ internal sealed class PosixShellApprovalSemantics : ShellApprovalSemanticsBase
 
     protected override bool IsAnchoredPath(string token)
     {
-        return Path.IsPathRooted(token)
+        return token.Length > 0 && token[0] == '/'
             || token.StartsWith("./", StringComparison.Ordinal)
             || token.StartsWith("../", StringComparison.Ordinal)
             || token.StartsWith('~')
             || token.StartsWith("$HOME", StringComparison.Ordinal)
             || token.StartsWith("${HOME}", StringComparison.Ordinal);
     }
+
+    protected override string EnsureTrailingSeparator(string path)
+        => path.Length > 0 && path[^1] == '/' ? path : path + '/';
 
     internal static bool IsPosixShellInvoker(string verb)
     {
