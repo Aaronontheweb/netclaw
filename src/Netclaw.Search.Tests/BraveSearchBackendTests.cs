@@ -6,6 +6,7 @@
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
+using Microsoft.Extensions.Time.Testing;
 using Netclaw.Search;
 using Xunit;
 
@@ -154,7 +155,7 @@ public class BraveSearchBackendTests
         var now = new DateTimeOffset(2024, 6, 1, 12, 0, 0, TimeSpan.Zero);
         var future = now.AddSeconds(45);
         var header = new RetryConditionHeaderValue(future);
-        var fakeTime = new FixedTimeProvider(now);
+        var fakeTime = new FakeTimeProvider(now);
 
         var delay = BraveSearchBackend.ParseRetryAfter(header, 0, fakeTime);
 
@@ -262,8 +263,4 @@ public class BraveSearchBackendTests
         }
     }
 
-    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => utcNow;
-    }
 }
