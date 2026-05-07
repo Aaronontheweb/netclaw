@@ -31,11 +31,9 @@ public sealed class RollingFileLoggerProviderTests : TestKit, IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(daemonLogPath)!);
         var probe = CreateTestProbe();
 
-        using (var provider = new RollingFileLoggerProvider(
-            daemonLogPath,
-            sessionDispatcherFactory: () => Task.FromResult<IActorRef>(probe.Ref),
-            timeProvider: timeProvider))
+        using (var provider = new RollingFileLoggerProvider(daemonLogPath, timeProvider))
         {
+            provider.AttachSessionDispatcher(Task.FromResult<IActorRef>(probe.Ref));
             var logger = provider.CreateLogger("Netclaw.Tests");
 
             using (SessionDiagnosticsContext.Push("channel/thread"))
@@ -59,11 +57,9 @@ public sealed class RollingFileLoggerProviderTests : TestKit, IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(daemonLogPath)!);
         var probe = CreateTestProbe();
 
-        using (var provider = new RollingFileLoggerProvider(
-            daemonLogPath,
-            sessionDispatcherFactory: () => Task.FromResult<IActorRef>(probe.Ref),
-            timeProvider: timeProvider))
+        using (var provider = new RollingFileLoggerProvider(daemonLogPath, timeProvider))
         {
+            provider.AttachSessionDispatcher(Task.FromResult<IActorRef>(probe.Ref));
             var logger = provider.CreateLogger("Netclaw.Tests");
             logger.LogInformation("daemon message");
 
@@ -86,11 +82,9 @@ public sealed class RollingFileLoggerProviderTests : TestKit, IDisposable
         var probe = CreateTestProbe();
         var tcs = new TaskCompletionSource<IActorRef>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        using (var provider = new RollingFileLoggerProvider(
-            daemonLogPath,
-            sessionDispatcherFactory: () => tcs.Task,
-            timeProvider: timeProvider))
+        using (var provider = new RollingFileLoggerProvider(daemonLogPath, timeProvider))
         {
+            provider.AttachSessionDispatcher(tcs.Task);
             var logger = provider.CreateLogger("Netclaw.Tests");
 
             using (SessionDiagnosticsContext.Push("channel/thread"))
@@ -122,11 +116,9 @@ public sealed class RollingFileLoggerProviderTests : TestKit, IDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(daemonLogPath)!);
         var probe = CreateTestProbe();
 
-        using (var provider = new RollingFileLoggerProvider(
-            daemonLogPath,
-            sessionDispatcherFactory: () => Task.FromResult<IActorRef>(probe.Ref),
-            timeProvider: timeProvider))
+        using (var provider = new RollingFileLoggerProvider(daemonLogPath, timeProvider))
         {
+            provider.AttachSessionDispatcher(Task.FromResult<IActorRef>(probe.Ref));
             var logger = provider.CreateLogger("Netclaw.Tests");
 
             using (SessionDiagnosticsContext.Push("channel/thread"))

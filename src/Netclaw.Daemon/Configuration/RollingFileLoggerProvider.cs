@@ -22,6 +22,11 @@ namespace Netclaw.Daemon.Configuration;
 /// actor. The dispatcher serializes all writes for a given session through
 /// a single mailbox, replacing the in-process file lock that previously
 /// coordinated concurrent writers.
+///
+/// The dispatcher is wired in via <see cref="AttachSessionDispatcher"/>
+/// post-construction (typically from an <c>IHostedService</c> that runs
+/// after the actor system starts) because the provider is constructed
+/// during host build, before Akka.
 /// </summary>
 internal sealed class RollingFileLoggerProvider : ILoggerProvider
 {
@@ -36,10 +41,11 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider
     private ConcurrentQueue<SessionLogDiagnostic>? _pendingDiagnostics;
     private IActorRef? _sessionDispatcher;
     private int _pendingCount;
+    private int _sessionRoutingEnabled;
     private StreamWriter? _writer;
     private string _currentDate = "";
 
-    public RollingFileLoggerProvider(string basePath, Func<Task<IActorRef>>? sessionDispatcherFactory = null, TimeProvider? timeProvider = null)
+    public RollingFileLoggerProvider(string basePath, TimeProvider? timeProvider = null)
     {
         _basePath = basePath;
         _timeProvider = timeProvider ?? TimeProvider.System;
@@ -49,22 +55,33 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider
             Name = "NetclawLogWriter"
         };
         _writerThread.Start();
-
-        if (sessionDispatcherFactory is not null)
-        {
-            _pendingDiagnostics = new ConcurrentQueue<SessionLogDiagnostic>();
-            _ = ResolveSessionDispatcherAsync(sessionDispatcherFactory);
-        }
     }
 
     public ILogger CreateLogger(string categoryName) =>
         _loggers.GetOrAdd(categoryName, name => new RollingFileLogger(name, this));
 
+    /// <summary>
+    /// Enables session-scoped log routing through the dispatcher actor.
+    /// The provider buffers session-scoped diagnostic lines emitted between
+    /// this call and dispatcher resolution into a small bounded queue, then
+    /// drains them in order. Subsequent emits go straight to the dispatcher.
+    /// Failures during resolution surface a single ERR line in the daemon log
+    /// and disable session routing for the rest of the process.
+    /// </summary>
+    public void AttachSessionDispatcher(Task<IActorRef> dispatcherTask)
+    {
+        if (Interlocked.Exchange(ref _sessionRoutingEnabled, 1) == 1)
+            return;
+
+        _pendingDiagnostics = new ConcurrentQueue<SessionLogDiagnostic>();
+        _ = ResolveSessionDispatcherAsync(dispatcherTask);
+    }
+
     internal void Enqueue(string message)
     {
         _queue.TryAdd(message);
 
-        if (_pendingDiagnostics is null)
+        if (_sessionRoutingEnabled == 0)
             return;
 
         var sessionId = SessionDiagnosticsContext.SessionId;
@@ -88,15 +105,15 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider
         }
 
         Interlocked.Increment(ref _pendingCount);
-        _pendingDiagnostics.Enqueue(diagnostic);
+        _pendingDiagnostics!.Enqueue(diagnostic);
     }
 
-    private async Task ResolveSessionDispatcherAsync(Func<Task<IActorRef>> factory)
+    private async Task ResolveSessionDispatcherAsync(Task<IActorRef> dispatcherTask)
     {
         IActorRef dispatcher;
         try
         {
-            dispatcher = await factory().ConfigureAwait(false);
+            dispatcher = await dispatcherTask.ConfigureAwait(false);
         }
         catch (Exception ex)
         {

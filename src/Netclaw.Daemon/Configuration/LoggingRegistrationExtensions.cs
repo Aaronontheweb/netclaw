@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using Akka.Hosting;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Netclaw.Actors.Hosting;
 using Netclaw.Configuration;
@@ -27,21 +28,15 @@ public static class LoggingRegistrationExtensions
         // Always write to a rolling log file in ~/.netclaw/logs/
         Directory.CreateDirectory(resolvedPaths.LogsDirectory);
 
-        // Construct as a DI-resolved singleton so the provider can lazily resolve
-        // IRequiredActor<SessionLogDispatcherActorKey> after the actor system boots.
-        builder.Logging.Services.AddSingleton<ILoggerProvider>(sp =>
-        {
-            var timeProvider = sp.GetService<TimeProvider>();
-            Func<Task<Akka.Actor.IActorRef>>? dispatcherFactory = () =>
-            {
-                var requiredActor = sp.GetRequiredService<IRequiredActor<SessionLogDispatcherActorKey>>();
-                return requiredActor.GetAsync();
-            };
-            return new RollingFileLoggerProvider(
-                resolvedPaths.DaemonLogPath,
-                dispatcherFactory,
-                timeProvider);
-        });
+        // Provider must be constructed eagerly so MEL can see it via AddProvider —
+        // a Services.AddSingleton<ILoggerProvider>(factory) registration here is
+        // not picked up by the LoggerFactory in this hosting setup. The session
+        // log dispatcher is wired in post-build by SessionLogDispatcherWiringService
+        // once Akka.Hosting has registered the actor system.
+        var provider = new RollingFileLoggerProvider(resolvedPaths.DaemonLogPath);
+        builder.Logging.AddProvider(provider);
+        builder.Services.AddSingleton(provider);
+        builder.Services.AddHostedService<SessionLogDispatcherWiringService>();
 
         builder.Logging.SetMinimumLevel(level);
         return level;
@@ -55,4 +50,30 @@ public static class LoggingRegistrationExtensions
 
         return LogLevel.Information;
     }
+}
+
+/// <summary>
+/// Hooks the session log dispatcher into <see cref="RollingFileLoggerProvider"/>
+/// once Akka.Hosting has registered <c>SessionLogDispatcherActorKey</c>.
+/// </summary>
+internal sealed class SessionLogDispatcherWiringService : IHostedService
+{
+    private readonly RollingFileLoggerProvider _provider;
+    private readonly IRequiredActor<SessionLogDispatcherActorKey> _dispatcher;
+
+    public SessionLogDispatcherWiringService(
+        RollingFileLoggerProvider provider,
+        IRequiredActor<SessionLogDispatcherActorKey> dispatcher)
+    {
+        _provider = provider;
+        _dispatcher = dispatcher;
+    }
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        _provider.AttachSessionDispatcher(_dispatcher.GetAsync(cancellationToken));
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
