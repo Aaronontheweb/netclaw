@@ -87,7 +87,7 @@ public static class ShellTokenizer
     /// work.
     /// </summary>
     public static IReadOnlyList<string> SplitCompoundCommand(string command)
-        => ShellApprovalSemantics.Current.SplitCompoundCommand(command);
+        => ShellApprovalSemantics.ForCommand(command).SplitCompoundCommand(command);
 
     /// <summary>
     /// Extracts the verb chain (command name + subcommands) from a tokenized
@@ -98,28 +98,28 @@ public static class ShellTokenizer
     /// argument so the approval pattern captures what the command operates on.
     /// </summary>
     public static string ExtractVerbChain(string command, int maxDepth = 2)
-        => ShellApprovalSemantics.Current.ExtractVerbChain(command, maxDepth);
+        => ShellApprovalSemantics.ForCommand(command).ExtractVerbChain(command, maxDepth);
 
     /// <summary>
     /// Produces an exact shell approval unit string with recognizable local paths
     /// normalized against the working directory. Non-path tokens remain in order.
     /// </summary>
     public static string NormalizeApprovalUnit(string command, string? workingDirectory = null)
-        => ShellApprovalSemantics.Current.NormalizeApprovalUnit(command, workingDirectory);
+        => ShellApprovalSemantics.ForCommand(command).NormalizeApprovalUnit(command, workingDirectory);
 
     /// <summary>
     /// Extracts reusable directory approval roots from a shell approval unit.
     /// Returns an empty list when no reusable roots can be extracted.
     /// </summary>
     public static IReadOnlyList<DirectoryApprovalRoot> ExtractDirectoryRoots(string command, string? workingDirectory = null)
-        => ShellApprovalSemantics.Current.ExtractDirectoryRoots(command, workingDirectory);
+        => ShellApprovalSemantics.ForCommand(command).ExtractDirectoryRoots(command, workingDirectory);
 
     /// <summary>
     /// Normalizes a path token using the active shell family's path semantics.
     /// Returns null when the token cannot be normalized as a local path.
     /// </summary>
     public static string? NormalizePathToken(string path, string? workingDirectory = null)
-        => ShellApprovalSemantics.Current.NormalizePathToken(path, workingDirectory);
+        => ShellApprovalSemantics.ForCommand(path).NormalizePathToken(path, workingDirectory);
 
     /// <summary>
     /// Extracts inner commands from bash -c / sh -c wrappers. Returns the
@@ -127,7 +127,7 @@ public static class ShellTokenizer
     /// if the command does not use a shell wrapper.
     /// </summary>
     public static IReadOnlyList<string> ExtractInnerCommands(string command)
-        => ShellApprovalSemantics.Current.ExtractInnerCommands(command);
+        => ShellApprovalSemantics.ForCommand(command).ExtractInnerCommands(command);
 
     /// <summary>
     /// Returns all command strings that should be evaluated, including the
@@ -161,7 +161,7 @@ public static class ShellTokenizer
     /// on URIs, git refs, docker images, sed expressions, and MIME types.
     /// </summary>
     public static bool LooksLikePath(string token)
-        => ShellApprovalSemantics.Current.LooksLikePath(token);
+        => ShellApprovalSemantics.ForCommand(token).LooksLikePath(token);
 
     internal const int MinDirectoryScopeDepth = 2;
 

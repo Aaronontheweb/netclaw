@@ -26,9 +26,61 @@ internal interface IShellApprovalSemantics
 
 internal static class ShellApprovalSemantics
 {
+    private static readonly IShellApprovalSemantics Posix = PosixShellApprovalSemantics.Instance;
+    private static readonly IShellApprovalSemantics Windows = WindowsShellApprovalSemantics.Instance;
+
     public static IShellApprovalSemantics Current { get; } = OperatingSystem.IsWindows()
-        ? WindowsShellApprovalSemantics.Instance
-        : PosixShellApprovalSemantics.Instance;
+        ? Windows
+        : Posix;
+
+    public static IShellApprovalSemantics ForCommand(string? command)
+    {
+        if (!OperatingSystem.IsWindows())
+            return Posix;
+
+        if (string.IsNullOrWhiteSpace(command))
+            return Windows;
+
+        var tokens = ShellTokenizer.Tokenize(command).ToList();
+        if (tokens.Count == 0)
+            return Windows;
+
+        var first = ShellTokenizer.TrimShellPunctuation(tokens[0]);
+        if (PosixShellApprovalSemantics.IsPosixShellInvoker(first))
+            return Posix;
+
+        if (WindowsShellApprovalSemantics.IsWindowsShellInvoker(first))
+            return Windows;
+
+        foreach (var token in tokens)
+        {
+            var trimmed = ShellTokenizer.TrimShellPunctuation(token);
+            if (string.IsNullOrWhiteSpace(trimmed) || trimmed.StartsWith('-'))
+                continue;
+
+            if (LooksLikePosixCommandPath(trimmed))
+                return Posix;
+
+            if (Windows.LooksLikePath(trimmed))
+                return Windows;
+        }
+
+        return Windows;
+    }
+
+    private static bool LooksLikePosixCommandPath(string token)
+    {
+        if (token.Contains("://", StringComparison.Ordinal))
+            return false;
+
+        if (token.Equals("/c", StringComparison.OrdinalIgnoreCase)
+            || token.Equals("/k", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return Posix.LooksLikePath(token);
+    }
 }
 
 internal abstract class ShellApprovalSemanticsBase : IShellApprovalSemantics
@@ -389,7 +441,7 @@ internal sealed class PosixShellApprovalSemantics : ShellApprovalSemanticsBase
         for (var i = 0; i < tokens.Count - 1; i++)
         {
             var verb = ShellTokenizer.TrimShellPunctuation(tokens[i]);
-            if (!IsShellInvoker(verb))
+            if (!IsPosixShellInvoker(verb))
                 continue;
 
             if (i + 1 < tokens.Count && IsShellCommandFlag(tokens[i + 1]) && i + 2 < tokens.Count)
@@ -441,7 +493,7 @@ internal sealed class PosixShellApprovalSemantics : ShellApprovalSemanticsBase
             || token.StartsWith("${HOME}", StringComparison.Ordinal);
     }
 
-    private static bool IsShellInvoker(string verb)
+    internal static bool IsPosixShellInvoker(string verb)
     {
         return verb is "bash" or "sh" or "/bin/bash" or "/bin/sh"
             or "/usr/bin/bash" or "/usr/bin/sh" or "zsh" or "/bin/zsh";
@@ -563,6 +615,11 @@ internal sealed class WindowsShellApprovalSemantics : ShellApprovalSemanticsBase
             return NormalizePosixShellPath(expanded);
 
         return PathUtility.ExpandAndNormalize(expanded, workingDirectory);
+    }
+
+    internal static bool IsWindowsShellInvoker(string verb)
+    {
+        return IsCmdInvoker(verb) || IsPowerShellInvoker(verb);
     }
 
     private static bool IsCmdInvoker(string verb)
