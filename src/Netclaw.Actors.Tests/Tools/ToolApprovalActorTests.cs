@@ -17,6 +17,20 @@ namespace Netclaw.Actors.Tests.Tools;
 
 public sealed class ToolApprovalActorTests : TestKit
 {
+    public static TheoryData<string, string, string> DirectoryRootCoverageCases
+    {
+        get
+        {
+            var data = new TheoryData<string, string, string>();
+            if (OperatingSystem.IsWindows())
+                data.Add(@"C:\Users\petabridge\.netclaw\logs\", @"C:\Users\petabridge\.netclaw\output\", @"C:\Users\petabridge\.netclaw\output\");
+            else
+                data.Add("/home/user/.netclaw/logs/", "/home/user/.netclaw/output/", "/home/user/.netclaw/output/");
+
+            return data;
+        }
+    }
+
     protected override void ConfigureAkka(AkkaConfigurationBuilder builder, IServiceProvider provider)
     {
     }
@@ -100,40 +114,44 @@ public sealed class ToolApprovalActorTests : TestKit
         Assert.Equal(["git push origin"], unapproved);
     }
 
-    [Fact]
-    public async Task Shell_directory_root_approval_covers_other_verbs_under_same_root()
+    [Theory]
+    [MemberData(nameof(DirectoryRootCoverageCases))]
+    public async Task Shell_directory_root_approval_covers_other_verbs_under_same_root(string approvedRoot, string otherRoot, string expectedUnapproved)
     {
+        _ = otherRoot;
+        _ = expectedUnapproved;
         var ct = TestContext.Current.CancellationToken;
         var actor = Sys.ActorOf(ToolApprovalActor.CreateProps());
         var service = CreateService(actor);
 
-        await service.RecordApprovalAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), ["/home/user/.netclaw/logs/"], persistent: false, ct);
+        await service.RecordApprovalAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), [approvedRoot], persistent: false, ct);
 
         Assert.Empty(await service.GetUnapprovedPatternsAsync(
             "session-a",
             TrustAudience.Personal,
             new ToolName("shell_execute"),
-            ["/home/user/.netclaw/logs/"],
+            [approvedRoot],
             ct));
     }
 
-    [Fact]
-    public async Task Shell_directory_root_approval_requires_all_roots_to_be_covered()
+    [Theory]
+    [MemberData(nameof(DirectoryRootCoverageCases))]
+    public async Task Shell_directory_root_approval_requires_all_roots_to_be_covered(string approvedRoot, string otherRoot, string expectedUnapproved)
     {
         var ct = TestContext.Current.CancellationToken;
         var actor = Sys.ActorOf(ToolApprovalActor.CreateProps());
         var service = CreateService(actor);
 
-        await service.RecordApprovalAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), ["/home/user/.netclaw/logs/"], persistent: false, ct);
+        await service.RecordApprovalAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), [approvedRoot], persistent: false, ct);
 
         var unapproved = await service.GetUnapprovedPatternsAsync(
             "session-a",
             TrustAudience.Personal,
             new ToolName("shell_execute"),
-            ["/home/user/.netclaw/logs/", "/home/user/.netclaw/output/"],
+            [approvedRoot, otherRoot],
             ct);
 
-        Assert.Equal(["/home/user/.netclaw/output/"], unapproved);
+        Assert.Equal([expectedUnapproved], unapproved);
     }
 
     [Fact]

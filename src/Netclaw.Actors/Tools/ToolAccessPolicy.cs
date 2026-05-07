@@ -197,7 +197,7 @@ public sealed class ToolAccessPolicy
 
         foreach (var pathToken in pathTokens)
         {
-            var expanded = PathUtility.ExpandAndNormalize(pathToken, workingDirectory);
+            var expanded = ShellTokenizer.NormalizePathToken(pathToken, workingDirectory);
             if (expanded is null)
                 continue;
 

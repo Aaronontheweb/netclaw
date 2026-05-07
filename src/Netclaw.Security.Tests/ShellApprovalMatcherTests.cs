@@ -12,6 +12,20 @@ public sealed class ShellApprovalMatcherTests
 {
     private readonly ShellApprovalMatcher _matcher = ShellApprovalMatcher.Instance;
 
+    public static TheoryData<string, string, bool> PlatformDirectoryMatchCases
+    {
+        get
+        {
+            var data = new TheoryData<string, string, bool>();
+            if (OperatingSystem.IsWindows())
+                data.Add(@"C:\Users\petabridge\.netclaw\logs\", @"type C:\Users\petabridge\.netclaw\logs\crash.log", true);
+            else
+                data.Add("/home/user/.netclaw/logs/", "cat /home/user/.netclaw/logs/crash.log", true);
+
+            return data;
+        }
+    }
+
     private static Dictionary<string, object?> Args(string command) => new() { ["Command"] = command };
 
     private static Dictionary<string, object?> Args(string command, string workingDirectory)
@@ -96,10 +110,17 @@ public sealed class ShellApprovalMatcherTests
     [InlineData("git push", "git push", true)]
     [InlineData("git push", "git push origin main", false)]
     [InlineData("gh", "gh --help", false)]
-    [InlineData("/home/user/.netclaw/logs/", "cat /home/user/.netclaw/logs/crash.log", true)]
     [InlineData("/home/user/.netclaw/logs/", "grep timeout /home/user/.netclaw/logs/crash.log", true)]
     [InlineData("/home/user/.netclaw/logs/", "cat /home/user/.netclaw/config/secret.json", false)]
     public void IsApproved_pattern_matching(string pattern, string command, bool expected)
+    {
+        var approved = new[] { pattern };
+        Assert.Equal(expected, _matcher.IsApproved(new ToolName("shell_execute"), Args(command), approved));
+    }
+
+    [Theory]
+    [MemberData(nameof(PlatformDirectoryMatchCases))]
+    public void IsApproved_platform_specific_directory_root_matching(string pattern, string command, bool expected)
     {
         var approved = new[] { pattern };
         Assert.Equal(expected, _matcher.IsApproved(new ToolName("shell_execute"), Args(command), approved));
@@ -144,14 +165,15 @@ public sealed class ShellApprovalMatcherTests
 
     // ── ExtractDirectoryRoots / ExtractApprovalEntries ──
 
-    [Fact]
-    public void ExtractDirectoryRoots_simple_path_command()
+    [Theory]
+    [MemberData(nameof(PlatformDirectoryMatchCases))]
+    public void ExtractDirectoryRoots_simple_path_command(string expectedRoot, string command, bool _)
     {
         var roots = _matcher.ExtractDirectoryRoots(
             new ToolName("shell_execute"),
-            Args("cat /home/user/.netclaw/logs/crash.log"));
+            Args(command));
         Assert.Single(roots);
-        Assert.Equal("/home/user/.netclaw/logs/", roots[0].ComparisonRoot.Replace('\\', '/'));
+        Assert.Equal(expectedRoot, roots[0].ComparisonRoot);
     }
 
     [Fact]

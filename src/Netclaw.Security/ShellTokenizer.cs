@@ -24,6 +24,7 @@ public static class ShellTokenizer
     {
         "cat", "less", "more", "head", "tail", "grep", "rg", "find", "jq", "awk", "sed", "strings", "xxd", "hexdump",
         "cp", "mv", "tar", "zip", "unzip", "scp", "rsync", "curl", "wget", "nc", "ncat",
+        "type", "findstr", "copy", "move", "xcopy", "robocopy", "del", "erase", "ren", "powershell", "powershell.exe", "pwsh", "pwsh.exe",
         "python", "python3", "node", "ruby", "perl", "php",
         "bash", "sh", "zsh"
     };
@@ -35,7 +36,7 @@ public static class ShellTokenizer
     /// </summary>
     internal static readonly HashSet<string> PathAwareVerbs = new(HighRiskVerbs, StringComparer.OrdinalIgnoreCase)
     {
-        "ls"
+        "ls", "dir"
     };
 
     /// <summary>
@@ -86,65 +87,7 @@ public static class ShellTokenizer
     /// work.
     /// </summary>
     public static IReadOnlyList<string> SplitCompoundCommand(string command)
-    {
-        if (string.IsNullOrWhiteSpace(command))
-            return [];
-
-        var segments = new List<string>();
-        var current = new StringBuilder();
-        char? quote = null;
-        var span = command.AsSpan();
-
-        for (var i = 0; i < span.Length; i++)
-        {
-            var ch = span[i];
-
-            // Track quoting so we don't split inside strings
-            if (quote is null && (ch == '\'' || ch == '"'))
-            {
-                quote = ch;
-                current.Append(ch);
-                continue;
-            }
-
-            if (quote is not null && ch == quote)
-            {
-                quote = null;
-                current.Append(ch);
-                continue;
-            }
-
-            if (quote is not null)
-            {
-                current.Append(ch);
-                continue;
-            }
-
-            // Check for two-char operators: && and ||
-            if (i + 1 < span.Length)
-            {
-                var twoChar = span.Slice(i, 2);
-                if (twoChar is "&&" or "||")
-                {
-                    FlushSegment(current, segments);
-                    i++; // skip second char
-                    continue;
-                }
-            }
-
-            // Single-char operator: ;
-            if (ch == ';')
-            {
-                FlushSegment(current, segments);
-                continue;
-            }
-
-            current.Append(ch);
-        }
-
-        FlushSegment(current, segments);
-        return segments;
-    }
+        => ShellApprovalSemantics.Current.SplitCompoundCommand(command);
 
     /// <summary>
     /// Extracts the verb chain (command name + subcommands) from a tokenized
@@ -155,109 +98,28 @@ public static class ShellTokenizer
     /// argument so the approval pattern captures what the command operates on.
     /// </summary>
     public static string ExtractVerbChain(string command, int maxDepth = 2)
-    {
-        var tokens = Tokenize(command).ToList();
-        if (tokens.Count == 0)
-            return string.Empty;
-
-        var verbParts = new List<string>();
-        foreach (var token in tokens)
-        {
-            if (verbParts.Count >= maxDepth)
-                break;
-
-            var trimmed = TrimShellPunctuation(token);
-            if (trimmed.Length == 0)
-                continue;
-
-            if (trimmed.StartsWith('-'))
-                break;
-
-            if (LooksLikeArgument(trimmed))
-                break;
-
-            verbParts.Add(trimmed);
-        }
-
-        if (verbParts.Count == 1 && PathAwareVerbs.Contains(verbParts[0]))
-        {
-            for (var i = 1; i < tokens.Count; i++)
-            {
-                var trimmed = TrimShellPunctuation(tokens[i]);
-                if (trimmed.Length == 0)
-                    continue;
-
-                if (trimmed.StartsWith('-'))
-                    continue;
-
-                verbParts.Add(trimmed);
-                break;
-            }
-        }
-
-        return string.Join(' ', verbParts);
-    }
+        => ShellApprovalSemantics.Current.ExtractVerbChain(command, maxDepth);
 
     /// <summary>
     /// Produces an exact shell approval unit string with recognizable local paths
     /// normalized against the working directory. Non-path tokens remain in order.
     /// </summary>
     public static string NormalizeApprovalUnit(string command, string? workingDirectory = null)
-    {
-        var tokens = Tokenize(command).ToList();
-        if (tokens.Count == 0)
-            return string.Empty;
-
-        var normalizedTokens = new List<string>(tokens.Count);
-        foreach (var token in tokens)
-        {
-            if (LooksLikePath(token))
-            {
-                var normalized = NormalizeShellPathToken(token, workingDirectory);
-                normalizedTokens.Add(normalized ?? token);
-            }
-            else
-            {
-                normalizedTokens.Add(token);
-            }
-        }
-
-        return string.Join(' ', normalizedTokens);
-    }
+        => ShellApprovalSemantics.Current.NormalizeApprovalUnit(command, workingDirectory);
 
     /// <summary>
     /// Extracts reusable directory approval roots from a shell approval unit.
     /// Returns an empty list when no reusable roots can be extracted.
     /// </summary>
     public static IReadOnlyList<DirectoryApprovalRoot> ExtractDirectoryRoots(string command, string? workingDirectory = null)
-    {
-        var tokens = Tokenize(command).ToList();
-        if (tokens.Count == 0)
-            return [];
+        => ShellApprovalSemantics.Current.ExtractDirectoryRoots(command, workingDirectory);
 
-        var roots = new List<DirectoryApprovalRoot>();
-        var comparisonRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var sawPathToken = false;
-
-        foreach (var token in tokens)
-        {
-            if (token.Length == 0 || token.StartsWith('-'))
-                continue;
-
-            if (!LooksLikePath(token))
-                continue;
-
-            sawPathToken = true;
-            var root = TryCreateDirectoryApprovalRoot(token, workingDirectory);
-            if (root is null)
-                return [];
-
-            if (comparisonRoots.Add(root.ComparisonRoot))
-                roots.Add(root);
-        }
-
-        return sawPathToken ? roots : [];
-    }
+    /// <summary>
+    /// Normalizes a path token using the active shell family's path semantics.
+    /// Returns null when the token cannot be normalized as a local path.
+    /// </summary>
+    public static string? NormalizePathToken(string path, string? workingDirectory = null)
+        => ShellApprovalSemantics.Current.NormalizePathToken(path, workingDirectory);
 
     /// <summary>
     /// Extracts inner commands from bash -c / sh -c wrappers. Returns the
@@ -265,25 +127,7 @@ public static class ShellTokenizer
     /// if the command does not use a shell wrapper.
     /// </summary>
     public static IReadOnlyList<string> ExtractInnerCommands(string command)
-    {
-        var tokens = Tokenize(command).ToList();
-        var results = new List<string>();
-
-        for (var i = 0; i < tokens.Count - 1; i++)
-        {
-            var verb = TrimShellPunctuation(tokens[i]);
-            if (!IsShellInvoker(verb))
-                continue;
-
-            // Look for -c flag
-            if (i + 1 < tokens.Count && IsShellCommandFlag(tokens[i + 1]) && i + 2 < tokens.Count)
-            {
-                results.Add(tokens[i + 2]);
-            }
-        }
-
-        return results;
-    }
+        => ShellApprovalSemantics.Current.ExtractInnerCommands(command);
 
     /// <summary>
     /// Returns all command strings that should be evaluated, including the
@@ -310,35 +154,6 @@ public static class ShellTokenizer
         return allSegments;
     }
 
-    private static bool IsShellInvoker(string verb)
-    {
-        return verb is "bash" or "sh" or "/bin/bash" or "/bin/sh"
-            or "/usr/bin/bash" or "/usr/bin/sh" or "zsh" or "/bin/zsh";
-    }
-
-    private static bool IsShellCommandFlag(string token)
-    {
-        if (token.Length == 0 || token[0] != '-' || token.StartsWith("--", StringComparison.Ordinal))
-            return false;
-
-        return token.AsSpan(1).IndexOf('c') >= 0;
-    }
-
-    private static bool LooksLikeArgument(string token)
-    {
-        // Paths, URLs, filenames, dotfiles, home-relative
-        return token.Contains('/', StringComparison.Ordinal)
-            || token.Contains('\\', StringComparison.Ordinal)
-            || token.StartsWith('~')
-            || token.StartsWith('.')
-            || token.Contains("://", StringComparison.Ordinal)
-            || token.Contains(':', StringComparison.Ordinal)
-            // Environment variable references
-            || token.StartsWith('$')
-            // Glob patterns
-            || token.Contains('*', StringComparison.Ordinal);
-    }
-
     /// <summary>
     /// Returns true if a token is identifiable as a local filesystem path.
     /// Uses positive identification (anchored prefixes + extension heuristic)
@@ -346,235 +161,9 @@ public static class ShellTokenizer
     /// on URIs, git refs, docker images, sed expressions, and MIME types.
     /// </summary>
     public static bool LooksLikePath(string token)
-    {
-        if (string.IsNullOrWhiteSpace(token))
-            return false;
-
-        if (token.StartsWith('-'))
-            return false;
-
-        // URIs
-        if (token.Contains("://", StringComparison.Ordinal))
-            return false;
-
-        // Anchored paths — definitively filesystem references
-        if (token.StartsWith('/'))
-            return true;
-        if (token.StartsWith("./", StringComparison.Ordinal) || token.StartsWith("../", StringComparison.Ordinal))
-            return true;
-        if (token.StartsWith('~'))
-            return true;
-        if (token.StartsWith("$HOME", StringComparison.Ordinal) || token.StartsWith("${HOME}", StringComparison.Ordinal))
-            return true;
-        // Windows drive letter: C:\ or C:/ (case-insensitive)
-        if (token.Length >= 3 && char.IsAsciiLetter(token[0]) && token[1] == ':'
-            && (token[2] == '/' || token[2] == '\\'))
-            return true;
-        // UNC path: \\server\share
-        if (token.StartsWith("\\\\", StringComparison.Ordinal))
-            return true;
-
-        // Backslash always indicates a Windows-style path
-        if (token.Contains('\\', StringComparison.Ordinal))
-            return true;
-
-        // Unanchored tokens with forward slashes — disambiguate using exclusions
-        // and the file-extension heuristic
-        if (token.Contains('/', StringComparison.Ordinal))
-        {
-            // Colon before first slash = docker image, port, or key:value
-            var firstSlash = token.IndexOf('/', StringComparison.Ordinal);
-            if (token.IndexOf(':', StringComparison.Ordinal) is var colonIdx && colonIdx >= 0 && colonIdx < firstSlash)
-                return false;
-
-            // npm scoped package: @scope/name
-            if (token.StartsWith('@') && token.IndexOf('/', 1) == token.LastIndexOf('/'))
-                return false;
-
-            // sed/tr expression: s/pattern/replacement/ or y/abc/xyz/
-            if ((token.StartsWith("s/", StringComparison.Ordinal) || token.StartsWith("y/", StringComparison.Ordinal))
-                && CountChar(token, '/') >= 3)
-                return false;
-
-            // Path traversal component is always a path signal
-            if (token.Contains("/../", StringComparison.Ordinal) || token.EndsWith("/..", StringComparison.Ordinal))
-                return true;
-
-            // File extension in the last component → treat as relative path
-            // (src/main.rs, config/app.json). Git refs and docker images don't
-            // have extensions.
-            var lastSlash = token.LastIndexOf('/');
-            if (lastSlash >= 0 && lastSlash < token.Length - 1)
-            {
-                var lastComponent = token.AsSpan(lastSlash + 1);
-                var dotIdx = lastComponent.LastIndexOf('.');
-                if (dotIdx > 0 && dotIdx < lastComponent.Length - 1)
-                    return true;
-            }
-
-            return false;
-        }
-
-        return false;
-    }
+        => ShellApprovalSemantics.Current.LooksLikePath(token);
 
     internal const int MinDirectoryScopeDepth = 2;
-
-    private static DirectoryApprovalRoot? TryCreateDirectoryApprovalRoot(string rawPath, string? workingDirectory)
-    {
-        var displayRoot = ExtractDisplayDirectory(rawPath, workingDirectory);
-        if (displayRoot is null)
-            return null;
-
-        var comparisonRoot = NormalizeShellPathToken(displayRoot, workingDirectory);
-        if (comparisonRoot is null)
-            return null;
-
-        if (Directory.Exists(comparisonRoot))
-            comparisonRoot = PathUtility.Normalize(new DirectoryInfo(comparisonRoot).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? comparisonRoot);
-
-        if (CountPathSegments(comparisonRoot) < MinDirectoryScopeDepth)
-            return null;
-
-        return new DirectoryApprovalRoot(EnsureTrailingSeparator(displayRoot), EnsureTrailingSeparator(comparisonRoot));
-    }
-
-    private static string? ExtractDisplayDirectory(string path, string? workingDirectory)
-    {
-        if (path.EndsWith('/') || path.EndsWith('\\'))
-            return path.TrimEnd('/', '\\');
-
-        if (path.Contains('/', StringComparison.Ordinal) && !path.Contains('\\', StringComparison.Ordinal))
-            return ExtractParentDirectory(path);
-
-        var globIdx = path.IndexOfAny(['*', '?', '[']);
-        if (globIdx >= 0)
-        {
-            var lastSep = path.LastIndexOf('/', globIdx);
-            if (lastSep < 0)
-                lastSep = path.LastIndexOf('\\', globIdx);
-            return lastSep > 0 ? path[..lastSep] : null;
-        }
-
-        var normalizedCandidate = NormalizeShellPathToken(path, workingDirectory);
-        if (normalizedCandidate is not null && Directory.Exists(normalizedCandidate))
-            return path;
-
-        return ExtractParentDirectory(path);
-    }
-
-    private static string? NormalizeShellPathToken(string path, string? workingDirectory)
-    {
-        var expanded = PathUtility.ExpandHome(path);
-
-        // Shell approval extraction is based on the command's path language, not
-        // the host runtime's filesystem parser. A POSIX shell path like
-        // `/home/user/...` should stay POSIX-shaped even when the daemon runs on
-        // Windows, otherwise `Path.GetFullPath()` rewrites it to `D:\home\...`
-        // and both matching and prompt text drift away from what the shell
-        // command actually means.
-        if (IsPosixAbsoluteShellPath(expanded))
-            return NormalizePosixShellPath(expanded);
-
-        return PathUtility.TryNormalize(expanded, workingDirectory, out var normalized)
-            ? normalized
-            : null;
-    }
-
-    private static bool IsPosixAbsoluteShellPath(string path)
-    {
-        return path.Length > 0 && path[0] == '/'
-            && !path.StartsWith("//", StringComparison.Ordinal)
-            && path.IndexOf('\\', StringComparison.Ordinal) < 0
-            && !path.Contains("://", StringComparison.Ordinal);
-    }
-
-    private static string NormalizePosixShellPath(string path)
-    {
-        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        var normalized = new List<string>(segments.Length);
-        foreach (var segment in segments)
-        {
-            if (segment == ".")
-                continue;
-
-            if (segment == "..")
-            {
-                if (normalized.Count > 0)
-                    normalized.RemoveAt(normalized.Count - 1);
-
-                continue;
-            }
-
-            normalized.Add(segment);
-        }
-
-        return normalized.Count == 0 ? "/" : "/" + string.Join('/', normalized);
-    }
-
-    private static string EnsureTrailingSeparator(string path)
-    {
-        if (path.EndsWith('/') || path.EndsWith('\\'))
-            return path;
-
-        if (path.Contains('/', StringComparison.Ordinal) && !path.Contains('\\', StringComparison.Ordinal))
-            return path + '/';
-
-        if (path.Contains('\\', StringComparison.Ordinal) && !path.Contains('/', StringComparison.Ordinal))
-            return path + '\\';
-
-        return path + Path.DirectorySeparatorChar;
-    }
-
-    private static string? ExtractParentDirectory(string path)
-    {
-        // Already a directory (trailing separator)
-        if (path.EndsWith('/') || path.EndsWith('\\'))
-            return path.TrimEnd('/', '\\');
-
-        // Glob: use directory portion before the glob
-        var globIdx = path.IndexOfAny(['*', '?', '[']);
-        if (globIdx >= 0)
-        {
-            var lastSep = path.LastIndexOf('/', globIdx);
-            if (lastSep < 0)
-                lastSep = path.LastIndexOf('\\', globIdx);
-            return lastSep > 0 ? path[..lastSep] : null;
-        }
-
-        // Preserve POSIX-style shell paths instead of routing them through the
-        // host filesystem parser, which would rewrite `/dir/file` into a drive-
-        // rooted Windows path when tests run on Windows.
-        if (path.Contains('/', StringComparison.Ordinal) && !path.Contains('\\', StringComparison.Ordinal))
-        {
-            var lastSlash = path.LastIndexOf('/');
-            return lastSlash > 0 ? path[..lastSlash] : null;
-        }
-
-        // Regular file: parent directory
-        var dir = Path.GetDirectoryName(path);
-        return string.IsNullOrEmpty(dir) ? null : dir;
-    }
-
-    private static int CountPathSegments(string normalizedPath)
-    {
-        var trimmed = normalizedPath
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-
-        if (trimmed.Length == 0)
-            return 0;
-
-        // Strip root (e.g., "/" on Linux, "C:\" on Windows)
-        var root = Path.GetPathRoot(trimmed);
-        if (root is not null && trimmed.Length > root.Length)
-            trimmed = trimmed[root.Length..];
-        else if (root is not null)
-            return 0; // path IS the root
-
-        return trimmed.Split(
-            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-            StringSplitOptions.RemoveEmptyEntries).Length;
-    }
 
     /// <summary>
     /// Returns true when the pattern is a single-token shell approval for a
@@ -599,23 +188,4 @@ public static class ShellTokenizer
         return token.Trim().TrimStart(';', '|', '&').TrimEnd(';', '|', '&');
     }
 
-    private static int CountChar(string value, char target)
-    {
-        var count = 0;
-        foreach (var c in value)
-        {
-            if (c == target)
-                count++;
-        }
-
-        return count;
-    }
-
-    private static void FlushSegment(StringBuilder current, List<string> segments)
-    {
-        var trimmed = current.ToString().Trim();
-        if (trimmed.Length > 0)
-            segments.Add(trimmed);
-        current.Clear();
-    }
 }

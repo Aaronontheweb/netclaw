@@ -9,6 +9,76 @@ namespace Netclaw.Security.Tests;
 
 public sealed class ShellTokenizerTests
 {
+    public static TheoryData<string, string> AbsoluteRootCases
+    {
+        get
+        {
+            var data = new TheoryData<string, string>();
+            if (OperatingSystem.IsWindows())
+                data.Add(@"type C:\Users\petabridge\.netclaw\logs\crash.log", @"C:\Users\petabridge\.netclaw\logs\");
+            else
+                data.Add("cat /home/user/.netclaw/logs/crash.log", "/home/user/.netclaw/logs/");
+
+            return data;
+        }
+    }
+
+    public static TheoryData<string, string> RelativeRootCases
+    {
+        get
+        {
+            var data = new TheoryData<string, string>();
+            if (OperatingSystem.IsWindows())
+                data.Add("findstr timeout logs\\app.log | find /c \"timeout\"", @"logs\");
+            else
+                data.Add("grep timeout logs/app.log | wc -l", "logs/");
+
+            return data;
+        }
+    }
+
+    public static TheoryData<string, bool> WindowsAnchoredPathCases
+    {
+        get
+        {
+            var expected = OperatingSystem.IsWindows();
+            return new TheoryData<string, bool>
+            {
+                { @"C:\Users\file.txt", expected },
+                { @"c:\users\documents", expected },
+                { "D:/Projects/src", expected },
+                { "C:/Windows/System32", expected },
+                { @"\\server\share\file.txt", expected },
+                { @"\\nas\backups", expected }
+            };
+        }
+    }
+
+    public static TheoryData<string, bool> BackslashPathCases
+    {
+        get
+        {
+            var expected = OperatingSystem.IsWindows();
+            return new TheoryData<string, bool>
+            {
+                { @"src\main.cs", expected },
+                { @"folder\subfolder", expected }
+            };
+        }
+    }
+
+    public static TheoryData<string, string?> WindowsAbsoluteDirectoryRootCases
+    {
+        get
+        {
+            var data = new TheoryData<string, string?>();
+            data.Add(
+                @"type C:\Users\petabridge\.netclaw\logs\crash.log",
+                OperatingSystem.IsWindows() ? @"C:\Users\petabridge\.netclaw\logs\" : null);
+            return data;
+        }
+    }
+
     // ── Tokenize ──
 
     [Fact]
@@ -207,15 +277,16 @@ public sealed class ShellTokenizerTests
     [InlineData("~")]
     [InlineData("$HOME/.config/app.toml")]
     [InlineData("${HOME}/workspace")]
-    [InlineData("C:\\Users\\file.txt")]
-    [InlineData("c:\\users\\documents")]
-    [InlineData("D:/Projects/src")]
-    [InlineData("C:/Windows/System32")]
-    [InlineData("\\\\server\\share\\file.txt")]
-    [InlineData("\\\\nas\\backups")]
     public void LooksLikePath_anchored_paths(string token)
     {
         Assert.True(ShellTokenizer.LooksLikePath(token));
+    }
+
+    [Theory]
+    [MemberData(nameof(WindowsAnchoredPathCases))]
+    public void LooksLikePath_windows_anchored_paths_follow_active_shell_family(string token, bool expected)
+    {
+        Assert.Equal(expected, ShellTokenizer.LooksLikePath(token));
     }
 
     // Non-paths — always false
@@ -265,23 +336,23 @@ public sealed class ShellTokenizerTests
 
     // Backslash always indicates Windows path
     [Theory]
-    [InlineData("src\\main.cs")]
-    [InlineData("folder\\subfolder")]
-    public void LooksLikePath_backslash(string token)
+    [MemberData(nameof(BackslashPathCases))]
+    public void LooksLikePath_backslash(string token, bool expected)
     {
-        Assert.True(ShellTokenizer.LooksLikePath(token));
+        Assert.Equal(expected, ShellTokenizer.LooksLikePath(token));
     }
 
     // ── ExtractDirectoryRoots ──
 
-    [Fact]
-    public void ExtractDirectoryRoots_returns_normalized_root_for_file_path()
+    [Theory]
+    [MemberData(nameof(AbsoluteRootCases))]
+    public void ExtractDirectoryRoots_returns_normalized_root_for_file_path(string command, string expectedRoot)
     {
-        var roots = ShellTokenizer.ExtractDirectoryRoots("cat /home/user/.netclaw/logs/crash.log");
+        var roots = ShellTokenizer.ExtractDirectoryRoots(command);
 
         Assert.Single(roots);
-        Assert.Equal("/home/user/.netclaw/logs/", roots[0].ComparisonRoot.Replace('\\', '/'));
-        Assert.Equal("/home/user/.netclaw/logs/", roots[0].DisplayPath.Replace('\\', '/'));
+        Assert.Equal(expectedRoot, roots[0].ComparisonRoot);
+        Assert.Equal(expectedRoot, roots[0].DisplayPath);
     }
 
     [Fact]
@@ -294,8 +365,9 @@ public sealed class ShellTokenizerTests
         Assert.Equal("/home/user/.netclaw/logs/", roots[0].ComparisonRoot.Replace('\\', '/'));
     }
 
-    [Fact]
-    public void ExtractDirectoryRoots_keeps_relative_display_path_and_normalized_comparison_root()
+    [Theory]
+    [MemberData(nameof(RelativeRootCases))]
+    public void ExtractDirectoryRoots_keeps_relative_display_path_and_normalized_comparison_root(string command, string expectedDisplayRoot)
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var logs = Path.Combine(root, "logs");
@@ -303,10 +375,10 @@ public sealed class ShellTokenizerTests
 
         try
         {
-            var roots = ShellTokenizer.ExtractDirectoryRoots("grep timeout logs/app.log | wc -l", root);
+            var roots = ShellTokenizer.ExtractDirectoryRoots(command, root);
 
             Assert.Single(roots);
-            Assert.Equal("logs/", roots[0].DisplayPath.Replace('\\', '/'));
+            Assert.Equal(expectedDisplayRoot, roots[0].DisplayPath);
             Assert.Equal(PathUtility.Normalize(logs) + Path.DirectorySeparatorChar, roots[0].ComparisonRoot);
         }
         finally
@@ -322,6 +394,23 @@ public sealed class ShellTokenizerTests
 
         Assert.Single(roots);
         Assert.Equal("/home/user/.netclaw/logs/", roots[0].ComparisonRoot.Replace('\\', '/'));
+    }
+
+    [Theory]
+    [MemberData(nameof(WindowsAbsoluteDirectoryRootCases))]
+    public void ExtractDirectoryRoots_handles_windows_absolute_paths(string command, string? expectedRoot)
+    {
+        var roots = ShellTokenizer.ExtractDirectoryRoots(command);
+
+        if (expectedRoot is null)
+        {
+            Assert.Empty(roots);
+            return;
+        }
+
+        Assert.Single(roots);
+        Assert.Equal(expectedRoot, roots[0].ComparisonRoot);
+        Assert.Equal(expectedRoot, roots[0].DisplayPath);
     }
 
     [Fact]

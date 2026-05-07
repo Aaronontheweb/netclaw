@@ -122,13 +122,13 @@ public sealed class ToolPathPolicy
             if (!LooksLikePath(token))
                 continue;
 
-            var expanded = PathUtility.ExpandHome(token);
-            if (PathUtility.TryNormalize(expanded, workingDirectory, out var normalized)
-                && IsDeniedNormalized(normalized, _shellDeniedPaths))
+            var normalized = ShellTokenizer.NormalizePathToken(token, workingDirectory);
+            if (normalized is not null && IsDeniedNormalized(normalized, _shellDeniedPaths))
             {
                 return true;
             }
 
+            var expanded = PathUtility.ExpandHome(token);
             if (expanded.Contains("secrets.json", StringComparison.OrdinalIgnoreCase)
                 || expanded.Contains(".netclaw/keys", StringComparison.OrdinalIgnoreCase)
                 || expanded.Contains(".netclaw\\keys", StringComparison.OrdinalIgnoreCase))
