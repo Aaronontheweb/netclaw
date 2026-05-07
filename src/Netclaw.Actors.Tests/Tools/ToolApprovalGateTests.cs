@@ -867,6 +867,37 @@ public sealed class ToolApprovalGateTests
     }
 
     [Fact]
+    public void Multi_path_allowlisted_command_uses_default_labels()
+    {
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var first = Path.Combine(root, "first.log");
+        var second = Path.Combine(root, "second.log");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(first, "one");
+        File.WriteAllText(second, "two");
+
+        try
+        {
+            var args = ToolInput.Create("Command", "cat first.log second.log", "WorkingDirectory", root);
+
+            var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+
+            Assert.True(decision.NeedsApproval);
+            Assert.DoesNotContain(decision.ApprovalContext!.DirectoryPatterns, p => p.EndsWith("/"));
+            Assert.Contains($"cat {PathUtility.Normalize(first)} {PathUtility.Normalize(second)}", decision.ApprovalContext.DirectoryPatterns);
+            var sessionOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession);
+            var alwaysOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways);
+            Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, sessionOption.Label);
+            Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, alwaysOption.Label);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Non_path_command_uses_default_labels()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);

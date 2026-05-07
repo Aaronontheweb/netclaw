@@ -103,6 +103,9 @@ public sealed class ShellApprovalMatcherTests
     // Path-aware patterns — exact path matches
     [InlineData("cat /etc/passwd", "cat /etc/passwd", true)]
     [InlineData("cat /etc/passwd", "cat /etc/shadow", false)]
+    [InlineData("cat /etc/passwd", "cat /etc/passwd /etc/shadow", false)]
+    [InlineData("cat /etc/passwd /etc/shadow", "cat /etc/passwd /etc/shadow", true)]
+    [InlineData("cat /etc/passwd /etc/shadow", "cat /etc/passwd /etc/shadow /etc/hosts", false)]
     // Directory-scoped patterns (trailing /) match files under that directory
     [InlineData("cat /home/user/.netclaw/logs/", "cat /home/user/.netclaw/logs/crash.log", true)]
     [InlineData("cat /home/user/.netclaw/logs/", "cat /home/user/.netclaw/logs/deep/nested.txt", true)]
@@ -196,6 +199,31 @@ public sealed class ShellApprovalMatcherTests
 
         Assert.Single(patterns);
         Assert.Equal("find /home/user/.netclaw/logs", patterns[0]);
+    }
+
+    [Fact]
+    public void ExtractPatterns_multi_path_allowlisted_command_includes_all_paths()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var first = Path.Combine(root, "first.log");
+        var second = Path.Combine(root, "second.log");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(first, "one");
+        File.WriteAllText(second, "two");
+
+        try
+        {
+            var patterns = _matcher.ExtractPatterns(
+                new ToolName("shell_execute"),
+                Args("cat first.log second.log", root));
+
+            Assert.Single(patterns);
+            Assert.Equal($"cat {PathUtility.Normalize(first)} {PathUtility.Normalize(second)}", patterns[0]);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]
@@ -330,7 +358,32 @@ public sealed class ShellApprovalMatcherTests
                 Args("cat logs/app.log > /tmp/out.log", root));
 
             Assert.Single(patterns);
-            Assert.Equal($"cat {PathUtility.Normalize(file)}", patterns[0]);
+            Assert.Equal($"cat {PathUtility.Normalize(file)} /tmp/out.log", patterns[0]);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ExtractDirectoryPatterns_multi_path_falls_back_to_exact_multi_path_pattern()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var first = Path.Combine(root, "first.log");
+        var second = Path.Combine(root, "second.log");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(first, "one");
+        File.WriteAllText(second, "two");
+
+        try
+        {
+            var patterns = _matcher.ExtractDirectoryPatterns(
+                new ToolName("shell_execute"),
+                Args("cat first.log second.log", root));
+
+            Assert.Single(patterns);
+            Assert.Equal($"cat {PathUtility.Normalize(first)} {PathUtility.Normalize(second)}", patterns[0]);
         }
         finally
         {
