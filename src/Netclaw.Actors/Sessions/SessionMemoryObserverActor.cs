@@ -12,6 +12,7 @@ using Microsoft.Extensions.AI;
 using Netclaw.Actors.Memory;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.SubAgents;
+using Netclaw.Configuration;
 
 namespace Netclaw.Actors.Sessions;
 
@@ -355,6 +356,7 @@ public sealed class SessionMemoryObserverActor : ReceivePersistentActor
         try
         {
             using var cts = new CancellationTokenSource(timeout);
+            using var diagnosticsScope = SessionDiagnosticsContext.Push(sessionId.Value);
             var messages = new List<ChatMessage>
             {
                 new(Microsoft.Extensions.AI.ChatRole.System, DistillationSystemPrompt),

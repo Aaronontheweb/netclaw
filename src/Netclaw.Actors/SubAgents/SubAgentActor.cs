@@ -253,7 +253,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             };
         }
 
-        _ = InvokeLlmAsync(client, messages, options, _executionCts?.Token ?? CancellationToken.None, self);
+        _ = InvokeLlmAsync(client, messages, options, _toolExecutionContext.SessionId, _executionCts?.Token ?? CancellationToken.None, self);
     }
 
     private void Complete(bool success, string output)
@@ -358,10 +358,17 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     // ── Static async helpers (same pattern as LlmSessionActor) ──
 
     private static async Task InvokeLlmAsync(
-        IChatClient client, List<AiChatMessage> messages, ChatOptions? options, CancellationToken ct, IActorRef self)
+        IChatClient client, List<AiChatMessage> messages, ChatOptions? options, string? sessionId, CancellationToken ct, IActorRef self)
     {
         try
         {
+            // Sub-agents share the parent session's diagnostics scope so their
+            // provider logs land in the parent's session.log.
+            // SessionDiagnosticsContext normalizes "/subagent/..." suffixes back
+            // to the parent id; passing the raw _toolExecutionContext.SessionId
+            // (which may be null when run outside a session) is intentional.
+            using var diagnosticsScope = SessionDiagnosticsContext.Push(sessionId);
+
             // Use streaming to match the main session path. The non-streaming
             // GetResponseAsync path drops reasoning content for some providers
             // (e.g., Qwen emits <think> blocks that surface as TextReasoningContent

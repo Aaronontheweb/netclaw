@@ -55,15 +55,17 @@ public sealed class MemoryCurationActor : ReceiveActor, IWithUnboundedStash
 
     private readonly SQLiteMemoryStore _store;
     private readonly IChatClient? _llmClient;
+    private readonly Protocol.SessionId _sessionId;
     private readonly ILoggingAdapter _log;
 
     private IActorRef? _currentRequester;
 
     public IStash Stash { get; set; } = null!;
 
-    public MemoryCurationActor(SQLiteMemoryStore store, IChatClientProvider? clientProvider = null)
+    public MemoryCurationActor(SQLiteMemoryStore store, Protocol.SessionId sessionId, IChatClientProvider? clientProvider = null)
     {
         _store = store;
+        _sessionId = sessionId;
         _llmClient = clientProvider != null
             ? clientProvider.GetClient(ModelRole.Compaction)
             : null;
@@ -75,8 +77,8 @@ public sealed class MemoryCurationActor : ReceiveActor, IWithUnboundedStash
     /// <summary>
     /// Create Props for the MemoryCurationActor.
     /// </summary>
-    public static Props CreateProps(SQLiteMemoryStore store, IChatClientProvider? clientProvider = null)
-        => Props.Create(() => new MemoryCurationActor(store, clientProvider));
+    public static Props CreateProps(SQLiteMemoryStore store, Protocol.SessionId sessionId, IChatClientProvider? clientProvider = null)
+        => Props.Create(() => new MemoryCurationActor(store, sessionId, clientProvider));
 
     // ── Idle behavior ───────────────────────────────────────────────
 
@@ -290,6 +292,7 @@ public sealed class MemoryCurationActor : ReceiveActor, IWithUnboundedStash
         try
         {
             using var cts = new CancellationTokenSource(LlmTimeout);
+            using var diagnosticsScope = SessionDiagnosticsContext.Push(_sessionId.Value);
 
             var messages = new List<ChatMessage>
             {
