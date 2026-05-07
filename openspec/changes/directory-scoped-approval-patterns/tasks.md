@@ -1,6 +1,6 @@
 ## 1. Pattern Extraction
 
-- [x] 1.1 Add shared path-operand extraction for `ShellTokenizer.ExtractApprovalPattern()` and `ExtractDirectoryScope()` — scan all args for directly identifiable path operands, resolve relatives against `WorkingDirectory`, normalize, keep exact extraction broader than directory scope, preserve all detected exact operands in order, and enforce minimum depth for directory scope
+- [x] 1.1 Add shared path-operand extraction for `ShellTokenizer.ExtractApprovalPattern()` and `ExtractDirectoryScope()` — scan all args for the first resolvable path operand, resolve relatives against `WorkingDirectory`, normalize, keep exact extraction broader than directory scope, and enforce minimum depth for directory scope
 - [x] 1.2 Add `ExtractParentDirectory()` and `CountPathSegments()` helpers to `ShellTokenizer`
 - [x] 1.3 Unit tests for `ExtractDirectoryScope` (allowlisted verb+directory, grep path vs search term, glob handling, non-allowlisted fallback, redirection null cases)
 
@@ -19,7 +19,7 @@
 
 - [x] 4.1 Add `DirectoryPatterns` property to `ToolInteractionRequest` in `SessionOutput.cs`
 - [x] 4.2 Add `DirectoryPatterns` to `ToolApprovalContext` record in `ToolAccessPolicy.cs`
-- [x] 4.3 Compute directory patterns and customize B/C labels in `CheckApprovalGate()` only when the full request maps cleanly to a single directory scope from the allowlisted direct read/list verbs with exactly one detected direct path operand; otherwise keep generic labels
+- [x] 4.3 Compute directory patterns and customize B/C labels in `CheckApprovalGate()` only when the full request maps cleanly to a single directory scope from the allowlisted direct read/list verbs; otherwise keep generic labels
 - [x] 4.4 Pass `DirectoryPatterns` from `ToolApprovalContext` to `ToolInteractionRequest` in `SessionToolExecutionPipeline`
 - [x] 4.5 Propagate `DirectoryPatterns` through `DispatchingToolExecutor` re-approval path
 
@@ -40,5 +40,4 @@
 - [x] 6.7 Note Windows-native shell support as out of scope for this change (tracked separately in issue #899)
 - [x] 6.8 Restrict directory-scoped approvals to `cat`, `less`, `more`, `head`, `tail`, `grep`, and `ls`; keep commands like `find` on exact patterns and generic labels
 - [x] 6.9 Disable directory-scoped extraction when shell redirection operators are present, even for allowlisted verbs
-- [x] 6.10 Keep multi-path exact approval patterns exact-only; do not widen one approved operand list to cover added direct path operands
-- [x] 6.11 Verify: `dotnet slopwatch analyze` passes, copyright headers present, all tests green
+- [x] 6.10 Verify: `dotnet slopwatch analyze` passes, copyright headers present, all tests green

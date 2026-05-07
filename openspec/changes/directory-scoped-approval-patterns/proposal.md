@@ -16,15 +16,10 @@ legitimate diagnostic work.
   `tail`, `grep`, and `ls`.
 - Relative path operands are resolved against the shell tool `WorkingDirectory`
   before both exact-pattern extraction and directory-scope extraction/matching.
-- Path-aware exact approval patterns use the actual normalized direct path
-  operands when present, preserving every directly identifiable operand in
-  command order rather than just the first one. This still covers commands like
-  `grep -l "timeout" logs/app.log` where the search term is not the path
-  operand, and commands like `find`, `bash`, or `python3` when a direct path
-  operand exists.
-- Path-aware exact approval patterns remain exact-only. They do not
-  prefix-expand one approved path to cover additional path operands later added
-  to the command.
+- Path-aware exact approval patterns use the actual normalized path operand when
+  one exists, including commands like `grep -l "timeout" logs/app.log` where the
+  search term is not the path operand and commands like `find`, `bash`, or
+  `python3` when a direct path operand exists.
 - Existing directory operands keep their directory scope for allowlisted
   directory-scoped verbs instead of widening to the parent directory.
 - A trailing `/` on a stored approval pattern signals directory scope. Matching
@@ -36,16 +31,9 @@ legitimate diagnostic work.
   directory pattern extraction.
 - Commands outside the directory-scope allowlist, including `find`, fall back to
   exact approval patterns and generic B/C labels rather than directory scope.
-- Directory-scoped approvals now require exactly one detected direct path
-  operand in addition to the existing allowlist and redirection restrictions.
-  Multi-path invocations of otherwise allowlisted commands fall back to exact
-  approval patterns and generic B/C labels.
 - Shell redirection operators disable directory-scoped extraction even for
   allowlisted verbs, causing fallback to exact approval patterns and generic
   labels.
-- When redirection disables directory scope, the fallback exact pattern may
-  include both the direct input path and the redirected output path when both
-  are directly identifiable.
 - Approval option labels only show a directory-specific scope when the full
   approval set for the request maps cleanly to a single directory; otherwise the
   labels stay generic.

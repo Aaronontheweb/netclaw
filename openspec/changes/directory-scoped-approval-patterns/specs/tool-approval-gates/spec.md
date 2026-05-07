@@ -5,11 +5,10 @@
 The system SHALL support directory-scoped approval patterns for shell commands
 targeting a narrow direct read/list allowlist: `cat`, `less`, `more`, `head`,
 `tail`, `grep`, and `ls`. When the user selects "Approve for this chat" (B) or
-"Approve always" (C) for one of those shell commands and the command targets
-exactly one recognizable direct path operand, the system SHALL store a
-directory-scoped pattern (e.g., `grep /home/.netclaw/logs/`) instead of the
-exact file-path pattern. "Approve once" (A) SHALL continue to use exact
-patterns.
+"Approve always" (C) for one of those shell commands and the command targets a
+recognizable direct path operand, the system SHALL store a directory-scoped
+pattern (e.g., `grep /home/.netclaw/logs/`) instead of the exact file-path
+pattern. "Approve once" (A) SHALL continue to use exact patterns.
 
 When a recognizable path operand is relative, the system SHALL resolve it
 against the shell tool `WorkingDirectory` before extracting either exact or
@@ -20,16 +19,9 @@ Commands outside that directory-scope allowlist, including `find`, SHALL fall
 back to exact approval patterns and generic B/C labels even when they have a
 recognizable direct path operand.
 
-Allowlisted commands with more than one recognizable direct path operand SHALL
-also fall back to exact approval patterns and generic B/C labels instead of
-directory scope.
-
 If a shell segment contains redirection operators, the system SHALL disable
 directory-scoped extraction for that segment even when the verb is allowlisted.
 That segment SHALL fall back to exact approval patterns and generic B/C labels.
-When both a direct input path and redirected output path are directly
-identifiable, the fallback exact pattern SHALL include both operands in command
-order.
 
 A trailing `/` on a stored pattern SHALL signal directory scope. The system SHALL
 use `PathUtility.IsWithinRoot()` for boundary-safe containment matching — not
@@ -120,17 +112,9 @@ Directory-scoped approvals SHALL be verb-isolated: an approval for
 #### Scenario: Redirection disables directory scope for allowlisted verb
 
 - **GIVEN** the shell tool `WorkingDirectory` is `/workspace/project`
-- **AND** the command is `cat logs/app.log > /tmp/out.log`
+- **AND** the command is `cat logs/app.log > out.txt`
 - **WHEN** exact and directory-scoped approval patterns are extracted
-- **THEN** the exact pattern is `cat /workspace/project/logs/app.log /tmp/out.log`
-- **AND** no directory-scoped pattern is extracted
-
-#### Scenario: Multi-path allowlisted command falls back to exact pattern
-
-- **GIVEN** the shell tool `WorkingDirectory` is `/workspace/project`
-- **AND** the command is `cat logs/first.log logs/second.log`
-- **WHEN** exact and directory-scoped approval patterns are extracted
-- **THEN** the exact pattern is `cat /workspace/project/logs/first.log /workspace/project/logs/second.log`
+- **THEN** the exact pattern is `cat /workspace/project/logs/app.log`
 - **AND** no directory-scoped pattern is extracted
 
 #### Scenario: Boundary-safe path matching prevents prefix collisions
@@ -144,16 +128,15 @@ Directory-scoped approvals SHALL be verb-isolated: an approval for
 
 `IToolApprovalMatcher` SHALL define an `ExtractDirectoryPatterns()` method that
 returns directory-scoped patterns for a tool invocation. `ShellApprovalMatcher`
-SHALL implement this by scanning all non-flag arguments for directly
-identifiable path operands, resolving relative paths against `WorkingDirectory`,
+SHALL implement this by scanning all non-flag arguments for the first
+recognizable path operand, resolving relative paths against `WorkingDirectory`,
 expanding home directory tokens, extracting the scoped directory, normalizing
 the path, enforcing minimum depth, and applying directory scope only to the
-allowlisted verbs `cat`, `less`, `more`, `head`, `tail`, `grep`, and `ls` when
-exactly one direct path operand is detected. Segments with shell redirection
-operators SHALL NOT emit directory scope. For compound commands and `bash -c`
-wrappers, each segment SHALL be processed recursively. When no directory scope
-is available for a segment, the segment's exact approval pattern SHALL be used
-as fallback.
+allowlisted verbs `cat`, `less`, `more`, `head`, `tail`, `grep`, and `ls`.
+Segments with shell redirection operators SHALL NOT emit directory scope. For
+compound commands and `bash -c` wrappers, each segment SHALL be processed
+recursively. When no directory scope is available for a segment, the segment's
+exact approval pattern SHALL be used as fallback.
 
 `DefaultApprovalMatcher` and `FilePathApprovalMatcher` SHALL return empty lists.
 
@@ -171,21 +154,6 @@ as fallback.
 - **WHEN** exact approval pattern extraction runs
 - **THEN** the pattern is `grep /workspace/project/logs/daemon.log`
 - **AND** the search term `"timeout"` is not used as the exact operand
-
-#### Scenario: Exact pattern preserves all detected direct path operands in order
-
-- **GIVEN** the shell tool `WorkingDirectory` is `/workspace/project`
-- **AND** the command is `cat logs/first.log logs/second.log`
-- **WHEN** exact approval pattern extraction runs
-- **THEN** the pattern is `cat /workspace/project/logs/first.log /workspace/project/logs/second.log`
-- **AND** both directly identifiable path operands are preserved in command order
-
-#### Scenario: Exact approval does not widen to added path operands
-
-- **GIVEN** `cat /workspace/project/logs/first.log` is approved as an exact pattern
-- **WHEN** the agent runs `cat /workspace/project/logs/first.log /workspace/project/logs/second.log`
-- **THEN** the command still requires approval
-- **AND** the existing exact approval does not prefix-expand to cover the added operand
 
 #### Scenario: Compound command extracts patterns per segment
 
@@ -222,7 +190,6 @@ as fallback.
 - **AND** the command is `grep error logs/app.log > report.txt`
 - **WHEN** `ExtractDirectoryPatterns` runs
 - **THEN** no directory-scoped pattern is extracted for that segment
-- **AND** the fallback exact pattern includes both the direct input path and the redirected output path when both are directly identifiable
 
 #### Scenario: Glob paths use parent directory
 
@@ -259,14 +226,6 @@ Options A ("Approve once") and D ("Deny") SHALL retain their default labels.
 #### Scenario: Non-allowlisted path-aware command keeps generic labels
 
 - **GIVEN** a shell command `find logs -name '*.log'` requires approval
-- **WHEN** the approval prompt is generated
-- **THEN** option B reads the default "Approve for this chat"
-- **AND** option C reads the default "Approve always"
-
-#### Scenario: Multi-path allowlisted command keeps generic labels
-
-- **GIVEN** a shell command `cat /home/.netclaw/logs/first.log /home/.netclaw/logs/second.log`
-  requires approval
 - **WHEN** the approval prompt is generated
 - **THEN** option B reads the default "Approve for this chat"
 - **AND** option C reads the default "Approve always"

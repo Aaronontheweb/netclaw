@@ -227,14 +227,11 @@ public static class ShellTokenizer
     /// <summary>
     /// Extracts the approval pattern used for exact matching. For path-aware verbs,
     /// prefers the first recognizable path operand normalized against the working
-    /// directory. When multiple direct path operands are present, includes all of
-    /// them in the exact pattern so approvals do not silently widen from one
-    /// resource to many. Falls back to the verb-chain extraction when no direct
-    /// path operand is recognized.
+    /// directory; otherwise falls back to the verb-chain extraction.
     /// </summary>
     public static string ExtractApprovalPattern(string command, string? workingDirectory = null, int maxDepth = 2)
-        => TryExtractPathOperands(command, workingDirectory, PathAwareVerbs, requireSimpleDirectoryShape: false, out var result)
-            ? result.Verb + " " + string.Join(' ', result.PathOperands.Select(static x => x.NormalizedPath))
+        => TryExtractPathOperand(command, workingDirectory, PathAwareVerbs, requireSimpleDirectoryShape: false, out var operand)
+            ? operand.Verb + " " + operand.NormalizedPath
             : ExtractVerbChain(command, maxDepth);
 
     /// <summary>
@@ -406,29 +403,26 @@ public static class ShellTokenizer
     /// </summary>
     public static string? ExtractDirectoryScope(string command, string? workingDirectory = null)
     {
-        if (!TryExtractPathOperands(command, workingDirectory, DirectoryScopeVerbs, requireSimpleDirectoryShape: true, out var result)
-            || result.PathOperands.Count != 1)
+        if (!TryExtractPathOperand(command, workingDirectory, DirectoryScopeVerbs, requireSimpleDirectoryShape: true, out var operand))
             return null;
-
-        var operand = result.PathOperands[0];
 
         // Enforce minimum depth — reject shallow scopes like / or /etc/
         if (CountPathSegments(operand.NormalizedDirectory) < MinDirectoryScopeDepth)
             return null;
 
-        return result.Verb + " " + operand.NormalizedDirectory + "/";
+        return operand.Verb + " " + operand.NormalizedDirectory + "/";
     }
 
     internal const int MinDirectoryScopeDepth = 2;
 
-    private static bool TryExtractPathOperands(
+    private static bool TryExtractPathOperand(
         string command,
         string? workingDirectory,
         IReadOnlySet<string> allowedVerbs,
         bool requireSimpleDirectoryShape,
-        out PathScanResult result)
+        out PathOperand operand)
     {
-        result = default;
+        operand = default;
 
         var tokens = Tokenize(command).ToList();
         if (tokens.Count == 0)
@@ -440,8 +434,6 @@ public static class ShellTokenizer
 
         if (requireSimpleDirectoryShape && !IsSimpleDirectoryScopeShape(tokens))
             return false;
-
-        var pathOperands = new List<PathOperand>();
 
         for (var i = 1; i < tokens.Count; i++)
         {
@@ -457,14 +449,11 @@ public static class ShellTokenizer
             if (normalizedDirectory is null)
                 continue;
 
-            pathOperands.Add(new PathOperand(normalizedPath, normalizedDirectory));
+            operand = new PathOperand(verb, normalizedPath, normalizedDirectory);
+            return true;
         }
 
-        if (pathOperands.Count == 0)
-            return false;
-
-        result = new PathScanResult(verb, pathOperands);
-        return true;
+        return false;
     }
 
     private static bool IsSimpleDirectoryScopeShape(IReadOnlyList<string> tokens)
@@ -584,26 +573,6 @@ public static class ShellTokenizer
         return PathAwareVerbs.Contains(trimmed);
     }
 
-    /// <summary>
-    /// Returns true when a pattern represents an exact path-aware approval with
-    /// one or more explicit path operands. These patterns should remain exact-only
-    /// and must not prefix-expand to additional operands.
-    /// </summary>
-    public static bool IsPathAwareExactPattern(string pattern)
-    {
-        if (string.IsNullOrWhiteSpace(pattern) || pattern.EndsWith('/'))
-            return false;
-
-        var tokens = pattern.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (tokens.Length < 2)
-            return false;
-
-        if (!PathAwareVerbs.Contains(TrimShellPunctuation(tokens[0])))
-            return false;
-
-        return tokens.Skip(1).All(LooksLikePath);
-    }
-
     internal static string TrimShellPunctuation(string token)
     {
         return token.Trim().TrimStart(';', '|', '&').TrimEnd(';', '|', '&');
@@ -629,7 +598,5 @@ public static class ShellTokenizer
         current.Clear();
     }
 
-    private readonly record struct PathOperand(string NormalizedPath, string NormalizedDirectory);
-
-    private readonly record struct PathScanResult(string Verb, IReadOnlyList<PathOperand> PathOperands);
+    private readonly record struct PathOperand(string Verb, string NormalizedPath, string NormalizedDirectory);
 }

@@ -29,12 +29,6 @@ public static class ApprovalPatternMatching
             if (approved.EndsWith('/') && MatchesDirectoryScope(candidate, approved))
                 return true;
 
-            // Exact path-aware patterns must not widen by prefix. This prevents an
-            // approval for one direct operand from silently approving additional
-            // path operands appended to the same verb.
-            if (ShellTokenizer.IsPathAwareExactPattern(approved))
-                continue;
-
             // Multi-token patterns prefix-match on a space boundary. Single-token
             // patterns remain exact-only so grants do not silently widen from
             // "cat" to every path-bearing cat invocation.

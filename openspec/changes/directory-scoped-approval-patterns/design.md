@@ -51,25 +51,21 @@ work unchanged.
 
 ### Extraction: shared path-operand resolution, narrower directory scope
 
-`ShellTokenizer.TryExtractPathOperands()` is the shared primitive behind
-`ExtractApprovalPattern()` and `ExtractDirectoryScope()`. It scans all non-flag
-arguments for directly identifiable path operands, using the shell tool
-`WorkingDirectory` to resolve relative operands before approval patterns are
-extracted or matched. This solves the grep problem where the search term is the
-first positional arg and the file path is second
+`ShellTokenizer.TryExtractPathOperand()` is the shared primitive behind
+`ExtractApprovalPattern()` and `ExtractDirectoryScope()`. It scans ALL non-flag
+arguments for the first token that can be normalized into a path operand, using
+the shell tool `WorkingDirectory` to resolve relative operands before approval
+patterns are extracted or matched. This solves the grep problem where the search
+term is the first positional arg and the file path is second
 (`grep -l "timeout" logs/daemon.log`).
 
-When directly identifiable path operands exist, exact approval patterns use the
-normalized operands themselves in detection order
-(`cat /abs/path/first.log /abs/path/second.log`), not the raw verb chain. That
-broader exact extraction still applies to commands like `find`, `bash`, or
-`python3` when they include direct path operands. These exact patterns remain
-exact-only: approving one concrete operand list does not prefix-expand to cover
-additional operands appended later.
-
-Directory-scoped patterns then derive scope from that same extraction only when
+When a recognizable path operand exists, exact approval patterns use the
+normalized path operand itself (`grep /abs/path/logs/daemon.log`), not the raw
+verb chain. That broader exact extraction still applies to commands like
+`find`, `bash`, or `python3` when they include a direct path operand.
+Directory-scoped patterns then derive scope from that same operand only when
 the command verb is in the MVP allowlist: `cat`, `less`, `more`, `head`,
-`tail`, `grep`, and `ls`, and exactly one direct path operand is detected.
+`tail`, `grep`, and `ls`.
 
 **Alternative considered:** Always use first positional. Rejected because grep,
 sed, and awk take non-path first arguments.
@@ -82,10 +78,8 @@ directory and stores `ls /abs/path/logs/` rather than widening to the parent
 (`/abs/path/`). This keeps approval scope aligned with what the command actually
 targets.
 
-Commands outside the allowlist still use normalized exact path operands when
-available, but they do not derive directory scope from them. Likewise,
-allowlisted commands with multiple direct path operands stay on exact approval
-patterns instead of widening one operand into a directory grant.
+Commands outside the allowlist still use the normalized exact path operand when
+available, but they do not derive directory scope from it.
 
 ### Matching: `PathUtility.IsWithinRoot()` with normalized operands
 
@@ -125,18 +119,17 @@ labels and never store trailing-slash directory approvals.
 `ToolAccessPolicy.TryGetSingleDirectoryScope()` only emits directory-specific B/C
 labels when every approval pattern for the request is directory-scoped and all
 of them resolve to the same directory. If any segment falls back to a generic
-exact pattern (for example `find logs -name '*.log'`, `git push`, an
-allowlisted multi-path read, or an allowlisted read with shell redirection) or
-multiple directory scopes are present, labels stay generic.
+exact pattern (for example `find logs -name '*.log'`, `git push`, or an
+allowlisted read with shell redirection) or multiple directory scopes are
+present, labels stay generic.
 
 ### Shell redirection disables directory scope
 
 If a segment contains shell redirection operators, directory-scoped extraction
 is disabled even when the verb itself is allowlisted. For example,
 `cat logs/app.log > out.txt` falls back to the exact pattern and generic B/C
-labels. When both the input operand and redirected output target are directly
-identifiable, both appear in the fallback exact pattern in command order. This
-avoids granting directory scope when the command also writes or rewires IO.
+labels. This avoids granting directory scope when the command also writes or
+rewires IO.
 
 ### Compound commands: direct path operands only
 
