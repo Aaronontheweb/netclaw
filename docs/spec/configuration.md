@@ -299,10 +299,17 @@ Slack Socket Mode channel configuration.
 
 Unified daemon logging settings used by both Microsoft.Extensions.Logging and
 Akka.NET logger integration. Daemon-global logs write to
-`~/.netclaw/logs/daemon-{yyyy-MM-dd}.log`. Session-owned diagnostics and session
-audit lines are consolidated into
-`~/.netclaw/logs/sessions/{sanitized-session-id}/session.log` when they execute
-under a session diagnostics context.
+`~/.netclaw/logs/daemon-{yyyy-MM-dd}.log` (rolled daily, capped at 10 MB
+per file). Session-owned diagnostics and session audit lines are consolidated
+into `~/.netclaw/logs/sessions/{sanitized-session-id}/session.log` when they
+execute under a session diagnostics context.
+
+Session-log writes are routed through the `SessionLogDispatcher` actor, which
+owns one writer actor per session id; this guarantees a single in-process
+writer per file and a chronologically faithful audit-plus-diagnostic timeline.
+`session.log` is best-effort observability — individual lines may be dropped
+on transient IO errors and logged at Debug level in the daemon log. Files
+are not size-rotated today (tracked separately).
 
 ```json
 {

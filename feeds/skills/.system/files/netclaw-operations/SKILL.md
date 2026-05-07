@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "1.25.0"
+  version: "1.26.0"
 ---
 
 # Netclaw Operations
@@ -488,9 +488,34 @@ When something seems wrong with Netclaw itself:
 
 Log split:
 
-- Daemon-global diagnostics stay in the daemon log.
-- Session-owned diagnostics and session output audit trails append to `~/.netclaw/logs/sessions/{sanitized-session-id}/session.log`.
-- Session log directories use the sanitized session ID (`/`, `.`, spaces, etc. replaced with `_`).
+- Daemon-global diagnostics stay in the daemon log (rolled daily, capped
+  at 10 MB per file).
+- Session-owned diagnostics and session output audit trails append to
+  `~/.netclaw/logs/sessions/{sanitized-session-id}/session.log` —
+  one file per session, no rotation today (see netclaw-dev/netclaw#919).
+- Session log directories use the sanitized session ID (`/`, `.`, spaces,
+  etc. replaced with `_`). Sub-agent diagnostics roll up into the parent
+  session's `session.log`; you will not find a separate file for a
+  sub-agent run.
+
+What to expect inside `session.log`:
+
+- A single chronological timeline. One actor (`SessionLogActor`) is the
+  only writer per file, so audit lines and diagnostic lines interleave in
+  wall-clock order — useful for reading "what happened, in order" without
+  cross-referencing two files.
+- Two line shapes: session output audit lines (`User:`, `Assistant:`,
+  `Thinking:`, `Tool call:`, `Tool result:`, `Usage:`, `Turn N completed`,
+  etc.) and `Diagnostic:` lines from MEL providers (LLM client, HTTP,
+  retry middleware) emitted under a session diagnostics scope.
+- Best-effort observability. Individual lines may be dropped on transient
+  IO errors and logged at Debug level in the daemon log; this is not a
+  transactional audit trail. Cross-check the daemon log for warnings
+  if a critical line appears missing.
+- Sidecar paths (compaction, title generation, sub-agents, memory
+  distillation) currently bypass the session diagnostics scope, so their
+  internal diagnostics may not appear in `session.log` even though their
+  output audit lines do. Tracked in netclaw-dev/netclaw#920.
 
 | Symptom | Check |
 |---------|-------|
