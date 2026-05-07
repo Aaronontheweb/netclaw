@@ -6,7 +6,6 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
-using System.Text;
 using Microsoft.Extensions.Configuration;
 using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Doctor;
@@ -32,7 +31,7 @@ public sealed class McpServersDoctorCheckTests : IDisposable
     [Fact]
     public async Task NoConfigFile_Passes()
     {
-        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => JsonResponse(new { })));
+        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(new { })));
         var result = await check.RunAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(DoctorSeverity.Pass, result.Severity);
@@ -42,7 +41,7 @@ public sealed class McpServersDoctorCheckTests : IDisposable
     public async Task NoMcpServersSection_Passes()
     {
         WriteConfig(new { configVersion = 1 });
-        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => JsonResponse(new { })));
+        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(new { })));
 
         var result = await check.RunAsync(TestContext.Current.CancellationToken);
 
@@ -92,7 +91,7 @@ public sealed class McpServersDoctorCheckTests : IDisposable
             }
         });
 
-        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => JsonResponse(new { })));
+        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(new { })));
         var result = await check.RunAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(DoctorSeverity.Error, result.Severity);
@@ -115,7 +114,7 @@ public sealed class McpServersDoctorCheckTests : IDisposable
             }
         });
 
-        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => JsonResponse(new { })));
+        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(new { })));
         var result = await check.RunAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(DoctorSeverity.Error, result.Severity);
@@ -138,7 +137,7 @@ public sealed class McpServersDoctorCheckTests : IDisposable
             }
         });
 
-        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => JsonResponse(new { })));
+        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(new { })));
         var result = await check.RunAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(DoctorSeverity.Error, result.Severity);
@@ -157,7 +156,7 @@ public sealed class McpServersDoctorCheckTests : IDisposable
             }
         });
 
-        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => JsonResponse(new { })));
+        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(new { })));
         var result = await check.RunAsync(TestContext.Current.CancellationToken);
 
         // Only disabled servers → all pass (no enabled servers to fail)
@@ -182,7 +181,7 @@ public sealed class McpServersDoctorCheckTests : IDisposable
             }
         });
 
-        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => JsonResponse(new
+        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(new
         {
             notion = new
             {
@@ -216,7 +215,7 @@ public sealed class McpServersDoctorCheckTests : IDisposable
             }
         });
 
-        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => JsonResponse(new
+        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(new
         {
             textforge = new
             {
@@ -272,42 +271,7 @@ public sealed class McpServersDoctorCheckTests : IDisposable
         var paths = new NetclawPaths(Path.Combine(Path.GetTempPath(), $"netclaw-daemon-api-test-{Guid.NewGuid():N}"));
         paths.EnsureDirectoriesExist();
 
-        return new DaemonApi(new StubHttpClientFactory(handler), configuration, paths);
-    }
-
-    private static HttpResponseMessage JsonResponse(object body, HttpStatusCode status = HttpStatusCode.OK)
-        => new(status)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
-        };
-
-    private sealed class StubHttpClientFactory : IHttpClientFactory
-    {
-        private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
-
-        public StubHttpClientFactory(Func<HttpRequestMessage, HttpResponseMessage> handler)
-        {
-            _handler = handler;
-        }
-
-        public HttpClient CreateClient(string name)
-            => new(new StubHttpMessageHandler(_handler));
-    }
-
-    private sealed class StubHttpMessageHandler : HttpMessageHandler
-    {
-        private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
-
-        public StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler)
-        {
-            _handler = handler;
-        }
-
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(_handler(request));
-        }
+        return new DaemonApi(new FakeHttpClientFactory(handler), configuration, paths);
     }
 
     private sealed class UnauthorizedHttpServer : IDisposable
