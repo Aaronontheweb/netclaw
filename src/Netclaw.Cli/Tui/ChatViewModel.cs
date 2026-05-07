@@ -255,7 +255,10 @@ public partial class ChatViewModel : ReactiveViewModel
         var patterns = interaction.Patterns.Count > 0
             ? $" Patterns: {string.Join(", ", interaction.Patterns)}"
             : string.Empty;
-        return $"Approval required for {interaction.ToolName}. {interaction.DisplayText}{patterns}";
+        var roots = interaction.DirectoryRoots.Count > 0
+            ? $" Directory roots: {string.Join(", ", interaction.DirectoryRoots)}"
+            : string.Empty;
+        return $"Approval required for {interaction.ToolName}. {interaction.DisplayText}{patterns}{roots}";
     }
 
     public string? GetApprovalHint()

@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Microsoft.Extensions.AI;
+using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Security;
@@ -55,7 +56,7 @@ public sealed class ToolApprovalGateTests
         Assert.True(decision.NeedsApproval);
         Assert.NotNull(decision.ApprovalContext);
         Assert.Equal("shell_execute", decision.ApprovalContext!.ToolName);
-        Assert.Contains("git push", decision.ApprovalContext.UnapprovedPatterns);
+        Assert.Contains("git push origin main", decision.ApprovalContext.Patterns);
     }
 
     [Fact]
@@ -117,7 +118,7 @@ public sealed class ToolApprovalGateTests
         // RequiresApproval so the executor can check the persistent approval store.
         Assert.True(decision.NeedsApproval);
         Assert.NotNull(decision.ApprovalContext);
-        Assert.Contains("git push", decision.ApprovalContext!.UnapprovedPatterns);
+        Assert.Contains("git push", decision.ApprovalContext!.Patterns);
     }
 
     [Fact]
@@ -129,9 +130,9 @@ public sealed class ToolApprovalGateTests
         var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
 
         Assert.True(decision.NeedsApproval);
-        Assert.Contains("git add", decision.ApprovalContext!.UnapprovedPatterns);
-        Assert.Contains("git commit", decision.ApprovalContext!.UnapprovedPatterns);
-        Assert.Contains("git push", decision.ApprovalContext.UnapprovedPatterns);
+        Assert.Contains("git add .", decision.ApprovalContext!.Patterns);
+        Assert.Contains("git commit -m fix", decision.ApprovalContext!.Patterns);
+        Assert.Contains("git push", decision.ApprovalContext.Patterns);
     }
 
     [Fact]
@@ -195,7 +196,7 @@ public sealed class ToolApprovalGateTests
         Assert.True(decision.NeedsApproval);
         Assert.NotNull(decision.ApprovalContext);
         Assert.Contains(
-            decision.ApprovalContext!.UnapprovedPatterns,
+            decision.ApprovalContext!.Patterns,
             p => p.StartsWith("file_write:control-plane:", StringComparison.Ordinal));
     }
 
@@ -217,7 +218,7 @@ public sealed class ToolApprovalGateTests
         Assert.True(decision.NeedsApproval);
         Assert.NotNull(decision.ApprovalContext);
         Assert.Contains(
-            decision.ApprovalContext!.UnapprovedPatterns,
+            decision.ApprovalContext!.Patterns,
             p => p.StartsWith("file_write:control-plane:", StringComparison.Ordinal));
     }
 
@@ -243,7 +244,7 @@ public sealed class ToolApprovalGateTests
 
         Assert.True(decision.NeedsApproval);
         Assert.Contains(
-            decision.ApprovalContext!.UnapprovedPatterns,
+            decision.ApprovalContext!.Patterns,
             p => p.StartsWith("file_edit:control-plane:", StringComparison.Ordinal));
     }
 
@@ -754,5 +755,111 @@ public sealed class ToolApprovalGateTests
         public FakeShellTrustZonePolicy(IReadOnlyList<string> roots) => _roots = roots;
 
         public IReadOnlyList<string> GetTrustZoneRoots(ToolExecutionContext context) => _roots;
+    }
+
+    // ── Directory-root shell approvals ──
+
+    [Fact]
+    public void Shell_path_command_populates_directory_roots_and_root_entries()
+    {
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var args = ToolInput.Create("Command", "cat /home/user/.netclaw/logs/crash.log");
+
+        var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+
+        Assert.True(decision.NeedsApproval);
+        Assert.NotNull(decision.ApprovalContext);
+        Assert.NotEmpty(decision.ApprovalContext!.DirectoryRoots);
+        Assert.Contains("/home/user/.netclaw/logs/", decision.ApprovalContext.DirectoryRoots.Select(p => p.Replace('\\', '/')));
+        Assert.Contains("/home/user/.netclaw/logs/", decision.ApprovalContext.ApprovalEntries.Select(p => p.Replace('\\', '/')));
+    }
+
+    [Fact]
+    public void Shell_path_command_labels_show_directory_scope()
+    {
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var args = ToolInput.Create("Command", "grep 'error' /home/user/.netclaw/logs/app.log");
+
+        var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+
+        Assert.True(decision.NeedsApproval);
+        var options = decision.ApprovalContext!.Options;
+        var sessionOption = options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession);
+        var alwaysOption = options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways);
+        Assert.StartsWith("Approve shell access in ", sessionOption.Label);
+        Assert.Contains("for this chat", sessionOption.Label);
+        Assert.StartsWith("Approve shell access in ", alwaysOption.Label);
+        Assert.Contains("always", alwaysOption.Label);
+    }
+
+    [Fact]
+    public void Shell_multi_root_command_uses_plural_directory_labels()
+    {
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var args = ToolInput.Create("Command", "cat /home/user/.netclaw/logs/app.log > /home/user/.netclaw/output/report.txt");
+
+        var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+
+        Assert.True(decision.NeedsApproval);
+        var options = decision.ApprovalContext!.Options;
+        Assert.Equal("Approve shell access in these directories for this chat", options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession).Label);
+        Assert.Equal("Approve shell access in these directories always", options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways).Label);
+    }
+
+    [Fact]
+    public void Shell_relative_path_command_keeps_relative_directory_root_for_prompt()
+    {
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var logs = Path.Combine(root, "logs");
+        Directory.CreateDirectory(logs);
+
+        try
+        {
+            var args = ToolInput.Create(
+                "Command", "grep timeout logs/app.log | wc -l",
+                "WorkingDirectory", root);
+
+            var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+
+            Assert.True(decision.NeedsApproval);
+            Assert.Equal(["logs/"], decision.ApprovalContext!.DirectoryRoots);
+            var absoluteRoot = PathUtility.Normalize(logs) + Path.DirectorySeparatorChar;
+            Assert.Contains(absoluteRoot, decision.ApprovalContext.ApprovalEntries);
+            // Session label keeps the relative form because session scope
+            // implicitly carries the working-directory context.
+            Assert.Equal(
+                "Approve shell access in logs/ for this chat",
+                decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession).Label);
+            // "Approve always" persists the absolute root, so the label MUST
+            // surface the absolute path the user is actually granting access
+            // to — otherwise the user thinks they approved `logs/` portably
+            // when in fact only the current working directory's `logs/` is
+            // covered.
+            Assert.Equal(
+                $"Approve shell access in {absoluteRoot} always",
+                decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways).Label);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Non_path_command_uses_default_labels()
+    {
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var args = ToolInput.Create("Command", "git push origin main");
+
+        var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+
+        Assert.True(decision.NeedsApproval);
+        Assert.Empty(decision.ApprovalContext!.DirectoryRoots);
+        Assert.Equal(["git push origin main"], decision.ApprovalContext.ApprovalEntries);
+        var sessionOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession);
+        var alwaysOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways);
+        Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, sessionOption.Label);
+        Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, alwaysOption.Label);
     }
 }

@@ -46,10 +46,26 @@ internal sealed class ParentSessionApprovalBridge : IParentApprovalBridge
         ToolCallId callId,
         string toolName,
         string displayText,
-        IReadOnlyList<string> unapprovedPatterns,
+        IReadOnlyList<string> patterns,
+        IReadOnlyList<string> approvalEntries,
+        IReadOnlyList<string> directoryRoots,
         CancellationToken ct)
     {
         var waitTask = _channel.WaitForApprovalAsync(callId, Timeout.InfiniteTimeSpan, ct);
+
+        var sessionLabel = ApprovalOptionKeys.ApproveSessionLabel;
+        var alwaysLabel = ApprovalOptionKeys.ApproveAlwaysLabel;
+        if (directoryRoots.Count == 1)
+        {
+            var dir = directoryRoots[0];
+            sessionLabel = $"Approve shell access in {dir} for this chat";
+            alwaysLabel = $"Approve shell access in {dir} always";
+        }
+        else if (directoryRoots.Count > 1)
+        {
+            sessionLabel = "Approve shell access in these directories for this chat";
+            alwaysLabel = "Approve shell access in these directories always";
+        }
 
         _emitRequest(new ToolInteractionRequest
         {
@@ -60,15 +76,17 @@ internal sealed class ParentSessionApprovalBridge : IParentApprovalBridge
             DisplayText = displayText,
             RequesterSenderId = _requesterSenderId,
             RequesterPrincipal = _requesterPrincipal,
-            Patterns = unapprovedPatterns,
+            Patterns = patterns,
+            ApprovalEntries = approvalEntries,
+            DirectoryRoots = directoryRoots,
             HasAdoptedContext = _hasAdoptedContext,
             AdoptedSpeakerIds = _adoptedSpeakerIds,
             PersistedAdoptedContext = _hasAdoptedContext,
             Options =
             [
                 new ToolInteractionOption(ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveOnceLabel),
-                new ToolInteractionOption(ApprovalOptionKeys.ApproveSession, ApprovalOptionKeys.ApproveSessionLabel),
-                new ToolInteractionOption(ApprovalOptionKeys.ApproveAlways, ApprovalOptionKeys.ApproveAlwaysLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveSession, sessionLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveAlways, alwaysLabel),
                 new ToolInteractionOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
             ]
         });

@@ -193,4 +193,37 @@ public sealed class PathUtilityTests
         var result = PathUtility.ExpandAndNormalize("path\0with\0nulls");
         Assert.Null(result);
     }
+
+    // Regression: when POSIX shell semantics handle a Windows host-resolved
+    // path (which contains backslashes), appending '/' would produce a
+    // mixed-separator string like "C:\foo\logs/". The trailing-separator
+    // helper must preserve the path's existing separator style so the
+    // comparison root recorded for B/C approvals matches what the host
+    // filesystem produces. This shape is host-independent — the runner OS
+    // does not affect the result, so it is safe to assert on Linux CI.
+    [Theory]
+    [InlineData(@"C:\Users\runner\AppData\Local\Temp\ef44\logs", @"C:\Users\runner\AppData\Local\Temp\ef44\logs\")]
+    [InlineData(@"C:\foo\bar", @"C:\foo\bar\")]
+    [InlineData("/home/user/logs", "/home/user/logs/")]
+    [InlineData("logs", "logs/")]
+    [InlineData("relative/path", "relative/path/")]
+    public void EnsureTrailingSeparatorPreservingStyle_preserves_existing_separator_style(string input, string expected)
+    {
+        Assert.Equal(expected, PathUtility.EnsureTrailingSeparatorPreservingStyle(input));
+    }
+
+    [Theory]
+    [InlineData("/already/has/slash/")]
+    [InlineData(@"C:\already\has\backslash\")]
+    [InlineData("logs/")]
+    public void EnsureTrailingSeparatorPreservingStyle_is_idempotent(string input)
+    {
+        Assert.Equal(input, PathUtility.EnsureTrailingSeparatorPreservingStyle(input));
+    }
+
+    [Fact]
+    public void EnsureTrailingSeparatorPreservingStyle_returns_empty_for_empty_input()
+    {
+        Assert.Equal(string.Empty, PathUtility.EnsureTrailingSeparatorPreservingStyle(string.Empty));
+    }
 }
