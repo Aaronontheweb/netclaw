@@ -35,6 +35,44 @@ public sealed class SessionLogActorTests : TestKit
                 timeProvider,
                 idleTimeout)));
 
+    /// <summary>
+    /// Best-effort temp directory cleanup. On Windows the SessionLogActor's
+    /// writer thread may still be releasing a file handle when this runs;
+    /// retry briefly to absorb the close-completion window before giving up.
+    /// Test assertions have already passed by the time we reach the finally,
+    /// so cleanup failures should not fail the test.
+    /// </summary>
+    private static void TryDeleteDirectory(string basePath)
+    {
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            try
+            {
+                if (Directory.Exists(basePath))
+                    Directory.Delete(basePath, recursive: true);
+                return;
+            }
+            catch (IOException) when (attempt < 5)
+            {
+                Thread.Sleep(20 * attempt);
+            }
+            catch (UnauthorizedAccessException) when (attempt < 5)
+            {
+                Thread.Sleep(20 * attempt);
+            }
+            catch (IOException ex)
+            {
+                Console.Error.WriteLine($"[SessionLogActorTests] cleanup failed: {ex.Message}");
+                return;
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                Console.Error.WriteLine($"[SessionLogActorTests] cleanup failed: {ex.Message}");
+                return;
+            }
+        }
+    }
+
     [Fact]
     public async Task ThinkingDeltaOutput_is_written_to_session_log()
     {
@@ -61,26 +99,26 @@ public sealed class SessionLogActorTests : TestKit
         }
         finally
         {
-            if (Directory.Exists(basePath))
-                Directory.Delete(basePath, recursive: true);
+            TryDeleteDirectory(basePath);
         }
     }
 
     [Fact]
-    public async Task Recreated_session_log_actor_appends_to_same_canonical_file()
+    public async Task Successive_dispatchers_append_to_same_canonical_file()
     {
+        // Validates the file-as-source-of-truth invariant: a fresh dispatcher
+        // spawning a fresh SessionLogActor against the same basePath appends
+        // to the existing session.log rather than creating a new file.
+        // Uses Watch + ExpectTerminatedAsync rather than idle eviction so
+        // the test is deterministic and not wall-clock dependent.
         var basePath = Path.Combine(Path.GetTempPath(), $"netclaw-session-log-tests-{Guid.NewGuid():N}");
         var timeProvider = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-07T13:10:00Z"));
         var sessionId = new SessionId("channel/thread");
 
         try
         {
-            // Short idle timeout so the child evicts during the test without sleeping.
-            // ReceiveTimeout is driven by the actor scheduler (real time), not
-            // FakeTimeProvider; AwaitAssertAsync polls real time until it fires.
-            var dispatcher = SpawnDispatcher(Sys, basePath, timeProvider, idleTimeout: TimeSpan.FromMilliseconds(150));
-
-            dispatcher.Tell(new TextOutput { SessionId = sessionId, Text = "first" }, ActorRefs.NoSender);
+            var dispatcher1 = SpawnDispatcher(Sys, basePath, timeProvider);
+            dispatcher1.Tell(new TextOutput { SessionId = sessionId, Text = "first" }, ActorRefs.NoSender);
 
             await AwaitAssertAsync(async () =>
             {
@@ -89,7 +127,12 @@ public sealed class SessionLogActorTests : TestKit
                 Assert.Contains("Assistant: first", text, StringComparison.Ordinal);
             }, cancellationToken: TestContext.Current.CancellationToken);
 
-            dispatcher.Tell(new TextOutput { SessionId = sessionId, Text = "second" }, ActorRefs.NoSender);
+            Watch(dispatcher1);
+            Sys.Stop(dispatcher1);
+            await ExpectTerminatedAsync(dispatcher1, cancellationToken: TestContext.Current.CancellationToken);
+
+            var dispatcher2 = SpawnDispatcher(Sys, basePath, timeProvider);
+            dispatcher2.Tell(new TextOutput { SessionId = sessionId, Text = "second" }, ActorRefs.NoSender);
 
             await AwaitAssertAsync(async () =>
             {
@@ -104,8 +147,7 @@ public sealed class SessionLogActorTests : TestKit
         }
         finally
         {
-            if (Directory.Exists(basePath))
-                Directory.Delete(basePath, recursive: true);
+            TryDeleteDirectory(basePath);
         }
     }
 
@@ -139,8 +181,7 @@ public sealed class SessionLogActorTests : TestKit
         }
         finally
         {
-            if (Directory.Exists(basePath))
-                Directory.Delete(basePath, recursive: true);
+            TryDeleteDirectory(basePath);
         }
     }
 
@@ -173,8 +214,7 @@ public sealed class SessionLogActorTests : TestKit
         }
         finally
         {
-            if (Directory.Exists(basePath))
-                Directory.Delete(basePath, recursive: true);
+            TryDeleteDirectory(basePath);
         }
     }
 }
