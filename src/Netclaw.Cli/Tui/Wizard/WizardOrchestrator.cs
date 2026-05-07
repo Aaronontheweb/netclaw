@@ -150,7 +150,7 @@ public sealed class WizardOrchestrator : IDisposable
         var configBuilder = new WizardConfigBuilder(_context.Paths);
         var secretsBuilder = new WizardSecretsBuilder(_context.Paths);
 
-        foreach (var step in _allSteps)
+        foreach (var step in _activeSteps)
         {
             step.ContributeConfig(configBuilder);
             step.ContributeSecrets(secretsBuilder);
@@ -182,7 +182,7 @@ public sealed class WizardOrchestrator : IDisposable
     /// </summary>
     public async Task RunHealthChecksAsync(HealthCheckRunner runner, CancellationToken ct)
     {
-        foreach (var step in _allSteps)
+        foreach (var step in _activeSteps)
         {
             ct.ThrowIfCancellationRequested();
             await step.ContributeHealthChecksAsync(runner, ct);

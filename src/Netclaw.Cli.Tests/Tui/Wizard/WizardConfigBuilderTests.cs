@@ -304,4 +304,30 @@ public sealed class WizardConfigBuilderTests : IDisposable
 
         Assert.False(config.ContainsKey("ExternalSkills"));
     }
+
+    [Fact]
+    public void BuildConfigDictionary_OmitsFeatureFlags_WhenFeatureSelectionsNull()
+    {
+        var builder = new WizardConfigBuilder(_paths);
+
+        var config = builder.BuildConfigDictionary();
+
+        // No Enabled flag should be injected into any feature section.
+        // Some sections (e.g., SkillSync) exist unconditionally with other keys.
+        AssertNoEnabledKey(config, "Memory");
+        AssertNoEnabledKey(config, "Search");
+        AssertNoEnabledKey(config, "SkillSync");
+        AssertNoEnabledKey(config, "Scheduling");
+        AssertNoEnabledKey(config, "SubAgents");
+        AssertNoEnabledKey(config, "Webhooks");
+    }
+
+    private static void AssertNoEnabledKey(Dictionary<string, object> config, string sectionKey)
+    {
+        if (config.TryGetValue(sectionKey, out var obj) && obj is Dictionary<string, object> section)
+        {
+            Assert.False(section.ContainsKey("Enabled"),
+                $"Section '{sectionKey}' should not have an 'Enabled' key when FeatureSelections is null");
+        }
+    }
 }
