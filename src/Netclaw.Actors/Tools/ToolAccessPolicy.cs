@@ -314,9 +314,17 @@ public sealed class ToolAccessPolicy
         var alwaysLabel = ApprovalOptionKeys.ApproveAlwaysLabel;
         if (directoryRoots.Count == 1)
         {
-            var dir = directoryRoots[0].DisplayPath;
-            sessionLabel = $"Approve shell access in {dir} for this chat";
-            alwaysLabel = $"Approve shell access in {dir} always";
+            var root = directoryRoots[0];
+            sessionLabel = $"Approve shell access in {root.DisplayPath} for this chat";
+            // "Approve always" persists the absolute comparison root, not the
+            // display form. When the display is a relative path like `logs/`,
+            // the persistent grant is still tied to the current working
+            // directory — the label has to show that absolute path so the user
+            // understands which directory they are actually granting access to.
+            // The session label keeps the relative form because session scope
+            // implicitly carries the working-directory context.
+            var alwaysScope = IsRelativeDisplayPath(root.DisplayPath) ? root.ComparisonRoot : root.DisplayPath;
+            alwaysLabel = $"Approve shell access in {alwaysScope} always";
         }
         else if (directoryRoots.Count > 1)
         {
@@ -448,6 +456,15 @@ public sealed class ToolAccessPolicy
 
     private static string? GetToolName(AITool tool)
         => tool is AIFunction function ? function.Name : null;
+
+    private static bool IsRelativeDisplayPath(string displayPath)
+    {
+        if (string.IsNullOrWhiteSpace(displayPath))
+            return false;
+
+        var trimmed = displayPath.TrimEnd('/', '\\');
+        return !Path.IsPathRooted(trimmed);
+    }
 }
 
 /// <summary>

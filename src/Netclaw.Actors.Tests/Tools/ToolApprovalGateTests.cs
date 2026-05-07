@@ -824,10 +824,21 @@ public sealed class ToolApprovalGateTests
 
             Assert.True(decision.NeedsApproval);
             Assert.Equal(["logs/"], decision.ApprovalContext!.DirectoryRoots);
-            Assert.Contains(PathUtility.Normalize(logs) + Path.DirectorySeparatorChar, decision.ApprovalContext.ApprovalEntries);
+            var absoluteRoot = PathUtility.Normalize(logs) + Path.DirectorySeparatorChar;
+            Assert.Contains(absoluteRoot, decision.ApprovalContext.ApprovalEntries);
+            // Session label keeps the relative form because session scope
+            // implicitly carries the working-directory context.
             Assert.Equal(
                 "Approve shell access in logs/ for this chat",
                 decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession).Label);
+            // "Approve always" persists the absolute root, so the label MUST
+            // surface the absolute path the user is actually granting access
+            // to — otherwise the user thinks they approved `logs/` portably
+            // when in fact only the current working directory's `logs/` is
+            // covered.
+            Assert.Equal(
+                $"Approve shell access in {absoluteRoot} always",
+                decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways).Label);
         }
         finally
         {
