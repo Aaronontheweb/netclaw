@@ -41,9 +41,13 @@ public sealed class DailyStatsActorTests : IDisposable
         actor.Tell(new DailyStatsActor.RecordSkillLoaded("create-release", SkillLoadMethod.SkillLoadTool));
         actor.Tell(new DailyStatsActor.RecordSkillLoaded("create-release", SkillLoadMethod.SlashCommand));
 
+        // 10s timeout: PreStart performs synchronous SQLite DDL (CREATE TABLE +
+        // COMMIT) on a fresh on-disk db, plus the query handler opens a second
+        // connection. On Windows CI cold-start with AV / Defender scanning, 3s
+        // is too tight. See netclaw-dev/netclaw#925 for the proper fix.
         var rows = await actor.Ask<DailyStatsActor.QuerySkillUsageStatsResult>(
             new DailyStatsActor.QuerySkillUsageStats(7),
-            TimeSpan.FromSeconds(3),
+            TimeSpan.FromSeconds(10),
             cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(3, rows.Rows.Count);
@@ -58,7 +62,7 @@ public sealed class DailyStatsActorTests : IDisposable
 
         var totals = await actor.Ask<DailyStatsActor.ProcessStatsResult>(
             new DailyStatsActor.QueryProcessStats(),
-            TimeSpan.FromSeconds(3),
+            TimeSpan.FromSeconds(10),
             cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(4, totals.SkillsLoadedTotal);
     }

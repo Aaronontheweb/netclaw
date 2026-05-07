@@ -1,30 +1,42 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="LoggingRegistrationExtensions.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Akka.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Netclaw.Actors.Hosting;
+using Netclaw.Configuration;
 
 namespace Netclaw.Daemon.Configuration;
 
 public static class LoggingRegistrationExtensions
 {
-    public static LogLevel ConfigureNetclawLogging(this WebApplicationBuilder builder)
+    public static LogLevel ConfigureNetclawLogging(this WebApplicationBuilder builder, NetclawPaths? paths = null)
     {
         var level = ResolveLogLevel(builder.Configuration);
         var consoleEnabled = builder.Configuration.GetValue("Logging:Console:Enabled", false);
+        var resolvedPaths = paths ?? new NetclawPaths();
 
         builder.Logging.ClearProviders();
+        builder.Logging.AddConfiguration(builder.Configuration.GetSection("Logging"));
         if (consoleEnabled)
             builder.Logging.AddSimpleConsole(options => options.SingleLine = true);
 
         // Always write to a rolling log file in ~/.netclaw/logs/
-        var logsDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".netclaw", "logs");
-        Directory.CreateDirectory(logsDir);
-        var logFilePath = Path.Combine(logsDir, "daemon.log");
-        builder.Logging.AddProvider(new RollingFileLoggerProvider(logFilePath));
+        Directory.CreateDirectory(resolvedPaths.LogsDirectory);
+
+        // Provider must be constructed eagerly so MEL can see it via AddProvider —
+        // a Services.AddSingleton<ILoggerProvider>(factory) registration here is
+        // not picked up by the LoggerFactory in this hosting setup. The session
+        // log dispatcher is wired in post-build by SessionLogDispatcherWiringService
+        // once Akka.Hosting has registered the actor system.
+        var provider = new RollingFileLoggerProvider(resolvedPaths.DaemonLogPath);
+        builder.Logging.AddProvider(provider);
+        builder.Services.AddSingleton(provider);
+        builder.Services.AddHostedService<SessionLogDispatcherWiringService>();
 
         builder.Logging.SetMinimumLevel(level);
         return level;
@@ -38,4 +50,30 @@ public static class LoggingRegistrationExtensions
 
         return LogLevel.Information;
     }
+}
+
+/// <summary>
+/// Hooks the session log dispatcher into <see cref="RollingFileLoggerProvider"/>
+/// once Akka.Hosting has registered <c>SessionLogDispatcherActorKey</c>.
+/// </summary>
+internal sealed class SessionLogDispatcherWiringService : IHostedService
+{
+    private readonly RollingFileLoggerProvider _provider;
+    private readonly IRequiredActor<SessionLogDispatcherActorKey> _dispatcher;
+
+    public SessionLogDispatcherWiringService(
+        RollingFileLoggerProvider provider,
+        IRequiredActor<SessionLogDispatcherActorKey> dispatcher)
+    {
+        _provider = provider;
+        _dispatcher = dispatcher;
+    }
+
+    public Task StartAsync(CancellationToken cancellationToken)
+    {
+        _provider.AttachSessionDispatcher(_dispatcher.GetAsync(cancellationToken));
+        return Task.CompletedTask;
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

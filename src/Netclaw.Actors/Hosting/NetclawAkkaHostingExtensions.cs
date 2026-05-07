@@ -141,6 +141,34 @@ public static class NetclawAkkaHostingExtensions
     }
 
     /// <summary>
+    /// Registers the session log dispatcher: a <see cref="GenericChildPerEntityParent"/>
+    /// that routes <see cref="Protocol.IWithSessionId"/> messages to a per-session
+    /// <see cref="SessionLogActor"/> child. The actor's mailbox is the sole writer
+    /// per <c>session.log</c> file. <c>RollingFileLoggerProvider</c> resolves the
+    /// dispatcher via <see cref="Akka.Hosting.IRequiredActor{T}"/> and routes
+    /// session-scoped MEL diagnostics through it; <c>LlmSessionActor</c> routes
+    /// session audit messages through it.
+    /// </summary>
+    public static AkkaConfigurationBuilder WithSessionLogDispatcher(
+        this AkkaConfigurationBuilder builder,
+        string sessionLogsBasePath,
+        TimeProvider timeProvider)
+    {
+        return builder.StartActors((system, registry, _) =>
+        {
+            var actor = system.ActorOf(
+                GenericChildPerEntityParent.CreateProps(
+                    new Routing.SessionMessageExtractor(),
+                    entityId => SessionLogActor.CreateProps(
+                        new Protocol.SessionId(entityId),
+                        sessionLogsBasePath,
+                        timeProvider)),
+                "session-log-dispatcher");
+            registry.Register<SessionLogDispatcherActorKey>(actor);
+        });
+    }
+
+    /// <summary>
     /// Convenience method that registers all Netclaw actor infrastructure.
     /// Requires <c>SessionConfig</c> and <see cref="Microsoft.Extensions.AI.IChatClient"/>
     /// to be registered in DI.

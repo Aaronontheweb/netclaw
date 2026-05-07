@@ -17,7 +17,7 @@ namespace Netclaw.Actors.Protocol;
 ///   <see cref="SessionTitleOutput"/>) are always delivered.
 /// - Content messages require the matching flag in the subscriber's filter.
 /// </summary>
-public abstract record SessionOutput
+public abstract record SessionOutput : IWithSessionId
 {
     public required SessionId SessionId { get; init; }
 

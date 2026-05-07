@@ -434,3 +434,4 @@ feeds/skills/.system/manifest.json
 
 # Eval run archives (persistent logs and results per run)
 evals/runs/
+.claude/scheduled_tasks.lock

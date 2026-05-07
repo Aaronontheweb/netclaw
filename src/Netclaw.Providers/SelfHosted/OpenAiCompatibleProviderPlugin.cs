@@ -24,6 +24,7 @@ public sealed class OpenAiCompatibleProviderPlugin : ProviderPluginBase<OpenAiCo
 
         return new OpenAiCompatibleChatClient(
             CreateLlmHttpClient(endpoint.BaseUri),
-            endpoint, model.ModelId);
+            endpoint,
+            model.ModelId);
     }
 }
