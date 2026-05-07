@@ -285,6 +285,16 @@ public sealed class ShellTokenizerTests
     }
 
     [Fact]
+    public void ExtractDirectoryRoots_preserves_posix_absolute_shell_paths_on_windows_hosts()
+    {
+        var roots = ShellTokenizer.ExtractDirectoryRoots("cat /home/user/.netclaw/logs/crash.log");
+
+        Assert.Single(roots);
+        Assert.DoesNotContain(":/home/", roots[0].ComparisonRoot.Replace('\\', '/'));
+        Assert.Equal("/home/user/.netclaw/logs/", roots[0].ComparisonRoot.Replace('\\', '/'));
+    }
+
+    [Fact]
     public void ExtractDirectoryRoots_keeps_relative_display_path_and_normalized_comparison_root()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));

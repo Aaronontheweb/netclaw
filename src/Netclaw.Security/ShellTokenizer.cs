@@ -213,7 +213,7 @@ public static class ShellTokenizer
         {
             if (LooksLikePath(token))
             {
-                var normalized = PathUtility.ExpandAndNormalize(token, workingDirectory);
+                var normalized = NormalizeShellPathToken(token, workingDirectory);
                 normalizedTokens.Add(normalized ?? token);
             }
             else
@@ -426,7 +426,7 @@ public static class ShellTokenizer
         if (displayRoot is null)
             return null;
 
-        var comparisonRoot = PathUtility.ExpandAndNormalize(displayRoot, workingDirectory);
+        var comparisonRoot = NormalizeShellPathToken(displayRoot, workingDirectory);
         if (comparisonRoot is null)
             return null;
 
@@ -453,17 +453,75 @@ public static class ShellTokenizer
             return lastSep > 0 ? path[..lastSep] : null;
         }
 
-        var normalizedCandidate = PathUtility.ExpandAndNormalize(path, workingDirectory);
+        var normalizedCandidate = NormalizeShellPathToken(path, workingDirectory);
         if (normalizedCandidate is not null && Directory.Exists(normalizedCandidate))
             return path;
 
         return ExtractParentDirectory(path);
     }
 
+    private static string? NormalizeShellPathToken(string path, string? workingDirectory)
+    {
+        var expanded = PathUtility.ExpandHome(path);
+
+        // Shell approval extraction is based on the command's path language, not
+        // the host runtime's filesystem parser. A POSIX shell path like
+        // `/home/user/...` should stay POSIX-shaped even when the daemon runs on
+        // Windows, otherwise `Path.GetFullPath()` rewrites it to `D:\home\...`
+        // and both matching and prompt text drift away from what the shell
+        // command actually means.
+        if (IsPosixAbsoluteShellPath(expanded))
+            return NormalizePosixShellPath(expanded);
+
+        return PathUtility.TryNormalize(expanded, workingDirectory, out var normalized)
+            ? normalized
+            : null;
+    }
+
+    private static bool IsPosixAbsoluteShellPath(string path)
+    {
+        return path.Length > 0 && path[0] == '/'
+            && !path.StartsWith("//", StringComparison.Ordinal)
+            && path.IndexOf('\\', StringComparison.Ordinal) < 0
+            && !path.Contains("://", StringComparison.Ordinal);
+    }
+
+    private static string NormalizePosixShellPath(string path)
+    {
+        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var normalized = new List<string>(segments.Length);
+        foreach (var segment in segments)
+        {
+            if (segment == ".")
+                continue;
+
+            if (segment == "..")
+            {
+                if (normalized.Count > 0)
+                    normalized.RemoveAt(normalized.Count - 1);
+
+                continue;
+            }
+
+            normalized.Add(segment);
+        }
+
+        return normalized.Count == 0 ? "/" : "/" + string.Join('/', normalized);
+    }
+
     private static string EnsureTrailingSeparator(string path)
-        => path.EndsWith('/') || path.EndsWith('\\')
-            ? path
-            : path + Path.DirectorySeparatorChar;
+    {
+        if (path.EndsWith('/') || path.EndsWith('\\'))
+            return path;
+
+        if (path.Contains('/', StringComparison.Ordinal) && !path.Contains('\\', StringComparison.Ordinal))
+            return path + '/';
+
+        if (path.Contains('\\', StringComparison.Ordinal) && !path.Contains('/', StringComparison.Ordinal))
+            return path + '\\';
+
+        return path + Path.DirectorySeparatorChar;
+    }
 
     private static string? ExtractParentDirectory(string path)
     {
@@ -479,6 +537,15 @@ public static class ShellTokenizer
             if (lastSep < 0)
                 lastSep = path.LastIndexOf('\\', globIdx);
             return lastSep > 0 ? path[..lastSep] : null;
+        }
+
+        // Preserve POSIX-style shell paths instead of routing them through the
+        // host filesystem parser, which would rewrite `/dir/file` into a drive-
+        // rooted Windows path when tests run on Windows.
+        if (path.Contains('/', StringComparison.Ordinal) && !path.Contains('\\', StringComparison.Ordinal))
+        {
+            var lastSlash = path.LastIndexOf('/');
+            return lastSlash > 0 ? path[..lastSlash] : null;
         }
 
         // Regular file: parent directory
