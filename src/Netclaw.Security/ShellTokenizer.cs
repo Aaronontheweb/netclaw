@@ -444,6 +444,9 @@ public static class ShellTokenizer
         if (path.EndsWith('/') || path.EndsWith('\\'))
             return path.TrimEnd('/', '\\');
 
+        if (path.Contains('/', StringComparison.Ordinal) && !path.Contains('\\', StringComparison.Ordinal))
+            return ExtractParentDirectory(path);
+
         var globIdx = path.IndexOfAny(['*', '?', '[']);
         if (globIdx >= 0)
         {
