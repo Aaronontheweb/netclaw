@@ -527,7 +527,7 @@ internal sealed class PosixShellApprovalSemantics : ShellApprovalSemanticsBase
     }
 
     protected override string EnsureTrailingSeparator(string path)
-        => path.Length > 0 && path[^1] == '/' ? path : path + '/';
+        => PathUtility.EnsureTrailingSeparatorPreservingStyle(path);
 
     internal static bool IsPosixShellInvoker(string verb)
     {
