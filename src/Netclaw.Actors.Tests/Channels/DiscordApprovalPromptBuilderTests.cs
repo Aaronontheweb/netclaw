@@ -14,8 +14,6 @@ public sealed class DiscordApprovalPromptBuilderTests
     [Fact]
     public void BuildTextPrompt_contains_tool_name_and_options()
     {
-        const string sessionLabel = "Approve in /home/user/.netclaw/logs/ for this chat";
-        const string alwaysLabel = "Approve in /home/user/.netclaw/logs/ always";
         var request = new ToolInteractionRequest
         {
             SessionId = new SessionId("test/session"),
@@ -26,8 +24,8 @@ public sealed class DiscordApprovalPromptBuilderTests
             Patterns = ["origin/main"],
             Options = [
                 new ToolInteractionOption(ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveOnceLabel),
-                new ToolInteractionOption(ApprovalOptionKeys.ApproveSession, sessionLabel),
-                new ToolInteractionOption(ApprovalOptionKeys.ApproveAlways, alwaysLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveSession, ApprovalOptionKeys.ApproveSessionLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveAlways, ApprovalOptionKeys.ApproveAlwaysLabel),
                 new ToolInteractionOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
             ]
         };
@@ -41,8 +39,6 @@ public sealed class DiscordApprovalPromptBuilderTests
         Assert.Contains("B)", prompt);
         Assert.Contains("C)", prompt);
         Assert.Contains("D)", prompt);
-        Assert.Contains(sessionLabel, prompt);
-        Assert.Contains(alwaysLabel, prompt);
     }
 
     [Fact]

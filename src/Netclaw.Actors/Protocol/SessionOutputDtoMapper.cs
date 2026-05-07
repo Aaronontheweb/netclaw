@@ -179,7 +179,6 @@ public static class SessionOutputDtoMapper
             InteractionDisplayText = msg.DisplayText,
             RequesterSenderId = msg.RequesterSenderId,
             InteractionPatterns = [.. msg.Patterns],
-            InteractionDirectoryPatterns = [.. msg.DirectoryPatterns],
             InteractionOptions = [.. msg.Options],
             InteractionHasAdoptedContext = msg.HasAdoptedContext,
             InteractionAdoptedSpeakerIds = [.. msg.AdoptedSpeakerIds]
@@ -337,7 +336,6 @@ public static class SessionOutputDtoMapper
                 HasAdoptedContext = dto.InteractionHasAdoptedContext ?? false,
                 AdoptedSpeakerIds = dto.InteractionAdoptedSpeakerIds ?? [],
                 Patterns = dto.InteractionPatterns ?? [],
-                DirectoryPatterns = dto.InteractionDirectoryPatterns ?? [],
                 Options = dto.InteractionOptions ?? []
             },
             _ => new ErrorOutput

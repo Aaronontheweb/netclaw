@@ -39,20 +39,6 @@ public static class ShellTokenizer
     };
 
     /// <summary>
-    /// Verbs whose first non-flag operand is expected to be a path. Existing bare
-    /// relative operands for these verbs can be treated as path targets even when
-    /// they do not include a slash or file extension.
-    /// </summary>
-    private static readonly HashSet<string> LeadingPathVerbs = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "bash", "sh", "zsh",
-        "cat", "less", "more", "head", "tail",
-        "find", "ls",
-        "cp", "mv", "tar", "zip", "unzip",
-        "python", "python3", "node", "ruby", "perl", "php"
-    };
-
-    /// <summary>
     /// Tokenizes a shell command string, respecting single and double quotes.
     /// Strips quote delimiters from tokens.
     /// </summary>
@@ -211,16 +197,6 @@ public static class ShellTokenizer
 
         return string.Join(' ', verbParts);
     }
-
-    /// <summary>
-    /// Extracts the approval pattern used for exact matching. For path-aware verbs,
-    /// prefers the first recognizable path operand normalized against the working
-    /// directory; otherwise falls back to the verb-chain extraction.
-    /// </summary>
-    public static string ExtractApprovalPattern(string command, string? workingDirectory = null, int maxDepth = 2)
-        => TryExtractPathOperand(command, workingDirectory, out var operand)
-            ? operand.Verb + " " + operand.NormalizedPath
-            : ExtractVerbChain(command, maxDepth);
 
     /// <summary>
     /// Extracts inner commands from bash -c / sh -c wrappers. Returns the
@@ -389,31 +365,15 @@ public static class ShellTokenizer
     /// argument, or the resulting directory is too shallow (fewer than 2
     /// path segments below root).
     /// </summary>
-    public static string? ExtractDirectoryScope(string command, string? workingDirectory = null)
+    public static string? ExtractDirectoryScope(string command)
     {
-        if (!TryExtractPathOperand(command, workingDirectory, out var operand))
-            return null;
-
-        // Enforce minimum depth — reject shallow scopes like / or /etc/
-        if (CountPathSegments(operand.NormalizedDirectory) < MinDirectoryScopeDepth)
-            return null;
-
-        return operand.Verb + " " + operand.NormalizedDirectory + "/";
-    }
-
-    internal const int MinDirectoryScopeDepth = 2;
-
-    private static bool TryExtractPathOperand(string command, string? workingDirectory, out PathOperand operand)
-    {
-        operand = default;
-
         var tokens = Tokenize(command).ToList();
         if (tokens.Count == 0)
-            return false;
+            return null;
 
         var verb = TrimShellPunctuation(tokens[0]);
         if (verb.Length == 0 || !PathAwareVerbs.Contains(verb))
-            return false;
+            return null;
 
         for (var i = 1; i < tokens.Count; i++)
         {
@@ -421,54 +381,28 @@ public static class ShellTokenizer
             if (trimmed.Length == 0 || trimmed.StartsWith('-'))
                 continue;
 
-            var normalizedPath = TryNormalizePathOperand(trimmed, verb, workingDirectory);
-            if (normalizedPath is null)
+            if (!LooksLikePath(trimmed))
                 continue;
 
-            var normalizedDirectory = ExtractScopedDirectory(normalizedPath, trimmed);
-            if (normalizedDirectory is null)
+            var dir = ExtractParentDirectory(PathUtility.ExpandHome(trimmed));
+            if (dir is null)
                 continue;
 
-            operand = new PathOperand(verb, normalizedPath, normalizedDirectory);
-            return true;
+            var normalized = PathUtility.ExpandAndNormalize(dir);
+            if (normalized is null)
+                continue;
+
+            // Enforce minimum depth — reject shallow scopes like / or /etc/
+            if (CountPathSegments(normalized) < MinDirectoryScopeDepth)
+                return null;
+
+            return verb + " " + normalized + "/";
         }
 
-        return false;
+        return null;
     }
 
-    private static string? TryNormalizePathOperand(string token, string verb, string? workingDirectory)
-    {
-        if (LooksLikePath(token))
-            return PathUtility.ExpandAndNormalize(token, workingDirectory);
-
-        if (!LeadingPathVerbs.Contains(verb))
-            return null;
-
-        var normalizedPath = PathUtility.ExpandAndNormalize(token, workingDirectory);
-        if (normalizedPath is null)
-            return null;
-
-        return File.Exists(normalizedPath) || Directory.Exists(normalizedPath)
-            ? normalizedPath
-            : null;
-    }
-
-    private static string? ExtractScopedDirectory(string normalizedPath, string rawPath)
-    {
-        if (rawPath.EndsWith('/') || rawPath.EndsWith('\\'))
-            return normalizedPath;
-
-        if (HasGlob(rawPath))
-            return Path.GetDirectoryName(normalizedPath);
-
-        if (Directory.Exists(normalizedPath))
-            return normalizedPath;
-
-        return Path.GetDirectoryName(normalizedPath);
-    }
-
-    private static bool HasGlob(string path)
-        => path.IndexOfAny(['*', '?', '[']) >= 0;
+    internal const int MinDirectoryScopeDepth = 2;
 
     private static string? ExtractParentDirectory(string path)
     {
@@ -553,6 +487,4 @@ public static class ShellTokenizer
             segments.Add(trimmed);
         current.Clear();
     }
-
-    private readonly record struct PathOperand(string Verb, string NormalizedPath, string NormalizedDirectory);
 }

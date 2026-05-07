@@ -14,13 +14,6 @@ public sealed class ShellApprovalMatcherTests
 
     private static Dictionary<string, object?> Args(string command) => new() { ["Command"] = command };
 
-    private static Dictionary<string, object?> Args(string command, string workingDirectory)
-        => new()
-        {
-            ["Command"] = command,
-            ["WorkingDirectory"] = workingDirectory
-        };
-
     [Fact]
     public void ExtractPatterns_simple_command()
     {
@@ -135,15 +128,6 @@ public sealed class ShellApprovalMatcherTests
     }
 
     [Fact]
-    public void IsApproved_directory_scope_matches_grep_path_operand()
-    {
-        var approved = new[] { "grep /home/user/.netclaw/logs/" };
-
-        Assert.True(_matcher.IsApproved(new ToolName("shell_execute"),
-            Args("grep -l \"timeout\" /home/user/.netclaw/logs/daemon.log"), approved));
-    }
-
-    [Fact]
     public void ExtractPatterns_path_aware_verb_includes_path()
     {
         var patterns = _matcher.ExtractPatterns(
@@ -152,41 +136,6 @@ public sealed class ShellApprovalMatcherTests
         Assert.Equal(2, patterns.Count);
         Assert.Contains("cat /etc/hosts", patterns);
         Assert.Contains("git push", patterns);
-    }
-
-    [Fact]
-    public void ExtractPatterns_grep_uses_path_operand_instead_of_search_term()
-    {
-        var patterns = _matcher.ExtractPatterns(
-            new ToolName("shell_execute"),
-            Args("grep -l \"timeout\" /home/user/.netclaw/logs/daemon.log"));
-
-        Assert.Single(patterns);
-        Assert.Equal("grep /home/user/.netclaw/logs/daemon.log", patterns[0]);
-    }
-
-    [Fact]
-    public void ExtractPatterns_resolve_relative_paths_against_working_directory()
-    {
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var logs = Path.Combine(root, "logs");
-        Directory.CreateDirectory(logs);
-        var file = Path.Combine(logs, "app.log");
-        File.WriteAllText(file, "hello");
-
-        try
-        {
-            var patterns = _matcher.ExtractPatterns(
-                new ToolName("shell_execute"),
-                Args("cat logs/app.log", root));
-
-            Assert.Single(patterns);
-            Assert.Equal($"cat {PathUtility.Normalize(file)}", patterns[0]);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
     }
 
     [Fact]
@@ -257,52 +206,6 @@ public sealed class ShellApprovalMatcherTests
         Assert.Equal(2, patterns.Count);
         Assert.Contains(patterns, p => p.StartsWith("cat ") && p.EndsWith("/"));
         Assert.Contains(patterns, p => p == "git push");
-    }
-
-    [Fact]
-    public void ExtractDirectoryPatterns_resolve_relative_paths_against_working_directory()
-    {
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var logs = Path.Combine(root, "logs");
-        Directory.CreateDirectory(logs);
-        var file = Path.Combine(logs, "app.log");
-        File.WriteAllText(file, "hello");
-
-        try
-        {
-            var patterns = _matcher.ExtractDirectoryPatterns(
-                new ToolName("shell_execute"),
-                Args("cat logs/app.log", root));
-
-            Assert.Single(patterns);
-            Assert.Equal($"cat {PathUtility.Normalize(logs)}/", patterns[0]);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void ExtractDirectoryPatterns_preserve_existing_directory_operand()
-    {
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var logs = Path.Combine(root, "logs");
-        Directory.CreateDirectory(logs);
-
-        try
-        {
-            var patterns = _matcher.ExtractDirectoryPatterns(
-                new ToolName("shell_execute"),
-                Args("find logs -name '*.log'", root));
-
-            Assert.Single(patterns);
-            Assert.Equal($"find {PathUtility.Normalize(logs)}/", patterns[0]);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
     }
 }
 
