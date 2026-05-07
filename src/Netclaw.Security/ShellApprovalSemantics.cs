@@ -491,6 +491,29 @@ internal sealed class PosixShellApprovalSemantics : ShellApprovalSemanticsBase
         return PathUtility.ExpandAndNormalize(expanded, workingDirectory);
     }
 
+    protected override string? ExtractDisplayDirectory(string path, string? workingDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+
+        if (path.EndsWith('/') || path.EndsWith('\\'))
+            return path.TrimEnd('/', '\\');
+
+        var globIdx = path.IndexOfAny(['*', '?', '[']);
+        if (globIdx >= 0)
+        {
+            var lastSep = path.LastIndexOf('/', globIdx);
+            return lastSep > 0 ? path[..lastSep] : null;
+        }
+
+        var normalizedCandidate = NormalizePathToken(path, workingDirectory);
+        if (normalizedCandidate is not null && Directory.Exists(normalizedCandidate))
+            return path;
+
+        var lastSlash = path.LastIndexOf('/');
+        return lastSlash > 0 ? path[..lastSlash] : null;
+    }
+
     protected override bool IsShellSeparator(char ch) => ch == '/';
 
     protected override bool IsAnchoredPath(string token)
@@ -629,6 +652,9 @@ internal sealed class WindowsShellApprovalSemantics : ShellApprovalSemanticsBase
             return false;
         }
 
+        if (token.Contains('\\', StringComparison.Ordinal))
+            return true;
+
         return HasTraversalComponent(token) || HasFileExtensionInLastComponent(token);
     }
 
@@ -636,8 +662,7 @@ internal sealed class WindowsShellApprovalSemantics : ShellApprovalSemanticsBase
 
     protected override bool IsAnchoredPath(string token)
     {
-        return token.Length > 0 && token[0] == '/'
-            || IsWindowsRootedPath(token)
+        return IsWindowsRootedPath(token)
             || token.StartsWith("./", StringComparison.Ordinal)
             || token.StartsWith("../", StringComparison.Ordinal)
             || token.StartsWith(@".\", StringComparison.Ordinal)
