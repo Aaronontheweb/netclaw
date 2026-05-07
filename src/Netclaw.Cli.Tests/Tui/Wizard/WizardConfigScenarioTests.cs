@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Text.Json;
 using Netclaw.Cli.Tui;
 using Netclaw.Cli.Tui.Wizard;
 using Netclaw.Cli.Tui.Wizard.Steps;
@@ -18,15 +19,11 @@ namespace Netclaw.Cli.Tests.Tui.Wizard;
 /// </summary>
 public sealed class WizardConfigScenarioTests : WizardStepTestBase
 {
-    private List<IWizardStepViewModel>? _steps;
+    private WizardOrchestrator? _orchestrator;
 
     public override void Dispose()
     {
-        if (_steps is not null)
-        {
-            foreach (var step in _steps)
-                step.Dispose();
-        }
+        _orchestrator?.Dispose();
         base.Dispose();
     }
 
@@ -197,9 +194,9 @@ public sealed class WizardConfigScenarioTests : WizardStepTestBase
 
     // ── Helpers ──
 
-    private List<IWizardStepViewModel> BuildCoreSteps()
+    private static List<IWizardStepViewModel> BuildCoreSteps()
     {
-        _steps =
+        return
         [
             new SecurityPostureStepViewModel(),
             new FeatureSelectionStepViewModel(),
@@ -207,7 +204,6 @@ public sealed class WizardConfigScenarioTests : WizardStepTestBase
             new IdentityStepViewModel(),
             new ExposureModeStepViewModel()
         ];
-        return _steps;
     }
 
     private void EnterAndConfigurePosture(List<IWizardStepViewModel> steps, DeploymentPosture posture)
@@ -253,11 +249,33 @@ public sealed class WizardConfigScenarioTests : WizardStepTestBase
 
     private Dictionary<string, object> AssembleConfig(List<IWizardStepViewModel> steps)
     {
-        var builder = new WizardConfigBuilder(Context.Paths);
-        foreach (var step in steps.Where(s => s.IsApplicable(Context)))
-            step.ContributeConfig(builder);
-        return builder.BuildConfigDictionary();
+        _orchestrator = new WizardOrchestrator(steps, Context);
+        _orchestrator.WriteConfig();
+
+        var json = File.ReadAllText(Context.Paths.NetclawConfigPath);
+        var doc = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json)!;
+        return ConvertToDictionary(doc);
     }
+
+    private static Dictionary<string, object> ConvertToDictionary(Dictionary<string, JsonElement> source)
+    {
+        var result = new Dictionary<string, object>();
+        foreach (var (key, element) in source)
+            result[key] = ConvertElement(element);
+        return result;
+    }
+
+    private static object ConvertElement(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.Object => element.EnumerateObject()
+            .ToDictionary(p => p.Name, p => ConvertElement(p.Value)),
+        JsonValueKind.Array => element.EnumerateArray().Select(ConvertElement).ToArray(),
+        JsonValueKind.String => element.GetString()!,
+        JsonValueKind.True => (object)true,
+        JsonValueKind.False => false,
+        JsonValueKind.Number => element.TryGetInt32(out var i) ? i : element.GetDouble(),
+        _ => element.ToString()
+    };
 
     private static T GetStep<T>(List<IWizardStepViewModel> steps) where T : IWizardStepViewModel
         => steps.OfType<T>().Single();

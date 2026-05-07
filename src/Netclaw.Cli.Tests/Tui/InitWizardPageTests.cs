@@ -345,6 +345,8 @@ public sealed class InitWizardPageTests : IDisposable
         var config = System.Text.Json.JsonSerializer.Deserialize<
             System.Text.Json.JsonElement>(configText);
 
+        // Webhooks is omitted: Personal posture skips FeatureSelection, so only
+        // ExposureModeStep can write Webhooks — and it only does so when enabled.
         string[] featureSections = ["Memory", "Search", "SkillSync", "Scheduling", "SubAgents"];
         foreach (var section in featureSections)
         {
