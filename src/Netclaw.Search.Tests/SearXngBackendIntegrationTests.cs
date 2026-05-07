@@ -28,24 +28,26 @@ public class SearXngBackendIntegrationTests : IAsyncLifetime
     public async ValueTask InitializeAsync()
     {
         var settingsYml = LoadFixture("searxng-settings.yml");
-
-        var container = new ContainerBuilder()
-            .WithImage(SearXngImage)
-            .WithPortBinding(8080, assignRandomHostPort: true)
-            .WithResourceMapping(
-                Encoding.UTF8.GetBytes(settingsYml),
-                "/etc/searxng/settings.yml")
-            .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(r =>
-                r.ForPort(8080).ForPath("/healthz")))
-            .Build();
+        IContainer? container = null;
 
         try
         {
+            container = new ContainerBuilder()
+                .WithImage(SearXngImage)
+                .WithPortBinding(8080, assignRandomHostPort: true)
+                .WithResourceMapping(
+                    Encoding.UTF8.GetBytes(settingsYml),
+                    "/etc/searxng/settings.yml")
+                .WithWaitStrategy(Wait.ForUnixContainer().UntilHttpRequestIsSucceeded(r =>
+                    r.ForPort(8080).ForPath("/healthz")))
+                .Build();
+
             await container.StartAsync();
         }
         catch (Exception ex) when (IsDockerUnavailable(ex))
         {
-            await container.DisposeAsync();
+            if (container is not null)
+                await container.DisposeAsync();
             Assert.Skip($"Docker is not available; integration test skipped. ({ex.GetType().Name}: {ex.Message})");
             return;
         }

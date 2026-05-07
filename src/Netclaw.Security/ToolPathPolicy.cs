@@ -3,6 +3,8 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Text;
+
 namespace Netclaw.Security;
 
 /// <summary>
@@ -122,13 +124,29 @@ public sealed class ToolPathPolicy
             if (!LooksLikePath(token))
                 continue;
 
-            var expanded = PathUtility.ExpandHome(token);
-            if (PathUtility.TryNormalize(expanded, workingDirectory, out var normalized)
-                && IsDeniedNormalized(normalized, _shellDeniedPaths))
+            var normalized = ShellTokenizer.NormalizePathToken(token, workingDirectory);
+            if (normalized is not null && IsDeniedNormalized(normalized, _shellDeniedPaths))
             {
                 return true;
             }
 
+            // Defense-in-depth against symlink escalation under a directory-
+            // scoped approval. Path.GetFullPath (used by NormalizePathToken)
+            // collapses `.`/`..` but does NOT resolve symlinks in any path
+            // component. Without this pass, a user who approves /home/safe/
+            // can be tricked by a planted /home/safe/leak -> /etc symlink:
+            // the approval gate sees /home/safe/leak/passwd as "within" the
+            // approved root and waves it through, and the static path check
+            // here would never see /etc unless we resolve link targets along
+            // every component of the path.
+            if (normalized is not null
+                && TryResolveSymlinksInPath(normalized, out var canonical)
+                && IsDeniedNormalized(canonical, _shellDeniedPaths))
+            {
+                return true;
+            }
+
+            var expanded = PathUtility.ExpandHome(token);
             if (expanded.Contains("secrets.json", StringComparison.OrdinalIgnoreCase)
                 || expanded.Contains(".netclaw/keys", StringComparison.OrdinalIgnoreCase)
                 || expanded.Contains(".netclaw\\keys", StringComparison.OrdinalIgnoreCase))
@@ -183,6 +201,65 @@ public sealed class ToolPathPolicy
 
         var boundary = candidate[denied.Length];
         return boundary == Path.DirectorySeparatorChar || boundary == Path.AltDirectorySeparatorChar;
+    }
+
+    private static bool TryResolveSymlinksInPath(string path, out string canonical)
+    {
+        canonical = string.Empty;
+        if (string.IsNullOrEmpty(path))
+            return false;
+
+        try
+        {
+            // Walk the path component by component, resolving any directory
+            // or file symlinks encountered. ResolveLinkTarget(returnFinalTarget:
+            // true) follows the chain to a non-link, but only operates on the
+            // entity it's invoked against — it does not see symlinks earlier
+            // in the path. Hence the explicit segment walk.
+            var fullPath = Path.GetFullPath(path);
+            var segments = fullPath.Split(
+                [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                StringSplitOptions.RemoveEmptyEntries);
+            var sb = new StringBuilder();
+            if (Path.IsPathRooted(fullPath))
+                sb.Append(Path.DirectorySeparatorChar);
+
+            foreach (var segment in segments)
+            {
+                if (sb.Length > 0 && sb[^1] != Path.DirectorySeparatorChar)
+                    sb.Append(Path.DirectorySeparatorChar);
+                sb.Append(segment);
+
+                var partial = sb.ToString();
+                if (Directory.Exists(partial))
+                {
+                    var target = new DirectoryInfo(partial).ResolveLinkTarget(returnFinalTarget: true);
+                    if (target is not null)
+                    {
+                        sb.Clear();
+                        sb.Append(target.FullName);
+                    }
+                }
+                else if (File.Exists(partial))
+                {
+                    var target = new FileInfo(partial).ResolveLinkTarget(returnFinalTarget: true);
+                    if (target is not null)
+                    {
+                        sb.Clear();
+                        sb.Append(target.FullName);
+                    }
+
+                    break;
+                }
+            }
+
+            canonical = PathUtility.Normalize(sb.ToString());
+            return !string.IsNullOrEmpty(canonical) && !string.Equals(canonical, PathUtility.Normalize(fullPath), StringComparison.Ordinal);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static bool TryResolveSymlinkTarget(string path, out string normalizedTarget)

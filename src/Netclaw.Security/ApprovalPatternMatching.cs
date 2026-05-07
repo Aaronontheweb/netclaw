@@ -6,33 +6,116 @@
 namespace Netclaw.Security;
 
 /// <summary>
-/// Shared verb-chain prefix matcher used for tool approval grants. An approved
-/// pattern matches a candidate exactly or as a verb-chain prefix on a space
-/// boundary — so "git push" approves "git push origin main" but never
-/// "github-cli".
+/// Shared approval matching helpers. Shell approvals use
+/// <see cref="MatchesShellApprovalEntry"/>, which only compares exact approval
+/// units and normalized directory roots. Other tools continue to use
+/// <see cref="MatchesAny"/> for exact and prefix-style matching.
 /// </summary>
 public static class ApprovalPatternMatching
 {
-    public static bool MatchesAny(string candidate, IEnumerable<string> approvedPatterns)
+    // Approval entries embed both filesystem paths (case-sensitive on POSIX,
+    // case-insensitive on Windows) and verb tokens that resolve to executables
+    // via the host's $PATH lookup, which honors filesystem case rules. Folding
+    // case unconditionally on POSIX would let an attacker who plants `Git`
+    // earlier in $PATH inherit the approval the user issued for `git` —
+    // similarly for case-distinct directory pairs like `/data/` vs `/Data/`.
+    private static StringComparison ApprovalEntryComparison =>
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+    public static bool MatchesShellApprovalEntry(string candidate, IEnumerable<string> approvedEntries)
     {
-        foreach (var approved in approvedPatterns)
+        // Shell approvals never widen by verb prefix here. Reusable entries are
+        // either exact normalized units or normalized directory roots.
+        foreach (var approved in approvedEntries)
         {
-            if (string.Equals(candidate, approved, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(candidate, approved, ApprovalEntryComparison))
                 return true;
 
-            if (candidate.Length <= approved.Length || candidate[approved.Length] != ' ')
-                continue;
-
-            if (!candidate.StartsWith(approved, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            // Multi-token patterns prefix-match on a space boundary. Single-token
-            // patterns remain exact-only so grants do not silently widen from
-            // "cat" to every path-bearing cat invocation.
-            if (approved.Contains(' ', StringComparison.Ordinal))
+            if (IsDirectoryRootEntry(candidate) && IsDirectoryRootEntry(approved) && MatchesDirectoryRoot(candidate, approved))
                 return true;
         }
 
         return false;
+    }
+
+    public static bool MatchesAny(string candidate, IEnumerable<string> approvedPatterns)
+    {
+        foreach (var approved in approvedPatterns)
+        {
+            if (string.Equals(candidate, approved, ApprovalEntryComparison))
+                return true;
+
+            if (!approved.Contains(' ', StringComparison.Ordinal))
+                continue;
+
+            // Directory-scoped patterns: "verb /dir/" matches "verb /dir/file.txt"
+            if (approved.EndsWith('/') && MatchesDirectoryScope(candidate, approved))
+                return true;
+
+            // Multi-token patterns prefix-match on a space boundary. Single-token
+            // patterns remain exact-only so grants do not silently widen from
+            // "cat" to every path-bearing cat invocation.
+            if (candidate.Length > approved.Length
+                && candidate[approved.Length] == ' '
+                && candidate.StartsWith(approved, ApprovalEntryComparison))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool MatchesDirectoryScope(string candidate, string approvedDirPattern)
+    {
+        var approvedSpaceIdx = approvedDirPattern.IndexOf(' ', StringComparison.Ordinal);
+        if (approvedSpaceIdx < 0)
+            return false;
+
+        var approvedVerb = approvedDirPattern[..approvedSpaceIdx];
+        var approvedDir = approvedDirPattern[(approvedSpaceIdx + 1)..].TrimEnd('/');
+
+        var candidateSpaceIdx = candidate.IndexOf(' ', StringComparison.Ordinal);
+        if (candidateSpaceIdx < 0)
+            return false;
+
+        var candidateVerb = candidate[..candidateSpaceIdx];
+        var candidatePath = candidate[(candidateSpaceIdx + 1)..];
+
+        if (!string.Equals(approvedVerb, candidateVerb, ApprovalEntryComparison))
+            return false;
+
+        try
+        {
+            return PathUtility.IsWithinRoot(candidatePath, approvedDir);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException)
+        {
+            return false;
+        }
+    }
+
+    private static bool MatchesDirectoryRoot(string candidateRoot, string approvedRoot)
+    {
+        try
+        {
+            return PathUtility.IsWithinRoot(
+                candidateRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                approvedRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsDirectoryRootEntry(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        if (!(value.EndsWith(Path.DirectorySeparatorChar) || value.EndsWith(Path.AltDirectorySeparatorChar)))
+            return false;
+
+        var trimmed = value.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return Path.IsPathRooted(trimmed);
     }
 }

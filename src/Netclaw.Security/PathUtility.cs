@@ -84,6 +84,32 @@ public static class PathUtility
     }
 
     /// <summary>
+    /// Appends a trailing directory separator to <paramref name="path"/> if it does
+    /// not already end with one, preserving the path's existing separator style.
+    /// </summary>
+    /// <remarks>
+    /// A path that already contains backslashes (typical of Windows host-resolved
+    /// paths from <see cref="Path.GetFullPath(string)"/>) gets a backslash appended,
+    /// while a path with only forward slashes — or no separators at all — gets a
+    /// forward slash. This avoids producing mixed-separator strings such as
+    /// <c>C:\foo\bar/</c> when POSIX-flavored shell semantics are applied to a
+    /// host-resolved Windows path.
+    /// </remarks>
+    public static string EnsureTrailingSeparatorPreservingStyle(string path)
+    {
+        if (path.Length == 0)
+            return path;
+
+        var last = path[^1];
+        if (last == '/' || last == '\\')
+            return path;
+
+        return path.Contains('\\', StringComparison.Ordinal)
+            ? path + '\\'
+            : path + '/';
+    }
+
+    /// <summary>
     /// Expands shell path tokens: ~, $HOME, ${HOME}, %USERPROFILE%.
     /// Does not normalize the path.
     /// </summary>

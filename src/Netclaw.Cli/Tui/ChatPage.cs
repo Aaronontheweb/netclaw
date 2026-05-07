@@ -361,6 +361,8 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 _chatHistory.AppendLine($"  {msg.DisplayText}", Color.White);
                 if (msg.Patterns.Count > 0)
                     _chatHistory.AppendLine($"  Patterns: {string.Join(", ", msg.Patterns)}", Color.BrightBlack);
+                if (msg.DirectoryRoots.Count > 0)
+                    _chatHistory.AppendLine($"  Directory roots: {string.Join(", ", msg.DirectoryRoots)}", Color.BrightBlack);
                 _chatHistory.AppendLine("  Choose Approve once, Approve for this chat, Approve always, or Deny below.", Color.Yellow);
                 _chatHistory.ScrollToBottom();
                 break;

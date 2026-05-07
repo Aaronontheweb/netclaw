@@ -20,14 +20,14 @@ internal static class DiscordApprovalPromptBuilder
         if (request.Patterns.Count > 0)
             sb.Append("Pattern: ").AppendLine(string.Join(", ", request.Patterns));
 
+        if (request.DirectoryRoots.Count > 0)
+            sb.Append("Directory roots: ").AppendLine(string.Join(", ", request.DirectoryRoots));
+
         AppendAdoptedContextSummary(sb, request);
 
         sb.AppendLine();
         sb.AppendLine("Reply with:");
-        sb.Append("A) ").AppendLine(ApprovalOptionKeys.ApproveOnceLabel);
-        sb.Append("B) ").AppendLine(ApprovalOptionKeys.ApproveSessionLabel);
-        sb.Append("C) ").AppendLine(ApprovalOptionKeys.ApproveAlwaysLabel);
-        sb.Append("D) ").AppendLine(ApprovalOptionKeys.DenyLabel);
+        AppendReplyOptions(sb, request.Options);
         return sb.ToString().TrimEnd();
     }
 
@@ -39,7 +39,7 @@ internal static class DiscordApprovalPromptBuilder
         AppendToolSummary(sb, request);
 
         sb.AppendLine();
-        sb.Append("You can also reply with `A`, `B`, `C`, or `D` in this thread.");
+        sb.Append("You can also reply with ").Append(FormatReplyLetters(request.Options)).Append(" in this thread.");
 
         var buttons = request.Options
             .Select(option => new DiscordButtonSpec(
@@ -95,6 +95,20 @@ internal static class DiscordApprovalPromptBuilder
             }
         }
 
+        if (request.DirectoryRoots.Count > 0)
+        {
+            if (request.DirectoryRoots.Count == 1)
+            {
+                sb.Append("**Directory Root:** `").Append(request.DirectoryRoots[0]).AppendLine("`");
+            }
+            else
+            {
+                sb.AppendLine("**Directory Roots:**");
+                foreach (var root in request.DirectoryRoots)
+                    sb.Append("  • `").Append(root).AppendLine("`");
+            }
+        }
+
         AppendAdoptedContextSummary(sb, request);
     }
 
@@ -106,6 +120,18 @@ internal static class DiscordApprovalPromptBuilder
         sb.Append("**Adopted context:** present").AppendLine();
         sb.Append("**Speakers:** `").Append(string.Join(", ", request.AdoptedSpeakerIds)).AppendLine("`");
     }
+
+    private static void AppendReplyOptions(StringBuilder sb, IReadOnlyList<ToolInteractionOption> options)
+    {
+        for (var i = 0; i < options.Count; i++)
+            sb.Append(GetReplyLetter(i)).Append(") ").AppendLine(options[i].Label);
+    }
+
+    private static string FormatReplyLetters(IReadOnlyList<ToolInteractionOption> options)
+        => string.Join(", ", Enumerable.Range(0, options.Count).Select(i => $"`{GetReplyLetter(i)}`"));
+
+    private static string GetReplyLetter(int index)
+        => ((char)('A' + index)).ToString();
 
     private static string GetDecisionLabel(string selectedKey)
         => selectedKey switch

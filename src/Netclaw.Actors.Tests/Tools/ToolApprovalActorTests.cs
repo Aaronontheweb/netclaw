@@ -17,6 +17,20 @@ namespace Netclaw.Actors.Tests.Tools;
 
 public sealed class ToolApprovalActorTests : TestKit
 {
+    public static TheoryData<string, string, string> DirectoryRootCoverageCases
+    {
+        get
+        {
+            var data = new TheoryData<string, string, string>();
+            if (OperatingSystem.IsWindows())
+                data.Add(@"C:\Users\petabridge\.netclaw\logs\", @"C:\Users\petabridge\.netclaw\output\", @"C:\Users\petabridge\.netclaw\output\");
+            else
+                data.Add("/home/user/.netclaw/logs/", "/home/user/.netclaw/output/", "/home/user/.netclaw/output/");
+
+            return data;
+        }
+    }
+
     protected override void ConfigureAkka(AkkaConfigurationBuilder builder, IServiceProvider provider)
     {
     }
@@ -88,7 +102,7 @@ public sealed class ToolApprovalActorTests : TestKit
     }
 
     [Fact]
-    public async Task Multi_token_approval_prefix_matches()
+    public async Task Shell_exact_approval_does_not_prefix_match()
     {
         var ct = TestContext.Current.CancellationToken;
         var actor = Sys.ActorOf(ToolApprovalActor.CreateProps());
@@ -96,9 +110,48 @@ public sealed class ToolApprovalActorTests : TestKit
 
         await service.RecordApprovalAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), ["git push"], persistent: false, ct);
 
-        // Multi-token "git push" should match "git push origin" via prefix
         var unapproved = await service.GetUnapprovedPatternsAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), ["git push origin"], ct);
-        Assert.Empty(unapproved);
+        Assert.Equal(["git push origin"], unapproved);
+    }
+
+    [Theory]
+    [MemberData(nameof(DirectoryRootCoverageCases))]
+    public async Task Shell_directory_root_approval_covers_other_verbs_under_same_root(string approvedRoot, string otherRoot, string expectedUnapproved)
+    {
+        _ = otherRoot;
+        _ = expectedUnapproved;
+        var ct = TestContext.Current.CancellationToken;
+        var actor = Sys.ActorOf(ToolApprovalActor.CreateProps());
+        var service = CreateService(actor);
+
+        await service.RecordApprovalAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), [approvedRoot], persistent: false, ct);
+
+        Assert.Empty(await service.GetUnapprovedPatternsAsync(
+            "session-a",
+            TrustAudience.Personal,
+            new ToolName("shell_execute"),
+            [approvedRoot],
+            ct));
+    }
+
+    [Theory]
+    [MemberData(nameof(DirectoryRootCoverageCases))]
+    public async Task Shell_directory_root_approval_requires_all_roots_to_be_covered(string approvedRoot, string otherRoot, string expectedUnapproved)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var actor = Sys.ActorOf(ToolApprovalActor.CreateProps());
+        var service = CreateService(actor);
+
+        await service.RecordApprovalAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), [approvedRoot], persistent: false, ct);
+
+        var unapproved = await service.GetUnapprovedPatternsAsync(
+            "session-a",
+            TrustAudience.Personal,
+            new ToolName("shell_execute"),
+            [approvedRoot, otherRoot],
+            ct);
+
+        Assert.Equal([expectedUnapproved], unapproved);
     }
 
     [Fact]
@@ -127,14 +180,26 @@ public sealed class ToolApprovalActorTests : TestKit
     }
 
     [Fact]
-    public async Task Case_insensitive_match()
+    public async Task Approval_match_follows_host_filesystem_case_rules()
     {
+        // Approval entries embed both filesystem paths and verb tokens that
+        // resolve to executables via $PATH lookup, which honors filesystem case
+        // rules. On POSIX, `Git` and `git` are different executables, and
+        // `/data/` and `/Data/` are different directories — so a grant issued
+        // for one MUST NOT cover the other (binary-substitution / case-distinct
+        // path bypass). On Windows, the filesystem and PATH are
+        // case-insensitive, so the case-folded match is the correct behavior.
         var ct = TestContext.Current.CancellationToken;
         var actor = Sys.ActorOf(ToolApprovalActor.CreateProps());
         var service = CreateService(actor);
 
         await service.RecordApprovalAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), ["Git Push"], persistent: false, ct);
-        Assert.Empty(await service.GetUnapprovedPatternsAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), ["git push"], ct));
+        var unapproved = await service.GetUnapprovedPatternsAsync("session-a", TrustAudience.Personal, new ToolName("shell_execute"), ["git push"], ct);
+
+        if (OperatingSystem.IsWindows())
+            Assert.Empty(unapproved);
+        else
+            Assert.Equal(["git push"], unapproved);
     }
 
     [Fact]

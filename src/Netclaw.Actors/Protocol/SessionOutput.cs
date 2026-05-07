@@ -357,8 +357,24 @@ public sealed record ToolInteractionRequest : SessionOutput
     /// </summary>
     public PrincipalClassification? RequesterPrincipal { get; init; }
 
-    /// <summary>Patterns requiring approval (for shell: verb chains like "git push").</summary>
+    /// <summary>
+    /// Exact blocked approval units shown in the prompt. For shell these are
+    /// the normalized command units that approve-once can retry.
+    /// </summary>
     public IReadOnlyList<string> Patterns { get; init; } = [];
+
+    /// <summary>
+    /// Entries checked against the accumulated session/persistent approval
+    /// state. For shell commands these are reusable directory roots when local
+    /// roots can be extracted, and exact fallback units otherwise.
+    /// </summary>
+    public IReadOnlyList<string> ApprovalEntries { get; init; } = [];
+
+    /// <summary>
+    /// Human-visible reusable roots extracted from the current invocation so the
+    /// prompt can explain what broader B/C approvals would cover.
+    /// </summary>
+    public IReadOnlyList<string> DirectoryRoots { get; init; } = [];
 
     /// <summary>Available response options (e.g., approve once, approve for this chat, approve always, deny).</summary>
     public required IReadOnlyList<ToolInteractionOption> Options { get; init; }
