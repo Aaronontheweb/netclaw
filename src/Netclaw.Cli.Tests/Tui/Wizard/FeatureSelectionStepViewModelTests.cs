@@ -177,19 +177,4 @@ public sealed class FeatureSelectionStepViewModelTests : WizardStepTestBase
         AssertNoEnabledKey(config, "Webhooks");
     }
 
-    private static void AssertNoEnabledKey(Dictionary<string, object> config, string sectionKey)
-    {
-        if (config.TryGetValue(sectionKey, out var obj) && obj is Dictionary<string, object> section)
-        {
-            Assert.False(section.ContainsKey("Enabled"),
-                $"Section '{sectionKey}' should not have an 'Enabled' key when feature step was skipped");
-        }
-    }
-
-    private static void AssertSectionEnabled(Dictionary<string, object> config, string sectionKey, bool expected)
-    {
-        Assert.True(config.ContainsKey(sectionKey), $"Config should contain '{sectionKey}' section");
-        var section = (Dictionary<string, object>)config[sectionKey];
-        Assert.Equal(expected, section["Enabled"]);
-    }
 }

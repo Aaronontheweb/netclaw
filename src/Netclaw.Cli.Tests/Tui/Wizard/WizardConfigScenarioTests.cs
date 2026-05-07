@@ -18,6 +18,18 @@ namespace Netclaw.Cli.Tests.Tui.Wizard;
 /// </summary>
 public sealed class WizardConfigScenarioTests : WizardStepTestBase
 {
+    private List<IWizardStepViewModel>? _steps;
+
+    public override void Dispose()
+    {
+        if (_steps is not null)
+        {
+            foreach (var step in _steps)
+                step.Dispose();
+        }
+        base.Dispose();
+    }
+
     [Fact]
     public void PersonalPosture_MinimalSetup_DoesNotDisableFeatures()
     {
@@ -43,7 +55,7 @@ public sealed class WizardConfigScenarioTests : WizardStepTestBase
     {
         var steps = BuildCoreSteps();
         EnterAndConfigurePosture(steps, DeploymentPosture.Team);
-        EnterFeatureSelection(steps, DeploymentPosture.Team);
+        EnterFeatureSelection(steps);
         ConfigureSearch(steps, SearchBackend.DuckDuckGo);
         ConfigureExposure(steps, ExposureMode.TailscaleServe, webhooks: true);
         ConfigureIdentity(steps, "TeamBot", "UTC");
@@ -161,10 +173,7 @@ public sealed class WizardConfigScenarioTests : WizardStepTestBase
         var config = AssembleConfig(steps);
 
         Assert.False(config.ContainsKey("Daemon"));
-        // Webhooks section should not appear when webhooks are off and
-        // there's no FeatureSelection step to explicitly write it
-        Assert.False(config.ContainsKey("Webhooks") && GetSection(config, "Webhooks").ContainsKey("Enabled")
-            && (bool)GetSection(config, "Webhooks")["Enabled"]);
+        AssertNoEnabledKey(config, "Webhooks");
     }
 
     [Fact]
@@ -172,7 +181,7 @@ public sealed class WizardConfigScenarioTests : WizardStepTestBase
     {
         var steps = BuildCoreSteps();
         EnterAndConfigurePosture(steps, DeploymentPosture.Team);
-        EnterFeatureSelection(steps, DeploymentPosture.Team);
+        EnterFeatureSelection(steps);
         ConfigureSearch(steps, SearchBackend.Brave);
         ConfigureExposure(steps, ExposureMode.TailscaleFunnel, webhooks: true);
         ConfigureIdentity(steps, "Netclaw", "UTC");
@@ -190,7 +199,7 @@ public sealed class WizardConfigScenarioTests : WizardStepTestBase
 
     private List<IWizardStepViewModel> BuildCoreSteps()
     {
-        return
+        _steps =
         [
             new SecurityPostureStepViewModel(),
             new FeatureSelectionStepViewModel(),
@@ -198,6 +207,7 @@ public sealed class WizardConfigScenarioTests : WizardStepTestBase
             new IdentityStepViewModel(),
             new ExposureModeStepViewModel()
         ];
+        return _steps;
     }
 
     private void EnterAndConfigurePosture(List<IWizardStepViewModel> steps, DeploymentPosture posture)
@@ -209,7 +219,7 @@ public sealed class WizardConfigScenarioTests : WizardStepTestBase
         Context.SelectedPosture = posture;
     }
 
-    private void EnterFeatureSelection(List<IWizardStepViewModel> steps, DeploymentPosture posture)
+    private void EnterFeatureSelection(List<IWizardStepViewModel> steps)
     {
         var step = GetStep<FeatureSelectionStepViewModel>(steps);
         if (!step.IsApplicable(Context))
@@ -273,16 +283,9 @@ public sealed class WizardConfigScenarioTests : WizardStepTestBase
         Assert.Equal(expected, search["Backend"]);
     }
 
-    private static void AssertSectionEnabled(Dictionary<string, object> config, string sectionKey, bool expected)
-    {
-        Assert.True(config.ContainsKey(sectionKey), $"Config should contain '{sectionKey}' section");
-        var section = GetSection(config, sectionKey);
-        Assert.Equal(expected, section["Enabled"]);
-    }
-
     private static void AssertNoDisabledFeatureFlags(Dictionary<string, object> config)
     {
-        string[] featureSections = ["Memory", "Scheduling", "SubAgents"];
+        string[] featureSections = ["Memory", "Search", "SkillSync", "Scheduling", "SubAgents", "Webhooks"];
         foreach (var section in featureSections)
         {
             if (config.TryGetValue(section, out var obj) && obj is Dictionary<string, object> dict)
