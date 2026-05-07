@@ -191,7 +191,7 @@ public sealed class ContextWindowDoctorCheckTests : IDisposable
         var configuration = new ConfigurationBuilder().Build();
         var paths = new NetclawPaths(Path.Combine(Path.GetTempPath(), $"netclaw-ctx-test-{Guid.NewGuid():N}"));
         paths.EnsureDirectoriesExist();
-        return new DaemonApi(new StubHttpClientFactory(handler), configuration, paths);
+        return new DaemonApi(new FakeHttpClientFactory(handler), configuration, paths);
     }
 
     private static object BuildStatusResponse(int contextWindow) => new
@@ -218,18 +218,4 @@ public sealed class ContextWindowDoctorCheckTests : IDisposable
             Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
         };
 
-    private sealed class StubHttpClientFactory(Func<HttpRequestMessage, HttpResponseMessage> handler) : IHttpClientFactory
-    {
-        public HttpClient CreateClient(string name)
-            => new(new StubHttpMessageHandler(handler));
-    }
-
-    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
-    {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(handler(request));
-        }
-    }
 }

@@ -145,7 +145,7 @@ public sealed class DaemonApiAuthenticationTests : IDisposable
         ClientConfigFile.WriteEndpoint(_paths, endpoint);
         var configuration = new ConfigurationBuilder().Build();
 
-        return new DaemonApi(new StubHttpClientFactory(handler), configuration, _paths);
+        return new DaemonApi(new FakeHttpClientFactory(handler), configuration, _paths);
     }
 
     private void WriteDeviceToken(string token)
@@ -164,32 +164,4 @@ public sealed class DaemonApiAuthenticationTests : IDisposable
             Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
         };
 
-    private sealed class StubHttpClientFactory : IHttpClientFactory
-    {
-        private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
-
-        public StubHttpClientFactory(Func<HttpRequestMessage, HttpResponseMessage> handler)
-        {
-            _handler = handler;
-        }
-
-        public HttpClient CreateClient(string name)
-            => new(new StubHttpMessageHandler(_handler));
-    }
-
-    private sealed class StubHttpMessageHandler : HttpMessageHandler
-    {
-        private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
-
-        public StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler)
-        {
-            _handler = handler;
-        }
-
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(_handler(request));
-        }
-    }
 }

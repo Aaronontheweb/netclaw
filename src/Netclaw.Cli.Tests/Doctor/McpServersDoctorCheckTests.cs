@@ -272,7 +272,7 @@ public sealed class McpServersDoctorCheckTests : IDisposable
         var paths = new NetclawPaths(Path.Combine(Path.GetTempPath(), $"netclaw-daemon-api-test-{Guid.NewGuid():N}"));
         paths.EnsureDirectoriesExist();
 
-        return new DaemonApi(new StubHttpClientFactory(handler), configuration, paths);
+        return new DaemonApi(new FakeHttpClientFactory(handler), configuration, paths);
     }
 
     private static HttpResponseMessage JsonResponse(object body, HttpStatusCode status = HttpStatusCode.OK)
@@ -280,35 +280,6 @@ public sealed class McpServersDoctorCheckTests : IDisposable
         {
             Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
         };
-
-    private sealed class StubHttpClientFactory : IHttpClientFactory
-    {
-        private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
-
-        public StubHttpClientFactory(Func<HttpRequestMessage, HttpResponseMessage> handler)
-        {
-            _handler = handler;
-        }
-
-        public HttpClient CreateClient(string name)
-            => new(new StubHttpMessageHandler(_handler));
-    }
-
-    private sealed class StubHttpMessageHandler : HttpMessageHandler
-    {
-        private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
-
-        public StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler)
-        {
-            _handler = handler;
-        }
-
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(_handler(request));
-        }
-    }
 
     private sealed class UnauthorizedHttpServer : IDisposable
     {
