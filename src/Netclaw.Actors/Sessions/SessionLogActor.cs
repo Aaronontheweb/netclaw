@@ -47,29 +47,9 @@ public sealed class SessionLogActor : ReceiveActor
         Receive<ReceiveTimeout>(_ => Context.Stop(Self));
     }
 
-    /// <summary>
-    /// Computes the logs directory for this session:
-    /// <c>{sessionLogsBase}/{sanitized_id}/</c>
-    /// </summary>
-    public static string GetSessionLogsDirectory(SessionId sessionId, string sessionLogsBasePath)
-        => SessionLogFile.GetLogsDirectory(sessionId, sessionLogsBasePath);
-
-    public static string GetSessionLogPath(SessionId sessionId, string sessionLogsBasePath)
-        => SessionLogFile.GetLogPath(sessionId, sessionLogsBasePath);
-
     protected override void PreStart()
     {
         Context.SetReceiveTimeout(_idleTimeout);
-
-        try
-        {
-            var now = _timeProvider.GetUtcNow();
-            SessionLogFile.AppendLine(_sessionId, _sessionLogsBasePath, $"[{now:o}] Session log attached: {_sessionId.Value}");
-        }
-        catch (Exception ex)
-        {
-            _log.Warning(ex, "Failed to initialize session log file for {SessionId}", _sessionId.Value);
-        }
     }
 
     private void OnUserMessage(SendUserMessage msg)

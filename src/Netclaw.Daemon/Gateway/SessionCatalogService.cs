@@ -7,7 +7,6 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
-using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Telemetry;
 using Netclaw.Configuration;
 
@@ -61,7 +60,7 @@ public sealed class SessionCatalogService : ISessionLifecycleObserver
 
         try
         {
-            var logPath = SessionLogActor.GetSessionLogPath(sessionId, _paths.SessionLogsDirectory);
+            var logPath = SessionLogFile.GetLogPath(sessionId, _paths.SessionLogsDirectory);
 
             using var conn = new SqliteConnection(_connectionString);
             conn.Open();

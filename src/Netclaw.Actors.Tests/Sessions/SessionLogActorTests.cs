@@ -3,11 +3,13 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using Akka.Hosting.TestKit;
 using Akka.Actor;
 using Akka.Hosting;
+using Akka.Hosting.TestKit;
 using Microsoft.Extensions.Time.Testing;
+using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Protocol;
+using Netclaw.Actors.Routing;
 using Netclaw.Actors.Sessions;
 using Netclaw.Configuration;
 using Xunit;
@@ -20,6 +22,19 @@ public sealed class SessionLogActorTests : TestKit
     {
     }
 
+    private static IActorRef SpawnDispatcher(
+        ActorSystem sys,
+        string basePath,
+        TimeProvider timeProvider,
+        TimeSpan? idleTimeout = null) =>
+        sys.ActorOf(GenericChildPerEntityParent.CreateProps(
+            new SessionMessageExtractor(),
+            entityId => SessionLogActor.CreateProps(
+                new SessionId(entityId),
+                basePath,
+                timeProvider,
+                idleTimeout)));
+
     [Fact]
     public async Task ThinkingDeltaOutput_is_written_to_session_log()
     {
@@ -29,7 +44,7 @@ public sealed class SessionLogActorTests : TestKit
 
         try
         {
-            var dispatcher = Sys.ActorOf(SessionLogDispatcher.CreateProps(basePath, timeProvider));
+            var dispatcher = SpawnDispatcher(Sys, basePath, timeProvider);
 
             dispatcher.Tell(new ThinkingDeltaOutput
             {
@@ -39,7 +54,7 @@ public sealed class SessionLogActorTests : TestKit
 
             await AwaitAssertAsync(async () =>
             {
-                var logFile = SessionLogActor.GetSessionLogPath(sessionId, basePath);
+                var logFile = SessionLogFile.GetLogPath(sessionId, basePath);
                 var text = await File.ReadAllTextAsync(logFile, TestContext.Current.CancellationToken);
                 Assert.Contains("Thinking delta: step by step", text, StringComparison.Ordinal);
             }, cancellationToken: TestContext.Current.CancellationToken);
@@ -61,36 +76,24 @@ public sealed class SessionLogActorTests : TestKit
         try
         {
             // Short idle timeout so the child evicts during the test without sleeping.
-            var dispatcher = Sys.ActorOf(SessionLogDispatcher.CreateProps(
-                basePath,
-                timeProvider,
-                childIdleTimeout: TimeSpan.FromMilliseconds(150)));
+            // ReceiveTimeout is driven by the actor scheduler (real time), not
+            // FakeTimeProvider; AwaitAssertAsync polls real time until it fires.
+            var dispatcher = SpawnDispatcher(Sys, basePath, timeProvider, idleTimeout: TimeSpan.FromMilliseconds(150));
 
-            dispatcher.Tell(new TextOutput
-            {
-                SessionId = sessionId,
-                Text = "first"
-            }, ActorRefs.NoSender);
+            dispatcher.Tell(new TextOutput { SessionId = sessionId, Text = "first" }, ActorRefs.NoSender);
 
             await AwaitAssertAsync(async () =>
             {
-                var logFile = SessionLogActor.GetSessionLogPath(sessionId, basePath);
+                var logFile = SessionLogFile.GetLogPath(sessionId, basePath);
                 var text = await File.ReadAllTextAsync(logFile, TestContext.Current.CancellationToken);
                 Assert.Contains("Assistant: first", text, StringComparison.Ordinal);
             }, cancellationToken: TestContext.Current.CancellationToken);
 
-            // Wait for the child to evict via ReceiveTimeout, then send another message
-            // and confirm the recreated actor appends to the same file.
-            timeProvider.Advance(TimeSpan.FromMilliseconds(50));
-            dispatcher.Tell(new TextOutput
-            {
-                SessionId = sessionId,
-                Text = "second"
-            }, ActorRefs.NoSender);
+            dispatcher.Tell(new TextOutput { SessionId = sessionId, Text = "second" }, ActorRefs.NoSender);
 
             await AwaitAssertAsync(async () =>
             {
-                var logFile = SessionLogActor.GetSessionLogPath(sessionId, basePath);
+                var logFile = SessionLogFile.GetLogPath(sessionId, basePath);
                 Assert.True(File.Exists(logFile));
                 Assert.Single(Directory.GetFiles(Path.GetDirectoryName(logFile)!, "*.log", SearchOption.TopDirectoryOnly));
 
@@ -116,15 +119,15 @@ public sealed class SessionLogActorTests : TestKit
 
         try
         {
-            var dispatcher = Sys.ActorOf(SessionLogDispatcher.CreateProps(basePath, timeProvider));
+            var dispatcher = SpawnDispatcher(Sys, basePath, timeProvider);
 
             dispatcher.Tell(new TextOutput { SessionId = sessionA, Text = "alpha" }, ActorRefs.NoSender);
             dispatcher.Tell(new TextOutput { SessionId = sessionB, Text = "beta" }, ActorRefs.NoSender);
 
             await AwaitAssertAsync(async () =>
             {
-                var pathA = SessionLogActor.GetSessionLogPath(sessionA, basePath);
-                var pathB = SessionLogActor.GetSessionLogPath(sessionB, basePath);
+                var pathA = SessionLogFile.GetLogPath(sessionA, basePath);
+                var pathB = SessionLogFile.GetLogPath(sessionB, basePath);
                 var textA = await File.ReadAllTextAsync(pathA, TestContext.Current.CancellationToken);
                 var textB = await File.ReadAllTextAsync(pathB, TestContext.Current.CancellationToken);
 
@@ -150,7 +153,7 @@ public sealed class SessionLogActorTests : TestKit
 
         try
         {
-            var dispatcher = Sys.ActorOf(SessionLogDispatcher.CreateProps(basePath, timeProvider));
+            var dispatcher = SpawnDispatcher(Sys, basePath, timeProvider);
 
             dispatcher.Tell(new TextOutput { SessionId = sessionId, Text = "audit-line" }, ActorRefs.NoSender);
             timeProvider.Advance(TimeSpan.FromMilliseconds(1));
@@ -162,7 +165,7 @@ public sealed class SessionLogActorTests : TestKit
 
             await AwaitAssertAsync(async () =>
             {
-                var path = SessionLogActor.GetSessionLogPath(sessionId, basePath);
+                var path = SessionLogFile.GetLogPath(sessionId, basePath);
                 var text = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
                 Assert.Contains("Assistant: audit-line", text, StringComparison.Ordinal);
                 Assert.Contains("Diagnostic: provider sent request", text, StringComparison.Ordinal);

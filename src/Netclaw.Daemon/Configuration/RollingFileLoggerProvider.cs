@@ -33,8 +33,9 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider
     private readonly ConcurrentDictionary<string, RollingFileLogger> _loggers = new();
     private readonly BlockingCollection<string> _queue = new(1024);
     private readonly Thread _writerThread;
-    private readonly ConcurrentQueue<SessionLogDiagnostic>? _pendingDiagnostics;
+    private ConcurrentQueue<SessionLogDiagnostic>? _pendingDiagnostics;
     private IActorRef? _sessionDispatcher;
+    private int _pendingCount;
     private StreamWriter? _writer;
     private string _currentDate = "";
 
@@ -70,38 +71,55 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider
         if (string.IsNullOrWhiteSpace(sessionId))
             return;
 
+        var dispatcher = Volatile.Read(ref _sessionDispatcher);
+        if (dispatcher is null && Volatile.Read(ref _pendingCount) >= PreResolutionBufferLimit)
+            return;
+
         var diagnostic = new SessionLogDiagnostic
         {
             SessionId = new SessionId(sessionId),
             Line = $"[{_timeProvider.GetUtcNow():o}] Diagnostic: {message}"
         };
 
-        var dispatcher = Volatile.Read(ref _sessionDispatcher);
         if (dispatcher is not null)
         {
             dispatcher.Tell(diagnostic);
             return;
         }
 
-        if (_pendingDiagnostics.Count >= PreResolutionBufferLimit)
-            return;
+        Interlocked.Increment(ref _pendingCount);
         _pendingDiagnostics.Enqueue(diagnostic);
     }
 
     private async Task ResolveSessionDispatcherAsync(Func<Task<IActorRef>> factory)
     {
+        IActorRef dispatcher;
         try
         {
-            var dispatcher = await factory().ConfigureAwait(false);
-
-            while (_pendingDiagnostics!.TryDequeue(out var pending))
-                dispatcher.Tell(pending);
-
-            Volatile.Write(ref _sessionDispatcher, dispatcher);
+            dispatcher = await factory().ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[NetclawLogWriter] Failed to resolve session log dispatcher: {ex.Message}");
+            // Resolution failed permanently. Drop the buffer and switch the
+            // session-log path off — daemon-global logging continues normally,
+            // but session-scoped diagnostics will not appear in session.log
+            // for the remainder of this process. Surface a single loud line
+            // so operators see this in the daemon log instead of silently
+            // accumulating drops.
+            _queue.TryAdd($"{GetTimestamp()} [ERR] Netclaw.Logging: session log dispatcher resolution failed; session-scoped diagnostics disabled. {ex.Message}");
+            _pendingDiagnostics = null;
+            return;
+        }
+
+        // Publish the ref BEFORE draining so producers racing with the drainer
+        // see the dispatcher and Tell directly rather than enqueueing into a
+        // queue that we are about to abandon.
+        Volatile.Write(ref _sessionDispatcher, dispatcher);
+
+        while (_pendingDiagnostics!.TryDequeue(out var pending))
+        {
+            Interlocked.Decrement(ref _pendingCount);
+            dispatcher.Tell(pending);
         }
     }
 
