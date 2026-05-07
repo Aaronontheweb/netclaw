@@ -170,7 +170,7 @@ public class SubAgentActorTests : TestKit
 
         Assert.True(result.Success);
         Assert.Equal(2, approvalBridge.RequestCount);
-        Assert.Equal(["git push", "git push"], approvalBridge.RequestedPatterns);
+        Assert.Equal(["git push origin main", "git push origin main"], approvalBridge.RequestedPatterns);
     }
 
     [Fact]
