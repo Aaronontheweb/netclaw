@@ -36,41 +36,19 @@ public sealed class SessionLogActorTests : TestKit
                 idleTimeout)));
 
     /// <summary>
-    /// Best-effort temp directory cleanup. On Windows the SessionLogActor's
-    /// writer thread may still be releasing a file handle when this runs;
-    /// retry briefly to absorb the close-completion window before giving up.
-    /// Test assertions have already passed by the time we reach the finally,
-    /// so cleanup failures should not fail the test.
+    /// Spins on <see cref="Directory.Delete"/> via <see cref="TestKit.AwaitAssertAsync"/>.
+    /// On Windows the SessionLogActor's writer or AV scanning may briefly
+    /// hold a handle on a just-closed file; AwaitAssertAsync retries the
+    /// delete with TestKit's polling cadence until it succeeds or the
+    /// outer test deadline expires.
     /// </summary>
-    private static void TryDeleteDirectory(string basePath)
+    private async Task TryDeleteDirectoryAsync(string basePath)
     {
-        for (var attempt = 1; attempt <= 5; attempt++)
+        await AwaitAssertAsync(() =>
         {
-            try
-            {
-                if (Directory.Exists(basePath))
-                    Directory.Delete(basePath, recursive: true);
-                return;
-            }
-            catch (IOException) when (attempt < 5)
-            {
-                Thread.Sleep(20 * attempt);
-            }
-            catch (UnauthorizedAccessException) when (attempt < 5)
-            {
-                Thread.Sleep(20 * attempt);
-            }
-            catch (IOException ex)
-            {
-                Console.Error.WriteLine($"[SessionLogActorTests] cleanup failed: {ex.Message}");
-                return;
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                Console.Error.WriteLine($"[SessionLogActorTests] cleanup failed: {ex.Message}");
-                return;
-            }
-        }
+            if (Directory.Exists(basePath))
+                Directory.Delete(basePath, recursive: true);
+        }, cancellationToken: TestContext.Current.CancellationToken);
     }
 
     [Fact]
@@ -99,7 +77,7 @@ public sealed class SessionLogActorTests : TestKit
         }
         finally
         {
-            TryDeleteDirectory(basePath);
+            await TryDeleteDirectoryAsync(basePath);
         }
     }
 
@@ -147,7 +125,7 @@ public sealed class SessionLogActorTests : TestKit
         }
         finally
         {
-            TryDeleteDirectory(basePath);
+            await TryDeleteDirectoryAsync(basePath);
         }
     }
 
@@ -181,7 +159,7 @@ public sealed class SessionLogActorTests : TestKit
         }
         finally
         {
-            TryDeleteDirectory(basePath);
+            await TryDeleteDirectoryAsync(basePath);
         }
     }
 
@@ -214,7 +192,7 @@ public sealed class SessionLogActorTests : TestKit
         }
         finally
         {
-            TryDeleteDirectory(basePath);
+            await TryDeleteDirectoryAsync(basePath);
         }
     }
 }
