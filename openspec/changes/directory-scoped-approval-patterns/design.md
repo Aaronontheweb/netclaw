@@ -1,8 +1,8 @@
 ## Context
 
 Shell command approval patterns are extracted by `ShellTokenizer.ExtractVerbChain()`
-which, for path-aware commands with a direct path operand, appends that
-normalized operand to the verb chain. This produces per-file patterns
+which, for path-aware verbs (`ls`, `cat`, `grep`, `find`, etc.), appends the
+first file-path argument to the verb chain. This produces per-file patterns
 like `cat /home/.netclaw/logs/crash-foo.log`. Combined with the single-token
 exact-match restriction in `ApprovalPatternMatching` (which prevents bare `cat`
 from silently approving `cat /etc/shadow`), each unique file path requires a
@@ -20,19 +20,16 @@ This change only relaxes layer 2. Layers 1 and 3 are unaffected.
 **Goals:**
 - Reduce per-file approval fatigue for diagnostic shell commands
 - Store directory-scoped patterns when user selects B (session) or C (always)
-  for a narrow direct read/list allowlist only
-- Maintain boundary-safe path matching (no `StartsWith` - use `PathUtility.IsWithinRoot`)
+- Maintain boundary-safe path matching (no `StartsWith` — use `PathUtility.IsWithinRoot`)
 - Prevent overly broad directory scopes (minimum 2 path segments)
 - Show directory context in approval option labels only when the entire request
   maps cleanly to one directory scope
 
 **Non-Goals:**
 - Changing the hard deny list or `ToolPathPolicy` behavior
-- Changing "Approve once" (A) behavior - it remains exact-pattern
+- Changing "Approve once" (A) behavior — it remains exact-pattern
 - Glob-aware or regex-based pattern matching
 - Cross-verb directory approvals (`cat /dir/` does not approve `grep /dir/`)
-- Directory-scoped approvals for non-allowlisted commands such as `find`,
-  `bash`, or `python3`
 - Inferring indirect path flow through shell constructs like `xargs`, `eval`,
   loop variables, command substitution, or shell variables
 - Windows-native shell path handling; tracked separately in issue #899
@@ -49,7 +46,7 @@ is a flat list of strings per tool per audience. A sentinel convention avoids
 schema changes and keeps backward compatibility — existing non-slash patterns
 work unchanged.
 
-### Extraction: shared path-operand resolution, narrower directory scope
+### Extraction: shared path-operand resolution for exact and directory patterns
 
 `ShellTokenizer.TryExtractPathOperand()` is the shared primitive behind
 `ExtractApprovalPattern()` and `ExtractDirectoryScope()`. It scans ALL non-flag
@@ -61,25 +58,18 @@ term is the first positional arg and the file path is second
 
 When a recognizable path operand exists, exact approval patterns use the
 normalized path operand itself (`grep /abs/path/logs/daemon.log`), not the raw
-verb chain. That broader exact extraction still applies to commands like
-`find`, `bash`, or `python3` when they include a direct path operand.
-Directory-scoped patterns then derive scope from that same operand only when
-the command verb is in the MVP allowlist: `cat`, `less`, `more`, `head`,
-`tail`, `grep`, and `ls`.
+verb chain. Directory-scoped patterns then derive scope from that same operand.
 
 **Alternative considered:** Always use first positional. Rejected because grep,
 sed, and awk take non-path first arguments.
 
-### Existing directory operands stay directory-scoped for allowlisted verbs
+### Existing directory operands stay directory-scoped
 
 `ExtractScopedDirectory()` preserves an operand that already denotes a
-directory. For example, `ls logs/` resolves `logs/` against the working
-directory and stores `ls /abs/path/logs/` rather than widening to the parent
-(`/abs/path/`). This keeps approval scope aligned with what the command actually
-targets.
-
-Commands outside the allowlist still use the normalized exact path operand when
-available, but they do not derive directory scope from it.
+directory. For example, `find logs -name '*.log'` resolves `logs` against the
+working directory and stores `find /abs/path/logs/` rather than widening to the
+parent (`/abs/path/`). This keeps approval scope aligned with what the command
+actually targets.
 
 ### Matching: `PathUtility.IsWithinRoot()` with normalized operands
 
@@ -101,42 +91,22 @@ at root-level directories even if they want to.
 ### Verb isolation
 
 An approval for `cat /dir/` does NOT approve `grep /dir/`. The verb is part of
-the pattern and checked explicitly. This limits blast radius - approving reads
+the pattern and checked explicitly. This limits blast radius — approving reads
 doesn't silently approve writes or deletions.
-
-### Directory scope is allowlist-based
-
-Directory scope is intentionally narrower than exact path-aware extraction. Only
-the direct read/list verbs `cat`, `less`, `more`, `head`, `tail`, `grep`, and
-`ls` can emit directory-scoped patterns in this MVP.
-
-Commands outside that allowlist, including `find`, keep exact path-aware
-patterns when a direct path operand exists, but they fall back to generic B/C
-labels and never store trailing-slash directory approvals.
 
 ### Dynamic labels require a single clean directory scope
 
 `ToolAccessPolicy.TryGetSingleDirectoryScope()` only emits directory-specific B/C
 labels when every approval pattern for the request is directory-scoped and all
 of them resolve to the same directory. If any segment falls back to a generic
-exact pattern (for example `find logs -name '*.log'`, `git push`, or an
-allowlisted read with shell redirection) or multiple directory scopes are
+verb-chain pattern (for example `git push`) or multiple directory scopes are
 present, labels stay generic.
-
-### Shell redirection disables directory scope
-
-If a segment contains shell redirection operators, directory-scoped extraction
-is disabled even when the verb itself is allowlisted. For example,
-`cat logs/app.log > out.txt` falls back to the exact pattern and generic B/C
-labels. This avoids granting directory scope when the command also writes or
-rewires IO.
 
 ### Compound commands: direct path operands only
 
 Compound commands and pipe segments are still traversed segment-by-segment, so a
 segment like `cat logs/app.log | jq .` can contribute directory scope for the
-`cat` segment when there is no shell redirection on that segment and the verb is
-allowlisted. MVP extraction stops there: it does not infer that a downstream
+`cat` segment. MVP extraction stops there: it does not infer that a downstream
 segment implicitly targets the same path through `xargs`, `eval`, loop
 variables, shell variables, or similar constructs.
 
