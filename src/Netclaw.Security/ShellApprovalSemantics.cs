@@ -481,6 +481,16 @@ internal sealed class PosixShellApprovalSemantics : ShellApprovalSemanticsBase
         return HasTraversalComponent(token) || HasFileExtensionInLastComponent(token);
     }
 
+    public override string? NormalizePathToken(string path, string? workingDirectory)
+    {
+        var expanded = PathUtility.ExpandHome(path);
+
+        if (LooksLikePosixAbsoluteShellPath(expanded))
+            return NormalizePosixShellPath(expanded);
+
+        return PathUtility.ExpandAndNormalize(expanded, workingDirectory);
+    }
+
     protected override bool IsShellSeparator(char ch) => ch == '/';
 
     protected override bool IsAnchoredPath(string token)
@@ -497,6 +507,37 @@ internal sealed class PosixShellApprovalSemantics : ShellApprovalSemanticsBase
     {
         return verb is "bash" or "sh" or "/bin/bash" or "/bin/sh"
             or "/usr/bin/bash" or "/usr/bin/sh" or "zsh" or "/bin/zsh";
+    }
+
+    private static bool LooksLikePosixAbsoluteShellPath(string path)
+    {
+        return path.Length > 0 && path[0] == '/'
+            && !path.StartsWith("//", StringComparison.Ordinal)
+            && path.IndexOf('\\', StringComparison.Ordinal) < 0
+            && !path.Contains("://", StringComparison.Ordinal);
+    }
+
+    private static string NormalizePosixShellPath(string path)
+    {
+        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var normalized = new List<string>(segments.Length);
+        foreach (var segment in segments)
+        {
+            if (segment == ".")
+                continue;
+
+            if (segment == "..")
+            {
+                if (normalized.Count > 0)
+                    normalized.RemoveAt(normalized.Count - 1);
+
+                continue;
+            }
+
+            normalized.Add(segment);
+        }
+
+        return normalized.Count == 0 ? "/" : "/" + string.Join('/', normalized);
     }
 
     private static bool IsShellCommandFlag(string token)
@@ -611,9 +652,6 @@ internal sealed class WindowsShellApprovalSemantics : ShellApprovalSemanticsBase
     {
         var expanded = PathUtility.ExpandHome(path);
 
-        if (LooksLikePosixAbsoluteShellPath(expanded))
-            return NormalizePosixShellPath(expanded);
-
         return PathUtility.ExpandAndNormalize(expanded, workingDirectory);
     }
 
@@ -635,37 +673,6 @@ internal sealed class WindowsShellApprovalSemantics : ShellApprovalSemanticsBase
             && char.IsAsciiLetter(token[0])
             && token[1] == ':'
             && (token[2] == '\\' || token[2] == '/');
-    }
-
-    private static bool LooksLikePosixAbsoluteShellPath(string path)
-    {
-        return path.Length > 0 && path[0] == '/'
-            && !path.StartsWith("//", StringComparison.Ordinal)
-            && path.IndexOf('\\', StringComparison.Ordinal) < 0
-            && !path.Contains("://", StringComparison.Ordinal);
-    }
-
-    private static string NormalizePosixShellPath(string path)
-    {
-        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        var normalized = new List<string>(segments.Length);
-        foreach (var segment in segments)
-        {
-            if (segment == ".")
-                continue;
-
-            if (segment == "..")
-            {
-                if (normalized.Count > 0)
-                    normalized.RemoveAt(normalized.Count - 1);
-
-                continue;
-            }
-
-            normalized.Add(segment);
-        }
-
-        return normalized.Count == 0 ? "/" : "/" + string.Join('/', normalized);
     }
 
     private static bool IsPowerShellInvoker(string verb)
