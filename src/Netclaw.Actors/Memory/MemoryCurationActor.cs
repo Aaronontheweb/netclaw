@@ -7,6 +7,7 @@ using Akka.Actor;
 using Akka.Event;
 using Microsoft.Extensions.AI;
 using Netclaw.Configuration;
+using SessionId = Netclaw.Actors.Protocol.SessionId;
 
 namespace Netclaw.Actors.Memory;
 
@@ -55,14 +56,14 @@ public sealed class MemoryCurationActor : ReceiveActor, IWithUnboundedStash
 
     private readonly SQLiteMemoryStore _store;
     private readonly IChatClient? _llmClient;
-    private readonly Protocol.SessionId _sessionId;
+    private readonly SessionId _sessionId;
     private readonly ILoggingAdapter _log;
 
     private IActorRef? _currentRequester;
 
     public IStash Stash { get; set; } = null!;
 
-    public MemoryCurationActor(SQLiteMemoryStore store, Protocol.SessionId sessionId, IChatClientProvider? clientProvider = null)
+    public MemoryCurationActor(SQLiteMemoryStore store, SessionId sessionId, IChatClientProvider? clientProvider = null)
     {
         _store = store;
         _sessionId = sessionId;
@@ -77,7 +78,7 @@ public sealed class MemoryCurationActor : ReceiveActor, IWithUnboundedStash
     /// <summary>
     /// Create Props for the MemoryCurationActor.
     /// </summary>
-    public static Props CreateProps(SQLiteMemoryStore store, Protocol.SessionId sessionId, IChatClientProvider? clientProvider = null)
+    public static Props CreateProps(SQLiteMemoryStore store, SessionId sessionId, IChatClientProvider? clientProvider = null)
         => Props.Create(() => new MemoryCurationActor(store, sessionId, clientProvider));
 
     // ── Idle behavior ───────────────────────────────────────────────

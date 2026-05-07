@@ -40,7 +40,6 @@ public sealed class SidecarDiagnosticsContextTests : TestKit
         var captor = new SessionContextCapturingChatClient();
         var probe = CreateTestProbe();
 
-        SessionDiagnosticsContext.SessionId = null;
         await SessionTitleGenerator.GenerateAsync(
             captor,
             sessionId,
@@ -64,7 +63,6 @@ public sealed class SidecarDiagnosticsContextTests : TestKit
             new() { Role = Netclaw.Actors.Protocol.ChatRole.Assistant, Content = "hi" }
         };
 
-        SessionDiagnosticsContext.SessionId = null;
         var observation = await SessionCompactionPipeline.GenerateObservationsAsync(
             client: captor,
             sessionId: sessionId,

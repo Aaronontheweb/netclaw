@@ -362,11 +362,9 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     {
         try
         {
-            // Sub-agents share the parent session's diagnostics scope so their
-            // provider logs land in the parent's session.log.
-            // SessionDiagnosticsContext normalizes "/subagent/..." suffixes back
-            // to the parent id; passing the raw _toolExecutionContext.SessionId
-            // (which may be null when run outside a session) is intentional.
+            // Sub-agents share the parent's diagnostics scope: SessionDiagnosticsContext
+            // strips the "/subagent/..." suffix back to the parent id. Null is intentional
+            // for sub-agents that run outside any session.
             using var diagnosticsScope = SessionDiagnosticsContext.Push(sessionId);
 
             // Use streaming to match the main session path. The non-streaming
