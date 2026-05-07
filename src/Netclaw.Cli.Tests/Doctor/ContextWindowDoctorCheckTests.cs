@@ -3,8 +3,6 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Net;
-using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Netclaw.Cli.Daemon;
@@ -90,7 +88,7 @@ public sealed class ContextWindowDoctorCheckTests : IDisposable
             Models = new { Main = new { ModelId = "qwen3:30b", Provider = "local-ollama" } }
         });
 
-        var daemonApi = CreateDaemonApi(_ => JsonResponse(BuildStatusResponse(262144)));
+        var daemonApi = CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(BuildStatusResponse(262144)));
         var check = CreateCheck(daemonApi);
 
         var result = await check.RunAsync(TestContext.Current.CancellationToken);
@@ -191,7 +189,7 @@ public sealed class ContextWindowDoctorCheckTests : IDisposable
         var configuration = new ConfigurationBuilder().Build();
         var paths = new NetclawPaths(Path.Combine(Path.GetTempPath(), $"netclaw-ctx-test-{Guid.NewGuid():N}"));
         paths.EnsureDirectoriesExist();
-        return new DaemonApi(new StubHttpClientFactory(handler), configuration, paths);
+        return new DaemonApi(new FakeHttpClientFactory(handler), configuration, paths);
     }
 
     private static object BuildStatusResponse(int contextWindow) => new
@@ -212,24 +210,4 @@ public sealed class ContextWindowDoctorCheckTests : IDisposable
         }
     };
 
-    private static HttpResponseMessage JsonResponse(object body, HttpStatusCode status = HttpStatusCode.OK)
-        => new(status)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
-        };
-
-    private sealed class StubHttpClientFactory(Func<HttpRequestMessage, HttpResponseMessage> handler) : IHttpClientFactory
-    {
-        public HttpClient CreateClient(string name)
-            => new(new StubHttpMessageHandler(handler));
-    }
-
-    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
-    {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(handler(request));
-        }
-    }
 }
