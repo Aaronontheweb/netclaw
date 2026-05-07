@@ -1,3 +1,27 @@
+#### 0.17.2 2026-05-06 ####
+
+Netclaw v0.17.2 — Session stability fixes, MCP reconnection, and schema packaging
+
+**Bug Fixes**
+
+* Fixed binding actor stream crashes on shutdown — SignalR, Slack, and Discord binding actors now drain their Akka.Streams pipeline before stopping, eliminating `AbruptTerminationException` / `StreamDetachedException` crash logs on graceful shutdown and idle timeout. ([#895](https://github.com/netclaw-dev/netclaw/pull/895))
+
+* Fixed thinking-only LLM responses being classified as empty — the empty response guard now checks `TextReasoningContent` in addition to `TextContent`, so models that emit thinking tokens without text (e.g., Qwen 3) are no longer incorrectly retried with a nudge. ([#895](https://github.com/netclaw-dev/netclaw/pull/895))
+
+* Fixed dropped tool calls from llama.cpp-compatible providers — `OpenAiCompatibleChatClient` now emits accumulated tool calls when `finish_reason` is `"stop"`, not just `"tool_calls"`, since llama.cpp often sends `"stop"` even when structured tool calls are present. ([#895](https://github.com/netclaw-dev/netclaw/pull/895))
+
+* Fixed `netclaw doctor` schema validation failing on `Search.Backend` — the config schema used PascalCase enum values but the wizard writes lowercase via `ToWireValue()`. Schema now matches wire format (`duckduckgo`, `brave`, `searxng`). ([#894](https://github.com/netclaw-dev/netclaw/pull/894))
+
+* Embedded config schema as assembly resource — the tar.gz/zip CLI archives only shipped the single-file binary, silently dropping the `Schemas/` directory. `netclaw doctor` now always has access to the schema regardless of distribution format. ([#894](https://github.com/netclaw-dev/netclaw/pull/894))
+
+* Added `CursorAdvanced` serialization bindings — replaced private nested cursor types in Slack and Discord binding actors with a shared, protobuf-serializable `CursorAdvanced(string Cursor)` record. Fixes persistence recovery failures when cursor state was written by the old unregistered type. Closes [#887](https://github.com/netclaw-dev/netclaw/issues/887). ([#890](https://github.com/netclaw-dev/netclaw/pull/890))
+
+* MCP servers that become unreachable (DNS failure, server down) no longer stay permanently stuck in `Unreachable` state — a new `McpReconnectionService` polls every 30 seconds with per-server exponential backoff (30s → 300s cap) and emits an operational alert on recovery. ([#884](https://github.com/netclaw-dev/netclaw/pull/884))
+
+**Documentation**
+
+* Refocused README on end-user content — moved architecture, design goals, and build-from-source sections to CONTRIBUTING.md; added Docker quickstart, netclaw.dev documentation links, and Discord link. ([#888](https://github.com/netclaw-dev/netclaw/pull/888))
+
 #### 0.17.1 2026-05-06 ####
 
 Netclaw v0.17.1 — First public release with Docker support, non-interactive approval, and open-source infrastructure
