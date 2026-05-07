@@ -278,7 +278,7 @@ public sealed class McpCommandTests : IDisposable
 
         var daemonApi = CreateDaemonApi(request => request.RequestUri!.AbsolutePath switch
         {
-            "/api/mcp/statuses" => JsonResponse(new
+            "/api/mcp/statuses" => FakeHttpMessageHandler.JsonResponse(new
             {
                 memorizer = new
                 {
@@ -326,7 +326,7 @@ public sealed class McpCommandTests : IDisposable
 
         var daemonApi = CreateDaemonApi(request => request.RequestUri!.AbsolutePath switch
         {
-            "/api/mcp/statuses" => JsonResponse(new { }),
+            "/api/mcp/statuses" => FakeHttpMessageHandler.JsonResponse(new { }),
             _ => new HttpResponseMessage(HttpStatusCode.NotFound)
         });
 
@@ -522,14 +522,6 @@ public sealed class McpCommandTests : IDisposable
         paths.EnsureDirectoriesExist();
 
         return new DaemonApi(new FakeHttpClientFactory(handler), configuration, paths);
-    }
-
-    private static HttpResponseMessage JsonResponse(object body, HttpStatusCode status = HttpStatusCode.OK)
-    {
-        return new HttpResponseMessage(status)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
-        };
     }
 
 }

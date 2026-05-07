@@ -3,8 +3,6 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Net;
-using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Netclaw.Cli.Daemon;
@@ -90,7 +88,7 @@ public sealed class ContextWindowDoctorCheckTests : IDisposable
             Models = new { Main = new { ModelId = "qwen3:30b", Provider = "local-ollama" } }
         });
 
-        var daemonApi = CreateDaemonApi(_ => JsonResponse(BuildStatusResponse(262144)));
+        var daemonApi = CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(BuildStatusResponse(262144)));
         var check = CreateCheck(daemonApi);
 
         var result = await check.RunAsync(TestContext.Current.CancellationToken);
@@ -211,11 +209,5 @@ public sealed class ContextWindowDoctorCheckTests : IDisposable
             OutputModalities = "Text"
         }
     };
-
-    private static HttpResponseMessage JsonResponse(object body, HttpStatusCode status = HttpStatusCode.OK)
-        => new(status)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
-        };
 
 }

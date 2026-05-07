@@ -3,8 +3,6 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Net;
-using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Netclaw.Cli.Config;
@@ -43,7 +41,7 @@ public sealed class DaemonApiAuthenticationTests : IDisposable
             request =>
             {
                 capturedRequest = request;
-                return JsonResponse(Array.Empty<object>());
+                return FakeHttpMessageHandler.JsonResponse(Array.Empty<object>());
             });
 
         var devices = await api.ListPairedDevicesAsync(TestContext.Current.CancellationToken);
@@ -66,7 +64,7 @@ public sealed class DaemonApiAuthenticationTests : IDisposable
             request =>
             {
                 capturedRequest = request;
-                return JsonResponse(Array.Empty<object>());
+                return FakeHttpMessageHandler.JsonResponse(Array.Empty<object>());
             });
 
         var devices = await api.ListPairedDevicesAsync(TestContext.Current.CancellationToken);
@@ -88,7 +86,7 @@ public sealed class DaemonApiAuthenticationTests : IDisposable
             request =>
             {
                 capturedRequest = request;
-                return JsonResponse(Array.Empty<object>());
+                return FakeHttpMessageHandler.JsonResponse(Array.Empty<object>());
             });
 
         var devices = await api.ListPairedDevicesAsync(TestContext.Current.CancellationToken);
@@ -157,11 +155,5 @@ public sealed class DaemonApiAuthenticationTests : IDisposable
 
         File.WriteAllText(_paths.SecretsPath, json);
     }
-
-    private static HttpResponseMessage JsonResponse(object body, HttpStatusCode status = HttpStatusCode.OK)
-        => new(status)
-        {
-            Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
-        };
 
 }
