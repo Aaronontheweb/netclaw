@@ -21,7 +21,17 @@ public sealed record ApprovalDisplayItem(
     TrustAudience Audience,
     string AudienceWire,
     string ToolName,
-    string Pattern);
+    ApprovalEntry Entry)
+{
+    /// <summary>
+    /// User-visible scope label for the entry: <c>&lt;verb&gt; in &lt;dir&gt;</c>
+    /// for folder-scoped grants, <c>&lt;verb&gt; anywhere</c> for the global
+    /// wildcard.
+    /// </summary>
+    public string DisplayText => Entry.Directory is null
+        ? $"{Entry.Verb} anywhere"
+        : $"{Entry.Verb} in {Entry.Directory}";
+}
 
 /// <summary>
 /// ViewModel for the <c>netclaw approvals</c> interactive TUI. The page is
@@ -66,8 +76,12 @@ public sealed class ApprovalsManagerViewModel : ReactiveViewModel
             var tools = snapshot[audienceKey];
             foreach (var toolName in tools.Keys.OrderBy(k => k, StringComparer.Ordinal))
             {
-                foreach (var pattern in tools[toolName].OrderBy(p => p, StringComparer.Ordinal))
-                    DisplayApprovals.Add(new ApprovalDisplayItem(audience, audienceKey, toolName, pattern));
+                foreach (var entry in tools[toolName]
+                    .OrderBy(static e => e.Verb, StringComparer.Ordinal)
+                    .ThenBy(static e => e.Directory ?? string.Empty, StringComparer.Ordinal))
+                {
+                    DisplayApprovals.Add(new ApprovalDisplayItem(audience, audienceKey, toolName, entry));
+                }
             }
         }
 
@@ -99,9 +113,9 @@ public sealed class ApprovalsManagerViewModel : ReactiveViewModel
             return;
         }
 
-        var removed = _store.RemoveApproval(target.Audience, target.ToolName, target.Pattern);
+        var removed = _store.RemoveApproval(target.Audience, target.ToolName, target.Entry);
         StatusMessage.Value = removed
-            ? $"✔ Removed '{target.Pattern}' from {target.AudienceWire} / {target.ToolName}."
+            ? $"✔ Removed '{target.DisplayText}' from {target.AudienceWire} / {target.ToolName}."
             : $"⚠ Entry not found (may have been removed elsewhere).";
 
         PendingRevoke = null;

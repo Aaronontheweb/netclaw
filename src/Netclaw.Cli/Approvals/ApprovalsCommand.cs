@@ -51,7 +51,7 @@ internal static class ApprovalsCommand
 
         if (opts.EmitJson)
         {
-            writer.WriteLine(JsonSerializer.Serialize(view, JsonDefaults.Indented));
+            writer.WriteLine(JsonSerializer.Serialize(view, JsonDefaults.IndentedOmitNull));
             return 0;
         }
 
@@ -64,18 +64,29 @@ internal static class ApprovalsCommand
         var first = true;
         foreach (var (audienceKey, tools) in view.Audiences)
         {
-            foreach (var (toolName, patterns) in tools)
+            foreach (var (toolName, entries) in tools)
             {
                 if (!first) writer.WriteLine();
                 writer.WriteLine($"{audienceKey} / {toolName}");
-                foreach (var pattern in patterns)
-                    writer.WriteLine($"  {pattern}");
+                foreach (var entry in entries)
+                    writer.WriteLine($"  {FormatEntryForList(entry)}");
                 first = false;
             }
         }
 
         return 0;
     }
+
+    /// <summary>
+    /// Renders an <see cref="ApprovalEntry"/> as the user-visible scope label:
+    /// <c>&lt;verb&gt; in &lt;dir&gt;</c> for folder-scoped grants, or
+    /// <c>&lt;verb&gt; anywhere</c> for the global wildcard. Section 6 will
+    /// extend this to also accept the same forms as inputs to <c>revoke</c>.
+    /// </summary>
+    internal static string FormatEntryForList(ApprovalEntry entry)
+        => entry.Directory is null
+            ? $"{entry.Verb} anywhere"
+            : $"{entry.Verb} in {entry.Directory}";
 
     private static int RunRevoke(string[] args, NetclawPaths paths, TextWriter writer)
     {
@@ -102,6 +113,12 @@ internal static class ApprovalsCommand
             return 1;
         }
 
+        // Section 1 interim: revoke parses the legacy single-string form as a
+        // verb-only global-wildcard lookup so the command compiles and the
+        // existing test corpus continues to round-trip. Section 6 replaces
+        // this with a parser for the user-visible forms ("verb in /dir/" and
+        // "verb anywhere") emitted by `list` above.
+        var lookup = ParseRevokePatternInterim(opts.Pattern);
         var snapshot = store.Snapshot();
         var removedAny = false;
 
@@ -117,7 +134,7 @@ internal static class ApprovalsCommand
                 if (opts.Tool is not null && !string.Equals(toolName, opts.Tool, StringComparison.Ordinal))
                     continue;
 
-                if (store.RemoveApproval(audience, toolName, opts.Pattern))
+                if (store.RemoveApproval(audience, toolName, lookup))
                 {
                     writer.WriteLine($"Removed '{opts.Pattern}' from {audienceKey} / {toolName}.");
                     removedAny = true;
@@ -132,6 +149,22 @@ internal static class ApprovalsCommand
         }
 
         return 0;
+    }
+
+    private static ApprovalEntry ParseRevokePatternInterim(string pattern)
+    {
+        // Accepts the global-wildcard form "<verb> anywhere" emitted by the
+        // section 1 list rendering, and falls back to treating the entire
+        // pattern as a verb (directory: null). Folder-scoped revoke parsing
+        // ("<verb> in <dir>") lands in section 6.
+        const string Suffix = " anywhere";
+        if (pattern.EndsWith(Suffix, StringComparison.Ordinal))
+        {
+            var verb = pattern[..^Suffix.Length].TrimEnd();
+            if (verb.Length > 0)
+                return new ApprovalEntry { Verb = verb, Directory = null };
+        }
+        return new ApprovalEntry { Verb = pattern, Directory = null };
     }
 
     private static int RunRevokeAll(RevokeOptions opts, ToolApprovalStore store, TextWriter writer)
@@ -285,7 +318,7 @@ internal static class ApprovalsCommand
     }
 
     private static ApprovalsListView BuildView(
-        IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<string>>> snapshot,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<ApprovalEntry>>> snapshot,
         TrustAudience? audienceFilter,
         string? toolFilter)
     {
@@ -299,13 +332,17 @@ internal static class ApprovalsCommand
                 if (parsed != audienceFilter.Value) continue;
             }
 
-            var filteredTools = new SortedDictionary<string, List<string>>(StringComparer.Ordinal);
-            foreach (var (toolName, patterns) in tools)
+            var filteredTools = new SortedDictionary<string, List<ApprovalEntry>>(StringComparer.Ordinal);
+            foreach (var (toolName, entries) in tools)
             {
                 if (toolFilter is not null && !string.Equals(toolName, toolFilter, StringComparison.Ordinal))
                     continue;
-                if (patterns.Count == 0) continue;
-                filteredTools[toolName] = [.. patterns.OrderBy(p => p, StringComparer.Ordinal)];
+                if (entries.Count == 0) continue;
+                filteredTools[toolName] =
+                [
+                    .. entries.OrderBy(static e => e.Verb, StringComparer.Ordinal)
+                              .ThenBy(static e => e.Directory ?? string.Empty, StringComparer.Ordinal)
+                ];
             }
 
             if (filteredTools.Count > 0)
@@ -317,11 +354,21 @@ internal static class ApprovalsCommand
 
     private static void WarnIfQuarantined(ToolApprovalStore store, TextWriter writer)
     {
-        if (!File.Exists(store.QuarantinePath))
-            return;
+        // Two quarantine paths exist after the v2 cutover:
+        //   - .v1.bak  : legacy v1 file detected and moved aside on upgrade
+        //   - .invalid : malformed (unparseable) file moved aside as fail-closed
+        // Operators see different remediation guidance for each.
+        if (File.Exists(store.V1QuarantinePath))
+        {
+            writer.WriteLine($"Note: Your previous approvals were quarantined to '{store.V1QuarantinePath}' during the v2 schema upgrade.");
+            writer.WriteLine("      Inspect or restore manually if needed; the daemon started with an empty v2 store.");
+        }
 
-        writer.WriteLine($"Warning: A quarantined approvals file exists at '{store.QuarantinePath}'.");
-        writer.WriteLine("         The active file was reset to empty after a parse failure.");
-        writer.WriteLine("         Inspect the .invalid copy before restoring grants.");
+        if (File.Exists(store.MalformedQuarantinePath))
+        {
+            writer.WriteLine($"Warning: A malformed approvals file was quarantined to '{store.MalformedQuarantinePath}'.");
+            writer.WriteLine("         The active file was reset to empty after a parse failure.");
+            writer.WriteLine("         Inspect the .invalid copy before restoring grants.");
+        }
     }
 }

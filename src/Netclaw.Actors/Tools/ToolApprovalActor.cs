@@ -40,7 +40,17 @@ internal sealed class ToolApprovalActor : ReceiveActor
                 AddSessionApproval(msg.SessionId, msg.Audience, msg.ToolName, pattern);
 
                 if (msg.Persistent)
-                    _persistentStore?.AddApproval(msg.Audience, msg.ToolName.Value, pattern);
+                {
+                    // Until section 2 lands the v2 directory-aware matcher, the
+                    // runtime treats every persisted grant as a global wildcard:
+                    // verb-only, directory null. The new prompt UX in section 7
+                    // will route folder-scoped clicks through a different add
+                    // path that supplies a concrete directory.
+                    _persistentStore?.AddApproval(
+                        msg.Audience,
+                        msg.ToolName.Value,
+                        new ApprovalEntry { Verb = pattern, Directory = null });
+                }
             }
 
             Sender.Tell(ToolApprovalRecorded.Instance);
@@ -58,7 +68,14 @@ internal sealed class ToolApprovalActor : ReceiveActor
         if (_persistentStore is null)
             return false;
 
-        return MatchesApprovedEntry(toolName, pattern, _persistentStore.GetApprovedPatterns(audience, toolName.Value));
+        // Section 1 interim: surface verb chains from the typed store so the
+        // existing string-based matcher keeps working. Section 2 swaps this
+        // for a directory-aware matcher that consumes ApprovalEntry directly
+        // and consults the candidate's cwd from ToolExecutionContext.
+        var persistedVerbs = _persistentStore
+            .GetApprovedEntries(audience, toolName.Value)
+            .Select(e => e.Verb);
+        return MatchesApprovedEntry(toolName, pattern, persistedVerbs);
     }
 
     private bool IsSessionApproved(SessionId sessionId, TrustAudience audience, ToolName toolName, string pattern)

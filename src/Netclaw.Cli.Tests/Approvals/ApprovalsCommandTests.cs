@@ -31,13 +31,16 @@ public sealed class ApprovalsCommandTests : IDisposable
         _dir.Dispose();
     }
 
+    private static ApprovalEntry Verb(string verb) => new() { Verb = verb, Directory = null };
+    private static ApprovalEntry InDir(string verb, string dir) => new() { Verb = verb, Directory = dir };
+
     private void SeedDefault()
     {
-        _store.AddApproval(TrustAudience.Personal, "shell_execute", "git push");
-        _store.AddApproval(TrustAudience.Personal, "shell_execute", "/home/user/logs/");
-        _store.AddApproval(TrustAudience.Personal, "shell_execute", "npm install");
-        _store.AddApproval(TrustAudience.Personal, "file_write", "/tmp/scratch/");
-        _store.AddApproval(TrustAudience.Public, "shell_execute", "ls");
+        _store.AddApproval(TrustAudience.Personal, "shell_execute", Verb("git push"));
+        _store.AddApproval(TrustAudience.Personal, "shell_execute", InDir("grep", "/home/user/logs"));
+        _store.AddApproval(TrustAudience.Personal, "shell_execute", Verb("npm install"));
+        _store.AddApproval(TrustAudience.Personal, "file_write", InDir("file_write", "/tmp/scratch"));
+        _store.AddApproval(TrustAudience.Public, "shell_execute", Verb("ls"));
     }
 
     [Fact]
@@ -61,12 +64,12 @@ public sealed class ApprovalsCommandTests : IDisposable
         Assert.Contains("personal / shell_execute", text);
         Assert.Contains("personal / file_write", text);
         Assert.Contains("public / shell_execute", text);
-        Assert.Contains("git push", text);
-        Assert.Contains("/tmp/scratch/", text);
+        Assert.Contains("git push anywhere", text);
+        Assert.Contains("grep in /home/user/logs", text);
     }
 
     [Fact]
-    public async Task List_json_emits_audience_tool_pattern_shape()
+    public async Task List_json_emits_typed_entry_shape()
     {
         SeedDefault();
 
@@ -75,10 +78,17 @@ public sealed class ApprovalsCommandTests : IDisposable
         using var doc = JsonDocument.Parse(_output.ToString());
         var audiences = doc.RootElement.GetProperty("audiences");
         var personalShell = audiences.GetProperty("personal").GetProperty("shell_execute");
-        var patterns = personalShell.EnumerateArray().Select(e => e.GetString()).ToList();
-        Assert.Contains("git push", patterns);
-        Assert.Contains("/home/user/logs/", patterns);
-        Assert.Contains("npm install", patterns);
+        var verbs = personalShell.EnumerateArray().Select(e => e.GetProperty("verb").GetString()).ToList();
+        Assert.Contains("git push", verbs);
+        Assert.Contains("grep", verbs);
+        Assert.Contains("npm install", verbs);
+
+        // The grep entry should carry its directory; "git push" should not.
+        var grep = personalShell.EnumerateArray().Single(e => e.GetProperty("verb").GetString() == "grep");
+        Assert.Equal("/home/user/logs", grep.GetProperty("directory").GetString());
+
+        var gitPush = personalShell.EnumerateArray().Single(e => e.GetProperty("verb").GetString() == "git push");
+        Assert.False(gitPush.TryGetProperty("directory", out _));
     }
 
     [Fact]
@@ -97,31 +107,32 @@ public sealed class ApprovalsCommandTests : IDisposable
     }
 
     [Fact]
-    public async Task Revoke_exact_match_removes_entry_and_returns_zero()
+    public async Task Revoke_global_wildcard_by_anywhere_form_removes_entry()
     {
         SeedDefault();
 
         var exit = await ApprovalsCommand.RunAsync(
-            ["approvals", "revoke", "git push", "--audience", "personal", "--tool", "shell_execute"],
+            ["approvals", "revoke", "git push anywhere", "--audience", "personal", "--tool", "shell_execute"],
             _paths, _output);
 
         Assert.Equal(0, exit);
-        Assert.DoesNotContain("git push", _store.GetApprovedPatterns(TrustAudience.Personal, "shell_execute"));
-        Assert.Contains("Removed 'git push'", _output.ToString());
+        var remaining = _store.GetApprovedEntries(TrustAudience.Personal, "shell_execute");
+        Assert.DoesNotContain(remaining, e => e.Verb == "git push" && e.Directory is null);
+        Assert.Contains("Removed 'git push anywhere'", _output.ToString());
     }
 
     [Fact]
     public async Task Revoke_no_match_exits_one_and_does_not_modify_file()
     {
         SeedDefault();
-        var beforeCount = _store.GetApprovedPatterns(TrustAudience.Personal, "shell_execute").Count;
+        var beforeCount = _store.GetApprovedEntries(TrustAudience.Personal, "shell_execute").Count;
 
         var exit = await ApprovalsCommand.RunAsync(
-            ["approvals", "revoke", "git pull", "--audience", "personal", "--tool", "shell_execute"],
+            ["approvals", "revoke", "git pull anywhere", "--audience", "personal", "--tool", "shell_execute"],
             _paths, _output);
 
         Assert.Equal(1, exit);
-        Assert.Equal(beforeCount, _store.GetApprovedPatterns(TrustAudience.Personal, "shell_execute").Count);
+        Assert.Equal(beforeCount, _store.GetApprovedEntries(TrustAudience.Personal, "shell_execute").Count);
         Assert.Contains("No matching approval found.", _output.ToString());
     }
 
@@ -135,9 +146,9 @@ public sealed class ApprovalsCommandTests : IDisposable
             _paths, _output);
 
         Assert.Equal(0, exit);
-        Assert.Empty(_store.GetApprovedPatterns(TrustAudience.Personal, "shell_execute"));
-        Assert.Empty(_store.GetApprovedPatterns(TrustAudience.Public, "shell_execute"));
-        Assert.Single(_store.GetApprovedPatterns(TrustAudience.Personal, "file_write"));
+        Assert.Empty(_store.GetApprovedEntries(TrustAudience.Personal, "shell_execute"));
+        Assert.Empty(_store.GetApprovedEntries(TrustAudience.Public, "shell_execute"));
+        Assert.Single(_store.GetApprovedEntries(TrustAudience.Personal, "file_write"));
     }
 
     [Fact]
@@ -150,22 +161,25 @@ public sealed class ApprovalsCommandTests : IDisposable
             _paths, _output);
 
         Assert.Equal(0, exit);
-        Assert.Empty(_store.GetApprovedPatterns(TrustAudience.Personal, "shell_execute"));
-        Assert.Equal(["ls"], _store.GetApprovedPatterns(TrustAudience.Public, "shell_execute"));
+        Assert.Empty(_store.GetApprovedEntries(TrustAudience.Personal, "shell_execute"));
+
+        var publicShell = _store.GetApprovedEntries(TrustAudience.Public, "shell_execute");
+        Assert.Single(publicShell);
+        Assert.Equal("ls", publicShell[0].Verb);
     }
 
     [Fact]
     public async Task Revoke_all_without_tool_exits_one_and_does_not_modify_file()
     {
         SeedDefault();
-        var beforeCount = _store.GetApprovedPatterns(TrustAudience.Personal, "shell_execute").Count;
+        var beforeCount = _store.GetApprovedEntries(TrustAudience.Personal, "shell_execute").Count;
 
         var exit = await ApprovalsCommand.RunAsync(
             ["approvals", "revoke", "--all"],
             _paths, _output);
 
         Assert.Equal(1, exit);
-        Assert.Equal(beforeCount, _store.GetApprovedPatterns(TrustAudience.Personal, "shell_execute").Count);
+        Assert.Equal(beforeCount, _store.GetApprovedEntries(TrustAudience.Personal, "shell_execute").Count);
         Assert.Contains("--all requires --tool", _output.ToString());
     }
 
@@ -216,16 +230,16 @@ public sealed class ApprovalsCommandTests : IDisposable
     [Fact]
     public async Task Revoke_unscoped_removes_match_across_audiences()
     {
-        // Same pattern stored under two audiences; unscoped revoke should hit both.
-        _store.AddApproval(TrustAudience.Personal, "shell_execute", "ls");
-        _store.AddApproval(TrustAudience.Public, "shell_execute", "ls");
+        // Same global wildcard stored under two audiences; unscoped revoke should hit both.
+        _store.AddApproval(TrustAudience.Personal, "shell_execute", Verb("ls"));
+        _store.AddApproval(TrustAudience.Public, "shell_execute", Verb("ls"));
 
         var exit = await ApprovalsCommand.RunAsync(
-            ["approvals", "revoke", "ls"],
+            ["approvals", "revoke", "ls anywhere"],
             _paths, _output);
 
         Assert.Equal(0, exit);
-        Assert.Empty(_store.GetApprovedPatterns(TrustAudience.Personal, "shell_execute"));
-        Assert.Empty(_store.GetApprovedPatterns(TrustAudience.Public, "shell_execute"));
+        Assert.Empty(_store.GetApprovedEntries(TrustAudience.Personal, "shell_execute"));
+        Assert.Empty(_store.GetApprovedEntries(TrustAudience.Public, "shell_execute"));
     }
 }

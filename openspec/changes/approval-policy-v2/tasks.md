@@ -9,13 +9,13 @@ Both PRs sit under this single OpenSpec change.
 
 ## 1. Storage schema v2 + quarantine
 
-- [ ] 1.1 Add `ApprovalEntry` record (`Verb` required, `Directory` nullable) to `src/Netclaw.Configuration/`.
-- [ ] 1.2 Update `ToolApprovalData` to `Version` (int, default 2) + `Dictionary<string, Dictionary<string, List<ApprovalEntry>>>` shape.
-- [ ] 1.3 Update `ToolApprovalStore.Load()` to detect `Version != 2` (or absent), move file to `tool-approvals.json.v1.bak`, and return empty v2 store.
-- [ ] 1.4 Update `ToolApprovalStore.Save()` to always emit `version: 2`.
-- [ ] 1.5 Update `AddApproval` / `RemoveApproval` / `RemoveAllForTool` / `Snapshot` to operate on `ApprovalEntry`.
-- [ ] 1.6 Update `ToolApprovalEntryComparer` to compare `(Verb, Directory)` tuples (Ordinal on POSIX, OrdinalIgnoreCase on Windows; null directory compares equal to null directory).
-- [ ] 1.7 Unit tests for v1 quarantine on first read; round-trip serialization of folder-scoped and global-wildcard entries; comparer on POSIX vs Windows.
+- [x] 1.1 Add `ApprovalEntry` record (`Verb` required, `Directory` nullable) to `src/Netclaw.Configuration/`.
+- [x] 1.2 Update `ToolApprovalData` to `Version` (int, default 2) + `Dictionary<string, Dictionary<string, List<ApprovalEntry>>>` shape.
+- [x] 1.3 Update `ToolApprovalStore.Load()` to detect `Version != 2` (or absent), move file to `tool-approvals.json.v1.bak`, and return empty v2 store.
+- [x] 1.4 Update `ToolApprovalStore.Save()` to always emit `version: 2`.
+- [x] 1.5 Update `AddApproval` / `RemoveApproval` / `RemoveAllForTool` / `Snapshot` to operate on `ApprovalEntry`.
+- [x] 1.6 Update `ToolApprovalEntryComparer` to compare `(Verb, Directory)` tuples (Ordinal on POSIX, OrdinalIgnoreCase on Windows; null directory compares equal to null directory).
+- [x] 1.7 Unit tests for v1 quarantine on first read; round-trip serialization of folder-scoped and global-wildcard entries; comparer on POSIX vs Windows.
 
 ## 2. Matcher operates on ApprovalEntry
 
