@@ -53,20 +53,8 @@ internal sealed class ParentSessionApprovalBridge : IParentApprovalBridge
     {
         var waitTask = _channel.WaitForApprovalAsync(callId, Timeout.InfiniteTimeSpan, ct);
 
-        var sessionLabel = ApprovalOptionKeys.ApproveSessionLabel;
-        var alwaysLabel = ApprovalOptionKeys.ApproveAlwaysLabel;
-        if (directoryRoots.Count == 1)
-        {
-            var dir = directoryRoots[0];
-            sessionLabel = $"Approve shell access in {dir} for this chat";
-            alwaysLabel = $"Approve shell access in {dir} always";
-        }
-        else if (directoryRoots.Count > 1)
-        {
-            sessionLabel = "Approve shell access in these directories for this chat";
-            alwaysLabel = "Approve shell access in these directories always";
-        }
-
+        // Labels are the fixed `ApprovalOptionKeys` constants — see that type
+        // for `MaxLabelLength` and the channel-cap rationale.
         _emitRequest(new ToolInteractionRequest
         {
             SessionId = _sessionId,
@@ -85,8 +73,8 @@ internal sealed class ParentSessionApprovalBridge : IParentApprovalBridge
             Options =
             [
                 new ToolInteractionOption(ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveOnceLabel),
-                new ToolInteractionOption(ApprovalOptionKeys.ApproveSession, sessionLabel),
-                new ToolInteractionOption(ApprovalOptionKeys.ApproveAlways, alwaysLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveSession, ApprovalOptionKeys.ApproveSessionLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveAlways, ApprovalOptionKeys.ApproveAlwaysLabel),
                 new ToolInteractionOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
             ]
         });
