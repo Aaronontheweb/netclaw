@@ -603,6 +603,8 @@ public abstract class SessionBindingContractTests : TestKit
         ]);
 
         var actor = CreateBindingActor(sid, pipeline, detector);
+        await AwaitAssertAsync(() => Assert.NotNull(pipeline.CapturedOptions),
+            cancellationToken: ct);
         await AwaitAssertAsync(() =>
         {
             var texts = GetPostedTexts();
@@ -650,6 +652,8 @@ public abstract class SessionBindingContractTests : TestKit
         ]);
 
         var actor = CreateBindingActor(sid, pipeline, detector);
+        await AwaitAssertAsync(() => Assert.NotNull(pipeline.CapturedOptions),
+            cancellationToken: ct);
         await AwaitAssertAsync(() =>
         {
             var texts = GetPostedTexts();
