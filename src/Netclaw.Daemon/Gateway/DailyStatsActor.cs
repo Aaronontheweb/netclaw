@@ -104,8 +104,11 @@ public sealed class DailyStatsActor : ReceiveActor, IWithTimers
 
     protected override void PreStart()
     {
+        // Schema DDL is initialized synchronously at daemon startup by
+        // SchemaMigrationHostedService — see DailyStatsSchema.EnsureAsync.
+        // Keeping it off the actor's mailbox prevents Windows cold-start
+        // (AV scan + first-time fsync) from delaying the first Ask.
         base.PreStart();
-        EnsureTable();
         Timers.StartPeriodicTimer(FlushTimerKey, Flush.Instance, FlushInterval, FlushInterval);
     }
 
@@ -386,52 +389,6 @@ public sealed class DailyStatsActor : ReceiveActor, IWithTimers
 
             return string.Compare(a.Method.ToWireValue(), b.Method.ToWireValue(), StringComparison.Ordinal);
         });
-    }
-
-    private void EnsureTable()
-    {
-        try
-        {
-            using var conn = new SqliteConnection(_connectionString);
-            conn.Open();
-            using var tx = conn.BeginTransaction();
-            using var cmd = conn.CreateCommand();
-            cmd.Transaction = tx;
-            cmd.CommandText =
-                """
-                CREATE TABLE IF NOT EXISTS daily_stats (
-                    date_key          TEXT NOT NULL PRIMARY KEY,
-                    input_tokens      INTEGER NOT NULL DEFAULT 0,
-                    output_tokens     INTEGER NOT NULL DEFAULT 0,
-                    turns             INTEGER NOT NULL DEFAULT 0,
-                    sessions          INTEGER NOT NULL DEFAULT 0,
-                    memories_formed   INTEGER NOT NULL DEFAULT 0,
-                    memories_recalled INTEGER NOT NULL DEFAULT 0,
-                    skills_loaded     INTEGER NOT NULL DEFAULT 0
-                )
-                """;
-            cmd.ExecuteNonQuery();
-
-            using var usageCmd = conn.CreateCommand();
-            usageCmd.Transaction = tx;
-            usageCmd.CommandText =
-                """
-                CREATE TABLE IF NOT EXISTS daily_skill_usage (
-                    date_key    TEXT NOT NULL,
-                    skill_name  TEXT NOT NULL,
-                    load_method TEXT NOT NULL,
-                    count       INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (date_key, skill_name, load_method)
-                )
-                """;
-            usageCmd.ExecuteNonQuery();
-
-            tx.Commit();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to ensure daily_stats table");
-        }
     }
 
     // ── Messages ─────────────────────────────────────────────────────

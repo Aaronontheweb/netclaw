@@ -598,7 +598,15 @@ public sealed partial class DaemonManager
         }
     }
 
-    private string? TryReadStartupFailureFromCrashLog(DateTimeOffset startedAt, out string? crashLogPath)
+    /// <summary>
+    /// Searches for a crash log written since <paramref name="startedAt"/> and extracts
+    /// the structured "Daemon startup aborted: …" line if present. Returns the failure
+    /// line (or <c>null</c> if none found) and the absolute path of the most recent
+    /// matching crash log via <paramref name="crashLogPath"/>. Public so callers that
+    /// observe a daemon-not-ready timeout can surface the same diagnostic as the
+    /// immediate-start-failure path.
+    /// </summary>
+    public string? TryReadStartupFailureFromCrashLog(DateTimeOffset startedAt, out string? crashLogPath)
     {
         crashLogPath = null;
 

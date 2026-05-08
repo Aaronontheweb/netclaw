@@ -15,20 +15,24 @@ namespace Netclaw.Cli.Tui.Wizard.Steps;
 public sealed class HealthCheckStepViewModel : IWizardStepViewModel
 {
     private static readonly TimeSpan OverallHealthCheckTimeout = TimeSpan.FromMinutes(5);
+    private const string NotReadyMessage = "Daemon did not become ready (personality setup skipped)";
 
     private readonly DaemonManager? _daemonManager;
     private readonly DaemonApi? _daemonApi;
     private readonly ChatNavigationState? _navigationState;
+    private readonly TimeProvider _timeProvider;
     private WizardContext? _context;
 
     public HealthCheckStepViewModel(
         DaemonManager? daemonManager = null,
         DaemonApi? daemonApi = null,
-        ChatNavigationState? navigationState = null)
+        ChatNavigationState? navigationState = null,
+        TimeProvider? timeProvider = null)
     {
         _daemonManager = daemonManager;
         _daemonApi = daemonApi;
         _navigationState = navigationState;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     public string StepId => WizardStepIds.HealthCheck;
@@ -182,7 +186,7 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
             }
             else if (Results.Count > 0 && Results[^1].Passed is null)
             {
-                runner.UpdateLast(new HealthCheckItem("Daemon did not become ready (personality setup skipped)", false));
+                runner.UpdateLast(new HealthCheckItem(NotReadyMessage, false));
             }
         }
 
@@ -205,6 +209,10 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
     private async Task<bool> StartAndPollDaemonAsync(CancellationToken ct)
     {
         if (_daemonManager is null) return false;
+
+        // DaemonManager.Start only consults the crash log on its 1.5s WaitForExit
+        // branch — anything that crashes after Start returns is invisible to it.
+        var startedAt = _timeProvider.GetUtcNow();
 
         var result = _daemonManager.Start();
         if (!result.Success && !result.Message.Contains("already running", StringComparison.OrdinalIgnoreCase))
@@ -236,7 +244,23 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
                 NotifyChanged();
             }
 
+            if (!_daemonManager.GetStatus().IsRunning)
+                break;
+
             await Task.Delay(1000, ct);
+        }
+
+        var crashFailure = _daemonManager.TryReadStartupFailureFromCrashLog(startedAt, out var crashLogPath);
+        var failureMessage = (crashFailure, crashLogPath) switch
+        {
+            (not null, _)  => $"{crashFailure} See crash log: {crashLogPath}",
+            (null, not null) => $"{NotReadyMessage}. See crash log: {crashLogPath}",
+            _ => null
+        };
+        if (failureMessage is not null)
+        {
+            Results[^1] = new HealthCheckItem(failureMessage, false);
+            NotifyChanged();
         }
 
         return false;
