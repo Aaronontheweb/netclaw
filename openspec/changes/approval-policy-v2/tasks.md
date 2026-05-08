@@ -35,9 +35,9 @@ Both PRs sit under this single OpenSpec change.
 
 ## 4. ShellTool cwd default
 
-- [ ] 4.1 In `src/Netclaw.Actors/Tools/ShellTool.cs:81-82`, when `args.WorkingDirectory` is null/whitespace, resolve cwd to `WorkingContext.ProjectDirectory` if set, else `session_dir`.
-- [ ] 4.2 Thread `WorkingContext` into `ShellTool` via `ToolExecutionContext` (or constructor; whichever matches existing patterns).
-- [ ] 4.3 Unit tests: null arg + project_dir set → uses project_dir; null arg + project_dir null → uses session_dir; explicit arg → uses arg verbatim; assert daemon-process cwd is never the resolved value.
+- [x] 4.1 In `src/Netclaw.Actors/Tools/ShellTool.cs:81-82`, when `args.WorkingDirectory` is null/whitespace, resolve cwd to `WorkingContext.ProjectDirectory` if set, else `session_dir`.
+- [x] 4.2 Thread `WorkingContext` into `ShellTool` via `ToolExecutionContext` (or constructor; whichever matches existing patterns).
+- [x] 4.3 Unit tests: null arg + project_dir set → uses project_dir; null arg + project_dir null → uses session_dir; explicit arg → uses arg verbatim; assert daemon-process cwd is never the resolved value.
 
 ## 5. Safe-verbs ∩ safe-space short-circuit
 

@@ -106,6 +106,17 @@ public sealed class DispatchingToolExecutor : IToolExecutor
             var approvalContext = accessDecision.ApprovalContext
                 ?? throw new InvalidOperationException("Approval decision missing approval context.");
 
+            // Resolve the cwd the matcher should evaluate against. For shell
+            // tools this is the same chain ShellTool itself uses
+            // (explicit arg → ProjectDirectory → SessionDirectory) so the
+            // gate's view of "where will this run" matches the spawned
+            // process. Other tools have no directory anchor; cwd stays null.
+            if (context is not null
+                && string.Equals(toolCall.Name, ShellTool.ToolName, StringComparison.Ordinal))
+            {
+                context.Cwd = context.ResolveShellCwd(ExtractWorkingDirectoryArg(toolCall.Arguments));
+            }
+
             // Messy commands cannot be persistently approved — the matcher
             // refuses to extract verb chains we could match a future
             // invocation against. Always round-trip through the user, even if
@@ -178,5 +189,19 @@ public sealed class DispatchingToolExecutor : IToolExecutor
             return false;
 
         return approvalContext.Patterns.All(pattern => context.OneTimeApprovedPatterns.Contains(pattern));
+    }
+
+    private static string? ExtractWorkingDirectoryArg(IDictionary<string, object?>? arguments)
+    {
+        if (arguments is null)
+            return null;
+
+        if (arguments.TryGetValue("WorkingDirectory", out var val)
+            || arguments.TryGetValue("workingDirectory", out val))
+        {
+            return val?.ToString();
+        }
+
+        return null;
     }
 }

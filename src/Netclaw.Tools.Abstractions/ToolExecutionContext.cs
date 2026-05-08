@@ -141,6 +141,44 @@ public sealed class ToolExecutionContext
     public string? Cwd { get; set; }
 
     /// <summary>
+    /// Absolute path to the project directory the agent is currently working
+    /// on, mirroring <c>WorkingContext.ProjectDirectory</c> from the session
+    /// state. Set by the session pipeline at context-build time so tools and
+    /// the approval gate can resolve a cwd without a round-trip through the
+    /// session actor. Null when no project root has been declared via
+    /// <c>set_working_directory</c>.
+    /// </summary>
+    public string? ProjectDirectory { get; set; }
+
+    /// <summary>
+    /// Resolves the working directory for a shell-style invocation. Returns
+    /// the first non-empty value of:
+    /// <list type="number">
+    /// <item><paramref name="explicitArg"/> — the tool call's
+    /// <c>WorkingDirectory</c> argument when the agent provided one;</item>
+    /// <item><see cref="ProjectDirectory"/> — the session's declared project
+    /// root, populated from <c>WorkingContext.ProjectDirectory</c>;</item>
+    /// <item><see cref="SessionDirectory"/> — the per-session scratch
+    /// directory under <c>~/.netclaw/sessions/&lt;id&gt;/</c>.</item>
+    /// </list>
+    /// Returns <c>null</c> only when none of the three is available, which is
+    /// the contract for tools that are not directory-anchored. Shell tools
+    /// SHALL never inherit the daemon process's cwd — that defeats the
+    /// approval policy's safe-space invariant because the daemon's cwd is
+    /// unrelated to what the agent is "working on."
+    /// </summary>
+    public string? ResolveShellCwd(string? explicitArg)
+    {
+        if (!string.IsNullOrWhiteSpace(explicitArg))
+            return explicitArg;
+        if (!string.IsNullOrWhiteSpace(ProjectDirectory))
+            return ProjectDirectory;
+        if (!string.IsNullOrWhiteSpace(SessionDirectory))
+            return SessionDirectory;
+        return null;
+    }
+
+    /// <summary>
     /// File attachments registered by tools during execution.
     /// </summary>
     public IReadOnlyList<FileAttachmentInfo> FileAttachments

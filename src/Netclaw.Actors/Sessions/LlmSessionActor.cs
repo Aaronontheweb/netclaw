@@ -1640,7 +1640,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             approvalTimeout: Timeout.InfiniteTimeSpan,
             maxToolTimeoutSeconds: _toolAccessPolicy?.MaxToolTimeoutSeconds ?? 600,
             shellTimeoutSeconds: _toolAccessPolicy?.ShellTimeoutSeconds ?? 60,
-            backgroundJobManager: bgJobManager);
+            backgroundJobManager: bgJobManager,
+            projectDirectory: _state.WorkingContext.ProjectDirectory);
     }
 
     private void HandleTextResponse(

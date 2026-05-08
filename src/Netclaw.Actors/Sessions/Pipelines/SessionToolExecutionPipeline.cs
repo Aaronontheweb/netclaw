@@ -52,7 +52,8 @@ internal static class SessionToolExecutionPipeline
         int maxToolTimeoutSeconds = 600,
         ILogger? logger = null,
         int shellTimeoutSeconds = 60,
-        IActorRef? backgroundJobManager = null)
+        IActorRef? backgroundJobManager = null,
+        string? projectDirectory = null)
     {
         try
         {
@@ -76,7 +77,8 @@ internal static class SessionToolExecutionPipeline
                 maxToolTimeoutSeconds,
                 logger,
                 shellTimeoutSeconds,
-                backgroundJobManager));
+                backgroundJobManager,
+                projectDirectory));
             var results = await Task.WhenAll(tasks);
 
             var fileAttachments = results.SelectMany(r => r.FileAttachments).ToList();
@@ -126,7 +128,8 @@ internal static class SessionToolExecutionPipeline
         int maxToolTimeoutSeconds = 600,
         ILogger? logger = null,
         int shellTimeoutSeconds = 60,
-        IActorRef? backgroundJobManager = null)
+        IActorRef? backgroundJobManager = null,
+        string? projectDirectory = null)
     {
         var (meta, cleanedTc) = ToolCallMetaExtractor.Extract(tc);
         tc = cleanedTc;
@@ -139,7 +142,7 @@ internal static class SessionToolExecutionPipeline
 
         var sw = Stopwatch.StartNew();
         string resultText;
-        var context = BuildToolExecutionContext(sessionId, source, sessionDir, spawnChildActor);
+        var context = BuildToolExecutionContext(sessionId, source, sessionDir, spawnChildActor, projectDirectory);
         context.RequestedTimeoutSeconds = (int)timeout.TotalSeconds;
         if (approvalChannel is not null && emitApprovalRequest is not null)
         {
@@ -609,7 +612,8 @@ internal static class SessionToolExecutionPipeline
         SessionId sessionId,
         MessageSource? source,
         string sessionDir,
-        Func<object, string, CancellationToken, Task<object>> spawnChildActor)
+        Func<object, string, CancellationToken, Task<object>> spawnChildActor,
+        string? projectDirectory)
     {
         var context = new ToolExecutionContext(sessionId.Value, sessionDir);
         context.Audience = source is null ? null : source.Audience.ToWireValue();
@@ -617,6 +621,7 @@ internal static class SessionToolExecutionPipeline
         context.ChannelType = source is null ? null : source.ChannelType.ToWireValue();
         context.SupportsInteractiveApproval = source?.ChannelType.SupportsInteractiveApproval();
         context.SpawnChildActor = spawnChildActor;
+        context.ProjectDirectory = projectDirectory;
         return context;
     }
 
