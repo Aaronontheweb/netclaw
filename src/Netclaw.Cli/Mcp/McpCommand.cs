@@ -232,21 +232,22 @@ internal static class McpCommand
         }
         else
         {
-            writer.WriteLine("Security: 0 tools granted for any audience. Personal/Team/Public tool grants");
-            writer.WriteLine("          were written as empty lists to block all tools until you opt in.");
+            writer.WriteLine("Security: Personal grants all tools (auto-approved). Team/Public grant 0 tools");
+            writer.WriteLine("          until you opt in via `netclaw mcp permissions`.");
         }
-        writer.WriteLine("Approval defaults: Personal=Approval, Team=Approval, Public=Deny");
+        writer.WriteLine("Approval defaults: Personal=Auto, Team=Approval, Public=Deny");
         writer.WriteLine($"Next: run `netclaw mcp permissions` to grant tools and adjust approvals for '{serverName.Value}'.");
         return 0;
     }
 
     /// <summary>
-    /// Writes fail-closed defaults for a newly added MCP server across all
-    /// audience profiles: empty <c>McpServerToolGrants[serverName]</c> lists
-    /// (skipped when <paramref name="grantAll"/> is true) and
-    /// <c>ApprovalPolicy.McpServerDefaults[serverName]</c> per-audience
-    /// entries (Personal=Approval, Team=Approval, Public=Deny). The
-    /// <c>ApprovalPolicy</c> section is created if missing.
+    /// Writes secure defaults for a newly added MCP server across all audience
+    /// profiles. Personal gets <c>Auto</c> approval and no per-tool grants
+    /// (all tools pass). Team/Public get empty <c>McpServerToolGrants[serverName]</c>
+    /// lists (skipped when <paramref name="grantAll"/> is true) and
+    /// <c>ApprovalPolicy.McpServerDefaults[serverName]</c> entries
+    /// (Team=Approval, Public=Deny). The <c>ApprovalPolicy</c> section is
+    /// created if missing.
     /// </summary>
     private static void ApplySecureDefaultsForNewServer(
         Dictionary<string, object> config, McpServerName serverName, bool grantAll)
@@ -254,18 +255,19 @@ internal static class McpCommand
         var toolsSection = GetOrCreateSection(config, "Tools");
         var profilesSection = GetOrCreateSection(toolsSection, "AudienceProfiles");
 
-        (string audience, string approvalMode)[] audiences =
+        (TrustAudience audience, string approvalMode)[] audiences =
         [
-            ("Personal", "Approval"),
-            ("Team", "Approval"),
-            ("Public", "Deny"),
+            (TrustAudience.Personal, "Auto"),
+            (TrustAudience.Team, "Approval"),
+            (TrustAudience.Public, "Deny"),
         ];
 
-        foreach (var (audienceName, approvalMode) in audiences)
+        foreach (var (audience, approvalMode) in audiences)
         {
+            var audienceName = audience.ToString();
             var audienceSection = GetOrCreateSection(profilesSection, audienceName);
 
-            if (!grantAll)
+            if (!grantAll && audience != TrustAudience.Personal)
             {
                 var grants = GetOrCreateSection(audienceSection, "McpServerToolGrants");
                 grants[serverName.Value] = new List<string>();
