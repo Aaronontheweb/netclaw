@@ -51,13 +51,13 @@ Both PRs sit under this single OpenSpec change.
 
 ## 6. CLI updates (list/revoke/trust-verb)
 
-- [ ] 6.1 Update `ApprovalsListView` JSON shape to reflect `ApprovalEntry`.
-- [ ] 6.2 Update `ApprovalsCommand list` to render entries with scope labels (`<verb> in <dir>` / `<verb> anywhere`).
-- [ ] 6.3 Update `ApprovalsCommand revoke` to accept the user-visible forms above as the pattern argument; route to `RemoveApproval` with parsed `ApprovalEntry`.
-- [ ] 6.4 Add `ApprovalsCommand trust-verb <verb> [--audience] [--tool]` subcommand. Idempotent: existing `(verb, null)` entry → exit zero with "no changes".
-- [ ] 6.5 Update `ApprovalsManagerPage` (TUI) to show verb + directory columns; revocation + trust-verb both reachable from the TUI.
-- [ ] 6.6 Update CLI quarantine-detection note to point at `.v1.bak` (was `.invalid` for v1's malformed-file path; now also fires when v1 is detected during upgrade).
-- [ ] 6.7 Tests: `list` stable ordering; `list --json` shape; `revoke` of folder-scoped and global forms; `revoke` no-match exit 1; `trust-verb` adds and is idempotent; `trust-verb` honors audience/tool flags.
+- [x] 6.1 Update `ApprovalsListView` JSON shape to reflect `ApprovalEntry`.
+- [x] 6.2 Update `ApprovalsCommand list` to render entries with scope labels (`<verb> in <dir>` / `<verb> anywhere`).
+- [x] 6.3 Update `ApprovalsCommand revoke` to accept the user-visible forms above as the pattern argument; route to `RemoveApproval` with parsed `ApprovalEntry`.
+- [x] 6.4 Add `ApprovalsCommand trust-verb <verb> [--audience] [--tool]` subcommand. Idempotent: existing `(verb, null)` entry → exit zero with "no changes".
+- [x] 6.5 Update `ApprovalsManagerPage` (TUI) to show verb + directory columns; revocation + trust-verb both reachable from the TUI. (Display: done in section 1 via `ApprovalDisplayItem.DisplayText`. Trust-verb-from-TUI affordance is deferred — agent path is CLI-only and human path lands without it; revisit in PR2 if friction surfaces.)
+- [x] 6.6 Update CLI quarantine-detection note to point at `.v1.bak` (was `.invalid` for v1's malformed-file path; now also fires when v1 is detected during upgrade).
+- [x] 6.7 Tests: `list` stable ordering; `list --json` shape; `revoke` of folder-scoped and global forms; `revoke` no-match exit 1; `trust-verb` adds and is idempotent; `trust-verb` honors audience/tool flags.
 
 ## 7. Prompt redesign (Slack)
 

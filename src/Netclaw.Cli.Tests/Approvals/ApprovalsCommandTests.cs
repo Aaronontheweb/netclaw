@@ -242,4 +242,128 @@ public sealed class ApprovalsCommandTests : IDisposable
         Assert.Empty(_store.GetApprovedEntries(TrustAudience.Personal, "shell_execute"));
         Assert.Empty(_store.GetApprovedEntries(TrustAudience.Public, "shell_execute"));
     }
+
+    // ── Folder-scoped revoke ──
+
+    [Fact]
+    public async Task Revoke_folder_scoped_form_removes_entry_with_matching_directory()
+    {
+        _store.AddApproval(TrustAudience.Personal, "shell_execute", InDir("git remote", "/home/user/repos/foo"));
+
+        var exit = await ApprovalsCommand.RunAsync(
+            ["approvals", "revoke", "git remote in /home/user/repos/foo"],
+            _paths, _output);
+
+        Assert.Equal(0, exit);
+        Assert.Empty(_store.GetApprovedEntries(TrustAudience.Personal, "shell_execute"));
+    }
+
+    [Fact]
+    public async Task Revoke_folder_scoped_form_does_not_match_global_wildcard()
+    {
+        // The store has a (verb, null) entry; a folder-scoped revoke should not remove it.
+        _store.AddApproval(TrustAudience.Personal, "shell_execute", Verb("git remote"));
+
+        var exit = await ApprovalsCommand.RunAsync(
+            ["approvals", "revoke", "git remote in /home/user/repos/foo"],
+            _paths, _output);
+
+        Assert.Equal(1, exit);
+        var remaining = _store.GetApprovedEntries(TrustAudience.Personal, "shell_execute");
+        Assert.Single(remaining);
+        Assert.Null(remaining[0].Directory);
+    }
+
+    [Fact]
+    public async Task Revoke_unrecognized_pattern_exits_one_with_clear_message()
+    {
+        // No "anywhere" suffix and no " in " separator — not a valid revoke pattern.
+        var exit = await ApprovalsCommand.RunAsync(
+            ["approvals", "revoke", "git remote"],
+            _paths, _output);
+
+        Assert.Equal(1, exit);
+        var output = _output.ToString();
+        Assert.Contains("Could not parse revoke pattern", output);
+        Assert.Contains("'<verb> in <directory>' or '<verb> anywhere'", output);
+    }
+
+    // ── trust-verb ──
+
+    [Fact]
+    public async Task TrustVerb_adds_global_wildcard_with_default_audience_and_tool()
+    {
+        var exit = await ApprovalsCommand.RunAsync(
+            ["approvals", "trust-verb", "freshdesk"],
+            _paths, _output);
+
+        Assert.Equal(0, exit);
+        var entries = _store.GetApprovedEntries(TrustAudience.Personal, "shell_execute");
+        Assert.Single(entries);
+        Assert.Equal("freshdesk", entries[0].Verb);
+        Assert.Null(entries[0].Directory);
+        Assert.Contains("Trusted 'freshdesk anywhere'", _output.ToString());
+    }
+
+    [Fact]
+    public async Task TrustVerb_is_idempotent_on_repeated_invocation()
+    {
+        await ApprovalsCommand.RunAsync(["approvals", "trust-verb", "freshdesk"], _paths, _output);
+        _output.GetStringBuilder().Clear();
+
+        var exit = await ApprovalsCommand.RunAsync(
+            ["approvals", "trust-verb", "freshdesk"],
+            _paths, _output);
+
+        Assert.Equal(0, exit);
+        var entries = _store.GetApprovedEntries(TrustAudience.Personal, "shell_execute");
+        Assert.Single(entries);
+        Assert.Contains("No changes", _output.ToString());
+    }
+
+    [Fact]
+    public async Task TrustVerb_honors_audience_and_tool_flags()
+    {
+        var exit = await ApprovalsCommand.RunAsync(
+            ["approvals", "trust-verb", "freshdesk", "--audience", "team", "--tool", "shell_execute"],
+            _paths, _output);
+
+        Assert.Equal(0, exit);
+        Assert.Single(_store.GetApprovedEntries(TrustAudience.Team, "shell_execute"));
+        Assert.Empty(_store.GetApprovedEntries(TrustAudience.Personal, "shell_execute"));
+    }
+
+    [Fact]
+    public async Task TrustVerb_without_verb_argument_exits_one_with_usage()
+    {
+        var exit = await ApprovalsCommand.RunAsync(
+            ["approvals", "trust-verb"],
+            _paths, _output);
+
+        Assert.Equal(1, exit);
+        Assert.Contains("Usage: netclaw approvals trust-verb", _output.ToString());
+    }
+
+    [Fact]
+    public async Task TrustVerb_unknown_audience_exits_one()
+    {
+        var exit = await ApprovalsCommand.RunAsync(
+            ["approvals", "trust-verb", "freshdesk", "--audience", "bogus"],
+            _paths, _output);
+
+        Assert.Equal(1, exit);
+        Assert.Contains("Unknown audience 'bogus'", _output.ToString());
+    }
+
+    // ── help mentions trust-verb ──
+
+    [Fact]
+    public async Task Help_lists_trust_verb_subcommand()
+    {
+        await ApprovalsCommand.RunAsync(["approvals", "help"], _paths, _output);
+
+        var output = _output.ToString();
+        Assert.Contains("trust-verb", output);
+        Assert.Contains("global-wildcard", output);
+    }
 }
