@@ -220,6 +220,40 @@ public sealed class McpToolPermissionsViewModelTests : IDisposable
         Assert.True(isInherited);
     }
 
+    [Fact]
+    public void ToggleServerAccess_GrantsAllDiscoveredTools()
+    {
+        var vm = CreateVm();
+        var tools = new[] { "create-pages", "search", "list-databases" };
+        vm.InitializeForTests(new McpServerName("notion"), tools);
+        vm.SetSelectedAudienceForTests(TrustAudience.Team);
+
+        Assert.False(vm.IsServerAllowedForSelectedAudience());
+
+        vm.ToggleServerAccess();
+
+        Assert.True(vm.IsServerAllowedForSelectedAudience());
+        foreach (var tool in tools)
+            Assert.True(vm.IsToolGranted(new ToolName(tool)));
+    }
+
+    [Fact]
+    public void ToggleServerAccess_DisablingClearsGrantedTools()
+    {
+        var vm = CreateVm();
+        var tools = new[] { "create-pages", "search" };
+        vm.InitializeForTests(new McpServerName("notion"), tools);
+        vm.SetSelectedAudienceForTests(TrustAudience.Team);
+
+        vm.ToggleServerAccess(); // enable
+        Assert.True(vm.IsToolGranted(new ToolName("create-pages")));
+
+        vm.ToggleServerAccess(); // disable
+        Assert.False(vm.IsServerAllowedForSelectedAudience());
+        foreach (var tool in tools)
+            Assert.False(vm.IsToolGranted(new ToolName(tool)));
+    }
+
     private sealed class NoopHttpClientFactory : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new();

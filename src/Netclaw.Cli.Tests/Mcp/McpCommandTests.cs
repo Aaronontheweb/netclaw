@@ -118,7 +118,20 @@ public sealed class McpCommandTests : IDisposable
         var doc = ReadConfigFile(_paths.NetclawConfigPath);
         var profiles = doc.RootElement.GetProperty("Tools").GetProperty("AudienceProfiles");
 
-        foreach (var audience in new[] { "Personal", "Team", "Public" })
+        // Personal: no per-tool grants (all tools pass), Auto approval
+        var personal = profiles.GetProperty("Personal");
+        var hasPersonalGrants = personal.TryGetProperty("McpServerToolGrants", out var pg)
+            && pg.ValueKind == JsonValueKind.Object
+            && pg.TryGetProperty("notion", out _);
+        Assert.False(hasPersonalGrants);
+        Assert.Equal("Auto", personal
+            .GetProperty("ApprovalPolicy")
+            .GetProperty("McpServerDefaults")
+            .GetProperty("notion")
+            .GetString());
+
+        // Team/Public: empty grants, Approval/Deny
+        foreach (var audience in new[] { "Team", "Public" })
         {
             var profile = profiles.GetProperty(audience);
             var grants = profile.GetProperty("McpServerToolGrants").GetProperty("notion");
@@ -136,9 +149,9 @@ public sealed class McpCommandTests : IDisposable
         }
 
         var output = _output.ToString();
-        Assert.Contains("0 tools granted", output);
+        Assert.Contains("Personal grants all tools", output);
         Assert.Contains("netclaw mcp permissions", output);
-        Assert.Contains("Personal=Approval", output);
+        Assert.Contains("Personal=Auto", output);
         Assert.Contains("Public=Deny", output);
     }
 
@@ -168,7 +181,12 @@ public sealed class McpCommandTests : IDisposable
                 .GetProperty("McpServerDefaults")
                 .GetProperty("trusted")
                 .GetString();
-            var expected = audience == "Public" ? "Deny" : "Approval";
+            var expected = audience switch
+            {
+                "Personal" => "Auto",
+                "Public" => "Deny",
+                _ => "Approval"
+            };
             Assert.Equal(expected, approvalMode);
         }
 
@@ -203,11 +221,23 @@ public sealed class McpCommandTests : IDisposable
         var doc = ReadConfigFile(_paths.NetclawConfigPath);
         var profiles = doc.RootElement.GetProperty("Tools").GetProperty("AudienceProfiles");
 
-        foreach (var audience in new[] { "Personal", "Team", "Public" })
+        // Personal: no per-tool grants written for new-server (all tools pass)
+        var personalProfile = profiles.GetProperty("Personal");
+        var hasPersonalGrants = personalProfile.TryGetProperty("McpServerToolGrants", out var personalGrants)
+            && personalGrants.ValueKind == JsonValueKind.Object
+            && personalGrants.TryGetProperty("new-server", out _);
+        Assert.False(hasPersonalGrants);
+        var personalApproval = personalProfile
+            .GetProperty("ApprovalPolicy")
+            .GetProperty("McpServerDefaults");
+        Assert.False(personalApproval.TryGetProperty("old-server", out _));
+        Assert.True(personalApproval.TryGetProperty("new-server", out _));
+
+        // Team/Public: empty grants written, old-server untouched
+        foreach (var audience in new[] { "Team", "Public" })
         {
             var profile = profiles.GetProperty(audience);
 
-            // old-server MUST NOT have defaults written.
             Assert.True(profile.TryGetProperty("McpServerToolGrants", out var grants));
             Assert.False(grants.TryGetProperty("old-server", out _));
             Assert.True(grants.TryGetProperty("new-server", out _));
@@ -254,7 +284,7 @@ public sealed class McpCommandTests : IDisposable
 
         Assert.True(personal.TryGetProperty("ApprovalPolicy", out var approvalPolicy));
         Assert.Equal(
-            "Approval",
+            "Auto",
             approvalPolicy.GetProperty("McpServerDefaults").GetProperty("notion").GetString());
 
         // Pre-existing property should still be there.

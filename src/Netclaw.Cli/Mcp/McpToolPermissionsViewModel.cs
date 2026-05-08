@@ -584,8 +584,6 @@ public sealed class McpToolPermissionsViewModel : ReactiveViewModel
 
         if (!allowed)
         {
-            // Enabling server for this audience — start with empty tool grants
-            // so the operator explicitly selects which tools to expose
             if (!_pendingGrants.TryGetValue(SelectedServer, out var serverGrants))
             {
                 serverGrants = [];
@@ -593,7 +591,11 @@ public sealed class McpToolPermissionsViewModel : ReactiveViewModel
             }
 
             if (!serverGrants.ContainsKey(audienceName))
-                serverGrants[audienceName] = new HashSet<string>(StringComparer.Ordinal);
+                serverGrants[audienceName] = new HashSet<string>(DiscoveredTools, StringComparer.Ordinal);
+        }
+        else if (_pendingGrants.TryGetValue(SelectedServer, out var existingGrants))
+        {
+            existingGrants.Remove(audienceName);
         }
 
         NotifyStateChanged();
