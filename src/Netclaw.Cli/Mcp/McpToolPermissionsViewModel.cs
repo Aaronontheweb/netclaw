@@ -593,6 +593,10 @@ public sealed class McpToolPermissionsViewModel : ReactiveViewModel
             if (!serverGrants.ContainsKey(audienceName))
                 serverGrants[audienceName] = new HashSet<string>(DiscoveredTools, StringComparer.Ordinal);
         }
+        else if (_pendingGrants.TryGetValue(SelectedServer, out var existingGrants))
+        {
+            existingGrants.Remove(audienceName);
+        }
 
         NotifyStateChanged();
     }
