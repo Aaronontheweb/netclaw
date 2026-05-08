@@ -19,8 +19,6 @@ internal interface IShellApprovalSemantics
 
     string NormalizeApprovalUnit(string command, string? workingDirectory);
 
-    IReadOnlyList<DirectoryApprovalRoot> ExtractDirectoryRoots(string command, string? workingDirectory);
-
     string? NormalizePathToken(string path, string? workingDirectory);
 }
 
@@ -161,36 +159,6 @@ internal abstract class ShellApprovalSemanticsBase : IShellApprovalSemantics
         return string.Join(' ', normalizedTokens);
     }
 
-    public IReadOnlyList<DirectoryApprovalRoot> ExtractDirectoryRoots(string command, string? workingDirectory)
-    {
-        var tokens = ShellTokenizer.Tokenize(command).ToList();
-        if (tokens.Count == 0)
-            return [];
-
-        var roots = new List<DirectoryApprovalRoot>();
-        var comparisonRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var sawPathToken = false;
-
-        foreach (var token in tokens)
-        {
-            if (token.Length == 0 || token.StartsWith('-'))
-                continue;
-
-            if (!LooksLikePath(token))
-                continue;
-
-            sawPathToken = true;
-            var root = TryCreateDirectoryApprovalRoot(token, workingDirectory);
-            if (root is null)
-                return [];
-
-            if (comparisonRoots.Add(root.ComparisonRoot))
-                roots.Add(root);
-        }
-
-        return sawPathToken ? roots : [];
-    }
-
     public virtual string? NormalizePathToken(string path, string? workingDirectory)
         => PathUtility.ExpandAndNormalize(path, workingDirectory);
 
@@ -238,17 +206,6 @@ internal abstract class ShellApprovalSemanticsBase : IShellApprovalSemantics
     protected int GetFirstShellSeparatorIndex(string token)
     {
         for (var i = 0; i < token.Length; i++)
-        {
-            if (IsShellSeparator(token[i]))
-                return i;
-        }
-
-        return -1;
-    }
-
-    protected int GetLastShellSeparatorIndex(string token, int startExclusive)
-    {
-        for (var i = Math.Min(startExclusive - 1, token.Length - 1); i >= 0; i--)
         {
             if (IsShellSeparator(token[i]))
                 return i;
@@ -321,100 +278,6 @@ internal abstract class ShellApprovalSemanticsBase : IShellApprovalSemantics
         return segments;
     }
 
-    protected DirectoryApprovalRoot? TryCreateDirectoryApprovalRoot(string rawPath, string? workingDirectory)
-    {
-        var displayRoot = ExtractDisplayDirectory(rawPath, workingDirectory);
-        if (displayRoot is null)
-            return null;
-
-        var comparisonRoot = NormalizePathToken(displayRoot, workingDirectory);
-        if (comparisonRoot is null)
-            return null;
-
-        if (Directory.Exists(comparisonRoot))
-            comparisonRoot = PathUtility.Normalize(new DirectoryInfo(comparisonRoot).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? comparisonRoot);
-
-        if (CountPathSegments(comparisonRoot) < ShellTokenizer.MinDirectoryScopeDepth)
-            return null;
-
-        return new DirectoryApprovalRoot(EnsureTrailingSeparator(displayRoot), EnsureTrailingSeparator(comparisonRoot));
-    }
-
-    protected virtual string? ExtractDisplayDirectory(string path, string? workingDirectory)
-    {
-        string? candidate;
-        if (path.EndsWith('/') || path.EndsWith('\\'))
-        {
-            candidate = path.TrimEnd('/', '\\');
-        }
-        else
-        {
-            var globIdx = path.IndexOfAny(['*', '?', '[']);
-            if (globIdx >= 0)
-            {
-                var lastSep = GetLastShellSeparatorIndex(path, globIdx);
-                candidate = lastSep > 0 ? path[..lastSep] : null;
-            }
-            else
-            {
-                var normalizedCandidate = NormalizePathToken(path, workingDirectory);
-                if (normalizedCandidate is not null && Directory.Exists(normalizedCandidate))
-                    candidate = path;
-                else
-                    candidate = Path.GetDirectoryName(path);
-            }
-        }
-
-        return NormalizeDisplayDirectory(candidate, workingDirectory);
-    }
-
-    protected virtual string? NormalizeDisplayDirectory(string? candidate, string? workingDirectory)
-    {
-        if (string.IsNullOrWhiteSpace(candidate))
-            return null;
-
-        var trimmed = Path.TrimEndingDirectorySeparator(candidate);
-        if (IsRelativeDisplayPath(trimmed))
-            return trimmed;
-
-        return NormalizePathToken(trimmed, workingDirectory);
-    }
-
-    protected virtual bool IsRelativeDisplayPath(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-            return false;
-
-        if (path.StartsWith('~')
-            || path.StartsWith("$HOME", StringComparison.Ordinal)
-            || path.StartsWith("${HOME}", StringComparison.Ordinal)
-            || path.StartsWith("%USERPROFILE%", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return !Path.IsPathRooted(path);
-    }
-
-    protected virtual string EnsureTrailingSeparator(string path)
-        => Path.EndsInDirectorySeparator(path) ? path : path + Path.DirectorySeparatorChar;
-
-    protected virtual int CountPathSegments(string normalizedPath)
-    {
-        var trimmed = normalizedPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (trimmed.Length == 0)
-            return 0;
-
-        var root = Path.GetPathRoot(trimmed);
-        if (root is not null && trimmed.Length > root.Length)
-            trimmed = trimmed[root.Length..];
-        else if (root is not null)
-            return 0;
-
-        return trimmed.Split(
-            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-            StringSplitOptions.RemoveEmptyEntries).Length;
-    }
 
     private static void FlushSegment(StringBuilder current, List<string> segments)
     {
@@ -491,29 +354,6 @@ internal sealed class PosixShellApprovalSemantics : ShellApprovalSemanticsBase
         return PathUtility.ExpandAndNormalize(expanded, workingDirectory);
     }
 
-    protected override string? ExtractDisplayDirectory(string path, string? workingDirectory)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-            return null;
-
-        if (path.EndsWith('/') || path.EndsWith('\\'))
-            return path.TrimEnd('/', '\\');
-
-        var globIdx = path.IndexOfAny(['*', '?', '[']);
-        if (globIdx >= 0)
-        {
-            var lastSep = path.LastIndexOf('/', globIdx);
-            return lastSep > 0 ? path[..lastSep] : null;
-        }
-
-        var normalizedCandidate = NormalizePathToken(path, workingDirectory);
-        if (normalizedCandidate is not null && Directory.Exists(normalizedCandidate))
-            return path;
-
-        var lastSlash = path.LastIndexOf('/');
-        return lastSlash > 0 ? path[..lastSlash] : null;
-    }
-
     protected override bool IsShellSeparator(char ch) => ch == '/';
 
     protected override bool IsAnchoredPath(string token)
@@ -525,9 +365,6 @@ internal sealed class PosixShellApprovalSemantics : ShellApprovalSemanticsBase
             || token.StartsWith("$HOME", StringComparison.Ordinal)
             || token.StartsWith("${HOME}", StringComparison.Ordinal);
     }
-
-    protected override string EnsureTrailingSeparator(string path)
-        => PathUtility.EnsureTrailingSeparatorPreservingStyle(path);
 
     internal static bool IsPosixShellInvoker(string verb)
     {

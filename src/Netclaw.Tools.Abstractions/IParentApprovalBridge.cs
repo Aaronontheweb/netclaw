@@ -30,10 +30,9 @@ public interface IParentApprovalBridge
     /// Emits an approval request to the parent session and waits for the user's decision.
     /// <paramref name="patterns"/> are the exact blocked units shown in the
     /// prompt and reused for approve-once retries. <paramref name="candidateVerbs"/>
-    /// are the verb chains the parent session should record for B/C decisions,
-    /// evaluated against persisted <c>ApprovalEntry</c> records using the
-    /// candidate's cwd. <paramref name="directoryRoots"/> is empty after the
-    /// v2 cutover and is removed in section 7.
+    /// are the verb chains the parent session records for broader-scope
+    /// approvals, evaluated against persisted <c>ApprovalEntry</c> records
+    /// using the candidate's cwd.
     /// </summary>
     Task<ParentApprovalDecision> RequestApprovalAsync(
         ToolCallId callId,
@@ -41,7 +40,6 @@ public interface IParentApprovalBridge
         string displayText,
         IReadOnlyList<string> patterns,
         IReadOnlyList<string> candidateVerbs,
-        IReadOnlyList<string> directoryRoots,
         bool isMessy,
         CancellationToken ct);
 }

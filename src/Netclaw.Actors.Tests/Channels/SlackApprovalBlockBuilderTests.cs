@@ -44,7 +44,6 @@ public sealed class SlackApprovalBlockBuilderTests
             RequesterSenderId = "device-1",
             Patterns = verbs,
             CandidateVerbs = verbs,
-            DirectoryRoots = [],
             Cwd = cwd,
             IsMessy = isMessy,
             Options = options

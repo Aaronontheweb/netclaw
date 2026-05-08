@@ -292,7 +292,6 @@ internal static class SessionToolExecutionPipeline
                 Patterns = ctx.Patterns,
                 CandidateVerbs = ctx.CandidateVerbs,
                 IsMessy = ctx.IsMessy,
-                DirectoryRoots = ctx.DirectoryRoots,
                 Options = ctx.Options
                     .Select(o => new ToolInteractionOption(o.Key, o.Label))
                     .ToList()

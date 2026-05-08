@@ -215,13 +215,6 @@ public static class ShellTokenizer
         => ShellApprovalSemantics.ForCommand(command).NormalizeApprovalUnit(command, workingDirectory);
 
     /// <summary>
-    /// Extracts reusable directory approval roots from a shell approval unit.
-    /// Returns an empty list when no reusable roots can be extracted.
-    /// </summary>
-    public static IReadOnlyList<DirectoryApprovalRoot> ExtractDirectoryRoots(string command, string? workingDirectory = null)
-        => ShellApprovalSemantics.ForCommand(command).ExtractDirectoryRoots(command, workingDirectory);
-
-    /// <summary>
     /// Normalizes a path token using the active shell family's path semantics.
     /// Returns null when the token cannot be normalized as a local path.
     /// </summary>
@@ -269,8 +262,6 @@ public static class ShellTokenizer
     /// </summary>
     public static bool LooksLikePath(string token)
         => ShellApprovalSemantics.ForCommand(token).LooksLikePath(token);
-
-    internal const int MinDirectoryScopeDepth = 2;
 
     /// <summary>
     /// Returns true when the pattern is a single-token shell approval for a

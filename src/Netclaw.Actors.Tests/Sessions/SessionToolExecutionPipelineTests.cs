@@ -155,8 +155,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
                         new ToolApprovalOption(ApprovalOptionKeys.ApproveSession, ApprovalOptionKeys.ApproveSessionLabel),
                         new ToolApprovalOption(ApprovalOptionKeys.ApproveAlways, ApprovalOptionKeys.ApproveAlwaysLabel),
                         new ToolApprovalOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
-                    ],
-                    DirectoryRoots: []));
+                    ]));
             }
 
             ct.ThrowIfCancellationRequested();

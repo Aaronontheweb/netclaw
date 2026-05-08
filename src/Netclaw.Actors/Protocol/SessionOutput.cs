@@ -372,12 +372,6 @@ public sealed record ToolInteractionRequest : SessionOutput
     public IReadOnlyList<string> CandidateVerbs { get; init; } = [];
 
     /// <summary>
-    /// Always empty after the v2 cutover; section 7's prompt redesign removes
-    /// the field as part of the new cwd-in-header layout.
-    /// </summary>
-    public IReadOnlyList<string> DirectoryRoots { get; init; } = [];
-
-    /// <summary>
     /// Resolved working directory for this invocation, used by the approval
     /// gate to evaluate folder-scoped <c>ApprovalEntry</c> records. May be
     /// null for tools whose approvals are not directory-anchored.

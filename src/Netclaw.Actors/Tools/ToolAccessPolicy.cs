@@ -309,10 +309,6 @@ public sealed class ToolAccessPolicy
         //   not extracted from arguments. Button labels stay fixed; runtime
         //   values like paths never enter button text because Slack caps
         //   button text at 76 chars and Discord at 80.
-        //
-        // DirectoryRoots is left empty for the section 1–6 commit chain.
-        // Section 7's prompt redesign removes the field entirely as part of
-        // the new "Approve in <cwd>?" header.
         var patterns = matcher.ExtractPatterns(toolName, arguments);
         var candidateVerbs = matcher.ExtractCandidateVerbs(toolName, arguments);
         var displayText = matcher.FormatForDisplay(toolName, arguments);
@@ -345,7 +341,6 @@ public sealed class ToolAccessPolicy
             patterns,
             candidateVerbs,
             options,
-            DirectoryRoots: [],
             IsMessy: isMessy);
 
         return ToolAccessDecision.RequiresApproval(approvalContext);
@@ -575,13 +570,10 @@ public sealed record ToolApprovalContext(
     // candidate's cwd in ToolExecutionContext, not from extraction.
     IReadOnlyList<string> CandidateVerbs,
     IReadOnlyList<ToolApprovalOption> Options,
-    // Always empty after the v2 cutover; section 7's prompt redesign removes
-    // the field as part of the new cwd-in-header layout.
-    IReadOnlyList<string> DirectoryRoots,
     // True when the invocation cannot be cleanly split into verb-chain
-    // approval units (bash control-flow, unbalanced quotes/brackets). Section 7
-    // uses this to omit the persistent-grant buttons and surface the
-    // "complex command" hint.
+    // approval units (bash control-flow, unbalanced quotes/brackets).
+    // Channel adapters use this to omit the persistent-grant buttons and
+    // surface the "complex command" hint.
     bool IsMessy = false);
 
 public sealed record ToolApprovalOption(string Key, string Label);

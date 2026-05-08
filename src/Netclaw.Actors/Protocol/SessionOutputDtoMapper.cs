@@ -180,7 +180,6 @@ public static class SessionOutputDtoMapper
             RequesterSenderId = msg.RequesterSenderId,
             InteractionPatterns = [.. msg.Patterns],
             InteractionCandidateVerbs = [.. msg.CandidateVerbs],
-            InteractionDirectoryRoots = [.. msg.DirectoryRoots],
             InteractionCwd = msg.Cwd,
             InteractionIsMessy = msg.IsMessy,
             InteractionOptions = [.. msg.Options],
@@ -341,7 +340,6 @@ public static class SessionOutputDtoMapper
                 AdoptedSpeakerIds = dto.InteractionAdoptedSpeakerIds ?? [],
                 Patterns = dto.InteractionPatterns ?? [],
                 CandidateVerbs = dto.InteractionCandidateVerbs ?? [],
-                DirectoryRoots = dto.InteractionDirectoryRoots ?? [],
                 Cwd = dto.InteractionCwd,
                 IsMessy = dto.InteractionIsMessy ?? false,
                 Options = dto.InteractionOptions ?? []

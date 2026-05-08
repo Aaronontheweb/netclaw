@@ -769,15 +769,11 @@ public sealed class ToolApprovalGateTests
 
         Assert.True(decision.NeedsApproval);
         Assert.NotNull(decision.ApprovalContext);
-        // v2 cutover: DirectoryRoots is always empty; the candidate's cwd is
-        // the directory half of any (verb, directory) approval pair, supplied
-        // via ToolExecutionContext rather than extracted from arguments.
-        Assert.Empty(decision.ApprovalContext!.DirectoryRoots);
         // ExtractVerbChain appends the first positional argument for
         // path-aware verbs (cat, grep, etc.) so the candidate captures what
         // the command operates on.
         Assert.Contains(
-            decision.ApprovalContext.CandidateVerbs,
+            decision.ApprovalContext!.CandidateVerbs,
             v => v.Replace('\\', '/').Equals("cat /home/user/.netclaw/logs/crash.log", StringComparison.OrdinalIgnoreCase));
     }
 
@@ -795,9 +791,6 @@ public sealed class ToolApprovalGateTests
         var alwaysOption = options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways);
         Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, sessionOption.Label);
         Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, alwaysOption.Label);
-        // v2 cutover: DirectoryRoots is always empty; section 7 redesigns the
-        // prompt body to show the cwd in the header instead of in a section.
-        Assert.Empty(decision.ApprovalContext.DirectoryRoots);
     }
 
     [Fact]
@@ -812,7 +805,6 @@ public sealed class ToolApprovalGateTests
         var options = decision.ApprovalContext!.Options;
         Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession).Label);
         Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways).Label);
-        Assert.Empty(decision.ApprovalContext.DirectoryRoots);
     }
 
     [Fact]
@@ -832,11 +824,10 @@ public sealed class ToolApprovalGateTests
             var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
 
             Assert.True(decision.NeedsApproval);
-            // v2 cutover: no v1 directory-root extraction. Pipelines stay
-            // inside one approval unit, so the candidate is the verb chain of
-            // the unit's first command (path-aware "grep <first-arg>").
-            Assert.Empty(decision.ApprovalContext!.DirectoryRoots);
-            Assert.Contains(decision.ApprovalContext.CandidateVerbs, v => v.StartsWith("grep", StringComparison.Ordinal));
+            // Pipelines stay inside one approval unit, so the candidate is
+            // the verb chain of the unit's first command (path-aware
+            // "grep <first-arg>").
+            Assert.Contains(decision.ApprovalContext!.CandidateVerbs, v => v.StartsWith("grep", StringComparison.Ordinal));
             // Button labels are fixed; Slack's 76-char and Discord's 80-char
             // button caps make dynamic labels structurally unsafe.
             Assert.Equal(
@@ -861,9 +852,8 @@ public sealed class ToolApprovalGateTests
         var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
 
         Assert.True(decision.NeedsApproval);
-        Assert.Empty(decision.ApprovalContext!.DirectoryRoots);
         // ExtractVerbChain caps at depth 2, dropping positional arguments.
-        Assert.Equal(["git push"], decision.ApprovalContext.CandidateVerbs);
+        Assert.Equal(["git push"], decision.ApprovalContext!.CandidateVerbs);
         var sessionOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession);
         var alwaysOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways);
         Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, sessionOption.Label);
@@ -885,10 +875,6 @@ public sealed class ToolApprovalGateTests
 
         Assert.True(decision.NeedsApproval);
         var options = decision.ApprovalContext!.Options;
-        // v2: DirectoryRoots is always empty after section 2 — the cwd lives
-        // on ToolExecutionContext and section 7 renders it in the prompt
-        // header. The label-cap regression is independent of that.
-        Assert.Empty(decision.ApprovalContext.DirectoryRoots);
         Assert.All(options, option => Assert.True(
             option.Label.Length <= ApprovalOptionKeys.MaxLabelLength,
             $"Option '{option.Key}' label '{option.Label}' is {option.Label.Length} chars; must stay within {ApprovalOptionKeys.MaxLabelLength}."));

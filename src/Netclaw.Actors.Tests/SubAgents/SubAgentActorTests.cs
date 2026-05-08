@@ -535,7 +535,6 @@ internal sealed class RecordingParentApprovalBridge(ParentApprovalDecision decis
         string displayText,
         IReadOnlyList<string> patterns,
         IReadOnlyList<string> candidateVerbs,
-        IReadOnlyList<string> directoryRoots,
         bool isMessy,
         CancellationToken ct)
     {

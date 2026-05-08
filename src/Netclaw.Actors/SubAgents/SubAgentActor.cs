@@ -427,7 +427,6 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         ctx.DisplayText,
                         ctx.Patterns,
                         ctx.CandidateVerbs,
-                        ctx.DirectoryRoots,
                         ctx.IsMessy,
                         ct);
 

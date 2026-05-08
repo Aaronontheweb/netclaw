@@ -48,7 +48,6 @@ internal sealed class ParentSessionApprovalBridge : IParentApprovalBridge
         string displayText,
         IReadOnlyList<string> patterns,
         IReadOnlyList<string> candidateVerbs,
-        IReadOnlyList<string> directoryRoots,
         bool isMessy,
         CancellationToken ct)
     {
@@ -67,7 +66,6 @@ internal sealed class ParentSessionApprovalBridge : IParentApprovalBridge
             RequesterPrincipal = _requesterPrincipal,
             Patterns = patterns,
             CandidateVerbs = candidateVerbs,
-            DirectoryRoots = directoryRoots,
             IsMessy = isMessy,
             HasAdoptedContext = _hasAdoptedContext,
             AdoptedSpeakerIds = _adoptedSpeakerIds,

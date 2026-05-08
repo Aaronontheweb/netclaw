@@ -9,34 +9,6 @@ namespace Netclaw.Security.Tests;
 
 public sealed class ShellTokenizerTests
 {
-    public static TheoryData<string, string> AbsoluteRootCases
-    {
-        get
-        {
-            var data = new TheoryData<string, string>();
-            if (OperatingSystem.IsWindows())
-                data.Add(@"type C:\Users\petabridge\.netclaw\logs\crash.log", @"C:\Users\petabridge\.netclaw\logs\");
-            else
-                data.Add("cat /home/user/.netclaw/logs/crash.log", "/home/user/.netclaw/logs/");
-
-            return data;
-        }
-    }
-
-    public static TheoryData<string, string> RelativeRootCases
-    {
-        get
-        {
-            var data = new TheoryData<string, string>();
-            if (OperatingSystem.IsWindows())
-                data.Add("findstr timeout logs\\app.log | find /c \"timeout\"", @"logs\");
-            else
-                data.Add("grep timeout logs/app.log | wc -l", "logs/");
-
-            return data;
-        }
-    }
-
     public static TheoryData<string, bool> WindowsAnchoredPathCases
     {
         get
@@ -64,18 +36,6 @@ public sealed class ShellTokenizerTests
                 { @"src\main.cs", expected },
                 { @"folder\subfolder", expected }
             };
-        }
-    }
-
-    public static TheoryData<string, string?> WindowsAbsoluteDirectoryRootCases
-    {
-        get
-        {
-            var data = new TheoryData<string, string?>();
-            data.Add(
-                @"type C:\Users\petabridge\.netclaw\logs\crash.log",
-                OperatingSystem.IsWindows() ? @"C:\Users\petabridge\.netclaw\logs\" : null);
-            return data;
         }
     }
 
@@ -344,97 +304,6 @@ public sealed class ShellTokenizerTests
     public void LooksLikePath_backslash(string token, bool expected)
     {
         Assert.Equal(expected, ShellTokenizer.LooksLikePath(token));
-    }
-
-    // ── ExtractDirectoryRoots ──
-
-    [Theory]
-    [MemberData(nameof(AbsoluteRootCases))]
-    public void ExtractDirectoryRoots_returns_normalized_root_for_file_path(string command, string expectedRoot)
-    {
-        var roots = ShellTokenizer.ExtractDirectoryRoots(command);
-
-        Assert.Single(roots);
-        Assert.Equal(expectedRoot, roots[0].ComparisonRoot);
-        Assert.Equal(expectedRoot, roots[0].DisplayPath);
-    }
-
-    [Fact]
-    public void ExtractDirectoryRoots_preserves_posix_absolute_shell_paths_on_windows_hosts()
-    {
-        var roots = ShellTokenizer.ExtractDirectoryRoots("cat /home/user/.netclaw/logs/crash.log");
-
-        Assert.Single(roots);
-        Assert.DoesNotContain(":/home/", roots[0].ComparisonRoot.Replace('\\', '/'));
-        Assert.Equal("/home/user/.netclaw/logs/", roots[0].ComparisonRoot.Replace('\\', '/'));
-    }
-
-    [Theory]
-    [MemberData(nameof(RelativeRootCases))]
-    public void ExtractDirectoryRoots_keeps_relative_display_path_and_normalized_comparison_root(string command, string expectedDisplayRoot)
-    {
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var logs = Path.Combine(root, "logs");
-        Directory.CreateDirectory(logs);
-
-        try
-        {
-            var roots = ShellTokenizer.ExtractDirectoryRoots(command, root);
-
-            Assert.Single(roots);
-            Assert.Equal(expectedDisplayRoot, roots[0].DisplayPath);
-            Assert.Equal(PathUtility.Normalize(logs) + Path.DirectorySeparatorChar, roots[0].ComparisonRoot);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
-    }
-
-    [Fact]
-    public void ExtractDirectoryRoots_handles_glob_paths()
-    {
-        var roots = ShellTokenizer.ExtractDirectoryRoots("ls /home/user/.netclaw/logs/crash-*.log");
-
-        Assert.Single(roots);
-        Assert.Equal("/home/user/.netclaw/logs/", roots[0].ComparisonRoot.Replace('\\', '/'));
-    }
-
-    [Theory]
-    [MemberData(nameof(WindowsAbsoluteDirectoryRootCases))]
-    public void ExtractDirectoryRoots_handles_windows_absolute_paths(string command, string? expectedRoot)
-    {
-        var roots = ShellTokenizer.ExtractDirectoryRoots(command);
-
-        if (expectedRoot is null)
-        {
-            Assert.Empty(roots);
-            return;
-        }
-
-        Assert.Single(roots);
-        Assert.Equal(expectedRoot, roots[0].ComparisonRoot);
-        Assert.Equal(expectedRoot, roots[0].DisplayPath);
-    }
-
-    [Fact]
-    public void ExtractDirectoryRoots_returns_multiple_roots_for_multi_directory_command()
-    {
-        var roots = ShellTokenizer.ExtractDirectoryRoots("cat /home/user/.netclaw/logs/app.log > /home/user/.netclaw/output/report.txt");
-
-        Assert.Equal(2, roots.Count);
-        Assert.Contains(roots, r => r.ComparisonRoot.Replace('\\', '/') == "/home/user/.netclaw/logs/");
-        Assert.Contains(roots, r => r.ComparisonRoot.Replace('\\', '/') == "/home/user/.netclaw/output/");
-    }
-
-    [Theory]
-    [InlineData("echo hello")]
-    [InlineData("git push origin main")]
-    [InlineData("grep --version")]
-    [InlineData("cat /etc/passwd")]
-    public void ExtractDirectoryRoots_returns_empty_when_no_reusable_roots_exist(string command)
-    {
-        Assert.Empty(ShellTokenizer.ExtractDirectoryRoots(command));
     }
 
     // ── IsMessyCompoundCommand ──
