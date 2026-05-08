@@ -62,5 +62,5 @@
 
 ## 9. Companion docs issue
 
-- [ ] 9.1 Open the implementation PR against `netclaw-dev/netclaw` closing issue #921.
-- [ ] 9.2 File a tracking issue against `netclaw-dev/netclaw-website` for documenting the `netclaw approvals` CLI, cross-linking the PR, issue #921, and the `tool-approval-gates` capability.
+- [x] 9.1 Open the implementation PR against `netclaw-dev/netclaw` closing issue #921.
+- [x] 9.2 File a tracking issue against `netclaw-dev/netclaw-website` for documenting the `netclaw approvals` CLI, cross-linking the PR, issue #921, and the `tool-approval-gates` capability.

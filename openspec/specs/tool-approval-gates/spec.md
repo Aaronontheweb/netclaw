@@ -251,6 +251,11 @@ per-audience sections with per-tool approval lists. For the shipped MVP shell
 flow, the lists SHALL contain exact approvals and directory roots as applicable.
 Approval lookup and recording SHALL be mediated by `IToolApprovalService`.
 
+The file SHALL also be operator-editable via the `netclaw approvals` CLI
+(see the `netclaw-cli` capability). The daemon SHALL pick up out-of-band
+edits — whether made by direct file editing or by the CLI — on the next
+approval check, without requiring a restart.
+
 #### Scenario: Approve always persists directory root to file
 
 - **GIVEN** the user clicks "Approve Always" for a command targeting
@@ -285,6 +290,15 @@ Approval lookup and recording SHALL be mediated by `IToolApprovalService`.
 - **THEN** the directory root is approved for the current session only
 - **AND** `tool-approvals.json` is NOT modified
 - **AND** a new session will prompt again
+
+#### Scenario: Operator-applied revocation visible without restart
+
+- **GIVEN** the daemon is running with a persisted approval for `git push`
+- **WHEN** an operator removes that entry via `netclaw approvals revoke`
+- **AND** a new approval check evaluates `git push`
+- **THEN** the daemon re-loads the file and observes the entry is gone
+- **AND** the user is prompted for approval again
+- **AND** the daemon was not restarted
 
 ### Requirement: Channel approval capability
 
