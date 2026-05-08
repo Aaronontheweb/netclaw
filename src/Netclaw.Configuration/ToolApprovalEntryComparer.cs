@@ -33,8 +33,17 @@ public static class ToolApprovalEntryComparer
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     /// <summary>
-    /// Equality predicate matching the daemon's approval matcher.
+    /// Equality predicate for raw strings (verbs or directories).
     /// </summary>
     public static bool Equals(string? left, string? right) =>
         string.Equals(left, right, Comparison);
+
+    /// <summary>
+    /// Equality predicate matching the daemon's approval matcher: two
+    /// entries are equal when their verbs match and their directories
+    /// match (with both <c>null</c> directories considered equal — the
+    /// global wildcard).
+    /// </summary>
+    public static bool Equals(ApprovalEntry left, ApprovalEntry right)
+        => Equals(left.Verb, right.Verb) && Equals(left.Directory, right.Directory);
 }
