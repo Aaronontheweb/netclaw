@@ -79,11 +79,11 @@ Both PRs sit under this single OpenSpec change.
 
 ## 9. Agent guidance (AGENTS.md, tool description, failure path)
 
-- [ ] 9.1 Update `feeds/skills/.system/files/netclaw-operations/SKILL.md` with the new approval flow guidance and the schedule-creation pre-approval suggestion. Bump `metadata.version`.
-- [ ] 9.2 Update AGENTS.md (and any other live identity files: `feeds/skills/.system/files/.../AGENTS.md` if present) with the load-bearing `set_working_directory` instruction. Include the consequence framing ("burns the user's attention and your token budget").
-- [ ] 9.3 Update the `set_working_directory` tool description in `src/Netclaw.Actors/Tools/SetWorkingDirectoryTool.cs` to read as "declare your project root and expand your trusted scope." Remove any `cd`-style framing.
-- [ ] 9.4 Update `ShellTool` failure-result handling so when the deny reason is "cwd outside safe spaces" AND `set_working_directory` is in the audience's tool exposure list, the result includes the one-line hint pointing at `set_working_directory <cwd>`.
-- [ ] 9.5 Unit test the failure-path hint: emitted on cwd-outside denial; not emitted on hard-deny refusal; not emitted when `set_working_directory` is unavailable to the audience.
+- [x] 9.1 Update `feeds/skills/.system/files/netclaw-operations/SKILL.md` with the new approval flow guidance and the schedule-creation pre-approval suggestion. Bump `metadata.version`. (Bumped to 2.0.0; rewrote Approval Prompts and Approval Requirements for Reminders/Webhooks sections around the v2 model.)
+- [x] 9.2 Update AGENTS.md (and any other live identity files: `feeds/skills/.system/files/.../AGENTS.md` if present) with the load-bearing `set_working_directory` instruction. Include the consequence framing ("burns the user's attention and your token budget"). (No separate live `feeds/skills/.system/files/.../AGENTS.md` exists; updated `Resources/AGENTS.md` which Personal+Team load. Public's `AGENTS.public.md` left untouched because `set_working_directory` is profile-managed away from Public.)
+- [x] 9.3 Update the `set_working_directory` tool description in `src/Netclaw.Actors/Tools/SetWorkingDirectoryTool.cs` to read as "declare your project root and expand your trusted scope." Remove any `cd`-style framing.
+- [x] 9.4 Update `ShellTool` failure-result handling so when the deny reason is "cwd outside safe spaces" AND `set_working_directory` is in the audience's tool exposure list, the result includes the one-line hint pointing at `set_working_directory <cwd>`. (Implemented as `SessionToolExecutionPipeline.BuildSetWorkingDirectoryHint` in the deny path; LlmSessionActor pre-computes `setWorkingDirectoryAvailable` from the policy's `IsToolExposed` check and threads it into `ExecuteToolsAsync`.)
+- [x] 9.5 Unit test the failure-path hint: emitted on cwd-outside denial; not emitted on hard-deny refusal; not emitted when `set_working_directory` is unavailable to the audience.
 
 ## 10. Schedule-creation flow + evals
 

@@ -53,7 +53,8 @@ internal static class SessionToolExecutionPipeline
         ILogger? logger = null,
         int shellTimeoutSeconds = 60,
         IActorRef? backgroundJobManager = null,
-        string? projectDirectory = null)
+        string? projectDirectory = null,
+        bool setWorkingDirectoryAvailable = false)
     {
         try
         {
@@ -78,7 +79,8 @@ internal static class SessionToolExecutionPipeline
                 logger,
                 shellTimeoutSeconds,
                 backgroundJobManager,
-                projectDirectory));
+                projectDirectory,
+                setWorkingDirectoryAvailable));
             var results = await Task.WhenAll(tasks);
 
             var fileAttachments = results.SelectMany(r => r.FileAttachments).ToList();
@@ -129,7 +131,8 @@ internal static class SessionToolExecutionPipeline
         ILogger? logger = null,
         int shellTimeoutSeconds = 60,
         IActorRef? backgroundJobManager = null,
-        string? projectDirectory = null)
+        string? projectDirectory = null,
+        bool setWorkingDirectoryAvailable = false)
     {
         var (meta, cleanedTc) = ToolCallMetaExtractor.Extract(tc);
         tc = cleanedTc;
@@ -345,7 +348,21 @@ internal static class SessionToolExecutionPipeline
                 var reason = decision == ApprovalDecision.TimedOut
                     ? "Tool access denied: approval_timed_out"
                     : $"Tool access denied: approval_denied_by_user ({tc.Name} requires interactive approval and the user declined it)";
-                resultText = reason;
+
+                // When a shell call is denied because its cwd is outside both
+                // session_dir and project_dir, surface a one-line hint pointing
+                // the agent at set_working_directory so it can self-correct on
+                // the next turn rather than re-prompting the user. Suppressed
+                // for non-shell tools, timeouts, hard-deny paths, and
+                // audiences that can't call set_working_directory.
+                var hint = BuildSetWorkingDirectoryHint(
+                    toolName: tc.Name,
+                    decision: decision,
+                    cwd: context.Cwd,
+                    sessionDirectory: context.SessionDirectory,
+                    projectDirectory: context.ProjectDirectory,
+                    setWorkingDirectoryAvailable: setWorkingDirectoryAvailable);
+                resultText = string.IsNullOrEmpty(hint) ? reason : $"{reason}\n{hint}";
 
                 // Denied audit entries should describe the exact blocked units
                 // the user saw in the prompt. Broader reusable approval entries
@@ -656,5 +673,59 @@ internal static class SessionToolExecutionPipeline
         var omittedChars = resultText.Length - maxInlineToolResultChars;
         return resultText[..maxInlineToolResultChars]
                + $"\n[tool result truncated: omitted {omittedChars} chars to protect context window]";
+    }
+
+    /// <summary>
+    /// Returns a one-line agent-facing hint pointing at <c>set_working_directory</c>
+    /// when a shell call was denied specifically because its cwd is outside
+    /// both <see cref="ToolExecutionContext.SessionDirectory"/> and
+    /// <see cref="ToolExecutionContext.ProjectDirectory"/>. Empty for any
+    /// other denial path so hard-deny refusals, timeouts, and unrelated
+    /// approval declines do not get misleading "use set_working_directory"
+    /// guidance.
+    /// </summary>
+    internal static string BuildSetWorkingDirectoryHint(
+        string toolName,
+        ApprovalDecision decision,
+        string? cwd,
+        string? sessionDirectory,
+        string? projectDirectory,
+        bool setWorkingDirectoryAvailable)
+    {
+        if (!setWorkingDirectoryAvailable)
+            return string.Empty;
+
+        if (decision != ApprovalDecision.Denied)
+            return string.Empty;
+
+        if (!string.Equals(toolName, Tools.ShellTool.ToolName, StringComparison.Ordinal))
+            return string.Empty;
+
+        if (string.IsNullOrWhiteSpace(cwd))
+            return string.Empty;
+
+        // Already inside a safe space — denial was for a different reason.
+        if (IsCwdInsideSafeSpace(cwd, sessionDirectory)
+            || IsCwdInsideSafeSpace(cwd, projectDirectory))
+        {
+            return string.Empty;
+        }
+
+        return $"Hint: '{cwd}' is outside the session's trusted scope. Call set_working_directory \"{cwd}\" first, then retry — that brings the directory into your trusted scope so the approval policy can reason about it.";
+    }
+
+    private static bool IsCwdInsideSafeSpace(string cwd, string? safeSpace)
+    {
+        if (string.IsNullOrWhiteSpace(safeSpace))
+            return false;
+
+        try
+        {
+            return Netclaw.Security.PathUtility.IsWithinRoot(cwd, safeSpace);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException)
+        {
+            return false;
+        }
     }
 }

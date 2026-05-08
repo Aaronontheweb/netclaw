@@ -1647,6 +1647,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (registry.TryGet<BackgroundJobManagerActorKey>(out var mgr))
             bgJobManager = mgr;
 
+        // Pre-compute set_working_directory exposure once per dispatch so the
+        // pipeline's deny-path hint logic can run without a policy lookup.
+        // The hint is suppressed for audiences that cannot call the tool
+        // (Public, audience profiles that explicitly drop it).
+        var setWorkingDirectoryAvailable = IsSetWorkingDirectoryAvailable();
+
         _ = SessionToolExecutionPipeline.ExecuteToolsAsync(executor, toolCalls, sessionId, _currentTurnSource, auditLogger, tp, sessionDir, maxInlineToolResultChars, toolExecutionTimeout, self, emitSubAgentOutput, spawnChildActor,
             approvalChannel: _approvalChannel,
             emitApprovalRequest: request => self.Tell(request),
@@ -1654,7 +1660,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             maxToolTimeoutSeconds: _toolAccessPolicy?.MaxToolTimeoutSeconds ?? 600,
             shellTimeoutSeconds: _toolAccessPolicy?.ShellTimeoutSeconds ?? 60,
             backgroundJobManager: bgJobManager,
-            projectDirectory: _state.WorkingContext.ProjectDirectory);
+            projectDirectory: _state.WorkingContext.ProjectDirectory,
+            setWorkingDirectoryAvailable: setWorkingDirectoryAvailable);
     }
 
     private void HandleTextResponse(
@@ -2463,6 +2470,23 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             return _availableTools;
 
         return _toolAccessPolicy.FilterExposedTools(_availableTools, _fullRegistry, _currentTrustContext);
+    }
+
+    /// <summary>
+    /// Returns true when <c>set_working_directory</c> is exposed to the
+    /// current turn's audience profile. Used by the deny-path hint logic in
+    /// <see cref="SessionToolExecutionPipeline"/>: the hint points the agent
+    /// at the tool, so emitting it on a Public-audience turn that cannot call
+    /// the tool would be misleading.
+    /// </summary>
+    private bool IsSetWorkingDirectoryAvailable()
+    {
+        if (_toolAccessPolicy is null || _fullRegistry is null)
+            return false;
+
+        var registration = _fullRegistry.GetRegistrationByToolName(SetWorkingDirectoryTool.ToolName);
+        return registration is not null
+               && _toolAccessPolicy.IsToolExposed(registration, _currentTrustContext);
     }
 
 
