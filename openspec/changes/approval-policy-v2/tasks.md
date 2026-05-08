@@ -87,12 +87,12 @@ Both PRs sit under this single OpenSpec change.
 
 ## 10. Schedule-creation flow + evals
 
-- [ ] 10.1 Document the schedule-creation pre-approval pattern in `feeds/skills/.system/files/netclaw-operations/SKILL.md` (covered in 9.1, but cross-check phrasing covers the "ask the user, then call trust-verb" flow).
-- [ ] 10.2 Add eval case (positive): session opens with a user prompt that mentions a specific repo path; assert agent calls `set_working_directory <path>` before issuing any shell tool call to that tree.
-- [ ] 10.3 Add eval case (negative): session opens with no project signal ("what's 2+2?", "explain X"); assert agent does NOT call `set_working_directory` preemptively.
-- [ ] 10.4 Add eval case (recovery): in a session where the agent is denied a shell call because cwd was outside both safe spaces, assert agent reads the failure-path hint and calls `set_working_directory <path>` on its next turn.
-- [ ] 10.5 Add eval case (schedule pre-approval): session opens with a user request to schedule an unattended task using a specific verb (e.g. `freshdesk`); assert agent suggests global pre-approval and (on user confirmation) issues the equivalent of `netclaw approvals trust-verb freshdesk` before completing schedule setup.
-- [ ] 10.6 Run the eval suite; baseline pass rate documented in PR.
+- [x] 10.1 Document the schedule-creation pre-approval pattern in `feeds/skills/.system/files/netclaw-operations/SKILL.md` (covered in 9.1; cross-checked — "Pre-approving for unattended tasks (load-bearing)" section covers the agent-driven trust-verb flow with example dialogue).
+- [x] 10.2 Add eval case (positive): session opens with a user prompt that mentions a specific repo path; assert agent calls `set_working_directory <path>` before issuing any shell tool call to that tree.
+- [x] 10.3 Add eval case (negative): session opens with no project signal ("what's 2+2?", "explain X"); assert agent does NOT call `set_working_directory` preemptively.
+- [x] 10.4 Add eval case (recovery): in a session where the agent is denied a shell call because cwd was outside both safe spaces, assert agent reads the failure-path hint and calls `set_working_directory <path>` on its next turn. (Multi-turn — T1 feeds the hint shape since scripting an actual denial in the eval container is awkward; T2 asserts self-correction.)
+- [x] 10.5 Add eval case (schedule pre-approval): session opens with a user request to schedule an unattended task using a specific verb (e.g. `freshdesk`); assert agent suggests global pre-approval and (on user confirmation) issues the equivalent of `netclaw approvals trust-verb freshdesk` before completing schedule setup.
+- [ ] 10.6 Run the eval suite; baseline pass rate documented in PR. (Deferred — requires `NETCLAW_EVAL_PROVIDER_*` env + Docker daemon container; Aaron runs locally before merging.)
 
 ## 11. Spec sync at archive time
 
