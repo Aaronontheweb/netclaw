@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Netclaw.Configuration;
 using Netclaw.Daemon.Gateway;
+using Netclaw.Daemon.Services;
 using Netclaw.Tests.Utilities;
 using Xunit;
 
@@ -30,6 +31,12 @@ public sealed class DailyStatsActorTests : IDisposable
     [Fact]
     public async Task QuerySkillUsageStats_returns_groupable_rows_for_each_method()
     {
+        // Schema DDL no longer runs in PreStart — production initializes it via
+        // SchemaMigrator. Mirror that by running migrations here before ActorOf
+        // so the actor's mailbox is never blocked on disk I/O.
+        var migrator = new SchemaMigrator(_paths, NullLogger<SchemaMigrator>.Instance);
+        await migrator.MigrateAsync(_paths.SqliteDbPath, TestContext.Current.CancellationToken);
+
         var time = new FakeTimeProvider(new DateTimeOffset(2026, 4, 13, 12, 0, 0, TimeSpan.Zero));
         var actor = _system.ActorOf(Props.Create(() => new DailyStatsActor(
             _paths,
@@ -41,13 +48,9 @@ public sealed class DailyStatsActorTests : IDisposable
         actor.Tell(new DailyStatsActor.RecordSkillLoaded("create-release", SkillLoadMethod.SkillLoadTool));
         actor.Tell(new DailyStatsActor.RecordSkillLoaded("create-release", SkillLoadMethod.SlashCommand));
 
-        // 10s timeout: PreStart performs synchronous SQLite DDL (CREATE TABLE +
-        // COMMIT) on a fresh on-disk db, plus the query handler opens a second
-        // connection. On Windows CI cold-start with AV / Defender scanning, 3s
-        // is too tight. See netclaw-dev/netclaw#925 for the proper fix.
         var rows = await actor.Ask<DailyStatsActor.QuerySkillUsageStatsResult>(
             new DailyStatsActor.QuerySkillUsageStats(7),
-            TimeSpan.FromSeconds(10),
+            TimeSpan.FromSeconds(3),
             cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(3, rows.Rows.Count);
@@ -62,7 +65,7 @@ public sealed class DailyStatsActorTests : IDisposable
 
         var totals = await actor.Ask<DailyStatsActor.ProcessStatsResult>(
             new DailyStatsActor.QueryProcessStats(),
-            TimeSpan.FromSeconds(10),
+            TimeSpan.FromSeconds(3),
             cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(4, totals.SkillsLoadedTotal);
     }
