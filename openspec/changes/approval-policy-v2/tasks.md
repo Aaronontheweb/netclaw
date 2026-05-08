@@ -71,11 +71,11 @@ Both PRs sit under this single OpenSpec change.
 
 ## 8. Prompt redesign (Discord)
 
-- [ ] 8.1 Update `DiscordApprovalPromptBuilder` to mirror Slack's 5-button row using `ButtonStyle.Danger` on `Always anywhere` and `Deny`.
-- [ ] 8.2 Update prompt body to match Slack format.
-- [ ] 8.3 Update Discord approval response handler to mirror Slack's mapping.
-- [ ] 8.4 Update Discord resolution message to the single-line format.
-- [ ] 8.5 Snapshot tests parallel to Slack.
+- [x] 8.1 Update `DiscordApprovalPromptBuilder` to mirror Slack's 5-button row using `ButtonStyle.Danger` on `Always anywhere` and `Deny`.
+- [x] 8.2 Update prompt body to match Slack format.
+- [x] 8.3 Update Discord approval response handler to mirror Slack's mapping. (No Discord-side handler change needed: the transport decodes button values and forwards `selectedKey` to the session actor; `LlmSessionActor`'s switch already routes `ApproveEverywhere` for both channels.)
+- [x] 8.4 Update Discord resolution message to the single-line format.
+- [x] 8.5 Snapshot tests parallel to Slack.
 
 ## 9. Agent guidance (AGENTS.md, tool description, failure path)
 

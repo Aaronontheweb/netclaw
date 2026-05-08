@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="DiscordApprovalPromptBuilder.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -10,18 +10,25 @@ namespace Netclaw.Channels.Discord;
 
 internal static class DiscordApprovalPromptBuilder
 {
+    private const string ComplexCommandHint = "_complex command — only one-shot approval available_";
+
     public static string BuildTextPrompt(ToolInteractionRequest request)
     {
         var sb = new StringBuilder();
         sb.AppendLine("Netclaw approval required:");
         sb.Append("Tool: ").AppendLine(request.ToolName);
         sb.Append("Action: ").AppendLine(request.DisplayText);
+        sb.AppendLine(BuildApproveHeader(request));
 
-        if (request.Patterns.Count > 0)
-            sb.Append("Pattern: ").AppendLine(string.Join(", ", request.Patterns));
+        var verbs = ResolveDisplayVerbs(request);
+        if (verbs.Count > 1)
+        {
+            foreach (var verb in verbs)
+                sb.Append("  • ").AppendLine(verb);
+        }
 
-        if (request.DirectoryRoots.Count > 0)
-            sb.Append("Directory roots: ").AppendLine(string.Join(", ", request.DirectoryRoots));
+        if (request.IsMessy)
+            sb.AppendLine(ComplexCommandHint);
 
         AppendAdoptedContextSummary(sb, request);
 
@@ -68,14 +75,21 @@ internal static class DiscordApprovalPromptBuilder
         var statusEmoji = selectedKey == ApprovalOptionKeys.Deny
             ? ":no_entry:"
             : ":white_check_mark:";
-        var decisionLabel = GetDecisionLabel(selectedKey);
 
         var sb = new StringBuilder();
         sb.Append(statusEmoji).AppendLine(" **Tool approval resolved**");
-        AppendToolSummary(sb, request);
-
-        sb.Append("**Decision:** ").Append(decisionLabel);
+        sb.Append("**Tool:** `").Append(request.ToolName).AppendLine("`");
+        sb.Append("**Action:** `").Append(request.DisplayText).AppendLine("`");
+        sb.Append("**").Append(BuildResolutionLine(request, selectedKey)).Append("**");
         sb.Append(" (by <@").Append(senderId).Append(">)");
+
+        if (request.HasAdoptedContext)
+        {
+            sb.AppendLine();
+            sb.Append("**Adopted context:** present").AppendLine();
+            sb.Append("**Speakers:** `").Append(string.Join(", ", request.AdoptedSpeakerIds)).Append('`');
+        }
+
         return sb.ToString();
     }
 
@@ -83,37 +97,61 @@ internal static class DiscordApprovalPromptBuilder
     {
         sb.Append("**Tool:** `").Append(request.ToolName).AppendLine("`");
         sb.Append("**Action:** `").Append(request.DisplayText).AppendLine("`");
+        sb.Append("**").Append(BuildApproveHeader(request)).AppendLine("**");
 
-        if (request.Patterns.Count > 0)
+        var verbs = ResolveDisplayVerbs(request);
+        if (verbs.Count > 1)
         {
-            if (request.Patterns.Count == 1)
-            {
-                sb.Append("**Pattern:** `").Append(request.Patterns[0]).AppendLine("`");
-            }
-            else
-            {
-                sb.AppendLine("**Patterns:**");
-                foreach (var pattern in request.Patterns)
-                    sb.Append("  • `").Append(pattern).AppendLine("`");
-            }
+            foreach (var verb in verbs)
+                sb.Append("  • `").Append(verb).AppendLine("`");
         }
 
-        if (request.DirectoryRoots.Count > 0)
-        {
-            if (request.DirectoryRoots.Count == 1)
-            {
-                sb.Append("**Directory Root:** `").Append(request.DirectoryRoots[0]).AppendLine("`");
-            }
-            else
-            {
-                sb.AppendLine("**Directory Roots:**");
-                foreach (var root in request.DirectoryRoots)
-                    sb.Append("  • `").Append(root).AppendLine("`");
-            }
-        }
+        if (request.IsMessy)
+            sb.AppendLine(ComplexCommandHint);
 
         AppendAdoptedContextSummary(sb, request);
     }
+
+    /// <summary>
+    /// Header line mirroring the Slack builder. Single-verb invocations
+    /// collapse the verb into the header; multi-verb ones use the generic
+    /// "Approve in <cwd>?" form with the verbs as bullets below.
+    /// </summary>
+    private static string BuildApproveHeader(ToolInteractionRequest request)
+    {
+        var verbs = ResolveDisplayVerbs(request);
+        var cwd = string.IsNullOrWhiteSpace(request.Cwd) ? "(no working directory)" : request.Cwd;
+
+        return verbs.Count == 1
+            ? $"Approve {verbs[0]} in {cwd}?"
+            : $"Approve in {cwd}?";
+    }
+
+    /// <summary>
+    /// Single-line resolution message identical in form to the Slack builder
+    /// — see SlackApprovalBlockBuilder.BuildResolutionLine for the spec
+    /// reference.
+    /// </summary>
+    private static string BuildResolutionLine(ToolInteractionRequest request, string selectedKey)
+    {
+        var verbs = string.Join(", ", ResolveDisplayVerbs(request));
+        var cwd = string.IsNullOrWhiteSpace(request.Cwd) ? "(no working directory)" : request.Cwd;
+
+        return selectedKey switch
+        {
+            ApprovalOptionKeys.ApproveAlways => $"Saved: {verbs} in {cwd}",
+            ApprovalOptionKeys.ApproveEverywhere => $"Saved: {verbs} anywhere",
+            ApprovalOptionKeys.ApproveSession => $"Saved for this chat: {verbs} in {cwd}",
+            ApprovalOptionKeys.ApproveOnce => "Approved (no save)",
+            ApprovalOptionKeys.Deny => "Denied",
+            _ => "Resolved"
+        };
+    }
+
+    private static IReadOnlyList<string> ResolveDisplayVerbs(ToolInteractionRequest request)
+        => request.CandidateVerbs.Count > 0
+            ? request.CandidateVerbs
+            : request.Patterns;
 
     private static void AppendAdoptedContextSummary(StringBuilder sb, ToolInteractionRequest request)
     {
@@ -142,6 +180,7 @@ internal static class DiscordApprovalPromptBuilder
             ApprovalOptionKeys.ApproveOnce => ApprovalOptionKeys.ApproveOnceLabel,
             ApprovalOptionKeys.ApproveSession => ApprovalOptionKeys.ApproveSessionLabel,
             ApprovalOptionKeys.ApproveAlways => ApprovalOptionKeys.ApproveAlwaysLabel,
+            ApprovalOptionKeys.ApproveEverywhere => ApprovalOptionKeys.ApproveEverywhereLabel,
             ApprovalOptionKeys.Deny => ApprovalOptionKeys.DenyLabel,
             _ => selectedKey
         };
@@ -155,7 +194,10 @@ internal static class DiscordApprovalPromptBuilder
     private static DiscordButtonStyle GetButtonStyle(string optionKey)
         => optionKey switch
         {
-            ApprovalOptionKeys.Deny => DiscordButtonStyle.Danger,
+            // Danger styling for both global-wildcard persistence (Always
+            // anywhere) and hard refusal (Deny), matching the Slack builder
+            // and the spec's fat-finger-mitigation goal.
+            ApprovalOptionKeys.Deny or ApprovalOptionKeys.ApproveEverywhere => DiscordButtonStyle.Danger,
             ApprovalOptionKeys.ApproveOnce => DiscordButtonStyle.Success,
             _ => DiscordButtonStyle.Secondary
         };
