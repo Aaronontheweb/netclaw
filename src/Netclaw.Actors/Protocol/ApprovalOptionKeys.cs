@@ -23,4 +23,13 @@ public static class ApprovalOptionKeys
     public const string ApproveSessionLabel = "Approve for this chat";
     public const string ApproveAlwaysLabel = "Approve always";
     public const string DenyLabel = "Deny";
+
+    /// <summary>
+    /// The narrowest button-text cap across supported interactive channels
+    /// (Slack <c>PlainText</c> = 76 chars, Discord button label = 80 chars).
+    /// Approval option labels MUST stay within this bound for the channel
+    /// adapter to render them; oversized labels cause Slack to reject the
+    /// post with <c>invalid_blocks</c>, which then triggers an auto-deny.
+    /// </summary>
+    public const int MaxLabelLength = 76;
 }

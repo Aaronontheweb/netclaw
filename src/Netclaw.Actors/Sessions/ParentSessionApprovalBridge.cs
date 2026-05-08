@@ -53,11 +53,8 @@ internal sealed class ParentSessionApprovalBridge : IParentApprovalBridge
     {
         var waitTask = _channel.WaitForApprovalAsync(callId, Timeout.InfiniteTimeSpan, ct);
 
-        // Button labels are fixed verb-only constants. Directory-scope context
-        // is conveyed to the user via `DirectoryRoots` rendered in the channel
-        // adapter's message body — runtime values like paths never enter
-        // button text because Slack caps button text at 76 chars and Discord
-        // at 80, and channel-agnostic code cannot enforce per-channel limits.
+        // Labels are the fixed `ApprovalOptionKeys` constants — see that type
+        // for `MaxLabelLength` and the channel-cap rationale.
         _emitRequest(new ToolInteractionRequest
         {
             SessionId = _sessionId,

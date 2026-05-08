@@ -864,22 +864,14 @@ public sealed class ToolApprovalGateTests
         Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, alwaysOption.Label);
     }
 
-    // Regression pin for issue #931: button labels MUST stay within the
-    // narrowest platform cap (Slack PlainText 76 chars) regardless of how
-    // long the underlying directory path is. Prior to this fix, long paths
-    // produced 100+ char labels that Slack rejected with `invalid_blocks`,
-    // which then triggered an auto-deny safety net that made the bug look
-    // like a silent self-deny.
+    // Regression pin for issue #931 — long directory paths must not produce
+    // labels that exceed `ApprovalOptionKeys.MaxLabelLength`.
     [Fact]
     public void Shell_command_with_long_directory_path_keeps_labels_within_button_caps()
     {
-        const int slackButtonCap = 76;
         var policy = CreatePolicy(ToolApprovalMode.Approval);
-
-        // Build an absolute path whose length alone exceeds Slack's button
-        // cap, so any "Approve in {path} ..." style label would overflow.
         var deepPath = "/home/user/repositories/petabridge/testlab-setup/services/kubernetes/ingress/configs/app.log";
-        Assert.True(deepPath.Length > slackButtonCap);
+        Assert.True(deepPath.Length > ApprovalOptionKeys.MaxLabelLength);
 
         var args = ToolInput.Create("Command", $"grep error {deepPath}");
 
@@ -888,12 +880,9 @@ public sealed class ToolApprovalGateTests
         Assert.True(decision.NeedsApproval);
         var options = decision.ApprovalContext!.Options;
         Assert.NotEmpty(decision.ApprovalContext.DirectoryRoots);
-        foreach (var option in options)
-        {
-            Assert.True(
-                option.Label.Length <= slackButtonCap,
-                $"Option '{option.Key}' label '{option.Label}' is {option.Label.Length} chars; must stay within Slack's {slackButtonCap}-char button cap.");
-        }
+        Assert.All(options, option => Assert.True(
+            option.Label.Length <= ApprovalOptionKeys.MaxLabelLength,
+            $"Option '{option.Key}' label '{option.Label}' is {option.Label.Length} chars; must stay within {ApprovalOptionKeys.MaxLabelLength}."));
         Assert.Equal(ApprovalOptionKeys.ApproveOnceLabel, options.Single(o => o.Key == ApprovalOptionKeys.ApproveOnce).Label);
         Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession).Label);
         Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways).Label);
