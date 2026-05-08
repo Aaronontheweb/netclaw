@@ -23,14 +23,7 @@ public sealed record ApprovalDisplayItem(
     string ToolName,
     ApprovalEntry Entry)
 {
-    /// <summary>
-    /// User-visible scope label for the entry: <c>&lt;verb&gt; in &lt;dir&gt;</c>
-    /// for folder-scoped grants, <c>&lt;verb&gt; anywhere</c> for the global
-    /// wildcard.
-    /// </summary>
-    public string DisplayText => Entry.Directory is null
-        ? $"{Entry.Verb} anywhere"
-        : $"{Entry.Verb} in {Entry.Directory}";
+    public string DisplayText => Entry.FormatScope();
 }
 
 /// <summary>

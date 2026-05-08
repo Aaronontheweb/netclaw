@@ -253,15 +253,13 @@ internal static class SlackApprovalBlockBuilder
         => ApprovalButtonValueCodec.TryDecode(value, out callId, out selectedKey, out requesterSenderId);
 
     private static ButtonStyle GetButtonStyle(string optionKey)
-        => optionKey switch
-        {
-            // Danger styling for both global-wildcard persistence and hard
-            // refusal, mirroring the spec's "fat-finger mitigation" goal:
-            // visually distinct buttons for the elevated decisions.
-            ApprovalOptionKeys.Deny or ApprovalOptionKeys.ApproveEverywhere => ButtonStyle.Danger,
-            ApprovalOptionKeys.ApproveOnce => ButtonStyle.Primary,
-            _ => ButtonStyle.Default
-        };
+    {
+        if (ApprovalOptionKeys.IsDangerStyled(optionKey))
+            return ButtonStyle.Danger;
+        if (optionKey == ApprovalOptionKeys.ApproveOnce)
+            return ButtonStyle.Primary;
+        return ButtonStyle.Default;
+    }
 
     internal static bool IsApprovalActionId(string? actionId)
         => !string.IsNullOrWhiteSpace(actionId)

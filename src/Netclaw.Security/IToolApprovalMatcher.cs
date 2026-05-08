@@ -174,26 +174,10 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         => GetCommand(arguments) ?? "(empty command)";
 
     private static string? GetCommand(IDictionary<string, object?>? arguments)
-    {
-        if (arguments is null)
-            return null;
-
-        if (arguments.TryGetValue("Command", out var val) || arguments.TryGetValue("command", out val))
-            return val?.ToString();
-
-        return null;
-    }
+        => arguments is null ? null : ToolArgumentHelper.GetString(arguments, "Command");
 
     private static string? GetWorkingDirectory(IDictionary<string, object?>? arguments)
-    {
-        if (arguments is null)
-            return null;
-
-        if (arguments.TryGetValue("WorkingDirectory", out var val) || arguments.TryGetValue("workingDirectory", out val))
-            return val?.ToString();
-
-        return null;
-    }
+        => arguments is null ? null : ToolArgumentHelper.GetString(arguments, "WorkingDirectory");
 
     private static void TraverseApprovalUnits(string command, Action<string> visitUnit)
     {

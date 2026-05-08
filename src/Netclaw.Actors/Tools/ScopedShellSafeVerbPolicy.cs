@@ -44,15 +44,31 @@ internal sealed class ScopedShellSafeVerbPolicy
     /// to the existing approval gate.
     /// </summary>
     public bool ShortCircuitsApproval(string candidateVerb, string? cwd, ToolExecutionContext? context)
-    {
-        if (string.IsNullOrWhiteSpace(candidateVerb))
-            return false;
+        => AllShortCircuit([candidateVerb], cwd, context);
 
-        if (!_safeVerbs.Contains(candidateVerb))
+    /// <summary>
+    /// Returns true when every candidate verb in <paramref name="candidateVerbs"/>
+    /// is short-circuited by the safe-verb policy under the supplied
+    /// <paramref name="cwd"/>. Used by the gate to bypass the approval prompt
+    /// only when the entire compound is read-only-in-safe-space; any single
+    /// non-safe candidate falls the whole invocation through to the prompt.
+    /// Cwd-and-roots resolution runs once per call rather than per verb,
+    /// so an N-verb compound costs one path-normalize + one symlink-segment
+    /// scan instead of N.
+    /// </summary>
+    public bool AllShortCircuit(IReadOnlyList<string> candidateVerbs, string? cwd, ToolExecutionContext? context)
+    {
+        if (candidateVerbs.Count == 0)
             return false;
 
         if (string.IsNullOrWhiteSpace(cwd))
             return false;
+
+        foreach (var verb in candidateVerbs)
+        {
+            if (string.IsNullOrWhiteSpace(verb) || !_safeVerbs.Contains(verb))
+                return false;
+        }
 
         var safeRoots = ResolveSafeSpaceRoots(context);
         if (safeRoots.Count == 0)
@@ -85,27 +101,6 @@ internal sealed class ScopedShellSafeVerbPolicy
         }
 
         return false;
-    }
-
-    /// <summary>
-    /// Returns true when every candidate verb in <paramref name="candidateVerbs"/>
-    /// is short-circuited by the safe-verb policy under the supplied
-    /// <paramref name="cwd"/>. Used by the gate to bypass the approval prompt
-    /// only when the entire compound is read-only-in-safe-space; any single
-    /// non-safe candidate falls the whole invocation through to the prompt.
-    /// </summary>
-    public bool AllShortCircuit(IReadOnlyList<string> candidateVerbs, string? cwd, ToolExecutionContext? context)
-    {
-        if (candidateVerbs.Count == 0)
-            return false;
-
-        foreach (var verb in candidateVerbs)
-        {
-            if (!ShortCircuitsApproval(verb, cwd, context))
-                return false;
-        }
-
-        return true;
     }
 
     /// <summary>

@@ -22,11 +22,19 @@ internal sealed class ToolApprovalActor : ReceiveActor
 
         Receive<GetUnapprovedPatterns>(msg =>
         {
-            var unapproved = new List<string>(msg.Patterns.Count);
+            // Snapshot the persisted approvals once per message — every
+            // pattern in the same call evaluates against the same on-disk
+            // state, and Load() does a synchronous file read + JSON parse
+            // each call. For a compound shell with N candidate verbs this
+            // collapses N reads into 1.
+            var approved = _persistentStore is not null
+                ? _persistentStore.GetApprovedEntries(msg.Audience, msg.ToolName.Value)
+                : (IReadOnlyList<ApprovalEntry>)[];
 
+            var unapproved = new List<string>(msg.Patterns.Count);
             foreach (var pattern in msg.Patterns)
             {
-                if (!IsApproved(msg.SessionId, msg.Audience, msg.ToolName, pattern, msg.Cwd))
+                if (!IsApproved(msg.SessionId, msg.Audience, msg.ToolName, pattern, msg.Cwd, approved))
                     unapproved.Add(pattern);
             }
 
@@ -62,16 +70,12 @@ internal sealed class ToolApprovalActor : ReceiveActor
     public static Props CreateProps(ToolApprovalStore? persistentStore = null)
         => Props.Create(() => new ToolApprovalActor(persistentStore));
 
-    private bool IsApproved(SessionId? sessionId, TrustAudience audience, ToolName toolName, string candidateVerb, string? cwd)
+    private bool IsApproved(SessionId? sessionId, TrustAudience audience, ToolName toolName, string candidateVerb, string? cwd, IReadOnlyList<ApprovalEntry> persistedApprovals)
     {
         if (sessionId.HasValue && IsSessionApproved(sessionId.Value, audience, toolName, candidateVerb))
             return true;
 
-        if (_persistentStore is null)
-            return false;
-
-        var approved = _persistentStore.GetApprovedEntries(audience, toolName.Value);
-        return MatchesPersistedEntry(toolName, candidateVerb, cwd, approved);
+        return MatchesPersistedEntry(toolName, candidateVerb, cwd, persistedApprovals);
     }
 
     private bool IsSessionApproved(SessionId sessionId, TrustAudience audience, ToolName toolName, string candidateVerb)

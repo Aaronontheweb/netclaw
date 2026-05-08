@@ -35,4 +35,70 @@ public sealed record ApprovalEntry
     /// </summary>
     [JsonPropertyName("directory")]
     public string? Directory { get; init; }
+
+    /// <summary>
+    /// The user-visible scope label emitted by <c>netclaw approvals list</c>
+    /// and shown in the TUI. Folder-scoped entries render as
+    /// <c>&lt;verb&gt; in &lt;dir&gt;</c>; global wildcards render as
+    /// <c>&lt;verb&gt; anywhere</c>. Round-trips with
+    /// <see cref="TryParseScope"/>.
+    /// </summary>
+    public string FormatScope()
+        => Directory is null ? $"{Verb} anywhere" : $"{Verb} in {Directory}";
+
+    /// <summary>
+    /// Inverse of <see cref="FormatScope"/>. Parses one of the two
+    /// user-visible forms — <c>&lt;verb&gt; in &lt;directory&gt;</c> or
+    /// <c>&lt;verb&gt; anywhere</c> — into a typed <see cref="ApprovalEntry"/>.
+    /// Returns false with a non-empty <paramref name="error"/> for any other
+    /// shape so callers can surface the parse failure as a user error rather
+    /// than a silent best-effort match.
+    /// </summary>
+    public static bool TryParseScope(string input, out ApprovalEntry entry, out string error)
+    {
+        entry = new ApprovalEntry { Verb = string.Empty };
+        error = string.Empty;
+
+        const string AnywhereSuffix = " anywhere";
+        const string InSeparator = " in ";
+
+        var trimmed = input.Trim();
+        if (trimmed.Length == 0)
+        {
+            error = "Approval scope must not be empty.";
+            return false;
+        }
+
+        if (trimmed.EndsWith(AnywhereSuffix, StringComparison.Ordinal))
+        {
+            var verb = trimmed[..^AnywhereSuffix.Length].TrimEnd();
+            if (verb.Length == 0)
+            {
+                error = "'<verb> anywhere' must include a verb.";
+                return false;
+            }
+            entry = new ApprovalEntry { Verb = verb, Directory = null };
+            return true;
+        }
+
+        // First " in " separates verb from directory. Verb chains never
+        // contain " in " as a literal token, so this split is unambiguous
+        // for legitimate inputs.
+        var inIndex = trimmed.IndexOf(InSeparator, StringComparison.Ordinal);
+        if (inIndex > 0)
+        {
+            var verb = trimmed[..inIndex].TrimEnd();
+            var directory = trimmed[(inIndex + InSeparator.Length)..].TrimStart();
+            if (verb.Length == 0 || directory.Length == 0)
+            {
+                error = "'<verb> in <directory>' must include both verb and directory.";
+                return false;
+            }
+            entry = new ApprovalEntry { Verb = verb, Directory = directory };
+            return true;
+        }
+
+        error = $"Could not parse approval scope '{input}'.";
+        return false;
+    }
 }

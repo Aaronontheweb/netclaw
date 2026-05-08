@@ -73,24 +73,13 @@ internal static class ApprovalsCommand
                 if (!first) writer.WriteLine();
                 writer.WriteLine($"{audienceKey} / {toolName}");
                 foreach (var entry in entries)
-                    writer.WriteLine($"  {FormatEntryForList(entry)}");
+                    writer.WriteLine($"  {entry.FormatScope()}");
                 first = false;
             }
         }
 
         return 0;
     }
-
-    /// <summary>
-    /// Renders an <see cref="ApprovalEntry"/> as the user-visible scope label:
-    /// <c>&lt;verb&gt; in &lt;dir&gt;</c> for folder-scoped grants, or
-    /// <c>&lt;verb&gt; anywhere</c> for the global wildcard. Section 6 will
-    /// extend this to also accept the same forms as inputs to <c>revoke</c>.
-    /// </summary>
-    internal static string FormatEntryForList(ApprovalEntry entry)
-        => entry.Directory is null
-            ? $"{entry.Verb} anywhere"
-            : $"{entry.Verb} in {entry.Directory}";
 
     private static int RunRevoke(string[] args, NetclawPaths paths, TextWriter writer)
     {
@@ -117,9 +106,13 @@ internal static class ApprovalsCommand
             return 1;
         }
 
-        if (!TryParseRevokePattern(opts.Pattern, out var lookup, out var parseError))
+        // Could not parse — the CLI is the deliberate scriptable path, so
+        // we reject unrecognized inputs loudly rather than silently treat a
+        // bare verb as a global wildcard.
+        if (!ApprovalEntry.TryParseScope(opts.Pattern, out var lookup, out var parseError))
         {
             writer.WriteLine($"Error: {parseError}");
+            writer.WriteLine("Could not parse revoke pattern '" + opts.Pattern + "'.");
             writer.WriteLine("Patterns must use the form '<verb> in <directory>' or '<verb> anywhere',");
             writer.WriteLine("matching the labels emitted by 'netclaw approvals list'.");
             return 1;
@@ -155,68 +148,6 @@ internal static class ApprovalsCommand
         }
 
         return 0;
-    }
-
-    /// <summary>
-    /// Parses a revoke-pattern argument into a typed <see cref="ApprovalEntry"/>
-    /// lookup, accepting only the user-visible forms emitted by
-    /// <see cref="FormatEntryForList"/>:
-    /// <list type="bullet">
-    /// <item><c>&lt;verb&gt; in &lt;directory&gt;</c> — folder-scoped grant.</item>
-    /// <item><c>&lt;verb&gt; anywhere</c> — global wildcard.</item>
-    /// </list>
-    /// Anything else is rejected loudly: the CLI surface is the deliberate
-    /// scriptable path, so silently treating an unrecognized pattern as a
-    /// global wildcard would let an operator typo into broader removal than
-    /// they meant.
-    /// </summary>
-    internal static bool TryParseRevokePattern(string pattern, out ApprovalEntry entry, out string error)
-    {
-        entry = new ApprovalEntry { Verb = string.Empty };
-        error = string.Empty;
-
-        const string AnywhereSuffix = " anywhere";
-        const string InSeparator = " in ";
-
-        var trimmed = pattern.Trim();
-        if (trimmed.Length == 0)
-        {
-            error = "Revoke pattern must not be empty.";
-            return false;
-        }
-
-        if (trimmed.EndsWith(AnywhereSuffix, StringComparison.Ordinal))
-        {
-            var verb = trimmed[..^AnywhereSuffix.Length].TrimEnd();
-            if (verb.Length == 0)
-            {
-                error = "Revoke pattern '<verb> anywhere' must include a verb.";
-                return false;
-            }
-            entry = new ApprovalEntry { Verb = verb, Directory = null };
-            return true;
-        }
-
-        // First " in " separates verb from directory. Verb chains in our
-        // safe-verbs list never contain " in " so this split is unambiguous
-        // for legitimate inputs; if a user has somehow registered a verb
-        // chain that contains " in ", they can revoke via the TUI instead.
-        var inIndex = trimmed.IndexOf(InSeparator, StringComparison.Ordinal);
-        if (inIndex > 0)
-        {
-            var verb = trimmed[..inIndex].TrimEnd();
-            var directory = trimmed[(inIndex + InSeparator.Length)..].TrimStart();
-            if (verb.Length == 0 || directory.Length == 0)
-            {
-                error = "Revoke pattern '<verb> in <directory>' must include both verb and directory.";
-                return false;
-            }
-            entry = new ApprovalEntry { Verb = verb, Directory = directory };
-            return true;
-        }
-
-        error = $"Could not parse revoke pattern '{pattern}'.";
-        return false;
     }
 
     private static int RunTrustVerb(string[] args, NetclawPaths paths, TextWriter writer)

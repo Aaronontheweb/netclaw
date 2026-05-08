@@ -192,13 +192,11 @@ internal static class DiscordApprovalPromptBuilder
         => ApprovalButtonValueCodec.TryDecode(value, out callId, out selectedKey, out requesterSenderId);
 
     private static DiscordButtonStyle GetButtonStyle(string optionKey)
-        => optionKey switch
-        {
-            // Danger styling for both global-wildcard persistence (Always
-            // anywhere) and hard refusal (Deny), matching the Slack builder
-            // and the spec's fat-finger-mitigation goal.
-            ApprovalOptionKeys.Deny or ApprovalOptionKeys.ApproveEverywhere => DiscordButtonStyle.Danger,
-            ApprovalOptionKeys.ApproveOnce => DiscordButtonStyle.Success,
-            _ => DiscordButtonStyle.Secondary
-        };
+    {
+        if (ApprovalOptionKeys.IsDangerStyled(optionKey))
+            return DiscordButtonStyle.Danger;
+        if (optionKey == ApprovalOptionKeys.ApproveOnce)
+            return DiscordButtonStyle.Success;
+        return DiscordButtonStyle.Secondary;
+    }
 }
