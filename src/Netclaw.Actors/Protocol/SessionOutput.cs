@@ -384,6 +384,16 @@ public sealed record ToolInteractionRequest : SessionOutput
     /// </summary>
     public string? Cwd { get; init; }
 
+    /// <summary>
+    /// True when the invocation cannot be cleanly split into verb-chain
+    /// approval units — for shell, when the command contains bash control-flow
+    /// keywords (<c>for</c>/<c>while</c>/<c>do</c>/<c>done</c>/<c>then</c>/
+    /// <c>fi</c>/<c>case</c>/<c>esac</c>) or unbalanced quotes/brackets.
+    /// Channel adapters render only the <c>Once</c>/<c>Deny</c> buttons and
+    /// surface a "complex command" hint when this is true.
+    /// </summary>
+    public bool IsMessy { get; init; }
+
     /// <summary>Available response options (e.g., approve once, approve for this chat, approve always, deny).</summary>
     public required IReadOnlyList<ToolInteractionOption> Options { get; init; }
 

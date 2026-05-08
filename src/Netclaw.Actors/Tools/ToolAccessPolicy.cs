@@ -313,6 +313,7 @@ public sealed class ToolAccessPolicy
         var patterns = matcher.ExtractPatterns(toolName, arguments);
         var candidateVerbs = matcher.ExtractCandidateVerbs(toolName, arguments);
         var displayText = matcher.FormatForDisplay(toolName, arguments);
+        var isMessy = matcher.IsMessy(toolName, arguments);
 
         var approvalContext = new ToolApprovalContext(
             toolName.Value,
@@ -325,7 +326,8 @@ public sealed class ToolAccessPolicy
                 new ToolApprovalOption(ApprovalOptionKeys.ApproveAlways, ApprovalOptionKeys.ApproveAlwaysLabel),
                 new ToolApprovalOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
             ],
-            DirectoryRoots: []);
+            DirectoryRoots: [],
+            IsMessy: isMessy);
 
         return ToolAccessDecision.RequiresApproval(approvalContext);
     }
@@ -479,7 +481,12 @@ public sealed record ToolApprovalContext(
     IReadOnlyList<ToolApprovalOption> Options,
     // Always empty after the v2 cutover; section 7's prompt redesign removes
     // the field as part of the new cwd-in-header layout.
-    IReadOnlyList<string> DirectoryRoots);
+    IReadOnlyList<string> DirectoryRoots,
+    // True when the invocation cannot be cleanly split into verb-chain
+    // approval units (bash control-flow, unbalanced quotes/brackets). Section 7
+    // uses this to omit the persistent-grant buttons and surface the
+    // "complex command" hint.
+    bool IsMessy = false);
 
 public sealed record ToolApprovalOption(string Key, string Label);
 

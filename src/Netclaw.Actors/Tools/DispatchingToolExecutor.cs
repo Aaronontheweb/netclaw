@@ -105,20 +105,33 @@ public sealed class DispatchingToolExecutor : IToolExecutor
         {
             var approvalContext = accessDecision.ApprovalContext
                 ?? throw new InvalidOperationException("Approval decision missing approval context.");
-            var audience = SecurityPolicyDefaults.TryParseAudience(context?.Audience, out var parsed)
-                ? parsed
-                : SecurityPolicyDefaults.ResolveAudienceFromSessionId(context?.SessionId);
-            var unapproved = await _approvalService.GetUnapprovedPatternsAsync(
-                context?.SessionId,
-                audience,
-                new ToolName(toolCall.Name),
-                approvalContext.CandidateVerbs,
-                context?.Cwd,
-                ct);
 
-            accessDecision = unapproved.Count == 0
-                ? ToolAccessDecision.Allow()
-                : ToolAccessDecision.RequiresApproval(approvalContext);
+            // Messy commands cannot be persistently approved — the matcher
+            // refuses to extract verb chains we could match a future
+            // invocation against. Always round-trip through the user, even if
+            // the candidate-verbs list happens to be empty for unrelated
+            // reasons (which would otherwise short-circuit to allow).
+            if (approvalContext.IsMessy)
+            {
+                accessDecision = ToolAccessDecision.RequiresApproval(approvalContext);
+            }
+            else
+            {
+                var audience = SecurityPolicyDefaults.TryParseAudience(context?.Audience, out var parsed)
+                    ? parsed
+                    : SecurityPolicyDefaults.ResolveAudienceFromSessionId(context?.SessionId);
+                var unapproved = await _approvalService.GetUnapprovedPatternsAsync(
+                    context?.SessionId,
+                    audience,
+                    new ToolName(toolCall.Name),
+                    approvalContext.CandidateVerbs,
+                    context?.Cwd,
+                    ct);
+
+                accessDecision = unapproved.Count == 0
+                    ? ToolAccessDecision.Allow()
+                    : ToolAccessDecision.RequiresApproval(approvalContext);
+            }
         }
 
         if (accessDecision.NeedsApproval

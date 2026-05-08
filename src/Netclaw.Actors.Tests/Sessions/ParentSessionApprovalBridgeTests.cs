@@ -38,6 +38,7 @@ public sealed class ParentSessionApprovalBridgeTests
             ["grep timeout logs/app.log | wc -l"],
             ["/tmp/work/logs/"],
             ["logs/"],
+            isMessy: false,
             TestContext.Current.CancellationToken);
 
         Assert.Equal(ParentApprovalDecision.ApprovedOnce, decision);

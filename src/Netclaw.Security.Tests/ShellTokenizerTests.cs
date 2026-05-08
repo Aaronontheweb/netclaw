@@ -157,10 +157,14 @@ public sealed class ShellTokenizerTests
     [Fact]
     public void SplitCompound_preserves_quoted_operators()
     {
-        var segments = ShellTokenizer.SplitCompoundCommand("echo \"a && b\" && echo done");
+        // Avoid trailing "done"/"fi"/"esac" in unquoted positions — the
+        // section 3 messy detector flags those as control-flow keywords and
+        // SplitCompoundCommand returns empty. The token "finished" is a
+        // close stand-in that exercises the same splitter behavior.
+        var segments = ShellTokenizer.SplitCompoundCommand("echo \"a && b\" && echo finished");
         Assert.Equal(2, segments.Count);
         Assert.Equal("echo \"a && b\"", segments[0]);
-        Assert.Equal("echo done", segments[1]);
+        Assert.Equal("echo finished", segments[1]);
     }
 
     [Fact]
@@ -431,5 +435,77 @@ public sealed class ShellTokenizerTests
     public void ExtractDirectoryRoots_returns_empty_when_no_reusable_roots_exist(string command)
     {
         Assert.Empty(ShellTokenizer.ExtractDirectoryRoots(command));
+    }
+
+    // ── IsMessyCompoundCommand ──
+
+    [Theory]
+    [InlineData("for pid in $(pgrep netclawd); do echo \"$pid\"; done")]
+    [InlineData("while read line; do echo $line; done < input.txt")]
+    [InlineData("if [ -f x ]; then echo y; fi")]
+    [InlineData("case $x in 1) echo one ;; 2) echo two ;; esac")]
+    [InlineData("for f in *.log; do grep ERROR \"$f\"; done")]
+    public void IsMessyCompoundCommand_flags_bash_control_flow(string command)
+    {
+        Assert.True(ShellTokenizer.IsMessyCompoundCommand(command));
+    }
+
+    [Theory]
+    [InlineData("echo \"unterminated")]
+    [InlineData("echo 'still open")]
+    [InlineData("echo $(unclosed")]
+    [InlineData("ls [unclosed")]
+    [InlineData("echo too )many close parens")]
+    [InlineData("echo too ]many close brackets")]
+    public void IsMessyCompoundCommand_flags_unbalanced_quotes_or_brackets(string command)
+    {
+        Assert.True(ShellTokenizer.IsMessyCompoundCommand(command));
+    }
+
+    [Theory]
+    [InlineData("git push origin main")]
+    [InlineData("grep error /var/log/syslog")]
+    [InlineData("git add . && git commit -m fix && git push")]
+    [InlineData("cat file.log | grep error | wc -l")]
+    [InlineData("echo $(date)")]
+    [InlineData("ls ${HOME}")]
+    [InlineData("find . -name '*.log' -type f")]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void IsMessyCompoundCommand_passes_well_formed_commands(string command)
+    {
+        Assert.False(ShellTokenizer.IsMessyCompoundCommand(command));
+    }
+
+    [Fact]
+    public void IsMessyCompoundCommand_does_not_flag_keywords_inside_quotes()
+    {
+        // A literal "done" inside a quoted string is not a control-flow token.
+        Assert.False(ShellTokenizer.IsMessyCompoundCommand("echo \"done\""));
+    }
+
+    [Fact]
+    public void IsMessyCompoundCommand_does_not_flag_keyword_substrings()
+    {
+        // "format" contains "for" but is not the for-loop opener.
+        Assert.False(ShellTokenizer.IsMessyCompoundCommand("python format.py"));
+        // "fido" contains "fi" but is not the if-block closer.
+        Assert.False(ShellTokenizer.IsMessyCompoundCommand("echo fido"));
+    }
+
+    [Theory]
+    [InlineData("for pid in $(pgrep netclawd); do echo \"$pid\"; done")]
+    [InlineData("while read line; do echo $line; done")]
+    [InlineData("if [ -f x ]; then echo y; fi")]
+    public void SplitCompoundCommand_returns_empty_for_messy_input(string command)
+    {
+        Assert.Empty(ShellTokenizer.SplitCompoundCommand(command));
+    }
+
+    [Fact]
+    public void SplitCompoundCommand_still_splits_well_formed_compounds()
+    {
+        var segments = ShellTokenizer.SplitCompoundCommand("git add . && git push");
+        Assert.Equal(2, segments.Count);
     }
 }

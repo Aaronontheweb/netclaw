@@ -27,11 +27,11 @@ Both PRs sit under this single OpenSpec change.
 
 ## 3. ShellTokenizer refuses messy input
 
-- [ ] 3.1 Add control-flow keyword detection (`for`/`while`/`do`/`done`/`then`/`fi`/`case`/`esac`) to `SplitCompoundCommand`.
-- [ ] 3.2 Add unbalanced-quote/bracket detection (cheap structural scan; no full bash parser).
-- [ ] 3.3 When detected, return empty verb-chain list. Do not attempt partial extraction.
-- [ ] 3.4 Plumb a "messy" flag through to `ToolInteractionRequest` so the prompt builder can show the "complex command" hint and omit `This chat`/`Always here`/`Always anywhere` buttons.
-- [ ] 3.5 Unit tests for: `for ... do ... done`; `while ... do ... done`; `case ... esac`; unbalanced quote; unbalanced bracket; well-formed commands still extract normally.
+- [x] 3.1 Add control-flow keyword detection (`for`/`while`/`do`/`done`/`then`/`fi`/`case`/`esac`) to `SplitCompoundCommand`.
+- [x] 3.2 Add unbalanced-quote/bracket detection (cheap structural scan; no full bash parser).
+- [x] 3.3 When detected, return empty verb-chain list. Do not attempt partial extraction.
+- [x] 3.4 Plumb a "messy" flag through to `ToolInteractionRequest` so the prompt builder can show the "complex command" hint and omit `This chat`/`Always here`/`Always anywhere` buttons.
+- [x] 3.5 Unit tests for: `for ... do ... done`; `while ... do ... done`; `case ... esac`; unbalanced quote; unbalanced bracket; well-formed commands still extract normally.
 
 ## 4. ShellTool cwd default
 

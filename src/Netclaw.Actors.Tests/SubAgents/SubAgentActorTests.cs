@@ -534,8 +534,9 @@ internal sealed class RecordingParentApprovalBridge(ParentApprovalDecision decis
         string toolName,
         string displayText,
         IReadOnlyList<string> patterns,
-        IReadOnlyList<string> approvalEntries,
+        IReadOnlyList<string> candidateVerbs,
         IReadOnlyList<string> directoryRoots,
+        bool isMessy,
         CancellationToken ct)
     {
         RequestCount++;

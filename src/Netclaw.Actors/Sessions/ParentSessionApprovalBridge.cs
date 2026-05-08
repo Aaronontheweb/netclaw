@@ -49,6 +49,7 @@ internal sealed class ParentSessionApprovalBridge : IParentApprovalBridge
         IReadOnlyList<string> patterns,
         IReadOnlyList<string> candidateVerbs,
         IReadOnlyList<string> directoryRoots,
+        bool isMessy,
         CancellationToken ct)
     {
         var waitTask = _channel.WaitForApprovalAsync(callId, Timeout.InfiniteTimeSpan, ct);
@@ -67,6 +68,7 @@ internal sealed class ParentSessionApprovalBridge : IParentApprovalBridge
             Patterns = patterns,
             CandidateVerbs = candidateVerbs,
             DirectoryRoots = directoryRoots,
+            IsMessy = isMessy,
             HasAdoptedContext = _hasAdoptedContext,
             AdoptedSpeakerIds = _adoptedSpeakerIds,
             PersistedAdoptedContext = _hasAdoptedContext,

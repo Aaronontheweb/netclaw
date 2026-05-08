@@ -41,5 +41,6 @@ public interface IParentApprovalBridge
         IReadOnlyList<string> patterns,
         IReadOnlyList<string> candidateVerbs,
         IReadOnlyList<string> directoryRoots,
+        bool isMessy,
         CancellationToken ct);
 }

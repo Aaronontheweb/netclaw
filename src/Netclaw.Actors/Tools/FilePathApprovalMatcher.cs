@@ -63,6 +63,9 @@ public sealed class FilePathApprovalMatcher : IToolApprovalMatcher
         return true;
     }
 
+    public bool IsMessy(ToolName toolName, IDictionary<string, object?>? arguments)
+        => false;
+
     public string FormatForDisplay(ToolName toolName, IDictionary<string, object?>? arguments)
     {
         if (TryGetPath(arguments, out var path))

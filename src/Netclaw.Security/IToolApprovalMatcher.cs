@@ -65,6 +65,16 @@ public interface IToolApprovalMatcher
         string? cwd);
 
     /// <summary>
+    /// Returns true when the invocation cannot be cleanly split into
+    /// verb-chain approval units — for shell, when the command contains bash
+    /// control-flow keywords or unbalanced quotes/brackets. Approval prompts
+    /// for messy invocations omit persistent-grant buttons and surface a
+    /// "complex command" hint; the user can still grant a single retry via
+    /// <c>Once</c>. Non-shell matchers SHALL return <c>false</c>.
+    /// </summary>
+    bool IsMessy(ToolName toolName, IDictionary<string, object?>? arguments);
+
+    /// <summary>
     /// Formats the tool call for display in the approval prompt header.
     /// </summary>
     string FormatForDisplay(ToolName toolName, IDictionary<string, object?>? arguments);
@@ -133,9 +143,20 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         IReadOnlyList<ApprovalEntry> approvedEntries,
         string? cwd)
     {
+        var command = GetCommand(arguments);
+        if (string.IsNullOrWhiteSpace(command))
+            return true; // empty command, nothing to approve
+
+        // Messy commands cannot be auto-approved: the matcher cannot extract a
+        // candidate verb-chain to evaluate against the persisted store, so
+        // every messy invocation must round-trip through the user. The prompt
+        // builder offers only Once/Deny in this case (see IsMessy).
+        if (ShellTokenizer.IsMessyCompoundCommand(command))
+            return false;
+
         var verbs = ExtractCandidateVerbs(toolName, arguments);
         if (verbs.Count == 0)
-            return true; // empty command, nothing to approve
+            return true;
 
         foreach (var verb in verbs)
         {
@@ -145,6 +166,9 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
 
         return true;
     }
+
+    public bool IsMessy(ToolName toolName, IDictionary<string, object?>? arguments)
+        => ShellTokenizer.IsMessyCompoundCommand(GetCommand(arguments));
 
     public string FormatForDisplay(ToolName toolName, IDictionary<string, object?>? arguments)
         => GetCommand(arguments) ?? "(empty command)";
@@ -219,6 +243,9 @@ public sealed class DefaultApprovalMatcher : IToolApprovalMatcher
         IReadOnlyList<ApprovalEntry> approvedEntries,
         string? cwd)
         => ApprovalPatternMatching.MatchesAny(toolName.Value, approvedEntries);
+
+    public bool IsMessy(ToolName toolName, IDictionary<string, object?>? arguments)
+        => false;
 
     public string FormatForDisplay(ToolName toolName, IDictionary<string, object?>? arguments)
         => toolName.Value;

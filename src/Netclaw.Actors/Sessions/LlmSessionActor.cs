@@ -757,7 +757,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 msg.RequesterPrincipal,
                 msg.HasAdoptedContext,
                 msg.AdoptedSpeakerIds,
-                msg.Cwd);
+                msg.Cwd,
+                msg.IsMessy);
 
             PauseToolExecutionWatchdogForApprovalWait(msg.CallId);
 
@@ -3060,7 +3061,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         PrincipalClassification? RequesterPrincipal,
         bool HasAdoptedContext,
         IReadOnlyList<string> AdoptedSpeakerIds,
-        string? Cwd);
+        string? Cwd,
+        bool IsMessy);
 
     private void PersistAdoptedContextIfNeeded(MessageSource? source)
     {

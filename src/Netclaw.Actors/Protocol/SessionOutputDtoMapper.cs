@@ -182,6 +182,7 @@ public static class SessionOutputDtoMapper
             InteractionCandidateVerbs = [.. msg.CandidateVerbs],
             InteractionDirectoryRoots = [.. msg.DirectoryRoots],
             InteractionCwd = msg.Cwd,
+            InteractionIsMessy = msg.IsMessy,
             InteractionOptions = [.. msg.Options],
             InteractionHasAdoptedContext = msg.HasAdoptedContext,
             InteractionAdoptedSpeakerIds = [.. msg.AdoptedSpeakerIds]
@@ -342,6 +343,7 @@ public static class SessionOutputDtoMapper
                 CandidateVerbs = dto.InteractionCandidateVerbs ?? [],
                 DirectoryRoots = dto.InteractionDirectoryRoots ?? [],
                 Cwd = dto.InteractionCwd,
+                IsMessy = dto.InteractionIsMessy ?? false,
                 Options = dto.InteractionOptions ?? []
             },
             _ => new ErrorOutput

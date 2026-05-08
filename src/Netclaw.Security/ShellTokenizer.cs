@@ -84,10 +84,117 @@ public static class ShellTokenizer
     /// Splits a compound command on <c>&&</c>, <c>||</c>, and <c>;</c>
     /// operators, returning each approval unit trimmed. Pipes remain inside the
     /// same unit so shell pipelines can be approved as one piece of directory
-    /// work.
+    /// work. Returns an empty list when the command is "messy" — i.e., contains
+    /// bash control-flow keywords (<c>for</c>/<c>while</c>/<c>do</c>/<c>done</c>/
+    /// <c>then</c>/<c>fi</c>/<c>case</c>/<c>esac</c>) or unbalanced
+    /// quotes/brackets — so the approval gate can offer only one-shot approval
+    /// without persisting fragmentary verb chains derived from control-flow
+    /// tokens. See <see cref="IsMessyCompoundCommand"/> for the predicate.
     /// </summary>
     public static IReadOnlyList<string> SplitCompoundCommand(string command)
-        => ShellApprovalSemantics.ForCommand(command).SplitCompoundCommand(command);
+    {
+        if (IsMessyCompoundCommand(command))
+            return [];
+        return ShellApprovalSemantics.ForCommand(command).SplitCompoundCommand(command);
+    }
+
+    private static readonly HashSet<string> BashControlFlowKeywords = new(StringComparer.Ordinal)
+    {
+        "for", "while", "do", "done", "then", "fi", "case", "esac"
+    };
+
+    /// <summary>
+    /// Returns true when <paramref name="command"/> contains bash control-flow
+    /// keywords as unquoted standalone words, or has unbalanced quotes,
+    /// parentheses, brackets, or braces. Used by the approval gate to refuse
+    /// persistent grants for commands that cannot be cleanly split into verb
+    /// chains the operator could later reason about.
+    ///
+    /// Cheap structural scan; not a bash parser. Heredocs, here-strings, and
+    /// command substitution are not analyzed semantically — only their
+    /// quote/bracket balance contributes.
+    /// </summary>
+    public static bool IsMessyCompoundCommand(string? command)
+    {
+        if (string.IsNullOrWhiteSpace(command))
+            return false;
+
+        char? quote = null;
+        var parens = 0;
+        var brackets = 0;
+        var braces = 0;
+        var word = new StringBuilder();
+
+        foreach (var ch in command)
+        {
+            // Quote handling: opens skip the bracket scan, closes resume it.
+            if (quote is null && (ch == '\'' || ch == '"'))
+            {
+                if (FlushWordAsKeyword(word)) return true;
+                quote = ch;
+                continue;
+            }
+
+            if (quote == ch)
+            {
+                quote = null;
+                continue;
+            }
+
+            if (quote is not null)
+                continue;
+
+            switch (ch)
+            {
+                case '(':
+                    parens++;
+                    if (FlushWordAsKeyword(word)) return true;
+                    continue;
+                case ')':
+                    if (--parens < 0) return true;
+                    if (FlushWordAsKeyword(word)) return true;
+                    continue;
+                case '[':
+                    brackets++;
+                    if (FlushWordAsKeyword(word)) return true;
+                    continue;
+                case ']':
+                    if (--brackets < 0) return true;
+                    if (FlushWordAsKeyword(word)) return true;
+                    continue;
+                case '{':
+                    braces++;
+                    if (FlushWordAsKeyword(word)) return true;
+                    continue;
+                case '}':
+                    if (--braces < 0) return true;
+                    if (FlushWordAsKeyword(word)) return true;
+                    continue;
+            }
+
+            if (char.IsWhiteSpace(ch) || ch is ';' or '|' or '&')
+            {
+                if (FlushWordAsKeyword(word)) return true;
+                continue;
+            }
+
+            word.Append(ch);
+        }
+
+        if (FlushWordAsKeyword(word)) return true;
+
+        return quote is not null || parens != 0 || brackets != 0 || braces != 0;
+    }
+
+    private static bool FlushWordAsKeyword(StringBuilder word)
+    {
+        if (word.Length == 0)
+            return false;
+
+        var match = BashControlFlowKeywords.Contains(word.ToString());
+        word.Clear();
+        return match;
+    }
 
     /// <summary>
     /// Extracts the verb chain (command name + subcommands) from a tokenized

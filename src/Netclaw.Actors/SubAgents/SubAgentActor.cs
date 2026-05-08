@@ -428,6 +428,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         ctx.Patterns,
                         ctx.CandidateVerbs,
                         ctx.DirectoryRoots,
+                        ctx.IsMessy,
                         ct);
 
                     if (decision is ParentApprovalDecision.ApprovedOnce

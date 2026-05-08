@@ -172,6 +172,36 @@ public sealed class ShellApprovalMatcherTests
         var display = _matcher.FormatForDisplay(new ToolName("shell_execute"), Args("git push origin main"));
         Assert.Equal("git push origin main", display);
     }
+
+    [Fact]
+    public void IsMessy_true_for_bash_control_flow()
+    {
+        Assert.True(_matcher.IsMessy(
+            new ToolName("shell_execute"),
+            Args("for pid in $(pgrep netclawd); do echo $pid; done")));
+    }
+
+    [Fact]
+    public void IsMessy_false_for_well_formed_compound()
+    {
+        Assert.False(_matcher.IsMessy(
+            new ToolName("shell_execute"),
+            Args("git add . && git commit -m fix && git push")));
+    }
+
+    [Fact]
+    public void IsApproved_returns_false_for_messy_command_even_with_global_wildcards()
+    {
+        // Even if every conceivable verb is approved, a messy command never
+        // auto-runs: the matcher cannot extract verb chains to evaluate, and
+        // the prompt must offer Once/Deny only.
+        var approved = new[] { Verb("for"), Verb("do"), Verb("done"), Verb("echo") };
+        Assert.False(_matcher.IsApproved(
+            new ToolName("shell_execute"),
+            Args("for x in 1 2 3; do echo $x; done"),
+            approved,
+            cwd: null));
+    }
 }
 
 public sealed class DefaultApprovalMatcherTests
