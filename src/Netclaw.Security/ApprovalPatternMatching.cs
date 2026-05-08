@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ApprovalPatternMatching.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -8,10 +8,11 @@ using Netclaw.Configuration;
 namespace Netclaw.Security;
 
 /// <summary>
-/// Shared approval matching helpers. Shell approvals use
-/// <see cref="MatchesShellApprovalEntry"/>, which only compares exact approval
-/// units and normalized directory roots. Other tools continue to use
-/// <see cref="MatchesAny"/> for exact and prefix-style matching.
+/// Approval matching helpers that consume the v2 typed
+/// <see cref="ApprovalEntry"/> store. Shell approvals use
+/// <see cref="MatchesShellApproval"/> which evaluates the candidate's verb
+/// chain together with its cwd against each entry's <c>(verb, directory)</c>
+/// pair. Other tools use <see cref="MatchesAny"/> for verb-only matching.
 /// </summary>
 public static class ApprovalPatternMatching
 {
@@ -20,100 +21,70 @@ public static class ApprovalPatternMatching
     // ToolApprovalEntryComparer for the rationale.
     private static StringComparison ApprovalEntryComparison => ToolApprovalEntryComparer.Comparison;
 
-    public static bool MatchesShellApprovalEntry(string candidate, IEnumerable<string> approvedEntries)
+    /// <summary>
+    /// Returns true when <paramref name="approvedEntries"/> contains an entry
+    /// whose verb equals <paramref name="candidateVerb"/> AND whose directory
+    /// is either <c>null</c> (the global wildcard) or an ancestor of
+    /// <paramref name="cwd"/> with no symlink segments along the path between
+    /// the two.
+    ///
+    /// The symlink-segment guard prevents a planted symlink under an approved
+    /// directory from being used to redirect the cwd to a path outside that
+    /// directory: <see cref="PathUtility.ContainsSymlinkSegment"/> walks each
+    /// component from the approved root toward the cwd and refuses the match
+    /// if any segment is a reparse point.
+    /// </summary>
+    public static bool MatchesShellApproval(
+        string candidateVerb,
+        string? cwd,
+        IEnumerable<ApprovalEntry> approvedEntries)
     {
-        // Shell approvals never widen by verb prefix here. Reusable entries are
-        // either exact normalized units or normalized directory roots.
-        foreach (var approved in approvedEntries)
+        foreach (var entry in approvedEntries)
         {
-            if (string.Equals(candidate, approved, ApprovalEntryComparison))
-                return true;
-
-            if (IsDirectoryRootEntry(candidate) && IsDirectoryRootEntry(approved) && MatchesDirectoryRoot(candidate, approved))
-                return true;
-        }
-
-        return false;
-    }
-
-    public static bool MatchesAny(string candidate, IEnumerable<string> approvedPatterns)
-    {
-        foreach (var approved in approvedPatterns)
-        {
-            if (string.Equals(candidate, approved, ApprovalEntryComparison))
-                return true;
-
-            if (!approved.Contains(' ', StringComparison.Ordinal))
+            if (!string.Equals(entry.Verb, candidateVerb, ApprovalEntryComparison))
                 continue;
 
-            // Directory-scoped patterns: "verb /dir/" matches "verb /dir/file.txt"
-            if (approved.EndsWith('/') && MatchesDirectoryScope(candidate, approved))
+            // Global wildcard: matches any cwd by definition.
+            if (entry.Directory is null)
                 return true;
 
-            // Multi-token patterns prefix-match on a space boundary. Single-token
-            // patterns remain exact-only so grants do not silently widen from
-            // "cat" to every path-bearing cat invocation.
-            if (candidate.Length > approved.Length
-                && candidate[approved.Length] == ' '
-                && candidate.StartsWith(approved, ApprovalEntryComparison))
+            // Folder-scoped entry requires a concrete cwd to evaluate.
+            if (string.IsNullOrEmpty(cwd))
+                continue;
+
+            try
+            {
+                if (!PathUtility.IsWithinRoot(cwd, entry.Directory))
+                    continue;
+
+                if (PathUtility.ContainsSymlinkSegment(entry.Directory, cwd))
+                    continue;
+
                 return true;
+            }
+            catch (Exception ex) when (ex is ArgumentException or IOException)
+            {
+                continue;
+            }
         }
 
         return false;
     }
 
-    private static bool MatchesDirectoryScope(string candidate, string approvedDirPattern)
+    /// <summary>
+    /// Returns true when <paramref name="approvedEntries"/> contains an entry
+    /// whose verb equals <paramref name="candidate"/>. Used by non-shell
+    /// matchers where the directory half of an entry is not meaningful — the
+    /// candidate is the tool name and a verb match alone authorizes.
+    /// </summary>
+    public static bool MatchesAny(string candidate, IEnumerable<ApprovalEntry> approvedEntries)
     {
-        var approvedSpaceIdx = approvedDirPattern.IndexOf(' ', StringComparison.Ordinal);
-        if (approvedSpaceIdx < 0)
-            return false;
-
-        var approvedVerb = approvedDirPattern[..approvedSpaceIdx];
-        var approvedDir = approvedDirPattern[(approvedSpaceIdx + 1)..].TrimEnd('/');
-
-        var candidateSpaceIdx = candidate.IndexOf(' ', StringComparison.Ordinal);
-        if (candidateSpaceIdx < 0)
-            return false;
-
-        var candidateVerb = candidate[..candidateSpaceIdx];
-        var candidatePath = candidate[(candidateSpaceIdx + 1)..];
-
-        if (!string.Equals(approvedVerb, candidateVerb, ApprovalEntryComparison))
-            return false;
-
-        try
+        foreach (var approved in approvedEntries)
         {
-            return PathUtility.IsWithinRoot(candidatePath, approvedDir);
+            if (string.Equals(approved.Verb, candidate, ApprovalEntryComparison))
+                return true;
         }
-        catch (Exception ex) when (ex is ArgumentException or IOException)
-        {
-            return false;
-        }
-    }
 
-    private static bool MatchesDirectoryRoot(string candidateRoot, string approvedRoot)
-    {
-        try
-        {
-            return PathUtility.IsWithinRoot(
-                candidateRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
-                approvedRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-        }
-        catch (Exception ex) when (ex is ArgumentException or IOException)
-        {
-            return false;
-        }
-    }
-
-    private static bool IsDirectoryRootEntry(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return false;
-
-        if (!(value.EndsWith(Path.DirectorySeparatorChar) || value.EndsWith(Path.AltDirectorySeparatorChar)))
-            return false;
-
-        var trimmed = value.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        return Path.IsPathRooted(trimmed);
+        return false;
     }
 }

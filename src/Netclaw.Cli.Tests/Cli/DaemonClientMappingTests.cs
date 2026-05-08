@@ -266,7 +266,7 @@ public sealed class DaemonClientMappingTests
             DisplayText = "git push origin main",
             RequesterSenderId = "device-1",
             Patterns = ["git push"],
-            ApprovalEntries = ["git push"],
+            CandidateVerbs = ["git push"],
             DirectoryRoots = [],
             Options =
             [
@@ -282,7 +282,7 @@ public sealed class DaemonClientMappingTests
         Assert.Equal("approval", dto.InteractionKind);
         Assert.Equal("git push origin main", dto.InteractionDisplayText);
         Assert.Equal("device-1", dto.RequesterSenderId);
-        Assert.Equal(["git push"], dto.InteractionApprovalEntries);
+        Assert.Equal(["git push"], dto.InteractionCandidateVerbs);
         Assert.Equal([], dto.InteractionDirectoryRoots ?? []);
 
         var roundTripped = DaemonClient.FromDto(dto);
@@ -292,7 +292,7 @@ public sealed class DaemonClientMappingTests
         Assert.Equal("git push origin main", result.DisplayText);
         Assert.Equal("device-1", result.RequesterSenderId);
         Assert.Equal(["git push"], result.Patterns);
-        Assert.Equal(["git push"], result.ApprovalEntries);
+        Assert.Equal(["git push"], result.CandidateVerbs);
         Assert.Equal([], result.DirectoryRoots);
         Assert.Equal(4, result.Options.Count);
     }

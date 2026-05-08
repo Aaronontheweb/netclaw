@@ -622,6 +622,7 @@ public class DispatchingToolExecutorTests
                 new ToolName("shell_execute"),
                 ["pwd"],
                 persistent: false,
+                cwd: null,
                 TestContext.Current.CancellationToken);
 
             var call = new FunctionCallContent(
@@ -712,8 +713,9 @@ public class DispatchingToolExecutorTests
                 "signalr/thread-1",
                 TrustAudience.Personal,
                 new ToolName(toolCall.Name),
-                firstAttempt.ApprovalContext.ApprovalEntries,
+                firstAttempt.ApprovalContext.CandidateVerbs,
                 persistent: false,
+                cwd: null,
                 TestContext.Current.CancellationToken);
 
             var sameSessionResult = await executor.ExecuteAsync(toolCall, firstContext, TestContext.Current.CancellationToken);

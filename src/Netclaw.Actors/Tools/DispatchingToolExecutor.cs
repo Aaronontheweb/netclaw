@@ -112,7 +112,8 @@ public sealed class DispatchingToolExecutor : IToolExecutor
                 context?.SessionId,
                 audience,
                 new ToolName(toolCall.Name),
-                approvalContext.ApprovalEntries,
+                approvalContext.CandidateVerbs,
+                context?.Cwd,
                 ct);
 
             accessDecision = unapproved.Count == 0

@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
 
@@ -43,25 +44,19 @@ public sealed class FilePathApprovalMatcher : IToolApprovalMatcher
         return [toolName.Value];
     }
 
-    public IReadOnlyList<string> ExtractApprovalEntries(ToolName toolName, IDictionary<string, object?>? arguments)
+    public IReadOnlyList<string> ExtractCandidateVerbs(ToolName toolName, IDictionary<string, object?>? arguments)
         => ExtractPatterns(toolName, arguments);
 
-    public bool IsApproved(ToolName toolName, IDictionary<string, object?>? arguments, IEnumerable<string> approvedPatterns)
+    public bool IsApproved(
+        ToolName toolName,
+        IDictionary<string, object?>? arguments,
+        IReadOnlyList<ApprovalEntry> approvedEntries,
+        string? cwd)
     {
-        var patterns = ExtractPatterns(toolName, arguments);
-        foreach (var pattern in patterns)
+        var verbs = ExtractCandidateVerbs(toolName, arguments);
+        foreach (var verb in verbs)
         {
-            var matched = false;
-            foreach (var approved in approvedPatterns)
-            {
-                if (string.Equals(pattern, approved, StringComparison.OrdinalIgnoreCase))
-                {
-                    matched = true;
-                    break;
-                }
-            }
-
-            if (!matched)
+            if (!ApprovalPatternMatching.MatchesAny(verb, approvedEntries))
                 return false;
         }
 
@@ -75,9 +70,6 @@ public sealed class FilePathApprovalMatcher : IToolApprovalMatcher
 
         return toolName.Value;
     }
-
-    public IReadOnlyList<DirectoryApprovalRoot> ExtractDirectoryRoots(ToolName toolName, IDictionary<string, object?>? arguments)
-        => [];
 
     private bool TryGetControlPlaneRelativePath(
         IDictionary<string, object?>? arguments,

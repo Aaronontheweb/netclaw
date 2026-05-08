@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ToolApprovalActor.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -26,7 +26,7 @@ internal sealed class ToolApprovalActor : ReceiveActor
 
             foreach (var pattern in msg.Patterns)
             {
-                if (!IsApproved(msg.SessionId, msg.Audience, msg.ToolName, pattern))
+                if (!IsApproved(msg.SessionId, msg.Audience, msg.ToolName, pattern, msg.Cwd))
                     unapproved.Add(pattern);
             }
 
@@ -41,11 +41,13 @@ internal sealed class ToolApprovalActor : ReceiveActor
 
                 if (msg.Persistent)
                 {
-                    // Until section 2 lands the v2 directory-aware matcher, the
-                    // runtime treats every persisted grant as a global wildcard:
-                    // verb-only, directory null. The new prompt UX in section 7
-                    // will route folder-scoped clicks through a different add
-                    // path that supplies a concrete directory.
+                    // Until section 7's prompt redesign supplies an explicit
+                    // scope from the user's button click, the runtime persists
+                    // every "Always"-style grant as a global wildcard
+                    // (verb, null). Section 7 plumbs the per-button scope and
+                    // produces folder-scoped (verb, cwd) entries for the
+                    // "Always here" path while keeping (verb, null) for
+                    // "Always anywhere".
                     _persistentStore?.AddApproval(
                         msg.Audience,
                         msg.ToolName.Value,
@@ -60,25 +62,19 @@ internal sealed class ToolApprovalActor : ReceiveActor
     public static Props CreateProps(ToolApprovalStore? persistentStore = null)
         => Props.Create(() => new ToolApprovalActor(persistentStore));
 
-    private bool IsApproved(SessionId? sessionId, TrustAudience audience, ToolName toolName, string pattern)
+    private bool IsApproved(SessionId? sessionId, TrustAudience audience, ToolName toolName, string candidateVerb, string? cwd)
     {
-        if (sessionId.HasValue && IsSessionApproved(sessionId.Value, audience, toolName, pattern))
+        if (sessionId.HasValue && IsSessionApproved(sessionId.Value, audience, toolName, candidateVerb))
             return true;
 
         if (_persistentStore is null)
             return false;
 
-        // Section 1 interim: surface verb chains from the typed store so the
-        // existing string-based matcher keeps working. Section 2 swaps this
-        // for a directory-aware matcher that consumes ApprovalEntry directly
-        // and consults the candidate's cwd from ToolExecutionContext.
-        var persistedVerbs = _persistentStore
-            .GetApprovedEntries(audience, toolName.Value)
-            .Select(e => e.Verb);
-        return MatchesApprovedEntry(toolName, pattern, persistedVerbs);
+        var approved = _persistentStore.GetApprovedEntries(audience, toolName.Value);
+        return MatchesPersistedEntry(toolName, candidateVerb, cwd, approved);
     }
 
-    private bool IsSessionApproved(SessionId sessionId, TrustAudience audience, ToolName toolName, string pattern)
+    private bool IsSessionApproved(SessionId sessionId, TrustAudience audience, ToolName toolName, string candidateVerb)
     {
         // Walk up the scope chain: sub-agent scopes inherit parent session approvals.
         // Scope format: "{parentSessionId}/subagent/{name}/{runId}" — parent is the prefix before "/subagent/".
@@ -87,8 +83,8 @@ internal sealed class ToolApprovalActor : ReceiveActor
         {
             var sessionKey = BuildSessionKey((SessionId)scopeId, audience);
             if (_sessionApprovals.TryGetValue(sessionKey, out var toolMap)
-                && toolMap.TryGetValue(toolName.Value, out var patterns)
-                && MatchesApprovedEntry(toolName, pattern, patterns))
+                && toolMap.TryGetValue(toolName.Value, out var verbs)
+                && verbs.Contains(candidateVerb))
             {
                 return true;
             }
@@ -103,7 +99,7 @@ internal sealed class ToolApprovalActor : ReceiveActor
         return false;
     }
 
-    private void AddSessionApproval(SessionId sessionId, TrustAudience audience, ToolName toolName, string pattern)
+    private void AddSessionApproval(SessionId sessionId, TrustAudience audience, ToolName toolName, string candidateVerb)
     {
         var sessionKey = BuildSessionKey(sessionId, audience);
         if (!_sessionApprovals.TryGetValue(sessionKey, out var toolMap))
@@ -112,19 +108,23 @@ internal sealed class ToolApprovalActor : ReceiveActor
             _sessionApprovals[sessionKey] = toolMap;
         }
 
-        if (!toolMap.TryGetValue(toolName.Value, out var patterns))
+        if (!toolMap.TryGetValue(toolName.Value, out var verbs))
         {
-            patterns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            toolMap[toolName.Value] = patterns;
+            // Session approvals use the same platform-correct comparer as the
+            // persistent store (Ordinal on POSIX, OrdinalIgnoreCase on Windows)
+            // so a grant for `git` cannot be redeemed by a planted `Git`
+            // earlier in $PATH on case-sensitive filesystems.
+            verbs = new HashSet<string>(ToolApprovalEntryComparer.Comparer);
+            toolMap[toolName.Value] = verbs;
         }
 
-        patterns.Add(pattern);
+        verbs.Add(candidateVerb);
     }
 
-    private static bool MatchesApprovedEntry(ToolName toolName, string candidate, IEnumerable<string> approvedEntries)
+    private static bool MatchesPersistedEntry(ToolName toolName, string candidateVerb, string? cwd, IReadOnlyList<ApprovalEntry> approved)
         => string.Equals(toolName.Value, ShellTool.ToolName, StringComparison.Ordinal)
-            ? ApprovalPatternMatching.MatchesShellApprovalEntry(candidate, approvedEntries)
-            : ApprovalPatternMatching.MatchesAny(candidate, approvedEntries);
+            ? ApprovalPatternMatching.MatchesShellApproval(candidateVerb, cwd, approved)
+            : ApprovalPatternMatching.MatchesAny(candidateVerb, approved);
 
     private static string BuildSessionKey(SessionId sessionId, TrustAudience audience)
         => $"{sessionId.Value}|{audience.ToWireValue()}";

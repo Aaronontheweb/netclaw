@@ -19,11 +19,11 @@ Both PRs sit under this single OpenSpec change.
 
 ## 2. Matcher operates on ApprovalEntry
 
-- [ ] 2.1 Update `IToolApprovalMatcher` to remove `ExtractDirectoryRoots`; pattern extraction returns verb chains only.
-- [ ] 2.2 Update `ApprovalPatternMatching` to evaluate `(verb, directory)` containment: candidate matches when verb equals entry's verb AND (entry directory is null OR candidate cwd is under entry directory) AND no symlink segment along the cwd path.
-- [ ] 2.3 Plumb `Cwd` through `ToolExecutionContext` / `ToolInteractionRequest` so the matcher always has a concrete cwd to evaluate against.
-- [ ] 2.4 Delete the v1 string-shape inspection logic (trailing-slash heuristic) from `ShellApprovalMatcher` and `ApprovalPatternMatching`.
-- [ ] 2.5 Unit tests for the four matcher cases: cwd inside entry directory; cwd outside; entry directory null; symlink segment in cwd.
+- [x] 2.1 Update `IToolApprovalMatcher` to remove `ExtractDirectoryRoots`; pattern extraction returns verb chains only.
+- [x] 2.2 Update `ApprovalPatternMatching` to evaluate `(verb, directory)` containment: candidate matches when verb equals entry's verb AND (entry directory is null OR candidate cwd is under entry directory) AND no symlink segment along the cwd path.
+- [x] 2.3 Plumb `Cwd` through `ToolExecutionContext` / `ToolInteractionRequest` so the matcher always has a concrete cwd to evaluate against.
+- [x] 2.4 Delete the v1 string-shape inspection logic (trailing-slash heuristic) from `ShellApprovalMatcher` and `ApprovalPatternMatching`.
+- [x] 2.5 Unit tests for the four matcher cases: cwd inside entry directory; cwd outside; entry directory null; symlink segment in cwd.
 
 ## 3. ShellTokenizer refuses messy input
 

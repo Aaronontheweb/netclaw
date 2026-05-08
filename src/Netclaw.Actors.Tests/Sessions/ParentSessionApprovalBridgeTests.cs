@@ -48,7 +48,11 @@ public sealed class ParentSessionApprovalBridgeTests
         Assert.True(emitted.PersistedAdoptedContext);
         Assert.Equal(["user-123", "user-456"], emitted.AdoptedSpeakerIds);
         Assert.Equal(["grep timeout logs/app.log | wc -l"], emitted.Patterns);
-        Assert.Equal(["/tmp/work/logs/"], emitted.ApprovalEntries);
+        // The bridge passes the verb-chain candidate list it was given verbatim;
+        // in this test the second positional argument supplied "/tmp/work/logs/"
+        // as a synthetic candidate list, so we assert it round-trips into
+        // CandidateVerbs (the v2 field replacing v1's ApprovalEntries).
+        Assert.Equal(["/tmp/work/logs/"], emitted.CandidateVerbs);
         Assert.Equal(["logs/"], emitted.DirectoryRoots);
         Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, emitted.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession).Label);
         Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, emitted.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways).Label);

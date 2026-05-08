@@ -47,7 +47,7 @@ internal sealed class ParentSessionApprovalBridge : IParentApprovalBridge
         string toolName,
         string displayText,
         IReadOnlyList<string> patterns,
-        IReadOnlyList<string> approvalEntries,
+        IReadOnlyList<string> candidateVerbs,
         IReadOnlyList<string> directoryRoots,
         CancellationToken ct)
     {
@@ -65,7 +65,7 @@ internal sealed class ParentSessionApprovalBridge : IParentApprovalBridge
             RequesterSenderId = _requesterSenderId,
             RequesterPrincipal = _requesterPrincipal,
             Patterns = patterns,
-            ApprovalEntries = approvalEntries,
+            CandidateVerbs = candidateVerbs,
             DirectoryRoots = directoryRoots,
             HasAdoptedContext = _hasAdoptedContext,
             AdoptedSpeakerIds = _adoptedSpeakerIds,

@@ -1,8 +1,9 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ShellApprovalMatcherTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Configuration;
 using Netclaw.Tools;
 using Xunit;
 
@@ -12,20 +13,6 @@ public sealed class ShellApprovalMatcherTests
 {
     private readonly ShellApprovalMatcher _matcher = ShellApprovalMatcher.Instance;
 
-    public static TheoryData<string, string, bool> PlatformDirectoryMatchCases
-    {
-        get
-        {
-            var data = new TheoryData<string, string, bool>();
-            if (OperatingSystem.IsWindows())
-                data.Add(@"C:\Users\petabridge\.netclaw\logs\", @"type C:\Users\petabridge\.netclaw\logs\crash.log", true);
-            else
-                data.Add("/home/user/.netclaw/logs/", "cat /home/user/.netclaw/logs/crash.log", true);
-
-            return data;
-        }
-    }
-
     private static Dictionary<string, object?> Args(string command) => new() { ["Command"] = command };
 
     private static Dictionary<string, object?> Args(string command, string workingDirectory)
@@ -34,6 +21,9 @@ public sealed class ShellApprovalMatcherTests
             ["Command"] = command,
             ["WorkingDirectory"] = workingDirectory
         };
+
+    private static ApprovalEntry Verb(string verb) => new() { Verb = verb, Directory = null };
+    private static ApprovalEntry InDir(string verb, string dir) => new() { Verb = verb, Directory = dir };
 
     [Fact]
     public void ExtractPatterns_simple_command()
@@ -55,32 +45,12 @@ public sealed class ShellApprovalMatcherTests
     }
 
     [Fact]
-    public void ExtractPatterns_deduplicates()
-    {
-        var patterns = _matcher.ExtractPatterns(new ToolName("shell_execute"),
-            Args("git push && git push --tags"));
-        Assert.Equal(2, patterns.Count);
-        Assert.Contains("git push", patterns);
-        Assert.Contains("git push --tags", patterns);
-    }
-
-    [Fact]
     public void ExtractPatterns_recurses_into_bash_c_wrapper()
     {
         var patterns = _matcher.ExtractPatterns(new ToolName("shell_execute"), Args("bash -c \"git push --force\""));
 
         Assert.Single(patterns);
         Assert.Equal("git push --force", patterns[0]);
-    }
-
-    [Fact]
-    public void ExtractPatterns_batches_outer_and_inner_segments()
-    {
-        var patterns = _matcher.ExtractPatterns(new ToolName("shell_execute"), Args("echo ok && bash -c \"git push --force\""));
-
-        Assert.Equal(2, patterns.Count);
-        Assert.Contains("echo ok", patterns);
-        Assert.Contains("git push --force", patterns);
     }
 
     [Fact]
@@ -91,69 +61,109 @@ public sealed class ShellApprovalMatcherTests
     }
 
     [Fact]
-    public void IsApproved_all_patterns_approved()
+    public void ExtractCandidateVerbs_collapses_to_verb_chains_only()
     {
-        var approved = new[] { "git add .", "git commit -m fix", "git push" };
-        Assert.True(_matcher.IsApproved(new ToolName("shell_execute"),
-            Args("git add . && git commit -m fix && git push"), approved));
+        // Pure verb chains, no normalized commands or directory roots — the
+        // v2 matcher leaves the directory half of approval pairs to the cwd.
+        var verbs = _matcher.ExtractCandidateVerbs(
+            new ToolName("shell_execute"),
+            Args("git add . && git commit -m fix && git push"));
+        Assert.Equal(3, verbs.Count);
+        Assert.Contains("git add", verbs);
+        Assert.Contains("git commit", verbs);
+        Assert.Contains("git push", verbs);
     }
 
     [Fact]
-    public void IsApproved_one_pattern_unapproved()
+    public void ExtractCandidateVerbs_path_aware_verb_appends_first_argument()
     {
-        var approved = new[] { "git add .", "git push" };
-        Assert.False(_matcher.IsApproved(new ToolName("shell_execute"),
-            Args("git add . && git commit -m fix && git push"), approved));
+        var verbs = _matcher.ExtractCandidateVerbs(
+            new ToolName("shell_execute"),
+            Args("cat /home/user/.netclaw/logs/crash.log"));
+        Assert.Single(verbs);
+        Assert.Contains(
+            verbs,
+            v => v.Replace('\\', '/').Equals("cat /home/user/.netclaw/logs/crash.log", StringComparison.OrdinalIgnoreCase));
     }
 
-    [Theory]
-    [InlineData("git push", "git push", true)]
-    [InlineData("git push", "git push origin main", false)]
-    [InlineData("gh", "gh --help", false)]
-    [InlineData("/home/user/.netclaw/logs/", "grep timeout /home/user/.netclaw/logs/crash.log", true)]
-    [InlineData("/home/user/.netclaw/logs/", "cat /home/user/.netclaw/config/secret.json", false)]
-    public void IsApproved_pattern_matching(string pattern, string command, bool expected)
+    [Fact]
+    public void IsApproved_global_wildcard_matches_anywhere()
     {
-        var approved = new[] { pattern };
-        Assert.Equal(expected, _matcher.IsApproved(new ToolName("shell_execute"), Args(command), approved));
+        var approved = new[] { Verb("git push"), Verb("git add"), Verb("git commit") };
+        Assert.True(_matcher.IsApproved(
+            new ToolName("shell_execute"),
+            Args("git add . && git commit -m fix && git push"),
+            approved,
+            cwd: "/anywhere"));
     }
 
-    [Theory]
-    [MemberData(nameof(PlatformDirectoryMatchCases))]
-    public void IsApproved_platform_specific_directory_root_matching(string pattern, string command, bool expected)
+    [Fact]
+    public void IsApproved_one_verb_unapproved_returns_false()
     {
-        var approved = new[] { pattern };
-        Assert.Equal(expected, _matcher.IsApproved(new ToolName("shell_execute"), Args(command), approved));
+        var approved = new[] { Verb("git add"), Verb("git push") };
+        Assert.False(_matcher.IsApproved(
+            new ToolName("shell_execute"),
+            Args("git add . && git commit -m fix && git push"),
+            approved,
+            cwd: null));
+    }
+
+    [Fact]
+    public void IsApproved_folder_scoped_entry_matches_when_cwd_is_under_directory()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var sub = Path.Combine(tempRoot, "sub");
+        Directory.CreateDirectory(sub);
+        try
+        {
+            // Use a non-path-aware verb so the candidate stays a pure verb
+            // chain ("git status"); path-aware verbs (cat, grep, etc.) append
+            // their first positional argument which would not match a bare
+            // verb in the approved entry.
+            var approved = new[] { InDir("git status", tempRoot) };
+            Assert.True(_matcher.IsApproved(
+                new ToolName("shell_execute"),
+                Args("git status"),
+                approved,
+                cwd: sub));
+        }
+        finally
+        {
+            Directory.Delete(tempRoot, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void IsApproved_folder_scoped_entry_does_not_match_when_cwd_is_outside()
+    {
+        var approved = new[] { InDir("grep", "/home/user/repos/foo") };
+        Assert.False(_matcher.IsApproved(
+            new ToolName("shell_execute"),
+            Args("grep error file.log"),
+            approved,
+            cwd: "/etc"));
+    }
+
+    [Fact]
+    public void IsApproved_folder_scoped_entry_requires_concrete_cwd()
+    {
+        var approved = new[] { InDir("grep", "/home/user/repos/foo") };
+        Assert.False(_matcher.IsApproved(
+            new ToolName("shell_execute"),
+            Args("grep error file.log"),
+            approved,
+            cwd: null));
     }
 
     [Fact]
     public void IsApproved_recurses_into_bash_c_wrapper()
     {
-        var approved = new[] { "git push --force" };
-
-        Assert.True(_matcher.IsApproved(new ToolName("shell_execute"),
-            Args("bash -c \"git push --force\""), approved));
-    }
-
-    [Fact]
-    public void ExtractPatterns_normalize_paths_but_keep_full_unit_shape()
-    {
-        var patterns = _matcher.ExtractPatterns(
+        var approved = new[] { Verb("git push") };
+        Assert.True(_matcher.IsApproved(
             new ToolName("shell_execute"),
-            Args("cat /etc/hosts && git push origin main"));
-        Assert.Equal(2, patterns.Count);
-        Assert.Contains("cat /etc/hosts", patterns);
-        Assert.Contains("git push origin main", patterns);
-    }
-
-    [Fact]
-    public void ExtractPatterns_keep_pipeline_together_as_one_unit()
-    {
-        var patterns = _matcher.ExtractPatterns(
-            new ToolName("shell_execute"),
-            Args("cat /var/log/syslog | grep error"));
-        Assert.Single(patterns);
-        Assert.Equal("cat /var/log/syslog | grep error", patterns[0]);
+            Args("bash -c \"git push --force\""),
+            approved,
+            cwd: null));
     }
 
     [Fact]
@@ -162,65 +172,13 @@ public sealed class ShellApprovalMatcherTests
         var display = _matcher.FormatForDisplay(new ToolName("shell_execute"), Args("git push origin main"));
         Assert.Equal("git push origin main", display);
     }
-
-    // ── ExtractDirectoryRoots / ExtractApprovalEntries ──
-
-    [Theory]
-    [MemberData(nameof(PlatformDirectoryMatchCases))]
-    public void ExtractDirectoryRoots_simple_path_command(string expectedRoot, string command, bool _)
-    {
-        var roots = _matcher.ExtractDirectoryRoots(
-            new ToolName("shell_execute"),
-            Args(command));
-        Assert.Single(roots);
-        Assert.Equal(expectedRoot, roots[0].ComparisonRoot);
-    }
-
-    [Fact]
-    public void ExtractDirectoryRoots_pipeline_and_multiple_verbs_share_same_root()
-    {
-        var roots = _matcher.ExtractDirectoryRoots(
-            new ToolName("shell_execute"),
-            Args("grep 'error' /home/user/.netclaw/logs/app.log | wc -l"));
-        Assert.Single(roots);
-        Assert.Equal("/home/user/.netclaw/logs/", roots[0].ComparisonRoot.Replace('\\', '/'));
-    }
-
-    [Fact]
-    public void ExtractDirectoryRoots_returns_empty_when_no_reusable_roots_exist()
-    {
-        var roots = _matcher.ExtractDirectoryRoots(
-            new ToolName("shell_execute"),
-            Args("git push origin main"));
-        Assert.Empty(roots);
-    }
-
-    [Fact]
-    public void ExtractApprovalEntries_use_roots_when_available()
-    {
-        var entries = _matcher.ExtractApprovalEntries(
-            new ToolName("shell_execute"),
-            Args("grep 'error' /home/user/.netclaw/logs/app.log | wc -l"));
-
-        Assert.Single(entries);
-        Assert.Equal("/home/user/.netclaw/logs/", entries[0].Replace('\\', '/'));
-    }
-
-    [Fact]
-    public void ExtractApprovalEntries_fall_back_to_exact_unit_when_no_roots_exist()
-    {
-        var entries = _matcher.ExtractApprovalEntries(
-            new ToolName("shell_execute"),
-            Args("cat /home/user/.netclaw/logs/crash.log && git push origin main"));
-        Assert.Equal(2, entries.Count);
-        Assert.Contains("/home/user/.netclaw/logs/", entries.Select(p => p.Replace('\\', '/')));
-        Assert.Contains("git push origin main", entries);
-    }
 }
 
 public sealed class DefaultApprovalMatcherTests
 {
     private readonly DefaultApprovalMatcher _matcher = DefaultApprovalMatcher.Instance;
+
+    private static ApprovalEntry Verb(string verb) => new() { Verb = verb, Directory = null };
 
     [Fact]
     public void ExtractPatterns_returns_tool_name()
@@ -233,12 +191,20 @@ public sealed class DefaultApprovalMatcherTests
     [Fact]
     public void IsApproved_matches_exact_tool_name()
     {
-        Assert.True(_matcher.IsApproved(new ToolName("mcp:memorizer:store"), null, ["mcp:memorizer:store"]));
+        Assert.True(_matcher.IsApproved(
+            new ToolName("mcp:memorizer:store"),
+            null,
+            [Verb("mcp:memorizer:store")],
+            cwd: null));
     }
 
     [Fact]
     public void IsApproved_no_match()
     {
-        Assert.False(_matcher.IsApproved(new ToolName("mcp:memorizer:store"), null, ["mcp:memorizer:get"]));
+        Assert.False(_matcher.IsApproved(
+            new ToolName("mcp:memorizer:store"),
+            null,
+            [Verb("mcp:memorizer:get")],
+            cwd: null));
     }
 }

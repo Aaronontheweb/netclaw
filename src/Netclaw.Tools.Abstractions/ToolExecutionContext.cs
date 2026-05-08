@@ -129,6 +129,18 @@ public sealed class ToolExecutionContext
     public string? SessionDirectory { get; }
 
     /// <summary>
+    /// Resolved absolute working directory for the in-flight tool call. Set
+    /// by the session pipeline from the candidate tool arguments,
+    /// <c>WorkingContext.ProjectDirectory</c>, or <see cref="SessionDirectory"/>
+    /// — whichever resolves first. The approval gate uses this as the directory
+    /// half of the candidate <c>(verb, directory)</c> pair when evaluating
+    /// folder-scoped <see cref="Netclaw.Configuration.ApprovalEntry"/> records.
+    /// Null when the tool call is not directory-anchored (e.g. an in-process
+    /// tool like <c>store_memory</c>).
+    /// </summary>
+    public string? Cwd { get; set; }
+
+    /// <summary>
     /// File attachments registered by tools during execution.
     /// </summary>
     public IReadOnlyList<FileAttachmentInfo> FileAttachments

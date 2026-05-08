@@ -148,7 +148,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
                     ToolName: toolCall.Name,
                     DisplayText: "git push origin dev",
                     Patterns: ["git push origin dev"],
-                    ApprovalEntries: ["git push origin dev"],
+                    CandidateVerbs: ["git push origin dev"],
                     Options:
                     [
                         new ToolApprovalOption(ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveOnceLabel),

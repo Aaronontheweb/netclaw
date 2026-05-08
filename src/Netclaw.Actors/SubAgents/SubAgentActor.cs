@@ -426,7 +426,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         ctx.ToolName,
                         ctx.DisplayText,
                         ctx.Patterns,
-                        ctx.ApprovalEntries,
+                        ctx.CandidateVerbs,
                         ctx.DirectoryRoots,
                         ct);
 

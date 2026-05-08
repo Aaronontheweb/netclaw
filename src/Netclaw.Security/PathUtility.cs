@@ -147,4 +147,52 @@ public static class PathUtility
         var expanded = ExpandHome(path);
         return TryNormalize(expanded, workingDirectory, out var normalized) ? normalized : null;
     }
+
+    /// <summary>
+    /// Returns true when any segment of <paramref name="fullPath"/>, walking from
+    /// <paramref name="allowedRoot"/> outward, is a filesystem reparse point
+    /// (symbolic link, junction, or other reparse target). Used by the approval
+    /// gate and file-access policy to refuse to honor a grant when the candidate
+    /// path's resolution depends on a symlink that could redirect the I/O outside
+    /// the granted root.
+    ///
+    /// Errors reading attributes are conservatively treated as a positive
+    /// detection: if we cannot determine whether a segment is a symlink, we
+    /// assume it is.
+    /// </summary>
+    public static bool ContainsSymlinkSegment(string allowedRoot, string fullPath)
+    {
+        var relativePath = Path.GetRelativePath(allowedRoot, fullPath);
+        if (string.IsNullOrWhiteSpace(relativePath) || relativePath == ".")
+            return false;
+
+        var segments = relativePath.Split(
+            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+            StringSplitOptions.RemoveEmptyEntries);
+        var currentPath = allowedRoot;
+
+        foreach (var segment in segments)
+        {
+            currentPath = Path.Combine(currentPath, segment);
+            if (!File.Exists(currentPath) && !Directory.Exists(currentPath))
+                continue;
+
+            try
+            {
+                var attributes = File.GetAttributes(currentPath);
+                if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    return true;
+            }
+            catch (IOException)
+            {
+                return true;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }

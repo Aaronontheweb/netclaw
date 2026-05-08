@@ -757,10 +757,10 @@ public sealed class ToolApprovalGateTests
         public IReadOnlyList<string> GetTrustZoneRoots(ToolExecutionContext context) => _roots;
     }
 
-    // ── Directory-root shell approvals ──
+    // ── v2 candidate-verb extraction (replaces v1 directory-root extraction) ──
 
     [Fact]
-    public void Shell_path_command_populates_directory_roots_and_root_entries()
+    public void Shell_path_command_extracts_path_aware_verb_chain_with_no_directory_roots()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
         var args = ToolInput.Create("Command", "cat /home/user/.netclaw/logs/crash.log");
@@ -769,13 +769,20 @@ public sealed class ToolApprovalGateTests
 
         Assert.True(decision.NeedsApproval);
         Assert.NotNull(decision.ApprovalContext);
-        Assert.NotEmpty(decision.ApprovalContext!.DirectoryRoots);
-        Assert.Contains("/home/user/.netclaw/logs/", decision.ApprovalContext.DirectoryRoots.Select(p => p.Replace('\\', '/')));
-        Assert.Contains("/home/user/.netclaw/logs/", decision.ApprovalContext.ApprovalEntries.Select(p => p.Replace('\\', '/')));
+        // v2 cutover: DirectoryRoots is always empty; the candidate's cwd is
+        // the directory half of any (verb, directory) approval pair, supplied
+        // via ToolExecutionContext rather than extracted from arguments.
+        Assert.Empty(decision.ApprovalContext!.DirectoryRoots);
+        // ExtractVerbChain appends the first positional argument for
+        // path-aware verbs (cat, grep, etc.) so the candidate captures what
+        // the command operates on.
+        Assert.Contains(
+            decision.ApprovalContext.CandidateVerbs,
+            v => v.Replace('\\', '/').Equals("cat /home/user/.netclaw/logs/crash.log", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
-    public void Shell_path_command_uses_fixed_labels_with_root_in_directory_roots()
+    public void Shell_path_command_uses_fixed_labels()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
         var args = ToolInput.Create("Command", "grep 'error' /home/user/.netclaw/logs/app.log");
@@ -788,9 +795,9 @@ public sealed class ToolApprovalGateTests
         var alwaysOption = options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways);
         Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, sessionOption.Label);
         Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, alwaysOption.Label);
-        // Directory scope is preserved on the context for the channel adapter
-        // to render in the message body.
-        Assert.NotEmpty(decision.ApprovalContext.DirectoryRoots);
+        // v2 cutover: DirectoryRoots is always empty; section 7 redesigns the
+        // prompt body to show the cwd in the header instead of in a section.
+        Assert.Empty(decision.ApprovalContext.DirectoryRoots);
     }
 
     [Fact]
@@ -805,11 +812,11 @@ public sealed class ToolApprovalGateTests
         var options = decision.ApprovalContext!.Options;
         Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession).Label);
         Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways).Label);
-        Assert.True(decision.ApprovalContext.DirectoryRoots.Count > 1);
+        Assert.Empty(decision.ApprovalContext.DirectoryRoots);
     }
 
     [Fact]
-    public void Shell_relative_path_command_records_relative_root_and_absolute_entry()
+    public void Shell_relative_path_command_extracts_verb_chain_without_directory_roots()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -825,15 +832,13 @@ public sealed class ToolApprovalGateTests
             var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
 
             Assert.True(decision.NeedsApproval);
-            // DirectoryRoots keeps the relative display form for channel-body
-            // rendering. ApprovalEntries gets the absolute root because that's
-            // what gets persisted and matched against on retry.
-            Assert.Equal(["logs/"], decision.ApprovalContext!.DirectoryRoots);
-            var absoluteRoot = PathUtility.Normalize(logs) + Path.DirectorySeparatorChar;
-            Assert.Contains(absoluteRoot, decision.ApprovalContext.ApprovalEntries);
-            // Button labels are fixed regardless of relative/absolute path
-            // form — Slack's 76-char and Discord's 80-char button caps make
-            // dynamic labels structurally unsafe.
+            // v2 cutover: no v1 directory-root extraction. Pipelines stay
+            // inside one approval unit, so the candidate is the verb chain of
+            // the unit's first command (path-aware "grep <first-arg>").
+            Assert.Empty(decision.ApprovalContext!.DirectoryRoots);
+            Assert.Contains(decision.ApprovalContext.CandidateVerbs, v => v.StartsWith("grep", StringComparison.Ordinal));
+            // Button labels are fixed; Slack's 76-char and Discord's 80-char
+            // button caps make dynamic labels structurally unsafe.
             Assert.Equal(
                 ApprovalOptionKeys.ApproveSessionLabel,
                 decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession).Label);
@@ -848,7 +853,7 @@ public sealed class ToolApprovalGateTests
     }
 
     [Fact]
-    public void Non_path_command_uses_default_labels()
+    public void Non_path_command_extracts_two_token_verb_chain()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
         var args = ToolInput.Create("Command", "git push origin main");
@@ -857,7 +862,8 @@ public sealed class ToolApprovalGateTests
 
         Assert.True(decision.NeedsApproval);
         Assert.Empty(decision.ApprovalContext!.DirectoryRoots);
-        Assert.Equal(["git push origin main"], decision.ApprovalContext.ApprovalEntries);
+        // ExtractVerbChain caps at depth 2, dropping positional arguments.
+        Assert.Equal(["git push"], decision.ApprovalContext.CandidateVerbs);
         var sessionOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession);
         var alwaysOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways);
         Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, sessionOption.Label);
@@ -879,7 +885,10 @@ public sealed class ToolApprovalGateTests
 
         Assert.True(decision.NeedsApproval);
         var options = decision.ApprovalContext!.Options;
-        Assert.NotEmpty(decision.ApprovalContext.DirectoryRoots);
+        // v2: DirectoryRoots is always empty after section 2 — the cwd lives
+        // on ToolExecutionContext and section 7 renders it in the prompt
+        // header. The label-cap regression is independent of that.
+        Assert.Empty(decision.ApprovalContext.DirectoryRoots);
         Assert.All(options, option => Assert.True(
             option.Label.Length <= ApprovalOptionKeys.MaxLabelLength,
             $"Option '{option.Key}' label '{option.Label}' is {option.Label.Length} chars; must stay within {ApprovalOptionKeys.MaxLabelLength}."));

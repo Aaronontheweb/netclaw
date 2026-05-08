@@ -364,17 +364,25 @@ public sealed record ToolInteractionRequest : SessionOutput
     public IReadOnlyList<string> Patterns { get; init; } = [];
 
     /// <summary>
-    /// Entries checked against the accumulated session/persistent approval
-    /// state. For shell commands these are reusable directory roots when local
-    /// roots can be extracted, and exact fallback units otherwise.
+    /// Candidate verb chains extracted from this invocation. The approval gate
+    /// evaluates each verb against persisted <c>ApprovalEntry</c> records
+    /// using <see cref="Cwd"/> as the directory half of the
+    /// <c>(verb, directory)</c> pair.
     /// </summary>
-    public IReadOnlyList<string> ApprovalEntries { get; init; } = [];
+    public IReadOnlyList<string> CandidateVerbs { get; init; } = [];
 
     /// <summary>
-    /// Human-visible reusable roots extracted from the current invocation so the
-    /// prompt can explain what broader B/C approvals would cover.
+    /// Always empty after the v2 cutover; section 7's prompt redesign removes
+    /// the field as part of the new cwd-in-header layout.
     /// </summary>
     public IReadOnlyList<string> DirectoryRoots { get; init; } = [];
+
+    /// <summary>
+    /// Resolved working directory for this invocation, used by the approval
+    /// gate to evaluate folder-scoped <c>ApprovalEntry</c> records. May be
+    /// null for tools whose approvals are not directory-anchored.
+    /// </summary>
+    public string? Cwd { get; init; }
 
     /// <summary>Available response options (e.g., approve once, approve for this chat, approve always, deny).</summary>
     public required IReadOnlyList<ToolInteractionOption> Options { get; init; }

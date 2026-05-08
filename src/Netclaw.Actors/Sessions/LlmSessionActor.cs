@@ -750,13 +750,14 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _pendingToolInteractions[msg.CallId] = new PendingToolInteraction(
                 msg.ToolName,
                 msg.Patterns,
-                msg.ApprovalEntries,
+                msg.CandidateVerbs,
                 msg.DirectoryRoots,
                 CurrentTurnAudience(),
                 msg.RequesterSenderId,
                 msg.RequesterPrincipal,
                 msg.HasAdoptedContext,
-                msg.AdoptedSpeakerIds);
+                msg.AdoptedSpeakerIds,
+                msg.Cwd);
 
             PauseToolExecutionWatchdogForApprovalWait(msg.CallId);
 
@@ -805,8 +806,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                     _sessionId.Value,
                     pending.Audience,
                     new ToolName(pending.ToolName),
-                    pending.ApprovalEntries,
+                    pending.CandidateVerbs,
                     persistent: decision == ApprovalDecision.ApprovedAlways,
+                    pending.Cwd,
                     CancellationToken.None);
             }
 
@@ -3051,13 +3053,14 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private sealed record PendingToolInteraction(
         string ToolName,
         IReadOnlyList<string> Patterns,
-        IReadOnlyList<string> ApprovalEntries,
+        IReadOnlyList<string> CandidateVerbs,
         IReadOnlyList<string> DirectoryRoots,
         TrustAudience Audience,
         string? RequesterSenderId,
         PrincipalClassification? RequesterPrincipal,
         bool HasAdoptedContext,
-        IReadOnlyList<string> AdoptedSpeakerIds);
+        IReadOnlyList<string> AdoptedSpeakerIds,
+        string? Cwd);
 
     private void PersistAdoptedContextIfNeeded(MessageSource? source)
     {

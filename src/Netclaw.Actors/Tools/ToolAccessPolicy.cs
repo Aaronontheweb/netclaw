@@ -297,35 +297,35 @@ public sealed class ToolAccessPolicy
             return ToolAccessDecision.Allow();
         }
 
-        // Approval prompts carry three related views of the invocation:
+        // Approval prompts carry two views of the invocation:
         // - `patterns`: the exact blocked units shown to the user and reused by
         //   approve-once retries.
-        // - `approvalEntries`: what broader B/C approvals actually record and
-        //   later compare against. For shell this prefers reusable directory
-        //   roots and falls back to the exact unit when no reusable roots exist.
-        // - `directoryRoots`: the human-facing root list, surfaced to the user
-        //   in the channel-specific message body (Slack section block, Discord
-        //   summary line). Button labels stay fixed; runtime values like paths
-        //   never enter button text because Slack caps button text at 76 chars
-        //   and Discord at 80, and channel-agnostic policy cannot enforce
-        //   channel-specific length budgets.
+        // - `candidateVerbs`: the verb chains evaluated against persisted
+        //   ApprovalEntry records by the gate. The directory half of each
+        //   (verb, directory) pair comes from ToolExecutionContext.Cwd and is
+        //   not extracted from arguments. Button labels stay fixed; runtime
+        //   values like paths never enter button text because Slack caps
+        //   button text at 76 chars and Discord at 80.
+        //
+        // DirectoryRoots is left empty for the section 1–6 commit chain.
+        // Section 7's prompt redesign removes the field entirely as part of
+        // the new "Approve in <cwd>?" header.
         var patterns = matcher.ExtractPatterns(toolName, arguments);
-        var approvalEntries = matcher.ExtractApprovalEntries(toolName, arguments);
-        var directoryRoots = matcher.ExtractDirectoryRoots(toolName, arguments);
+        var candidateVerbs = matcher.ExtractCandidateVerbs(toolName, arguments);
         var displayText = matcher.FormatForDisplay(toolName, arguments);
 
         var approvalContext = new ToolApprovalContext(
             toolName.Value,
             displayText,
             patterns,
-            approvalEntries,
+            candidateVerbs,
             [
                 new ToolApprovalOption(ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveOnceLabel),
                 new ToolApprovalOption(ApprovalOptionKeys.ApproveSession, ApprovalOptionKeys.ApproveSessionLabel),
                 new ToolApprovalOption(ApprovalOptionKeys.ApproveAlways, ApprovalOptionKeys.ApproveAlwaysLabel),
                 new ToolApprovalOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
             ],
-            [.. directoryRoots.Select(static x => x.DisplayPath)]);
+            DirectoryRoots: []);
 
         return ToolAccessDecision.RequiresApproval(approvalContext);
     }
@@ -472,10 +472,13 @@ public sealed record ToolApprovalContext(
     string ToolName,
     string DisplayText,
     IReadOnlyList<string> Patterns,
-    IReadOnlyList<string> ApprovalEntries,
+    // Candidate verb chains evaluated against persisted ApprovalEntry records.
+    // The directory half of each (verb, directory) pair comes from the
+    // candidate's cwd in ToolExecutionContext, not from extraction.
+    IReadOnlyList<string> CandidateVerbs,
     IReadOnlyList<ToolApprovalOption> Options,
-    // Human-facing roots shown in the prompt. Approval lookups use
-    // ApprovalEntries instead so display formatting never leaks into matching.
+    // Always empty after the v2 cutover; section 7's prompt redesign removes
+    // the field as part of the new cwd-in-header layout.
     IReadOnlyList<string> DirectoryRoots);
 
 public sealed record ToolApprovalOption(string Key, string Label);
