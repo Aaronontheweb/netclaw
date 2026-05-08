@@ -775,7 +775,7 @@ public sealed class ToolApprovalGateTests
     }
 
     [Fact]
-    public void Shell_path_command_labels_show_directory_scope()
+    public void Shell_path_command_uses_fixed_labels_with_root_in_directory_roots()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
         var args = ToolInput.Create("Command", "grep 'error' /home/user/.netclaw/logs/app.log");
@@ -786,14 +786,15 @@ public sealed class ToolApprovalGateTests
         var options = decision.ApprovalContext!.Options;
         var sessionOption = options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession);
         var alwaysOption = options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways);
-        Assert.StartsWith("Approve shell access in ", sessionOption.Label);
-        Assert.Contains("for this chat", sessionOption.Label);
-        Assert.StartsWith("Approve shell access in ", alwaysOption.Label);
-        Assert.Contains("always", alwaysOption.Label);
+        Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, sessionOption.Label);
+        Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, alwaysOption.Label);
+        // Directory scope is preserved on the context for the channel adapter
+        // to render in the message body.
+        Assert.NotEmpty(decision.ApprovalContext.DirectoryRoots);
     }
 
     [Fact]
-    public void Shell_multi_root_command_uses_plural_directory_labels()
+    public void Shell_multi_root_command_uses_fixed_labels()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
         var args = ToolInput.Create("Command", "cat /home/user/.netclaw/logs/app.log > /home/user/.netclaw/output/report.txt");
@@ -802,12 +803,13 @@ public sealed class ToolApprovalGateTests
 
         Assert.True(decision.NeedsApproval);
         var options = decision.ApprovalContext!.Options;
-        Assert.Equal("Approve shell access in these directories for this chat", options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession).Label);
-        Assert.Equal("Approve shell access in these directories always", options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways).Label);
+        Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession).Label);
+        Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways).Label);
+        Assert.True(decision.ApprovalContext.DirectoryRoots.Count > 1);
     }
 
     [Fact]
-    public void Shell_relative_path_command_keeps_relative_directory_root_for_prompt()
+    public void Shell_relative_path_command_records_relative_root_and_absolute_entry()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -823,21 +825,20 @@ public sealed class ToolApprovalGateTests
             var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
 
             Assert.True(decision.NeedsApproval);
+            // DirectoryRoots keeps the relative display form for channel-body
+            // rendering. ApprovalEntries gets the absolute root because that's
+            // what gets persisted and matched against on retry.
             Assert.Equal(["logs/"], decision.ApprovalContext!.DirectoryRoots);
             var absoluteRoot = PathUtility.Normalize(logs) + Path.DirectorySeparatorChar;
             Assert.Contains(absoluteRoot, decision.ApprovalContext.ApprovalEntries);
-            // Session label keeps the relative form because session scope
-            // implicitly carries the working-directory context.
+            // Button labels are fixed regardless of relative/absolute path
+            // form — Slack's 76-char and Discord's 80-char button caps make
+            // dynamic labels structurally unsafe.
             Assert.Equal(
-                "Approve shell access in logs/ for this chat",
+                ApprovalOptionKeys.ApproveSessionLabel,
                 decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession).Label);
-            // "Approve always" persists the absolute root, so the label MUST
-            // surface the absolute path the user is actually granting access
-            // to — otherwise the user thinks they approved `logs/` portably
-            // when in fact only the current working directory's `logs/` is
-            // covered.
             Assert.Equal(
-                $"Approve shell access in {absoluteRoot} always",
+                ApprovalOptionKeys.ApproveAlwaysLabel,
                 decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways).Label);
         }
         finally
@@ -861,5 +862,41 @@ public sealed class ToolApprovalGateTests
         var alwaysOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways);
         Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, sessionOption.Label);
         Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, alwaysOption.Label);
+    }
+
+    // Regression pin for issue #931: button labels MUST stay within the
+    // narrowest platform cap (Slack PlainText 76 chars) regardless of how
+    // long the underlying directory path is. Prior to this fix, long paths
+    // produced 100+ char labels that Slack rejected with `invalid_blocks`,
+    // which then triggered an auto-deny safety net that made the bug look
+    // like a silent self-deny.
+    [Fact]
+    public void Shell_command_with_long_directory_path_keeps_labels_within_button_caps()
+    {
+        const int slackButtonCap = 76;
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+
+        // Build an absolute path whose length alone exceeds Slack's button
+        // cap, so any "Approve in {path} ..." style label would overflow.
+        var deepPath = "/home/user/repositories/petabridge/testlab-setup/services/kubernetes/ingress/configs/app.log";
+        Assert.True(deepPath.Length > slackButtonCap);
+
+        var args = ToolInput.Create("Command", $"grep error {deepPath}");
+
+        var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+
+        Assert.True(decision.NeedsApproval);
+        var options = decision.ApprovalContext!.Options;
+        Assert.NotEmpty(decision.ApprovalContext.DirectoryRoots);
+        foreach (var option in options)
+        {
+            Assert.True(
+                option.Label.Length <= slackButtonCap,
+                $"Option '{option.Key}' label '{option.Label}' is {option.Label.Length} chars; must stay within Slack's {slackButtonCap}-char button cap.");
+        }
+        Assert.Equal(ApprovalOptionKeys.ApproveOnceLabel, options.Single(o => o.Key == ApprovalOptionKeys.ApproveOnce).Label);
+        Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession).Label);
+        Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways).Label);
+        Assert.Equal(ApprovalOptionKeys.DenyLabel, options.Single(o => o.Key == ApprovalOptionKeys.Deny).Label);
     }
 }

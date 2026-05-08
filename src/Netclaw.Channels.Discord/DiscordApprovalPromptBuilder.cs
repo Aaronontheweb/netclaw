@@ -41,6 +41,9 @@ internal static class DiscordApprovalPromptBuilder
         sb.AppendLine();
         sb.Append("You can also reply with ").Append(FormatReplyLetters(request.Options)).Append(" in this thread.");
 
+        // Discord hard-caps button labels at 80 characters. Labels MUST come from the
+        // fixed `ApprovalOptionKeys` constants — do not interpolate runtime values
+        // (paths, commands, tool names) into `option.Label` upstream.
         var buttons = request.Options
             .Select(option => new DiscordButtonSpec(
                 CustomId: BuildButtonValue(request, option),

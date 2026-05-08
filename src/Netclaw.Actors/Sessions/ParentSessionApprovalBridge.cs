@@ -53,20 +53,11 @@ internal sealed class ParentSessionApprovalBridge : IParentApprovalBridge
     {
         var waitTask = _channel.WaitForApprovalAsync(callId, Timeout.InfiniteTimeSpan, ct);
 
-        var sessionLabel = ApprovalOptionKeys.ApproveSessionLabel;
-        var alwaysLabel = ApprovalOptionKeys.ApproveAlwaysLabel;
-        if (directoryRoots.Count == 1)
-        {
-            var dir = directoryRoots[0];
-            sessionLabel = $"Approve shell access in {dir} for this chat";
-            alwaysLabel = $"Approve shell access in {dir} always";
-        }
-        else if (directoryRoots.Count > 1)
-        {
-            sessionLabel = "Approve shell access in these directories for this chat";
-            alwaysLabel = "Approve shell access in these directories always";
-        }
-
+        // Button labels are fixed verb-only constants. Directory-scope context
+        // is conveyed to the user via `DirectoryRoots` rendered in the channel
+        // adapter's message body — runtime values like paths never enter
+        // button text because Slack caps button text at 76 chars and Discord
+        // at 80, and channel-agnostic code cannot enforce per-channel limits.
         _emitRequest(new ToolInteractionRequest
         {
             SessionId = _sessionId,
@@ -85,8 +76,8 @@ internal sealed class ParentSessionApprovalBridge : IParentApprovalBridge
             Options =
             [
                 new ToolInteractionOption(ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveOnceLabel),
-                new ToolInteractionOption(ApprovalOptionKeys.ApproveSession, sessionLabel),
-                new ToolInteractionOption(ApprovalOptionKeys.ApproveAlways, alwaysLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveSession, ApprovalOptionKeys.ApproveSessionLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveAlways, ApprovalOptionKeys.ApproveAlwaysLabel),
                 new ToolInteractionOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
             ]
         });

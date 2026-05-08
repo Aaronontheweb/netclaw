@@ -303,37 +303,16 @@ public sealed class ToolAccessPolicy
         // - `approvalEntries`: what broader B/C approvals actually record and
         //   later compare against. For shell this prefers reusable directory
         //   roots and falls back to the exact unit when no reusable roots exist.
-        // - `directoryRoots`: the human-facing root list used only to explain
-        //   the broader B/C label in the prompt.
+        // - `directoryRoots`: the human-facing root list, surfaced to the user
+        //   in the channel-specific message body (Slack section block, Discord
+        //   summary line). Button labels stay fixed; runtime values like paths
+        //   never enter button text because Slack caps button text at 76 chars
+        //   and Discord at 80, and channel-agnostic policy cannot enforce
+        //   channel-specific length budgets.
         var patterns = matcher.ExtractPatterns(toolName, arguments);
         var approvalEntries = matcher.ExtractApprovalEntries(toolName, arguments);
         var directoryRoots = matcher.ExtractDirectoryRoots(toolName, arguments);
         var displayText = matcher.FormatForDisplay(toolName, arguments);
-
-        var sessionLabel = ApprovalOptionKeys.ApproveSessionLabel;
-        var alwaysLabel = ApprovalOptionKeys.ApproveAlwaysLabel;
-        if (directoryRoots.Count == 1)
-        {
-            var root = directoryRoots[0];
-            sessionLabel = $"Approve shell access in {root.DisplayPath} for this chat";
-            // "Approve always" persists the absolute comparison root, not the
-            // display form. When the display is a relative path like `logs/`,
-            // the persistent grant is still tied to the current working
-            // directory — the label has to show that absolute path so the user
-            // understands which directory they are actually granting access to.
-            // The session label keeps the relative form because session scope
-            // implicitly carries the working-directory context.
-            var alwaysScope = IsRelativeDisplayPath(root.DisplayPath) ? root.ComparisonRoot : root.DisplayPath;
-            alwaysLabel = $"Approve shell access in {alwaysScope} always";
-        }
-        else if (directoryRoots.Count > 1)
-        {
-            // Listing only the first root would be misleading for multi-path
-            // commands, so switch to a generic label once the command spans
-            // more than one reusable directory.
-            sessionLabel = "Approve shell access in these directories for this chat";
-            alwaysLabel = "Approve shell access in these directories always";
-        }
 
         var approvalContext = new ToolApprovalContext(
             toolName.Value,
@@ -342,8 +321,8 @@ public sealed class ToolAccessPolicy
             approvalEntries,
             [
                 new ToolApprovalOption(ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveOnceLabel),
-                new ToolApprovalOption(ApprovalOptionKeys.ApproveSession, sessionLabel),
-                new ToolApprovalOption(ApprovalOptionKeys.ApproveAlways, alwaysLabel),
+                new ToolApprovalOption(ApprovalOptionKeys.ApproveSession, ApprovalOptionKeys.ApproveSessionLabel),
+                new ToolApprovalOption(ApprovalOptionKeys.ApproveAlways, ApprovalOptionKeys.ApproveAlwaysLabel),
                 new ToolApprovalOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
             ],
             [.. directoryRoots.Select(static x => x.DisplayPath)]);
@@ -456,15 +435,6 @@ public sealed class ToolAccessPolicy
 
     private static string? GetToolName(AITool tool)
         => tool is AIFunction function ? function.Name : null;
-
-    private static bool IsRelativeDisplayPath(string displayPath)
-    {
-        if (string.IsNullOrWhiteSpace(displayPath))
-            return false;
-
-        var trimmed = displayPath.TrimEnd('/', '\\');
-        return !Path.IsPathRooted(trimmed);
-    }
 }
 
 /// <summary>

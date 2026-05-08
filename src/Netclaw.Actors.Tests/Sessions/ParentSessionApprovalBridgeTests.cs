@@ -50,7 +50,7 @@ public sealed class ParentSessionApprovalBridgeTests
         Assert.Equal(["grep timeout logs/app.log | wc -l"], emitted.Patterns);
         Assert.Equal(["/tmp/work/logs/"], emitted.ApprovalEntries);
         Assert.Equal(["logs/"], emitted.DirectoryRoots);
-        Assert.Equal("Approve shell access in logs/ for this chat", emitted.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession).Label);
-        Assert.Equal("Approve shell access in logs/ always", emitted.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways).Label);
+        Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, emitted.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession).Label);
+        Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, emitted.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways).Label);
     }
 }

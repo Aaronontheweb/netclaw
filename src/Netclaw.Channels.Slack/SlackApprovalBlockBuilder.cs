@@ -92,6 +92,10 @@ internal static class SlackApprovalBlockBuilder
             });
         }
 
+        // Slack hard-caps PlainText button text at 76 characters; oversized labels are
+        // rejected with `invalid_blocks` and the post fails. Labels MUST come from the
+        // fixed `ApprovalOptionKeys` constants — do not interpolate runtime values
+        // (paths, commands, tool names) into `option.Label` upstream.
         blocks.Add(new ActionsBlock
         {
             Elements = [.. request.Options
