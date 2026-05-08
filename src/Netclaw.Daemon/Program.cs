@@ -666,6 +666,12 @@ static void ConfigureDaemonServices(
         SchedulingEnabled: schedulingConfig.Enabled);
     var fileApprovalMatcher = new FilePathApprovalMatcher(paths.ConfigDirectory);
     var shellTrustZonePolicy = new ShellTrustZonePolicy(toolConfig, paths);
+    // Safe-verbs list: bundled per-OS defaults + optional additive user override
+    // at ~/.netclaw/config/safe-verbs.<os>.json. Used by the approval gate's
+    // safe-space short-circuit to auto-allow demonstrably read-only verbs
+    // when invoked inside an audience-aware safe space.
+    var safeVerbs = SafeVerbLoader.Load(paths);
+    services.AddSingleton(safeVerbs);
     var toolAccessPolicy = new ToolAccessPolicy(
         toolConfig,
         effectivePolicyDefaults,
@@ -673,7 +679,8 @@ static void ConfigureDaemonServices(
         fileApprovalMatcher,
         toolPathPolicy,
         featureGates,
-        shellTrustZonePolicy);
+        shellTrustZonePolicy,
+        safeVerbs);
     services.AddSingleton(toolAccessPolicy);
 
     var toolApprovalStore = new ToolApprovalStore(paths.ToolApprovalsPath);

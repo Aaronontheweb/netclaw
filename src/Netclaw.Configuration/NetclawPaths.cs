@@ -98,6 +98,22 @@ public sealed class NetclawPaths
     public string LockFilePath => Path.Combine(BasePath, "netclaw.lock");
     public string SqliteDbPath => Path.Combine(BasePath, "netclaw.db");
     public string McpOAuthMetadataPath => Path.Combine(ConfigDirectory, "mcp-oauth-metadata.json");
+
+    /// <summary>
+    /// Per-OS user override file for the safe-verbs list consulted by the
+    /// shell approval gate's safe-space short-circuit. Optional; when absent,
+    /// the daemon uses only the bundled defaults. Format: a JSON object with
+    /// a <c>"verbs"</c> array of verb-chain strings; the daemon merges these
+    /// additively with the shipped defaults.
+    /// </summary>
+    public string SafeVerbsOverridePath
+    {
+        get
+        {
+            var fileName = OperatingSystem.IsWindows() ? "safe-verbs.windows.json" : "safe-verbs.linux.json";
+            return Path.Combine(ConfigDirectory, fileName);
+        }
+    }
     public string KeysDirectory => Path.Combine(BasePath, "keys");
 
     public NetclawPaths(string? basePath = null, string? workspacesDirectory = null)

@@ -23,6 +23,7 @@ public sealed class ToolAccessPolicy
     private readonly IShellTrustZonePolicy? _shellTrustZonePolicy;
     private readonly IToolApprovalMatcher _fileApprovalMatcher;
     private readonly FeatureGates _featureGates;
+    private readonly ScopedShellSafeVerbPolicy? _safeVerbPolicy;
 
     public ToolAccessPolicy(
         ToolConfig toolConfig,
@@ -31,7 +32,8 @@ public sealed class ToolAccessPolicy
         IToolApprovalMatcher? fileApprovalMatcher = null,
         ToolPathPolicy? toolPathPolicy = null,
         FeatureGates? featureGates = null,
-        IShellTrustZonePolicy? shellTrustZonePolicy = null)
+        IShellTrustZonePolicy? shellTrustZonePolicy = null,
+        SafeVerbList? safeVerbs = null)
     {
         _toolConfig = toolConfig;
         _defaults = defaults;
@@ -41,6 +43,7 @@ public sealed class ToolAccessPolicy
         _shellTrustZonePolicy = shellTrustZonePolicy;
         _fileApprovalMatcher = fileApprovalMatcher ?? DefaultApprovalMatcher.Instance;
         _featureGates = featureGates ?? FeatureGates.AllEnabled;
+        _safeVerbPolicy = safeVerbs is not null ? new ScopedShellSafeVerbPolicy(safeVerbs) : null;
     }
 
     public int MaxToolTimeoutSeconds => _toolConfig.MaxToolTimeoutSeconds;
@@ -314,6 +317,23 @@ public sealed class ToolAccessPolicy
         var candidateVerbs = matcher.ExtractCandidateVerbs(toolName, arguments);
         var displayText = matcher.FormatForDisplay(toolName, arguments);
         var isMessy = matcher.IsMessy(toolName, arguments);
+
+        // Safe-verb ∩ safe-space short-circuit (layer 1.5). Runs only for shell
+        // and only when the matcher could extract candidate verbs cleanly —
+        // messy commands always prompt regardless of verb membership. Resolves
+        // cwd into context.Cwd here so the matcher and downstream gate
+        // evaluate folder-scoped ApprovalEntry records against the same
+        // directory the spawned process will run in.
+        if (_safeVerbPolicy is not null
+            && context is not null
+            && string.Equals(toolName.Value, ShellTool.ToolName, StringComparison.Ordinal)
+            && !isMessy
+            && candidateVerbs.Count > 0)
+        {
+            context.Cwd = context.ResolveShellCwd(ExtractWorkingDirectory(arguments));
+            if (_safeVerbPolicy.AllShortCircuit(candidateVerbs, context.Cwd, context))
+                return ToolAccessDecision.Allow();
+        }
 
         var approvalContext = new ToolApprovalContext(
             toolName.Value,

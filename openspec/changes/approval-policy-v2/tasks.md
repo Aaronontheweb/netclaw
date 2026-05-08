@@ -41,13 +41,13 @@ Both PRs sit under this single OpenSpec change.
 
 ## 5. Safe-verbs ∩ safe-space short-circuit
 
-- [ ] 5.1 Create `safe-verbs.linux.json` and `safe-verbs.windows.json` in the daemon's bundled config (alongside other shipped defaults).
-- [ ] 5.2 Add a loader that reads bundled defaults and merges `~/.netclaw/config/safe-verbs.<os>.json` overrides if present.
-- [ ] 5.3 Create `src/Netclaw.Actors/Tools/ScopedShellSafeVerbPolicy.cs` mirroring `ScopedFileAccessPolicy`. Inputs: candidate verb chain + cwd + `ToolExecutionContext`. Output: short-circuit decision (allow / fall-through).
-- [ ] 5.4 Reuse `ToolAudienceProfileResolver` for safe-space root resolution. Personal/Team get `session_dir + project_dir`; Public gets `session_dir` only.
-- [ ] 5.5 Reuse `ContainsSymlinkSegment` (or extract to a shared utility) for symlink-segment guard along the cwd path.
-- [ ] 5.6 Wire the policy into `ToolAccessPolicy.CheckApprovalGate` so the safe-verb short-circuit runs before the existing approval gate. Hard-deny list (layer 1) still runs first.
-- [ ] 5.7 Unit tests covering all four scenarios in the spec: safe verb + project_dir → allow; safe verb + session_dir → allow; safe verb + outside → prompt; mutating verb + safe space → prompt; Public + project_dir → prompt; symlink in cwd → prompt; user override extends defaults.
+- [x] 5.1 Create `safe-verbs.linux.json` and `safe-verbs.windows.json` in the daemon's bundled config (alongside other shipped defaults).
+- [x] 5.2 Add a loader that reads bundled defaults and merges `~/.netclaw/config/safe-verbs.<os>.json` overrides if present.
+- [x] 5.3 Create `src/Netclaw.Actors/Tools/ScopedShellSafeVerbPolicy.cs` mirroring `ScopedFileAccessPolicy`. Inputs: candidate verb chain + cwd + `ToolExecutionContext`. Output: short-circuit decision (allow / fall-through).
+- [x] 5.4 Reuse `ToolAudienceProfileResolver` for safe-space root resolution. Personal/Team get `session_dir + project_dir`; Public gets `session_dir` only.
+- [x] 5.5 Reuse `ContainsSymlinkSegment` (or extract to a shared utility) for symlink-segment guard along the cwd path.
+- [x] 5.6 Wire the policy into `ToolAccessPolicy.CheckApprovalGate` so the safe-verb short-circuit runs before the existing approval gate. Hard-deny list (layer 1) still runs first.
+- [x] 5.7 Unit tests covering all four scenarios in the spec: safe verb + project_dir → allow; safe verb + session_dir → allow; safe verb + outside → prompt; mutating verb + safe space → prompt; Public + project_dir → prompt; symlink in cwd → prompt; user override extends defaults.
 
 ## 6. CLI updates (list/revoke/trust-verb)
 
