@@ -299,7 +299,10 @@ internal static class SessionToolExecutionPipeline
 
             sw.Stop();
 
-            if (decision is ApprovalDecision.ApprovedOnce or ApprovalDecision.ApprovedSession or ApprovalDecision.ApprovedAlways)
+            if (decision is ApprovalDecision.ApprovedOnce
+                or ApprovalDecision.ApprovedSession
+                or ApprovalDecision.ApprovedAlways
+                or ApprovalDecision.ApprovedEverywhere)
             {
                 // Retry execution now that approval is granted
                 // (Approve-once is retried through transient context state; broader scopes

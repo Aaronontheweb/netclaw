@@ -14,6 +14,7 @@ public enum ParentApprovalDecision
     ApprovedOnce,
     ApprovedSession,
     ApprovedAlways,
+    ApprovedEverywhere,
     Denied,
     TimedOut
 }

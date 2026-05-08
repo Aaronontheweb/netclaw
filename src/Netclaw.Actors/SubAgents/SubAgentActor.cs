@@ -433,7 +433,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
                     if (decision is ParentApprovalDecision.ApprovedOnce
                         or ParentApprovalDecision.ApprovedSession
-                        or ParentApprovalDecision.ApprovedAlways)
+                        or ParentApprovalDecision.ApprovedAlways
+                        or ParentApprovalDecision.ApprovedEverywhere)
                     {
                         // The immediate retry needs a transient grant even for session/always
                         // approvals because the sub-agent's scope ID differs from the parent

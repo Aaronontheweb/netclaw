@@ -88,6 +88,7 @@ internal sealed class ParentSessionApprovalBridge : IParentApprovalBridge
             ApprovalDecision.ApprovedOnce => ParentApprovalDecision.ApprovedOnce,
             ApprovalDecision.ApprovedSession => ParentApprovalDecision.ApprovedSession,
             ApprovalDecision.ApprovedAlways => ParentApprovalDecision.ApprovedAlways,
+            ApprovalDecision.ApprovedEverywhere => ParentApprovalDecision.ApprovedEverywhere,
             ApprovalDecision.TimedOut => ParentApprovalDecision.TimedOut,
             _ => ParentApprovalDecision.Denied
         };

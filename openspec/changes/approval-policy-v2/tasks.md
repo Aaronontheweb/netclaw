@@ -61,13 +61,13 @@ Both PRs sit under this single OpenSpec change.
 
 ## 7. Prompt redesign (Slack)
 
-- [ ] 7.1 Add `ApprovalOptionKeys.ApproveEverywhere` constant ("Always anywhere").
-- [ ] 7.2 Update `SlackApprovalBlockBuilder` to render the 5-button row with `Once` / `This chat` / `Always here` / `Always anywhere` / `Deny` and apply `style: "danger"` on `Always anywhere` and `Deny`.
-- [ ] 7.3 Update prompt body: header `Approve in <cwd> ?` (or `Approve <verb> in <cwd> ?` for single-verb), bulleted verbs, no `Patterns` / `Directory Roots` sections.
-- [ ] 7.4 When the cwd is too shallow (fails minimum-depth check) or the command is "messy" (per task 3.4), omit `This chat`/`Always here`/`Always anywhere` and emit the "complex command" hint.
-- [ ] 7.5 Update `SlackApprovalHandler` to map button clicks to the right persistence path: Once → no-op; This chat → session-scoped store; Always here → `(verb, cwd)` per extracted verb; Always anywhere → `(verb, null)` per extracted verb; Deny → refuse this call.
-- [ ] 7.6 Update resolution message to the single-line format from the spec.
-- [ ] 7.7 Snapshot tests for prompt body (single-verb + compound + messy) and resolution message (Once / This chat / Always here / Always anywhere / Deny).
+- [x] 7.1 Add `ApprovalOptionKeys.ApproveEverywhere` constant ("Always anywhere").
+- [x] 7.2 Update `SlackApprovalBlockBuilder` to render the 5-button row with `Once` / `This chat` / `Always here` / `Always anywhere` / `Deny` and apply `style: "danger"` on `Always anywhere` and `Deny`.
+- [x] 7.3 Update prompt body: header `Approve in <cwd> ?` (or `Approve <verb> in <cwd> ?` for single-verb), bulleted verbs, no `Patterns` / `Directory Roots` sections.
+- [x] 7.4 When the cwd is too shallow (fails minimum-depth check) or the command is "messy" (per task 3.4), omit `This chat`/`Always here`/`Always anywhere` and emit the "complex command" hint. (Messy → only Once/Deny per spec scenario; shallow → only `Always here` omitted, This chat / Always anywhere remain per `tool-approval-gates` "Shallow directory prevents Always here" scenario.)
+- [x] 7.5 Update `SlackApprovalHandler` to map button clicks to the right persistence path: Once → no-op; This chat → session-scoped store; Always here → `(verb, cwd)` per extracted verb; Always anywhere → `(verb, null)` per extracted verb; Deny → refuse this call.
+- [x] 7.6 Update resolution message to the single-line format from the spec.
+- [x] 7.7 Snapshot tests for prompt body (single-verb + compound + messy) and resolution message (Once / This chat / Always here / Always anywhere / Deny).
 
 ## 8. Prompt redesign (Discord)
 

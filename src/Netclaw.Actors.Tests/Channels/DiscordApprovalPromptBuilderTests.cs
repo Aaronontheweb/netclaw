@@ -68,8 +68,11 @@ public sealed class DiscordApprovalPromptBuilderTests
     [Fact]
     public void BuildDecisionStatus_formats_known_keys()
     {
-        Assert.Contains("Approve once", DiscordApprovalPromptBuilder.BuildDecisionStatus(ApprovalOptionKeys.ApproveOnce));
-        Assert.Contains("Approve always", DiscordApprovalPromptBuilder.BuildDecisionStatus(ApprovalOptionKeys.ApproveAlways));
+        // Labels updated in section 7 (approval-policy-v2) — see ApprovalOptionKeys.
+        // Discord prompt body redesign to single-line resolution lands in section 8;
+        // for now we only assert the new label spellings make it through.
+        Assert.Contains("Once", DiscordApprovalPromptBuilder.BuildDecisionStatus(ApprovalOptionKeys.ApproveOnce));
+        Assert.Contains("Always here", DiscordApprovalPromptBuilder.BuildDecisionStatus(ApprovalOptionKeys.ApproveAlways));
         Assert.Contains("Deny", DiscordApprovalPromptBuilder.BuildDecisionStatus(ApprovalOptionKeys.Deny));
     }
 

@@ -335,21 +335,97 @@ public sealed class ToolAccessPolicy
                 return ToolAccessDecision.Allow();
         }
 
+        var options = BuildApprovalOptions(
+            isMessy,
+            isCwdShallow: IsCwdTooShallow(context?.Cwd));
+
         var approvalContext = new ToolApprovalContext(
             toolName.Value,
             displayText,
             patterns,
             candidateVerbs,
-            [
-                new ToolApprovalOption(ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveOnceLabel),
-                new ToolApprovalOption(ApprovalOptionKeys.ApproveSession, ApprovalOptionKeys.ApproveSessionLabel),
-                new ToolApprovalOption(ApprovalOptionKeys.ApproveAlways, ApprovalOptionKeys.ApproveAlwaysLabel),
-                new ToolApprovalOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
-            ],
+            options,
             DirectoryRoots: [],
             IsMessy: isMessy);
 
         return ToolAccessDecision.RequiresApproval(approvalContext);
+    }
+
+    /// <summary>
+    /// Builds the prompt's button row. The five-button default
+    /// (Once / This chat / Always here / Always anywhere / Deny) is pruned
+    /// in two cases:
+    /// <list type="bullet">
+    /// <item><b>Messy commands</b> (bash control-flow / unbalanced
+    /// quotes/brackets) — only <c>Once</c> and <c>Deny</c> are offered.
+    /// Persistence is impossible because the matcher cannot extract a verb
+    /// chain to remember.</item>
+    /// <item><b>Shallow cwd</b> (path depth fails the minimum-scope check) —
+    /// <c>Always here</c> is omitted so an operator cannot accidentally write
+    /// a folder-scoped grant for a too-shallow root like <c>/etc/</c>.
+    /// <c>This chat</c> and <c>Always anywhere</c> remain available.</item>
+    /// </list>
+    /// </summary>
+    private static IReadOnlyList<ToolApprovalOption> BuildApprovalOptions(bool isMessy, bool isCwdShallow)
+    {
+        if (isMessy)
+        {
+            return
+            [
+                new ToolApprovalOption(ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveOnceLabel),
+                new ToolApprovalOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
+            ];
+        }
+
+        var options = new List<ToolApprovalOption>(5)
+        {
+            new ToolApprovalOption(ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveOnceLabel),
+            new ToolApprovalOption(ApprovalOptionKeys.ApproveSession, ApprovalOptionKeys.ApproveSessionLabel)
+        };
+
+        if (!isCwdShallow)
+        {
+            options.Add(new ToolApprovalOption(ApprovalOptionKeys.ApproveAlways, ApprovalOptionKeys.ApproveAlwaysLabel));
+        }
+
+        options.Add(new ToolApprovalOption(ApprovalOptionKeys.ApproveEverywhere, ApprovalOptionKeys.ApproveEverywhereLabel));
+        options.Add(new ToolApprovalOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel));
+
+        return options;
+    }
+
+    /// <summary>
+    /// Returns true when the cwd is too shallow to support a folder-scoped
+    /// approval grant. Mirrors the v1 minimum-depth check: a path with fewer
+    /// than two non-empty segments under its root (e.g. <c>/</c>, <c>/etc/</c>,
+    /// <c>C:\</c>) cannot be safely persisted as an ApprovalEntry directory.
+    /// </summary>
+    private static bool IsCwdTooShallow(string? cwd)
+    {
+        if (string.IsNullOrWhiteSpace(cwd))
+            return false;
+
+        try
+        {
+            var full = Path.GetFullPath(cwd);
+            var trimmed = full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var segments = trimmed.Split(
+                [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                StringSplitOptions.RemoveEmptyEntries);
+
+            // POSIX root → 0 segments after trim. /etc → 1 segment. /home/user → 2 segments.
+            // Windows: C:\ → ["C:"] → 1 segment but conventionally a root, so still shallow.
+            //          C:\Users\foo → 3 segments.
+            // Require at least 2 distinct path segments for folder-scoped persistence.
+            return segments.Length < 2;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            // Treat unparseable cwds as shallow — fail closed on the
+            // persistent button rather than offering a grant whose target we
+            // could not normalize.
+            return true;
+        }
     }
 
     private static ToolApprovalMode GetMissingApprovalPolicyDefaultMode(

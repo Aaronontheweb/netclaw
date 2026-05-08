@@ -41,17 +41,17 @@ internal sealed class ToolApprovalActor : ReceiveActor
 
                 if (msg.Persistent)
                 {
-                    // Until section 7's prompt redesign supplies an explicit
-                    // scope from the user's button click, the runtime persists
-                    // every "Always"-style grant as a global wildcard
-                    // (verb, null). Section 7 plumbs the per-button scope and
-                    // produces folder-scoped (verb, cwd) entries for the
-                    // "Always here" path while keeping (verb, null) for
-                    // "Always anywhere".
+                    // The cwd field encodes scope: a non-null value writes a
+                    // folder-scoped (verb, cwd) entry that matches future
+                    // invocations only under that directory tree, while null
+                    // writes a global wildcard (verb, null) that matches any
+                    // cwd. The caller (LlmSessionActor) chooses based on the
+                    // user's button click — Always here → cwd; Always
+                    // anywhere → null.
                     _persistentStore?.AddApproval(
                         msg.Audience,
                         msg.ToolName.Value,
-                        new ApprovalEntry { Verb = pattern, Directory = null });
+                        new ApprovalEntry { Verb = pattern, Directory = msg.Cwd });
                 }
             }
 

@@ -794,22 +794,35 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 ApprovalOptionKeys.ApproveOnce => ApprovalDecision.ApprovedOnce,
                 ApprovalOptionKeys.ApproveSession => ApprovalDecision.ApprovedSession,
                 ApprovalOptionKeys.ApproveAlways => ApprovalDecision.ApprovedAlways,
+                ApprovalOptionKeys.ApproveEverywhere => ApprovalDecision.ApprovedEverywhere,
                 ApprovalOptionKeys.Deny => ApprovalDecision.Denied,
                 _ => ApprovalDecision.Denied
             };
 
             _log.Info("Approval response for {CallId}: {Decision}", msg.CallId, decision);
 
-            if (decision is ApprovalDecision.ApprovedSession or ApprovalDecision.ApprovedAlways
+            if (decision is ApprovalDecision.ApprovedSession
+                or ApprovalDecision.ApprovedAlways
+                or ApprovalDecision.ApprovedEverywhere
                 && _approvalService is not null)
             {
+                // Folder-scoped (ApprovedAlways) writes (verb, cwd); global
+                // wildcard (ApprovedEverywhere) writes (verb, null). The
+                // store uses null directory as the global-wildcard sentinel
+                // matched against any cwd at evaluation time.
+                var persistCwd = decision == ApprovalDecision.ApprovedEverywhere
+                    ? null
+                    : pending.Cwd;
+                var persistent = decision is ApprovalDecision.ApprovedAlways
+                    or ApprovalDecision.ApprovedEverywhere;
+
                 await _approvalService.RecordApprovalAsync(
                     _sessionId.Value,
                     pending.Audience,
                     new ToolName(pending.ToolName),
                     pending.CandidateVerbs,
-                    persistent: decision == ApprovalDecision.ApprovedAlways,
-                    pending.Cwd,
+                    persistent: persistent,
+                    persistCwd,
                     CancellationToken.None);
             }
 
