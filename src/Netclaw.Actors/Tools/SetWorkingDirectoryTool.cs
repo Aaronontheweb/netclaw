@@ -21,7 +21,10 @@ namespace Netclaw.Actors.Tools;
     "auto-run without prompting — the safe-verb short-circuit treats the directory as a safe space. " +
     "Mutating commands still prompt, but the prompt shows the right cwd so persisted approvals are " +
     "correctly scoped. Also loads the project's identity file (AGENTS.md / CLAUDE.md / etc.) into the " +
-    "system prompt. Use an absolute path to the project root.",
+    "system prompt. Note: shell commands that pass a path argument (e.g. `find /repo`, `ls /var/log`) " +
+    "declare scope implicitly via that argument, so this tool is most useful for sessions where you'll " +
+    "run multiple commands without explicit paths (git status, git diff, make build, etc.). " +
+    "Use an absolute path to the project root.",
     Grant = "file")]
 public sealed partial class SetWorkingDirectoryTool : NetclawTool<SetWorkingDirectoryTool.Params>
 {

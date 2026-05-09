@@ -17,35 +17,39 @@
   without attempting at least one fallback.
 - Never say "you can visit..." or "you can call..." — look it up yourself.
 
-## Declare Your Project Root Early (load-bearing)
+## Declaring Project Scope (load-bearing for approvals)
 
-When a user task is scoped to a specific codebase or project — anything where
-you'll be reading files, running git commands, grepping logs, or otherwise
-operating inside one tree — your FIRST shell-related action MUST be to call
-`set_working_directory <path>`.
+Path arguments to shell commands declare scope implicitly. When you run
+`find /home/user/repo -name X`, the approval gate treats `/home/user/repo`
+as the directory portion of `(find, /home/user/repo)` automatically. You
+do NOT need to call `set_working_directory` first for that to work — the
+path argument IS the declaration. Folder-scoped trust compounds across
+deeper paths, so a future `find /home/user/repo/.netclaw` is auto-allowed.
 
-This is not about changing where commands run. It is the gesture by which you
-declare to the approval policy "this directory is what I'm working on." Once
-declared:
+**When `set_working_directory` IS the right tool**, it's for sessions
+where the agent will run multiple commands without explicit path
+arguments — typical interactive REPL work, `git status` followed by
+`git diff` followed by edits, or `make build` and similar tools that
+hide their target behind flags (`make -C`, `git -C`). In those cases
+call `set_working_directory <path>` so the safe-verb short-circuit
+treats that tree as a safe space; the agent's read-only verbs auto-run
+with no prompt.
 
-- Read-only verbs in that tree (`ls`, `grep`, `cat`, `git status`, `git log`,
-  …) auto-run with no prompt — the safe-verb short-circuit kicks in.
-- Mutating commands (`git push`, `rm`, edits) still prompt, but the prompt
-  shows the right cwd in its header so one click on `Always here` persists a
-  scoped grant rather than a global one.
-- The user is not interrupted for every read-only inspection.
+When the user task is scoped to a project or codebase the user named
+explicitly (a directory path, a repo, "this codebase"), declaring
+scope — either by passing the path on each command or by calling
+`set_working_directory` once — keeps the approval prompts from
+interrupting every read-only inspection. Skipping that produces a
+prompt per call, which burns the user's attention and your token
+budget while delivering zero security value: read-only inspection of
+the user's own codebase was never the threat the gate was built to
+stop.
 
-**If you skip this step**, the only declared safe space is the per-session
-scratch directory. Every shell call against the user's real project triggers
-an approval prompt — `grep` prompts, `ls` prompts, `cat` prompts. That burns
-the user's attention and your token budget while delivering zero security
-value, because read-only inspection of the user's own codebase was never the
-threat the gate was built to stop.
-
-When NOT to call it: pure-conversation turns ("what's 2+2?", "explain X"),
-sessions where no project has been mentioned, or one-shot lookups against
-external APIs. Calling `set_working_directory` preemptively without a project
-signal is its own kind of noise.
+When NOT to declare scope at all: pure-conversation turns ("what's
+2+2?", "explain X"), sessions where no project has been mentioned, or
+one-shot lookups against external APIs. Calling
+`set_working_directory` preemptively without a project signal is its
+own kind of noise.
 
 **Recovery from a denied shell call.** If `shell_execute` fails with a denial
 that mentions cwd being outside the safe spaces, the result includes a hint

@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.0.0"
+  version: "2.1.0"
 ---
 
 # Netclaw Operations
@@ -292,31 +292,51 @@ set.
 
 Approvals are typed `(verb, directory)` pairs in `tool-approvals.json`:
 
-- **verb** — the verb chain extracted from the command (e.g. `git push`, `grep`,
-  `freshdesk`). Pure, no flags.
-- **directory** — the cwd the grant applies to (`/home/user/repos/foo/`), OR
-  `null` for the global wildcard ("approve this verb in any cwd").
+- **verb** — the command head plus subcommand chain only (e.g. `git push`,
+  `grep`, `freshdesk`). No flags, no path arguments.
+- **directory** — the directory the grant applies to. Sourced two ways:
+  - **Path argument** in the original command (`find /repo`, `ls /var/log`,
+    `cat ~/.bashrc`). The path argument is the directory; for file targets
+    the parent directory is used so `cat ~/.bashrc` scopes to `~`.
+  - **Cwd** when no path argument is present (`git status`, `freshdesk`).
+  - **`null`** for the global wildcard ("approve this verb in any
+    directory") — only set by `Always anywhere`.
+
+**Folder-scoped trust compounds.** An entry on `(find, /home/user/repo)`
+auto-allows `find /home/user/repo/.netclaw -name X` because the candidate's
+extracted path is under the entry's directory. You don't have to call
+`set_working_directory` for this — running a command with a path argument
+declares scope implicitly.
 
 The approval gate runs three layers in order:
 
 1. **Hard-deny list** — system-protected paths. Always blocks.
 2. **Safe-verb ∩ safe-space short-circuit** — when the verb is on the curated
-   safe list (`ls`, `grep`, `cat`, `git status`, `git log`, …) AND the cwd is
-   under your declared safe space (`session_dir` or `project_dir`), the call
-   auto-runs with no prompt. Mutating verbs (`git push`, `rm`, `sed -i`) are
-   never on the list.
+   safe list (`ls`, `grep`, `cat`, `git status`, `git log`, …) AND the
+   effective directory (path arg or cwd) is under your declared safe space
+   (`session_dir` or `project_dir`), the call auto-runs with no prompt.
+   Mutating verbs (`git push`, `rm`, `sed -i`) are never on the list.
 3. **Interactive prompt** — everything else. Five buttons:
    - **Once** — run this one time, persist nothing.
-   - **This chat** — allow the verbs in this cwd for the rest of the session.
-   - **Always here** — persist `(verb, this cwd)`.
-   - **Always anywhere** — persist `(verb, null)` global wildcard. Danger style.
+   - **This chat** — allow the verbs in this directory for the rest of the
+     session.
+   - **Always here** — persist `(verb, effective directory)`. The
+     "directory" is the command's path argument when present, else cwd.
+   - **Always anywhere** — persist `(verb, null)` global wildcard.
+     Danger style.
    - **Deny** — refuse this call only.
 
+**Side-effect-only clauses are authorized but not persisted.** When a
+compound command includes pure side-effect verbs (`echo`, `printf`, `:`,
+`true`, `false`) with no path argument and no redirect, those clauses are
+authorized for the current call by the click but no `ApprovalEntry` is
+written for them. Recording every literal `echo "==="` would be noise.
+
 **Why you may not see a prompt at all.** If the user invokes a read-only verb
-(say `grep`) inside the project root they declared with `set_working_directory`,
-the safe-verb short-circuit applies and there is no prompt. This is intended
-behavior — read-only inspection of declared work surfaces is implicit.
-Mutating verbs in the same directory still prompt.
+(say `grep`) with a path argument under a tree the operator has previously
+trusted, the safe-verb short-circuit applies and there is no prompt. This
+is intended behavior — read-only inspection of declared work surfaces is
+implicit. Mutating verbs in the same directory still prompt.
 
 **When the prompt offers fewer buttons.** Two cases:
 
@@ -327,10 +347,13 @@ Mutating verbs in the same directory still prompt.
   too-shallow root would grant the verb across most of the filesystem;
   `This chat` and `Always anywhere` remain available.
 
-If a user asks why they keep getting prompted in their repo, suggest they call
-`set_working_directory <path>` so read-only verbs auto-allow inside that tree.
-If they keep getting prompted for the same mutating verb (e.g. `git push`),
-suggest `Always here` to persist `(git push, this cwd)`.
+If a user keeps getting prompted in their repo on read-only verbs, the
+likely cause is the commands they're running don't carry a path argument
+(e.g. `git status` with no `-C`). Suggest they call
+`set_working_directory <path>` so the safe-verb short-circuit treats that
+tree as a safe space. If they keep getting prompted for the same mutating
+verb (e.g. `git push`), suggest `Always here` to persist
+`(git push, effective directory)`.
 
 ### Inspecting, revoking, and pre-approving grants
 

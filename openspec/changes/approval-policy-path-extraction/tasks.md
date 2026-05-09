@@ -128,18 +128,17 @@ Reference: proposal.md (why), design.md (how), specs/tool-approval-gates/spec.md
 
 ## 5. Agent guidance and resolution-line copy
 
-- [ ] 5.1 Update `feeds/skills/.system/files/netclaw-operations/SKILL.md`
+- [x] 5.1 Update `feeds/skills/.system/files/netclaw-operations/SKILL.md`
   Approval Prompts section to reflect implicit-directory-from-path-args.
-  Bump `metadata.version` to 2.1.0. Tone: "shell commands with a path
-  argument declare scope automatically; `set_working_directory` is the
-  fallback when commands won't carry a path."
-- [ ] 5.2 Update `src/Netclaw.Configuration/Resources/AGENTS.md`
-  "Declare Your Project Root Early" section. Soften the "FIRST
-  shell-related action MUST be" imperative — for verb-with-path
-  commands, the act of running the command IS the declaration.
-  Keep the imperative for sessions where the agent is doing
-  multiple shell calls in cwd-less form.
-- [ ] 5.3 Update `SetWorkingDirectoryTool` description: keep "declare
+  Bump `metadata.version` to 2.1.0. (Bumped + rewrote `verb`/`directory`
+  definitions, added the "Folder-scoped trust compounds" paragraph, and
+  added the side-effect-clauses-not-persisted note.)
+- [x] 5.2 Update `src/Netclaw.Configuration/Resources/AGENTS.md`
+  "Declare Your Project Root Early" section. (Renamed to "Declaring
+  Project Scope (load-bearing for approvals)". Path arguments now
+  declare scope; `set_working_directory` is positioned as the fallback
+  for sessions running multi-command workflows without explicit paths.)
+- [x] 5.3 Update `SetWorkingDirectoryTool` description: keep "declare
   your project root and expand your trusted scope" framing, add a
   short note that path arguments to shell commands also expand
   scope automatically.
