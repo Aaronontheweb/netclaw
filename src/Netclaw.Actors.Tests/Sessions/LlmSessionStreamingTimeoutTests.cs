@@ -31,6 +31,7 @@ public sealed class LlmSessionStreamingTimeoutTests(ITestOutputHelper output) : 
         });
         services.AddSingleton(new SessionConfig
         {
+            PrefillTimeout = TimeSpan.FromSeconds(2),
             FirstTokenTimeout = TimeSpan.FromSeconds(2),
             ToolExecutionTimeout = TimeSpan.FromSeconds(10),
             SidecarLlmTimeout = TimeSpan.FromSeconds(10),

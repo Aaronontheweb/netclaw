@@ -63,12 +63,21 @@ public sealed record SessionConfig
     public TimeSpan SidecarLlmTimeout { get; init; } = TimeSpan.FromSeconds(90);
 
     /// <summary>
-    /// Maximum inactivity timeout for LLM streaming calls. Used both as the
-    /// initial wait for the first token (prefill phase) and as the silence
-    /// threshold between consecutive deltas — the timer resets on every delta.
+    /// Maximum inactivity timeout between consecutive LLM streaming deltas.
+    /// The timer resets on every delta. Once the first delta arrives the watchdog
+    /// switches from <see cref="PrefillTimeout"/> to this tighter budget.
     /// Falls back to <see cref="TurnLlmTimeout"/> if not explicitly configured.
     /// </summary>
     public TimeSpan FirstTokenTimeout { get; init; } = TimeSpan.FromSeconds(600);
+
+    /// <summary>
+    /// Maximum time to wait for the first streaming delta from the LLM (covers
+    /// queue wait + prompt prefill). Generous default because self-hosted backends
+    /// can be legitimately silent for 10+ minutes during slot contention and cold
+    /// prefill of large contexts. After the first delta, the watchdog switches to
+    /// <see cref="FirstTokenTimeout"/>.
+    /// </summary>
+    public TimeSpan PrefillTimeout { get; init; } = TimeSpan.FromSeconds(1800);
 
     /// <summary>
     /// Internal tuning constants. Bindable from config for development/testing
@@ -99,6 +108,9 @@ public sealed record SessionConfig
             FirstTokenTimeout = raw.FirstTokenTimeoutSeconds > 0
                 ? TimeSpan.FromSeconds(raw.FirstTokenTimeoutSeconds)
                 : raw.TurnLlmTimeoutSeconds != 180 ? turnLlmTimeout : TimeSpan.FromSeconds(600),
+            PrefillTimeout = raw.PrefillTimeoutSeconds > 0
+                ? TimeSpan.FromSeconds(raw.PrefillTimeoutSeconds)
+                : TimeSpan.FromSeconds(1800),
             Tuning = tuning,
         };
     }
@@ -150,5 +162,6 @@ public sealed record SessionConfig
         public int ToolExecutionTimeoutSeconds { get; init; } = 90;
         public int SidecarLlmTimeoutSeconds { get; init; } = 90;
         public int FirstTokenTimeoutSeconds { get; init; }
+        public int PrefillTimeoutSeconds { get; init; }
     }
 }

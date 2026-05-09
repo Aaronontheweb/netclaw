@@ -9,6 +9,7 @@ using Akka.Persistence.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Netclaw.Actors.Hosting;
+using Netclaw.Actors.Jobs;
 using Netclaw.Configuration;
 
 namespace Netclaw.Actors.Tests.Sessions;
@@ -30,6 +31,8 @@ public abstract class LlmSessionTestBase : TestKit
     {
         services.AddSingleton<IModelCapabilityResolver>(new FakeCapabilityResolver());
         services.AddTestNetclawPaths();
+        services.AddSingleton(SecurityPolicyDefaults.Resolve(null));
+        services.AddSingleton<BackgroundJobDefinitionStore>();
         ConfigureSessionServices(services);
         services.AddLlmSessionCompositeRecords();
     }
