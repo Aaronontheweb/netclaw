@@ -91,6 +91,11 @@ internal static class SessionLlmInvoker
                             if (textDeltaCount == 1)
                             {
                                 pendingTextDelta = text.Text;
+                                self.Tell(new LlmResponseDeltaReceived
+                                {
+                                    Content = EmptyTextContent,
+                                    CallId = callId
+                                });
                             }
                             else
                             {
@@ -114,6 +119,11 @@ internal static class SessionLlmInvoker
                             if (thinkingDeltaCount == 1)
                             {
                                 pendingThinkingDelta = thinking.Text;
+                                self.Tell(new LlmResponseDeltaReceived
+                                {
+                                    Content = EmptyTextContent,
+                                    CallId = callId
+                                });
                             }
                             else
                             {
