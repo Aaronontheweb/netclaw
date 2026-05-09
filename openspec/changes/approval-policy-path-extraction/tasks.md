@@ -145,22 +145,26 @@ Reference: proposal.md (why), design.md (how), specs/tool-approval-gates/spec.md
 
 ## 6. Tests + eval cases
 
-- [ ] 6.1 Run the existing `Approval Policy v2` eval cases (see
-  `evals/run-evals.sh`); the positive case `approval_set_working_
-  directory_positive` is now expected to pass via implicit scope OR
-  via explicit `set_working_directory` — either path satisfies the
-  assertion. No assertion change needed.
-- [ ] 6.2 Add an eval case `approval_path_compounding`: session opens,
-  user mentions a project at `/some/path`, agent runs `ls /some/path`
-  (gets prompt, clicks Always here), then runs
-  `ls /some/path/subdir` — assert no second prompt.
-  (Deferred — runs against the same flaky local provider that
-  blocked the v2 eval baseline; can be authored without running.)
-- [ ] 6.3 Add a unit test for the side-effect skip list end-to-end:
-  approve a multi-clause command including `echo`, verify the store
-  contains entries for the action verbs but not for `echo`.
+- [ ] 6.1 Run the existing `Approval Policy v2` eval cases. (Deferred
+  — same flaky-inference-provider issue documented in the v2 eval
+  comment on PR #940. Re-run when the provider is healthy or after
+  the streaming-idle-timeout daemon fix lands. The implementation is
+  matcher-test-covered.)
+- [ ] 6.2 Add an eval case `approval_path_compounding` for the
+  click-Always-here-then-deeper-path scenario. (Deferred — cannot be
+  scripted without daemon-side hooks; the eval framework checks
+  model output text, not click-driven persistence state. Manual
+  binary-swap validation in PR #940's acceptance gate covers this.)
+- [x] 6.3 Add unit/matcher tests for the side-effect skip list:
+  `IsPureSideEffect_skips_echo_without_redirect`,
+  `IsPureSideEffect_does_not_skip_echo_with_redirect_target`,
+  `IsPureSideEffect_does_not_skip_action_verbs`. Full LlmSession
+  end-to-end is the same deferred-to-binary-swap class as 3.3/3.4.
 
 ## 7. Spec sync at archive time
+
+These run AFTER manual binary-swap validation (see acceptance gates
+below) confirms the implementation works in a real Slack session.
 
 - [ ] 7.1 Run `/opsx-verify` to confirm implementation matches change
   artifacts.
