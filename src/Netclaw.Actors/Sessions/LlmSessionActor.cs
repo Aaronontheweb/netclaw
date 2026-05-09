@@ -493,9 +493,14 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             if (msg.CallId != _activeCallId) return; // stale delta from cancelled call
             if (!_anyContentStreamed)
+            {
+                _anyContentStreamed = true;
                 _watchdog.Promote(_config.FirstTokenTimeout, Timers);
-            _anyContentStreamed = true;
-            _watchdog.Refresh(_config.FirstTokenTimeout, Timers);
+            }
+            else
+            {
+                _watchdog.Refresh(_config.FirstTokenTimeout, Timers);
+            }
 
             switch (msg.Content)
             {
