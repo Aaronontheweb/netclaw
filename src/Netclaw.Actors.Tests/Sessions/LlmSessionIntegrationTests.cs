@@ -1417,11 +1417,27 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
         }, TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(sessionId, ack.SessionId);
-        await AwaitAssertAsync(() =>
+
+        // Poll until the turn is fully persisted. Checking CallCount alone is not
+        // sufficient — the in-memory journal persists asynchronously, so TurnCount
+        // can still be 0 at the moment CallCount first reaches 1. CallCount is
+        // intentionally NOT asserted inside the retry loop: if retries push it above
+        // the expected value, a strict equality check would loop forever rather than
+        // failing fast. Assert it once after the loop, when the actor is idle.
+        // JoinSession is idempotent for the same subscriber (Dictionary keyed by
+        // IActorRef), so repeated calls with the witness probe are safe.
+        var witness = CreateTestProbe("passivation-witness");
+        await AwaitAssertAsync(async () =>
         {
-            Assert.Equal(1, _fakeChatClient.CallCount);
-            return Task.CompletedTask;
-        }, TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(100), cancellationToken: TestContext.Current.CancellationToken);
+            var peek = await sessionManager.Ask<SessionJoined>(new JoinSession
+            {
+                SessionId = sessionId,
+                Subscriber = witness,
+                Filter = OutputFilter.TextOnly
+            }, TimeSpan.FromSeconds(1), cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(1, peek.TurnCount);
+        }, TimeSpan.FromSeconds(5), TimeSpan.FromMilliseconds(100), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(1, _fakeChatClient.CallCount);
 
         var rejoined = await sessionManager.Ask<SessionJoined>(new JoinSession
         {
