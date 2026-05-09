@@ -82,7 +82,11 @@ public sealed class SystemdUnitPathDoctorCheck : IDoctorCheck
                 "Reinstall: `netclaw daemon uninstall && netclaw daemon install`."));
         }
 
-        var installDir = Path.GetDirectoryName(ExtractFirstToken(execStart));
+        // systemd unit paths are always POSIX-style; use forward-slash semantics
+        // regardless of host OS so the parser is portable across CI runners.
+        var binaryPath = ExtractFirstToken(execStart);
+        var lastSlash = binaryPath.LastIndexOf('/');
+        var installDir = lastSlash > 0 ? binaryPath[..lastSlash] : string.Empty;
         if (string.IsNullOrEmpty(installDir))
         {
             return Task.FromResult(DoctorCheckResult.Warning(
