@@ -342,6 +342,57 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         Assert.False(ApprovalPatternMatching.IsPureSideEffect(
             new ApprovalCandidate("git push", Directory: null)));
     }
+
+    [Fact]
+    public void ExtractCandidates_caps_echo_at_one_token()
+    {
+        // Without the SingleTokenSideEffectVerbs cap, the verb-chain
+        // extractor would capture `echo hello` as a 2-token verb (since
+        // `hello` neither starts with `-` nor matches LooksLikeArgument)
+        // and the side-effect skip list would not match. Aaron's real
+        // dogfood case used `echo "---REMOTE-INFO---"` which already
+        // breaks at the leading `-` — but operators routinely run
+        // `echo hello`-shape commands in build scripts.
+        // (`echo done` would be the more obvious example but `done` is
+        // a bash control-flow keyword and triggers IsMessyCompoundCommand,
+        // which returns zero candidates.)
+        var candidates = _matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?> { ["Command"] = "echo hello" });
+
+        var c = Assert.Single(candidates);
+        Assert.Equal("echo", c.Verb);
+        Assert.True(ApprovalPatternMatching.IsPureSideEffect(c));
+    }
+
+    [Fact]
+    public void IsApproved_treats_side_effect_candidates_as_authorized()
+    {
+        // Regression: when a compound command contains both action verbs and
+        // pure side-effect clauses (echo "==="), persistence skips the echo
+        // but the matcher historically did not. Result: after the user
+        // clicked Always anywhere, the action verbs were stored but echo
+        // wasn't, so the retry's authorization check saw echo as unapproved
+        // and threw ToolApprovalRequiredException — which escaped the
+        // already-active approval-pause catch and failed the turn.
+        // This test asserts IsApproved skips side-effect candidates the
+        // same way persistence does.
+        var approvedEntries = new[]
+        {
+            new ApprovalEntry { Verb = "cd", Directory = null },
+            new ApprovalEntry { Verb = "git status", Directory = null },
+            new ApprovalEntry { Verb = "git remote", Directory = null }
+            // No echo entry — exactly what the side-effect skip produces.
+        };
+
+        var compound =
+            "cd ~/repo && git status && echo \"---\" && git remote -v && echo \"finished\"";
+        Assert.True(_matcher.IsApproved(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?> { ["Command"] = compound },
+            approvedEntries,
+            cwd: null));
+    }
 }
 
 public sealed class DefaultApprovalMatcherTests

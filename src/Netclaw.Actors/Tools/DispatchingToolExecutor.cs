@@ -125,17 +125,41 @@ public sealed class DispatchingToolExecutor : IToolExecutor
                 var audience = SecurityPolicyDefaults.TryParseAudience(context?.Audience, out var parsed)
                     ? parsed
                     : SecurityPolicyDefaults.ResolveAudienceFromSessionId(context?.SessionId);
-                var unapproved = await _approvalService.GetUnapprovedPatternsAsync(
-                    context?.SessionId,
-                    audience,
-                    new ToolName(toolCall.Name),
-                    approvalContext.CandidateVerbs,
-                    context?.Cwd,
-                    ct);
 
-                accessDecision = unapproved.Count == 0
-                    ? ToolAccessDecision.Allow()
-                    : ToolAccessDecision.RequiresApproval(approvalContext);
+                // Pure side-effect candidates (echo "X" with no path/redirect,
+                // bash :, true/false) are not persisted on Always-here clicks
+                // and must also be treated as authorized at match time —
+                // otherwise the matcher would see them as unapproved on retry
+                // after the click, throw ToolApprovalRequiredException again,
+                // and fail the turn (the outer try/catch is already inside
+                // the conditional catch so a re-throw escapes).
+                var verbsForCheck = approvalContext.Candidates is { Count: > 0 } candidates
+                    ? candidates
+                        .Where(c => !ApprovalPatternMatching.IsPureSideEffect(c))
+                        .Select(c => c.Verb)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList()
+                    : approvalContext.CandidateVerbs;
+
+                if (verbsForCheck.Count == 0)
+                {
+                    // Every candidate is side-effect-only — auto-allow.
+                    accessDecision = ToolAccessDecision.Allow();
+                }
+                else
+                {
+                    var unapproved = await _approvalService.GetUnapprovedPatternsAsync(
+                        context?.SessionId,
+                        audience,
+                        new ToolName(toolCall.Name),
+                        verbsForCheck,
+                        context?.Cwd,
+                        ct);
+
+                    accessDecision = unapproved.Count == 0
+                        ? ToolAccessDecision.Allow()
+                        : ToolAccessDecision.RequiresApproval(approvalContext);
+                }
             }
         }
 

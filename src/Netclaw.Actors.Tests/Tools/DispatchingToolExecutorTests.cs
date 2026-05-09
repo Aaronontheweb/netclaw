@@ -420,7 +420,10 @@ public class DispatchingToolExecutorTests
             var toolCall = new FunctionCallContent(
                 "call-approve-once",
                 "shell_execute",
-                ToolInput.Create("Command", "echo once"));
+                // Use a non-side-effect verb (echo/printf/:/true/false
+                // auto-allow at the matcher level under v2.1) so the
+                // approval flow this test exercises actually triggers.
+                ToolInput.Create("Command", "git status"));
 
             var context = new Netclaw.Tools.ToolExecutionContext("signalr/thread-1", null)
             {
@@ -436,8 +439,10 @@ public class DispatchingToolExecutorTests
             context.OneTimeApprovedToolName = toolCall.Name;
             context.SetOneTimeApprovedPatterns(firstAttempt.ApprovalContext.Patterns);
 
-            var retryResult = await executor.ExecuteAsync(toolCall, context, TestContext.Current.CancellationToken);
-            Assert.Contains("once", retryResult);
+            // The one-time-approval bypass should let the call succeed.
+            // Output text varies by test environment (git status); meaningful
+            // assertion is that no ToolApprovalRequiredException is thrown.
+            _ = await executor.ExecuteAsync(toolCall, context, TestContext.Current.CancellationToken);
 
             context.OneTimeApprovedToolName = null;
             context.SetOneTimeApprovedPatterns([]);
@@ -688,7 +693,10 @@ public class DispatchingToolExecutorTests
             var toolCall = new FunctionCallContent(
                 "call-session-approve",
                 "shell_execute",
-                ToolInput.Create("Command", "echo session"));
+                // Non-side-effect verb so the approval flow under test
+                // actually triggers (see same change above for
+                // One_time_approval_allows_immediate_retry_only).
+                ToolInput.Create("Command", "git status"));
 
             var firstContext = new Netclaw.Tools.ToolExecutionContext("signalr/thread-1", null)
             {
@@ -718,8 +726,11 @@ public class DispatchingToolExecutorTests
                 cwd: null,
                 TestContext.Current.CancellationToken);
 
-            var sameSessionResult = await executor.ExecuteAsync(toolCall, firstContext, TestContext.Current.CancellationToken);
-            Assert.Contains("session", sameSessionResult);
+            // Approved in firstContext's session — call should succeed.
+            // The output text varies by test environment (git status may
+            // error if not in a repo), but the meaningful assertion is
+            // that no ToolApprovalRequiredException was thrown.
+            _ = await executor.ExecuteAsync(toolCall, firstContext, TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<ToolApprovalRequiredException>(() =>
                 executor.ExecuteAsync(toolCall, secondContext, TestContext.Current.CancellationToken));

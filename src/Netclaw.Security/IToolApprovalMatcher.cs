@@ -190,6 +190,13 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
 
         foreach (var candidate in candidates)
         {
+            // Pure side-effect candidates (echo "X" without a path or redirect,
+            // bash :, true/false) are always authorized — they're skipped on
+            // persistence so the store never contains them, and the matcher
+            // here mirrors that decision at evaluation time.
+            if (ApprovalPatternMatching.IsPureSideEffect(candidate))
+                continue;
+
             if (!ApprovalPatternMatching.MatchesShellApproval(
                     candidate.Verb, candidate.Directory, cwd, approvedEntries))
                 return false;

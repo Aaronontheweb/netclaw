@@ -124,7 +124,15 @@ internal abstract class ShellApprovalSemanticsBase : IShellApprovalSemantics
             // is what makes "grep secret /var/log/syslog" produce verb
             // "grep" (with /var/log/syslog as the effective directory)
             // rather than verb "grep secret".
-            if (verbParts.Count == 1 && ShellTokenizer.PathAwareVerbs.Contains(verbParts[0]))
+            //
+            // Same cap applies to single-token side-effect verbs (echo,
+            // printf, :, true, false) so "echo done" resolves to verb
+            // "echo" — matching the skip list in
+            // ApprovalPatternMatching.IsPureSideEffect rather than the
+            // 2-token chain "echo done".
+            if (verbParts.Count == 1
+                && (ShellTokenizer.PathAwareVerbs.Contains(verbParts[0])
+                    || ShellTokenizer.SingleTokenSideEffectVerbs.Contains(verbParts[0])))
                 break;
 
             verbParts.Add(trimmed);

@@ -40,6 +40,19 @@ public static class ShellTokenizer
     };
 
     /// <summary>
+    /// Verbs that are stdout-only side effects without redirects. The verb-
+    /// chain extractor caps at one token for these so <c>echo done</c>
+    /// resolves to verb <c>echo</c> (matching the side-effect skip list)
+    /// rather than the 2-token chain <c>echo done</c>. Mirrors the skip
+    /// list in <c>ApprovalPatternMatching.SideEffectOnlyVerbs</c>; keep
+    /// the two in sync — both are security-relevant defaults.
+    /// </summary>
+    internal static readonly HashSet<string> SingleTokenSideEffectVerbs = new(StringComparer.Ordinal)
+    {
+        "echo", "printf", ":", "true", "false"
+    };
+
+    /// <summary>
     /// Tokenizes a shell command string, respecting single and double quotes.
     /// Strips quote delimiters from tokens.
     /// </summary>
