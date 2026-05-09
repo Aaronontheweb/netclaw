@@ -13,6 +13,10 @@ namespace Netclaw.Actors.Sessions.Handlers;
 /// </summary>
 internal sealed class ProcessingWatchdog
 {
+    public const string LlmCall = "llm-call";
+    public const string ToolExecution = "tool-execution";
+    public const string Compaction = "compaction";
+
     private static readonly object TimerKey = new();
     private long _operationId;
     private string? _operationName;
@@ -56,14 +60,14 @@ internal sealed class ProcessingWatchdog
 
     /// <summary>
     /// Refresh the watchdog timer for an active LLM call (streaming keepalive).
-    /// Only refreshes if the current operation is "llm-call".
+    /// Only refreshes if the current operation is <see cref="LlmCall"/>.
     /// </summary>
     public void Refresh(TimeSpan timeout, ITimerScheduler timers)
         => RestartLlmTimer(timeout, timers);
 
     private void RestartLlmTimer(TimeSpan timeout, ITimerScheduler timers)
     {
-        if (_operationName is not "llm-call")
+        if (_operationName is not LlmCall)
             return;
 
         timers.StartSingleTimer(
