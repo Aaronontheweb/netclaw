@@ -1415,10 +1415,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         Context.Stop(Self);
     }
 
+    // Outer hang-detector for the whole compaction pipeline. The inner observer
+    // call already enforces its own SidecarLlmTimeout via a linked CTS, so the
+    // outer budget needs headroom for Phase 1 (clear tool results), Phase 2
+    // (extractive reducer loop), threadpool scheduling/JIT/GC, plus the full
+    // sidecar call.
     private TimeSpan GetCompactionTimeout()
-        => _config.TurnLlmTimeout > _config.SidecarLlmTimeout
-            ? _config.TurnLlmTimeout
-            : _config.SidecarLlmTimeout;
+        => _config.SidecarLlmTimeout * 2 + TimeSpan.FromSeconds(5);
 
     // The observer replies to the fire-and-forget RecordAcceptedDistillationProposals
     // path in HandleDistillationResult. In non-passivation states the reply is purely
