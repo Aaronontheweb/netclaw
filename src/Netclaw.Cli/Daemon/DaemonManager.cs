@@ -242,16 +242,23 @@ public sealed partial class DaemonManager
                 "Cannot find netclawd binary. Set NETCLAW_DAEMON_PATH or ensure it is " +
                 "in the same directory as the CLI.");
 
-        var unitDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".config", "systemd", "user");
-        Directory.CreateDirectory(unitDir);
+        var userHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        Directory.CreateDirectory(SystemdUserUnitDirectory);
 
         // CLI binary is in the same directory as the daemon binary
         var installDir = Path.GetDirectoryName(binaryPath)!;
         var cliBinaryPath = Path.Combine(installDir, "netclaw");
 
-        var unitPath = Path.Combine(unitDir, "netclaw.service");
+        // systemd --user services start with a sanitized PATH that does not include
+        // installDir or ~/.local/bin, so the agent's shell tool cannot resolve
+        // `netclaw` (or other user-installed binaries) when invoked from the daemon.
+        // We compose PATH explicitly: installDir first (so the daemon's bundled CLI
+        // wins), then ~/.local/bin (common user-bin location), then the systemd
+        // default. Keep this in sync with SystemdUnitPathDoctorCheck.
+        var unitPathEnv = ComposeSystemdUnitPath(installDir, userHome);
+
+        var unitPath = SystemdUserUnitFilePath;
+        var isUpgrade = File.Exists(unitPath);
         var unitContent = $"""
             [Unit]
             Description=Netclaw Daemon
@@ -264,6 +271,7 @@ public sealed partial class DaemonManager
             Restart=always
             RestartSec=5
             Environment=DOTNET_ENVIRONMENT=Production
+            Environment=PATH={unitPathEnv}
 
             [Install]
             WantedBy=default.target
@@ -284,8 +292,50 @@ public sealed partial class DaemonManager
         if (!linger.Success)
             return new DaemonResult(false, $"Service installed but linger failed: {linger.Message}");
 
-        return new DaemonResult(true,
-            $"Service installed at {unitPath}. Start with: systemctl --user start netclaw");
+        var startMessage = $"Service installed at {unitPath}. Start with: systemctl --user start netclaw";
+        if (isUpgrade)
+        {
+            startMessage += "\nUnit file refreshed (PATH for the daemon's shell tool) — " +
+                "restart the service to pick up the change.";
+        }
+
+        return new DaemonResult(true, startMessage);
+    }
+
+    /// <summary>
+    /// Path to the systemd user-service directory (<c>~/.config/systemd/user</c>).
+    /// Single source of truth for daemon install/uninstall and
+    /// <see cref="SystemdUnitPathDoctorCheck"/>.
+    /// </summary>
+    internal static string SystemdUserUnitDirectory => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        ".config", "systemd", "user");
+
+    internal static string SystemdUserUnitFilePath => Path.Combine(SystemdUserUnitDirectory, "netclaw.service");
+
+    /// <summary>
+    /// Builds the PATH value baked into the systemd user unit so the daemon's
+    /// shell tool can resolve user-installed binaries like <c>netclaw</c>.
+    /// </summary>
+    /// <remarks>
+    /// systemd <c>--user</c> services start with a minimal default PATH that does
+    /// not include <c>~/.local/bin</c> or any custom install directory, so we
+    /// compose one explicitly. The doctor check
+    /// <c>SystemdUnitPathDoctorCheck</c> validates that an existing unit file
+    /// contains <paramref name="installDir"/> on PATH; keep both call sites in
+    /// agreement.
+    /// </remarks>
+    internal static string ComposeSystemdUnitPath(string installDir, string userHome)
+    {
+        var localBin = Path.Combine(userHome, ".local", "bin");
+        return string.Join(':',
+            installDir,
+            localBin,
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin");
     }
 
     /// <summary>
@@ -301,10 +351,7 @@ public sealed partial class DaemonManager
         await RunCommandAsync("systemctl", "--user stop netclaw.service");
         await RunCommandAsync("systemctl", "--user disable netclaw.service");
 
-        var unitPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".config", "systemd", "user", "netclaw.service");
-
+        var unitPath = SystemdUserUnitFilePath;
         if (File.Exists(unitPath))
             File.Delete(unitPath);
 
