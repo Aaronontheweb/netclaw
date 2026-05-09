@@ -492,8 +492,15 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         Command<LlmResponseDeltaReceived>(msg =>
         {
             if (msg.CallId != _activeCallId) return; // stale delta from cancelled call
-            _anyContentStreamed = true;
-            _watchdog.Refresh(_config.FirstTokenTimeout, Timers);
+            if (!_anyContentStreamed)
+            {
+                _anyContentStreamed = true;
+                _watchdog.Promote(_config.FirstTokenTimeout, Timers);
+            }
+            else
+            {
+                _watchdog.Refresh(_config.FirstTokenTimeout, Timers);
+            }
 
             switch (msg.Content)
             {
@@ -923,8 +930,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             var timeout = msg.OperationName switch
             {
-                "tool-execution" => _config.ToolExecutionTimeout,
-                "llm-call" => _config.FirstTokenTimeout,
+                ProcessingWatchdog.ToolExecution => _config.ToolExecutionTimeout,
+                ProcessingWatchdog.LlmCall => _config.FirstTokenTimeout,
                 _ => _config.TurnLlmTimeout
             };
 
@@ -1112,7 +1119,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         Command<CompactionTriggered>(msg =>
         {
             var timeout = GetCompactionTimeout();
-            _watchdog.Start("compaction", timeout, Timers);
+            _watchdog.Start(ProcessingWatchdog.Compaction, timeout, Timers);
 
             var operationId = _watchdog.CurrentOperationId;
             var stateSnapshot = _state;
@@ -1430,10 +1437,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         Context.Stop(Self);
     }
 
+    // Outer hang-detector for the whole compaction pipeline. The inner observer
+    // call already enforces its own SidecarLlmTimeout via a linked CTS, so the
+    // outer budget needs headroom for Phase 1 (clear tool results), Phase 2
+    // (extractive reducer loop), threadpool scheduling/JIT/GC, plus the full
+    // sidecar call.
     private TimeSpan GetCompactionTimeout()
-        => _config.TurnLlmTimeout > _config.SidecarLlmTimeout
-            ? _config.TurnLlmTimeout
-            : _config.SidecarLlmTimeout;
+        => _config.SidecarLlmTimeout * 2 + TimeSpan.FromSeconds(5);
 
     // The observer replies to the fire-and-forget RecordAcceptedDistillationProposals
     // path in HandleDistillationResult. In non-passivation states the reply is purely
@@ -1455,7 +1465,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     }
 
     private bool IsCurrentCompactionOperation(long operationId)
-        => _watchdog.IsCurrentOperation("compaction", operationId);
+        => _watchdog.IsCurrentOperation(ProcessingWatchdog.Compaction, operationId);
 
 
     /// <summary>
@@ -1612,7 +1622,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         var maxInlineToolResultChars = _config.Tuning.MaxInlineToolResultChars;
         var toolExecutionTimeout = _config.ToolExecutionTimeout;
 
-        _watchdog.Start("tool-execution", toolExecutionTimeout, Timers);
+        _watchdog.Start(ProcessingWatchdog.ToolExecution, toolExecutionTimeout, Timers);
 
         // Capture subscriber snapshot for subagent activity notifications.
         // These are emitted directly from the tool execution thread via Tell(),
@@ -2428,7 +2438,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         var self = Self;
         var client = _chatClient;
-        var timeout = _config.FirstTokenTimeout;
 
         var exposedTools = ResolveExposedToolsForCurrentTurn();
         ChatOptions? options = null;
@@ -2440,7 +2449,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             };
         }
 
-        _watchdog.Start("llm-call", timeout, Timers);
+        _watchdog.Start(ProcessingWatchdog.LlmCall, _config.PrefillTimeout, Timers);
 
         TurnLog().Info("turn_llm_call_start messages={MessageCount} toolsEnabled={ToolsEnabled} forceNoTools={ForceNoTools} callId={CallId}",
             messages.Count,
@@ -3016,7 +3025,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void PauseToolExecutionWatchdogForApprovalWait(string callId)
     {
-        if (!string.Equals(_watchdog.CurrentOperationName, "tool-execution", StringComparison.Ordinal))
+        if (!string.Equals(_watchdog.CurrentOperationName, ProcessingWatchdog.ToolExecution, StringComparison.Ordinal))
             return;
 
         _watchdog.Stop(Timers);
@@ -3034,7 +3043,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (_watchdog.CurrentOperationName is not null)
             return;
 
-        _watchdog.Start("tool-execution", _config.ToolExecutionTimeout, Timers);
+        _watchdog.Start(ProcessingWatchdog.ToolExecution, _config.ToolExecutionTimeout, Timers);
         _log.Info("Resumed tool-execution watchdog after approval response");
     }
 

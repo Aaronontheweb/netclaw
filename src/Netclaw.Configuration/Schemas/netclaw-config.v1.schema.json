@@ -145,7 +145,14 @@
           "minimum": 10,
           "maximum": 1800,
           "default": 600,
-          "description": "Maximum inactivity in seconds for LLM streaming calls. Used as both the initial wait for the first token and the silence threshold between deltas (resets on each delta)."
+          "description": "Maximum silence in seconds between consecutive LLM streaming deltas. After the first delta arrives, the watchdog uses this as the inter-delta timeout (timer resets on each delta)."
+        },
+        "PrefillTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 7200,
+          "default": 1800,
+          "description": "Maximum time in seconds to wait for the first streaming delta from the LLM. Covers queue wait and prompt prefill on self-hosted backends. After the first delta, the watchdog switches to FirstTokenTimeoutSeconds."
         },
         "CompactionThreshold": {
           "type": "number",

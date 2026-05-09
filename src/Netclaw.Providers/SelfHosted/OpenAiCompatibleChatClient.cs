@@ -74,8 +74,16 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
             if (line is null)
                 break;
 
-            if (string.IsNullOrWhiteSpace(line) || !line.StartsWith("data:", StringComparison.Ordinal))
+            if (string.IsNullOrWhiteSpace(line))
                 continue;
+
+            if (!line.StartsWith("data:", StringComparison.Ordinal))
+            {
+                // SSE comment lines (`:` prefix) and event-type lines — yield keepalive
+                // so the watchdog knows the connection is alive during prefill/queuing.
+                yield return KeepaliveUpdate;
+                continue;
+            }
 
             var ssePayload = line[5..].Trim();
             if (ssePayload == "[DONE]")
@@ -173,6 +181,9 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
         if (stream)
         {
             body["stream_options"] = new JsonObject { ["include_usage"] = true };
+            // llama-server sends prefill progress as SSE data events when enabled.
+            // Harmless on servers that don't support it (unknown fields are ignored).
+            body["return_progress"] = true;
         }
 
         if (options?.Temperature is { } temperature)
@@ -576,7 +587,12 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
             contents.Add(new UsageContent(usage));
 
         if (contents.Count == 0 && finishReason is null)
+        {
+            // Content-less data events (e.g. prompt_progress during prefill) — yield
+            // keepalive so the watchdog timer resets while the server is working.
+            yield return KeepaliveUpdate;
             yield break;
+        }
 
         yield return new ChatResponseUpdate(ChatRole.Assistant, contents)
         {
