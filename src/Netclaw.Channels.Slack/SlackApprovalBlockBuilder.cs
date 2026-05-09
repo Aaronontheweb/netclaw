@@ -173,14 +173,60 @@ internal static class SlackApprovalBlockBuilder
     /// multi-verb invocations use the generic <c>Approve in ~/repos/foo/?</c>
     /// form and let the bullet list below name the verbs.
     /// </summary>
+    /// <remarks>
+    /// The "in &lt;dir&gt;" portion shows the most meaningful target directory
+    /// the operator is being asked to trust. Priority order:
+    /// <list type="number">
+    /// <item>The single distinct path argument extracted across the
+    /// candidates (e.g. <c>cd /repo &amp;&amp; git status</c> shows
+    /// <c>/repo</c>).</item>
+    /// <item><c>cwd</c> if no path arguments are present.</item>
+    /// <item><c>this session</c> when the cwd is the per-session ephemeral
+    /// scratch directory — that path won't recur, so calling it out by name
+    /// would be misleading.</item>
+    /// </list>
+    /// </remarks>
     private static string BuildApproveHeader(ToolInteractionRequest request)
     {
         var verbs = ResolveDisplayVerbs(request);
-        var cwd = string.IsNullOrWhiteSpace(request.Cwd) ? "(no working directory)" : request.Cwd;
+        var location = ResolveHeaderLocation(request);
 
         return verbs.Count == 1
-            ? $"Approve {verbs[0]} in {cwd}?"
-            : $"Approve in {cwd}?";
+            ? $"Approve {verbs[0]} in {location}?"
+            : $"Approve in {location}?";
+    }
+
+    private static string ResolveHeaderLocation(ToolInteractionRequest request)
+    {
+        var distinctDirs = request.Candidates
+            .Where(c => !string.IsNullOrWhiteSpace(c.Directory))
+            .Select(c => c.Directory!)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (distinctDirs.Count == 1)
+            return distinctDirs[0];
+
+        if (distinctDirs.Count > 1)
+            return $"{distinctDirs.Count} directories";
+
+        // No path arguments — fall back to cwd, but prefer "this session" when
+        // the cwd is the session's ephemeral scratch directory so operators
+        // know an "Always here" grant would be a no-op.
+        if (string.IsNullOrWhiteSpace(request.Cwd))
+            return "(no working directory)";
+
+        return IsSessionScratchPath(request.Cwd) ? "this session" : request.Cwd;
+    }
+
+    private static bool IsSessionScratchPath(string cwd)
+    {
+        // Session directories live under "{netclaw-home}/sessions/{id}/" with
+        // {id} of the form "<channelId>_<unix-ts>_<random>" or a uuid. We use
+        // a path-segment check rather than full path equality so the helper
+        // works without access to NetclawPaths.SessionsBaseDirectory.
+        var normalized = cwd.Replace('\\', '/');
+        return normalized.Contains("/.netclaw/sessions/", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -198,13 +244,13 @@ internal static class SlackApprovalBlockBuilder
     private static string BuildResolutionLine(ToolInteractionRequest request, string selectedKey)
     {
         var verbs = string.Join(", ", ResolveDisplayVerbs(request));
-        var cwd = string.IsNullOrWhiteSpace(request.Cwd) ? "(no working directory)" : request.Cwd;
+        var location = ResolveHeaderLocation(request);
 
         return selectedKey switch
         {
-            ApprovalOptionKeys.ApproveAlways => $"Saved: {verbs} in {cwd}",
+            ApprovalOptionKeys.ApproveAlways => $"Saved: {verbs} in {location}",
             ApprovalOptionKeys.ApproveEverywhere => $"Saved: {verbs} anywhere",
-            ApprovalOptionKeys.ApproveSession => $"Saved for this chat: {verbs} in {cwd}",
+            ApprovalOptionKeys.ApproveSession => $"Saved for this chat: {verbs} in {location}",
             ApprovalOptionKeys.ApproveOnce => "Approved (no save)",
             ApprovalOptionKeys.Deny => "Denied",
             _ => "Resolved"

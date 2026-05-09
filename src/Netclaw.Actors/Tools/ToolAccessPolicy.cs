@@ -347,7 +347,9 @@ public sealed class ToolAccessPolicy
 
         var options = BuildApprovalOptions(
             isMessy,
-            isCwdShallow: IsCwdTooShallow(context?.Cwd));
+            isCwdShallow: IsCwdTooShallow(context?.Cwd),
+            allEffectiveDirsAreSessionScratch: AllCandidatesResolveToSessionScratch(
+                candidates, context?.Cwd, context?.SessionDirectory));
 
         var approvalContext = new ToolApprovalContext(
             toolName.Value,
@@ -363,9 +365,58 @@ public sealed class ToolAccessPolicy
     }
 
     /// <summary>
+    /// Returns true when every candidate's effective directory resolves to
+    /// the session's ephemeral <c>session_dir</c>. Persisting an "Always
+    /// here" grant scoped to that directory is dead-on-arrival because the
+    /// next session has a fresh session_dir; matching against the saved
+    /// entry would never succeed. The button is hidden in that case so
+    /// operators can pick "This chat" (the equivalent in-session
+    /// semantics) or "Always anywhere" (folder-agnostic) instead.
+    /// </summary>
+    private static bool AllCandidatesResolveToSessionScratch(
+        IReadOnlyList<ApprovalCandidate> candidates,
+        string? cwd,
+        string? sessionDirectory)
+    {
+        if (string.IsNullOrEmpty(sessionDirectory) || candidates.Count == 0)
+            return false;
+
+        foreach (var candidate in candidates)
+        {
+            var effective = candidate.Directory ?? cwd;
+            if (string.IsNullOrEmpty(effective))
+                return false;
+
+            if (!PathsEquivalent(effective, sessionDirectory))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool PathsEquivalent(string a, string b)
+    {
+        try
+        {
+            var fullA = Path.GetFullPath(a)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var fullB = Path.GetFullPath(b)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var comparison = OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+            return string.Equals(fullA, fullB, comparison);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.Security.SecurityException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Builds the prompt's button row. The five-button default
     /// (Once / This chat / Always here / Always anywhere / Deny) is pruned
-    /// in two cases:
+    /// in three cases:
     /// <list type="bullet">
     /// <item><b>Messy commands</b> (bash control-flow / unbalanced
     /// quotes/brackets) — only <c>Once</c> and <c>Deny</c> are offered.
@@ -375,9 +426,18 @@ public sealed class ToolAccessPolicy
     /// <c>Always here</c> is omitted so an operator cannot accidentally write
     /// a folder-scoped grant for a too-shallow root like <c>/etc/</c>.
     /// <c>This chat</c> and <c>Always anywhere</c> remain available.</item>
+    /// <item><b>Session-scratch effective directory</b> (every candidate's
+    /// effective directory is the session's ephemeral <c>session_dir</c>) —
+    /// <c>Always here</c> is omitted because the saved grant would be scoped
+    /// to a directory that won't recur. <c>This chat</c> already provides
+    /// the equivalent in-session semantics without polluting the persistent
+    /// store.</item>
     /// </list>
     /// </summary>
-    private static IReadOnlyList<ToolApprovalOption> BuildApprovalOptions(bool isMessy, bool isCwdShallow)
+    private static IReadOnlyList<ToolApprovalOption> BuildApprovalOptions(
+        bool isMessy,
+        bool isCwdShallow,
+        bool allEffectiveDirsAreSessionScratch)
     {
         if (isMessy)
         {
@@ -394,7 +454,7 @@ public sealed class ToolAccessPolicy
             new ToolApprovalOption(ApprovalOptionKeys.ApproveSession, ApprovalOptionKeys.ApproveSessionLabel)
         };
 
-        if (!isCwdShallow)
+        if (!isCwdShallow && !allEffectiveDirsAreSessionScratch)
         {
             options.Add(new ToolApprovalOption(ApprovalOptionKeys.ApproveAlways, ApprovalOptionKeys.ApproveAlwaysLabel));
         }

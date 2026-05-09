@@ -366,6 +366,29 @@ public sealed class ShellApprovalMatcherPathExtractionTests
     }
 
     [Fact]
+    public void ExtractCandidates_extracts_cd_target_as_directory()
+    {
+        // Aaron's dogfood case: `cd /repo && git remote -v && ...`. The
+        // header / persistence layer needs the cd target as the candidate's
+        // directory so the prompt can show the meaningful trust scope
+        // rather than the per-session ephemeral session_dir.
+        var candidates = _matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?>
+            {
+                ["Command"] = "cd /home/petabridge/repositories/stannardlabs/netclaw && git remote -v"
+            });
+
+        Assert.Contains(candidates,
+            c => c.Verb == "cd"
+              && c.Directory == "/home/petabridge/repositories/stannardlabs/netclaw");
+        // git remote has no path argument so its directory falls back to cwd
+        // at match time (Directory == null on the candidate itself).
+        Assert.Contains(candidates,
+            c => c.Verb == "git remote" && c.Directory == null);
+    }
+
+    [Fact]
     public void IsApproved_treats_side_effect_candidates_as_authorized()
     {
         // Regression: when a compound command contains both action verbs and

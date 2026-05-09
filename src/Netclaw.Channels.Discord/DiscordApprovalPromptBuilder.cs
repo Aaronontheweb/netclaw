@@ -113,18 +113,19 @@ internal static class DiscordApprovalPromptBuilder
     }
 
     /// <summary>
-    /// Header line mirroring the Slack builder. Single-verb invocations
-    /// collapse the verb into the header; multi-verb ones use the generic
-    /// "Approve in <cwd>?" form with the verbs as bullets below.
+    /// Header line mirroring the Slack builder. The "in &lt;dir&gt;" portion
+    /// shows the most meaningful target directory the operator is being
+    /// asked to trust — see SlackApprovalBlockBuilder.BuildApproveHeader
+    /// for the priority order.
     /// </summary>
     private static string BuildApproveHeader(ToolInteractionRequest request)
     {
         var verbs = ResolveDisplayVerbs(request);
-        var cwd = string.IsNullOrWhiteSpace(request.Cwd) ? "(no working directory)" : request.Cwd;
+        var location = ResolveHeaderLocation(request);
 
         return verbs.Count == 1
-            ? $"Approve {verbs[0]} in {cwd}?"
-            : $"Approve in {cwd}?";
+            ? $"Approve {verbs[0]} in {location}?"
+            : $"Approve in {location}?";
     }
 
     /// <summary>
@@ -135,17 +136,43 @@ internal static class DiscordApprovalPromptBuilder
     private static string BuildResolutionLine(ToolInteractionRequest request, string selectedKey)
     {
         var verbs = string.Join(", ", ResolveDisplayVerbs(request));
-        var cwd = string.IsNullOrWhiteSpace(request.Cwd) ? "(no working directory)" : request.Cwd;
+        var location = ResolveHeaderLocation(request);
 
         return selectedKey switch
         {
-            ApprovalOptionKeys.ApproveAlways => $"Saved: {verbs} in {cwd}",
+            ApprovalOptionKeys.ApproveAlways => $"Saved: {verbs} in {location}",
             ApprovalOptionKeys.ApproveEverywhere => $"Saved: {verbs} anywhere",
-            ApprovalOptionKeys.ApproveSession => $"Saved for this chat: {verbs} in {cwd}",
+            ApprovalOptionKeys.ApproveSession => $"Saved for this chat: {verbs} in {location}",
             ApprovalOptionKeys.ApproveOnce => "Approved (no save)",
             ApprovalOptionKeys.Deny => "Denied",
             _ => "Resolved"
         };
+    }
+
+    private static string ResolveHeaderLocation(ToolInteractionRequest request)
+    {
+        var distinctDirs = request.Candidates
+            .Where(c => !string.IsNullOrWhiteSpace(c.Directory))
+            .Select(c => c.Directory!)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (distinctDirs.Count == 1)
+            return distinctDirs[0];
+
+        if (distinctDirs.Count > 1)
+            return $"{distinctDirs.Count} directories";
+
+        if (string.IsNullOrWhiteSpace(request.Cwd))
+            return "(no working directory)";
+
+        return IsSessionScratchPath(request.Cwd) ? "this session" : request.Cwd;
+    }
+
+    private static bool IsSessionScratchPath(string cwd)
+    {
+        var normalized = cwd.Replace('\\', '/');
+        return normalized.Contains("/.netclaw/sessions/", StringComparison.OrdinalIgnoreCase);
     }
 
     private static IReadOnlyList<string> ResolveDisplayVerbs(ToolInteractionRequest request)

@@ -3165,6 +3165,17 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // mapped back to null when calling the persistence layer below.
         var grouping = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 
+        // Resolve session_dir for the session-scratch persistence guard.
+        // Folder-scoped grants whose effective directory equals the
+        // ephemeral session_dir are dead-on-arrival — the next session
+        // starts with a fresh session_dir, so the saved entry could never
+        // match again. The prompt already hides Always here in this case
+        // (see ToolAccessPolicy.AllCandidatesResolveToSessionScratch); we
+        // re-check at persistence time as belt-and-suspenders so a stale
+        // request or a partial mix of session-scratch and real-path
+        // candidates can't silently drop dead entries into the store.
+        var sessionDirectory = GetSessionDirectory();
+
         foreach (var candidate in pending.Candidates)
         {
             if (ApprovalPatternMatching.IsPureSideEffect(candidate))
@@ -3178,6 +3189,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             else
             {
                 effectiveDirectory = candidate.Directory ?? pending.Cwd;
+            }
+
+            if (effectiveDirectory is not null
+                && sessionDirectory is not null
+                && IsSessionScratchDirectory(effectiveDirectory, sessionDirectory))
+            {
+                continue;
             }
 
             if (!grouping.TryGetValue(effectiveDirectory ?? string.Empty, out var verbs))
@@ -3207,6 +3225,31 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 persistent,
                 directory,
                 ct);
+        }
+    }
+
+    /// <summary>
+    /// Returns true when <paramref name="effectiveDirectory"/> is the same
+    /// path as <paramref name="sessionDirectory"/>. Used by the persistence
+    /// guard to skip dead-on-arrival folder-scoped grants whose directory
+    /// matches the session's ephemeral scratch dir.
+    /// </summary>
+    private static bool IsSessionScratchDirectory(string effectiveDirectory, string sessionDirectory)
+    {
+        try
+        {
+            var fullA = Path.GetFullPath(effectiveDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var fullB = Path.GetFullPath(sessionDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var comparison = OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+            return string.Equals(fullA, fullB, comparison);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.Security.SecurityException)
+        {
+            return false;
         }
     }
 
