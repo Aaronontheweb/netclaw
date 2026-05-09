@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "1.27.0"
+  version: "1.28.0"
 ---
 
 # Netclaw Operations
@@ -554,6 +554,7 @@ What to expect inside `session.log`:
 | Missing tools | `netclaw mcp list`; check MCP connection state |
 | Memory recall degraded | `netclaw status` memory section |
 | Daemon won't start | crash logs at `~/.netclaw/logs/crash-*.log` |
+| `command not found` for `netclaw` from shell tool when daemon runs as systemd service | `netclaw doctor` (the **Systemd Unit PATH** check warns when the unit was installed before PATH was baked in) |
 
 If webhook notifications are configured, daemon crash paths emit
 `daemon.crashing` operational alerts with context (PID, reason, and latest known
