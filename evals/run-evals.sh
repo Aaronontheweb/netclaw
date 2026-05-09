@@ -339,9 +339,12 @@ start_eval_daemon() {
 
     # Copy system skills from the repo into the eval home so Skill Discovery
     # tests use the skills being developed, not whatever is synced on the host.
-    mkdir -p "$EVAL_HOME/skills/.system/files"
+    # SkillScanner expects <skills>/.system/<skill-name>/SKILL.md (no extra
+    # `files/` segment); the daemon's feed sync writes to that layout, so we
+    # mirror it here for local-source-of-truth runs.
+    mkdir -p "$EVAL_HOME/skills/.system"
     if [[ -d "$REPO_ROOT/feeds/skills/.system/files" ]]; then
-        cp -r "$REPO_ROOT/feeds/skills/.system/files/." "$EVAL_HOME/skills/.system/files/"
+        cp -r "$REPO_ROOT/feeds/skills/.system/files/." "$EVAL_HOME/skills/.system/"
     else
         echo "WARN: no system skills at $REPO_ROOT/feeds/skills/.system/files/ — Skill Discovery evals will fail." >&2
     fi
@@ -378,6 +381,11 @@ start_eval_daemon() {
         -e "NETCLAW_Security__ShellExecutionMode=HostAllowed"
         -e "NETCLAW_Security__StrictDefaults=false"
         -e "NETCLAW_Tools__ShellMode=HostAllowed"
+        # Evals test the source tree, not the published feed. Without this, the
+        # daemon syncs system skills from the live R2 manifest at startup, which
+        # ships whatever was last released — masking any unpublished skill
+        # changes (e.g. version bumps in this PR) and the local copies above.
+        -e "NETCLAW_SkillSync__DisableSystemSkillSync=true"
     )
 
     if [[ -n "$EVAL_CONTEXT_WINDOW" ]]; then
