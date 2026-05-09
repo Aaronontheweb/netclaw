@@ -1439,16 +1439,15 @@ run_all() {
     print_category "Approval Policy v2"
 
     run_case approval_set_working_directory_positive "calls set_working_directory before shell tool when project mentioned" \
-        "I'm working on the Netclaw repository at /tmp. List the files in that directory and tell me what's there." \
-        "Help me work on /tmp — start by listing what's in it."
+        "I'm starting a debugging session on the project checked out at /tmp. Get oriented in that codebase — look at the layout, identify build files, and figure out what kind of project it is. We'll be running multiple shell commands across the tree." \
+        "I want to start working on the Netclaw checkout at /tmp. Plan to run several commands across that tree — start by getting yourself oriented."
 
     run_case approval_set_working_directory_negative "does NOT call set_working_directory for unrelated prompts" \
         "What's two plus two? Just give me the number." \
         "Explain what a hash table is in one sentence."
 
-    run_multi_turn_case approval_recovery_hint "recovers from cwd-outside-safe-spaces denial by calling set_working_directory" \
-        "Pretend you just got back this tool result from a denied shell call: 'Tool access denied: approval_denied_by_user. Hint: '/tmp' is outside the session's trusted scope. Call set_working_directory \"/tmp\" first, then retry — that brings the directory into your trusted scope so the approval policy can reason about it.' Acknowledge and wait — do not call any tools yet." \
-        "Now act on that hint and call set_working_directory for /tmp so future shell calls in that tree don't get re-prompted."
+    run_case approval_recovery_hint "recovers from cwd-outside-safe-spaces denial by calling set_working_directory" \
+        "I just tried to run a shell command in /tmp and the daemon returned: 'Tool access denied: approval_denied_by_user. Hint: \"/tmp\" is outside the session'\\''s trusted scope. Call set_working_directory \"/tmp\" first, then retry — that brings the directory into your trusted scope so the approval policy can reason about it.' How should I unblock this so the next shell call works?"
 
     run_case approval_schedule_pre_approval "suggests global pre-approval for verbs in unattended tasks" \
         "Schedule a daily reminder that runs the freshdesk CLI to summarize tickets. The reminder fires unattended and won't be able to answer approval prompts, so the verb needs to be globally pre-approved before the schedule fires. Call netclaw approvals trust-verb freshdesk via shell_execute as part of the setup."
