@@ -314,21 +314,28 @@ public sealed class ToolAccessPolicy
         var displayText = matcher.FormatForDisplay(toolName, arguments);
         var isMessy = matcher.IsMessy(toolName, arguments);
 
+        // Resolve cwd up-front for shell so it's available to the safe-verb
+        // short-circuit, the shallow-cwd guard, AND the approval context that
+        // gets persisted on "Always here". Doing this only inside the
+        // short-circuit branch (as the original v2 layout did) drops cwd from
+        // ToolApprovalContext when conditions don't match — silently turning
+        // every "Always here" click into "Always anywhere" because the
+        // persistence path reads PendingToolInteraction.Cwd.
+        var isShell = string.Equals(toolName.Value, ShellTool.ToolName, StringComparison.Ordinal);
+        if (isShell && context is not null)
+            context.Cwd = context.ResolveShellCwd(ExtractWorkingDirectory(arguments));
+
         // Safe-verb ∩ safe-space short-circuit (layer 1.5). Runs only for shell
         // and only when the matcher could extract candidate verbs cleanly —
-        // messy commands always prompt regardless of verb membership. Resolves
-        // cwd into context.Cwd here so the matcher and downstream gate
-        // evaluate folder-scoped ApprovalEntry records against the same
-        // directory the spawned process will run in.
+        // messy commands always prompt regardless of verb membership.
         if (_safeVerbPolicy is not null
             && context is not null
-            && string.Equals(toolName.Value, ShellTool.ToolName, StringComparison.Ordinal)
+            && isShell
             && !isMessy
-            && candidateVerbs.Count > 0)
+            && candidateVerbs.Count > 0
+            && _safeVerbPolicy.AllShortCircuit(candidateVerbs, context.Cwd, context))
         {
-            context.Cwd = context.ResolveShellCwd(ExtractWorkingDirectory(arguments));
-            if (_safeVerbPolicy.AllShortCircuit(candidateVerbs, context.Cwd, context))
-                return ToolAccessDecision.Allow();
+            return ToolAccessDecision.Allow();
         }
 
         var options = BuildApprovalOptions(
@@ -341,6 +348,7 @@ public sealed class ToolAccessPolicy
             patterns,
             candidateVerbs,
             options,
+            Cwd: context?.Cwd,
             IsMessy: isMessy);
 
         return ToolAccessDecision.RequiresApproval(approvalContext);
@@ -570,6 +578,12 @@ public sealed record ToolApprovalContext(
     // candidate's cwd in ToolExecutionContext, not from extraction.
     IReadOnlyList<string> CandidateVerbs,
     IReadOnlyList<ToolApprovalOption> Options,
+    // Resolved cwd at the moment the gate decided approval was required.
+    // Threaded through ToolInteractionRequest → PendingToolInteraction so
+    // an "Always here" click persists with the actual directory rather
+    // than a null sentinel (which would silently behave as "Always
+    // anywhere").
+    string? Cwd = null,
     // True when the invocation cannot be cleanly split into verb-chain
     // approval units (bash control-flow, unbalanced quotes/brackets).
     // Channel adapters use this to omit the persistent-grant buttons and

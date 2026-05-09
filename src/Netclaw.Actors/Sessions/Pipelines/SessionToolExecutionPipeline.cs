@@ -291,6 +291,7 @@ internal static class SessionToolExecutionPipeline
                 PersistedAdoptedContext = source?.HasAdoptedContext ?? false,
                 Patterns = ctx.Patterns,
                 CandidateVerbs = ctx.CandidateVerbs,
+                Cwd = ctx.Cwd,
                 IsMessy = ctx.IsMessy,
                 Options = ctx.Options
                     .Select(o => new ToolInteractionOption(o.Key, o.Label))
