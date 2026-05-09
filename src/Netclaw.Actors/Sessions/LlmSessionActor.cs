@@ -492,6 +492,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         Command<LlmResponseDeltaReceived>(msg =>
         {
             if (msg.CallId != _activeCallId) return; // stale delta from cancelled call
+            if (!_anyContentStreamed)
+                _watchdog.Promote(_config.FirstTokenTimeout, Timers);
             _anyContentStreamed = true;
             _watchdog.Refresh(_config.FirstTokenTimeout, Timers);
 
@@ -2408,7 +2410,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         var self = Self;
         var client = _chatClient;
-        var timeout = _config.FirstTokenTimeout;
 
         var exposedTools = ResolveExposedToolsForCurrentTurn();
         ChatOptions? options = null;
@@ -2420,7 +2421,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             };
         }
 
-        _watchdog.Start("llm-call", timeout, Timers);
+        _watchdog.Start("llm-call", _config.PrefillTimeout, Timers);
 
         TurnLog().Info("turn_llm_call_start messages={MessageCount} toolsEnabled={ToolsEnabled} forceNoTools={ForceNoTools} callId={CallId}",
             messages.Count,

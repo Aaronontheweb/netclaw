@@ -48,6 +48,25 @@ internal sealed class ProcessingWatchdog
     }
 
     /// <summary>
+    /// Switch from the generous prefill budget to the tighter inter-delta timeout.
+    /// Called once when the first real streaming delta arrives.
+    /// </summary>
+    public void Promote(TimeSpan interDeltaTimeout, ITimerScheduler timers)
+    {
+        if (_operationName is not "llm-call")
+            return;
+
+        timers.StartSingleTimer(
+            TimerKey,
+            new ProcessingWatchdogExpired
+            {
+                OperationId = _operationId,
+                OperationName = _operationName
+            },
+            interDeltaTimeout);
+    }
+
+    /// <summary>
     /// Refresh the watchdog timer for an active LLM call (streaming keepalive).
     /// Only refreshes if the current operation is "llm-call".
     /// </summary>

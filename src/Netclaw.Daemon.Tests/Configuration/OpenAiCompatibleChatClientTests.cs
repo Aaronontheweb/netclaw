@@ -60,7 +60,8 @@ data: [DONE]
         await foreach (var update in client.GetStreamingResponseAsync([new ChatMessage(ChatRole.User, "hello")], cancellationToken: TestContext.Current.CancellationToken))
             updates.Add(update);
 
-        Assert.Equal(3, updates.Count);
+        Assert.Equal(4, updates.Count);
+        Assert.Contains(updates, u => u.Contents.Count == 0 && u.FinishReason is null); // keepalive from content-less initial chunk
         Assert.Contains(updates, u => u.Contents.OfType<TextReasoningContent>().Any(c => c.Text == "Thinking"));
         Assert.Contains(updates, u => u.Contents.OfType<TextContent>().Any(c => c.Text == "Hello"));
         Assert.Contains(updates, u => u.FinishReason == ChatFinishReason.Stop);

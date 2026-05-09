@@ -29,6 +29,7 @@ public sealed class LlmSessionWatchdogTests(ITestOutputHelper output) : LlmSessi
         });
         services.AddSingleton(new SessionConfig
         {
+            PrefillTimeout = TimeSpan.FromSeconds(1),
             FirstTokenTimeout = TimeSpan.FromSeconds(1),
             ToolExecutionTimeout = TimeSpan.FromSeconds(1),
             SidecarLlmTimeout = TimeSpan.FromSeconds(1),
