@@ -201,11 +201,50 @@ public static class ShellTokenizer
     /// command. Stops at the first token that looks like a flag (starts with -)
     /// or an argument (path, URL, etc.), and caps at <paramref name="maxDepth"/>
     /// tokens (default: 2) to avoid capturing positional arguments as subcommands.
-    /// For path-aware verbs (cat, grep, bash, etc.), appends the first non-flag
-    /// argument so the approval pattern captures what the command operates on.
+    /// The verb chain SHALL NOT include any path-like tokens — paths are
+    /// extracted separately via <see cref="ExtractFirstPathArgument"/> and
+    /// become the candidate's effective directory in the approval matcher.
     /// </summary>
     public static string ExtractVerbChain(string command, int maxDepth = 2)
         => ShellApprovalSemantics.ForCommand(command).ExtractVerbChain(command, maxDepth);
+
+    /// <summary>
+    /// Returns the first path-like positional argument from a single shell
+    /// clause, or null when no path token is present. Used by the approval
+    /// gate to determine the candidate's effective directory: when present,
+    /// it overrides the resolved cwd; when absent, the matcher falls back
+    /// to cwd.
+    /// </summary>
+    /// <remarks>
+    /// File-targeting commands (e.g. <c>cat ~/.bashrc</c>) return the parent
+    /// directory of the extracted path so persisted approvals scope to a
+    /// folder rather than a single file. This is a deterministic string
+    /// operation — no filesystem syscall is performed at extract time.
+    /// </remarks>
+    public static string? ExtractFirstPathArgument(string command)
+        => ShellApprovalSemantics.ForCommand(command).ExtractFirstPathArgument(command);
+
+    /// <summary>
+    /// Conservative path-token classifier. Returns true when the token
+    /// starts with <c>/</c>, <c>~/</c>, <c>./</c>, <c>../</c>, or is exactly
+    /// <c>~</c>, <c>.</c>, or <c>..</c>. Tokens that merely contain a slash
+    /// internally (URLs, regexes, docker tags, git refs) are NOT classified
+    /// as paths — false positives here would silently expand or contract
+    /// the approval gate's trust scope.
+    /// </summary>
+    public static bool IsPathToken(string token)
+    {
+        if (string.IsNullOrEmpty(token))
+            return false;
+
+        if (token == "~" || token == "." || token == "..")
+            return true;
+
+        return token.StartsWith('/')
+            || token.StartsWith("~/", StringComparison.Ordinal)
+            || token.StartsWith("./", StringComparison.Ordinal)
+            || token.StartsWith("../", StringComparison.Ordinal);
+    }
 
     /// <summary>
     /// Produces an exact shell approval unit string with recognizable local paths

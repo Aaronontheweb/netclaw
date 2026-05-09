@@ -764,7 +764,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 msg.HasAdoptedContext,
                 msg.AdoptedSpeakerIds,
                 msg.Cwd,
-                msg.IsMessy);
+                msg.IsMessy,
+                msg.Candidates);
 
             PauseToolExecutionWatchdogForApprovalWait(msg.CallId);
 
@@ -812,23 +813,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 or ApprovalDecision.ApprovedEverywhere
                 && _approvalService is not null)
             {
-                // Folder-scoped (ApprovedAlways) writes (verb, cwd); global
-                // wildcard (ApprovedEverywhere) writes (verb, null). The
-                // store uses null directory as the global-wildcard sentinel
-                // matched against any cwd at evaluation time.
-                var persistCwd = decision == ApprovalDecision.ApprovedEverywhere
-                    ? null
-                    : pending.Cwd;
-                var persistent = decision is ApprovalDecision.ApprovedAlways
-                    or ApprovalDecision.ApprovedEverywhere;
-
-                await _approvalService.RecordApprovalAsync(
-                    _sessionId.Value,
-                    pending.Audience,
-                    new ToolName(pending.ToolName),
-                    pending.CandidateVerbs,
-                    persistent: persistent,
-                    persistCwd,
+                await PersistApprovalCandidatesAsync(
+                    pending,
+                    decision,
                     CancellationToken.None);
             }
 
@@ -3107,7 +3094,98 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         bool HasAdoptedContext,
         IReadOnlyList<string> AdoptedSpeakerIds,
         string? Cwd,
-        bool IsMessy);
+        bool IsMessy,
+        // Per-clause (verb, directory) pairs preserved across the pause-
+        // for-approval round trip so the persistence path on
+        // ApprovedAlways can write per-clause folder-scoped grants from
+        // the path arguments the agent originally passed, rather than
+        // collapsing everything to cwd. Empty list when the request did
+        // not carry candidate-level data (e.g. older callers).
+        IReadOnlyList<ApprovalCandidate> Candidates);
+
+    private async Task PersistApprovalCandidatesAsync(
+        PendingToolInteraction pending,
+        ApprovalDecision decision,
+        CancellationToken ct)
+    {
+        if (_approvalService is null)
+            return;
+
+        var persistent = decision is ApprovalDecision.ApprovedAlways
+            or ApprovalDecision.ApprovedEverywhere;
+        var globalWildcard = decision == ApprovalDecision.ApprovedEverywhere;
+
+        // Prefer per-clause Candidates so we can use each clause's extracted
+        // path argument as the directory half. Fall back to the verb-only
+        // CandidateVerbs list for older callers (or non-shell tools whose
+        // matcher doesn't populate Candidates).
+        if (pending.Candidates.Count == 0)
+        {
+            var fallbackCwd = globalWildcard ? null : pending.Cwd;
+            await _approvalService.RecordApprovalAsync(
+                _sessionId.Value,
+                pending.Audience,
+                new ToolName(pending.ToolName),
+                pending.CandidateVerbs,
+                persistent,
+                fallbackCwd,
+                ct);
+            return;
+        }
+
+        // Group candidates by their effective directory so we make one
+        // RecordApprovalAsync call per (audience, tool, directory) bucket
+        // rather than one per verb. Side-effect-only clauses are dropped
+        // before grouping — they're authorized for the current call by
+        // the decision but persistence is suppressed.
+        // Key is string.Empty for the null-directory (global wildcard) bucket;
+        // mapped back to null when calling the persistence layer below.
+        var grouping = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+        foreach (var candidate in pending.Candidates)
+        {
+            if (ApprovalPatternMatching.IsPureSideEffect(candidate))
+                continue;
+
+            string? effectiveDirectory;
+            if (globalWildcard)
+            {
+                effectiveDirectory = null;
+            }
+            else
+            {
+                effectiveDirectory = candidate.Directory ?? pending.Cwd;
+            }
+
+            if (!grouping.TryGetValue(effectiveDirectory ?? string.Empty, out var verbs))
+            {
+                verbs = [];
+                grouping[effectiveDirectory ?? string.Empty] = verbs;
+            }
+
+            if (!verbs.Contains(candidate.Verb, StringComparer.OrdinalIgnoreCase))
+                verbs.Add(candidate.Verb);
+        }
+
+        foreach (var (key, verbs) in grouping)
+        {
+            if (verbs.Count == 0)
+                continue;
+
+            // Re-derive null vs concrete directory: the dictionary key was
+            // string.Empty for null to satisfy the comparer; map back here.
+            var directory = string.IsNullOrEmpty(key) ? null : key;
+
+            await _approvalService.RecordApprovalAsync(
+                _sessionId.Value,
+                pending.Audience,
+                new ToolName(pending.ToolName),
+                verbs,
+                persistent,
+                directory,
+                ct);
+        }
+    }
 
     private void PersistAdoptedContextIfNeeded(MessageSource? source)
     {

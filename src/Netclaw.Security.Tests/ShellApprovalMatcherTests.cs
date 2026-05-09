@@ -75,15 +75,17 @@ public sealed class ShellApprovalMatcherTests
     }
 
     [Fact]
-    public void ExtractCandidateVerbs_path_aware_verb_appends_first_argument()
+    public void ExtractCandidateVerbs_emits_command_head_only()
     {
+        // v2.1 path-extraction: verb chain is the command head only.
+        // The path argument is captured separately on
+        // ExtractCandidates(...).Directory; see
+        // ShellApprovalMatcherPathExtractionTests for the full coverage.
         var verbs = _matcher.ExtractCandidateVerbs(
             new ToolName("shell_execute"),
             Args("cat /home/user/.netclaw/logs/crash.log"));
         Assert.Single(verbs);
-        Assert.Contains(
-            verbs,
-            v => v.Replace('\\', '/').Equals("cat /home/user/.netclaw/logs/crash.log", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("cat", verbs[0]);
     }
 
     [Fact]
@@ -201,6 +203,144 @@ public sealed class ShellApprovalMatcherTests
             Args("for x in 1 2 3; do echo $x; done"),
             approved,
             cwd: null));
+    }
+}
+
+/// <summary>
+/// Path-extraction-aware matcher tests. The v2.1 design moves path arguments
+/// out of the verb chain and into the candidate's directory half so future
+/// calls in the same tree match a single persisted entry.
+/// </summary>
+public sealed class ShellApprovalMatcherPathExtractionTests
+{
+    private readonly ShellApprovalMatcher _matcher = ShellApprovalMatcher.Instance;
+
+    private static Dictionary<string, object?> Args(string command) => new() { ["Command"] = command };
+
+    [Fact]
+    public void ExtractCandidates_strips_path_from_verb()
+    {
+        var candidates = _matcher.ExtractCandidates(new ToolName("shell_execute"),
+            Args("find /home/petabridge -name X"));
+
+        var c = Assert.Single(candidates);
+        Assert.Equal("find", c.Verb);
+        Assert.Equal("/home/petabridge", c.Directory);
+    }
+
+    [Fact]
+    public void ExtractCandidates_applies_file_parent_rule()
+    {
+        var candidates = _matcher.ExtractCandidates(new ToolName("shell_execute"),
+            Args("cat ~/.bashrc"));
+
+        var c = Assert.Single(candidates);
+        Assert.Equal("cat", c.Verb);
+        // Path.GetDirectoryName drops the trailing separator.
+        Assert.Equal("~", c.Directory);
+    }
+
+    [Fact]
+    public void ExtractCandidates_no_path_returns_null_directory()
+    {
+        var candidates = _matcher.ExtractCandidates(new ToolName("shell_execute"),
+            Args("git status"));
+
+        var c = Assert.Single(candidates);
+        Assert.Equal("git status", c.Verb);
+        Assert.Null(c.Directory);
+    }
+
+    [Fact]
+    public void ExtractCandidates_compound_command_extracts_per_clause()
+    {
+        var candidates = _matcher.ExtractCandidates(new ToolName("shell_execute"),
+            Args("ls /repo && git status"));
+
+        Assert.Equal(2, candidates.Count);
+        Assert.Equal("ls", candidates[0].Verb);
+        Assert.Equal("/repo", candidates[0].Directory);
+        Assert.Equal("git status", candidates[1].Verb);
+        Assert.Null(candidates[1].Directory);
+    }
+
+    [Fact]
+    public void Matches_when_candidate_path_under_entry_directory()
+    {
+        // Folder-scoped trust compounds: an entry on /home/petabridge
+        // covers any candidate whose path is under it.
+        Assert.True(ApprovalPatternMatching.MatchesShellApproval(
+            candidateVerb: "find",
+            candidateDirectory: "/home/petabridge/.netclaw",
+            cwd: null,
+            approvedEntries: [new ApprovalEntry { Verb = "find", Directory = "/home/petabridge" }]));
+    }
+
+    [Fact]
+    public void Matches_when_candidate_path_equals_entry_directory()
+    {
+        Assert.True(ApprovalPatternMatching.MatchesShellApproval(
+            candidateVerb: "find",
+            candidateDirectory: "/home/petabridge",
+            cwd: null,
+            approvedEntries: [new ApprovalEntry { Verb = "find", Directory = "/home/petabridge" }]));
+    }
+
+    [Fact]
+    public void Rejects_when_candidate_path_outside_entry_directory()
+    {
+        Assert.False(ApprovalPatternMatching.MatchesShellApproval(
+            candidateVerb: "find",
+            candidateDirectory: "/home/other",
+            cwd: null,
+            approvedEntries: [new ApprovalEntry { Verb = "find", Directory = "/home/petabridge" }]));
+    }
+
+    [Fact]
+    public void Falls_back_to_cwd_when_candidate_path_is_null()
+    {
+        // No path argument on the candidate — cwd is the effective directory.
+        Assert.True(ApprovalPatternMatching.MatchesShellApproval(
+            candidateVerb: "git status",
+            candidateDirectory: null,
+            cwd: "/home/petabridge/.netclaw",
+            approvedEntries: [new ApprovalEntry { Verb = "git status", Directory = "/home/petabridge" }]));
+    }
+
+    [Fact]
+    public void Null_directory_entry_matches_any_candidate()
+    {
+        // Global wildcard ignores both candidate path and cwd.
+        Assert.True(ApprovalPatternMatching.MatchesShellApproval(
+            candidateVerb: "freshdesk",
+            candidateDirectory: null,
+            cwd: null,
+            approvedEntries: [new ApprovalEntry { Verb = "freshdesk", Directory = null }]));
+    }
+
+    [Fact]
+    public void IsPureSideEffect_skips_echo_without_redirect()
+    {
+        Assert.True(ApprovalPatternMatching.IsPureSideEffect(
+            new ApprovalCandidate("echo", Directory: null)));
+    }
+
+    [Fact]
+    public void IsPureSideEffect_does_not_skip_echo_with_redirect_target()
+    {
+        // echo X > /tmp/log gets /tmp as its directory via the path-arg
+        // scan, which means it's no longer "pure" side effect.
+        Assert.False(ApprovalPatternMatching.IsPureSideEffect(
+            new ApprovalCandidate("echo", Directory: "/tmp")));
+    }
+
+    [Fact]
+    public void IsPureSideEffect_does_not_skip_action_verbs()
+    {
+        Assert.False(ApprovalPatternMatching.IsPureSideEffect(
+            new ApprovalCandidate("find", Directory: null)));
+        Assert.False(ApprovalPatternMatching.IsPureSideEffect(
+            new ApprovalCandidate("git push", Directory: null)));
     }
 }
 

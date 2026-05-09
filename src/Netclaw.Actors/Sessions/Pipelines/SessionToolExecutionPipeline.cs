@@ -291,6 +291,7 @@ internal static class SessionToolExecutionPipeline
                 PersistedAdoptedContext = source?.HasAdoptedContext ?? false,
                 Patterns = ctx.Patterns,
                 CandidateVerbs = ctx.CandidateVerbs,
+                Candidates = ctx.Candidates ?? [],
                 Cwd = ctx.Cwd,
                 IsMessy = ctx.IsMessy,
                 Options = ctx.Options

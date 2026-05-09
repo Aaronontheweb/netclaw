@@ -13,6 +13,8 @@ internal interface IShellApprovalSemantics
 
     string ExtractVerbChain(string command, int maxDepth);
 
+    string? ExtractFirstPathArgument(string command);
+
     IReadOnlyList<string> ExtractInnerCommands(string command);
 
     bool LooksLikePath(string token);
@@ -115,26 +117,76 @@ internal abstract class ShellApprovalSemanticsBase : IShellApprovalSemantics
             if (LooksLikeArgument(trimmed))
                 break;
 
+            // Path-aware verbs (cat, grep, find, ls, ...) take positional
+            // arguments (search pattern, target file) that are not
+            // subcommands. Stop after the first verb so we don't bake
+            // call-specific arguments into the persisted verb chain. This
+            // is what makes "grep secret /var/log/syslog" produce verb
+            // "grep" (with /var/log/syslog as the effective directory)
+            // rather than verb "grep secret".
+            if (verbParts.Count == 1 && ShellTokenizer.PathAwareVerbs.Contains(verbParts[0]))
+                break;
+
             verbParts.Add(trimmed);
         }
 
-        if (verbParts.Count == 1 && ShellTokenizer.PathAwareVerbs.Contains(verbParts[0]))
+        return string.Join(' ', verbParts);
+    }
+
+    public string? ExtractFirstPathArgument(string command)
+    {
+        // Per the path-extraction spec, only conservatively path-anchored
+        // tokens count: starts with /, ~/, ./, ../ or equals ~, ., ..
+        // Tokens that merely contain a slash (URLs, regexes, docker tags,
+        // git refs) are intentionally NOT extracted — false positives here
+        // would silently expand or contract trust scope.
+        foreach (var token in ShellTokenizer.Tokenize(command))
         {
-            for (var i = 1; i < tokens.Count; i++)
-            {
-                var trimmed = ShellTokenizer.TrimShellPunctuation(tokens[i]);
-                if (trimmed.Length == 0)
-                    continue;
-
-                if (trimmed.StartsWith('-'))
-                    continue;
-
-                verbParts.Add(trimmed);
-                break;
-            }
+            var trimmed = ShellTokenizer.TrimShellPunctuation(token);
+            if (trimmed.Length == 0)
+                continue;
+            if (trimmed.StartsWith('-'))
+                continue;
+            if (ShellTokenizer.IsPathToken(trimmed))
+                return ApplyFileParentRule(trimmed);
         }
 
-        return string.Join(' ', verbParts);
+        return null;
+    }
+
+    /// <summary>
+    /// When the extracted path looks like a file (has an extension on its
+    /// last component), return the parent directory so persisted approvals
+    /// scope to the folder rather than a single file. Pure string operation,
+    /// no filesystem syscall.
+    /// </summary>
+    private static string? ApplyFileParentRule(string token)
+    {
+        if (string.IsNullOrEmpty(token))
+            return token;
+
+        // Path.HasExtension is the deterministic heuristic; dot-prefixed
+        // dotfiles like ~/.bashrc don't return an extension via this API
+        // (the leading dot is treated as part of the basename), which is
+        // the right behavior for our use case — scope cat ~/.bashrc to ~/.
+        var hasExtension = Path.HasExtension(token);
+        if (!hasExtension && !LooksLikeDotfile(token))
+            return token;
+
+        var parent = Path.GetDirectoryName(token);
+        // GetDirectoryName returns "" for a bare filename and the literal
+        // separator for root-level files. Fall back to the token unchanged
+        // when we can't sensibly compute a parent.
+        if (string.IsNullOrEmpty(parent))
+            return token;
+
+        return parent;
+    }
+
+    private static bool LooksLikeDotfile(string token)
+    {
+        var basename = Path.GetFileName(token);
+        return basename.Length > 1 && basename[0] == '.';
     }
 
     public string NormalizeApprovalUnit(string command, string? workingDirectory)

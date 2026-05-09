@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Netclaw.Configuration;
+using Netclaw.Security;
 
 namespace Netclaw.Actors.Protocol;
 
@@ -364,12 +365,23 @@ public sealed record ToolInteractionRequest : SessionOutput
     public IReadOnlyList<string> Patterns { get; init; } = [];
 
     /// <summary>
-    /// Candidate verb chains extracted from this invocation. The approval gate
-    /// evaluates each verb against persisted <c>ApprovalEntry</c> records
-    /// using <see cref="Cwd"/> as the directory half of the
-    /// <c>(verb, directory)</c> pair.
+    /// Verb-only projection of <see cref="Candidates"/>. Renderers (Slack,
+    /// Discord) bullet-list these in the prompt body. Persisted approval
+    /// matching uses <see cref="Candidates"/> instead so the directory half
+    /// of each <c>(verb, directory)</c> pair is preserved.
     /// </summary>
     public IReadOnlyList<string> CandidateVerbs { get; init; } = [];
+
+    /// <summary>
+    /// Per-clause <c>(verb, directory)</c> pairs extracted from this
+    /// invocation. The directory half is the path argument extracted
+    /// from each clause when present, else null (in which case the
+    /// matcher falls back to <see cref="Cwd"/>). The session actor
+    /// reads this on <c>ApprovedAlways</c> so "Always here" persists
+    /// per-clause folder-scoped grants from the actual path arguments
+    /// the agent passed.
+    /// </summary>
+    public IReadOnlyList<ApprovalCandidate> Candidates { get; init; } = [];
 
     /// <summary>
     /// Resolved working directory for this invocation, used by the approval

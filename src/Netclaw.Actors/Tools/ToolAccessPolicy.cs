@@ -300,17 +300,24 @@ public sealed class ToolAccessPolicy
             return ToolAccessDecision.Allow();
         }
 
-        // Approval prompts carry two views of the invocation:
+        // Approval prompts carry three views of the invocation:
         // - `patterns`: the exact blocked units shown to the user and reused by
         //   approve-once retries.
-        // - `candidateVerbs`: the verb chains evaluated against persisted
-        //   ApprovalEntry records by the gate. The directory half of each
-        //   (verb, directory) pair comes from ToolExecutionContext.Cwd and is
-        //   not extracted from arguments. Button labels stay fixed; runtime
-        //   values like paths never enter button text because Slack caps
-        //   button text at 76 chars and Discord at 80.
+        // - `candidates`: the (verb, directory) pairs evaluated against
+        //   persisted ApprovalEntry records by the gate. The directory half is
+        //   the path argument extracted from each clause when present, falling
+        //   back to ToolExecutionContext.Cwd at evaluation time.
+        // - `candidateVerbs`: the verb-only projection of `candidates`, kept
+        //   for renderers (Slack/Discord builders) that bullet-list verbs in
+        //   the prompt body. Button labels stay fixed; runtime values like
+        //   paths never enter button text because Slack caps button text at
+        //   76 chars and Discord at 80.
         var patterns = matcher.ExtractPatterns(toolName, arguments);
-        var candidateVerbs = matcher.ExtractCandidateVerbs(toolName, arguments);
+        var candidates = matcher.ExtractCandidates(toolName, arguments);
+        var candidateVerbs = candidates
+            .Select(static c => c.Verb)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         var displayText = matcher.FormatForDisplay(toolName, arguments);
         var isMessy = matcher.IsMessy(toolName, arguments);
 
@@ -349,7 +356,8 @@ public sealed class ToolAccessPolicy
             candidateVerbs,
             options,
             Cwd: context?.Cwd,
-            IsMessy: isMessy);
+            IsMessy: isMessy,
+            Candidates: candidates);
 
         return ToolAccessDecision.RequiresApproval(approvalContext);
     }
@@ -573,9 +581,9 @@ public sealed record ToolApprovalContext(
     string ToolName,
     string DisplayText,
     IReadOnlyList<string> Patterns,
-    // Candidate verb chains evaluated against persisted ApprovalEntry records.
-    // The directory half of each (verb, directory) pair comes from the
-    // candidate's cwd in ToolExecutionContext, not from extraction.
+    // Verb-only projection of Candidates. Kept for renderers that bullet-
+    // list verbs in the prompt body (Slack, Discord) without needing the
+    // directory half.
     IReadOnlyList<string> CandidateVerbs,
     IReadOnlyList<ToolApprovalOption> Options,
     // Resolved cwd at the moment the gate decided approval was required.
@@ -588,7 +596,14 @@ public sealed record ToolApprovalContext(
     // approval units (bash control-flow, unbalanced quotes/brackets).
     // Channel adapters use this to omit the persistent-grant buttons and
     // surface the "complex command" hint.
-    bool IsMessy = false);
+    bool IsMessy = false,
+    // Per-clause (verb, directory) pairs evaluated against the persisted
+    // ApprovalEntry store. The directory half is the path argument
+    // extracted from the clause when present, falling back to Cwd at
+    // match time. The persistence path reads this on ApprovedAlways so
+    // "Always here" stores per-clause folder-scoped grants from the
+    // actual paths the agent touched.
+    IReadOnlyList<ApprovalCandidate>? Candidates = null);
 
 public sealed record ToolApprovalOption(string Key, string Label);
 

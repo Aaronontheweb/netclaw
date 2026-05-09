@@ -9,6 +9,16 @@ using Netclaw.Tools;
 namespace Netclaw.Security;
 
 /// <summary>
+/// One approval candidate extracted from a tool invocation. The verb is the
+/// command head plus subcommand chain (e.g., <c>find</c>, <c>git status</c>).
+/// The directory is the first path-like positional argument with the
+/// file-parent rule applied — when present it overrides the resolved cwd as
+/// the candidate's effective directory in the approval matcher; when null
+/// the matcher falls back to the spawned process's cwd.
+/// </summary>
+public sealed record ApprovalCandidate(string Verb, string? Directory);
+
+/// <summary>
 /// Tool-specific pattern extraction and matching for the approval system.
 /// Each tool type can provide its own matcher to define what constitutes
 /// an "intent-level" pattern for approval purposes.
@@ -43,13 +53,22 @@ public interface IToolApprovalMatcher
 
     /// <summary>
     /// Returns the candidate verb chains evaluated against persisted
-    /// <see cref="ApprovalEntry"/> records by the gate. The directory half of
-    /// each <c>(verb, directory)</c> pair comes from the candidate's
-    /// <see cref="ToolExecutionContext.Cwd"/>, not from extraction. For shell
-    /// these are pure verb chains (e.g., <c>git push</c>, <c>grep</c>); for
-    /// other tools typically <c>[toolName.Value]</c>.
+    /// <see cref="ApprovalEntry"/> records by the gate. For shell these are
+    /// pure verb chains (e.g., <c>git push</c>, <c>grep</c>); for other
+    /// tools typically <c>[toolName.Value]</c>. Derived from
+    /// <see cref="ExtractCandidates"/>.
     /// </summary>
     IReadOnlyList<string> ExtractCandidateVerbs(ToolName toolName, IDictionary<string, object?>? arguments);
+
+    /// <summary>
+    /// Returns the candidate <c>(verb, directory)</c> pairs for this tool
+    /// invocation. The directory half is the first path-like positional
+    /// argument extracted from each clause (with the file-parent rule
+    /// applied), or null when the clause has no path argument. The matcher
+    /// SHALL use this directory as the candidate's effective directory,
+    /// falling back to <see cref="ToolExecutionContext.Cwd"/> when null.
+    /// </summary>
+    IReadOnlyList<ApprovalCandidate> ExtractCandidates(ToolName toolName, IDictionary<string, object?>? arguments);
 
     /// <summary>
     /// Returns true when every candidate verb chain finds a matching
@@ -114,27 +133,38 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     }
 
     public IReadOnlyList<string> ExtractCandidateVerbs(ToolName toolName, IDictionary<string, object?>? arguments)
+        => ExtractCandidates(toolName, arguments)
+            .Select(c => c.Verb)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    public IReadOnlyList<ApprovalCandidate> ExtractCandidates(ToolName toolName, IDictionary<string, object?>? arguments)
     {
         var command = GetCommand(arguments);
         if (string.IsNullOrWhiteSpace(command))
             return [];
 
-        // v2 candidate extraction: verb chains only. The directory half of
-        // each (verb, directory) approval pair is the candidate's cwd from
-        // ToolExecutionContext, evaluated by the gate. v1's mingling of verb
-        // chains, normalized commands, and bare directory roots in this same
-        // list was the source of the unreviewable approval store the v2
-        // schema set out to fix; we no longer fall back to anything other
-        // than the verb chain.
-        var verbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // v2.1 candidate extraction: emit (verb, directory) pairs per clause.
+        // The verb is the command head + subcommand chain only; path
+        // arguments are extracted separately as the candidate's effective
+        // directory. The matcher uses directory ?? cwd at evaluation time.
+        // Deduped by (verb, directory) so a compound command like
+        // "ls A; ls B" produces two entries even though the verb is shared.
+        var seen = new HashSet<(string, string?)>();
+        var candidates = new List<ApprovalCandidate>();
         TraverseApprovalUnits(command, unit =>
         {
             var verb = ShellTokenizer.ExtractVerbChain(unit);
-            if (!string.IsNullOrEmpty(verb))
-                verbs.Add(verb);
+            if (string.IsNullOrEmpty(verb))
+                return;
+
+            var directory = ShellTokenizer.ExtractFirstPathArgument(unit);
+            var key = (verb.ToLowerInvariant(), directory);
+            if (seen.Add(key))
+                candidates.Add(new ApprovalCandidate(verb, directory));
         });
 
-        return verbs.ToList();
+        return candidates;
     }
 
     public bool IsApproved(
@@ -154,13 +184,14 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (ShellTokenizer.IsMessyCompoundCommand(command))
             return false;
 
-        var verbs = ExtractCandidateVerbs(toolName, arguments);
-        if (verbs.Count == 0)
+        var candidates = ExtractCandidates(toolName, arguments);
+        if (candidates.Count == 0)
             return true;
 
-        foreach (var verb in verbs)
+        foreach (var candidate in candidates)
         {
-            if (!ApprovalPatternMatching.MatchesShellApproval(verb, cwd, approvedEntries))
+            if (!ApprovalPatternMatching.MatchesShellApproval(
+                    candidate.Verb, candidate.Directory, cwd, approvedEntries))
                 return false;
         }
 
@@ -220,6 +251,9 @@ public sealed class DefaultApprovalMatcher : IToolApprovalMatcher
 
     public IReadOnlyList<string> ExtractCandidateVerbs(ToolName toolName, IDictionary<string, object?>? arguments)
         => [toolName.Value];
+
+    public IReadOnlyList<ApprovalCandidate> ExtractCandidates(ToolName toolName, IDictionary<string, object?>? arguments)
+        => [new ApprovalCandidate(toolName.Value, Directory: null)];
 
     public bool IsApproved(
         ToolName toolName,

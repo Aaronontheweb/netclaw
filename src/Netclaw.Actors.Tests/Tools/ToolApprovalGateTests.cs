@@ -769,12 +769,18 @@ public sealed class ToolApprovalGateTests
 
         Assert.True(decision.NeedsApproval);
         Assert.NotNull(decision.ApprovalContext);
-        // ExtractVerbChain appends the first positional argument for
-        // path-aware verbs (cat, grep, etc.) so the candidate captures what
-        // the command operates on.
-        Assert.Contains(
-            decision.ApprovalContext!.CandidateVerbs,
-            v => v.Replace('\\', '/').Equals("cat /home/user/.netclaw/logs/crash.log", StringComparison.OrdinalIgnoreCase));
+        // Under v2.1 path-extraction, the verb chain is the command head
+        // only; the path is captured separately as the candidate's
+        // directory (with the file-parent rule reducing the leaf file to
+        // its parent directory).
+        Assert.Contains("cat", decision.ApprovalContext!.CandidateVerbs);
+        Assert.NotNull(decision.ApprovalContext.Candidates);
+        var candidate = Assert.Single(decision.ApprovalContext.Candidates!);
+        Assert.Equal("cat", candidate.Verb);
+        Assert.NotNull(candidate.Directory);
+        Assert.Equal(
+            "/home/user/.netclaw/logs",
+            candidate.Directory!.Replace('\\', '/'));
     }
 
     [Fact]

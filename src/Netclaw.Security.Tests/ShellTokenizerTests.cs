@@ -146,10 +146,10 @@ public sealed class ShellTokenizerTests
 
     [Theory]
     [InlineData("git push origin main", "git push")]
-    [InlineData("ls -la /tmp", "ls /tmp")]
+    [InlineData("ls -la /tmp", "ls")]
     [InlineData("docker compose up -d", "docker compose")]
-    [InlineData("cat /etc/hosts", "cat /etc/hosts")]
-    [InlineData("cat .gitignore", "cat .gitignore")]
+    [InlineData("cat /etc/hosts", "cat")]
+    [InlineData("cat .gitignore", "cat")]
     [InlineData("kubectl delete pod my-pod", "kubectl delete")]
     [InlineData("", "")]
     public void ExtractVerbChain_extracts_expected_chain(string input, string expected)
@@ -158,14 +158,17 @@ public sealed class ShellTokenizerTests
     }
 
     [Theory]
-    // Path-aware verbs include first non-flag argument
-    [InlineData("cat /etc/passwd", "cat /etc/passwd")]
-    [InlineData("grep secret /var/log/syslog", "grep secret")]
-    [InlineData("bash /home/user/.netclaw/scripts/monitor.sh", "bash /home/user/.netclaw/scripts/monitor.sh")]
-    [InlineData("python3 /opt/scripts/report.py --verbose", "python3 /opt/scripts/report.py")]
-    [InlineData("curl https://example.com/api", "curl https://example.com/api")]
-    [InlineData("find /var/log -name '*.log'", "find /var/log")]
-    [InlineData("sed -i 's/foo/bar/' /etc/config.txt", "sed s/foo/bar/")]
+    // Verb-only extraction — paths and arguments are separate concerns
+    // (see ExtractFirstPathArgument tests). The pre-fix behavior of
+    // appending the first arg to the verb chain (e.g.
+    // "cat /etc/passwd" → "cat /etc/passwd") was the v2 bug fixed here.
+    [InlineData("cat /etc/passwd", "cat")]
+    [InlineData("grep secret /var/log/syslog", "grep")]
+    [InlineData("bash /home/user/.netclaw/scripts/monitor.sh", "bash")]
+    [InlineData("python3 /opt/scripts/report.py --verbose", "python3")]
+    [InlineData("curl https://example.com/api", "curl")]
+    [InlineData("find /var/log -name '*.log'", "find")]
+    [InlineData("sed -i 's/foo/bar/' /etc/config.txt", "sed")]
     // Structured CLIs unchanged
     [InlineData("git push origin main", "git push")]
     [InlineData("docker compose up -d", "docker compose")]
@@ -174,12 +177,78 @@ public sealed class ShellTokenizerTests
     // Edge: flag-only invocations of path-aware verbs
     [InlineData("grep --version", "grep")]
     [InlineData("cat --help", "cat")]
-    // Edge: home-relative and env-var paths
-    [InlineData("cat ~/.bashrc", "cat ~/.bashrc")]
-    [InlineData("bash ~/scripts/deploy.sh", "bash ~/scripts/deploy.sh")]
-    public void ExtractVerbChain_path_aware_verbs(string input, string expected)
+    // Edge: home-relative paths — verb only, path lives in
+    // ExtractFirstPathArgument
+    [InlineData("cat ~/.bashrc", "cat")]
+    [InlineData("bash ~/scripts/deploy.sh", "bash")]
+    public void ExtractVerbChain_verb_only(string input, string expected)
     {
         Assert.Equal(expected, ShellTokenizer.ExtractVerbChain(input));
+    }
+
+    // ── IsPathToken ──
+
+    [Theory]
+    [InlineData("/", true)]
+    [InlineData("/home/petabridge", true)]
+    [InlineData("/etc/hosts", true)]
+    [InlineData("~", true)]
+    [InlineData("~/", true)]
+    [InlineData("~/.bashrc", true)]
+    [InlineData(".", true)]
+    [InlineData("./", true)]
+    [InlineData("./build", true)]
+    [InlineData("..", true)]
+    [InlineData("../shared", true)]
+    // Negative cases — tokens with internal slashes that are NOT paths
+    [InlineData("https://example.com/api", false)]
+    [InlineData("a/b", false)]
+    [InlineData("'a/b'", false)]
+    [InlineData("foo/bar:tag", false)]
+    [InlineData("origin/main", false)]
+    [InlineData("s/foo/bar/", false)]
+    [InlineData("--verbose", false)]
+    [InlineData("netclaw", false)]
+    [InlineData("", false)]
+    public void IsPathToken_classifies_correctly(string token, bool expected)
+    {
+        Assert.Equal(expected, ShellTokenizer.IsPathToken(token));
+    }
+
+    // ── ExtractFirstPathArgument ──
+
+    [Theory]
+    // Absolute paths
+    [InlineData("find /home/petabridge -name X", "/home/petabridge")]
+    [InlineData("ls -la /tmp", "/tmp")]
+    [InlineData("grep -r foo /var/log", "/var/log")]
+    // Tilde-prefixed file → parent directory via file-parent rule
+    // (Path.GetDirectoryName returns the parent without a trailing
+    // separator; the matcher's under-check is tolerant of both forms.)
+    [InlineData("cat ~/.bashrc", "~")]
+    [InlineData("cat ~/.profile", "~")]
+    // Tilde-prefixed directory (no extension) preserved as-is
+    [InlineData("ls ~/repos", "~/repos")]
+    // Relative dot/dot-dot paths
+    [InlineData("grep -r foo ./build", "./build")]
+    [InlineData("ls .", ".")]
+    [InlineData("cd ..", "..")]
+    // File path with extension → parent
+    [InlineData("cp /src/a.txt /dst/b.txt", "/src")]
+    [InlineData("cat /etc/hosts.conf", "/etc")]
+    // File path without extension stays as-is
+    [InlineData("cat /etc/hosts", "/etc/hosts")]
+    // No path argument
+    [InlineData("git status", null)]
+    [InlineData("echo hello", null)]
+    [InlineData("freshdesk --since=24h", null)]
+    // URL not classified as path
+    [InlineData("curl https://example.com/foo", null)]
+    // Internal-slash regex literal not classified as path
+    [InlineData("grep -r 'a/b' .", ".")]
+    public void ExtractFirstPathArgument_returns_first_path_or_null(string command, string? expected)
+    {
+        Assert.Equal(expected, ShellTokenizer.ExtractFirstPathArgument(command));
     }
 
     [Fact]
