@@ -606,8 +606,18 @@ static void ConfigureDaemonServices(
         .Get<SearchConfig>() ?? new SearchConfig();
     var searchBackend = searchConfig.Enabled ? CreateSearchBackend(searchConfig) : null;
 
+    // ConfigDirectory is hard-denied for agent writes and shell access to
+    // close the prompt-injection vector where an injected payload would
+    // instruct the agent to rewrite tool-approvals.json, hard-deny-overrides.json,
+    // or netclaw.json and grant itself global trust. Operators retain agency
+    // by editing config files outside the agent (their own editor) or via
+    // dedicated CLI commands that bypass the agent's tool-call path.
+    // Individual high-sensitivity paths (Secrets, Keys, etc.) are also listed
+    // explicitly for self-documenting intent — ConfigDirectory subsumes them
+    // but the explicit entries make the security purpose obvious to readers.
     var writeDenyList = new[]
     {
+        paths.ConfigDirectory,
         paths.SecretsPath,
         paths.KeysDirectory,
         paths.SqliteDbPath,
@@ -623,6 +633,7 @@ static void ConfigureDaemonServices(
     };
     var shellIndicatorList = new[]
     {
+        paths.ConfigDirectory,
         paths.SecretsPath,
         paths.WebhooksDirectory,
         paths.KeysDirectory,
