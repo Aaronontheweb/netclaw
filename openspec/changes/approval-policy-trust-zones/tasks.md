@@ -10,7 +10,8 @@
 - [ ] 1.8 Implement per-verb `pathArgs` filter: knows `chmod 755 file` (first arg is mode, rest are paths), `cp -r src dst` (skip flag, both rest are paths), Windows-cmd `/X` flag skipping. Verify: unit-tested per verb (≥20 verbs).
 - [ ] 1.9 Implement `Resolver`: `~` expansion, `$VAR` / `${VAR}` env-var resolution against an injected `IEnvironmentSnapshot`, glob detection (`*`, `?`, `[`), `filesystem::/path` prefix stripping, dynamic-skip when expansion fails. Verify: resolver unit tests cover each expansion case with ≥30 inputs.
 - [ ] 1.10 Implement cd-in-compound propagation: walk `Clauses`; when first clause is `cd /target`, attribute `/target` as an additional path on subsequent clauses within the same compound (until subshell boundary). Verify: AST-level test ≥10 cases including nested subshells.
-- [ ] 1.11 Author corpus at `tests/Corpus/` with input + expected-AST JSON files. Seed from sanitized real-agent emissions (PII stripped). Target ≥100 corpus entries covering each grammar production and counter-examples. Verify: corpus runner test executes every entry and asserts AST equality.
+- [ ] 1.11a Draft `tests/Corpus/SANITIZATION.md` describing what gets stripped from session-log seeds (usernames, channel/thread IDs, repo names, internal hostnames, real filenames → placeholders) and the regex patterns used. Aaron reviews before any logs are touched. Verify: SANITIZATION.md committed, Aaron sign-off in PR.
+- [ ] 1.11 Author corpus at `tests/Corpus/` with input + expected-AST JSON files. Seed from session logs sanitized per SANITIZATION.md (PII stripped). Target ≥100 corpus entries covering each grammar production and counter-examples. Verify: corpus runner test executes every entry and asserts AST equality; second pass on the corpus confirms zero PII via grep against the sanitization patterns.
 - [ ] 1.12 Set up CI on the external repo: `dotnet test` on push, NuGet publish on tag. Verify: CI green on initial commit; tag-based publish documented.
 - [ ] 1.13 Cut `0.1.0-alpha` tag and verify NuGet publish pipeline produces a consumable package. Verify: package downloadable from nuget.org and installable in a separate test project.
 
@@ -42,11 +43,15 @@
 ## 5. Three-layer gate evaluator
 
 - [ ] 5.1 Define `GateEvaluator` service with `Evaluate(ParsedCommand, Audience, TrustState)` returning per-clause `GateResult` (hard-deny / zone-pass / zone-prompt / verb-pass / verb-prompt / verb-pass-readonly). Verify: unit-tested for each result kind.
-- [ ] 5.2 Implement Layer 1 hard-deny check on parsed clauses. Reuse existing hard-deny patterns; refactor the matcher to consume `Clause` instead of token strings. Verify: hard-deny unit tests pass against parsed-clause inputs.
+- [ ] 5.2a Define `HardDenyDefaults` static class in `Netclaw.Security` with the shipped baseline rules as immutable C# data. Each rule uses the structured DSL (verb + argFlags + firstPath predicates, or rawText escape). Translate the existing `toolConfig.HardDenyPatterns` regex list into structured form during this task; document each translation in the commit message. Verify: defaults round-trip through the matcher; every existing hard-deny test still passes after rule translation.
+- [ ] 5.2b Implement `HardDenyOverridesLoader` reading `~/.netclaw/config/hard-deny-overrides.json` (additive only; rejects rules attempting to disable shipped defaults). Verify: loader unit-tested for valid additions, malformed JSON, and shadow-attempt rejection.
+- [ ] 5.2c Implement `HardDenyDoctorCheck` verifying shipped defaults are present in the loaded final ruleset at startup. Refuse daemon start with loud error if any default is missing. Verify: doctor check unit-tested.
+- [ ] 5.2 Implement Layer 1 hard-deny check operating on parsed clauses. For each clause, evaluate the structured rules first; for `escapeHatch: true` rawText rules, normalize the clause back to a string and apply the regex. Verify: hard-deny unit tests pass against parsed-clause inputs and rawText fallback.
 - [ ] 5.3 Implement Layer 2 zone gate: extract paths per clause from AST (path args + cd-in-compound attribution + redirect targets); check each against the union (audience baseline ∪ persisted zones ∪ session zones ∪ session_dir); collect untrusted paths into a single batched prompt. Verify: per-path zone evaluation unit-tested with ≥30 cases.
 - [ ] 5.4 Implement Layer 3 verb-pattern gate: extract verb chain per clause via BashArity; check against persisted patterns ∪ session patterns. Read-only verb auto-pass conditional on all clause paths being inside trusted zones. Verify: gate decision unit-tested for read-only-in-zone, read-only-outside-zone, mutating-with-pattern, mutating-without-pattern.
 - [ ] 5.5 Define `IToolApprovalMatcher` v3 interface accepting `ParsedCommand` + `TrustState` and returning per-clause `GateResult`. Implement `ShellApprovalMatcher` for shell tools; default tool-name matcher for non-shell tools. Verify: matcher unit-tested.
 - [ ] 5.6 Wire `GateEvaluator` into `ToolAccessPolicy`. Replace v2 matcher integration. Verify: `ToolAccessPolicy` unit tests updated and passing.
+- [ ] 5.7 Implement parser anomaly safe-fail: when `IShellParser.Parse` throws or returns an unparseable AST, route to safe-fail (hard-deny still consults rawText fallback; zone gate prompts as if raw command operates on one untrusted path; verb gate offers only Once/Deny). Verify: safe-fail unit tests covering parse exceptions, unparseable flag, and partial-AST cases.
 
 ## 6. Per-call ToolApprovalWorkflow
 
@@ -90,6 +95,7 @@
 - [ ] 10.5 Delete `ScopedShellSafeVerbPolicy` (replaced by inline gate evaluation). Verify: no callers remain; safe-verbs file load logic survives but is consumed directly by the new gate evaluator.
 - [ ] 10.6 Update `WorkingContext.ResolveShellCwd` to remove `ProjectDirectory` from the resolution chain (now: `args.WorkingDirectory → SessionDirectory`). Verify: cwd-resolution unit tests pass.
 - [ ] 10.7 Delete the `ShellTool` failure-path hint emission for `set_working_directory`. Verify: hint emission tests removed.
+- [ ] 10.8 Extend `ToolPathPolicy` write-deny and shell-deny lists in `src/Netclaw.Daemon/Program.cs:609-633` to include `paths.ConfigDirectory`. Single-line addition; uses existing infrastructure. Verify: integration test attempts agent file_write to `~/.netclaw/config/tool-approvals.json`, asserts hard-deny; attempts agent shell_execute redirecting to `~/.netclaw/config/netclaw.json`, asserts hard-deny; attempts via symlink, asserts symlink-resolved deny.
 
 ## 11. Agent guidance
 
@@ -124,3 +130,4 @@
 - [ ] 14.4 Run `openspec verify --change approval-policy-trust-zones`; confirm artifacts and implementation align. Verify: verify exits 0.
 - [ ] 14.5 Manual binary-swap on Aaron's machine: replace running daemon, confirm sample sessions exercise both gates with expected prompt shapes on Slack. Verify: Aaron sign-off.
 - [ ] 14.6 Confirm `tool-approvals.json` schema synced (per CLAUDE.md Configuration Schema Sync Rule) if any `*Config` types changed. Verify: `ConfigSchemaDoctorCheck` passes at runtime.
+- [ ] 14.7 Add a parser-version-bump CI gate in Netclaw: any PR that bumps the `ShellSyntaxTree` PackageReference version SHALL run `dotnet test --filter Category=ParserIntegration` exercising the entire parser corpus through Netclaw's live matcher path. Verify: gate present in CI config; intentionally-broken parser version bump fails the gate.

@@ -154,6 +154,12 @@ dependencies in the spec without clarifying anything.
 
 **Security impact:**
 
+Threat model: prompt injection. The agent has tool access (`file_write`,
+`file_edit`, `shell_execute`) and follows instructions emitted by content
+it reads (web pages, file contents, MCP server output). The defense
+gates the *mechanism* an injected payload would use, not the agent's
+judgment about whether to follow the payload.
+
 - Tightening: read-only verbs no longer auto-pass outside trusted zones.
   Previous behavior allowed any read-only verb anywhere; new behavior
   requires explicit zone trust first. Reduces blast radius of misconfigured
@@ -162,6 +168,15 @@ dependencies in the spec without clarifying anything.
   is parsed for path attribution but never mutates persistent or session
   state. Closes a class of "agent issues 9-byte command to escalate trust"
   vectors that the old auto-promote design would have opened.
+- Tightening: hard-deny defaults compiled into the daemon binary and
+  cannot be removed by editing config files. Operator overrides are
+  strictly additive (can add deny rules; cannot weaken shipped defaults).
+- Tightening: existing `ToolPathPolicy` extended to cover
+  `~/.netclaw/config/`. Agent `file_write`, `file_edit`, and
+  `shell_execute` clauses targeting paths under this directory are
+  hard-denied — no approval prompt offered. Closes the prompt-injection
+  vector where the agent would be instructed to rewrite
+  `tool-approvals.json` and grant itself global trust.
 - New: session-scoped grants exist in-memory only. Lost on session
   termination — by design, prevents accidentally widening trust through
   long-lived persistence of one-off experimental approvals.

@@ -45,6 +45,17 @@ gate.
 - **AND** if the user approves, the verb-pattern gate prompts second (verb prompt)
 - **AND** if both approve, the command executes
 
+#### Scenario: Mixed-zone clause with read-only verb collapses to one zone prompt
+
+- **GIVEN** a clause `grep -r foo /trusted /untrusted`
+- **AND** `/trusted` is inside a trusted zone but `/untrusted` is not
+- **AND** `grep` is on the read-only verb list
+- **WHEN** the gate evaluator runs
+- **THEN** the zone gate prompts for `/untrusted` only
+- **AND** the verb-pattern gate auto-passes after zone approval
+  (read-only verb AND all paths now in trusted scope)
+- **AND** the user sees exactly one prompt, then the command executes
+
 ### Requirement: Trust zones store and evaluation
 
 The system SHALL maintain a per-audience `trustedZones` store of directory
@@ -55,6 +66,14 @@ baseline read-allowed roots from `netclaw.json`, (b) the persisted
 `trustedZones` for that audience, (c) the in-memory session-scope trusted
 zones for the current session, AND (d) the immutable `session_dir` for the
 current session (which is always trusted).
+
+Glob matching SHALL use path-prefix recursive semantics: a zone of
+`<dir>/*` SHALL match `<dir>` itself, any direct child of `<dir>`, and any
+descendant at any depth. The `*` is implicitly recursive — there is no
+`**` in zone globs. Trailing slash variations SHALL be normalized
+(`<dir>/`, `<dir>/*`, `<dir>` all denote the same zone). Zone matching
+SHALL be boundary-safe: `~/repos/*` SHALL NOT match `~/repossecret`
+(directory boundary, not character prefix).
 
 When a path P does not match any glob in the union, the zone gate SHALL
 prompt the user. The prompt SHALL list every untrusted path in the command
@@ -113,6 +132,19 @@ The system SHALL maintain a per-audience `verbPatterns` store of glob-style
 verb patterns (e.g., `git push *`, `rm /tmp/*`, `dotnet test *`). The store
 SHALL be persisted under each audience key in
 `~/.netclaw/config/tool-approvals.json` colocated with `trustedZones`.
+
+A verb pattern SHALL parse into two parts: a verb-chain prefix (one or
+more tokens, length determined by the BashArity dictionary) and a trailing
+arg-glob suffix. Pattern matching SHALL succeed when (1) the candidate
+command's verb chain (after BashArity collapses multi-token verbs)
+matches the pattern's verb-chain prefix exactly, AND (2) the candidate
+command's remaining argument tokens match the pattern's arg-glob suffix.
+A pattern of `git push *` matches `git push origin main` and
+`git push --force` (verb chain `git push` exact, args matched by `*`); it
+does NOT match `git pull origin main` (verb mismatch) or `git push-all`
+(verb mismatch). Patterns without a trailing glob (`git push`) SHALL be
+rejected at write time with an error directing the user to add the
+explicit `*` suffix.
 
 The verb-pattern gate SHALL pass silently for a candidate command when
 either: (a) the command's verb chain is on the read-only verb list AND every
@@ -332,6 +364,21 @@ and the full value SHALL appear in the prompt body.
 Both prompts SHALL include the audience name and command context in the
 body so the user can scan the decision context without inferring it.
 
+When a zone prompt lists multiple untrusted paths, the `Trust ...` button
+SHALL apply to ALL listed paths atomically (trust-all-or-nothing) and the
+button label SHALL read `Trust all listed` (with the count parenthesized
+when more than one path is shown). Per-path partial trust SHALL NOT be
+expressible from the prompt; users wanting partial trust SHALL fall back
+to the CLI (`netclaw approvals trust-zone <path>`) or click `Once` and
+let subsequent calls re-prompt.
+
+Channel adapters SHALL render the four buttons in a fixed positional
+order (Once, Session, Trust/Always, Deny) so that text-only or
+keyboard-driven channel adapters can map them to letters
+`A=Once / B=Session / C=Trust|Always / D=Deny` without per-channel
+remapping. The text-only mapping SHALL be considered a forward-compat
+contract and SHALL be the order any future text-mode renderer uses.
+
 #### Scenario: Zone prompt shows path and 4-button row
 
 - **GIVEN** a command operates on the untrusted path `/etc/nginx`
@@ -352,6 +399,8 @@ body so the user can scan the decision context without inferring it.
 - **WHEN** the zone prompt is rendered
 - **THEN** the body lists both paths
 - **AND** a single 4-button row applies to both
+- **AND** the trust button label reads `Trust all listed (2)`
+- **AND** clicking that button extends `trustedZones` for both paths atomically
 
 #### Scenario: Long path label truncates with full value in body
 
@@ -445,6 +494,180 @@ the clause to be treated as path-arg-less; the verb gate still applies.
 - **WHEN** the matcher processes it
 - **THEN** the inner command is parsed
 - **AND** verb chain `git push` is extracted from the inner command
+
+### Requirement: Hard-deny rule source and structured format
+
+The system SHALL ship hard-deny rule defaults as immutable data compiled
+into the daemon binary (`Netclaw.Security.HardDenyDefaults`). The shipped
+defaults SHALL NOT be removable or weakenable at runtime. Operators MAY
+add additional rules via `~/.netclaw/config/hard-deny-overrides.json`.
+The override file SHALL be strictly additive: it MAY introduce new deny
+rules; it MUST NOT remove, disable, or weaken any shipped default. The
+final ruleset evaluated by the matcher SHALL be `Defaults ∪ Overrides`.
+
+Rules SHALL use a JSON-structured predicate format with explicit
+verb-and-args matching. Each rule is one of:
+
+```json
+{
+  "verb": ["netclaw", "daemon", "stop"],
+  "reason": "hard_deny_self_destructive"
+}
+```
+
+```json
+{
+  "verb": ["rm"],
+  "argFlags": ["-rf"],
+  "firstPath": { "oneOf": ["/", "~", "~/"] },
+  "reason": "hard_deny_destructive_root"
+}
+```
+
+For shape-shaped patterns that cannot be expressed as verb+args (e.g.,
+fork bombs `:(){ :|:& };:` which are pure shell syntax with no real verb),
+an explicit `rawText` escape SHALL be permitted, marked with
+`"escapeHatch": true` for documentation:
+
+```json
+{
+  "rawText": ":\\(\\)\\{.*:\\|:&.*\\};:",
+  "reason": "hard_deny_fork_bomb",
+  "escapeHatch": true
+}
+```
+
+Structured rules SHALL evaluate against parsed `Clause` records (verb
+chain + arg list); rawText rules SHALL match against the normalized
+rendered clause string. A `doctor` startup check SHALL verify shipped
+defaults are present in the loaded ruleset and SHALL refuse daemon
+startup if any default is missing or shadowed by a malformed override.
+
+#### Scenario: Shipped default cannot be disabled by override
+
+- **GIVEN** the override file contains a rule attempting to negate
+  `netclaw daemon stop` (e.g., a `disable` field referencing it)
+- **WHEN** the daemon loads the rules
+- **THEN** the override is rejected at parse time with a clear error
+- **AND** the shipped default remains active
+
+#### Scenario: Override adds new deny rule
+
+- **GIVEN** the override file contains
+  `{"verb": ["docker", "rm"], "reason": "local_policy"}`
+- **WHEN** the matcher evaluates a `docker rm my-container` call
+- **THEN** the call is denied via the override rule
+
+#### Scenario: rawText escape matches fork-bomb-shaped commands
+
+- **GIVEN** the shipped defaults include the fork-bomb rawText rule
+- **WHEN** the agent invokes `shell_execute` with command `:(){ :|:& };:`
+- **THEN** the matcher matches the rawText rule against the rendered clause
+- **AND** the call is denied with reason `hard_deny_fork_bomb`
+
+#### Scenario: Doctor refuses startup when default is missing
+
+- **GIVEN** the daemon binary's compiled defaults include a rule with
+  reason `hard_deny_self_destructive`
+- **AND** the override file is malformed in a way that shadows that rule
+- **WHEN** the daemon starts
+- **THEN** the doctor check reports the missing default
+- **AND** the daemon refuses to start with a loud error
+
+### Requirement: Security-critical config protection via ToolPathPolicy
+
+The system SHALL extend the existing `ToolPathPolicy` write-deny and
+shell-deny lists to cover `~/.netclaw/config/` (the entire directory
+tree). This protects `tool-approvals.json`,
+`hard-deny-overrides.json`, `netclaw.json`, and any future operator
+config from agent tool writes — `file_write`, `file_edit`, and
+`shell_execute` clauses that target paths under
+`~/.netclaw/config/` SHALL be hard-denied at the `ToolPathPolicy`
+layer, BEFORE the three-layer gate is consulted.
+
+`ToolPathPolicy` is a hard-deny mechanism: no approval prompt is offered.
+Operators wanting to edit config files SHALL do so outside the agent
+(their own editor, their own shell), or via the dedicated
+`netclaw approvals` / `netclaw audience` CLI commands which bypass the
+agent's tool-call path.
+
+The deny SHALL apply with `ToolPathPolicy`'s existing
+symlink-resolving normalization: a planted symlink under a permitted
+directory cannot route writes to `~/.netclaw/config/`.
+
+This requirement defends against prompt-injection attacks where the
+agent is instructed (by malicious content read from a web page, file,
+or MCP server output) to lift its own constraints by editing the
+config files.
+
+#### Scenario: Agent file_write to tool-approvals.json is denied
+
+- **WHEN** the agent invokes `file_write` with path
+  `~/.netclaw/config/tool-approvals.json`
+- **THEN** the write is denied at the ToolPathPolicy layer
+- **AND** the deny reason indicates security-critical-path
+- **AND** no approval prompt is offered
+
+#### Scenario: Agent shell redirect to netclaw.json is denied
+
+- **WHEN** the agent invokes `shell_execute` with command
+  `echo "{}" > ~/.netclaw/config/netclaw.json`
+- **THEN** ShellTool's `_pathPolicy.CommandReferencesDeniedPath` returns true
+- **AND** the call is denied before the three-layer gate runs
+
+#### Scenario: Agent file_edit via symlink to config is denied
+
+- **GIVEN** the agent has created a symlink at `~/scratch/leak`
+  resolving to `~/.netclaw/config/tool-approvals.json`
+- **WHEN** the agent invokes `file_edit` with path `~/scratch/leak`
+- **THEN** ToolPathPolicy resolves the symlink and matches the canonical
+  path against the deny list
+- **AND** the call is denied
+
+#### Scenario: Operator can edit config outside the agent
+
+- **GIVEN** the operator runs `vim ~/.netclaw/config/netclaw.json` in
+  their own shell (not the agent's `shell_execute`)
+- **WHEN** the file is saved
+- **THEN** the daemon picks up the change on next read
+- **AND** ToolPathPolicy was never consulted (it only governs agent tool calls)
+
+### Requirement: Parser anomaly safe-fail
+
+The gate evaluator SHALL default to the safest behavior when
+`ShellSyntaxTree` returns a `ParsedCommand` with the unparseable flag
+set or when `IShellParser.Parse` throws: hard-deny is still consulted
+(against the raw command string as a fallback, plus against any partial
+AST the parser produced); the zone gate SHALL prompt the user as if the
+entire raw command operates on a single untrusted path; the
+verb-pattern gate SHALL offer only `Once` and `Deny` (no `Session` or
+`Always`) so no persistent grant can encode an unparseable shape.
+
+This requirement ensures that parser bugs, novel shell idioms, or
+intentionally crafted unparseable inputs degrade to "extra prompt,"
+never to "silent bypass."
+
+#### Scenario: Parse failure offers only Once and Deny
+
+- **WHEN** `IShellParser.Parse` throws on a malformed command
+- **THEN** the matcher catches the failure
+- **AND** the verb-pattern gate prompt offers only `Once` and `Deny`
+- **AND** the prompt body shows a `parse failure — one-shot only` hint
+
+#### Scenario: Unparseable AST flag triggers safe-fail
+
+- **GIVEN** a command containing unbalanced quotes
+- **WHEN** `ShellSyntaxTree` parses it and sets the unparseable flag
+- **THEN** the gate evaluator routes through the safe-fail path
+- **AND** the user sees a prompt rather than silent execution
+
+#### Scenario: Hard-deny still applies on parse failure
+
+- **GIVEN** a hard-deny rule for raw text matching `rm -rf /`
+- **WHEN** the agent invokes `shell_execute` with `rm -rf /; for i in 1 2; do`
+  (unbalanced; parser fails)
+- **THEN** the rawText hard-deny matches against the raw command
+- **AND** the call is denied before any prompt
 
 ## MODIFIED Requirements
 

@@ -241,7 +241,136 @@ parsing logic that has nothing to do with Akka actors or approval policy.
   (and let the verb gate handle it) than to misextract a literal `$VAR/foo`
   as a path.
 
-### Decision 8: Project context via on-demand `file_read`, not auto-injection
+### Decision 8: Glob semantics — recursive zones, BashArity-aware verb patterns
+
+**Choice:** `trustedZones` globs use path-prefix recursive semantics:
+`<dir>/*` matches `<dir>` itself plus any descendant at any depth, with
+boundary-safe matching (`~/repos/*` does NOT match `~/repossecret`).
+`verbPatterns` globs split into a verb-chain prefix (length determined
+by `BashArity`) and a trailing arg-glob suffix: `git push *` matches
+`git push origin main` but not `git pull origin main`.
+
+**Rationale:** Path-prefix recursion is what users mean when they say
+"trust this folder." Single-segment globs (`*` not recursive) require
+operators to learn the `**` convention for the common case. Verb
+patterns need verb-chain awareness because BashArity already tells us
+where the verb ends and args begin — leveraging it for matching is
+free.
+
+**Alternatives considered:**
+- *Shell-glob semantics for zones (single segment, `**` for recursive).*
+  Standard but adds cognitive load for the dominant case.
+- *Verbatim zones (no globbing).* Loses the "trust everything under" idiom.
+- *Full-string glob over command text for verbs.* Brittle to spacing
+  and quoting; couples matching to the renderer.
+
+### Decision 9: Hard-deny defaults compiled in, additive overrides only
+
+**Choice:** Ship hard-deny rules as immutable C# data
+(`HardDenyDefaults`). Operators add to them via
+`~/.netclaw/config/hard-deny-overrides.json` which is strictly additive.
+Rules use a JSON-structured DSL with verb+args predicates and an explicit
+`rawText` escape for shape-shaped patterns (fork bombs etc.).
+
+**Rationale:** The operative threat is prompt injection — the agent
+following injected instructions to lift its own constraints. Compiled
+defaults can't be removed by editing a config file. Additive-only
+overrides mean the agent (or a hostile operator) can only make the
+rules *stricter*, never weaker. Structured DSL gives precise matching
+on the AST; rawText escape handles the few cases where shell syntax
+isn't verb-shaped. Operator-editable JSON preserves the ability to add
+custom rules without recompilation.
+
+**Alternatives considered:**
+- *All rules in operator-editable file.* Trades security for flexibility
+  the wrong way; agent edits the file and lifts constraints.
+- *All rules compiled in (no overrides).* Maximum agent-resistance;
+  loses operator flexibility entirely.
+- *Structured matching with no rawText escape.* Cannot represent
+  fork-bomb-shaped patterns precisely.
+
+**Failure modes:**
+- *Override file shadows a default.* Doctor check refuses startup with
+  loud error; daemon doesn't run.
+- *Malformed override rejected at parse.* Daemon logs the rejection and
+  continues with shipped defaults intact.
+
+### Decision 10: Security-critical config protection via existing `ToolPathPolicy`
+
+**Choice:** Extend the existing `ToolPathPolicy` write-deny and shell-deny
+lists in `Program.cs` to include `paths.ConfigDirectory` (the entire
+`~/.netclaw/config/` tree). No new mechanism, no new categories — reuse
+the symlink-resolving, hard-deny path policy that already exists.
+
+**Rationale:** `ToolPathPolicy` is the right shape: hard-deny (no prompt),
+symlink-aware, applied to every tool that touches paths
+(`FileWriteTool`, `FileEditTool`, `ShellTool`). The daemon already uses
+it to protect credentials, the SQLite DB, the lock and PID files. Adding
+the config directory to the same lists closes the prompt-injection gap
+where an injected payload could instruct the agent to rewrite
+`tool-approvals.json` and grant itself global trust.
+
+Operators retain agency: they edit config files in their own editor or
+via dedicated `netclaw approvals` / `netclaw audience` CLI commands. The
+deny only governs *agent tool calls*, not the host filesystem.
+
+**Alternatives considered:**
+- *New "security-critical write" hard-deny category in the rule DSL.*
+  More machinery for the same effect; reusing `ToolPathPolicy` is
+  smaller and battle-tested.
+- *Prompt with Once/Deny only for config writes.* User can mistakenly
+  approve; doesn't close the prompt-injection gap firmly.
+
+**Failure modes:**
+- *Operator workflow that legitimately wanted the agent to edit
+  `~/.netclaw/config/`.* Forces operator to use external editor or CLI
+  instead. Acceptable trade — config edits are infrequent and security
+  outweighs the friction.
+
+### Decision 11: Multi-path zone prompt with trust-all-or-nothing
+
+**Choice:** When a clause has multiple untrusted paths, batch them into
+one zone prompt with a single `Trust all listed (N)` button. No per-path
+checkboxes, no sequential per-path prompts. Same 4-button shape as the
+single-path case.
+
+**Rationale:** The 4-button row maps cleanly to text-only channels via
+fixed positional letters `A=Once / B=Session / C=Trust|Always / D=Deny`.
+Per-path checkboxes don't exist in text mode; sequential per-path
+prompts produce prompt-storms when N is large. Trust-all keeps the
+choice space at exactly 4 letters always, regardless of how many paths
+are listed. Operators wanting partial trust fall back to the CLI
+(`netclaw approvals trust-zone <path>`) which is one shell command.
+
+**Alternatives considered:**
+- *Per-path checkboxes with `Trust selected` button.* Doesn't render in
+  text-only channels; complicates the future text-mode adapter.
+- *Sequential per-path prompts.* N prompts when N paths are untrusted;
+  user fatigue at scale.
+
+### Decision 12: Parser anomaly safe-fail
+
+**Choice:** When `ShellSyntaxTree` returns an unparseable AST or throws,
+the gate evaluator routes to a safe-fail path: hard-deny still consults
+both the rawText fallback and any partial AST; zone gate prompts the
+user as if the raw command operates on one untrusted path; verb-pattern
+gate offers only `Once` and `Deny`. Plus: a Netclaw integration test
+gates any `ShellSyntaxTree` version bump by running the entire corpus
+through the live matcher path.
+
+**Rationale:** Parser bugs are inevitable. The cost of an extra prompt
+is annoyance; the cost of a silent bypass is a security incident. Safe-
+fail biases toward annoyance. The integration test gate ensures
+parser-version-bump PRs visibly demonstrate matcher behavior across the
+corpus before they merge.
+
+**Alternatives considered:**
+- *Default-to-deny on parser failure.* Safest possible posture; UX
+  cost too high (any novel shell construct hits a wall).
+- *Default-to-prompt only (no integration gate).* Same fallback
+  behavior; relies on review discipline rather than enforced check.
+
+### Decision 13: Project context via on-demand `file_read`, not auto-injection
 
 **Choice:** Delete the `project-instructions` capability's auto-injection
 machinery. Add explicit lookup discipline to `Resources/AGENTS.md` instructing
@@ -302,6 +431,24 @@ and survives the deletion of `ProjectDirectory` cleanly.
   by hand. Acceptable — TUI provides per-axis visibility and revoke; raw
   file is for advanced operators only.
 
+- **[Risk]** Prompt-injection attack instructs the agent to lift its own
+  constraints by editing security-critical config files
+  (`tool-approvals.json`, `hard-deny-overrides.json`, `netclaw.json`) or
+  the daemon binary itself. → **Mitigation:** Hard-deny defaults compiled
+  into the binary (Decision 9) cannot be removed by config edits.
+  `ToolPathPolicy` extension to cover `~/.netclaw/config/` (Decision 10)
+  blocks the actionable mechanism — agent's `file_write`, `file_edit`,
+  and `shell_execute` clauses targeting these paths are hard-denied
+  before the three-layer gate is consulted, with no approval prompt
+  offered. Operators retain agency via their own editor or dedicated
+  CLI commands that bypass the agent's tool-call path.
+
+- **[Trade-off]** Operators who would have used the agent to edit
+  `~/.netclaw/config/` files now must use their own shell or CLI.
+  Acceptable — config edits are infrequent and the security tightening
+  outweighs the friction. The dedicated `netclaw approvals` /
+  `netclaw audience` CLI commands handle the common cases.
+
 ## Migration Plan
 
 **Pre-deployment (within this change):**
@@ -348,3 +495,29 @@ and survives the deletion of `ProjectDirectory` cleanly.
    `/etc/nginx` from `trustedZones`, does it also affect any in-memory
    session-scope grants in active sessions? Probably no (session-scope is
    a separate axis), but spec should be explicit.
+
+5. **Approval timeout per-prompt vs shared workflow.** Default proposed:
+   fresh 5-min clock per prompt (zone and verb prompts each get their own
+   timer). Alternative: single 5-min clock spans the whole workflow.
+   Per-prompt is more forgiving; shared is more strict. Confirm during
+   implementation.
+
+6. **`~` expansion in zone globs.** Default proposed: expand to the
+   daemon-process user's home directory at glob-load time. Alternative:
+   expand at evaluation time per-call (handles unusual cases where the
+   daemon changes its effective user). Per-load is simpler and matches
+   how the existing audience trust profile reads home paths.
+
+7. **Glob escape for literal `*` in path/pattern strings.** Deferred —
+   no observed need. If a user genuinely wants to trust a directory
+   literally named with an asterisk, they can use the CLI to add it
+   directly to `trustedZones` after escape-quoting.
+
+8. **`ToolInteractionRequest.Stage` field vs `Kind`-encoded stage.**
+   Default proposed: add a `Stage` enum field (`Zone | Verb`) so `Kind`
+   stays `approval`. Future gates (e.g., a hypothetical "Layer 4 risk
+   gate") extend cleanly via a new Stage value rather than a new Kind.
+
+9. **Default TUI tab on `netclaw approvals` invocation.** Default
+   proposed: open to `[Z]ones` first (geography is the dominant
+   operator concern). Remember last-used tab as a post-MVP enhancement.
