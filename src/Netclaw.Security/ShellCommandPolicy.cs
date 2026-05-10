@@ -27,20 +27,83 @@ public sealed class ShellCommandPolicy
     private readonly IReadOnlyList<RawStringPattern> _rawStringPatterns;
 
     public ShellCommandPolicy(IEnumerable<string>? additionalDenyPatterns = null)
+        : this(additionalDenyPatterns, overrideRules: null)
     {
-        var patterns = new List<DenyPattern>(DefaultDenyPatterns);
+    }
+
+    /// <summary>
+    /// Constructs the policy with both legacy string-based deny patterns
+    /// (kept for back-compat with <c>toolConfig.HardDenyPatterns</c>) and
+    /// structured operator override rules from <see cref="HardDenyRule"/>.
+    /// Both inputs are additive — shipped defaults
+    /// (<see cref="DefaultDenyPatterns"/>, <see cref="DefaultRawStringPatterns"/>)
+    /// are always present and cannot be removed via either input.
+    /// </summary>
+    public ShellCommandPolicy(
+        IEnumerable<string>? additionalDenyPatterns,
+        IEnumerable<HardDenyRule>? overrideRules)
+    {
+        var structured = new List<DenyPattern>(DefaultDenyPatterns);
+        var raw = new List<RawStringPattern>(DefaultRawStringPatterns);
+
         if (additionalDenyPatterns is not null)
         {
             foreach (var pattern in additionalDenyPatterns)
             {
                 var parsed = ParseDenyPattern(pattern);
                 if (parsed is not null)
-                    patterns.Add(parsed);
+                    structured.Add(parsed);
             }
         }
 
-        _denyPatterns = patterns;
-        _rawStringPatterns = DefaultRawStringPatterns;
+        if (overrideRules is not null)
+        {
+            foreach (var rule in overrideRules)
+            {
+                rule.Validate();
+                TranslateRule(rule, structured, raw);
+            }
+        }
+
+        _denyPatterns = structured;
+        _rawStringPatterns = raw;
+    }
+
+    private static void TranslateRule(
+        HardDenyRule rule,
+        List<DenyPattern> structured,
+        List<RawStringPattern> raw)
+    {
+        if (!string.IsNullOrWhiteSpace(rule.RawText))
+        {
+            raw.Add(new RawStringPattern(rule.RawText, rule.Reason, rule.Category));
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(rule.VerbPrefix))
+        {
+            structured.Add(new VerbPrefixDenyPattern(rule.VerbPrefix, rule.Reason, rule.Category));
+            return;
+        }
+
+        if (rule.Verb is { Count: > 0 })
+        {
+            // Refined verb-chain match: verb-chain prefix + optional argFlags +
+            // optional firstPath. Falls back to plain VerbChainDenyPattern when
+            // no refinements are present.
+            if (rule.ArgFlags is not { Count: > 0 } && rule.FirstPath is null)
+            {
+                structured.Add(new VerbChainDenyPattern(rule.Verb, rule.Reason, rule.Category));
+                return;
+            }
+
+            structured.Add(new RefinedVerbChainDenyPattern(
+                rule.Verb,
+                rule.ArgFlags,
+                rule.FirstPath,
+                rule.Reason,
+                rule.Category));
+        }
     }
 
     /// <summary>
@@ -295,6 +358,135 @@ public sealed class ShellCommandPolicy
             return trimmed is "~" or "$HOME" or "${HOME}"
                 || string.Equals(trimmed, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                     StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    /// <summary>
+    /// Verb-chain match with optional argFlags and firstPath refinements.
+    /// Used when an operator override rule combines a structured verb match
+    /// with additional constraints (e.g. "deny rm -rf when targeting root").
+    /// </summary>
+    internal sealed record RefinedVerbChainDenyPattern(
+        IReadOnlyList<string> VerbChain,
+        IReadOnlyList<string>? ArgFlags,
+        PathConstraint? FirstPath,
+        string Reason,
+        string Category) : DenyPattern(Reason, Category)
+    {
+        public override bool Matches(IReadOnlyList<string> tokens)
+        {
+            if (tokens.Count < VerbChain.Count)
+                return false;
+
+            for (var i = 0; i < VerbChain.Count; i++)
+            {
+                var tokenVerb = ShellTokenizer.TrimShellPunctuation(tokens[i]);
+                if (!string.Equals(tokenVerb, VerbChain[i], StringComparison.OrdinalIgnoreCase))
+                    return false;
+            }
+
+            if (ArgFlags is { Count: > 0 } && !AnyFlagPresent(tokens, ArgFlags))
+                return false;
+
+            if (FirstPath is not null && !FirstNonFlagMatchesConstraint(tokens, FirstPath))
+                return false;
+
+            return true;
+        }
+
+        private static bool AnyFlagPresent(IReadOnlyList<string> tokens, IReadOnlyList<string> requiredFlags)
+        {
+            // The flag is "present" if it appears as a standalone token OR if a
+            // short combined flag token contains all requested short flag chars
+            // (e.g. argFlag '-rf' matches token '-rfv').
+            foreach (var required in requiredFlags)
+            {
+                if (TokensContainFlag(tokens, required))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool TokensContainFlag(IReadOnlyList<string> tokens, string required)
+        {
+            for (var i = 0; i < tokens.Count; i++)
+            {
+                var token = tokens[i];
+                if (string.Equals(token, required, StringComparison.OrdinalIgnoreCase))
+                    return true;
+
+                // Combined short flags: '-rf' present if any combined token
+                // starts with '-' (single dash) and contains every short char.
+                if (required.Length >= 2 && required[0] == '-' && required[1] != '-'
+                    && token.Length >= 2 && token[0] == '-' && token[1] != '-')
+                {
+                    var requiredChars = required[1..];
+                    var tokenChars = token[1..];
+                    var allPresent = true;
+                    foreach (var c in requiredChars)
+                    {
+                        if (!tokenChars.Contains(c, StringComparison.Ordinal))
+                        {
+                            allPresent = false;
+                            break;
+                        }
+                    }
+
+                    if (allPresent)
+                        return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool FirstNonFlagMatchesConstraint(
+            IReadOnlyList<string> tokens,
+            PathConstraint constraint)
+        {
+            if (constraint.OneOf is not { Count: > 0 })
+                return false;
+
+            // Skip over the verb chain tokens already consumed and the flag
+            // tokens; the first remaining positional argument is the
+            // candidate.
+            for (var i = 0; i < tokens.Count; i++)
+            {
+                var token = tokens[i];
+                if (token.StartsWith('-'))
+                    continue;
+
+                // Skip the verb tokens themselves — we don't want to treat the
+                // verb as the first non-flag arg.
+                // Heuristic: tokens containing '/' or '~' or '$' are paths;
+                // bare alphanumeric tokens early in the stream are likely the
+                // verb chain.
+                if (i == 0)
+                    continue;
+
+                var normalized = NormalizePathToken(token);
+                foreach (var candidate in constraint.OneOf)
+                {
+                    var normalizedCandidate = NormalizePathToken(candidate);
+                    if (string.Equals(normalized, normalizedCandidate, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+
+                // First non-flag positional arg checked; further args don't
+                // satisfy "first path" semantics.
+                return false;
+            }
+
+            return false;
+        }
+
+        private static string NormalizePathToken(string token)
+        {
+            var trimmed = token.TrimEnd('/', '\\');
+            if (trimmed is "~" or "$HOME" or "${HOME}")
+                return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            return trimmed;
         }
     }
 
