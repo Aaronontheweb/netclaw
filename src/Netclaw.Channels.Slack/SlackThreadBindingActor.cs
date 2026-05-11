@@ -796,7 +796,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         return new InboundBuildResult(baseInput with
         {
             Contents = merged.Contents,
-            HasAdoptedContext = true,
+            HasThirdPartyAdoptedContext = merged.SpeakerIds.Any(id => !string.Equals(id, triggeringMessage.SenderId, StringComparison.Ordinal)),
             AdoptedSpeakerIds = merged.SpeakerIds,
             AdoptedContextProjection = merged.Projection,
             AdoptedContextLowerBound = cursor?.Value,

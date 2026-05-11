@@ -156,6 +156,7 @@ internal static class SessionToolExecutionPipeline
                 source?.SenderId,
                 source?.Principal,
                 source?.HasAdoptedContext ?? false,
+                source?.HasThirdPartyAdoptedContext ?? false,
                 source?.AdoptedSpeakerIds ?? []);
         }
         var completedRuns = new List<CompletedSubAgentRun>();
@@ -287,6 +288,7 @@ internal static class SessionToolExecutionPipeline
                 RequesterSenderId = source?.SenderId,
                 RequesterPrincipal = source?.Principal,
                 HasAdoptedContext = source?.HasAdoptedContext ?? false,
+                HasThirdPartyAdoptedContext = source?.HasThirdPartyAdoptedContext ?? false,
                 AdoptedSpeakerIds = source?.AdoptedSpeakerIds ?? [],
                 PersistedAdoptedContext = source?.HasAdoptedContext ?? false,
                 Patterns = ctx.Patterns,

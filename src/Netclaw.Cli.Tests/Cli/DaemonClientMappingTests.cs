@@ -265,6 +265,9 @@ public sealed class DaemonClientMappingTests
             ToolName = "shell_execute",
             DisplayText = "git push origin main",
             RequesterSenderId = "device-1",
+            HasAdoptedContext = true,
+            HasThirdPartyAdoptedContext = true,
+            AdoptedSpeakerIds = ["device-1", "device-2"],
             Patterns = ["git push"],
             CandidateVerbs = ["git push"],
             Options =
@@ -281,6 +284,9 @@ public sealed class DaemonClientMappingTests
         Assert.Equal("approval", dto.InteractionKind);
         Assert.Equal("git push origin main", dto.InteractionDisplayText);
         Assert.Equal("device-1", dto.RequesterSenderId);
+        Assert.True(dto.InteractionHasAdoptedContext);
+        Assert.True(dto.InteractionHasThirdPartyAdoptedContext);
+        Assert.Equal(["device-1", "device-2"], dto.InteractionAdoptedSpeakerIds);
         Assert.Equal(["git push"], dto.InteractionCandidateVerbs);
 
         var roundTripped = DaemonClient.FromDto(dto);
@@ -289,6 +295,9 @@ public sealed class DaemonClientMappingTests
         Assert.Equal("shell_execute", result.ToolName);
         Assert.Equal("git push origin main", result.DisplayText);
         Assert.Equal("device-1", result.RequesterSenderId);
+        Assert.True(result.HasAdoptedContext);
+        Assert.True(result.HasThirdPartyAdoptedContext);
+        Assert.Equal(["device-1", "device-2"], result.AdoptedSpeakerIds);
         Assert.Equal(["git push"], result.Patterns);
         Assert.Equal(["git push"], result.CandidateVerbs);
         Assert.Equal(4, result.Options.Count);
