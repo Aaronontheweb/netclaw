@@ -177,8 +177,11 @@ a custom matcher.
 The system SHALL pause individual tool execution tasks when approval is required
 without blocking other tool calls in the same batch. The pause SHALL use a
 `TaskCompletionSource` that completes when the session actor receives an approval
-response. A configurable timeout (default: 5 minutes) SHALL auto-deny if no
-response arrives.
+response. The pause SHALL wait indefinitely for user response — the system
+SHALL NOT auto-deny on a timer. Operators take as long as they need to
+evaluate a prompt; a clock-driven auto-deny silently transitions the
+workflow to a denied state and manufactures race conditions (late clicks
+landing in already-terminated workflows) for zero security benefit.
 
 #### Scenario: Approval-pending tool blocks while others complete
 
@@ -189,12 +192,14 @@ response arrives.
 - **AND** `shell_execute` blocks waiting for approval
 - **AND** the session actor remains responsive to messages
 
-#### Scenario: Approval timeout auto-denies
+#### Scenario: Approval pause waits indefinitely for user response
 
 - **GIVEN** an approval prompt has been emitted
-- **WHEN** no response arrives within the configured timeout
-- **THEN** the tool task unblocks with `ApprovalDecision.TimedOut`
-- **AND** the tool result says "Approval timed out after X seconds"
+- **AND** the user has not yet clicked any button
+- **WHEN** an arbitrarily long time passes (minutes, hours, until daemon restart)
+- **THEN** the workflow remains paused on the TaskCompletionSource
+- **AND** no clock-driven transition to `TimedOut` occurs
+- **AND** when the user eventually clicks, the workflow resumes from that state
 
 #### Scenario: Approved tool executes and returns result
 

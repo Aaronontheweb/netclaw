@@ -308,9 +308,13 @@ same batch SHALL execute in parallel and SHALL NOT block on this
 workflow.
 
 If the user denies at any prompt, the workflow SHALL terminate with
-`Denied` and the tool task SHALL unblock with the denial result. If the
-configured approval timeout (default: 5 minutes) elapses on either
-prompt, the workflow SHALL terminate with `TimedOut`.
+`Denied` and the tool task SHALL unblock with the denial result. The
+workflow SHALL NOT impose its own approval timeout — a tool call awaiting
+user approval SHALL wait indefinitely for a user response. Operators
+take as long as they need to evaluate the prompt; the system SHALL NOT
+silently transition the workflow to `TimedOut` on a clock. (Session
+passivation and daemon restart are separate concerns tracked in
+GitHub issue #939; they are out of scope for this requirement.)
 
 #### Scenario: Zone-then-verb sequential prompts
 
@@ -790,8 +794,11 @@ The system SHALL pause individual tool execution tasks when approval is required
 without blocking other tool calls in the same batch. The pause SHALL use a
 `TaskCompletionSource` that completes when the session actor receives an approval
 response. The pause SHALL span the entire `ToolApprovalWorkflow` (both prompts
-when both fire). A configurable timeout (default: 5 minutes) SHALL auto-deny if
-no response arrives on either prompt.
+when both fire). The pause SHALL wait indefinitely for the user response — there
+is no clock-driven auto-deny. Operators take as long as they need to evaluate
+prompts; the system silently transitioning a workflow to a denied state on a
+timer would manufacture race conditions (late clicks landing in already-terminated
+workflows) for zero security benefit.
 
 #### Scenario: Approval-pending tool blocks while others complete
 
@@ -802,13 +809,14 @@ no response arrives on either prompt.
 - **AND** `shell_execute` blocks waiting for the approval workflow
 - **AND** the session actor remains responsive to messages
 
-#### Scenario: Approval timeout auto-denies on either prompt
+#### Scenario: Approval pause waits indefinitely for user response
 
 - **GIVEN** a zone prompt has been emitted
-- **WHEN** no response arrives within the configured timeout
-- **THEN** the workflow terminates with `TimedOut`
-- **AND** the tool task unblocks
-- **AND** the tool result says "Approval timed out after X seconds"
+- **AND** the user has not yet clicked any button
+- **WHEN** an arbitrarily long time passes (minutes, hours, until daemon restart)
+- **THEN** the workflow remains paused on the TaskCompletionSource
+- **AND** no clock-driven transition to `TimedOut` occurs
+- **AND** when the user eventually clicks, the workflow resumes from that state
 
 #### Scenario: Approved tool executes after both prompts complete
 

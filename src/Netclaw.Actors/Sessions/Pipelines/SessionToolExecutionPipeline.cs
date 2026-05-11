@@ -74,7 +74,7 @@ internal static class SessionToolExecutionPipeline
                 CancellationToken.None,
                 approvalChannel,
                 emitApprovalRequest,
-                approvalTimeout ?? TimeSpan.FromMinutes(5),
+                approvalTimeout ?? Timeout.InfiniteTimeSpan,
                 maxToolTimeoutSeconds,
                 logger,
                 shellTimeoutSeconds,
