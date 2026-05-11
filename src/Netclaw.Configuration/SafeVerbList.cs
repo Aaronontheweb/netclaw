@@ -11,13 +11,15 @@ namespace Netclaw.Configuration;
 
 /// <summary>
 /// Curated list of demonstrably read-only shell verb chains the approval gate
-/// auto-allows when invoked inside an audience-aware safe space. Loaded from
-/// the daemon's bundled <c>safe-verbs.&lt;os&gt;.json</c> resource, optionally
-/// merged additively with a user override at
-/// <c>~/.netclaw/config/safe-verbs.&lt;os&gt;.json</c>.
+/// auto-allows when invoked inside a trusted zone. Loaded exclusively from
+/// the daemon's bundled <c>safe-verbs.&lt;os&gt;.json</c> embedded resource —
+/// there is no user-override file by design. Adding a verb to this list
+/// loosens the policy (more silent auto-pass cases), so widening must go
+/// through code review and a daemon release, not a config edit. The agent
+/// has no path to extend its own read-only verb list at runtime.
 ///
-/// Membership is exact-equality against the verb chain extracted by
-/// <c>ShellTokenizer.ExtractVerbChain</c> (case rules from
+/// Membership is exact-equality against the verb chain extracted by the
+/// shell parser (case rules from
 /// <see cref="ToolApprovalEntryComparer.Comparer"/>: Ordinal on POSIX,
 /// OrdinalIgnoreCase on Windows). Mutating verbs (e.g. <c>git push</c>,
 /// <c>sed -i</c>) are intentionally absent — they remain subject to the
@@ -70,8 +72,11 @@ internal sealed class SafeVerbListFile
 }
 
 /// <summary>
-/// Loads the bundled safe-verbs list for the current OS and merges any user
-/// override at <see cref="NetclawPaths.SafeVerbsOverridePath"/> additively.
+/// Loads the bundled safe-verbs list for the current OS from the embedded
+/// resource. There is no user-override path — the safe-verbs list is
+/// immutable at runtime so the agent cannot widen its own read-only
+/// auto-pass set through file writes. Widening goes through code review
+/// and a daemon release.
 /// </summary>
 public static class SafeVerbLoader
 {
@@ -86,28 +91,21 @@ public static class SafeVerbLoader
     };
 
     /// <summary>
-    /// Loads the safe-verbs list for the current OS. Always returns at least
-    /// the bundled defaults; merges an additional set from
-    /// <see cref="NetclawPaths.SafeVerbsOverridePath"/> when that file exists
-    /// and parses cleanly. Never throws — a malformed override file is
-    /// silently ignored (the bundled defaults still apply).
+    /// Loads the bundled safe-verbs list for the current OS. Always returns
+    /// the shipped defaults — no merge from disk, no user-overridable
+    /// surface. Throws <see cref="InvalidOperationException"/> only if the
+    /// embedded resource itself is missing from the assembly, which is a
+    /// build-packaging bug, not a runtime condition.
     /// </summary>
-    public static SafeVerbList Load(NetclawPaths? paths = null)
-        => Load(OperatingSystem.IsWindows(), paths?.SafeVerbsOverridePath);
+    public static SafeVerbList Load() => Load(OperatingSystem.IsWindows());
 
-    internal static SafeVerbList Load(bool isWindows, string? overrideFilePath)
+    internal static SafeVerbList Load(bool isWindows)
     {
         var comparer = ToolApprovalEntryComparer.Comparer;
         var verbs = new HashSet<string>(comparer);
 
         foreach (var verb in LoadBundled(isWindows))
             verbs.Add(verb);
-
-        if (!string.IsNullOrWhiteSpace(overrideFilePath) && File.Exists(overrideFilePath))
-        {
-            foreach (var verb in TryLoadOverride(overrideFilePath))
-                verbs.Add(verb);
-        }
 
         return new SafeVerbList(verbs);
     }
@@ -124,33 +122,6 @@ public static class SafeVerbLoader
 
         var file = JsonSerializer.Deserialize<SafeVerbListFile>(stream, JsonOptions)
             ?? throw new InvalidDataException($"Bundled safe-verbs resource '{resourceName}' deserialized to null.");
-
-        foreach (var verb in file.Verbs)
-        {
-            if (!string.IsNullOrWhiteSpace(verb))
-                yield return verb.Trim();
-        }
-    }
-
-    private static IEnumerable<string> TryLoadOverride(string path)
-    {
-        SafeVerbListFile? file;
-        try
-        {
-            var json = File.ReadAllText(path);
-            file = JsonSerializer.Deserialize<SafeVerbListFile>(json, JsonOptions);
-        }
-        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)
-        {
-            // A malformed user override should not prevent the daemon from
-            // starting; the bundled defaults remain in force. The doctor
-            // surfaces this condition out-of-band so operators can fix it
-            // without losing trust in the safe-verb policy.
-            yield break;
-        }
-
-        if (file?.Verbs is null)
-            yield break;
 
         foreach (var verb in file.Verbs)
         {

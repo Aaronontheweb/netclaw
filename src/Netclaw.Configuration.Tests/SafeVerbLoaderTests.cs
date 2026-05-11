@@ -7,22 +7,12 @@ using Xunit;
 
 namespace Netclaw.Configuration.Tests;
 
-public sealed class SafeVerbLoaderTests : IDisposable
+public sealed class SafeVerbLoaderTests
 {
-    private readonly string _tempOverridePath = Path.Combine(
-        Path.GetTempPath(),
-        $"netclaw-safe-verbs-{Guid.NewGuid():N}.json");
-
-    public void Dispose()
-    {
-        if (File.Exists(_tempOverridePath))
-            File.Delete(_tempOverridePath);
-    }
-
     [Fact]
-    public void Load_returns_bundled_linux_defaults_when_no_override()
+    public void Load_returns_bundled_linux_defaults()
     {
-        var list = SafeVerbLoader.Load(isWindows: false, overrideFilePath: null);
+        var list = SafeVerbLoader.Load(isWindows: false);
 
         // Spot-check a few entries from the spec's default Linux list.
         Assert.True(list.Contains("ls"));
@@ -34,9 +24,9 @@ public sealed class SafeVerbLoaderTests : IDisposable
     }
 
     [Fact]
-    public void Load_returns_bundled_windows_defaults_when_no_override()
+    public void Load_returns_bundled_windows_defaults()
     {
-        var list = SafeVerbLoader.Load(isWindows: true, overrideFilePath: null);
+        var list = SafeVerbLoader.Load(isWindows: true);
 
         // Spot-check a few entries from the spec's default Windows list.
         Assert.True(list.Contains("dir"));
@@ -47,58 +37,19 @@ public sealed class SafeVerbLoaderTests : IDisposable
     }
 
     [Fact]
-    public void Load_user_override_extends_bundled_defaults()
+    public void Load_public_overload_returns_current_OS_defaults()
     {
-        File.WriteAllText(_tempOverridePath, """
-            { "verbs": ["eza", "delta"] }
-            """);
+        // Smoke test on the parameterless overload: it always returns a
+        // non-empty list — the embedded resource is required at build time.
+        var list = SafeVerbLoader.Load();
 
-        var list = SafeVerbLoader.Load(isWindows: false, overrideFilePath: _tempOverridePath);
-
-        // User additions present.
-        Assert.True(list.Contains("eza"));
-        Assert.True(list.Contains("delta"));
-        // Bundled defaults remain.
-        Assert.True(list.Contains("ls"));
-        Assert.True(list.Contains("grep"));
-    }
-
-    [Fact]
-    public void Load_user_override_cannot_remove_bundled_entries()
-    {
-        // Even if the user file is empty, the bundled defaults still apply.
-        File.WriteAllText(_tempOverridePath, """{ "verbs": [] }""");
-
-        var list = SafeVerbLoader.Load(isWindows: false, overrideFilePath: _tempOverridePath);
-
-        Assert.True(list.Contains("ls"));
-        Assert.True(list.Contains("grep"));
-    }
-
-    [Fact]
-    public void Load_malformed_override_falls_back_to_bundled_defaults()
-    {
-        File.WriteAllText(_tempOverridePath, "not valid json {{{");
-
-        var list = SafeVerbLoader.Load(isWindows: false, overrideFilePath: _tempOverridePath);
-
-        // No throw; bundled defaults still loaded.
-        Assert.True(list.Contains("ls"));
-        Assert.True(list.Contains("grep"));
-    }
-
-    [Fact]
-    public void Load_missing_override_path_uses_bundled_only()
-    {
-        var list = SafeVerbLoader.Load(isWindows: false, overrideFilePath: "/path/does/not/exist.json");
-
-        Assert.True(list.Contains("ls"));
+        Assert.NotEmpty(list.Verbs);
     }
 
     [Fact]
     public void Contains_uses_platform_correct_case_rules()
     {
-        var list = SafeVerbLoader.Load(isWindows: false, overrideFilePath: null);
+        var list = SafeVerbLoader.Load(isWindows: false);
 
         if (OperatingSystem.IsWindows())
         {
@@ -111,6 +62,31 @@ public sealed class SafeVerbLoaderTests : IDisposable
             // Ordinal — `LS` is a different binary from `ls` on POSIX.
             Assert.False(list.Contains("LS"));
             Assert.True(list.Contains("ls"));
+        }
+    }
+
+    [Fact]
+    public void Load_has_no_disk_loading_surface()
+    {
+        // Architectural assertion: the loader's public API exposes no
+        // overload that accepts an external file path. This test fails to
+        // compile if a future PR re-introduces an override-file load path,
+        // turning the security tightening into a hard contract.
+        var methods = typeof(SafeVerbLoader)
+            .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+
+        foreach (var method in methods)
+        {
+            if (method.Name != "Load")
+                continue;
+
+            foreach (var param in method.GetParameters())
+            {
+                Assert.False(
+                    param.ParameterType == typeof(string) || param.ParameterType == typeof(NetclawPaths),
+                    $"SafeVerbLoader.{method.Name} must not expose a string or NetclawPaths parameter — "
+                    + "the safe-verbs list is immutable at runtime by design. Found parameter '{param.Name}' of type {param.ParameterType.Name}.");
+            }
         }
     }
 }

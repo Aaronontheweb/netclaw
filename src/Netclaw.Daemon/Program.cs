@@ -677,11 +677,14 @@ static void ConfigureDaemonServices(
         SchedulingEnabled: schedulingConfig.Enabled);
     var fileApprovalMatcher = new FilePathApprovalMatcher(paths.ConfigDirectory);
     var shellTrustZonePolicy = new ShellTrustZonePolicy(toolConfig, paths);
-    // Safe-verbs list: bundled per-OS defaults + optional additive user override
-    // at ~/.netclaw/config/safe-verbs.<os>.json. Used by the approval gate's
-    // safe-space short-circuit to auto-allow demonstrably read-only verbs
-    // when invoked inside an audience-aware safe space.
-    var safeVerbs = SafeVerbLoader.Load(paths);
+    // Safe-verbs list: bundled per-OS defaults only — embedded resource in
+    // Netclaw.Configuration with no on-disk user override. Used by the
+    // approval gate's verb-pattern Layer to auto-allow demonstrably
+    // read-only verbs when invoked inside a trusted zone. Widening the
+    // list goes through code review and a daemon release, not a config
+    // edit, so the agent has no path to extend its own auto-pass surface
+    // at runtime.
+    var safeVerbs = SafeVerbLoader.Load();
     services.AddSingleton(safeVerbs);
     var toolAccessPolicy = new ToolAccessPolicy(
         toolConfig,
