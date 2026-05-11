@@ -713,14 +713,18 @@ static void ConfigureDaemonServices(
     // session-scope grants). The evaluator runs the three-layer pipeline
     // over a ParsedCommand against that TrustState. Both are registered
     // as singletons — they are pure-function services with no per-call
-    // mutable state.
-    services.AddSingleton<GateEvaluator>(sp => new GateEvaluator(
-        sp.GetRequiredService<ShellCommandPolicy>(),
-        sp.GetRequiredService<IShellParser>()));
-    services.AddSingleton<TrustStateComposer>(sp => new TrustStateComposer(
+    // mutable state. Plumbed into ToolAccessPolicy below as the fast-path
+    // auto-allow check ahead of the v2 matcher.
+    var bashParser = new BashParser();
+    services.AddSingleton<IShellParser>(bashParser);
+    var gateEvaluator = new GateEvaluator(shellCommandPolicy, bashParser);
+    services.AddSingleton(gateEvaluator);
+    var trustStateComposer = new TrustStateComposer(
         toolConfig.AudienceProfiles,
-        sp.GetRequiredService<AudienceTrustStore>(),
-        sp.GetRequiredService<SafeVerbList>()));
+        audienceTrustStore,
+        safeVerbs);
+    services.AddSingleton(trustStateComposer);
+
     var toolAccessPolicy = new ToolAccessPolicy(
         toolConfig,
         effectivePolicyDefaults,
@@ -729,7 +733,9 @@ static void ConfigureDaemonServices(
         toolPathPolicy,
         featureGates,
         shellTrustZonePolicy,
-        safeVerbs);
+        safeVerbs,
+        gateEvaluator,
+        trustStateComposer);
     services.AddSingleton(toolAccessPolicy);
 
     var toolApprovalStore = new ToolApprovalStore(paths.ToolApprovalsPath);
