@@ -115,6 +115,55 @@ public sealed class ConfigWatcherServiceTests : IDisposable
         Assert.Equal(1, _restartCoordinator.RequestCount);
     }
 
+    // Integration tests — exercise real FileSystemWatcher + filesystem operations.
+    // These are inherently async and use generous timeouts to stay stable on slow CI.
+
+    [Fact]
+    public async Task AtomicReplace_TriggersReload()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        // Simulate the write-temp-then-rename pattern used by safe editors and CLI tools
+        await _sut.StartAsync(ct);
+
+        File.WriteAllText(_paths.NetclawConfigPath, """{ "Providers": {} }""");
+
+        var tempPath = _paths.NetclawConfigPath + ".tmp." + Guid.NewGuid().ToString("N")[..8];
+        File.WriteAllText(tempPath, """{ "Providers": {} }""");
+        File.Move(tempPath, _paths.NetclawConfigPath, overwrite: true);
+
+        // Wait up to 3 s for the debounce + reload to fire
+        var deadline = TimeSpan.FromSeconds(3);
+        var started = DateTime.UtcNow;
+        while (_restartCoordinator.RequestCount == 0 && DateTime.UtcNow - started < deadline)
+            await Task.Delay(50, ct);
+
+        Assert.Equal(1, _restartCoordinator.RequestCount);
+    }
+
+    [Fact]
+    public async Task InPlaceWrite_TriggersReload()
+    {
+        var ct = TestContext.Current.CancellationToken;
+
+        // Regression: direct in-place writes (e.g. shell > redirect) must still work
+        await _sut.StartAsync(ct);
+
+        // Write once to create the file, then overwrite in place
+        File.WriteAllText(_paths.NetclawConfigPath, """{ "Providers": {} }""");
+        await Task.Delay(100, ct); // let any initial events settle
+
+        _restartCoordinator.Reset();
+        await File.WriteAllTextAsync(_paths.NetclawConfigPath, """{ "Providers": {} }""", ct);
+
+        var deadline = TimeSpan.FromSeconds(3);
+        var started = DateTime.UtcNow;
+        while (_restartCoordinator.RequestCount == 0 && DateTime.UtcNow - started < deadline)
+            await Task.Delay(50, ct);
+
+        Assert.Equal(1, _restartCoordinator.RequestCount);
+    }
+
     [Fact]
     public void ReadDaemonConfigFromFile_MissingFile_ReturnsDefaults()
     {
@@ -144,6 +193,8 @@ public sealed class ConfigWatcherServiceTests : IDisposable
         public int RequestCount { get; private set; }
 
         public bool ThrowOnRequest { get; set; }
+
+        public void Reset() => RequestCount = 0;
 
         public Task RequestConfigRestartAsync(CancellationToken cancellationToken)
         {

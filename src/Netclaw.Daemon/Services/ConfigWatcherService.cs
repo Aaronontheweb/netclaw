@@ -65,13 +65,14 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
 
         _watcher = new FileSystemWatcher(configDir)
         {
-            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.CreationTime,
+            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.CreationTime | NotifyFilters.FileName,
             EnableRaisingEvents = true
         };
 
         _watcher.Changed += OnFileChanged;
         _watcher.Created += OnFileChanged;
         _watcher.Deleted += OnFileDeleted;
+        _watcher.Renamed += OnFileRenamed;
 
         _logger.LogInformation("Config hot-reload watching: {ConfigDir}", configDir);
         return Task.CompletedTask;
@@ -112,6 +113,30 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
         catch (Exception ex)
         {
             _logger.LogError(ex, "Unhandled exception in config watcher Deleted callback for {FileName}", e.Name);
+        }
+    }
+
+    private void OnFileRenamed(object sender, RenamedEventArgs e)
+    {
+        try
+        {
+            // Rename INTO our watched filename = atomic-replace write (write-temp + rename).
+            if (IsWatchedFile(e.Name))
+            {
+                _logger.LogDebug("Config file rename detected: {OldName} -> {NewName}", e.OldName, e.Name);
+                ScheduleReload();
+                return;
+            }
+
+            // Rename OUT of our watched filename = treat like a delete.
+            if (IsWatchedFile(e.OldName))
+            {
+                _logger.LogWarning("Config file renamed away: {OldName} -> {NewName}. Keeping current config.", e.OldName, e.Name);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Unhandled exception in config watcher Renamed callback for {FileName}", e.Name);
         }
     }
 
