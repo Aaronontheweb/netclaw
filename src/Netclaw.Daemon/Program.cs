@@ -725,6 +725,13 @@ static void ConfigureDaemonServices(
         safeVerbs);
     services.AddSingleton(trustStateComposer);
 
+    // Construct twice: the local instance is consumed at config time by
+    // ToolRegistry.WithFirstPartyTools (synchronous), and the DI-resolved
+    // instance gets an ILogger<ToolAccessPolicy> for the runtime
+    // approval gate. Both are stateless given identical constructor
+    // arguments. The dual-construction is temporary diagnostic
+    // scaffolding for #962 (trust-zones workflow not firing); revert
+    // alongside the gate_fastpath_* logs.
     var toolAccessPolicy = new ToolAccessPolicy(
         toolConfig,
         effectivePolicyDefaults,
@@ -736,7 +743,18 @@ static void ConfigureDaemonServices(
         safeVerbs,
         gateEvaluator,
         trustStateComposer);
-    services.AddSingleton(toolAccessPolicy);
+    services.AddSingleton(sp => new ToolAccessPolicy(
+        toolConfig,
+        effectivePolicyDefaults,
+        shellCommandPolicy,
+        fileApprovalMatcher,
+        toolPathPolicy,
+        featureGates,
+        shellTrustZonePolicy,
+        safeVerbs,
+        gateEvaluator,
+        trustStateComposer,
+        sp.GetService<ILogger<ToolAccessPolicy>>()));
 
     var toolApprovalStore = new ToolApprovalStore(paths.ToolApprovalsPath);
     services.AddSingleton(toolApprovalStore);
