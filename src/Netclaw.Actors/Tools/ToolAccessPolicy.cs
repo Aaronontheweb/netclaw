@@ -4,6 +4,8 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Jobs;
 using Netclaw.Actors.Protocol;
@@ -26,6 +28,7 @@ public sealed class ToolAccessPolicy
     private readonly ScopedShellSafeVerbPolicy? _safeVerbPolicy;
     private readonly GateEvaluator? _gateEvaluator;
     private readonly TrustStateComposer? _trustStateComposer;
+    private readonly ILogger _logger;
 
     public ToolAccessPolicy(
         ToolConfig toolConfig,
@@ -37,7 +40,8 @@ public sealed class ToolAccessPolicy
         IShellTrustZonePolicy? shellTrustZonePolicy = null,
         SafeVerbList? safeVerbs = null,
         GateEvaluator? gateEvaluator = null,
-        TrustStateComposer? trustStateComposer = null)
+        TrustStateComposer? trustStateComposer = null,
+        ILogger<ToolAccessPolicy>? logger = null)
     {
         _toolConfig = toolConfig;
         _defaults = defaults;
@@ -50,6 +54,7 @@ public sealed class ToolAccessPolicy
         _safeVerbPolicy = safeVerbs is not null ? new ScopedShellSafeVerbPolicy(safeVerbs) : null;
         _gateEvaluator = gateEvaluator;
         _trustStateComposer = trustStateComposer;
+        _logger = logger ?? (ILogger)NullLogger.Instance;
     }
 
     public int MaxToolTimeoutSeconds => _toolConfig.MaxToolTimeoutSeconds;
@@ -356,6 +361,22 @@ public sealed class ToolAccessPolicy
         // never hit the prompt-required v2 path.
         var shellCommandForGate = isShell ? ExtractShellCommand(arguments) : null;
         Netclaw.Security.GateEvaluation? gateEvaluation = null;
+        // DIAGNOSTIC (temporary, see #962): trust-zones workflow not
+        // firing in production despite §6 wire-up. Logs the entry
+        // preconditions so we can see which gate condition is failing
+        // for shell calls that should be hitting the new path.
+        if (isShell)
+        {
+            _logger.LogInformation(
+                "gate_fastpath_eval isShell={IsShell} isMessy={IsMessy} hasEvaluator={HasEvaluator} hasComposer={HasComposer} hasContext={HasContext} hasSessionDir={HasSessionDir} hasCommand={HasCommand}",
+                isShell, isMessy,
+                _gateEvaluator is not null,
+                _trustStateComposer is not null,
+                context is not null,
+                context?.SessionDirectory is not null,
+                !string.IsNullOrEmpty(shellCommandForGate));
+        }
+
         if (isShell
             && !isMessy
             && _gateEvaluator is not null
@@ -370,6 +391,18 @@ public sealed class ToolAccessPolicy
                 sessionTrustedZones: context.SessionTrustedZones,
                 sessionVerbPatterns: context.SessionVerbPatterns);
             var evaluation = _gateEvaluator.Evaluate(shellCommandForGate, audience, trustState);
+
+            // DIAGNOSTIC (temporary, see #962): the gate evaluator's
+            // decision drives whether ApprovalContext.Gate gets
+            // populated. If we see Approved silently for commands the
+            // operator believes should prompt, that's the bug.
+            _logger.LogInformation(
+                "gate_fastpath_result decision={Decision} hardDeny={HardDeny} zonePrompt={ZonePrompt} verbPrompt={VerbPrompt} unparseable={Unparseable}",
+                evaluation.OverallDecision,
+                evaluation.HardDenyReason,
+                evaluation.ZonePrompt is not null,
+                evaluation.VerbPrompt is not null,
+                evaluation.IsUnparseable);
 
             if (evaluation.OverallDecision == OverallGateDecision.HardDenied)
             {
