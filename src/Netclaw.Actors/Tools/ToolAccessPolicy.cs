@@ -257,16 +257,20 @@ public sealed class ToolAccessPolicy
 
     private static string? ExtractShellCommand(IDictionary<string, object?>? arguments)
     {
+        // Use the shared extractor so JsonElement-valued arguments (the
+        // shape LLM-generated tool calls arrive in) get string-converted
+        // correctly. The direct `is string` pattern previously here
+        // silently returned null for every real shell call, which
+        // disabled both the hard-deny pre-check at AuthorizeInvocation
+        // and the trust-zones GateEvaluator fast-path in
+        // CheckApprovalGate. The matcher's GetCommand uses
+        // ToolArgumentHelper.GetString — mirror it here for
+        // consistency.
         if (arguments is null)
             return null;
 
-        if (arguments.TryGetValue("Command", out var command) && command is string text)
-            return text;
-
-        if (arguments.TryGetValue("command", out command) && command is string lowerText)
-            return lowerText;
-
-        return null;
+        return ToolArgumentHelper.GetString(arguments, "Command")
+            ?? ToolArgumentHelper.GetString(arguments, "command");
     }
 
     private static string? ExtractWorkingDirectory(IDictionary<string, object?>? arguments)
