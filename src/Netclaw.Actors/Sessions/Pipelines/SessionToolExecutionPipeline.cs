@@ -54,7 +54,9 @@ internal static class SessionToolExecutionPipeline
         int shellTimeoutSeconds = 60,
         IActorRef? backgroundJobManager = null,
         string? projectDirectory = null,
-        bool setWorkingDirectoryAvailable = false)
+        bool setWorkingDirectoryAvailable = false,
+        IReadOnlyCollection<string>? sessionTrustedZones = null,
+        IReadOnlyCollection<string>? sessionVerbPatterns = null)
     {
         try
         {
@@ -80,7 +82,9 @@ internal static class SessionToolExecutionPipeline
                 shellTimeoutSeconds,
                 backgroundJobManager,
                 projectDirectory,
-                setWorkingDirectoryAvailable));
+                setWorkingDirectoryAvailable,
+                sessionTrustedZones,
+                sessionVerbPatterns));
             var results = await Task.WhenAll(tasks);
 
             var fileAttachments = results.SelectMany(r => r.FileAttachments).ToList();
@@ -132,7 +136,9 @@ internal static class SessionToolExecutionPipeline
         int shellTimeoutSeconds = 60,
         IActorRef? backgroundJobManager = null,
         string? projectDirectory = null,
-        bool setWorkingDirectoryAvailable = false)
+        bool setWorkingDirectoryAvailable = false,
+        IReadOnlyCollection<string>? sessionTrustedZones = null,
+        IReadOnlyCollection<string>? sessionVerbPatterns = null)
     {
         var (meta, cleanedTc) = ToolCallMetaExtractor.Extract(tc);
         tc = cleanedTc;
@@ -145,7 +151,9 @@ internal static class SessionToolExecutionPipeline
 
         var sw = Stopwatch.StartNew();
         string resultText;
-        var context = BuildToolExecutionContext(sessionId, source, sessionDir, spawnChildActor, projectDirectory);
+        var context = BuildToolExecutionContext(
+            sessionId, source, sessionDir, spawnChildActor, projectDirectory,
+            sessionTrustedZones, sessionVerbPatterns);
         context.RequestedTimeoutSeconds = (int)timeout.TotalSeconds;
         if (approvalChannel is not null && emitApprovalRequest is not null)
         {
@@ -298,7 +306,8 @@ internal static class SessionToolExecutionPipeline
                 IsMessy = ctx.IsMessy,
                 Options = ctx.Options
                     .Select(o => new ToolInteractionOption(o.Key, o.Label))
-                    .ToList()
+                    .ToList(),
+                Gate = ctx.Gate
             });
 
             var decision = await waitTask;
@@ -317,6 +326,19 @@ internal static class SessionToolExecutionPipeline
                 {
                     context.OneTimeApprovedToolName = tc.Name;
                     context.SetOneTimeApprovedPatterns(ctx.Patterns);
+                }
+
+                // Trust-zones flow: the workflow on the actor has applied
+                // all persistence side-effects via WorkflowEffect dispatch
+                // and signaled CompleteCall(ApprovedOnce) regardless of
+                // which scope the user picked. The retry must bypass the
+                // gate this once — the GateEvaluator would otherwise still
+                // see NeedsPrompt and the executor would throw again.
+                // One-shot: the flag is cleared in
+                // ExecuteToolAttemptAsync's finally.
+                if (ctx.Gate is not null)
+                {
+                    context.WorkflowApprovedThisCall = true;
                 }
 
                 sw = Stopwatch.StartNew();
@@ -473,6 +495,12 @@ internal static class SessionToolExecutionPipeline
                     context.SetOneTimeApprovedPatterns([]);
                 }
             }
+
+            // Trust-zones workflow bypass is also a per-retry flag — clear
+            // after consumption. Future calls re-evaluate against the
+            // composed TrustState; the bypass is only for the immediate
+            // post-approval retry.
+            context.WorkflowApprovedThisCall = false;
         }
     }
 
@@ -636,7 +664,9 @@ internal static class SessionToolExecutionPipeline
         MessageSource? source,
         string sessionDir,
         Func<object, string, CancellationToken, Task<object>> spawnChildActor,
-        string? projectDirectory)
+        string? projectDirectory,
+        IReadOnlyCollection<string>? sessionTrustedZones,
+        IReadOnlyCollection<string>? sessionVerbPatterns)
     {
         var context = new ToolExecutionContext(sessionId.Value, sessionDir);
         context.Audience = source is null ? null : source.Audience.ToWireValue();
@@ -645,6 +675,12 @@ internal static class SessionToolExecutionPipeline
         context.SupportsInteractiveApproval = source?.ChannelType.SupportsInteractiveApproval();
         context.SpawnChildActor = spawnChildActor;
         context.ProjectDirectory = projectDirectory;
+        // Trust-zones live views: assigning the collections directly
+        // shares the underlying actor-owned HashSet so the gate evaluator
+        // picks up grants added mid-call (e.g. zone Session click during
+        // a two-prompt workflow) by the time the verb stage's retry runs.
+        context.SessionTrustedZones = sessionTrustedZones;
+        context.SessionVerbPatterns = sessionVerbPatterns;
         return context;
     }
 

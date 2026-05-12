@@ -35,7 +35,12 @@ public sealed record SessionToolServices(
     Skills.SkillRegistry? SkillRegistry,
     IToolApprovalService? ApprovalService = null,
     SubAgentDefinitionRegistry? SubAgentRegistry = null,
-    SubAgentSpawner? SubAgentSpawner = null);
+    SubAgentSpawner? SubAgentSpawner = null,
+    // Trust-zones persistent store for `Always`/`Everywhere` clicks at
+    // either gate. Optional during the v2-to-trust-zones transition;
+    // when null the workflow dispatcher logs and drops the persistence
+    // effect rather than dropping the call.
+    Netclaw.Configuration.AudienceTrustStore? AudienceTrustStore = null);
 
 /// <summary>
 /// Memory infrastructure for recall, checkpoint, and curation.

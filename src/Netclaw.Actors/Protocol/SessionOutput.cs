@@ -423,6 +423,17 @@ public sealed record ToolInteractionRequest : SessionOutput
     /// True when adopted-context provenance was preserved in stored approval state.
     /// </summary>
     public bool PersistedAdoptedContext { get; init; }
+
+    /// <summary>
+    /// Trust-zones gate evaluation, set when the request originated from
+    /// the new <c>GateEvaluator</c> fast path in <c>ToolAccessPolicy</c>.
+    /// <c>LlmSessionActor</c> reads this to start a
+    /// <c>ToolApprovalWorkflow</c> rather than the v2 single-prompt
+    /// handler. Null on v2 matcher-driven requests; consumers fall back
+    /// to <see cref="Patterns"/> / <see cref="CandidateVerbs"/> /
+    /// <see cref="Candidates"/> rendering in that case.
+    /// </summary>
+    public Netclaw.Security.GateEvaluation? Gate { get; init; }
 }
 
 /// <summary>

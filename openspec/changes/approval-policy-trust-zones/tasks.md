@@ -55,12 +55,12 @@
 
 ## 6. Per-call ToolApprovalWorkflow
 
-- [ ] 6.1 Define `ToolApprovalWorkflow` value type on `LlmSessionActor` with fields `Call`, `Paths`, `ZoneState`, `VerbState`, `Stage`. Verify: type compiles with minimal allocation footprint.
-- [ ] 6.2 Implement workflow state machine `Start → ZoneGate → VerbGate → Complete`. Issue zone prompt when `Paths` contain untrusted entries; advance to verb gate after response; issue verb prompt when verb-pattern gate decides to prompt. Verify: state-machine unit tests cover all transition paths.
-- [ ] 6.3 Implement workflow termination on `Deny` at any stage; on `Approved` at `Complete` stage; on `TimedOut` at any stage. Verify: termination unit tests for each cause.
-- [ ] 6.4 Wire workflow into `LlmSessionActor` per-call dispatch. Replace v2 single-prompt code path. Verify: integration test exercises a call requiring both prompts.
-- [ ] 6.5 Confirm watchdog pause/resume spans the entire workflow (across both prompts). Verify: watchdog test asserts no pre-emption between prompts.
-- [ ] 6.6 Apply scope handling: `Once` runs no persistence; `Session` calls `AddSessionZone`/`AddSessionVerbPattern`; `Always` calls `ToolApprovalStore.AddZone`/`AddVerbPattern`. Verify: scope-handling unit tests.
+- [x] 6.1 Define `ToolApprovalWorkflow` value type on `LlmSessionActor` with fields `Call`, `Paths`, `ZoneState`, `VerbState`, `Stage`. Verify: type compiles with minimal allocation footprint.
+- [x] 6.2 Implement workflow state machine `Start → ZoneGate → VerbGate → Complete`. Issue zone prompt when `Paths` contain untrusted entries; advance to verb gate after response; issue verb prompt when verb-pattern gate decides to prompt. Verify: state-machine unit tests cover all transition paths.
+- [x] 6.3 Implement workflow termination on `Deny` at any stage; on `Approved` at `Complete` stage; on `TimedOut` at any stage. Verify: termination unit tests for each cause.
+- [x] 6.4 Wire workflow into `LlmSessionActor` per-call dispatch. Replace v2 single-prompt code path. Verify: integration test exercises a call requiring both prompts.
+- [x] 6.5 Confirm watchdog pause/resume spans the entire workflow (across both prompts). Verify: watchdog test asserts no pre-emption between prompts.
+- [x] 6.6 Apply scope handling: `Once` runs no persistence; `Session` calls `AddSessionZone`/`AddSessionVerbPattern`; `Always` calls `ToolApprovalStore.AddZone`/`AddVerbPattern`. Verify: scope-handling unit tests.
 
 ## 7. Slack adapter
 

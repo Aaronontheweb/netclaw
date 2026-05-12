@@ -101,6 +101,19 @@ public sealed class DispatchingToolExecutor : IToolExecutor
 
         var accessDecision = _policy.AuthorizeInvocation(tool, context, toolCall.Arguments);
 
+        // Trust-zones workflow bypass: when the pipeline's post-approval
+        // retry sets this flag, the workflow has already authorized this
+        // call (Once/Session/Always/Everywhere). Skip every gate so the
+        // retry doesn't loop on the GateEvaluator re-evaluating to
+        // NeedsPrompt (the session grants written via workflow effects
+        // are visible to TrustStateComposer on subsequent calls, but the
+        // current retry needs to pass regardless). One-shot — the
+        // pipeline's cleanup clears the flag after this attempt.
+        if (context?.WorkflowApprovedThisCall == true)
+        {
+            return tool;
+        }
+
         if (accessDecision.NeedsApproval && _approvalService is not null)
         {
             var approvalContext = accessDecision.ApprovalContext

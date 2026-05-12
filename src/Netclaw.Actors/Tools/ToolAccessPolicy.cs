@@ -355,6 +355,7 @@ public sealed class ToolAccessPolicy
         // firing read-only verbs inside trusted zones auto-allow here and
         // never hit the prompt-required v2 path.
         var shellCommandForGate = isShell ? ExtractShellCommand(arguments) : null;
+        Netclaw.Security.GateEvaluation? gateEvaluation = null;
         if (isShell
             && !isMessy
             && _gateEvaluator is not null
@@ -366,8 +367,8 @@ public sealed class ToolAccessPolicy
             var trustState = _trustStateComposer.Compose(
                 audience,
                 context.SessionDirectory,
-                sessionTrustedZones: null,    // session-scope state lives on
-                sessionVerbPatterns: null);   // LlmSessionActor; wire when prompts move to new shape
+                sessionTrustedZones: context.SessionTrustedZones,
+                sessionVerbPatterns: context.SessionVerbPatterns);
             var evaluation = _gateEvaluator.Evaluate(shellCommandForGate, audience, trustState);
 
             if (evaluation.OverallDecision == OverallGateDecision.HardDenied)
@@ -380,12 +381,13 @@ public sealed class ToolAccessPolicy
                 return ToolAccessDecision.Allow();
             }
 
-            // NeedsPrompt → fall through to v2 path below. v2 will produce
-            // its own ApprovalContext with the existing 5-button shape.
-            // The new audience trust store doesn't get written on v2
-            // button clicks yet — operator can pre-populate via
-            // `netclaw approvals trust-verb` etc., or wait for the prompt
-            // builder rewrite to land.
+            // NeedsPrompt → preserve the evaluation so the v2 ApprovalContext
+            // carries the gate info forward to LlmSessionActor's workflow
+            // dispatcher. The v2 patterns / candidate verbs / candidates
+            // fields are still populated below as a fallback for adapters
+            // that haven't been rewritten for the new two-prompt shape;
+            // workflow dispatch is gated on Gate != null.
+            gateEvaluation = evaluation;
         }
 
         // Safe-verb ∩ safe-space short-circuit (layer 1.5). Runs only for shell
@@ -419,7 +421,8 @@ public sealed class ToolAccessPolicy
             options,
             Cwd: context?.Cwd,
             IsMessy: isMessy,
-            Candidates: candidates);
+            Candidates: candidates,
+            Gate: gateEvaluation);
 
         return ToolAccessDecision.RequiresApproval(approvalContext);
     }
@@ -723,7 +726,15 @@ public sealed record ToolApprovalContext(
     // match time. The persistence path reads this on ApprovedAlways so
     // "Always here" stores per-clause folder-scoped grants from the
     // actual paths the agent touched.
-    IReadOnlyList<ApprovalCandidate>? Candidates = null);
+    IReadOnlyList<ApprovalCandidate>? Candidates = null,
+    // Trust-zones gate evaluation, populated when the GateEvaluator
+    // fast-path runs and decides NeedsPrompt. Drives the new per-call
+    // workflow in LlmSessionActor: when set, the actor builds a
+    // ToolApprovalWorkflow from this evaluation and routes the user
+    // through the zone/verb gates sequentially. Null on the v2 matcher
+    // path; consumers fall back to single-prompt rendering using
+    // Patterns / CandidateVerbs / Candidates above.
+    Netclaw.Security.GateEvaluation? Gate = null);
 
 public sealed record ToolApprovalOption(string Key, string Label);
 

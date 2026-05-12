@@ -56,6 +56,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly IToolExecutor? _toolExecutor;
     private readonly IToolAuditLogger? _auditLogger;
     private readonly IToolApprovalService? _approvalService;
+    private readonly Netclaw.Configuration.AudienceTrustStore? _audienceTrustStore;
     private readonly ApprovalChannel _approvalChannel = new();
     private readonly IMemoryExtractor _memoryExtractor;
     private readonly IMemoryRecallCoordinator _memoryRecallCoordinator;
@@ -81,6 +82,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // SessionScopeGrants for the boundary contract and SessionSnapshot
     // structural tests for the pin.
     private readonly SessionScopeGrants _sessionScopeGrants = new();
+    // Per-call workflow state for trust-zones approvals. Populated when
+    // a ToolInteractionRequest arrives with a GateEvaluation; removed on
+    // the workflow's terminal CompleteCall effect. Lives alongside
+    // _pendingToolInteractions (which still tracks per-call request
+    // metadata like RequesterSenderId).
+    private readonly Dictionary<string, ToolApprovalWorkflow> _activeWorkflows = new(StringComparer.Ordinal);
     private MessageSource? _currentTurnSource;
     private readonly ToolRegistry? _fullRegistry;
     private readonly ToolAccessPolicy? _toolAccessPolicy;
@@ -207,6 +214,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _auditLogger = tools?.AuditLogger;
         _toolAccessPolicy = tools?.AccessPolicy;
         _approvalService = tools?.ApprovalService;
+        _audienceTrustStore = tools?.AudienceTrustStore;
         _memoryExtractor = memory?.MemoryExtractor ?? NullMemoryExtractor.Instance;
         _memoryRecallCoordinator = memory?.RecallCoordinator ?? NullMemoryRecallCoordinator.Instance;
         _memoryCheckpointSink = memory?.CheckpointSink ?? NullMemoryCheckpointSink.Instance;
@@ -798,6 +806,24 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             PauseToolExecutionWatchdogForApprovalWait(msg.CallId);
 
+            // Trust-zones path: when the gate evaluator produced an
+            // evaluation, drive the per-call workflow instead of the v2
+            // single-prompt emit. The workflow's effects (EmitZonePrompt /
+            // EmitVerbPrompt / Add* / Persist* / CompleteCall) translate
+            // to the side effects below in DispatchWorkflowEffects.
+            if (msg.Gate is not null)
+            {
+                var (state, effects) = WorkflowEngine.Start(
+                    msg.CallId,
+                    msg.ToolName,
+                    CurrentTurnAudience(),
+                    msg.Gate);
+                _activeWorkflows[msg.CallId] = state;
+                DispatchWorkflowEffects(effects, msg);
+                return;
+            }
+
+            // v2 path: emit the original request unchanged.
             EmitOutput(msg);
         });
 
@@ -837,6 +863,26 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             _log.Info("Approval response for {CallId}: {Decision}", msg.CallId, decision);
 
+            // Trust-zones path: advance the active workflow if one exists
+            // for this call. The dispatcher applies all persistence
+            // effects and calls Complete on the approval channel at the
+            // terminal stage. v2 path runs only when no workflow is
+            // active.
+            if (_activeWorkflows.TryGetValue(msg.CallId, out var workflow))
+            {
+                var (next, effects) = WorkflowEngine.OnResponse(workflow, decision);
+                if (next.Stage == WorkflowStage.Complete)
+                    _activeWorkflows.Remove(msg.CallId);
+                else
+                    _activeWorkflows[msg.CallId] = next;
+
+                // Use the pending interaction as the source of routing
+                // metadata for any follow-up prompt (the verb stage).
+                DispatchWorkflowEffects(effects, BuildRequestFromPending(msg.CallId, pending));
+                return;
+            }
+
+            // v2 path: persist via the legacy code and complete.
             if (decision is ApprovalDecision.ApprovedSession
                 or ApprovalDecision.ApprovedAlways
                 or ApprovalDecision.ApprovedEverywhere
@@ -1686,7 +1732,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             shellTimeoutSeconds: _toolAccessPolicy?.ShellTimeoutSeconds ?? 60,
             backgroundJobManager: bgJobManager,
             projectDirectory: _state.WorkingContext.ProjectDirectory,
-            setWorkingDirectoryAvailable: setWorkingDirectoryAvailable);
+            setWorkingDirectoryAvailable: setWorkingDirectoryAvailable,
+            // Trust-zones session-scope grants are passed as the actor's
+            // live HashSet view via the SessionScopeGrants accessors, so
+            // mutations during a two-prompt workflow are visible to the
+            // gate evaluator on the same call's verb-stage retry.
+            sessionTrustedZones: _sessionScopeGrants.TrustedZones,
+            sessionVerbPatterns: _sessionScopeGrants.VerbPatterns);
     }
 
     private void HandleTextResponse(
@@ -3132,6 +3184,140 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // collapsing everything to cwd. Empty list when the request did
         // not carry candidate-level data (e.g. older callers).
         IReadOnlyList<ApprovalCandidate> Candidates);
+
+    /// <summary>
+    /// Applies the effects emitted by <see cref="WorkflowEngine"/> to the
+    /// actor's external surfaces: emits prompts to subscribers, writes
+    /// session-scope grants to the in-memory store, writes persistent
+    /// grants to <c>AudienceTrustStore</c>, and signals the approval
+    /// channel on terminal <see cref="CompleteCall"/>.
+    /// </summary>
+    /// <remarks>
+    /// Effect order from the engine matters: persistence effects come
+    /// before <c>CompleteCall</c> so by the time the pipeline's
+    /// <c>WaitForApprovalAsync</c> wakes up, grants are already
+    /// committed. The dispatcher preserves that order by iterating in
+    /// place.
+    /// </remarks>
+    private void DispatchWorkflowEffects(
+        IReadOnlyList<WorkflowEffect> effects,
+        ToolInteractionRequest originalRequest)
+    {
+        foreach (var effect in effects)
+        {
+            switch (effect)
+            {
+                case EmitZonePrompt zone:
+                    EmitOutput(BuildZonePromptOutput(originalRequest, zone.Prompt));
+                    break;
+                case EmitVerbPrompt verb:
+                    EmitOutput(BuildVerbPromptOutput(originalRequest, verb.Prompt));
+                    break;
+                case AddSessionZone az:
+                    _sessionScopeGrants.AddTrustedZone(az.Path);
+                    break;
+                case AddSessionVerbPattern av:
+                    _sessionScopeGrants.AddVerbPattern(av.Pattern);
+                    break;
+                case PersistZoneGrant pz when _audienceTrustStore is not null:
+                    _audienceTrustStore.AddTrustedZone(pz.Audience, pz.Path);
+                    break;
+                case PersistVerbPatternGrant pv when _audienceTrustStore is not null:
+                    _audienceTrustStore.AddVerbPattern(pv.Audience, pv.Pattern);
+                    break;
+                case PersistZoneGrant pz:
+                    _log.Warning(
+                        "Trust-zones persistent zone grant dropped: AudienceTrustStore not registered. path={Path}",
+                        pz.Path);
+                    break;
+                case PersistVerbPatternGrant pv:
+                    _log.Warning(
+                        "Trust-zones persistent verb-pattern grant dropped: AudienceTrustStore not registered. pattern={Pattern}",
+                        pv.Pattern);
+                    break;
+                case CompleteCall cc:
+                    _pendingToolInteractions.Remove(cc.CallId);
+                    ResumeToolExecutionWatchdogAfterApprovalWait();
+                    _approvalChannel.Complete(new ToolCallId(cc.CallId), cc.Decision);
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reconstructs a <see cref="ToolInteractionRequest"/> from the
+    /// pending interaction state stored when the original request
+    /// arrived. Used by the second workflow stage (verb gate) so the
+    /// emitted follow-up prompt carries the same routing metadata
+    /// (sender, principal, adopted context) as the first.
+    /// </summary>
+    private ToolInteractionRequest BuildRequestFromPending(string callId, PendingToolInteraction pending)
+        => new()
+        {
+            SessionId = _sessionId,
+            Kind = "approval",
+            CallId = callId,
+            ToolName = pending.ToolName,
+            DisplayText = string.Empty,
+            RequesterSenderId = pending.RequesterSenderId,
+            RequesterPrincipal = pending.RequesterPrincipal,
+            HasAdoptedContext = pending.HasAdoptedContext,
+            HasThirdPartyAdoptedContext = pending.HasThirdPartyAdoptedContext,
+            AdoptedSpeakerIds = pending.AdoptedSpeakerIds,
+            Patterns = pending.Patterns,
+            CandidateVerbs = pending.CandidateVerbs,
+            Candidates = pending.Candidates,
+            Cwd = pending.Cwd,
+            IsMessy = pending.IsMessy,
+            Options = []
+        };
+
+    private ToolInteractionRequest BuildZonePromptOutput(
+        ToolInteractionRequest original,
+        ZonePromptInfo zone)
+    {
+        var pathsRendered = zone.UntrustedPaths.Count == 1
+            ? zone.UntrustedPaths[0]
+            : string.Join(", ", zone.UntrustedPaths);
+
+        return original with
+        {
+            Kind = "approval_zone",
+            DisplayText = $"Allow {zone.Audience} to operate in: {pathsRendered}?",
+            Patterns = zone.UntrustedPaths,
+            CandidateVerbs = [],
+            Candidates = [],
+            Options =
+            [
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveOnceLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveSession, ApprovalOptionKeys.ApproveSessionLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveAlways, ApprovalOptionKeys.ApproveAlwaysLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
+            ]
+        };
+    }
+
+    private ToolInteractionRequest BuildVerbPromptOutput(
+        ToolInteractionRequest original,
+        VerbPromptInfo verb)
+    {
+        return original with
+        {
+            Kind = "approval_verb",
+            DisplayText = $"Allow {verb.Audience} to run: {verb.CommandText}?",
+            Patterns = [verb.VerbPattern],
+            CandidateVerbs = [verb.VerbPattern],
+            Candidates = [],
+            Options =
+            [
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveOnceLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveSession, ApprovalOptionKeys.ApproveSessionLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveAlways, ApprovalOptionKeys.ApproveAlwaysLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveEverywhere, ApprovalOptionKeys.ApproveEverywhereLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.Deny, ApprovalOptionKeys.DenyLabel)
+            ]
+        };
+    }
 
     private async Task PersistApprovalCandidatesAsync(
         PendingToolInteraction pending,

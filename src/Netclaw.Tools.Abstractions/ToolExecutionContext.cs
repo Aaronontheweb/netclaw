@@ -114,6 +114,35 @@ public sealed class ToolExecutionContext
     public string? OneTimeApprovedToolName { get; set; }
 
     /// <summary>
+    /// Per-retry bypass flag set by the pipeline after a trust-zones
+    /// workflow signals approval. The executor skips the gate when this
+    /// is set so the post-approval retry doesn't loop on the gate
+    /// re-evaluating to NeedsPrompt (the session grants written via
+    /// workflow effects are read by <c>TrustStateComposer</c> on
+    /// subsequent calls, but the immediate retry needs to bypass
+    /// regardless). Cleared after one attempt.
+    /// </summary>
+    public bool WorkflowApprovedThisCall { get; set; }
+
+    /// <summary>
+    /// Trust-zones in-memory session-scope trusted-zone globs from the
+    /// owning <c>LlmSessionActor</c>. Snapshot at context construction;
+    /// <c>ToolAccessPolicy</c> passes this to <c>TrustStateComposer</c>
+    /// so the gate evaluator sees zones the user has accepted at
+    /// <c>Session</c> scope for this thread. Null/empty when the actor
+    /// has no session-scope zones (every new actor instance starts
+    /// here).
+    /// </summary>
+    public IReadOnlyCollection<string>? SessionTrustedZones { get; set; }
+
+    /// <summary>
+    /// Trust-zones in-memory session-scope verb-pattern globs from the
+    /// owning <c>LlmSessionActor</c>. Mirrors
+    /// <see cref="SessionTrustedZones"/> for the verb-pattern gate.
+    /// </summary>
+    public IReadOnlyCollection<string>? SessionVerbPatterns { get; set; }
+
+    /// <summary>
     /// Approval patterns granted for a single retry of the current tool call.
     /// </summary>
     public IReadOnlySet<string> OneTimeApprovedPatterns
