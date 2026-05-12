@@ -213,6 +213,7 @@ public static class NetclawAkkaHostingExtensions
             typeof(ReminderPayload),
             typeof(AdoptedContextRecorded),
             typeof(Channels.CursorAdvanced),
+            typeof(MemoriesDistilledV2),
         };
 
         return builder
