@@ -145,14 +145,35 @@ public sealed class ShellTokenizerTests
     // ── ExtractVerbChain ──
 
     [Theory]
-    [InlineData("git push origin main", "git push")]
+    // Greedy extraction: chain extends through every verb-like token
+    // (no slash, no dot, no flag prefix) until it hits a path or flag.
+    // Multi-token CLI subcommands and arg shapes ride along — that's
+    // the intended contract for narrow auto-proposed approval patterns.
+    [InlineData("git push origin main", "git push origin main")]
+    [InlineData("docker compose up -d", "docker compose up")]
+    [InlineData("kubectl delete pod my-pod", "kubectl delete pod my-pod")]
+    // Path-aware verbs short-circuit at depth 1 — the first positional
+    // arg is a path/search-pattern, not a subcommand.
     [InlineData("ls -la /tmp", "ls")]
-    [InlineData("docker compose up -d", "docker compose")]
     [InlineData("cat /etc/hosts", "cat")]
     [InlineData("cat .gitignore", "cat")]
-    [InlineData("kubectl delete pod my-pod", "kubectl delete")]
     [InlineData("", "")]
     public void ExtractVerbChain_extracts_expected_chain(string input, string expected)
+    {
+        Assert.Equal(expected, ShellTokenizer.ExtractVerbChain(input));
+    }
+
+    [Theory]
+    // Production regressions for the v2 depth-2 cap (issue #27 follow-on).
+    // Pre-fix these surfaced as truncated approval prompts ("Approve
+    // freshdesk ticket in ...") and verb-chain mismatches between
+    // approval-prompt time and retry time, throwing
+    // ToolApprovalRequiredException in flight.
+    [InlineData("freshdesk ticket list --status open", "freshdesk ticket list")]
+    [InlineData("git worktree list", "git worktree list")]
+    [InlineData("gh pr view 123 --json title", "gh pr view")]
+    [InlineData("kubectl get pods -n default", "kubectl get pods")]
+    public void ExtractVerbChain_extracts_multi_token_cli_subcommands(string input, string expected)
     {
         Assert.Equal(expected, ShellTokenizer.ExtractVerbChain(input));
     }
@@ -169,10 +190,10 @@ public sealed class ShellTokenizerTests
     [InlineData("curl https://example.com/api", "curl")]
     [InlineData("find /var/log -name '*.log'", "find")]
     [InlineData("sed -i 's/foo/bar/' /etc/config.txt", "sed")]
-    // Structured CLIs unchanged
-    [InlineData("git push origin main", "git push")]
-    [InlineData("docker compose up -d", "docker compose")]
-    [InlineData("kubectl delete pod my-pod", "kubectl delete")]
+    // Structured CLIs — greedy through verb-like tokens, halts at flag/path
+    [InlineData("git push origin main", "git push origin main")]
+    [InlineData("docker compose up -d", "docker compose up")]
+    [InlineData("kubectl delete pod my-pod", "kubectl delete pod my-pod")]
     [InlineData("dotnet build --configuration Release", "dotnet build")]
     // Edge: flag-only invocations of path-aware verbs
     [InlineData("grep --version", "grep")]

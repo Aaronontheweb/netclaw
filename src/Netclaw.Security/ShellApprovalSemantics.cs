@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text;
+using ShellSyntaxTree;
 
 namespace Netclaw.Security;
 
@@ -97,48 +98,67 @@ internal abstract class ShellApprovalSemanticsBase : IShellApprovalSemantics
 
     public string ExtractVerbChain(string command, int maxDepth)
     {
-        var tokens = ShellTokenizer.Tokenize(command).ToList();
-        if (tokens.Count == 0)
+        if (string.IsNullOrWhiteSpace(command))
             return string.Empty;
 
-        var verbParts = new List<string>();
-        foreach (var token in tokens)
+        // Greedy verb-chain extraction via ShellSyntaxTree's BashParser:
+        // extends through every "verb-like" token (no slash, no dot, no
+        // flag prefix) until it hits a path or flag. This makes
+        // multi-token CLI subcommands like `freshdesk ticket list`,
+        // `git worktree list`, and `git push origin main` extract their
+        // full chain so the approval prompt and persisted patterns stay
+        // narrow and operator-meaningful.
+        var greedy = TryGreedyExtract(command);
+        if (string.IsNullOrEmpty(greedy))
+            return string.Empty;
+
+        // Apply the path-aware/side-effect short-circuit at depth 1.
+        // BashParser doesn't know that grep/cat/find/ls take a search
+        // pattern or path as their first positional arg (not a
+        // subcommand), so left to its own devices it would bake the
+        // call-specific arg into the verb chain — `grep secret`
+        // instead of `grep`, `echo done` instead of `echo`. The
+        // post-check restores the v2 invariant for these verb
+        // families.
+        var firstSpace = greedy.IndexOf(' ', StringComparison.Ordinal);
+        var firstToken = firstSpace < 0 ? greedy : greedy[..firstSpace];
+        if (ShellTokenizer.PathAwareVerbs.Contains(firstToken)
+            || ShellTokenizer.SingleTokenSideEffectVerbs.Contains(firstToken))
+            return firstToken;
+
+        // Honor the explicit maxDepth cap as a hard upper bound so
+        // callers asking for fewer tokens still get them. Default
+        // callers pass int.MaxValue (effectively "no cap beyond
+        // greedy + path-aware short-circuit").
+        if (maxDepth <= 0)
+            return string.Empty;
+
+        var parts = greedy.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length <= maxDepth)
+            return greedy;
+
+        return string.Join(' ', parts.Take(maxDepth));
+    }
+
+    private static string TryGreedyExtract(string command)
+    {
+        try
         {
-            if (verbParts.Count >= maxDepth)
-                break;
+            var parser = new BashParser();
+            var result = parser.Parse(command);
+            if (result.IsUnparseable || result.Clauses.Count == 0)
+                return string.Empty;
 
-            var trimmed = ShellTokenizer.TrimShellPunctuation(token);
-            if (trimmed.Length == 0)
-                continue;
-
-            if (trimmed.StartsWith('-'))
-                break;
-
-            if (LooksLikeArgument(trimmed))
-                break;
-
-            // Path-aware verbs (cat, grep, find, ls, ...) take positional
-            // arguments (search pattern, target file) that are not
-            // subcommands. Stop after the first verb so we don't bake
-            // call-specific arguments into the persisted verb chain. This
-            // is what makes "grep secret /var/log/syslog" produce verb
-            // "grep" (with /var/log/syslog as the effective directory)
-            // rather than verb "grep secret".
-            //
-            // Same cap applies to single-token side-effect verbs (echo,
-            // printf, :, true, false) so "echo done" resolves to verb
-            // "echo" — matching the skip list in
-            // ApprovalPatternMatching.IsPureSideEffect rather than the
-            // 2-token chain "echo done".
-            if (verbParts.Count == 1
-                && (ShellTokenizer.PathAwareVerbs.Contains(verbParts[0])
-                    || ShellTokenizer.SingleTokenSideEffectVerbs.Contains(verbParts[0])))
-                break;
-
-            verbParts.Add(trimmed);
+            return result.Clauses[0].Verb.Joined ?? string.Empty;
         }
-
-        return string.Join(' ', verbParts);
+        catch
+        {
+            // Defensive: malformed input that slips past IsUnparseable
+            // shouldn't take down the approval flow. Fail-empty so the
+            // caller treats this as a messy command (no patterns
+            // proposed, Once-only prompt).
+            return string.Empty;
+        }
     }
 
     public string? ExtractFirstPathArgument(string command)

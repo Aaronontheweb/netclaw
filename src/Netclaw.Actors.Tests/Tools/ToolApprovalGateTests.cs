@@ -850,7 +850,7 @@ public sealed class ToolApprovalGateTests
     }
 
     [Fact]
-    public void Non_path_command_extracts_two_token_verb_chain()
+    public void Non_path_command_extracts_full_greedy_verb_chain()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
         var args = ToolInput.Create("Command", "git push origin main");
@@ -858,8 +858,13 @@ public sealed class ToolApprovalGateTests
         var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
 
         Assert.True(decision.NeedsApproval);
-        // ExtractVerbChain caps at depth 2, dropping positional arguments.
-        Assert.Equal(["git push"], decision.ApprovalContext!.CandidateVerbs);
+        // ExtractVerbChain (post-ShellSyntaxTree-0.1.4) extracts greedily
+        // through every verb-like token. `origin` and `main` have no slash,
+        // dot, or flag prefix, so the chain extends through both. This is
+        // the operator-friendly contract: persisted approvals key on the
+        // specific arg shape (`git push origin main *`) rather than the
+        // verb family (`git push *`), making them safer by construction.
+        Assert.Equal(["git push origin main"], decision.ApprovalContext!.CandidateVerbs);
         var sessionOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveSession);
         var alwaysOption = decision.ApprovalContext.Options.Single(o => o.Key == ApprovalOptionKeys.ApproveAlways);
         Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, sessionOption.Label);

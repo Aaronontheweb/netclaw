@@ -210,15 +210,22 @@ public static class ShellTokenizer
     }
 
     /// <summary>
-    /// Extracts the verb chain (command name + subcommands) from a tokenized
-    /// command. Stops at the first token that looks like a flag (starts with -)
-    /// or an argument (path, URL, etc.), and caps at <paramref name="maxDepth"/>
-    /// tokens (default: 2) to avoid capturing positional arguments as subcommands.
-    /// The verb chain SHALL NOT include any path-like tokens — paths are
-    /// extracted separately via <see cref="ExtractFirstPathArgument"/> and
-    /// become the candidate's effective directory in the approval matcher.
+    /// Extracts the verb chain (command name + subcommand chain) from a
+    /// shell command. Backed by <c>ShellSyntaxTree.BashParser</c> on POSIX
+    /// shells: extends through every "verb-like" token (no slash, no dot,
+    /// no flag prefix) until it hits a path or flag. Path-aware verbs
+    /// (cat, grep, find, ls, ...) and single-token side-effect verbs
+    /// (echo, printf, ...) are capped at depth 1 by post-check so the
+    /// chain doesn't bake call-specific arguments (search patterns, file
+    /// targets) into persisted approval keys. The verb chain SHALL NOT
+    /// include any path-like tokens — paths are extracted separately via
+    /// <see cref="ExtractFirstPathArgument"/> and become the candidate's
+    /// effective directory in the approval matcher.
+    /// <paramref name="maxDepth"/> is honored as a hard upper bound for
+    /// callers that need a tighter cap; the default is effectively
+    /// unlimited.
     /// </summary>
-    public static string ExtractVerbChain(string command, int maxDepth = 2)
+    public static string ExtractVerbChain(string command, int maxDepth = int.MaxValue)
         => ShellApprovalSemantics.ForCommand(command).ExtractVerbChain(command, maxDepth);
 
     /// <summary>
