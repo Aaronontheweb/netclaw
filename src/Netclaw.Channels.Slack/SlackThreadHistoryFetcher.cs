@@ -151,14 +151,6 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
 
             foreach (var message in response.Messages)
             {
-                // Bot-authored entries are included so the root of a
-                // proactively-posted thread surfaces during backfill.
-                // Downstream, the binding actor's cursor watermark filters
-                // already-processed entries out of adopted context (note:
-                // the watermark gates output, not the I/O cost of this loop;
-                // attachment dedup via the historical inbox keeps repeat
-                // fetches cheap). Live-loop prevention is the inbound
-                // filter in SlackConversationActor, which is unchanged.
                 var senderId = !string.IsNullOrWhiteSpace(message.User)
                     ? message.User
                     : !string.IsNullOrWhiteSpace(message.BotId)
@@ -166,6 +158,22 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
                         : null;
 
                 if (senderId is null)
+                    continue;
+
+                // Bot-authored entries are only adopted from server-side
+                // history at the thread root. The root is the one position
+                // whose content cannot already exist in any session's
+                // persisted transcript — by definition no session ran in
+                // this thread before the root was posted. Any bot entry
+                // below the root was produced by one of our sessions and
+                // is already in transcript; re-adopting it from history
+                // would surface our own outputs as third-party context
+                // (regression observed in issue #955). The cursor
+                // watermark is a cost-amortization, not a correctness
+                // primitive — it filters by ts, not by author.
+                var isBotAuthored = !string.IsNullOrWhiteSpace(message.BotId);
+                var isThreadRoot = string.Equals(message.Ts, threadTs.Value, StringComparison.Ordinal);
+                if (isBotAuthored && !isThreadRoot)
                     continue;
 
                 var input = await ConvertMessageAsync(

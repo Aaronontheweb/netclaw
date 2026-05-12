@@ -64,38 +64,110 @@ public sealed class SlackThreadHistoryFetcherTests
     }
 
     [Fact]
-    public async Task Includes_bot_messages_with_bot_id_as_sender_when_user_is_missing()
+    public async Task Includes_bot_authored_root_for_proactive_post_bootstrap()
     {
+        // Proactive-post case: the bot opened the thread. The thread root
+        // ts equals the post's ts, which equals the session's threadTs.
+        // This entry MUST be hydrated — it's the only anchor a freshly-
+        // bootstrapped session has for what the bot said.
         _replies.Set("C1", "1000.0", null, new ConversationMessagesResponse
         {
             Messages =
             [
-                new MessageEvent { Ts = "1000.0", User = "U1", Text = "root" },
-                new MessageEvent { Ts = "1000.1", User = "U2", Text = "human reply" },
-                new MessageEvent { Ts = "1000.2", BotId = "B_BOT", Text = "bot reply" },
-                new MessageEvent { Ts = "1000.3", BotId = "B_NETCLAW", Text = "netclaw reply" }
+                new MessageEvent { Ts = "1000.0", BotId = "B_NETCLAW", Text = "proactive post (root)" },
+                new MessageEvent { Ts = "1000.1", User = "U1", Text = "human reply" }
             ]
         });
 
         var result = await CreateFetcher().FetchThreadHistoryAsync(new SessionId("C1/1000.0"), TestContext.Current.CancellationToken);
 
-        Assert.Equal(4, result.Count);
-        Assert.Contains(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "root"));
+        Assert.Equal(2, result.Count);
+
+        var rootEntry = Assert.Single(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "proactive post (root)"));
+        Assert.Equal("B_NETCLAW", rootEntry.SenderId);
+        Assert.Equal("C1:1000.0", rootEntry.MessageId);
+
+        Assert.Contains(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "human reply"));
+    }
+
+    [Fact]
+    public async Task Excludes_bot_authored_replies_below_thread_root()
+    {
+        // Regression test for issue #955: bot entries below the thread root
+        // are the agent's own prior in-session outputs, already in transcript.
+        // Re-adopting them from server-side history would surface the agent's
+        // own turns as third-party context.
+        _replies.Set("C1", "1000.0", null, new ConversationMessagesResponse
+        {
+            Messages =
+            [
+                new MessageEvent { Ts = "1000.0", User = "U1", Text = "root (human)" },
+                new MessageEvent { Ts = "1000.1", User = "U2", Text = "human reply" },
+                new MessageEvent { Ts = "1000.2", BotId = "B_OTHER", Text = "other bot reply" },
+                new MessageEvent { Ts = "1000.3", BotId = "B_NETCLAW", User = "U_NETCLAW", Text = "our own prior bot reply" }
+            ]
+        });
+
+        var result = await CreateFetcher().FetchThreadHistoryAsync(new SessionId("C1/1000.0"), TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, result.Count);
+        Assert.Contains(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "root (human)"));
         Assert.Contains(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "human reply"));
 
-        var botEntry = Assert.Single(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "bot reply"));
-        Assert.Equal("B_BOT", botEntry.SenderId);
+        Assert.DoesNotContain(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "other bot reply"));
+        Assert.DoesNotContain(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "our own prior bot reply"));
+    }
 
-        var netclawEntry = Assert.Single(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "netclaw reply"));
-        Assert.Equal("B_NETCLAW", netclawEntry.SenderId);
+    [Fact]
+    public async Task Excludes_bot_below_root_even_when_root_is_also_bot()
+    {
+        // Pathological mix: the proactive post root is bot, AND there's a
+        // subsequent bot reply (e.g., the agent's first turn after the user
+        // first replied, captured in transcript). Only the root survives.
+        _replies.Set("C1", "1000.0", null, new ConversationMessagesResponse
+        {
+            Messages =
+            [
+                new MessageEvent { Ts = "1000.0", BotId = "B_NETCLAW", Text = "proactive root" },
+                new MessageEvent { Ts = "1000.1", User = "U1", Text = "user reply" },
+                new MessageEvent { Ts = "1000.2", BotId = "B_NETCLAW", User = "U_NETCLAW", Text = "agent's reply turn (in transcript)" }
+            ]
+        });
+
+        var result = await CreateFetcher().FetchThreadHistoryAsync(new SessionId("C1/1000.0"), TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, result.Count);
+        Assert.Contains(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "proactive root"));
+        Assert.Contains(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "user reply"));
+        Assert.DoesNotContain(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "agent's reply turn (in transcript)"));
+    }
+
+    [Fact]
+    public async Task Bot_post_with_only_bot_id_is_included_at_root()
+    {
+        // Some bot integrations post without a user id (only bot_id). At the
+        // thread root, that should still be hydrated; sender id falls back
+        // to the bot id.
+        _replies.Set("C1", "1000.0", null, new ConversationMessagesResponse
+        {
+            Messages =
+            [
+                new MessageEvent { Ts = "1000.0", BotId = "B_BOT_NO_USER", Text = "bot-only root" }
+            ]
+        });
+
+        var result = await CreateFetcher().FetchThreadHistoryAsync(new SessionId("C1/1000.0"), TestContext.Current.CancellationToken);
+
+        var entry = Assert.Single(result);
+        Assert.Equal("B_BOT_NO_USER", entry.SenderId);
     }
 
     [Fact]
     public async Task Prefers_user_id_over_bot_id_when_both_are_present()
     {
-        // Slack often sets both fields on bot posts. The user id is the more
-        // useful identifier (matches the agent's known user id in the system
-        // prompt), so it wins when present.
+        // Slack sets both `user` and `bot_id` on workspace bot posts. The
+        // user id wins because it matches the agent's known workspace user
+        // id from identity grounding.
         _replies.Set("C1", "1000.0", null, new ConversationMessagesResponse
         {
             Messages =
