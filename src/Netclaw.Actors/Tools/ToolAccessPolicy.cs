@@ -365,13 +365,15 @@ public sealed class ToolAccessPolicy
         // never hit the prompt-required v2 path.
         var shellCommandForGate = isShell ? ExtractShellCommand(arguments) : null;
         Netclaw.Security.GateEvaluation? gateEvaluation = null;
-        // DIAGNOSTIC (temporary, see #962): trust-zones workflow not
-        // firing in production despite §6 wire-up. Logs the entry
-        // preconditions so we can see which gate condition is failing
-        // for shell calls that should be hitting the new path.
-        if (isShell)
+        // Runtime trust-zones gate visibility (Debug). Lights up the
+        // entry-precondition vector when an operator suspects the
+        // trust-zones fast path isn't being entered for a call they
+        // think it should be. Enable by setting
+        // `Logging.LogLevel."Netclaw.Actors.Tools.ToolAccessPolicy": "Debug"`
+        // in netclaw.json (hot-reloads).
+        if (isShell && _logger.IsEnabled(LogLevel.Debug))
         {
-            _logger.LogInformation(
+            _logger.LogDebug(
                 "gate_fastpath_eval isShell={IsShell} isMessy={IsMessy} hasEvaluator={HasEvaluator} hasComposer={HasComposer} hasContext={HasContext} hasSessionDir={HasSessionDir} hasCommand={HasCommand}",
                 isShell, isMessy,
                 _gateEvaluator is not null,
@@ -396,17 +398,22 @@ public sealed class ToolAccessPolicy
                 sessionVerbPatterns: context.SessionVerbPatterns);
             var evaluation = _gateEvaluator.Evaluate(shellCommandForGate, audience, trustState);
 
-            // DIAGNOSTIC (temporary, see #962): the gate evaluator's
-            // decision drives whether ApprovalContext.Gate gets
-            // populated. If we see Approved silently for commands the
-            // operator believes should prompt, that's the bug.
-            _logger.LogInformation(
-                "gate_fastpath_result decision={Decision} hardDeny={HardDeny} zonePrompt={ZonePrompt} verbPrompt={VerbPrompt} unparseable={Unparseable}",
-                evaluation.OverallDecision,
-                evaluation.HardDenyReason,
-                evaluation.ZonePrompt is not null,
-                evaluation.VerbPrompt is not null,
-                evaluation.IsUnparseable);
+            // Companion to gate_fastpath_eval: the actual gate decision
+            // the trust-zones evaluator returned. Tells you whether
+            // Gate gets populated on ApprovalContext (NeedsPrompt /
+            // HardDenied paths) or the call short-circuits to
+            // Allow/Deny without one. Enable via the same log-level
+            // setting as gate_fastpath_eval.
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug(
+                    "gate_fastpath_result decision={Decision} hardDeny={HardDeny} zonePrompt={ZonePrompt} verbPrompt={VerbPrompt} unparseable={Unparseable}",
+                    evaluation.OverallDecision,
+                    evaluation.HardDenyReason,
+                    evaluation.ZonePrompt is not null,
+                    evaluation.VerbPrompt is not null,
+                    evaluation.IsUnparseable);
+            }
 
             if (evaluation.OverallDecision == OverallGateDecision.HardDenied)
             {

@@ -725,13 +725,24 @@ static void ConfigureDaemonServices(
         safeVerbs);
     services.AddSingleton(trustStateComposer);
 
-    // Construct twice: the local instance is consumed at config time by
-    // ToolRegistry.WithFirstPartyTools (synchronous), and the DI-resolved
-    // instance gets an ILogger<ToolAccessPolicy> for the runtime
-    // approval gate. Both are stateless given identical constructor
-    // arguments. The dual-construction is temporary diagnostic
-    // scaffolding for #962 (trust-zones workflow not firing); revert
-    // alongside the gate_fastpath_* logs.
+    // ToolAccessPolicy is constructed twice on purpose:
+    //
+    // 1. The local variable feeds ToolRegistry.WithFirstPartyTools below,
+    //    which captures it into SearchToolsTool/LoadToolTool synchronously
+    //    at config time (those tools only call FilterDiscoverableTools /
+    //    IsToolExposed — they don't need a logger).
+    // 2. The DI factory below gets an ILogger<ToolAccessPolicy> via the
+    //    service provider. DispatchingToolExecutor resolves THIS instance
+    //    so the runtime approval-gate path (CheckApprovalGate and the
+    //    gate_fastpath_* Debug logs) can emit when an operator turns the
+    //    Netclaw.Actors.Tools.ToolAccessPolicy category to Debug.
+    //
+    // Both instances are stateless given identical constructor arguments;
+    // the only behavioral difference is the logger. Removing the local
+    // variable would require either refactoring WithFirstPartyTools to
+    // accept a Func<ToolAccessPolicy> and resolve lazily, or building a
+    // mid-config service provider — neither is worth the complexity for
+    // the small memory cost of two identical stateless instances.
     var toolAccessPolicy = new ToolAccessPolicy(
         toolConfig,
         effectivePolicyDefaults,
