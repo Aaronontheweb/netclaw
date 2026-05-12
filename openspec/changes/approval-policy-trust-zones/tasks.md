@@ -35,10 +35,10 @@
 
 ## 4. In-memory session-scope grants
 
-- [ ] 4.1 Add `SessionTrustedZones` and `SessionVerbPatterns` fields to `LlmSessionActor` (in-memory `List<string>` each). Verify: fields initialize empty on actor start.
-- [ ] 4.2 Add `LlmSessionActor.AddSessionZone(glob)` and `AddSessionVerbPattern(glob)` methods invoked by the workflow when user clicks `Session` scope. Verify: unit-tested.
-- [ ] 4.3 Confirm `SessionSnapshot` does NOT include session-scope grants. Add explicit test asserting snapshot serialization omits these fields. Verify: snapshot round-trip test.
-- [ ] 4.4 Confirm actor recovery from snapshot does NOT restore session-scope grants. Verify: recovery test asserts both lists are empty after restore.
+- [x] 4.1 Add `SessionTrustedZones` and `SessionVerbPatterns` fields to `LlmSessionActor` (in-memory `List<string>` each). Verify: fields initialize empty on actor start.
+- [x] 4.2 Add `LlmSessionActor.AddSessionZone(glob)` and `AddSessionVerbPattern(glob)` methods invoked by the workflow when user clicks `Session` scope. Verify: unit-tested.
+- [x] 4.3 Confirm `SessionSnapshot` does NOT include session-scope grants. Add explicit test asserting snapshot serialization omits these fields. Verify: snapshot round-trip test.
+- [x] 4.4 Confirm actor recovery from snapshot does NOT restore session-scope grants. Verify: recovery test asserts both lists are empty after restore.
 
 ## 5. Three-layer gate evaluator
 

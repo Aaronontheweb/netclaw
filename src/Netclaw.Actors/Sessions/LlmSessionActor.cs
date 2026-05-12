@@ -76,6 +76,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly Dictionary<IActorRef, OutputFilter> _subscribers = [];
     private readonly List<AITool> _availableTools = [];
     private readonly Dictionary<string, PendingToolInteraction> _pendingToolInteractions = new(StringComparer.Ordinal);
+    // Trust-zones Session-scope grants. Lifecycle is bounded by this actor
+    // instance — never persisted, never restored on recovery. See
+    // SessionScopeGrants for the boundary contract and SessionSnapshot
+    // structural tests for the pin.
+    private readonly SessionScopeGrants _sessionScopeGrants = new();
     private MessageSource? _currentTurnSource;
     private readonly ToolRegistry? _fullRegistry;
     private readonly ToolAccessPolicy? _toolAccessPolicy;
