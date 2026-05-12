@@ -256,6 +256,13 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         // anchored-path predicate from the legacy tokenizer counts (/, ~/,
         // ./, ../ and the bare ~/./..), so `feature/freshdesk-cli-skill`
         // and other internal-slash tokens stay as args, not directories.
+        // The IsPathToken classification runs on the raw user-facing form
+        // so branch names whose Resolved happens to look path-like don't
+        // get misclassified; once classified as a path, we persist the
+        // parser-resolved absolute path when available so it compares
+        // string-equal to cwd-attributed directories produced by other
+        // clauses (otherwise `cd ~/x && verb` produces "2 directories" in
+        // the approval prompt even though both refer to the same folder).
         foreach (var arg in clause.Args)
         {
             if (arg.IsCwdAttribution)
@@ -269,7 +276,10 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
                 continue;
 
             if (ShellTokenizer.IsPathToken(raw))
-                return ApplyFileParentRule(raw);
+            {
+                var canonical = !string.IsNullOrEmpty(arg.Resolved) ? arg.Resolved : raw;
+                return ApplyFileParentRule(canonical);
+            }
         }
 
         // Side-effect verbs ignore cd attribution — see caller's comment

@@ -221,23 +221,31 @@ public sealed class ShellApprovalMatcherPathExtractionTests
     public void ExtractCandidates_strips_path_from_verb()
     {
         var candidates = _matcher.ExtractCandidates(new ToolName("shell_execute"),
-            Args("find /home/petabridge -name X"));
+            Args("find /home/user -name X"));
 
         var c = Assert.Single(candidates);
         Assert.Equal("find", c.Verb);
-        Assert.Equal("/home/petabridge", c.Directory);
+        Assert.Equal("/home/user", c.Directory);
     }
 
     [Fact]
     public void ExtractCandidates_applies_file_parent_rule()
     {
+        // `cat ~/.bashrc` → directory is the basename's parent (the home
+        // directory itself). The matcher canonicalizes via the parser's
+        // Resolved field, so the result is the absolute home directory
+        // rather than the raw `~` prefix — needed so this candidate
+        // compares string-equal with cwd-attributed directories from
+        // other clauses in a compound (see the
+        // ExtractCandidates_normalizes_tilde_cd... test).
         var candidates = _matcher.ExtractCandidates(new ToolName("shell_execute"),
             Args("cat ~/.bashrc"));
 
         var c = Assert.Single(candidates);
         Assert.Equal("cat", c.Verb);
-        // Path.GetDirectoryName drops the trailing separator.
-        Assert.Equal("~", c.Directory);
+        Assert.Equal(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            c.Directory);
     }
 
     [Fact]
@@ -498,6 +506,36 @@ public sealed class ShellApprovalMatcherPathExtractionTests
             });
 
         Assert.Contains(candidates, c => c.Verb == "echo" && c.Directory == null);
+    }
+
+    [Fact]
+    public void ExtractCandidates_normalizes_tilde_cd_to_absolute_path_so_clauses_share_one_directory()
+    {
+        // Production header bug: prompt for `cd ~/x && git checkout -b f`
+        // displayed "Saved for this chat: cd, git checkout in 2
+        // directories" — cd's candidate kept the raw `~/...` form while
+        // git checkout's inherited directory was already absolute (the
+        // parser's IsCwdAttribution.Resolved is always pre-expanded).
+        // Both should canonicalize to the same absolute path so the
+        // distinct-directory counter in the prompt header reads 1.
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var expected = Path.Combine(home, "repos", "example");
+
+        var candidates = _matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?>
+            {
+                ["Command"] = "cd ~/repos/example && git checkout -b feature/foo"
+            });
+
+        Assert.Single(
+            candidates
+                .Where(c => !string.IsNullOrEmpty(c.Directory))
+                .Select(c => c.Directory)
+                .Distinct(StringComparer.Ordinal));
+
+        Assert.Contains(candidates, c => c.Verb == "cd" && c.Directory == expected);
+        Assert.Contains(candidates, c => c.Verb == "git checkout" && c.Directory == expected);
     }
 
     [Fact]
