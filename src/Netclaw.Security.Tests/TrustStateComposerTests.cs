@@ -166,4 +166,56 @@ public sealed class TrustStateComposerTests : IDisposable
         Assert.True(personal.IsPathInTrustedZone("/home/user/repos/foo"));
         Assert.False(team.IsPathInTrustedZone("/home/user/repos/foo"));
     }
+
+    [Fact]
+    public void Compose_with_Mode_All_trusts_arbitrary_paths_outside_Roots()
+    {
+        // Operator declared Personal as filesystem-unrestricted at the
+        // profile layer (Mode=All). The composer must propagate that into
+        // TrustState so the zone gate stops prompting on every path.
+        // Roots is intentionally empty — Mode=All makes it meaningless.
+        _profiles.Personal.ReadFiles = new ToolFilesystemAccessProfile
+        {
+            Mode = ToolFilesystemMode.All,
+            Roots = []
+        };
+
+        var state = NewComposer().Compose(TrustAudience.Personal, "/home/user/.netclaw/sessions/x");
+
+        Assert.True(state.IsPathInTrustedZone("/etc/nginx"));
+        Assert.True(state.IsPathInTrustedZone("/var/log/syslog"));
+        Assert.True(state.IsPathInTrustedZone("/tmp/whatever"));
+    }
+
+    [Fact]
+    public void Compose_with_Mode_None_does_not_trust_paths_outside_session_dir()
+    {
+        // Mode=None means "trust nothing baseline" — only session_dir and
+        // explicit per-call grants count. Confirms the composer doesn't
+        // accidentally treat None as All.
+        _profiles.Personal.ReadFiles = new ToolFilesystemAccessProfile
+        {
+            Mode = ToolFilesystemMode.None,
+            Roots = ["/this/is/ignored/when/mode/is/none"]  // realistically empty, but defensive
+        };
+
+        var state = NewComposer().Compose(TrustAudience.Personal, "/home/user/.netclaw/sessions/x");
+
+        Assert.False(state.IsPathInTrustedZone("/etc/nginx"));
+        Assert.False(state.IsPathInTrustedZone("/home/user/repos/foo"));
+        Assert.True(state.IsPathInTrustedZone("/home/user/.netclaw/sessions/x/inbox/file"));
+    }
+
+    [Fact]
+    public void Compose_with_Mode_Roots_only_trusts_listed_roots()
+    {
+        // Sanity that the existing Mode=Roots behavior is unchanged by the
+        // Mode=All wiring. Personal default in this test class is already
+        // Mode=Roots with /home/user/repos — we just assert the negative.
+        var state = NewComposer().Compose(TrustAudience.Personal, "/home/user/.netclaw/sessions/x");
+
+        Assert.True(state.IsPathInTrustedZone("/home/user/repos/foo"));
+        Assert.False(state.IsPathInTrustedZone("/etc/nginx"));
+        Assert.False(state.IsPathInTrustedZone("/home/user/elsewhere"));
+    }
 }

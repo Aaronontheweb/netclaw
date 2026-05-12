@@ -21,8 +21,12 @@ namespace Netclaw.Security;
 /// <see cref="Compose"/>.
 ///
 /// Audience baseline trusted zones derive from the audience profile's
-/// <see cref="ToolFilesystemAccessProfile.Roots"/> on <c>ReadFiles</c>. The
-/// composer does not consult <c>WriteFiles.Roots</c> separately — the
+/// <see cref="ToolFilesystemAccessProfile.Roots"/> on <c>ReadFiles</c>, and
+/// <see cref="ToolFilesystemAccessProfile.Mode"/> drives whether the zone
+/// gate trusts arbitrary paths (<c>Mode=All</c> → trust everything;
+/// <c>Mode=Roots</c> → trust only the listed roots; <c>Mode=None</c> →
+/// trust nothing beyond session-scope grants and the session directory).
+/// The composer does not consult <c>WriteFiles.Roots</c> separately — the
 /// zone gate treats all path operands uniformly (read or write distinction
 /// is the verb gate's concern). Operators wanting per-write restrictions
 /// configure that via the hard-deny rule set or specific verb patterns,
@@ -62,6 +66,14 @@ public sealed class TrustStateComposer
         var profile = ResolveProfile(audience);
         var baselineZones = profile.ReadFiles.Roots;
 
+        // Mode=All on the audience's read-files profile is the operator
+        // declaring "trust the whole filesystem for this audience" — Roots
+        // is meaningless in that mode, so without this flag the composer
+        // would hand TrustState an empty zone set and the gate would prompt
+        // on every path operand. Mode=Roots and Mode=None still rely on
+        // the explicit Roots list (None typically empty).
+        var trustsAllPaths = profile.ReadFiles.Mode == ToolFilesystemMode.All;
+
         return new TrustState(
             baselineZones: baselineZones,
             persistedZones: _store.GetTrustedZones(audience),
@@ -70,7 +82,8 @@ public sealed class TrustStateComposer
             persistedVerbPatterns: _store.GetVerbPatterns(audience),
             sessionVerbPatterns: sessionVerbPatterns ?? [],
             readOnlyVerbs: _safeVerbs,
-            homeDirectory: _homeDirectoryOverride);
+            homeDirectory: _homeDirectoryOverride,
+            trustsAllPaths: trustsAllPaths);
     }
 
     private ToolAudienceProfile ResolveProfile(TrustAudience audience)

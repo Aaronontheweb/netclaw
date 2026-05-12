@@ -32,6 +32,7 @@ public sealed class TrustState
     private readonly IReadOnlyList<string> _normalizedZones;
     private readonly IReadOnlyList<string> _allVerbPatterns;
     private readonly SafeVerbList _readOnlyVerbs;
+    private readonly bool _trustsAllPaths;
 
     public TrustState(
         IEnumerable<string> baselineZones,
@@ -41,8 +42,10 @@ public sealed class TrustState
         IEnumerable<string> persistedVerbPatterns,
         IEnumerable<string> sessionVerbPatterns,
         SafeVerbList readOnlyVerbs,
-        string? homeDirectory = null)
+        string? homeDirectory = null,
+        bool trustsAllPaths = false)
     {
+        _trustsAllPaths = trustsAllPaths;
         var home = homeDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
         // Compose all four zone sources, normalize each, dedupe. Order
@@ -87,6 +90,14 @@ public sealed class TrustState
     {
         if (string.IsNullOrWhiteSpace(resolvedPath))
             return false;
+
+        // Mode=All on the audience's filesystem profile maps to "trust any
+        // path" for the zone gate. The operator declared this audience as
+        // unrestricted at the trust-profile layer; the verb-pattern gate
+        // still applies, so mutating verbs without a pattern match still
+        // prompt regardless. Geography is the only thing waived here.
+        if (_trustsAllPaths)
+            return true;
 
         foreach (var zone in _normalizedZones)
         {
