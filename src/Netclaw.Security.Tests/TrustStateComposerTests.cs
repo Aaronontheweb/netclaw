@@ -11,6 +11,16 @@ namespace Netclaw.Security.Tests;
 
 public sealed class TrustStateComposerTests : IDisposable
 {
+    /// <summary>
+    /// xunit.v3 <c>SkipUnless</c> hook for POSIX-only tests. Tilde
+    /// expansion via the <c>homeDirectoryOverride</c> threads through
+    /// <c>Path.Combine</c>, which uses the platform separator —
+    /// Windows produces backslash-mixed paths that don't match the
+    /// forward-slash assertions in tests written against POSIX-shaped
+    /// home directories.
+    /// </summary>
+    public static bool IsPosix => !OperatingSystem.IsWindows();
+
     private readonly string _storeFile;
     private readonly AudienceTrustStore _store;
     private readonly SafeVerbList _safeVerbs = SafeVerbList.FromVerbs(["ls", "cat", "git status"]);
@@ -134,7 +144,7 @@ public sealed class TrustStateComposerTests : IDisposable
         Assert.True(state.IsReadOnlyVerb(lsVerb));
     }
 
-    [Fact]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
     public void Compose_uses_home_directory_override_for_tilde_expansion()
     {
         // Audience baseline has no zones that use ~, so add one via the store
