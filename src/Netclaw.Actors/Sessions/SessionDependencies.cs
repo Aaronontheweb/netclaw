@@ -33,14 +33,16 @@ public sealed record SessionToolServices(
     ToolAccessPolicy? AccessPolicy,
     TrustContextDeriver? TrustDeriver,
     Skills.SkillRegistry? SkillRegistry,
+    // Trust-zones persistent store for `Always`/`Everywhere` clicks at
+    // either gate. Required: a session actor that supports tool flows
+    // must be able to persist Always/Everywhere grants if the user
+    // clicks them — silently dropping the persistence on a missing
+    // store is a security-relevant fail-soft we refuse to do. Wire
+    // alongside `GateEvaluator` and `TrustStateComposer` in DI.
+    Netclaw.Configuration.AudienceTrustStore AudienceTrustStore,
     IToolApprovalService? ApprovalService = null,
     SubAgentDefinitionRegistry? SubAgentRegistry = null,
-    SubAgentSpawner? SubAgentSpawner = null,
-    // Trust-zones persistent store for `Always`/`Everywhere` clicks at
-    // either gate. Optional during the v2-to-trust-zones transition;
-    // when null the workflow dispatcher logs and drops the persistence
-    // effect rather than dropping the call.
-    Netclaw.Configuration.AudienceTrustStore? AudienceTrustStore = null);
+    SubAgentSpawner? SubAgentSpawner = null);
 
 /// <summary>
 /// Memory infrastructure for recall, checkpoint, and curation.

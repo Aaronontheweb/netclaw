@@ -40,6 +40,15 @@ internal static class LlmSessionTestExtensions
 
         if (services.Any(d => d.ServiceType == typeof(IToolExecutor)))
         {
+            // AudienceTrustStore is required on SessionToolServices so the
+            // workflow dispatcher can persist Always/Everywhere grants.
+            // Tests that don't exercise trust-zones still need one wired
+            // through — register a unique per-test temp-file-backed store
+            // unless the test set one up itself.
+            services.TryAddSingleton(_ => new Netclaw.Configuration.AudienceTrustStore(
+                Path.Combine(Path.GetTempPath(),
+                    $"netclaw-test-trust-zones-{Guid.NewGuid():N}.json")));
+
             services.TryAddSingleton(sp => new SessionToolServices(
                 sp.GetRequiredService<IToolExecutor>(),
                 sp.GetService<IToolAuditLogger>(),
@@ -47,6 +56,7 @@ internal static class LlmSessionTestExtensions
                 sp.GetService<ToolAccessPolicy>(),
                 sp.GetService<TrustContextDeriver>(),
                 sp.GetService<SkillRegistry>(),
+                sp.GetRequiredService<Netclaw.Configuration.AudienceTrustStore>(),
                 sp.GetService<IToolApprovalService>(),
                 sp.GetService<SubAgentDefinitionRegistry>(),
                 sp.GetService<SubAgentSpawner>()));

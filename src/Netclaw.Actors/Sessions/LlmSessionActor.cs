@@ -57,6 +57,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly IToolAuditLogger? _auditLogger;
     private readonly IToolApprovalService? _approvalService;
     private readonly Netclaw.Configuration.AudienceTrustStore? _audienceTrustStore;
+    // True when tool services were provided AND included an
+    // AudienceTrustStore. Workflow Persist* effects assert on this so
+    // a misconfigured DI manifests at the call site rather than as
+    // a silent null-deref.
     private readonly ApprovalChannel _approvalChannel = new();
     private readonly IMemoryExtractor _memoryExtractor;
     private readonly IMemoryRecallCoordinator _memoryRecallCoordinator;
@@ -214,6 +218,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _auditLogger = tools?.AuditLogger;
         _toolAccessPolicy = tools?.AccessPolicy;
         _approvalService = tools?.ApprovalService;
+        // AudienceTrustStore is required on SessionToolServices itself,
+        // so when tools is non-null the store is guaranteed non-null.
+        // Hold a typed reference so the dispatcher can deref without
+        // a per-call null-check.
         _audienceTrustStore = tools?.AudienceTrustStore;
         _memoryExtractor = memory?.MemoryExtractor ?? NullMemoryExtractor.Instance;
         _memoryRecallCoordinator = memory?.RecallCoordinator ?? NullMemoryRecallCoordinator.Instance;
@@ -3219,21 +3227,17 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 case AddSessionVerbPattern av:
                     _sessionScopeGrants.AddVerbPattern(av.Pattern);
                     break;
-                case PersistZoneGrant pz when _audienceTrustStore is not null:
-                    _audienceTrustStore.AddTrustedZone(pz.Audience, pz.Path);
-                    break;
-                case PersistVerbPatternGrant pv when _audienceTrustStore is not null:
-                    _audienceTrustStore.AddVerbPattern(pv.Audience, pv.Pattern);
-                    break;
                 case PersistZoneGrant pz:
-                    _log.Warning(
-                        "Trust-zones persistent zone grant dropped: AudienceTrustStore not registered. path={Path}",
-                        pz.Path);
+                    // _audienceTrustStore non-null when tools are wired
+                    // (SessionToolServices requires it). A null deref here
+                    // would mean the actor was constructed without tool
+                    // services AND somehow received a workflow Persist
+                    // effect — an inconsistent state that should crash
+                    // loudly rather than silently drop the grant.
+                    _audienceTrustStore!.AddTrustedZone(pz.Audience, pz.Path);
                     break;
                 case PersistVerbPatternGrant pv:
-                    _log.Warning(
-                        "Trust-zones persistent verb-pattern grant dropped: AudienceTrustStore not registered. pattern={Pattern}",
-                        pv.Pattern);
+                    _audienceTrustStore!.AddVerbPattern(pv.Audience, pv.Pattern);
                     break;
                 case CompleteCall cc:
                     _pendingToolInteractions.Remove(cc.CallId);
