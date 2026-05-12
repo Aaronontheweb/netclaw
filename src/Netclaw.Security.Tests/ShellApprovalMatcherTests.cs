@@ -217,7 +217,18 @@ public sealed class ShellApprovalMatcherPathExtractionTests
 
     private static Dictionary<string, object?> Args(string command) => new() { ["Command"] = command };
 
-    [Fact]
+    /// <summary>
+    /// xunit.v3 <c>SkipUnless</c> hook for POSIX-only tests. The v2
+    /// matcher falls through to the legacy <c>ShellTokenizer</c> path
+    /// on Windows (ShellSyntaxTree is bash-only), so tests that pin
+    /// BashParser cwd attribution / <c>arg.Resolved</c> canonicalization
+    /// don't apply. Marking them <c>[Fact(SkipUnless = nameof(IsPosix))]</c>
+    /// produces a proper "Skipped" entry in the test log on Windows
+    /// runners instead of hiding the gap behind an early-return.
+    /// </summary>
+    public static bool IsPosix => !OperatingSystem.IsWindows();
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
     public void ExtractCandidates_strips_path_from_verb()
     {
         var candidates = _matcher.ExtractCandidates(new ToolName("shell_execute"),
@@ -228,7 +239,7 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         Assert.Equal("/home/user", c.Directory);
     }
 
-    [Fact]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
     public void ExtractCandidates_applies_file_parent_rule()
     {
         // `cat ~/.bashrc` → directory is the basename's parent (the home
@@ -373,7 +384,7 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         Assert.True(ApprovalPatternMatching.IsPureSideEffect(c));
     }
 
-    [Fact]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
     public void ExtractCandidates_extracts_cd_target_as_directory()
     {
         // Production case: `cd /repo && git remote -v`. The header /
@@ -407,7 +418,7 @@ public sealed class ShellApprovalMatcherPathExtractionTests
               && c.Directory == "/home/user/repos/example");
     }
 
-    [Fact]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
     public void ExtractCandidates_propagates_cd_target_to_subsequent_clauses_with_no_path_arg()
     {
         // Production repro of the retry-after-approval failure on
@@ -431,7 +442,7 @@ public sealed class ShellApprovalMatcherPathExtractionTests
             c => c.Verb == "git checkout" && c.Directory == "/home/user/repos/foo");
     }
 
-    [Fact]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
     public void ExtractCandidates_tracks_latest_cd_through_multiple_hops()
     {
         // cd /a && cd /b && grep ... — grep inherits /b (the latest cd),
@@ -451,7 +462,7 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         Assert.Contains(candidates, c => c.Verb == "pwd" && c.Directory == "/b");
     }
 
-    [Fact]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
     public void ExtractCandidates_recurses_into_bash_dash_c_with_cd_attribution_intact()
     {
         // bash -c "cd /repo && git push" — the parser flattens the
@@ -468,7 +479,7 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         Assert.Contains(candidates, c => c.Verb == "git push" && c.Directory == "/repo");
     }
 
-    [Fact]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
     public void ExtractCandidates_prefers_explicit_path_arg_over_cd_attribution()
     {
         // When a clause has its own anchored path argument, that wins —
@@ -488,7 +499,7 @@ public sealed class ShellApprovalMatcherPathExtractionTests
             c => c.Verb == "dotnet test" && c.Directory == "/home/foo");
     }
 
-    [Fact]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
     public void ExtractCandidates_side_effect_verbs_do_not_inherit_cd_attribution()
     {
         // echo / printf / true / false write to stdout and ignore cwd,
@@ -508,7 +519,7 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         Assert.Contains(candidates, c => c.Verb == "echo" && c.Directory == null);
     }
 
-    [Fact]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
     public void ExtractCandidates_normalizes_tilde_cd_to_absolute_path_so_clauses_share_one_directory()
     {
         // Production header bug: prompt for `cd ~/x && git checkout -b f`
@@ -538,7 +549,7 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         Assert.Contains(candidates, c => c.Verb == "git checkout" && c.Directory == expected);
     }
 
-    [Fact]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
     public void ExtractCandidates_collapses_pipe_chain_into_single_candidate()
     {
         // Pipes stay inside one approval unit — approving cat /etc/hosts

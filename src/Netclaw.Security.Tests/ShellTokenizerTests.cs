@@ -9,6 +9,15 @@ namespace Netclaw.Security.Tests;
 
 public sealed class ShellTokenizerTests
 {
+    /// <summary>
+    /// xunit.v3 <c>SkipUnless</c> hook for tests whose expected output
+    /// depends on POSIX <c>Path.GetDirectoryName</c> semantics —
+    /// Windows produces backslashed parents that don't match the
+    /// forward-slash expectations baked into the inline data.
+    /// </summary>
+    public static bool IsPosix => !OperatingSystem.IsWindows();
+
+
     public static TheoryData<string, bool> WindowsAnchoredPathCases
     {
         get
@@ -254,9 +263,6 @@ public sealed class ShellTokenizerTests
     [InlineData("grep -r foo ./build", "./build")]
     [InlineData("ls .", ".")]
     [InlineData("cd ..", "..")]
-    // File path with extension → parent
-    [InlineData("cp /src/a.txt /dst/b.txt", "/src")]
-    [InlineData("cat /etc/hosts.conf", "/etc")]
     // File path without extension stays as-is
     [InlineData("cat /etc/hosts", "/etc/hosts")]
     // No path argument
@@ -268,6 +274,18 @@ public sealed class ShellTokenizerTests
     // Internal-slash regex literal not classified as path
     [InlineData("grep -r 'a/b' .", ".")]
     public void ExtractFirstPathArgument_returns_first_path_or_null(string command, string? expected)
+    {
+        Assert.Equal(expected, ShellTokenizer.ExtractFirstPathArgument(command));
+    }
+
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "POSIX-only Path.GetDirectoryName semantics")]
+    // File path with extension → parent. Path.GetDirectoryName is
+    // platform-aware: on Windows the parent uses backslashes which
+    // doesn't match these forward-slash expectations, so the cases
+    // live in a POSIX-gated theory.
+    [InlineData("cp /src/a.txt /dst/b.txt", "/src")]
+    [InlineData("cat /etc/hosts.conf", "/etc")]
+    public void ExtractFirstPathArgument_applies_file_parent_rule_posix(string command, string expected)
     {
         Assert.Equal(expected, ShellTokenizer.ExtractFirstPathArgument(command));
     }
