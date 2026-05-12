@@ -197,13 +197,35 @@ public sealed class DispatchingToolExecutor : IToolExecutor
         if (approvalContext is null)
             return false;
 
+        // Tool-name match is required for any one-time bypass — without it
+        // we could never tell which tool the grant applies to.
+        if (!string.IsNullOrEmpty(context.OneTimeApprovedToolName)
+            && !string.Equals(context.OneTimeApprovedToolName, toolCall.Name, StringComparison.Ordinal))
+            return false;
+
+        // Messy commands (bash control-flow, unbalanced quotes/brackets)
+        // have no extractable verb-chain patterns, so the user prompt only
+        // offers Once+Deny. ApprovedOnce on a messy command MUST bypass on
+        // the tool-name match alone — there are no patterns to compare on
+        // either side. Without this branch, clicking Once on a complex
+        // command lands the retry into AuthorizeCoreAsync, hits the empty-
+        // patterns guard below, and throws ToolApprovalRequiredException
+        // (surfacing as "I encountered an error executing a tool"). The
+        // per-retry cleanup at SessionToolExecutionPipeline.cs:467-475
+        // still clears OneTimeApprovedToolName afterward, so the messy
+        // bypass cannot be reused for subsequent calls.
+        if (approvalContext.IsMessy
+            && !string.IsNullOrEmpty(context.OneTimeApprovedToolName)
+            && string.Equals(context.OneTimeApprovedToolName, toolCall.Name, StringComparison.Ordinal))
+            return true;
+
         if (context.OneTimeApprovedPatterns.Count == 0)
             return false;
 
         if (approvalContext.Patterns.Count == 0)
             return false;
 
-        if (!string.Equals(context.OneTimeApprovedToolName, toolCall.Name, StringComparison.Ordinal))
+        if (string.IsNullOrEmpty(context.OneTimeApprovedToolName))
             return false;
 
         return approvalContext.Patterns.All(pattern => context.OneTimeApprovedPatterns.Contains(pattern));

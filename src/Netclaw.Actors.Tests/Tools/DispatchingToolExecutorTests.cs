@@ -387,6 +387,94 @@ public class DispatchingToolExecutorTests
     }
 
     [Fact]
+    public async Task One_time_approval_bypasses_for_messy_command_via_tool_name_match()
+    {
+        // Messy commands (bash control-flow, unbalanced quotes) cannot have
+        // verb-chain patterns extracted, so the prompt offers Once + Deny
+        // only and ApprovalContext.Patterns is empty. The OneTimeApproval
+        // bypass must succeed on tool-name match alone for messy commands —
+        // otherwise clicking Once on a complex bash for-loop fails the
+        // retry with ToolApprovalRequiredException ("I encountered an
+        // error executing a tool"), which is what was happening in
+        // session D0AC6CKBK5K/1778542266.328629 on 2026-05-11.
+        var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
+        config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
+        {
+            ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
+            {
+                ["shell_execute"] = ToolApprovalMode.Approval
+            }
+        };
+
+        var registry = new ToolRegistry();
+        registry.WithFirstPartyTools(config);
+
+        var system = ActorSystem.Create($"tool-approval-messy-{Guid.NewGuid():N}");
+        try
+        {
+            var approvalActor = system.ActorOf(ToolApprovalActor.CreateProps(), "tool-approval");
+            var approvalService = new AkkaToolApprovalService(new StubRequiredActor(approvalActor));
+            var executor = new DispatchingToolExecutor(
+                registry,
+                new ToolAccessPolicy(
+                    config,
+                    new EffectivePolicyDefaults(
+                        DeploymentPosture.Personal,
+                        TrustAudience.Personal,
+                        ShellExecutionMode.HostAllowed,
+                        UsedStrictFallback: false)),
+                approvalService);
+
+            // bash for-loop is messy — tokenizer refuses to extract verb
+            // chains for control-flow commands, so Patterns is empty.
+            var toolCall = new FunctionCallContent(
+                "call-messy-once",
+                "shell_execute",
+                ToolInput.Create("Command", "for i in 1 2 3; do echo $i; done"));
+
+            var context = new Netclaw.Tools.ToolExecutionContext("signalr/thread-1", null)
+            {
+                Audience = TrustAudience.Personal.ToWireValue(),
+                Boundary = SecurityPolicyDefaults.TrustedInstanceBoundary,
+                ChannelType = "signalr",
+                SupportsInteractiveApproval = true
+            };
+
+            var firstAttempt = await Assert.ThrowsAsync<ToolApprovalRequiredException>(() =>
+                executor.ExecuteAsync(toolCall, context, TestContext.Current.CancellationToken));
+
+            // Confirm the test setup: a messy command produces empty patterns
+            // and the IsMessy flag, with only Once+Deny options offered.
+            Assert.True(firstAttempt.ApprovalContext.IsMessy);
+            Assert.Empty(firstAttempt.ApprovalContext.Patterns);
+
+            // Simulate ApprovedOnce: SessionToolExecutionPipeline sets the
+            // tool-name and patterns on the context. For messy commands the
+            // patterns list is empty (per ApprovalContext.Patterns above),
+            // so the bypass must rely on tool-name match only.
+            context.OneTimeApprovedToolName = toolCall.Name;
+            context.SetOneTimeApprovedPatterns(firstAttempt.ApprovalContext.Patterns);
+
+            // The retry must succeed without throwing. Output text varies
+            // by environment (bash for-loop expansion); the load-bearing
+            // assertion is the absence of ToolApprovalRequiredException.
+            _ = await executor.ExecuteAsync(toolCall, context, TestContext.Current.CancellationToken);
+
+            // After the per-retry cleanup runs, the bypass is gone and a
+            // subsequent attempt re-prompts.
+            context.OneTimeApprovedToolName = null;
+            context.SetOneTimeApprovedPatterns([]);
+
+            await Assert.ThrowsAsync<ToolApprovalRequiredException>(() =>
+                executor.ExecuteAsync(toolCall, context, TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            await system.Terminate();
+        }
+    }
+
+    [Fact]
     public async Task One_time_approval_allows_immediate_retry_only()
     {
         var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
