@@ -126,4 +126,39 @@ public sealed class ShellSyntaxTreeIntegrationTests
         Assert.Equal(ArgKind.DynamicSkip, argWithDynamic.Kind);
         Assert.Null(argWithDynamic.Resolved);
     }
+
+    [Fact]
+    public void Leading_line_comment_is_stripped_from_clause_extraction()
+    {
+        // Regression test for ShellSyntaxTree #25 — bash line comments
+        // (# starting a token, runs to end-of-line) must not appear as
+        // verb-chain content. Pre-fix this surfaced as approval prompts
+        // saying "Approve `# Get` in ..." and persistence-versus-recheck
+        // verb-set mismatches that broke ApprovedSession on commented
+        // commands. Fixed in ShellSyntaxTree 0.1.3-alpha.
+        var parser = new BashParser();
+
+        var result = parser.Parse(
+            "# fetch the latest\ngit pull origin main");
+
+        Assert.False(result.IsUnparseable);
+        Assert.Single(result.Clauses);
+        Assert.Equal("git pull", result.Clauses[0].Verb.Joined);
+    }
+
+    [Fact]
+    public void Hash_inside_double_quotes_is_not_a_comment()
+    {
+        // Per POSIX, # is only a comment when starting a word AND outside
+        // quotes. echo "hash is #1234" should produce one verb (echo)
+        // with one literal arg containing the hash sign.
+        var parser = new BashParser();
+
+        var result = parser.Parse("echo \"hash is #1234\"");
+
+        Assert.False(result.IsUnparseable);
+        Assert.Single(result.Clauses);
+        Assert.Equal("echo", result.Clauses[0].Verb.Joined);
+        Assert.Contains(result.Clauses[0].Args, a => a.Raw.Contains("#1234"));
+    }
 }
