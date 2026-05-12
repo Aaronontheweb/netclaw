@@ -140,7 +140,12 @@ public sealed class GateEvaluatorTests
         Assert.Equal(OverallGateDecision.NeedsPrompt, result.OverallDecision);
         Assert.Null(result.ZonePrompt);   // no untrusted paths in this clause
         Assert.NotNull(result.VerbPrompt);
-        Assert.Equal("git push *", result.VerbPrompt.VerbPattern);
+        // Greedy verb-chain extraction (ShellSyntaxTree 0.1.4-alpha,
+        // issue #27): the proposed pattern includes the full verb chain
+        // up to the first non-verb-like token. Approving
+        // `git push origin main *` is intentionally narrower than
+        // `git push *` — see PRD discussion on operator-friendly defaults.
+        Assert.Equal("git push origin main *", result.VerbPrompt.VerbPattern);
     }
 
     [Fact]
@@ -273,9 +278,13 @@ public sealed class GateEvaluatorTests
     public void Persisted_verb_pattern_auto_passes_verb_gate()
     {
         var evaluator = NewEvaluator();
+        // Persisted pattern matches the verb chain the parser actually
+        // extracts for `git push origin main` (greedy through verb-like
+        // tokens). This mirrors what AudienceTrustStore would persist
+        // after the operator clicks Always on the auto-proposed prompt.
         var state = NewTrustState(
             baselineZones: ["/home/user/repos"],
-            persistedVerbPatterns: ["git push *"]);
+            persistedVerbPatterns: ["git push origin main *"]);
 
         var result = evaluator.Evaluate(
             "git push origin main",
@@ -308,6 +317,9 @@ public sealed class GateEvaluatorTests
     public void Verb_pattern_does_not_match_different_verb()
     {
         var evaluator = NewEvaluator();
+        // Persisted `git push *` does not match the `git pull origin main`
+        // verb chain — different verb root, no auto-pass. The auto-proposed
+        // pattern for the prompt is the full greedy chain.
         var state = NewTrustState(
             baselineZones: ["/home/user/repos"],
             persistedVerbPatterns: ["git push *"]);
@@ -318,7 +330,7 @@ public sealed class GateEvaluatorTests
             state);
 
         Assert.NotNull(result.VerbPrompt);
-        Assert.Equal("git pull *", result.VerbPrompt.VerbPattern);
+        Assert.Equal("git pull origin main *", result.VerbPrompt.VerbPattern);
     }
 
     // -------------------------------------------------------------------

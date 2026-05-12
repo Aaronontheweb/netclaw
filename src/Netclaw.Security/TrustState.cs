@@ -23,9 +23,12 @@ namespace Netclaw.Security;
 ///
 /// Zone matching is path-prefix recursive with directory-boundary safety:
 /// zone <c>~/repos</c> matches <c>~/repos/foo/bar</c> but not
-/// <c>~/repossecret</c>. Verb-pattern matching is verb-chain prefix +
-/// arg-glob suffix per the locked design (<c>git push *</c> matches
-/// <c>git push origin main</c> but not <c>git pull origin main</c>).
+/// <c>~/repossecret</c>. Verb-pattern matching is verb-chain
+/// exact-equality + arg-glob suffix per the locked design — the verb
+/// chain comes from the parser's greedy verb-like extraction, so
+/// pattern <c>git push origin main *</c> matches verb chain
+/// <c>git push origin main</c> but not <c>git pull origin main</c> or
+/// <c>git push</c> alone.
 /// </remarks>
 public sealed class TrustState
 {

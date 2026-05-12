@@ -53,15 +53,69 @@ public sealed class ShellSyntaxTreeIntegrationTests
     }
 
     [Fact]
-    public void Multi_token_verb_collapses_with_BashArity()
+    public void Verb_chain_extracts_greedily_through_verb_like_tokens()
     {
+        // ShellSyntaxTree 0.1.4-alpha (issue #27): the parser extends the
+        // verb chain through every "verb-like" token until it hits a flag
+        // or a path. So `git push origin main` produces a four-token verb
+        // chain rather than collapsing to `git push` via a fixed BashArity
+        // table — which is the behavior Netclaw wants for narrow
+        // auto-proposed verb patterns (`git push origin main *` is safer
+        // to approve than `git push *`).
         var parser = new BashParser();
 
         var result = parser.Parse("git push origin main");
 
         Assert.False(result.IsUnparseable);
         Assert.Single(result.Clauses);
-        Assert.Equal("git push", result.Clauses[0].Verb.Joined);
+        Assert.Equal("git push origin main", result.Clauses[0].Verb.Joined);
+    }
+
+    [Fact]
+    public void Verb_chain_stops_at_flag_token()
+    {
+        // `-s` is a flag, so verb-chain extraction must halt before it.
+        var parser = new BashParser();
+
+        var result = parser.Parse("git status -s");
+
+        Assert.False(result.IsUnparseable);
+        Assert.Equal("git status", result.Clauses[0].Verb.Joined);
+        Assert.Contains(result.Clauses[0].Args, a => a.Raw == "-s");
+    }
+
+    [Fact]
+    public void Verb_chain_stops_at_path_token()
+    {
+        // A token containing `/` or `.` is path-like, not verb-like, so
+        // verb-chain extraction must halt before it.
+        var parser = new BashParser();
+
+        var dotted = parser.Parse("cat file.txt");
+        Assert.Equal("cat", dotted.Clauses[0].Verb.Joined);
+
+        var slashed = parser.Parse("dotnet test /home/user/repos/Foo");
+        Assert.Equal("dotnet test", slashed.Clauses[0].Verb.Joined);
+    }
+
+    [Fact]
+    public void Multi_token_cli_subcommand_extracts_full_chain()
+    {
+        // Regression for ShellSyntaxTree #27 — production hit on
+        // `git worktree list`. The pre-fix parser stopped at `git
+        // worktree`, which propagated to a verb-chain mismatch between
+        // approval-prompt time and retry time and surfaced as
+        // "I encountered an error executing a tool". Same heuristic now
+        // also handles non-git CLIs (`freshdesk ticket list`,
+        // `kubectl get pods`, etc.) without per-CLI tables.
+        var parser = new BashParser();
+
+        Assert.Equal(
+            "git worktree list",
+            parser.Parse("git worktree list").Clauses[0].Verb.Joined);
+        Assert.Equal(
+            "freshdesk ticket list",
+            parser.Parse("freshdesk ticket list").Clauses[0].Verb.Joined);
     }
 
     [Fact]
@@ -143,7 +197,7 @@ public sealed class ShellSyntaxTreeIntegrationTests
 
         Assert.False(result.IsUnparseable);
         Assert.Single(result.Clauses);
-        Assert.Equal("git pull", result.Clauses[0].Verb.Joined);
+        Assert.Equal("git pull origin main", result.Clauses[0].Verb.Joined);
     }
 
     [Fact]
