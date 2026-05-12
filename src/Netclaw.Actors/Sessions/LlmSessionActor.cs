@@ -3163,52 +3163,22 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // rather than one per verb. Side-effect-only clauses are dropped
         // before grouping — they're authorized for the current call by
         // the decision but persistence is suppressed.
-        // Key is string.Empty for the null-directory (global wildcard) bucket;
-        // mapped back to null when calling the persistence layer below.
-        var grouping = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-
-        // Resolve session_dir for the session-scratch persistence guard.
-        // Folder-scoped grants whose effective directory equals the
-        // ephemeral session_dir are dead-on-arrival — the next session
-        // starts with a fresh session_dir, so the saved entry could never
-        // match again. The prompt already hides Always here in this case
-        // (see ToolAccessPolicy.AllCandidatesResolveToSessionScratch); we
-        // re-check at persistence time as belt-and-suspenders so a stale
-        // request or a partial mix of session-scratch and real-path
-        // candidates can't silently drop dead entries into the store.
+        //
+        // Bucket key is string.Empty for the null-directory (global wildcard)
+        // bucket; mapped back to null when calling the persistence layer
+        // below. The session-scratch dead-on-arrival guard is applied inside
+        // BuildApprovalBuckets for persistent scope only — session-scope
+        // entries are matched verb-only at lookup time so threading cwd
+        // through here just feeds the filter that drops standalone verbs
+        // with no path arg (curl, gh, git status).
         var sessionDirectory = GetSessionDirectory();
 
-        foreach (var candidate in pending.Candidates)
-        {
-            if (ApprovalPatternMatching.IsPureSideEffect(candidate))
-                continue;
-
-            string? effectiveDirectory;
-            if (globalWildcard)
-            {
-                effectiveDirectory = null;
-            }
-            else
-            {
-                effectiveDirectory = candidate.Directory ?? pending.Cwd;
-            }
-
-            if (effectiveDirectory is not null
-                && sessionDirectory is not null
-                && IsSessionScratchDirectory(effectiveDirectory, sessionDirectory))
-            {
-                continue;
-            }
-
-            if (!grouping.TryGetValue(effectiveDirectory ?? string.Empty, out var verbs))
-            {
-                verbs = [];
-                grouping[effectiveDirectory ?? string.Empty] = verbs;
-            }
-
-            if (!verbs.Contains(candidate.Verb, StringComparer.OrdinalIgnoreCase))
-                verbs.Add(candidate.Verb);
-        }
+        var grouping = BuildApprovalBuckets(
+            pending.Candidates,
+            persistent,
+            globalWildcard,
+            pending.Cwd,
+            sessionDirectory);
 
         foreach (var (key, verbs) in grouping)
         {
@@ -3228,6 +3198,81 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 directory,
                 ct);
         }
+    }
+
+    /// <summary>
+    /// Pure helper that groups approval candidates into the per-directory
+    /// buckets <see cref="PersistApprovalCandidatesAsync"/> turns into
+    /// <c>RecordApprovalAsync</c> calls. Extracted so the session-scope
+    /// vs persistent-scope branching is regression-tested at the unit
+    /// level — the bucketing is where the no-path-arg-verb retry bug
+    /// (curl https://..., gh pr list) was hiding.
+    /// </summary>
+    /// <remarks>
+    /// Session-scope entries (<c>persistent: false</c>, not global wildcard)
+    /// use <c>candidate.Directory</c> directly without falling back to
+    /// <paramref name="cwd"/>. The session approval dict in
+    /// <c>ToolApprovalActor._sessionApprovals</c> is keyed by
+    /// <c>(sessionId, audience, tool)</c> and matches verb-only — the
+    /// directory half is never consulted at lookup time, so threading
+    /// cwd through here just creates buckets that the session-scratch
+    /// guard then drops on the floor (which is what was silently
+    /// breaking retries on standalone verbs with no anchored path arg).
+    ///
+    /// Persistent scope (<c>persistent: true</c>) still falls back to
+    /// <paramref name="cwd"/> and applies the session-scratch guard, so
+    /// folder-scoped grants whose effective directory resolves to the
+    /// ephemeral session directory continue to be dropped — those entries
+    /// would be dead-on-arrival because the next session has a fresh
+    /// session_dir and the saved entry could never match again.
+    /// </remarks>
+    internal static Dictionary<string, List<string>> BuildApprovalBuckets(
+        IReadOnlyList<ApprovalCandidate> candidates,
+        bool persistent,
+        bool globalWildcard,
+        string? cwd,
+        string? sessionDirectory)
+    {
+        var grouping = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+        foreach (var candidate in candidates)
+        {
+            if (ApprovalPatternMatching.IsPureSideEffect(candidate))
+                continue;
+
+            string? effectiveDirectory;
+            if (globalWildcard)
+            {
+                effectiveDirectory = null;
+            }
+            else if (!persistent)
+            {
+                effectiveDirectory = candidate.Directory;
+            }
+            else
+            {
+                effectiveDirectory = candidate.Directory ?? cwd;
+
+                if (effectiveDirectory is not null
+                    && sessionDirectory is not null
+                    && IsSessionScratchDirectory(effectiveDirectory, sessionDirectory))
+                {
+                    continue;
+                }
+            }
+
+            var key = effectiveDirectory ?? string.Empty;
+            if (!grouping.TryGetValue(key, out var verbs))
+            {
+                verbs = [];
+                grouping[key] = verbs;
+            }
+
+            if (!verbs.Contains(candidate.Verb, StringComparer.OrdinalIgnoreCase))
+                verbs.Add(candidate.Verb);
+        }
+
+        return grouping;
     }
 
     /// <summary>
