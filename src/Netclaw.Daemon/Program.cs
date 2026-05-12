@@ -840,7 +840,12 @@ static void ConfigureDaemonServices(
     services.AddSingleton<IToolExecutor>(sp =>
         new DispatchingToolExecutor(
             toolRegistry,
-            toolAccessPolicy,
+            // Resolve the DI-registered ToolAccessPolicy (logger-equipped)
+            // rather than capturing the local construction (no logger).
+            // The diag(approvals) commit relies on this — without it the
+            // executor holds the no-logger instance and the gate_fastpath_*
+            // lines never fire.
+            sp.GetRequiredService<ToolAccessPolicy>(),
             sp.GetService<IToolApprovalService>(),
             sp.GetRequiredService<ILogger<DispatchingToolExecutor>>()));
 
