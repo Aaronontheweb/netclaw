@@ -144,12 +144,15 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (string.IsNullOrWhiteSpace(command))
             return [];
 
-        // v2.1 candidate extraction: emit (verb, directory) pairs per clause.
-        // The verb is the command head + subcommand chain only; path
-        // arguments are extracted separately as the candidate's effective
-        // directory. The matcher uses directory ?? cwd at evaluation time.
-        // Deduped by (verb, directory) so a compound command like
-        // "ls A; ls B" produces two entries even though the verb is shared.
+        // POSIX commands route through BashParser so we pick up the parser's
+        // cd-in-compound cwd attribution. The parser walks `cd X && verb`,
+        // `bash -c "cd X && verb"`, and multi-step `cd A && cd B && verb`
+        // chains; the candidate's directory inherits the latest cd target
+        // when the clause itself has no anchored path arg. Windows keeps
+        // the legacy ShellTokenizer path — ShellSyntaxTree is bash-only.
+        if (!OperatingSystem.IsWindows())
+            return ExtractCandidatesViaBashParser(command);
+
         var seen = new HashSet<(string, string?)>();
         var candidates = new List<ApprovalCandidate>();
         TraverseApprovalUnits(command, unit =>
@@ -165,6 +168,149 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         });
 
         return candidates;
+    }
+
+    private static IReadOnlyList<ApprovalCandidate> ExtractCandidatesViaBashParser(string command)
+    {
+        ShellSyntaxTree.ParsedCommand result;
+        try
+        {
+            result = new ShellSyntaxTree.BashParser().Parse(command);
+        }
+        catch
+        {
+            // Defensive: an unhandled parser exception shouldn't take down
+            // the approval flow. Fail-empty so the matcher treats this as
+            // a messy command (Once+Deny prompt only).
+            return [];
+        }
+
+        if (result.IsUnparseable || result.Clauses.Count == 0)
+            return [];
+
+        // Group consecutive Pipe clauses into a single approval unit so
+        // `cat /etc/hosts | wc -l` stays one decision rather than two.
+        // AndIf / OrIf / Sequence and the leading None-operator clause each
+        // start a fresh group.
+        var seen = new HashSet<(string, string?)>();
+        var candidates = new List<ApprovalCandidate>();
+        ShellSyntaxTree.Clause? groupHead = null;
+
+        foreach (var clause in result.Clauses)
+        {
+            if (clause.Operator != ShellSyntaxTree.CompoundOperator.Pipe)
+                groupHead = clause;
+
+            if (groupHead is null)
+                continue;
+
+            if (!ReferenceEquals(clause, groupHead))
+                continue;  // pipe-tail clauses fold into the group head
+
+            var verb = ApplyVerbShortCircuit(clause.Verb.Joined);
+            if (string.IsNullOrEmpty(verb))
+                continue;
+
+            // Side-effect verbs (echo, printf, :, true, false) don't
+            // operate on the filesystem, so inheriting the cd target
+            // would (a) break ApprovalPatternMatching.IsPureSideEffect's
+            // null-directory invariant and (b) attach a misleading scope
+            // to a verb that ignores cwd. Their candidates remain
+            // directory-less; redirects (echo X > /tmp/log) still
+            // surface their target via the explicit-path scan above
+            // when BashParser exposes the redirect arg.
+            var isSideEffectVerb = ShellTokenizer.SingleTokenSideEffectVerbs.Contains(verb);
+            var directory = ResolveClauseDirectory(clause, isSideEffectVerb);
+            var key = (verb.ToLowerInvariant(), directory);
+            if (seen.Add(key))
+                candidates.Add(new ApprovalCandidate(verb, directory));
+        }
+
+        return candidates;
+    }
+
+    private static string ApplyVerbShortCircuit(string? rawVerb)
+    {
+        if (string.IsNullOrEmpty(rawVerb))
+            return string.Empty;
+
+        // Path-aware verbs (cat, grep, find, ls, ...) and single-token
+        // side-effect verbs (echo, printf, ...) collapse to depth 1 so
+        // call-specific positional arguments don't bake into the persisted
+        // verb chain. Mirrors ShellApprovalSemanticsBase.ExtractVerbChain
+        // — both paths must apply the same short-circuit to stay
+        // consistent across POSIX BashParser and Windows legacy code.
+        var firstSpace = rawVerb.IndexOf(' ', StringComparison.Ordinal);
+        var firstToken = firstSpace < 0 ? rawVerb : rawVerb[..firstSpace];
+        if (ShellTokenizer.PathAwareVerbs.Contains(firstToken)
+            || ShellTokenizer.SingleTokenSideEffectVerbs.Contains(firstToken))
+            return firstToken;
+
+        return rawVerb;
+    }
+
+    private static string? ResolveClauseDirectory(ShellSyntaxTree.Clause clause, bool isSideEffectVerb)
+    {
+        // First explicit path arg wins — that's the candidate's own
+        // operand, e.g. `dotnet test /home/user/repos/Foo`. Only the
+        // anchored-path predicate from the legacy tokenizer counts (/, ~/,
+        // ./, ../ and the bare ~/./..), so `feature/freshdesk-cli-skill`
+        // and other internal-slash tokens stay as args, not directories.
+        foreach (var arg in clause.Args)
+        {
+            if (arg.IsCwdAttribution)
+                continue;
+
+            var raw = arg.Raw;
+            if (string.IsNullOrEmpty(raw))
+                continue;
+
+            if (raw.StartsWith('-'))
+                continue;
+
+            if (ShellTokenizer.IsPathToken(raw))
+                return ApplyFileParentRule(raw);
+        }
+
+        // Side-effect verbs ignore cd attribution — see caller's comment
+        // on why (null-directory invariant in IsPureSideEffect, and these
+        // verbs don't operate on the filesystem anyway).
+        if (isSideEffectVerb)
+            return null;
+
+        // No explicit path → inherit the cd-attributed cwd from any
+        // preceding `cd X` in this compound (or in a wrapping `bash -c
+        // "..."` invocation; the parser flattens that).
+        var cwdAttribution = clause.Args.FirstOrDefault(a => a.IsCwdAttribution);
+        return cwdAttribution?.Resolved;
+    }
+
+    private static string? ApplyFileParentRule(string token)
+    {
+        // File path with extension: scope to the parent directory so
+        // persisted approvals match the folder, not a single file. Mirrors
+        // ShellApprovalSemanticsBase.ApplyFileParentRule — the BashParser
+        // path must produce identical (verb, directory) tuples for the
+        // same command so prompt-time and retry-time candidates compare
+        // equal.
+        if (string.IsNullOrEmpty(token))
+            return token;
+
+        var hasExtension = Path.HasExtension(token);
+        if (!hasExtension && !LooksLikeDotfile(token))
+            return token;
+
+        var parent = Path.GetDirectoryName(token);
+        if (string.IsNullOrEmpty(parent))
+            return token;
+
+        return parent;
+    }
+
+    private static bool LooksLikeDotfile(string token)
+    {
+        var basename = Path.GetFileName(token);
+        return basename.Length > 1 && basename[0] == '.';
     }
 
     public bool IsApproved(

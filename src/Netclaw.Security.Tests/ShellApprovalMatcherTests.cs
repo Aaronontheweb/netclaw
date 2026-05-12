@@ -368,24 +368,154 @@ public sealed class ShellApprovalMatcherPathExtractionTests
     [Fact]
     public void ExtractCandidates_extracts_cd_target_as_directory()
     {
-        // Aaron's dogfood case: `cd /repo && git remote -v && ...`. The
-        // header / persistence layer needs the cd target as the candidate's
-        // directory so the prompt can show the meaningful trust scope
-        // rather than the per-session ephemeral session_dir.
+        // Production case: `cd /repo && git remote -v`. The header /
+        // persistence layer needs the cd target as the candidate's
+        // directory so the prompt shows the meaningful trust scope rather
+        // than the per-session ephemeral session_dir, AND so ApprovedSession
+        // / ApprovedAlways grants for the verb actually persist (the
+        // persistence guard at LlmSessionActor.PersistApprovalCandidatesAsync
+        // drops candidates whose effective directory resolves to session_dir
+        // — when git remote inherited session_dir as its fallback cwd, that
+        // guard silently dropped the grant and the retry threw
+        // ToolApprovalRequiredException).
+        //
+        // ShellSyntaxTree 0.1.4-alpha attributes the cd target as a
+        // synthetic IsCwdAttribution arg on every clause that follows
+        // a `cd` in the compound; ExtractCandidates surfaces that into
+        // the candidate's Directory so the verb's effective directory
+        // matches the actual filesystem location the shell will run it in.
         var candidates = _matcher.ExtractCandidates(
             new ToolName("shell_execute"),
             new Dictionary<string, object?>
             {
-                ["Command"] = "cd /home/petabridge/repositories/stannardlabs/netclaw && git remote -v"
+                ["Command"] = "cd /home/user/repos/example && git remote -v"
             });
 
         Assert.Contains(candidates,
             c => c.Verb == "cd"
-              && c.Directory == "/home/petabridge/repositories/stannardlabs/netclaw");
-        // git remote has no path argument so its directory falls back to cwd
-        // at match time (Directory == null on the candidate itself).
+              && c.Directory == "/home/user/repos/example");
         Assert.Contains(candidates,
-            c => c.Verb == "git remote" && c.Directory == null);
+            c => c.Verb == "git remote"
+              && c.Directory == "/home/user/repos/example");
+    }
+
+    [Fact]
+    public void ExtractCandidates_propagates_cd_target_to_subsequent_clauses_with_no_path_arg()
+    {
+        // Production repro of the retry-after-approval failure on
+        // `cd ~/repos && git checkout -b feature/foo`. The git checkout
+        // clause has no anchored path arg of its own (feature/foo has a
+        // slash but isn't an anchored path token), so before the
+        // BashParser rewrite its candidate ended up
+        // (git checkout, null) → effective directory fell back to
+        // session_dir at persistence time → the session-scratch guard
+        // dropped the grant → retry threw ToolApprovalRequiredException.
+        var candidates = _matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?>
+            {
+                ["Command"] = "cd /home/user/repos/foo && git checkout -b feature/freshdesk-cli-skill"
+            });
+
+        Assert.Contains(candidates,
+            c => c.Verb == "cd" && c.Directory == "/home/user/repos/foo");
+        Assert.Contains(candidates,
+            c => c.Verb == "git checkout" && c.Directory == "/home/user/repos/foo");
+    }
+
+    [Fact]
+    public void ExtractCandidates_tracks_latest_cd_through_multiple_hops()
+    {
+        // cd /a && cd /b && grep ... — grep inherits /b (the latest cd),
+        // not /a. Mirrors the BashParser's state-machine semantics for
+        // cd-in-compound; pinning here so a parser regression that
+        // forgets cwd updates breaks Netclaw CI before it surfaces in
+        // production.
+        var candidates = _matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?>
+            {
+                ["Command"] = "cd /a && cd /b && pwd"
+            });
+
+        Assert.Contains(candidates, c => c.Verb == "cd" && c.Directory == "/a");
+        Assert.Contains(candidates, c => c.Verb == "cd" && c.Directory == "/b");
+        Assert.Contains(candidates, c => c.Verb == "pwd" && c.Directory == "/b");
+    }
+
+    [Fact]
+    public void ExtractCandidates_recurses_into_bash_dash_c_with_cd_attribution_intact()
+    {
+        // bash -c "cd /repo && git push" — the parser flattens the
+        // inner command and propagates the cd target onto git push.
+        // Recursion is the parser's responsibility; the matcher just
+        // reads what it produces.
+        var candidates = _matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?>
+            {
+                ["Command"] = "bash -c \"cd /repo && git push\""
+            });
+
+        Assert.Contains(candidates, c => c.Verb == "git push" && c.Directory == "/repo");
+    }
+
+    [Fact]
+    public void ExtractCandidates_prefers_explicit_path_arg_over_cd_attribution()
+    {
+        // When a clause has its own anchored path argument, that wins —
+        // the candidate is approved for the specific path it operates
+        // on, not for the broader cd target. Approving
+        // `dotnet test /home/foo` shouldn't accidentally grant dotnet
+        // test access to all of /tmp just because the operator happened
+        // to be cd'd there.
+        var candidates = _matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?>
+            {
+                ["Command"] = "cd /tmp && dotnet test /home/foo"
+            });
+
+        Assert.Contains(candidates,
+            c => c.Verb == "dotnet test" && c.Directory == "/home/foo");
+    }
+
+    [Fact]
+    public void ExtractCandidates_side_effect_verbs_do_not_inherit_cd_attribution()
+    {
+        // echo / printf / true / false write to stdout and ignore cwd,
+        // so cd attribution must NOT attach to them — both because the
+        // attribution is semantically meaningless for these verbs and
+        // because ApprovalPatternMatching.IsPureSideEffect treats them
+        // as unconditional pass when Directory is null (the redirect
+        // detector still kicks in if a literal `> /tmp/log` path arg
+        // is present on the clause).
+        var candidates = _matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?>
+            {
+                ["Command"] = "cd /tmp && echo \"done\""
+            });
+
+        Assert.Contains(candidates, c => c.Verb == "echo" && c.Directory == null);
+    }
+
+    [Fact]
+    public void ExtractCandidates_collapses_pipe_chain_into_single_candidate()
+    {
+        // Pipes stay inside one approval unit — approving cat /etc/hosts
+        // | wc -l shouldn't prompt twice. Compare with && which DOES
+        // produce independent units.
+        var candidates = _matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?>
+            {
+                ["Command"] = "cat /etc/hosts | wc -l"
+            });
+
+        Assert.Single(candidates);
+        Assert.Equal("cat", candidates[0].Verb);
+        Assert.Equal("/etc/hosts", candidates[0].Directory);  // no extension → no file-parent
     }
 
     [Fact]
