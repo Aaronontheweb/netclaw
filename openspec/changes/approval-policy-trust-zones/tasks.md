@@ -64,11 +64,11 @@
 
 ## 7. Slack adapter
 
-- [ ] 7.1 Update `SlackApprovalBlockBuilder` to render two distinct prompt shapes by `Kind`: `approval_zone` (header asks about paths; row contains `Once / Session / Trust <path> / Deny`) and `approval_verb` (header asks about verb pattern; row contains `Once / Session / Always <pattern> / Deny`). Verify: builder unit tests assert block structure for each Kind.
-- [ ] 7.2 Implement label truncation when path/pattern exceeds 76-character button-text cap. Full value remains in body. Verify: truncation unit test for ≥10 long inputs.
-- [ ] 7.3 Update Slack interaction handler to route response by `Kind` to the correct `ToolApprovalWorkflow` stage. Verify: handler test routes zone vs verb responses correctly.
-- [ ] 7.4 Update resolution message rendering: `Saved zone: ...`, `Saved verb: ...`, `Approved (no save)`, `Denied`. Verify: resolution-line unit tests.
-- [ ] 7.5 Update Slack sample fixtures and snapshot tests for the new prompt shapes. Verify: snapshot tests pass after baseline update.
+- [x] 7.1 Update `SlackApprovalBlockBuilder` to render two distinct prompt shapes by `Kind`: `approval_zone` (header asks about paths; row contains `Once / Session / Trust <path> / Deny`) and `approval_verb` (header asks about verb pattern; row contains `Once / Session / Always <pattern> / Deny`). Verify: builder unit tests assert block structure for each Kind.
+- [x] 7.2 Implement label truncation when path/pattern exceeds 76-character button-text cap. Full value remains in body. Verify: truncation unit test for ≥10 long inputs.
+- [x] 7.3 Update Slack interaction handler to route response by `Kind` to the correct `ToolApprovalWorkflow` stage. Verify: handler test routes zone vs verb responses correctly.
+- [x] 7.4 Update resolution message rendering: `Saved zone: ...`, `Saved verb: ...`, `Approved (no save)`, `Denied`. Verify: resolution-line unit tests.
+- [x] 7.5 Update Slack sample fixtures and snapshot tests for the new prompt shapes. Verify: snapshot tests pass after baseline update.
 
 ## 8. Discord adapter
 

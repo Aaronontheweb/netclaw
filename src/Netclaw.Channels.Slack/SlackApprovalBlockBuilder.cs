@@ -8,110 +8,34 @@ using SlackNet.Blocks;
 
 namespace Netclaw.Channels.Slack;
 
+/// <summary>
+/// Renders the three approval prompt shapes Slack supports:
+/// v2 single-prompt (<c>Kind = "approval"</c>), trust-zones zone-gate
+/// (<c>Kind = "approval_zone"</c>), and trust-zones verb-gate
+/// (<c>Kind = "approval_verb"</c>). The block builder is the only
+/// place that varies output by <see cref="ToolInteractionRequest.Kind"/>;
+/// the upstream actor and pipeline don't need to know which channel
+/// is rendering.
+/// </summary>
 internal static class SlackApprovalBlockBuilder
 {
     public const string ApprovalActionId = "tool_approval";
 
     private const string ComplexCommandHint = "_complex command — only one-shot approval available_";
 
-    public static string BuildApprovalText(ToolInteractionRequest request)
+    public static string BuildApprovalText(ToolInteractionRequest request) => request.Kind switch
     {
-        var lines = new List<string>
-        {
-            ":lock: *Tool approval required*",
-            $"> `{request.ToolName}`: `{request.DisplayText}`",
-            BuildApproveHeader(request)
-        };
+        "approval_zone" => BuildZoneApprovalText(request),
+        "approval_verb" => BuildVerbApprovalText(request),
+        _ => BuildLegacyApprovalText(request)
+    };
 
-        var verbs = ResolveDisplayVerbs(request);
-        if (verbs.Count > 1)
-        {
-            foreach (var verb in verbs)
-                lines.Add($"  • `{verb}`");
-        }
-
-        if (request.IsMessy)
-            lines.Add(ComplexCommandHint);
-
-        AppendAdoptedContextSummary(lines, request);
-
-        lines.Add("");
-        lines.Add("Reply with:");
-        foreach (var replyOption in EnumerateReplyOptions(request.Options))
-            lines.Add($"  *{replyOption.Letter})* {replyOption.Option.Label}");
-
-        return string.Join("\n", lines);
-    }
-
-    public static IReadOnlyList<Block> BuildApprovalBlocks(ToolInteractionRequest request)
+    public static IReadOnlyList<Block> BuildApprovalBlocks(ToolInteractionRequest request) => request.Kind switch
     {
-        var blocks = new List<Block>
-        {
-            new SectionBlock
-            {
-                Text = new Markdown(":lock: *Tool approval required*")
-            },
-            new SectionBlock
-            {
-                Text = new Markdown($"*Tool:* `{EscapeMarkdown(request.ToolName)}`\n*Request:* `{EscapeMarkdown(request.DisplayText)}`"),
-                Expand = true
-            },
-            new SectionBlock
-            {
-                Text = new Markdown($"*{EscapeMarkdown(BuildApproveHeader(request))}*")
-            }
-        };
-
-        var verbs = ResolveDisplayVerbs(request);
-        if (verbs.Count > 1)
-        {
-            var verbLines = verbs.Select(v => $"• `{EscapeMarkdown(v)}`");
-            blocks.Add(new SectionBlock
-            {
-                Text = new Markdown(string.Join("\n", verbLines))
-            });
-        }
-
-        if (request.IsMessy)
-        {
-            blocks.Add(new SectionBlock
-            {
-                Text = new Markdown(ComplexCommandHint)
-            });
-        }
-
-        if (request.HasAdoptedContext)
-        {
-            blocks.Add(new SectionBlock
-            {
-                Text = new Markdown(BuildAdoptedContextMarkdown(request))
-            });
-        }
-
-        // Slack hard-caps PlainText button text at 76 characters; oversized labels are
-        // rejected with `invalid_blocks` and the post fails. Labels MUST come from the
-        // fixed `ApprovalOptionKeys` constants — do not interpolate runtime values
-        // (paths, commands, tool names) into `option.Label` upstream.
-        blocks.Add(new ActionsBlock
-        {
-            Elements = [.. request.Options
-                .Select(option => (IActionElement)new Button
-                {
-                    ActionId = BuildActionId(option.Key),
-                    Text = new PlainText(option.Label),
-                    Value = BuildButtonValue(request, option),
-                    Style = GetButtonStyle(option.Key),
-                    AccessibilityLabel = option.Label
-                })]
-        });
-
-        blocks.Add(new SectionBlock
-        {
-            Text = new Markdown($"You can also reply with {FormatReplyLetters(request.Options)} in this thread.")
-        });
-
-        return blocks;
-    }
+        "approval_zone" => BuildZoneApprovalBlocks(request),
+        "approval_verb" => BuildVerbApprovalBlocks(request),
+        _ => BuildLegacyApprovalBlocks(request)
+    };
 
     public static string BuildResolvedApprovalText(
         ToolInteractionRequest request,
@@ -167,36 +91,445 @@ internal static class SlackApprovalBlockBuilder
         return blocks;
     }
 
+    // -------------------------------------------------------------------
+    // Legacy v2 path — Kind = "approval"
+    // -------------------------------------------------------------------
+
+    private static string BuildLegacyApprovalText(ToolInteractionRequest request)
+    {
+        var lines = new List<string>
+        {
+            ":lock: *Tool approval required*",
+            $"> `{request.ToolName}`: `{request.DisplayText}`",
+            BuildLegacyApproveHeader(request)
+        };
+
+        var verbs = ResolveDisplayVerbs(request);
+        if (verbs.Count > 1)
+        {
+            foreach (var verb in verbs)
+                lines.Add($"  • `{verb}`");
+        }
+
+        if (request.IsMessy)
+            lines.Add(ComplexCommandHint);
+
+        AppendAdoptedContextSummary(lines, request);
+
+        lines.Add("");
+        lines.Add("Reply with:");
+        foreach (var replyOption in EnumerateReplyOptions(request.Options))
+            lines.Add($"  *{replyOption.Letter})* {replyOption.Option.Label}");
+
+        return string.Join("\n", lines);
+    }
+
+    private static IReadOnlyList<Block> BuildLegacyApprovalBlocks(ToolInteractionRequest request)
+    {
+        var blocks = new List<Block>
+        {
+            new SectionBlock
+            {
+                Text = new Markdown(":lock: *Tool approval required*")
+            },
+            new SectionBlock
+            {
+                Text = new Markdown($"*Tool:* `{EscapeMarkdown(request.ToolName)}`\n*Request:* `{EscapeMarkdown(request.DisplayText)}`"),
+                Expand = true
+            },
+            new SectionBlock
+            {
+                Text = new Markdown($"*{EscapeMarkdown(BuildLegacyApproveHeader(request))}*")
+            }
+        };
+
+        var verbs = ResolveDisplayVerbs(request);
+        if (verbs.Count > 1)
+        {
+            var verbLines = verbs.Select(v => $"• `{EscapeMarkdown(v)}`");
+            blocks.Add(new SectionBlock
+            {
+                Text = new Markdown(string.Join("\n", verbLines))
+            });
+        }
+
+        if (request.IsMessy)
+        {
+            blocks.Add(new SectionBlock
+            {
+                Text = new Markdown(ComplexCommandHint)
+            });
+        }
+
+        if (request.HasAdoptedContext)
+        {
+            blocks.Add(new SectionBlock
+            {
+                Text = new Markdown(BuildAdoptedContextMarkdown(request))
+            });
+        }
+
+        blocks.Add(BuildActionsBlock(request));
+        blocks.Add(BuildReplyHintBlock(request));
+
+        return blocks;
+    }
+
+    // -------------------------------------------------------------------
+    // Trust-zones zone-gate prompt — Kind = "approval_zone"
+    // -------------------------------------------------------------------
+    //
+    // Shape per the trust-zones spec:
+    //   Header: "Trust this path?" / "Trust these N paths?"
+    //   Body:   the command being approved + the bulleted path list
+    //   Row:    Once / Session / Trust <path-or-all> / Deny
+    //
+    // The "Trust" button replaces the legacy "Always here" label; its
+    // key is still ApprovalOptionKeys.ApproveAlways so the response
+    // handler decodes scope identically.
+
+    private static string BuildZoneApprovalText(ToolInteractionRequest request)
+    {
+        var paths = ResolveZonePaths(request);
+
+        var lines = new List<string>
+        {
+            ":lock: *Trust zone required*",
+            $"> `{request.ToolName}`: `{request.DisplayText}`",
+            BuildZoneHeader(paths.Count)
+        };
+
+        foreach (var path in paths)
+            lines.Add($"  • `{path}`");
+
+        AppendAdoptedContextSummary(lines, request);
+
+        lines.Add("");
+        lines.Add("Reply with:");
+        foreach (var replyOption in EnumerateReplyOptions(request.Options))
+            lines.Add($"  *{replyOption.Letter})* {RenderZoneButtonLabel(replyOption.Option, paths)}");
+
+        return string.Join("\n", lines);
+    }
+
+    private static IReadOnlyList<Block> BuildZoneApprovalBlocks(ToolInteractionRequest request)
+    {
+        var paths = ResolveZonePaths(request);
+
+        var blocks = new List<Block>
+        {
+            new SectionBlock
+            {
+                Text = new Markdown(":lock: *Trust zone required*")
+            },
+            new SectionBlock
+            {
+                Text = new Markdown(
+                    $"*Tool:* `{EscapeMarkdown(request.ToolName)}`\n"
+                    + $"*Request:* `{EscapeMarkdown(request.DisplayText)}`"),
+                Expand = true
+            },
+            new SectionBlock
+            {
+                Text = new Markdown($"*{EscapeMarkdown(BuildZoneHeader(paths.Count))}*")
+            }
+        };
+
+        if (paths.Count > 0)
+        {
+            var pathLines = paths.Select(p => $"• `{EscapeMarkdown(p)}`");
+            blocks.Add(new SectionBlock
+            {
+                Text = new Markdown(string.Join("\n", pathLines))
+            });
+        }
+
+        if (request.HasAdoptedContext)
+        {
+            blocks.Add(new SectionBlock
+            {
+                Text = new Markdown(BuildAdoptedContextMarkdown(request))
+            });
+        }
+
+        blocks.Add(BuildActionsBlock(request, option => RenderZoneButtonLabel(option, paths)));
+        blocks.Add(BuildReplyHintBlock(request));
+
+        return blocks;
+    }
+
+    private static string BuildZoneHeader(int pathCount) => pathCount switch
+    {
+        0 => "Trust this scope?",
+        1 => "Trust this path?",
+        _ => $"Trust these {pathCount} paths?"
+    };
+
     /// <summary>
-    /// Builds the prompt's header line. Single-verb invocations collapse the
-    /// verb into the header (<c>Approve git status in ~/repos/foo/?</c>);
-    /// multi-verb invocations use the generic <c>Approve in ~/repos/foo/?</c>
-    /// form and let the bullet list below name the verbs.
+    /// Renders the dynamic label for the trust-button on a zone prompt.
+    /// Single-path: "Trust /etc/nginx". Multi-path: "Trust all N listed".
+    /// All other options keep their fixed
+    /// <see cref="ApprovalOptionKeys"/> label.
     /// </summary>
-    /// <remarks>
-    /// The "in &lt;dir&gt;" portion shows the most meaningful target directory
-    /// the operator is being asked to trust. Priority order:
-    /// <list type="number">
-    /// <item>The single distinct path argument extracted across the
-    /// candidates (e.g. <c>cd /repo &amp;&amp; git status</c> shows
-    /// <c>/repo</c>).</item>
-    /// <item><c>cwd</c> if no path arguments are present.</item>
-    /// <item><c>this session</c> when the cwd is the per-session ephemeral
-    /// scratch directory — that path won't recur, so calling it out by name
-    /// would be misleading.</item>
-    /// </list>
-    /// </remarks>
-    private static string BuildApproveHeader(ToolInteractionRequest request)
+    private static string RenderZoneButtonLabel(ToolInteractionOption option, IReadOnlyList<string> paths)
+    {
+        if (option.Key != ApprovalOptionKeys.ApproveAlways)
+            return option.Label;
+
+        if (paths.Count == 1)
+            return TruncateButtonLabel($"Trust {paths[0]}");
+
+        return TruncateButtonLabel($"Trust all {paths.Count} listed");
+    }
+
+    /// <summary>
+    /// Untrusted paths flow through <see cref="ToolInteractionRequest.Patterns"/>
+    /// for trust-zones prompts (the workflow dispatcher stages
+    /// <see cref="Netclaw.Security.ZonePromptInfo.UntrustedPaths"/> there
+    /// because the existing <see cref="ToolInteractionRequest"/> shape
+    /// already had a path-shaped list field).
+    /// </summary>
+    private static IReadOnlyList<string> ResolveZonePaths(ToolInteractionRequest request)
+        => request.Patterns;
+
+    // -------------------------------------------------------------------
+    // Trust-zones verb-gate prompt — Kind = "approval_verb"
+    // -------------------------------------------------------------------
+    //
+    // Shape per the trust-zones spec:
+    //   Header: "Approve this verb pattern?"
+    //   Body:   the command being approved + the pattern row
+    //   Row:    Once / Session / Always <pattern> / Always anywhere / Deny
+    //
+    // ApprovalOptionKeys.ApproveEverywhere stays on this prompt because
+    // verb patterns DO have a global form (the verb pattern matches
+    // regardless of cwd). Zone prompts don't expose Everywhere — a zone
+    // is always a concrete directory.
+
+    private static string BuildVerbApprovalText(ToolInteractionRequest request)
+    {
+        var pattern = ResolveVerbPattern(request);
+
+        var lines = new List<string>
+        {
+            ":lock: *Verb approval required*",
+            $"> `{request.ToolName}`: `{request.DisplayText}`",
+            "Approve this verb pattern?",
+            $"  • `{pattern}`"
+        };
+
+        AppendAdoptedContextSummary(lines, request);
+
+        lines.Add("");
+        lines.Add("Reply with:");
+        foreach (var replyOption in EnumerateReplyOptions(request.Options))
+            lines.Add($"  *{replyOption.Letter})* {RenderVerbButtonLabel(replyOption.Option, pattern)}");
+
+        return string.Join("\n", lines);
+    }
+
+    private static IReadOnlyList<Block> BuildVerbApprovalBlocks(ToolInteractionRequest request)
+    {
+        var pattern = ResolveVerbPattern(request);
+
+        var blocks = new List<Block>
+        {
+            new SectionBlock
+            {
+                Text = new Markdown(":lock: *Verb approval required*")
+            },
+            new SectionBlock
+            {
+                Text = new Markdown(
+                    $"*Tool:* `{EscapeMarkdown(request.ToolName)}`\n"
+                    + $"*Request:* `{EscapeMarkdown(request.DisplayText)}`\n"
+                    + $"*Pattern:* `{EscapeMarkdown(pattern)}`"),
+                Expand = true
+            },
+            new SectionBlock
+            {
+                Text = new Markdown("*Approve this verb pattern?*")
+            }
+        };
+
+        if (request.HasAdoptedContext)
+        {
+            blocks.Add(new SectionBlock
+            {
+                Text = new Markdown(BuildAdoptedContextMarkdown(request))
+            });
+        }
+
+        blocks.Add(BuildActionsBlock(request, option => RenderVerbButtonLabel(option, pattern)));
+        blocks.Add(BuildReplyHintBlock(request));
+
+        return blocks;
+    }
+
+    /// <summary>
+    /// Renders the dynamic label for the Always-button on a verb prompt:
+    /// "Always git push origin main *". Everywhere keeps its fixed
+    /// "Always anywhere" label because the pattern is implicit
+    /// ("anywhere" makes it clear).
+    /// </summary>
+    private static string RenderVerbButtonLabel(ToolInteractionOption option, string pattern)
+    {
+        if (option.Key != ApprovalOptionKeys.ApproveAlways)
+            return option.Label;
+
+        return TruncateButtonLabel($"Always {pattern}");
+    }
+
+    private static string ResolveVerbPattern(ToolInteractionRequest request)
+        => request.CandidateVerbs.Count > 0
+            ? request.CandidateVerbs[0]
+            : string.Empty;
+
+    // -------------------------------------------------------------------
+    // Resolution line (post-click rendering)
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Single-line resolution message replacing v1's dual <c>Patterns</c> /
+    /// <c>Directory Roots</c> sections. Trust-zones-aware: zone prompts
+    /// surface "Saved zone:" and verb prompts surface "Saved verb:" so
+    /// the resolution mirrors the prompt shape rather than collapsing
+    /// to the legacy v2 verbs-and-directory format.
+    /// </summary>
+    private static string BuildResolutionLine(ToolInteractionRequest request, string selectedKey)
+    {
+        return request.Kind switch
+        {
+            "approval_zone" => BuildZoneResolutionLine(request, selectedKey),
+            "approval_verb" => BuildVerbResolutionLine(request, selectedKey),
+            _ => BuildLegacyResolutionLine(request, selectedKey)
+        };
+    }
+
+    private static string BuildZoneResolutionLine(ToolInteractionRequest request, string selectedKey)
+    {
+        var paths = ResolveZonePaths(request);
+        var renderedPaths = paths.Count == 0
+            ? "(no paths)"
+            : string.Join(", ", paths);
+
+        return selectedKey switch
+        {
+            ApprovalOptionKeys.ApproveAlways => $"Saved zone: {renderedPaths}",
+            ApprovalOptionKeys.ApproveSession => $"Saved zone for this chat: {renderedPaths}",
+            ApprovalOptionKeys.ApproveOnce => "Approved (no save)",
+            ApprovalOptionKeys.Deny => "Denied",
+            _ => "Resolved"
+        };
+    }
+
+    private static string BuildVerbResolutionLine(ToolInteractionRequest request, string selectedKey)
+    {
+        var pattern = ResolveVerbPattern(request);
+
+        return selectedKey switch
+        {
+            ApprovalOptionKeys.ApproveAlways => $"Saved verb: {pattern}",
+            ApprovalOptionKeys.ApproveEverywhere => $"Saved verb (anywhere): {pattern}",
+            ApprovalOptionKeys.ApproveSession => $"Saved verb for this chat: {pattern}",
+            ApprovalOptionKeys.ApproveOnce => "Approved (no save)",
+            ApprovalOptionKeys.Deny => "Denied",
+            _ => "Resolved"
+        };
+    }
+
+    private static string BuildLegacyResolutionLine(ToolInteractionRequest request, string selectedKey)
+    {
+        var verbs = string.Join(", ", ResolveDisplayVerbs(request));
+        var location = ResolveLegacyHeaderLocation(request);
+
+        return selectedKey switch
+        {
+            ApprovalOptionKeys.ApproveAlways => $"Saved: {verbs} in {location}",
+            ApprovalOptionKeys.ApproveEverywhere => $"Saved: {verbs} anywhere",
+            ApprovalOptionKeys.ApproveSession => $"Saved for this chat: {verbs} in {location}",
+            ApprovalOptionKeys.ApproveOnce => "Approved (no save)",
+            ApprovalOptionKeys.Deny => "Denied",
+            _ => "Resolved"
+        };
+    }
+
+    // -------------------------------------------------------------------
+    // Shared block construction
+    // -------------------------------------------------------------------
+
+    private static ActionsBlock BuildActionsBlock(
+        ToolInteractionRequest request,
+        Func<ToolInteractionOption, string>? labelOverride = null)
+    {
+        // Slack hard-caps PlainText button text at 76 characters; oversized
+        // labels are rejected with `invalid_blocks` and the post fails.
+        // Static labels from ApprovalOptionKeys are within the cap by
+        // construction. Dynamic labels (Trust <path>, Always <pattern>)
+        // run through TruncateButtonLabel.
+        return new ActionsBlock
+        {
+            Elements = [.. request.Options
+                .Select(option =>
+                {
+                    var label = labelOverride is not null ? labelOverride(option) : option.Label;
+                    return (IActionElement)new Button
+                    {
+                        ActionId = BuildActionId(option.Key),
+                        Text = new PlainText(label),
+                        Value = BuildButtonValue(request, option),
+                        Style = GetButtonStyle(option.Key),
+                        AccessibilityLabel = label
+                    };
+                })]
+        };
+    }
+
+    private static SectionBlock BuildReplyHintBlock(ToolInteractionRequest request) => new()
+    {
+        Text = new Markdown($"You can also reply with {FormatReplyLetters(request.Options)} in this thread.")
+    };
+
+    /// <summary>
+    /// Truncates a button label to <see cref="ApprovalOptionKeys.MaxLabelLength"/>
+    /// with a trailing ellipsis when over the cap. The full path/pattern
+    /// is always preserved in the prompt body, so the truncation is
+    /// purely cosmetic — the user can still see what they're trusting
+    /// before they click.
+    /// </summary>
+    private static string TruncateButtonLabel(string label)
+    {
+        const string Ellipsis = "…";
+
+        if (label.Length <= ApprovalOptionKeys.MaxLabelLength)
+            return label;
+
+        // Reserve one char for the ellipsis itself.
+        var keep = ApprovalOptionKeys.MaxLabelLength - Ellipsis.Length;
+        return label[..keep] + Ellipsis;
+    }
+
+    // -------------------------------------------------------------------
+    // Legacy v2 header (unchanged behavior)
+    // -------------------------------------------------------------------
+
+    /// <summary>
+    /// Builds the legacy v2 prompt header: "Approve git status in /repo/?".
+    /// Single-verb invocations name the verb; multi-verb invocations use
+    /// the generic "Approve in &lt;dir&gt;?" form and rely on the bullet
+    /// list to enumerate verbs. Only used for Kind = "approval".
+    /// </summary>
+    private static string BuildLegacyApproveHeader(ToolInteractionRequest request)
     {
         var verbs = ResolveDisplayVerbs(request);
-        var location = ResolveHeaderLocation(request);
+        var location = ResolveLegacyHeaderLocation(request);
 
         return verbs.Count == 1
             ? $"Approve {verbs[0]} in {location}?"
             : $"Approve in {location}?";
     }
 
-    private static string ResolveHeaderLocation(ToolInteractionRequest request)
+    private static string ResolveLegacyHeaderLocation(ToolInteractionRequest request)
     {
         var distinctDirs = request.Candidates
             .Where(c => !string.IsNullOrWhiteSpace(c.Directory))
@@ -210,9 +543,6 @@ internal static class SlackApprovalBlockBuilder
         if (distinctDirs.Count > 1)
             return $"{distinctDirs.Count} directories";
 
-        // No path arguments — fall back to cwd, but prefer "this session" when
-        // the cwd is the session's ephemeral scratch directory so operators
-        // know an "Always here" grant would be a no-op.
         if (string.IsNullOrWhiteSpace(request.Cwd))
             return "(no working directory)";
 
@@ -221,53 +551,25 @@ internal static class SlackApprovalBlockBuilder
 
     private static bool IsSessionScratchPath(string cwd)
     {
-        // Session directories live under "{netclaw-home}/sessions/{id}/" with
-        // {id} of the form "<channelId>_<unix-ts>_<random>" or a uuid. We use
-        // a path-segment check rather than full path equality so the helper
-        // works without access to NetclawPaths.SessionsBaseDirectory.
         var normalized = cwd.Replace('\\', '/');
         return normalized.Contains("/.netclaw/sessions/", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
-    /// Single-line resolution message replacing v1's dual <c>Patterns</c> /
-    /// <c>Directory Roots</c> sections. The format mirrors the spec's
-    /// "tool-approval-gates: Resolution message single-line format" requirement:
-    /// <list type="bullet">
-    /// <item><c>Saved: &lt;verbs&gt; in &lt;dir&gt;</c> for <c>Always here</c></item>
-    /// <item><c>Saved: &lt;verbs&gt; anywhere</c> for <c>Always anywhere</c></item>
-    /// <item><c>Saved for this chat: &lt;verbs&gt; in &lt;dir&gt;</c> for <c>This chat</c></item>
-    /// <item><c>Approved (no save)</c> for <c>Once</c></item>
-    /// <item><c>Denied</c> for <c>Deny</c></item>
-    /// </list>
-    /// </summary>
-    private static string BuildResolutionLine(ToolInteractionRequest request, string selectedKey)
-    {
-        var verbs = string.Join(", ", ResolveDisplayVerbs(request));
-        var location = ResolveHeaderLocation(request);
-
-        return selectedKey switch
-        {
-            ApprovalOptionKeys.ApproveAlways => $"Saved: {verbs} in {location}",
-            ApprovalOptionKeys.ApproveEverywhere => $"Saved: {verbs} anywhere",
-            ApprovalOptionKeys.ApproveSession => $"Saved for this chat: {verbs} in {location}",
-            ApprovalOptionKeys.ApproveOnce => "Approved (no save)",
-            ApprovalOptionKeys.Deny => "Denied",
-            _ => "Resolved"
-        };
-    }
-
-    /// <summary>
-    /// Returns the verbs to display in the prompt body / resolution message.
-    /// Prefers <see cref="ToolInteractionRequest.CandidateVerbs"/> (the v2
-    /// matcher's verb-chain extraction); falls back to <c>Patterns</c> for
-    /// legacy callers and for messy commands where the matcher returned
+    /// Returns the verbs to display in the prompt body / resolution
+    /// message for legacy v2 prompts. Prefers
+    /// <see cref="ToolInteractionRequest.CandidateVerbs"/>; falls back
+    /// to <c>Patterns</c> for messy commands where the matcher returned
     /// nothing.
     /// </summary>
     private static IReadOnlyList<string> ResolveDisplayVerbs(ToolInteractionRequest request)
         => request.CandidateVerbs.Count > 0
             ? request.CandidateVerbs
             : request.Patterns;
+
+    // -------------------------------------------------------------------
+    // Shared helpers (adopted context, reply letters, button wire format)
+    // -------------------------------------------------------------------
 
     private static void AppendAdoptedContextSummary(List<string> lines, ToolInteractionRequest request)
     {
