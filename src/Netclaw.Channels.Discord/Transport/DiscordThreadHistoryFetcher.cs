@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Globalization;
 using Discord;
 using Discord.WebSocket;
 using Microsoft.Extensions.AI;
@@ -122,16 +123,27 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
             var history = await _messageFetcher(threadChannelId, cancellationToken);
             var results = new List<ChannelInput>(history.Count);
 
+            var threadChannelIdString = threadChannelId.ToString(CultureInfo.InvariantCulture);
+
             foreach (var message in history)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                // Bot-authored entries are included so the root of a
-                // proactively-posted thread surfaces during backfill.
-                // Downstream, the binding actor's cursor watermark filters
-                // already-processed entries out of adopted context. Live-loop
-                // prevention is the inbound filter in DiscordConversationActor,
-                // which is unchanged.
+                // Bot-authored entries are only adopted from server-side
+                // history at the thread root. The root is the one position
+                // whose content cannot already exist in any session's
+                // persisted transcript — by definition no session ran in
+                // this thread before the root was posted. Any bot entry
+                // below the root was produced by one of our sessions and
+                // is already in transcript; re-adopting it from history
+                // would surface our own outputs as third-party context
+                // (regression observed in issue #955). For Discord, the
+                // thread channel id equals the root message id, so the
+                // root is identified by `MessageId == threadChannelId`.
+                var isThreadRoot = string.Equals(message.MessageId, threadChannelIdString, StringComparison.Ordinal);
+                if (message.IsBot && !isThreadRoot)
+                    continue;
+
                 var input = await ConvertMessageAsync(
                     message,
                     channelId,

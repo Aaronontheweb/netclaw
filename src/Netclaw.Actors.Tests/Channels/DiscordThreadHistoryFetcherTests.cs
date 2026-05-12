@@ -270,20 +270,23 @@ public sealed class DiscordThreadHistoryFetcherTests
     }
 
     [Fact]
-    public async Task Includes_bot_authored_messages_in_history_result()
+    public async Task Includes_bot_authored_root_for_proactive_post_bootstrap()
     {
+        // Discord conventions: thread channel id equals the root message id.
+        // Session id is `{channelId}/{threadChannelId}`; the entry whose
+        // MessageId matches the threadChannelId IS the root.
         var fetcher = CreateFetcher(
             (_, _) => Task.FromResult<IReadOnlyList<DiscordThreadHistoryFetcher.HistoricalMessage>>(
             [
                 new DiscordThreadHistoryFetcher.HistoricalMessage(
-                    MessageId: "2001",
+                    MessageId: "100000000000002001",
                     SenderId: "bot-1",
                     IsBot: true,
-                    Text: "proactive post from the agent",
+                    Text: "proactive post (root)",
                     Timestamp: TimeProvider.System.GetUtcNow(),
                     Attachments: []),
                 new DiscordThreadHistoryFetcher.HistoricalMessage(
-                    MessageId: "2002",
+                    MessageId: "100000000000002002",
                     SenderId: "user-1",
                     IsBot: false,
                     Text: "human reply",
@@ -297,13 +300,106 @@ public sealed class DiscordThreadHistoryFetcherTests
 
         Assert.Equal(2, result.Count);
 
-        var botEntry = Assert.Single(result, r => r.Contents.OfType<TextContent>()
-            .Any(t => t.Text == "proactive post from the agent"));
-        Assert.Equal("bot-1", botEntry.SenderId);
+        var rootEntry = Assert.Single(result, r => r.Contents.OfType<TextContent>()
+            .Any(t => t.Text == "proactive post (root)"));
+        Assert.Equal("bot-1", rootEntry.SenderId);
 
         var humanEntry = Assert.Single(result, r => r.Contents.OfType<TextContent>()
             .Any(t => t.Text == "human reply"));
         Assert.Equal("user-1", humanEntry.SenderId);
+    }
+
+    [Fact]
+    public async Task Excludes_bot_authored_replies_below_thread_root()
+    {
+        // Regression test for issue #955: bot entries below the root were
+        // produced by one of our sessions and are already in transcript.
+        // Re-adopting them from history surfaces our own outputs as
+        // third-party context.
+        var fetcher = CreateFetcher(
+            (_, _) => Task.FromResult<IReadOnlyList<DiscordThreadHistoryFetcher.HistoricalMessage>>(
+            [
+                new DiscordThreadHistoryFetcher.HistoricalMessage(
+                    MessageId: "100000000000003001",
+                    SenderId: "user-1",
+                    IsBot: false,
+                    Text: "human-started root",
+                    Timestamp: TimeProvider.System.GetUtcNow(),
+                    Attachments: []),
+                new DiscordThreadHistoryFetcher.HistoricalMessage(
+                    MessageId: "100000000000003002",
+                    SenderId: "user-1",
+                    IsBot: false,
+                    Text: "human reply",
+                    Timestamp: TimeProvider.System.GetUtcNow(),
+                    Attachments: []),
+                new DiscordThreadHistoryFetcher.HistoricalMessage(
+                    MessageId: "100000000000003003",
+                    SenderId: "bot-other",
+                    IsBot: true,
+                    Text: "third-party bot reply",
+                    Timestamp: TimeProvider.System.GetUtcNow(),
+                    Attachments: []),
+                new DiscordThreadHistoryFetcher.HistoricalMessage(
+                    MessageId: "100000000000003004",
+                    SenderId: "bot-netclaw",
+                    IsBot: true,
+                    Text: "our own prior bot reply",
+                    Timestamp: TimeProvider.System.GetUtcNow(),
+                    Attachments: [])
+            ]));
+
+        var result = await fetcher.FetchThreadHistoryAsync(
+            new SessionId("ch-public/100000000000003001"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, result.Count);
+        Assert.Contains(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "human-started root"));
+        Assert.Contains(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "human reply"));
+
+        Assert.DoesNotContain(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "third-party bot reply"));
+        Assert.DoesNotContain(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "our own prior bot reply"));
+    }
+
+    [Fact]
+    public async Task Excludes_bot_below_root_even_when_root_is_also_bot()
+    {
+        // Proactive root is bot AND there's a later bot turn (already in
+        // transcript). Only the root survives backfill.
+        var fetcher = CreateFetcher(
+            (_, _) => Task.FromResult<IReadOnlyList<DiscordThreadHistoryFetcher.HistoricalMessage>>(
+            [
+                new DiscordThreadHistoryFetcher.HistoricalMessage(
+                    MessageId: "100000000000004001",
+                    SenderId: "bot-netclaw",
+                    IsBot: true,
+                    Text: "proactive root",
+                    Timestamp: TimeProvider.System.GetUtcNow(),
+                    Attachments: []),
+                new DiscordThreadHistoryFetcher.HistoricalMessage(
+                    MessageId: "100000000000004002",
+                    SenderId: "user-1",
+                    IsBot: false,
+                    Text: "user reply",
+                    Timestamp: TimeProvider.System.GetUtcNow(),
+                    Attachments: []),
+                new DiscordThreadHistoryFetcher.HistoricalMessage(
+                    MessageId: "100000000000004003",
+                    SenderId: "bot-netclaw",
+                    IsBot: true,
+                    Text: "agent's reply turn (in transcript)",
+                    Timestamp: TimeProvider.System.GetUtcNow(),
+                    Attachments: [])
+            ]));
+
+        var result = await fetcher.FetchThreadHistoryAsync(
+            new SessionId("ch-public/100000000000004001"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, result.Count);
+        Assert.Contains(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "proactive root"));
+        Assert.Contains(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "user reply"));
+        Assert.DoesNotContain(result, r => r.Contents.OfType<TextContent>().Any(t => t.Text == "agent's reply turn (in transcript)"));
     }
 
     private static DiscordThreadHistoryFetcher CreateFetcher(

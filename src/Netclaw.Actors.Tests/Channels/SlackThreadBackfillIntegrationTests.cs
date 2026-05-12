@@ -395,6 +395,244 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
     }
 
     [Fact]
+    public async Task Bot_replies_below_thread_root_are_excluded_from_adopted_context()
+    {
+        // Regression test for issue #955. Prior to the root-only filter,
+        // backfill returned every bot-authored message in the thread,
+        // including the agent's own prior in-session replies. Those got
+        // re-adopted into the next turn's adopted-context window, so the
+        // LLM saw its own outputs as third-party speakers. End-to-end
+        // assertion: after history backfill, the merged user turn must
+        // not contain bot reply text from below the root.
+        var pipeline = Host.Services.GetRequiredService<SessionPipeline>();
+        var httpClient = new HttpClient(_httpHandler);
+
+        var fetcher = new SlackThreadHistoryFetcher(
+            (channelId, threadTs, limit, cursor, ct) =>
+            {
+                var ts = threadTs.Value;
+                return Task.FromResult(new SlackNet.WebApi.ConversationMessagesResponse
+                {
+                    Messages =
+                    [
+                        // Root (human-started thread)
+                        new SlackNet.Events.MessageEvent
+                        {
+                            Ts = ts,
+                            User = "U_ROOT",
+                            Text = "human-authored thread root"
+                        },
+                        // Midstream user reply (should appear in adopted context)
+                        new SlackNet.Events.MessageEvent
+                        {
+                            Ts = $"{ts[..^1]}1",
+                            User = "U_ALICE",
+                            Text = "alice midstream reply"
+                        },
+                        // The agent's prior in-session reply, captured in
+                        // Slack's history. Must NOT be re-adopted — it's
+                        // already in the session's transcript.
+                        new SlackNet.Events.MessageEvent
+                        {
+                            Ts = $"{ts[..^1]}2",
+                            User = "UBOT",
+                            BotId = "B_NETCLAW",
+                            Text = "agent's own prior reply already in transcript"
+                        },
+                        // A third-party bot reply midstream. Same rule:
+                        // not at root, so excluded.
+                        new SlackNet.Events.MessageEvent
+                        {
+                            Ts = $"{ts[..^1]}3",
+                            BotId = "B_OTHER",
+                            Text = "alerts bot reply"
+                        },
+                        // The triggering user mention (will be authorized
+                        // message, not part of adopted-context window).
+                        new SlackNet.Events.MessageEvent
+                        {
+                            Ts = $"{ts[..^1]}4",
+                            User = "U_MENTIONER",
+                            Text = "can you summarize?"
+                        }
+                    ]
+                });
+            },
+            new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
+            httpClient,
+            new NullContentScanner(),
+            new NetclawPaths(Path.GetTempPath()),
+            ToolAudienceProfileDefaults.CreateProfiles(),
+            TestSlackGatewayDeps.DefaultVisionCapableModel,
+            NullLogger<SlackThreadHistoryFetcher>.Instance);
+
+        var deps = new SlackGatewayDependencies(
+            Pipeline: pipeline,
+            IngressGate: null,
+            ActorSystem: Sys,
+            TimeProvider: TimeProvider.System,
+            Options: new SlackChannelOptions
+            {
+                Enabled = true,
+                MentionOnly = true,
+                AllowedChannelIds = ["C_BOT_EXCLUDE"],
+                BotToken = new SensitiveString("xoxb-fake-token")
+            },
+            BotUserId: new SlackUserId("UBOT"),
+            DefaultChannelId: null,
+            ReplyClient: _replyClient,
+            ContentScanner: new NullContentScanner(),
+            HttpClient: httpClient,
+            ThreadHistoryFetcher: fetcher,
+            AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
+            ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
+            Paths: _paths);
+
+        var gateway = Sys.ActorOf(SlackGatewayActor.CreateProps(deps), "slack-gw-bot-exclude");
+
+        gateway.Tell(new SlackInboundMessage(
+            Kind: SlackInboundKind.AppMention,
+            EventId: new SlackEventId("C_BOT_EXCLUDE:6000.4"),
+            ChannelId: new SlackChannelId("C_BOT_EXCLUDE"),
+            ThreadTs: new SlackThreadTs("6000.0"),
+            EventTs: new SlackEventTs("6000.4"),
+            UserId: new SlackUserId("U_MENTIONER"),
+            BotId: null,
+            Text: "<@UBOT> can you summarize?",
+            Subtype: null,
+            Hidden: false,
+            IsDirectMessage: false));
+
+        await AwaitAssertAsync(() =>
+        {
+            Assert.True(_chatClient.CallCount > 0, "Expected at least one LLM call");
+        }, duration: TimeSpan.FromSeconds(10), cancellationToken: TestContext.Current.CancellationToken);
+
+        var messages = _chatClient.LastMessages!;
+        var userMessages = messages.Where(m => m.Role == AiChatRole.User).ToList();
+        Assert.Single(userMessages);
+
+        var mergedText = string.Join("", userMessages[0].Contents.OfType<TextContent>().Select(t => t.Text));
+
+        // Live-pulled human content survives.
+        Assert.Contains("human-authored thread root", mergedText, StringComparison.Ordinal);
+        Assert.Contains("alice midstream reply", mergedText, StringComparison.Ordinal);
+        Assert.Contains("can you summarize?", mergedText, StringComparison.Ordinal);
+
+        // Bot content below the root is excluded.
+        Assert.DoesNotContain("agent's own prior reply already in transcript", mergedText, StringComparison.Ordinal);
+        Assert.DoesNotContain("alerts bot reply", mergedText, StringComparison.Ordinal);
+
+        // The agent's bot user id must not appear in adopted-speaker
+        // metadata: that's the failure mode of issue #955 (own outputs
+        // surfaced as third-party).
+        Assert.DoesNotContain("[adopted-message id=C_BOT_EXCLUDE:6000.2", mergedText, StringComparison.Ordinal);
+        Assert.DoesNotContain("[adopted-message id=C_BOT_EXCLUDE:6000.3", mergedText, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Bot_authored_thread_root_is_hydrated_for_proactive_post_bootstrap()
+    {
+        // Proactive-post case: bot opens the thread (no prior in-session
+        // turn for this thread anywhere). The root MUST be hydrated as
+        // adopted context so the LLM has an anchor for what it said when
+        // the user replies. This is the case the PR was originally trying
+        // to fix; this test pins it so a future refactor doesn't drop it.
+        var pipeline = Host.Services.GetRequiredService<SessionPipeline>();
+        var httpClient = new HttpClient(_httpHandler);
+
+        var fetcher = new SlackThreadHistoryFetcher(
+            (channelId, threadTs, limit, cursor, ct) =>
+            {
+                var ts = threadTs.Value;
+                return Task.FromResult(new SlackNet.WebApi.ConversationMessagesResponse
+                {
+                    Messages =
+                    [
+                        // Root: the bot's proactive post. ts == threadTs.
+                        new SlackNet.Events.MessageEvent
+                        {
+                            Ts = ts,
+                            User = "UBOT",
+                            BotId = "B_NETCLAW",
+                            Text = "scheduled-task report: nothing actionable"
+                        },
+                        // The user's reply (triggering message).
+                        new SlackNet.Events.MessageEvent
+                        {
+                            Ts = $"{ts[..^1]}1",
+                            User = "U_REPLIER",
+                            Text = "thanks, what about the other metric?"
+                        }
+                    ]
+                });
+            },
+            new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
+            httpClient,
+            new NullContentScanner(),
+            new NetclawPaths(Path.GetTempPath()),
+            ToolAudienceProfileDefaults.CreateProfiles(),
+            TestSlackGatewayDeps.DefaultVisionCapableModel,
+            NullLogger<SlackThreadHistoryFetcher>.Instance);
+
+        var deps = new SlackGatewayDependencies(
+            Pipeline: pipeline,
+            IngressGate: null,
+            ActorSystem: Sys,
+            TimeProvider: TimeProvider.System,
+            Options: new SlackChannelOptions
+            {
+                Enabled = true,
+                MentionOnly = true,
+                AllowedChannelIds = ["C_PROACTIVE"],
+                BotToken = new SensitiveString("xoxb-fake-token")
+            },
+            BotUserId: new SlackUserId("UBOT"),
+            DefaultChannelId: null,
+            ReplyClient: _replyClient,
+            ContentScanner: new NullContentScanner(),
+            HttpClient: httpClient,
+            ThreadHistoryFetcher: fetcher,
+            AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
+            ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
+            Paths: _paths);
+
+        var gateway = Sys.ActorOf(SlackGatewayActor.CreateProps(deps), "slack-gw-proactive-root");
+
+        gateway.Tell(new SlackInboundMessage(
+            Kind: SlackInboundKind.Message,
+            EventId: new SlackEventId("C_PROACTIVE:7000.1"),
+            ChannelId: new SlackChannelId("C_PROACTIVE"),
+            ThreadTs: new SlackThreadTs("7000.0"),
+            EventTs: new SlackEventTs("7000.1"),
+            UserId: new SlackUserId("U_REPLIER"),
+            BotId: null,
+            Text: "thanks, what about the other metric?",
+            Subtype: null,
+            Hidden: false,
+            IsDirectMessage: false));
+
+        await AwaitAssertAsync(() =>
+        {
+            Assert.True(_chatClient.CallCount > 0, "Expected at least one LLM call");
+        }, duration: TimeSpan.FromSeconds(10), cancellationToken: TestContext.Current.CancellationToken);
+
+        var messages = _chatClient.LastMessages!;
+        var userMessages = messages.Where(m => m.Role == AiChatRole.User).ToList();
+        Assert.Single(userMessages);
+
+        var mergedText = string.Join("", userMessages[0].Contents.OfType<TextContent>().Select(t => t.Text));
+
+        // Bot-authored root IS hydrated: the LLM sees what it posted.
+        Assert.Contains("[adopted-context]", mergedText, StringComparison.Ordinal);
+        Assert.Contains("scheduled-task report: nothing actionable", mergedText, StringComparison.Ordinal);
+
+        // Trigger reply is the authorized message, not part of adopted.
+        Assert.Contains("thanks, what about the other metric?", mergedText, StringComparison.Ordinal);
+        Assert.Contains("[current-authorized-message author=U_REPLIER", mergedText, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Older_out_of_order_live_event_is_dropped_after_cursor_advances()
     {
         var pipeline = Host.Services.GetRequiredService<SessionPipeline>();
