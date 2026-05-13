@@ -207,7 +207,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             if (!ReferenceEquals(clause, groupHead))
                 continue;  // pipe-tail clauses fold into the group head
 
-            var verb = ApplyVerbShortCircuit(clause.Verb.Joined);
+            var verb = ShellTokenizer.ApplyVerbShortCircuit(clause.Verb.Joined);
             if (string.IsNullOrEmpty(verb))
                 continue;
 
@@ -227,26 +227,6 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         }
 
         return candidates;
-    }
-
-    private static string ApplyVerbShortCircuit(string? rawVerb)
-    {
-        if (string.IsNullOrEmpty(rawVerb))
-            return string.Empty;
-
-        // Path-aware verbs (cat, grep, find, ls, ...) and single-token
-        // side-effect verbs (echo, printf, ...) collapse to depth 1 so
-        // call-specific positional arguments don't bake into the persisted
-        // verb chain. Mirrors ShellApprovalSemanticsBase.ExtractVerbChain
-        // — both paths must apply the same short-circuit to stay
-        // consistent across POSIX BashParser and Windows legacy code.
-        var firstSpace = rawVerb.IndexOf(' ', StringComparison.Ordinal);
-        var firstToken = firstSpace < 0 ? rawVerb : rawVerb[..firstSpace];
-        if (ShellTokenizer.PathAwareVerbs.Contains(firstToken)
-            || ShellTokenizer.SingleTokenSideEffectVerbs.Contains(firstToken))
-            return firstToken;
-
-        return rawVerb;
     }
 
     private static string? ResolveClauseDirectory(ShellSyntaxTree.Clause clause, bool isSideEffectVerb)
@@ -278,7 +258,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             if (ShellTokenizer.IsPathToken(raw))
             {
                 var canonical = !string.IsNullOrEmpty(arg.Resolved) ? arg.Resolved : raw;
-                return ApplyFileParentRule(canonical);
+                return ShellTokenizer.ApplyFileParentRule(canonical);
             }
         }
 
@@ -293,34 +273,6 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         // "..."` invocation; the parser flattens that).
         var cwdAttribution = clause.Args.FirstOrDefault(a => a.IsCwdAttribution);
         return cwdAttribution?.Resolved;
-    }
-
-    private static string? ApplyFileParentRule(string token)
-    {
-        // File path with extension: scope to the parent directory so
-        // persisted approvals match the folder, not a single file. Mirrors
-        // ShellApprovalSemanticsBase.ApplyFileParentRule — the BashParser
-        // path must produce identical (verb, directory) tuples for the
-        // same command so prompt-time and retry-time candidates compare
-        // equal.
-        if (string.IsNullOrEmpty(token))
-            return token;
-
-        var hasExtension = Path.HasExtension(token);
-        if (!hasExtension && !LooksLikeDotfile(token))
-            return token;
-
-        var parent = Path.GetDirectoryName(token);
-        if (string.IsNullOrEmpty(parent))
-            return token;
-
-        return parent;
-    }
-
-    private static bool LooksLikeDotfile(string token)
-    {
-        var basename = Path.GetFileName(token);
-        return basename.Length > 1 && basename[0] == '.';
     }
 
     public bool IsApproved(

@@ -51,8 +51,16 @@ public static class PathUtility
     /// Uses platform-appropriate case sensitivity.
     /// </summary>
     public static bool IsWithinRoot(string candidate, string root)
+        => IsNormalizedWithinRoot(Normalize(candidate), root);
+
+    /// <summary>
+    /// Like <see cref="IsWithinRoot"/> but assumes <paramref name="normalizedCandidate"/>
+    /// has already been canonicalized via <see cref="Normalize"/>. Use on hot
+    /// paths that compare many roots against the same candidate to avoid
+    /// re-running <c>Path.GetFullPath</c> on the candidate per iteration.
+    /// </summary>
+    public static bool IsNormalizedWithinRoot(string normalizedCandidate, string root)
     {
-        var normalizedCandidate = Normalize(candidate);
         var normalizedRoot = Normalize(root);
         var comparison = OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase

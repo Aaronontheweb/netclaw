@@ -388,7 +388,7 @@ public sealed class ShellCommandPolicy
             if (ArgFlags is { Count: > 0 } && !AnyFlagPresent(tokens, ArgFlags))
                 return false;
 
-            if (FirstPath is not null && !FirstNonFlagMatchesConstraint(tokens, FirstPath))
+            if (FirstPath is not null && !FirstNonFlagMatchesConstraint(tokens, VerbChain.Count, FirstPath))
                 return false;
 
             return true;
@@ -443,26 +443,23 @@ public sealed class ShellCommandPolicy
 
         private static bool FirstNonFlagMatchesConstraint(
             IReadOnlyList<string> tokens,
+            int verbChainCount,
             PathConstraint constraint)
         {
             if (constraint.OneOf is not { Count: > 0 })
                 return false;
 
-            // Skip over the verb chain tokens already consumed and the flag
-            // tokens; the first remaining positional argument is the
-            // candidate.
-            for (var i = 0; i < tokens.Count; i++)
+            // Skip past the verb-chain tokens already consumed by the
+            // prefix match in Matches(), then over any flag tokens; the
+            // first remaining positional argument is the candidate path.
+            // A bug landed when this was a static helper that assumed a
+            // single-token verb chain — multi-token chains like
+            // `git push` would treat `push` as the candidate path and
+            // silently miss firstPath deny rules.
+            for (var i = verbChainCount; i < tokens.Count; i++)
             {
                 var token = tokens[i];
                 if (token.StartsWith('-'))
-                    continue;
-
-                // Skip the verb tokens themselves — we don't want to treat the
-                // verb as the first non-flag arg.
-                // Heuristic: tokens containing '/' or '~' or '$' are paths;
-                // bare alphanumeric tokens early in the stream are likely the
-                // verb chain.
-                if (i == 0)
                     continue;
 
                 var normalized = NormalizePathToken(token);
@@ -482,12 +479,7 @@ public sealed class ShellCommandPolicy
         }
 
         private static string NormalizePathToken(string token)
-        {
-            var trimmed = token.TrimEnd('/', '\\');
-            if (trimmed is "~" or "$HOME" or "${HOME}")
-                return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            return trimmed;
-        }
+            => PathUtility.ExpandHome(token).TrimEnd('/', '\\');
     }
 
 }
