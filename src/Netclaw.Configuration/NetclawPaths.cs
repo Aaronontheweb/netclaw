@@ -109,16 +109,48 @@ public sealed class NetclawPaths
 
     public NetclawPaths(string? basePath = null, string? workspacesDirectory = null)
     {
-        BasePath = basePath
-            ?? NormalizeEnvHome(Environment.GetEnvironmentVariable("NETCLAW_HOME"))
+        BasePath = ExpandHome(basePath)
+            ?? ExpandHome(NormalizeEnvHome(Environment.GetEnvironmentVariable("NETCLAW_HOME")))
             ?? Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 ".netclaw");
-        WorkspacesDirectory = workspacesDirectory ?? Path.Combine(BasePath, "workspaces");
+        WorkspacesDirectory = ExpandHome(workspacesDirectory) ?? Path.Combine(BasePath, "workspaces");
     }
 
     private static string? NormalizeEnvHome(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    /// <summary>
+    /// Expands shell home tokens (<c>~</c>, <c>$HOME</c>, <c>${HOME}</c>,
+    /// <c>%USERPROFILE%</c>) in a configured path so values like
+    /// <c>~/repositories</c> resolve correctly when the daemon's CWD is not
+    /// the user's home directory. Inlined here (rather than reusing
+    /// <c>Netclaw.Security.PathUtility</c>) because <c>Netclaw.Configuration</c>
+    /// is the foundation project and cannot depend on Security.
+    /// </summary>
+    private static string? ExpandHome(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        var trimmed = value.Trim();
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (string.IsNullOrWhiteSpace(home))
+            return trimmed;
+
+        if (trimmed.StartsWith('~'))
+        {
+            trimmed = trimmed.Length == 1
+                ? home
+                : Path.Combine(home, trimmed[1..].TrimStart('/', '\\'));
+        }
+
+        trimmed = trimmed.Replace("$HOME", home, StringComparison.OrdinalIgnoreCase);
+        trimmed = trimmed.Replace("${HOME}", home, StringComparison.OrdinalIgnoreCase);
+        trimmed = trimmed.Replace("%USERPROFILE%", home, StringComparison.OrdinalIgnoreCase);
+
+        return trimmed;
+    }
 
     /// <summary>
     /// Create all standard subdirectories if they don't exist.
