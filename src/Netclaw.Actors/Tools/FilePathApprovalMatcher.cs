@@ -107,20 +107,23 @@ public sealed class FilePathApprovalMatcher : IToolApprovalMatcher
 
     private static bool TryGetPath(IDictionary<string, object?>? arguments, out string path)
     {
-        path = string.Empty;
-        if (arguments is null)
-            return false;
-
-        if (arguments.TryGetValue("Path", out var value) || arguments.TryGetValue("path", out value))
+        // Route through ToolArgumentHelper.GetString so JsonElement-shaped
+        // arguments (the form LLM-generated tool calls arrive in) get
+        // string-converted correctly. The direct `is string` pattern
+        // previously here silently returned false for every JsonElement
+        // value — which made GetApprovalModeKey return the non-control-plane
+        // key for control-plane writes and IsFailClosedOnPersonal fail
+        // open. ExtractShellCommand was fixed for the same shape in this
+        // PR; this matcher mirrors that fix.
+        var raw = ToolArgumentHelper.GetString(arguments, "Path");
+        if (string.IsNullOrWhiteSpace(raw))
         {
-            if (value is string s && !string.IsNullOrWhiteSpace(s))
-            {
-                path = s;
-                return true;
-            }
+            path = string.Empty;
+            return false;
         }
 
-        return false;
+        path = raw;
+        return true;
     }
 
 }

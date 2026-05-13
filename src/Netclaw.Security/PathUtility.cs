@@ -77,6 +77,30 @@ public static class PathUtility
     }
 
     /// <summary>
+    /// Returns true when <paramref name="a"/> and <paramref name="b"/> resolve
+    /// to the same canonical filesystem path under the platform's casing
+    /// rules. Both inputs are passed through <see cref="Normalize"/> first.
+    /// Swallows <see cref="ArgumentException"/>, <see cref="NotSupportedException"/>,
+    /// and <see cref="System.Security.SecurityException"/> (returning false) so
+    /// callers can compare untrusted or partially-formed paths without
+    /// wrapping the call in a try/catch.
+    /// </summary>
+    public static bool AreEquivalentPaths(string a, string b)
+    {
+        try
+        {
+            var comparison = OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+            return string.Equals(Normalize(a), Normalize(b), comparison);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.Security.SecurityException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Checks if a candidate path is within or equal to any of the root directories.
     /// Uses platform-appropriate case sensitivity.
     /// </summary>

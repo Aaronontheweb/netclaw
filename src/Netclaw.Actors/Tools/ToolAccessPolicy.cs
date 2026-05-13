@@ -392,30 +392,11 @@ public sealed class ToolAccessPolicy
             if (string.IsNullOrEmpty(effective))
                 return false;
 
-            if (!PathsEquivalent(effective, sessionDirectory))
+            if (!PathUtility.AreEquivalentPaths(effective, sessionDirectory))
                 return false;
         }
 
         return true;
-    }
-
-    private static bool PathsEquivalent(string a, string b)
-    {
-        try
-        {
-            var fullA = Path.GetFullPath(a)
-                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            var fullB = Path.GetFullPath(b)
-                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            var comparison = OperatingSystem.IsWindows()
-                ? StringComparison.OrdinalIgnoreCase
-                : StringComparison.Ordinal;
-            return string.Equals(fullA, fullB, comparison);
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.Security.SecurityException)
-        {
-            return false;
-        }
     }
 
     /// <summary>
@@ -483,9 +464,7 @@ public sealed class ToolAccessPolicy
 
         try
         {
-            var full = Path.GetFullPath(cwd);
-            var trimmed = full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            var segments = trimmed.Split(
+            var segments = PathUtility.Normalize(cwd).Split(
                 [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
                 StringSplitOptions.RemoveEmptyEntries);
 
@@ -568,9 +547,7 @@ public sealed class ToolAccessPolicy
         => trustContext?.EffectiveAudience ?? TrustAudience.Public;
 
     private static TrustAudience ResolveAudience(ToolExecutionContext? context)
-        => SecurityPolicyDefaults.TryParseAudience(context?.Audience, out var parsed)
-            ? parsed
-            : SecurityPolicyDefaults.ResolveAudienceFromSessionId(context?.SessionId);
+        => SecurityPolicyDefaults.ResolveAudienceWithFallback(context?.Audience, context?.SessionId);
 
     private static ToolExecutionContext CreateContext(TrustAudience audience)
         => new(null, null) { Audience = audience.ToWireValue() };
