@@ -299,6 +299,112 @@ public class FileSubAgentDefinitionLoaderTests : IDisposable
         Assert.DoesNotContain(_logger.Warnings, w => w.Contains("stray.json", StringComparison.Ordinal));
         Assert.DoesNotContain(_logger.Warnings, w => w.Contains("readme.txt", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void RefreshIfChanged_detects_valid_edits_and_reloads_profiles()
+    {
+        var path = WriteAgent("reloadable.md", """
+            ---
+            name: reloadable
+            description: First description
+            tools: [file_read]
+            ---
+
+            First body.
+            """);
+
+        var first = _loader.LoadAll();
+        var initial = Assert.Single(first);
+        Assert.Equal("First description", initial.Description);
+
+        File.WriteAllText(path, """
+            ---
+            name: reloadable
+            description: Updated description
+            tools: [file_read]
+            ---
+
+            Updated body.
+            """);
+
+        Assert.True(_loader.RefreshIfChanged(out var refreshed));
+        var updated = Assert.Single(refreshed);
+        Assert.Equal("Updated description", updated.Description);
+        Assert.Contains("Updated body.", updated.SystemPrompt);
+    }
+
+    [Fact]
+    public void RefreshIfChanged_detects_deletes_and_returns_empty_snapshot()
+    {
+        var path = WriteAgent("temporary.md", """
+            ---
+            name: temporary
+            description: Temporary agent
+            tools: [file_read]
+            ---
+
+            body
+            """);
+
+        Assert.Single(_loader.LoadAll());
+
+        File.Delete(path);
+
+        Assert.True(_loader.RefreshIfChanged(out var refreshed));
+        Assert.Empty(refreshed);
+    }
+
+    [Fact]
+    public void SyncInto_replaces_registry_profiles_when_disk_changes()
+    {
+        // Both spawn_agent and metadata.subagent routed activations go through the
+        // same SyncInto contract — exercising the loader+registry pair end-to-end
+        // proves the live-reload requirement for both entry points.
+        var path = WriteAgent("routable.md", """
+            ---
+            name: routable
+            description: First description
+            tools: [file_read]
+            ---
+
+            First body.
+            """);
+
+        var registry = new SubAgentDefinitionRegistry();
+        Assert.True(_loader.SyncInto(registry));
+        Assert.Equal("First description", registry.TryGetByName("routable")!.Description);
+
+        File.WriteAllText(path, """
+            ---
+            name: routable
+            description: Updated description
+            tools: [file_read]
+            ---
+
+            Updated body.
+            """);
+
+        Assert.True(_loader.SyncInto(registry));
+        Assert.Equal("Updated description", registry.TryGetByName("routable")!.Description);
+    }
+
+    [Fact]
+    public void SyncInto_is_a_no_op_when_directory_unchanged()
+    {
+        WriteAgent("stable.md", """
+            ---
+            name: stable
+            description: Stable
+            tools: [file_read]
+            ---
+
+            body
+            """);
+
+        var registry = new SubAgentDefinitionRegistry();
+        Assert.True(_loader.SyncInto(registry));
+        Assert.False(_loader.SyncInto(registry));
+    }
 }
 
 /// <summary>

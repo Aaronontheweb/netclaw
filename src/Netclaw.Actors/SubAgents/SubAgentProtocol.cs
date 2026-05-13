@@ -34,6 +34,11 @@ public sealed record SubAgentDefinition
     /// Whether successful free-form output should be converted into structured findings.
     /// </summary>
     public bool EmitStructuredFindings { get; init; }
+
+    /// <summary>
+    /// Optional project-scoped identity content inherited from the parent session.
+    /// </summary>
+    public string? ProjectInstructions { get; init; }
 }
 
 /// <summary>
@@ -71,6 +76,16 @@ public sealed record RunSubAgent : INoSerializationVerificationNeeded
     public string? Boundary { get; init; }
 
     public string? ChannelType { get; init; }
+
+    /// <summary>
+    /// Parent session's session directory snapshot when the subagent was spawned.
+    /// </summary>
+    public string? ParentSessionDirectory { get; init; }
+
+    /// <summary>
+    /// Parent session's project directory snapshot when the subagent was spawned.
+    /// </summary>
+    public string? ParentProjectDirectory { get; init; }
 
     /// <summary>
     /// Parent session's approval bridge. When provided, the sub-agent can route
