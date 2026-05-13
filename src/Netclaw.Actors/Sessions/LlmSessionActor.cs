@@ -2531,7 +2531,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     /// a registered skill, activation path selection is deterministic:
     /// metadata.subagent route first, then inline injection when metadata is absent.
     /// </summary>
-    private bool TryHandleSlashCommand(string userContent, List<SerializableMediaReference> mediaRefs)
+    private bool TryHandleSlashCommand(string userContent, IReadOnlyList<SerializableMediaReference> mediaRefs)
     {
         if (_skillRegistry is null || string.IsNullOrWhiteSpace(userContent) || userContent[0] != '/')
             return false;
@@ -2583,7 +2583,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         return true;
     }
 
-    private bool HandleInlineSlashCommand(SkillEntry skill, string remainder, List<SerializableMediaReference> mediaRefs)
+    private bool HandleInlineSlashCommand(SkillEntry skill, string remainder, IReadOnlyList<SerializableMediaReference> mediaRefs)
     {
         string skillBody;
         try
@@ -2629,7 +2629,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         return true;
     }
 
-    private bool TryHandleRoutedSlashCommand(SkillEntry skill, string remainder, List<SerializableMediaReference> mediaRefs, string routedSubagent)
+    private bool TryHandleRoutedSlashCommand(SkillEntry skill, string remainder, IReadOnlyList<SerializableMediaReference> mediaRefs, string routedSubagent)
     {
         if (_subAgentRegistry is null || _subAgentSpawner is null)
         {
@@ -2922,9 +2922,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private SessionSnapshot BuildSnapshot()
     {
-        var snapshot = _state.ToSnapshot();
-        snapshot.EligibleDeliveryTurnNumber = _deliveryRetry.EligibleTurnNumber;
-        return snapshot;
+        return _state.ToSnapshot() with { EligibleDeliveryTurnNumber = _deliveryRetry.EligibleTurnNumber };
     }
 
     private void MaybeSnapshot()
@@ -3126,7 +3124,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // the path arguments the agent originally passed, rather than
         // collapsing everything to cwd. Empty list when the request did
         // not carry candidate-level data (e.g. older callers).
-        IReadOnlyList<ApprovalCandidate> Candidates);
+        IReadOnlyList<ApprovalCandidate> Candidates) : INoSerializationVerificationNeeded;
 
     private async Task PersistApprovalCandidatesAsync(
         PendingToolInteraction pending,
@@ -3331,12 +3329,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private sealed record RoutedSkillExecutionCompleted(
         string SkillName,
         string SubagentName,
-        SubAgentResult Result);
+        SubAgentResult Result) : INoSerializationVerificationNeeded;
 
     private sealed record RoutedSkillExecutionFailed(
         string SkillName,
         string SubagentName,
-        string ErrorMessage);
+        string ErrorMessage) : INoSerializationVerificationNeeded;
 
     private sealed record RoutedSkillSubAgentActivity(
         long TimestampMs,
@@ -3345,7 +3343,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         int ToolCount,
         bool? Success,
         TimeSpan? Duration,
-        int FindingsCount);
+        int FindingsCount) : INoSerializationVerificationNeeded;
 
     private void BindTurnTelemetry(MessageSource? source)
     {

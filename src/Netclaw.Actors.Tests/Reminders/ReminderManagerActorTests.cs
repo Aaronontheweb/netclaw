@@ -13,6 +13,7 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Reminders;
+using Netclaw.Actors.Tests.Hosting;
 using Netclaw.Configuration;
 using Xunit;
 
@@ -31,7 +32,8 @@ public class ReminderManagerActorTests : TestKit
         builder
             .WithInMemoryJournal()
             .WithInMemorySnapshotStore()
-            .WithNetclawSerialization();
+            .WithNetclawSerialization()
+            .WithSerializationVerification();
 
         var paths = new NetclawPaths(_basePath);
         paths.EnsureDirectoriesExist();

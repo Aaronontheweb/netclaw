@@ -178,7 +178,7 @@ public sealed class SerializationRoundTripTests : TestKit
             Role = ChatRole.User,
             Content = "Check this image",
             MediaReferences =
-            {
+            [
                 new SerializableMediaReference
                 {
                     RelativePath = "abc123.png",
@@ -191,7 +191,7 @@ public sealed class SerializationRoundTripTests : TestKit
                     MimeType = "image/jpeg",
                     Modality = (int)MediaModality.Image
                 }
-            }
+            ]
         };
 
         var result = RoundTrip(original);
@@ -214,14 +214,14 @@ public sealed class SerializationRoundTripTests : TestKit
             SessionId = new SessionId("C99999/1708531200.000100"),
             Content = "Look at this",
             MediaReferences =
-            {
+            [
                 new SerializableMediaReference
                 {
                     RelativePath = "photo.png",
                     MimeType = "image/png",
                     Modality = (int)MediaModality.Image
                 }
-            }
+            ]
         };
 
         var result = RoundTrip(original);
@@ -324,7 +324,7 @@ public sealed class SerializationRoundTripTests : TestKit
         {
             Role = ChatRole.Assistant,
             ToolCalls =
-            {
+            [
                 new SerializableToolCall
                 {
                     CallId = "call-1",
@@ -332,7 +332,7 @@ public sealed class SerializationRoundTripTests : TestKit
                     ArgumentsJson = """{"Command":"dotnet test"}""",
                     MetaJson = """{"rationale":"running tests","timeout_seconds":300}"""
                 }
-            }
+            ]
         };
 
         var result = RoundTrip(original);
@@ -351,14 +351,14 @@ public sealed class SerializationRoundTripTests : TestKit
         {
             Role = ChatRole.Assistant,
             ToolCalls =
-            {
+            [
                 new SerializableToolCall
                 {
                     CallId = "call-1",
                     Name = "web_search",
                     ArgumentsJson = """{"query":"test"}"""
                 }
-            }
+            ]
         };
 
         var result = RoundTrip(original);
