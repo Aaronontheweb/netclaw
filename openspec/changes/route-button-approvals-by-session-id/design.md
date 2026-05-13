@@ -192,6 +192,53 @@ informational. We could remove the deferral entirely in a follow-up since
 it is no longer load-bearing for correctness, but doing so would lose a
 useful diagnostic and is out of scope here.
 
+### D7. Conformance is documented per-channel, not generalized to a cross-channel contract — yet
+
+The routing-independence invariant is genuinely cross-channel in spirit:
+any future channel that exposes an interactive (button/widget-style)
+approval surface should satisfy it. Slack and Discord already do under
+this change, and a Teams or Mattermost adapter should too.
+
+We considered promoting the invariant to a single cross-channel
+`tool-approval-gates` requirement and slimming the per-channel deltas to
+"this channel implements requirement X." We chose not to, for one
+specific reason: **a spec requirement is only enforceable to the extent
+we can test it.** Today, what we can actually verify is per-channel:
+
+- Slack integration test: click delivered after channel-level adapter
+  passivated → response reaches the session
+- Discord integration test: equivalent scenario for Discord
+
+The mechanics differ enough between Slack (`block_actions`,
+`chat.update`, no edit-window cap) and Discord (interaction tokens,
+15-min interaction-edit window, `custom_id` ≤ 100 chars) that the two
+adapters do not share an `IInteractiveApprovalIngress` interface today.
+Without a shared interface there is no shared contract test, and a
+cross-channel spec requirement would be mechanically unenforceable for
+any future channel — relying solely on code review against the spec.
+
+**What we are doing instead:**
+
+- Per-channel spec deltas accurately describe what each channel must do
+  and what we can actually test.
+- This decision (D7) records the conformance intent so a reviewer of
+  the next channel adapter can see what invariant the precedent is
+  trying to preserve.
+
+**When to revisit:**
+
+- A third channel is added that supports interactive approval. At that
+  point the right move is to extract `IInteractiveApprovalIngress` (or
+  similar), write one shared contract test, and refactor all three
+  adapters to implement it. The cross-channel spec requirement can then
+  land alongside the contract test and become mechanically enforceable.
+- Discovery that any **existing** channel violates the invariant in a
+  way per-channel tests don't catch.
+
+**Anti-decision:** do not write a cross-channel `tool-approval-gates`
+requirement that we cannot enforce without an interface that does not
+yet exist.
+
 ## Risks / Trade-offs
 
 - **[Risk] Session actor receives an `ApprovalResponseReceived` for a
