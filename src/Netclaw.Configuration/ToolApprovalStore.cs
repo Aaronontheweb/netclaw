@@ -218,13 +218,20 @@ public sealed class ToolApprovalStore
 
     /// <summary>
     /// Adds an approved <see cref="ApprovalEntry"/> for a tool in the given
-    /// audience. The directory portion is normalized before storage so the
-    /// on-disk file never accumulates trailing-slash variants of the same
-    /// logical entry. Idempotent: an entry equal under
+    /// audience. The verb and directory are normalized before storage so the
+    /// on-disk file never accumulates whitespace-padded verbs or
+    /// trailing-slash directory variants of the same logical entry.
+    /// Idempotent: an entry equal under
     /// <see cref="ToolApprovalEntryComparer.Equals(ApprovalEntry, ApprovalEntry)"/>
-    /// is silently dropped.
+    /// is left in place and not appended.
     /// </summary>
-    public void AddApproval(TrustAudience audience, string toolName, ApprovalEntry entry)
+    /// <returns>
+    /// <c>true</c> when a new entry was appended; <c>false</c> when an
+    /// equivalent entry was already present. Callers can use this to surface
+    /// "new vs already-trusted" feedback without re-implementing the
+    /// duplicate check.
+    /// </returns>
+    public bool AddApproval(TrustAudience audience, string toolName, ApprovalEntry entry)
     {
         var normalized = ToolApprovalEntryComparer.Normalize(entry);
 
@@ -248,11 +255,12 @@ public sealed class ToolApprovalStore
             foreach (var existing in entries)
             {
                 if (ToolApprovalEntryComparer.Equals(existing, normalized))
-                    return;
+                    return false;
             }
 
             entries.Add(normalized);
             Save(data);
+            return true;
         }
     }
 
