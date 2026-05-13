@@ -109,44 +109,12 @@ public sealed class NetclawPaths
 
     public NetclawPaths(string? basePath = null, string? workspacesDirectory = null)
     {
-        BasePath = ExpandHome(basePath)
-            ?? ExpandHome(Environment.GetEnvironmentVariable("NETCLAW_HOME"))
+        BasePath = PathExpansion.ExpandHome(basePath)
+            ?? PathExpansion.ExpandHome(Environment.GetEnvironmentVariable("NETCLAW_HOME"))
             ?? Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 ".netclaw");
-        WorkspacesDirectory = ExpandHome(workspacesDirectory) ?? Path.Combine(BasePath, "workspaces");
-    }
-
-    /// <summary>
-    /// Expands shell home tokens (<c>~</c>, <c>$HOME</c>, <c>${HOME}</c>,
-    /// <c>%USERPROFILE%</c>) in a configured path, also collapsing null and
-    /// whitespace-only input to <c>null</c> and trimming surrounding whitespace.
-    /// Inlined here rather than reusing <c>Netclaw.Security.PathUtility.ExpandHome</c>
-    /// because <c>Netclaw.Configuration</c> is the foundation project and cannot
-    /// depend on Security; the Security variant has no null/trim normalization.
-    /// </summary>
-    private static string? ExpandHome(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-
-        var trimmed = value.Trim();
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (string.IsNullOrWhiteSpace(home))
-            return trimmed;
-
-        if (trimmed.StartsWith('~'))
-        {
-            trimmed = trimmed.Length == 1
-                ? home
-                : Path.Combine(home, trimmed[1..].TrimStart('/', '\\'));
-        }
-
-        trimmed = trimmed.Replace("$HOME", home, StringComparison.OrdinalIgnoreCase);
-        trimmed = trimmed.Replace("${HOME}", home, StringComparison.OrdinalIgnoreCase);
-        trimmed = trimmed.Replace("%USERPROFILE%", home, StringComparison.OrdinalIgnoreCase);
-
-        return trimmed;
+        WorkspacesDirectory = PathExpansion.ExpandHome(workspacesDirectory) ?? Path.Combine(BasePath, "workspaces");
     }
 
     /// <summary>
