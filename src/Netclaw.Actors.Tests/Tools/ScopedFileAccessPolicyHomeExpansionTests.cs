@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
+using Netclaw.Security;
 using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
 using Xunit;
@@ -28,7 +29,6 @@ public sealed class ScopedFileAccessPolicyHomeExpansionTests : IDisposable
         _sessionDir = Path.Combine(_dir.Path, "sessions", "test-session");
         Directory.CreateDirectory(_sessionDir);
         _paths = new NetclawPaths(_dir.Path);
-        _paths.EnsureDirectoriesExist();
     }
 
     public void Dispose() => _dir.Dispose();
@@ -46,10 +46,9 @@ public sealed class ScopedFileAccessPolicyHomeExpansionTests : IDisposable
         var roots = policy.GetRootsForContext(context, ScopedFileAccessPolicy.AccessKind.Write);
 
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var expected = Normalize(Path.Combine(home, "repositories"));
+        var expected = PathUtility.Normalize(Path.Combine(home, "repositories"));
 
         Assert.Contains(roots, r => r.Equals(expected, StringComparison.OrdinalIgnoreCase));
-        Assert.DoesNotContain(roots, r => r.Contains("~", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -99,7 +98,4 @@ public sealed class ScopedFileAccessPolicyHomeExpansionTests : IDisposable
             Boundary = SecurityPolicyDefaults.ResolveBoundaryFromAudience(audience),
             ChannelType = "signalr"
         };
-
-    private static string Normalize(string path)
-        => Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 }

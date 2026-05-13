@@ -110,7 +110,6 @@ public sealed class NetclawPathsTests : IDisposable
         var paths = new NetclawPaths(workspacesDirectory: configured);
 
         Assert.Equal(expected, paths.WorkspacesDirectory);
-        Assert.DoesNotContain("~", paths.WorkspacesDirectory);
     }
 
     [Fact]

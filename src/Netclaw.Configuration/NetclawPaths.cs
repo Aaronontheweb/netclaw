@@ -110,23 +110,20 @@ public sealed class NetclawPaths
     public NetclawPaths(string? basePath = null, string? workspacesDirectory = null)
     {
         BasePath = ExpandHome(basePath)
-            ?? ExpandHome(NormalizeEnvHome(Environment.GetEnvironmentVariable("NETCLAW_HOME")))
+            ?? ExpandHome(Environment.GetEnvironmentVariable("NETCLAW_HOME"))
             ?? Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 ".netclaw");
         WorkspacesDirectory = ExpandHome(workspacesDirectory) ?? Path.Combine(BasePath, "workspaces");
     }
 
-    private static string? NormalizeEnvHome(string? value)
-        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-
     /// <summary>
     /// Expands shell home tokens (<c>~</c>, <c>$HOME</c>, <c>${HOME}</c>,
-    /// <c>%USERPROFILE%</c>) in a configured path so values like
-    /// <c>~/repositories</c> resolve correctly when the daemon's CWD is not
-    /// the user's home directory. Inlined here (rather than reusing
-    /// <c>Netclaw.Security.PathUtility</c>) because <c>Netclaw.Configuration</c>
-    /// is the foundation project and cannot depend on Security.
+    /// <c>%USERPROFILE%</c>) in a configured path, also collapsing null and
+    /// whitespace-only input to <c>null</c> and trimming surrounding whitespace.
+    /// Inlined here rather than reusing <c>Netclaw.Security.PathUtility.ExpandHome</c>
+    /// because <c>Netclaw.Configuration</c> is the foundation project and cannot
+    /// depend on Security; the Security variant has no null/trim normalization.
     /// </summary>
     private static string? ExpandHome(string? value)
     {
