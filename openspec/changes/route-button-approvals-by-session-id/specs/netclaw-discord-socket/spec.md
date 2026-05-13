@@ -1,3 +1,33 @@
+## MODIFIED Requirements
+
+### Requirement: Discord interactive approval with deterministic text fallback
+
+The Discord adapter SHALL handle `ToolInteractionRequest` in Discord sessions by
+preferring Discord interaction controls when available and SHALL always support
+deterministic text fallback with equivalent approval options and outcomes.
+
+Inbound delivery of approval responses (interaction click and text fallback
+alike) SHALL route to the originating session actor without depending on the
+`DiscordSessionBindingActor` being hot at the moment of the response.
+Classification of inbound text as approval-vs-normal SHALL be performed by
+the session actor, not by the binding.
+
+#### Scenario: Discord interaction approval path succeeds
+
+- **GIVEN** Discord interaction callbacks are available
+- **WHEN** a tool approval request is emitted
+- **THEN** the adapter renders interaction controls
+- **AND** selected approval decision is routed to the session actor at its deterministic path
+
+#### Scenario: Interaction path unavailable falls back to text deterministically
+
+- **GIVEN** Discord interaction callbacks are unavailable or fail
+- **WHEN** a tool approval request is emitted
+- **THEN** the adapter emits a text prompt with deterministic A/B/C/D options
+- **AND** subsequent inbound text is forwarded unconditionally to the session actor
+- **AND** the session classifies matching letters as the equivalent approval response
+- **AND** non-matching text is processed as a normal user message
+
 ## ADDED Requirements
 
 ### Requirement: Discord button approval response routing independent of session binding liveness
@@ -17,10 +47,10 @@ produces the resulting `ToolInteractionResponse`. The Discord ingress SHALL
 NOT consult any in-memory pending-approval map held by
 `DiscordSessionBindingActor` to perform this routing.
 
-This requirement complements the existing `Discord interactive approval with
-deterministic text fallback` requirement: that requirement defines what
-decision each click produces; this requirement defines how the click is
-delivered to the session.
+This requirement complements the modified `Discord interactive approval
+with deterministic text fallback` requirement above: that requirement
+defines the user-visible flows; this requirement defines the routing
+contract for click-style responses.
 
 #### Scenario: Button click delivered after Discord session binding has stopped
 
@@ -33,13 +63,14 @@ delivered to the session.
 - **AND** the response is delivered to the session actor at its deterministic path
 - **AND** the session actor resolves the pending tool call
 
-#### Scenario: Discord button text fallback path is unchanged
+#### Scenario: Discord text fallback delivered after binding re-spawned cold
 
-- **GIVEN** Discord interaction callbacks are unavailable or fail
-- **AND** the adapter has emitted a text prompt with deterministic A/B/C/D options
-- **WHEN** a user sends a text reply matching one of the options
-- **THEN** the text reply continues to be parsed against the pending approval state held by `DiscordSessionBindingActor`
-- **AND** the resulting `ToolInteractionResponse` matches the existing text-fallback semantics
+- **GIVEN** a text-fallback approval prompt has been posted in a Discord channel
+- **AND** the `DiscordSessionBindingActor` has been stopped and re-spawned
+- **AND** the re-spawned binding holds no in-memory approval state
+- **WHEN** the user replies with a single approval option character
+- **THEN** the binding forwards the text unconditionally to the session
+- **AND** the session resolves the pending approval correctly
 
 #### Scenario: Resolved-state redraw is issued from session actor with self-contained inputs
 

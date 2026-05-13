@@ -31,14 +31,20 @@ on a 2-hour timer.
   to the slack/discord output binding for the message rewrite. The binding can
   be lazily spawned for the redraw because `BuildResolvedApprovalBlocks(...)`
   is pure — no prior in-memory state required.
-- Per-thread binding's `_pendingApprovalRequests` is no longer load-bearing
-  for delivery. It is retained only as a hint for the binding's own
-  passivation deferral.
+- Per-thread binding becomes a thin transport. Its
+  `_pendingApprovalRequests` field is removed entirely. Passivation
+  deferral logic that depended on it is removed. The binding can passivate
+  and re-spawn freely; nothing about correctness depends on it being hot.
 - **Text** approval reply routing (Slack `A`/`B`/`C`/`D` and Discord
-  equivalents) is **unchanged**. Text replies legitimately need pending-state
-  lookup at the binding actor because the letter alone is ambiguous without
-  knowing what's pending. Buttons carry an unambiguous encoded `callId`
-  in the click payload, so they don't need it.
+  equivalents) ALSO moves to blind-write. Inbound text from the platform is
+  forwarded to the session actor unconditionally as today's
+  `SendUserMessage` (or equivalent). The session actor classifies at the
+  top of its handler: if there is a pending approval AND the text matches
+  an approval option, treat as a `ToolInteractionResponse`; otherwise treat
+  as a normal user message. Today's binding-side classification has the
+  same cold-actor bug as buttons (re-spawned binding has empty
+  `_pendingApprovalRequests` and silently misclassifies the reply); moving
+  it to the session fixes both classes simultaneously.
 
 ## Capabilities
 
@@ -48,19 +54,20 @@ None.
 
 ### Modified Capabilities
 
-- `tool-approval-gates`: New requirement that **button** approval responses
-  SHALL be routable independently of channel-adapter actor liveness — i.e.,
-  delivery does not depend on the per-thread binding actor being hot at the
-  moment the user clicks. The existing button-semantics requirements (which
-  decision each click produces, ACL evaluation, persistence of approval
-  entries) are unchanged.
-- `netclaw-slack-socket`: Clarify that the existing "Slack text approval
-  reply routing" requirement (which mandates routing through the thread
-  binding actor's pending state) applies to **text** replies only, and add
-  a parallel requirement covering button-click routing that does not rely
-  on the binding actor's liveness.
-- `netclaw-discord-socket`: Symmetric clarification — button approval routing
-  does not depend on the per-channel binding actor's liveness.
+- `tool-approval-gates`: New requirement that approval responses (both
+  button-click and text-reply forms) SHALL be routable independently of
+  channel-adapter actor liveness. Delivery and approval-vs-message
+  classification are the session actor's responsibility, not the binding
+  actor's. Button decision semantics and approval-entry persistence are
+  unchanged.
+- `netclaw-slack-socket`: MODIFIED text-reply requirement so routing no
+  longer depends on the thread binding actor's pending-state. The Slack
+  ingress forwards inbound text unconditionally to the session actor;
+  the session actor classifies. ADDED parallel button-routing requirement
+  for `block_actions` payloads.
+- `netclaw-discord-socket`: Symmetric — text-fallback path moves to
+  session-side classification; button-click path routes via session
+  regardless of `DiscordSessionBindingActor` liveness.
 
 ## Impact
 
@@ -68,11 +75,13 @@ None.
 
 - `src/Netclaw.Channels.Slack/SlackConversationActor.cs` — replace per-thread
   child lookup with `Tell` to `session-manager/{persistenceId}`
-- `src/Netclaw.Channels.Slack/SlackThreadBindingActor.cs` — remove
-  `_pendingApprovalRequests` as a routing dependency for buttons (keep as
-  passivation-deferral hint)
+- `src/Netclaw.Channels.Slack/SlackThreadBindingActor.cs` — remove the
+  `_pendingApprovalRequests` field entirely; remove approval-pending
+  passivation deferral; binding becomes a pure transport (decode platform
+  payload, forward to session)
 - `src/Netclaw.Channels.Discord/DiscordConversationActor.cs` — symmetric
-- `src/Netclaw.Channels.Discord/DiscordSessionBindingActor.cs` — symmetric
+- `src/Netclaw.Channels.Discord/DiscordSessionBindingActor.cs` — symmetric;
+  remove `_pendingApprovalRequests`
 - `src/Netclaw.Actors/Sessions/LlmSessionActor.cs` — handle new
   `ApprovalResponseReceived` protocol message; emit `RenderResolvedApproval`
 - `src/Netclaw.Actors/Protocol/*` — new self-contained message types

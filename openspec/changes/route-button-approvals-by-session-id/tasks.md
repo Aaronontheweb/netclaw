@@ -4,7 +4,7 @@
 - [ ] 1.2 Add `RenderResolvedApproval` message type in `Netclaw.Actors.Protocol` carrying `Channel`, `MessageTs` (or Discord message identifier), `ToolInteractionRequest`, `SelectedKey`, and `ApprovingSenderId`
 - [ ] 1.3 Wire both new messages through the existing serialization registration so they round-trip via the configured serializer (acceptance: serializer round-trip unit test passes)
 
-## 2. Session actor inbound handler
+## 2. Session actor inbound handler — button responses
 
 - [ ] 2.1 Add a handler on `LlmSessionActor` for `ApprovalResponseReceived` that runs `ApprovalButtonValueCodec.CanApprove(requesterPrincipal, requesterSenderId, approvingSenderId)` against the actor-owned pending-call state
 - [ ] 2.2 Implement prefix-match of incoming `CallId` against the session's pending-call set, scoped to a single session (acceptance: matches under truncated callId per `MaxEncodedLength = 100`)
@@ -13,20 +13,29 @@
 - [ ] 2.5 On no-match (unknown `CallId`): log + drop, do NOT crash (acceptance: feeding a synthetic unknown callId leaves session state unchanged)
 - [ ] 2.6 After resolving, emit `RenderResolvedApproval` to the corresponding output binding for the redraw
 
+## 2b. Session actor inbound handler — text classification
+
+- [ ] 2b.1 Audit existing `LlmSessionActor` user-message handler entry to find the exact spot where inbound text becomes a conversation turn
+- [ ] 2b.2 Insert a classification step at handler entry: if a pending approval is awaiting decision in this session AND the inbound text exactly matches one of that pending call's option keys (case-sensitive, single-token match consistent with today's binding logic), short-circuit to the same approval-resolution path used by `ApprovalResponseReceived`
+- [ ] 2b.3 On classification = approval: do NOT add the text to conversation history; do NOT trigger an LLM turn; resolve the pending approval and emit `RenderResolvedApproval`
+- [ ] 2b.4 On classification = normal message: existing behavior unchanged (text becomes a user turn as today)
+- [ ] 2b.5 Where multiple pending calls exist (rare but possible), pick the most recent pending call as today's binding does (acceptance: same selection rule, just relocated)
+- [ ] 2b.6 `CanApprove` runs on the text path with the inbound message's sender as `approvingSenderId`
+
 ## 3. Slack ingress
 
 - [ ] 3.1 In `SlackConversationActor`, on `block_actions` payload with an approval `action_id`, decode the payload and `ApprovalButtonValueCodec.TryDecode` the button value to extract `callId`, `optionKey`, `requesterSenderId`
 - [ ] 3.2 Resolve `SessionId` from `(channel.id, message.thread_ts)` and address `ApprovalResponseReceived` to `session-manager/{persistenceId}` via `Tell` — do NOT call `Context.Child(threadName)` for routing
 - [ ] 3.3 Remove the `Ignoring Slack approval response for missing thread` drop path for button responses (text-reply path keeps its existing routing through `SlackThreadBindingActor`)
-- [ ] 3.4 In `SlackThreadBindingActor`, drop reliance on `_pendingApprovalRequests` for **button** routing only; retain the field for text-reply matching and passivation-deferral hint
-- [ ] 3.5 Implement `SlackThreadBindingActor` handler for `RenderResolvedApproval` that calls the existing pure `BuildResolvedApprovalBlocks(...)` and posts via `chat.update` (or `response_url` `replace_original` if `chat.update` fails) — handler must work with empty `_pendingApprovalRequests`
+- [ ] 3.4 In `SlackThreadBindingActor`, audit every read of `_pendingApprovalRequests` and confirm none are load-bearing after this change. Then **delete the field** along with the approval-pending passivation-deferral logic ("Slack thread idle but N approval(s) are pending; deferring passivation"). Inbound text continues to flow to the session via the existing `SendUserMessage` (or equivalent) path with no binding-side classification.
+- [ ] 3.5 Implement `SlackThreadBindingActor` handler for `RenderResolvedApproval` that calls the existing pure `BuildResolvedApprovalBlocks(...)` and posts via `chat.update` (or `response_url` `replace_original` if `chat.update` fails) — handler must function correctly on a freshly-spawned binding with no prior in-memory state
 
 ## 4. Discord ingress
 
 - [ ] 4.1 In `DiscordConversationActor`, on interaction payload with an approval `custom_id`, decode and route to the session actor via `ApprovalResponseReceived` — symmetric to Slack
 - [ ] 4.2 Remove the equivalent `IsNobody()` drop path for button responses
-- [ ] 4.3 In `DiscordSessionBindingActor`, drop reliance on `_pendingApprovalRequests` for button routing only; retain for text-fallback and passivation-deferral
-- [ ] 4.4 Implement `DiscordSessionBindingActor` handler for `RenderResolvedApproval` that produces the resolved Discord message from the pure builder
+- [ ] 4.3 In `DiscordSessionBindingActor`, audit every read of `_pendingApprovalRequests` and confirm none are load-bearing. Then **delete the field** along with any approval-pending passivation-deferral logic. Inbound text flows to the session unconditionally.
+- [ ] 4.4 Implement `DiscordSessionBindingActor` handler for `RenderResolvedApproval` that produces the resolved Discord message from the pure builder; handler must function on a freshly-spawned binding
 
 ## 5. Tests
 
@@ -35,10 +44,12 @@
 - [ ] 5.3 Unit test: `LlmSessionActor` ignores `ApprovalResponseReceived` for an unknown callId without crashing
 - [ ] 5.4 Unit test: prefix-match against truncated callId resolves to the full pending call when only one prefix matches
 - [ ] 5.5 Integration test (Slack): button click delivered when channel-level conversation actor has been stopped — response reaches the session actor and resolves the pending call (regression test for the production incident in #979)
-- [ ] 5.6 Integration test (Slack): text-reply path continues to route through `SlackThreadBindingActor` unchanged (regression guard for the existing `netclaw-slack-socket` text-reply requirement)
-- [ ] 5.7 Integration test (Discord): button click delivered when `DiscordSessionBindingActor` has stopped — symmetric to 5.5
-- [ ] 5.8 Integration test (Discord): text-fallback path unchanged
-- [ ] 5.9 Test: `RenderResolvedApproval` arriving at a freshly-spawned binding (no prior `_pendingApprovalRequests`) produces the resolved-state blocks correctly
+- [ ] 5.6 Integration test (Slack): text reply (`A`/`B`/`C`/`D`) delivered when `SlackThreadBindingActor` has been re-spawned cold — session classifies and resolves correctly (proves text path is no longer dependent on binding hotness)
+- [ ] 5.7 Test: text matching an approval option but with NO pending approval falls through as a normal user message and enters conversation history
+- [ ] 5.8 Integration test (Discord): button click delivered when `DiscordSessionBindingActor` has stopped — symmetric to 5.5
+- [ ] 5.9 Integration test (Discord): text-fallback delivered when binding re-spawned cold — symmetric to 5.6
+- [ ] 5.10 Test: `RenderResolvedApproval` arriving at a freshly-spawned binding (no prior in-memory state) produces the resolved-state blocks correctly
+- [ ] 5.11 Test: existing user-message handler behavior is unchanged for any text that doesn't match an approval option (regression guard for normal conversation flow)
 
 ## 6. Quality gates
 

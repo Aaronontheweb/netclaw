@@ -53,34 +53,43 @@ Constraints we must respect:
   is 100 chars (Discord `custom_id` cap), so the click payload can carry the
   encoded `callId|optionKey|requesterSenderId` triple and nothing more. We
   cannot embed the full `ToolInteractionRequest`.
-- **Text reply path is correct as-is.** Letters `A`/`B`/`C`/`D` are
-  meaningless without pending-state context, so text routing legitimately
-  needs the binding actor's in-memory list. We are not changing that path.
+- **Text reply path has the same cold-actor bug as buttons.** Today's
+  binding intercepts `A`/`B`/`C`/`D`, but only because it has
+  `_pendingApprovalRequests` populated. A re-spawned binding has an empty
+  list and would silently misclassify the reply as a normal message. The
+  bug is harder to observe because users instinctively click buttons, but
+  it is the same bug class. We are fixing it together.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Inbound button approval responses are delivered to the session actor
-  regardless of whether any subset of the channel-adapter actor tree is hot
-  at the moment of the click, **without requiring persistence**.
-- Routing for buttons is symmetric with outbound routing: both addressed by
-  `SessionId` to a deterministic actor path.
-- Resolved-state UI redraw (rewrite the original message to show the
-  decision) works without requiring prior in-memory state on the binding
-  actor.
+- Inbound approval responses (button-click and text-reply alike) are
+  delivered to the session actor regardless of whether any subset of the
+  channel-adapter actor tree is hot at the moment of the response,
+  **without requiring persistence**.
+- Routing is symmetric with outbound: both addressed by `SessionId` to a
+  deterministic actor path.
+- Approval-vs-normal-message classification lives at the session actor
+  (the only authority that knows the pending-call state). Channel
+  adapters do no classification.
+- Resolved-state UI redraw works without requiring prior in-memory state
+  on the binding actor.
 - Discord and Slack adapters get the same fix.
 - `CanApprove` semantics and ACL evaluation are byte-identical to today.
+- The binding actor becomes a pure transport — it can passivate and
+  re-spawn freely with no impact on correctness.
 
 **Non-Goals:**
 
 - Surviving full daemon restart with pending approvals intact. That is
   upstream issue #939 and requires persistence work outside this change.
-- Changing text reply routing, button labels, button counts, decision
-  semantics, or `tool-approvals.json` format.
+- Changing button labels, button counts, decision semantics, or
+  `tool-approvals.json` format.
 - Persisting any new state to disk in this change.
-- Removing the per-thread binding actor entirely. It still owns
-  outbound rendering, idle-deferral hinting, and text-reply parsing.
+- Removing the per-thread binding actor entirely. It still owns outbound
+  rendering and platform-payload decoding. It just no longer carries
+  routing-relevant state.
 
 ## Decisions
 
@@ -163,34 +172,78 @@ pending-call set. Match ambiguity is impossible in practice because:
 
 Codec is unchanged.
 
-### D5. Per-thread binding keeps `_pendingApprovalRequests` for non-routing uses
+### D5. Binding becomes a pure transport — `_pendingApprovalRequests` is removed
 
-The list stays for two legitimate purposes:
+The field is dropped entirely. Earlier drafts of this design proposed
+keeping it for "passivation deferral hint" and "text-reply matching" —
+both turned out to be incoherent under the new architecture:
 
-1. **Passivation deferral hint.** `Slack thread idle but N approval(s) are
-   pending; deferring passivation` still uses it. Useful guidance to the
-   binding's own idle timer even though it does not (today) prevent the
-   channel-level parent from passivating.
-2. **Text-reply matching.** The text-reply path (`A`/`B`/`C`/`D`) must
-   continue to consult the pending list — letters are meaningless without
-   it. Spec line `netclaw-slack-socket/spec.md:72-77` continues to apply
-   verbatim to text replies and is unaffected by this change.
+- **Why "passivation deferral hint" had to go.** Deferring passivation
+  while approvals are pending only matters if delivery depends on the
+  binding being hot. Under D1, delivery does not depend on it. Keeping
+  the deferral signals "this state matters" while D1 says "this state
+  doesn't matter." Both can't be true. Worse, the deferral was already
+  proven non-load-bearing for the channel-level parent (see the incident
+  trace in the Context section), so it offered noise rather than safety.
+- **Why "text-reply matching" had to move too.** Today's binding
+  intercepts `A`/`B`/`C`/`D` against `_pendingApprovalRequests`. A
+  re-spawned binding has an empty list and silently misclassifies the
+  reply as a normal user message. That is the same cold-actor bug as
+  buttons, just rarer because users prefer clicking. Fixing buttons
+  while leaving text in the same fragile shape would codify a tier-2
+  path that nobody asked for.
 
-The list is no longer load-bearing for **button** delivery. If it is empty
-or stale, button responses still arrive.
+The clean position is **blind-write end to end**:
+
+- Binding decodes the platform payload (Slack `block_actions` or chat
+  message; Discord interaction or message) into channel-agnostic
+  protocol messages and forwards them to the session actor at its
+  deterministic path.
+- Binding holds no routing-relevant state. It can passivate at any
+  time. It can re-spawn at any time. Neither affects correctness.
+- Session actor is the single authority that classifies inbound text
+  ("does this match a pending approval option?") and resolves
+  approvals (button or text).
+
+Outbound rendering still flows through the binding (the binding is
+where the platform SDK lives), but as documented in D2 those commands
+are self-contained — the binding doesn't need prior in-memory state to
+render anything.
+
+### D5a. Session-side text classification
+
+The session actor classifies inbound text at the entry of its existing
+user-message handler:
+
+- If a pending tool call is awaiting approval AND the text matches one
+  of that call's approval option keys (`A`/`B`/`C`/`D` or whatever the
+  call advertised), the session resolves the approval and does NOT
+  add the text to conversation history as a user turn.
+- Otherwise, the text is treated as a normal `SendUserMessage` exactly
+  as today.
+
+This preserves today's user-visible behavior (an `A` typed during a
+pending approval consumes the approval and isn't echoed back as a user
+turn) while moving the decision to the actor that owns the pending
+state.
+
+**Why session-side classification, not a new "raw text" message
+type:** the existing `SendUserMessage` path already carries everything
+the session needs (text, sender, timestamp, channel context). Adding a
+new wire-level message type would duplicate the path. The
+classification is a single-line check at the top of the handler.
 
 ### D6. Cascading-passivation is mitigated, not fixed, by this change
 
 We deliberately do not change the channel-level parent's passivation policy
-in this change. The asymmetry-fix at the routing layer makes passivation
-behavior irrelevant to button delivery — a stronger guarantee than fixing
-the immediate deferral gap. The parent can passivate; the response still
-lands.
+in this change. The blind-write architecture at the routing layer makes
+passivation behavior irrelevant to delivery — a stronger guarantee than
+fixing the immediate deferral gap. Any actor in the channel-adapter tree
+can passivate; the response still lands.
 
-**Side note:** the per-thread "deferring passivation" log line will remain
-informational. We could remove the deferral entirely in a follow-up since
-it is no longer load-bearing for correctness, but doing so would lose a
-useful diagnostic and is out of scope here.
+The "deferring passivation" log line and its associated logic are removed
+together with `_pendingApprovalRequests` (per D5). They were noise: they
+implied the deferral was load-bearing when it was not.
 
 ### D7. Conformance is documented per-channel, not generalized to a cross-channel contract — yet
 
@@ -276,12 +329,21 @@ yet exist.
   prefix-matches and use the first match (today's behavior); this
   surfaces the edge case without breaking anything.
 
-- **[Trade-off] We retain `_pendingApprovalRequests` on the binding for
-  non-routing uses.**
-  Keeping the field looks like we are leaving routing state where it
-  shouldn't be. We accept the cosmetic cost because removing the field
-  entirely would lose the passivation-deferral diagnostic and would also
-  break the text-reply path, which legitimately needs it.
+- **[Risk] Session-side text classification consumes `A` typed in
+  ambiguous contexts.**
+  If a user types just `A` while a pending approval is open but means
+  it as a normal message, the session resolves the approval. This is
+  exactly today's behavior — the binding does the same — but the
+  decision now lives in the session.
+  **Mitigation:** none needed; behavior parity is the goal.
+
+- **[Risk] Removing `_pendingApprovalRequests` breaks anything that
+  reads it for non-routing reasons.**
+  Searching the codebase before the refactor is required. Anything
+  found that reads the field needs an explicit decision: relocate to
+  the session, replace with a derived signal, or remove.
+  **Mitigation:** task 3.4 / 4.3 explicitly require an audit before
+  field deletion.
 
 - **[Trade-off] No persistence in this change.**
   Daemon restart still wedges sessions on pending approval (issue #939).

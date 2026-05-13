@@ -2,50 +2,67 @@
 
 ### Requirement: Slack text approval reply routing to session
 
-The Slack channel SHALL route parsed **text** approval replies (single-letter
-replies `A`/`B`/`C`/`D` or equivalents) back to the originating session as
-`ToolInteractionResponse` messages. Routing SHALL use the pending request
-state held by the thread binding actor so the reply is matched to the correct
-`CallId` and requester.
+The Slack channel SHALL route inbound text from a Slack thread to the
+originating session actor unconditionally, using the existing user-message
+message type. The Slack channel SHALL NOT classify text as approval-vs-
+normal; classification is the session actor's responsibility. The session
+actor SHALL inspect inbound text at the entry of its user-message handler:
+if a pending approval is awaiting decision in that session AND the text
+matches one of the pending call's approval option keys (`A`/`B`/`C`/`D` or
+whatever the call advertised), the session SHALL produce the corresponding
+`ToolInteractionResponse` and SHALL NOT add the text to conversation
+history as a user turn; otherwise the text SHALL be processed as a normal
+user message.
 
-This requirement applies to text replies only. Button-click (Slack
-`block_actions`) approval responses are routed independently of the thread
-binding actor's liveness — see the `Slack button approval response routing
-independent of thread binding liveness` requirement below.
+This requirement supersedes the previous routing model in which the
+`SlackThreadBindingActor` consulted `_pendingApprovalRequests` to perform
+classification. The binding's `_pendingApprovalRequests` field is removed
+entirely as part of this change.
 
 #### Scenario: User replies Approve Once
 
 - **GIVEN** an approval prompt is displayed in a Slack thread
 - **WHEN** the user replies `A`
-- **THEN** the Slack channel parses the text reply against the pending approval request
-- **AND** sends a `ToolInteractionResponse` with `ApprovedOnce` to the session
+- **THEN** the Slack adapter forwards the text unconditionally to the session actor
+- **AND** the session classifies the text against its pending-call set
+- **AND** the session produces a `ToolInteractionResponse` with `ApprovedOnce`
 
 #### Scenario: User replies Approve For This Chat
 
 - **GIVEN** an approval prompt is displayed in a Slack thread
 - **WHEN** the user replies `B`
-- **THEN** a `ToolInteractionResponse` with `ApprovedSession` is sent to the session
+- **THEN** the session produces a `ToolInteractionResponse` with `ApprovedSession`
 - **AND** the approval is retained only for the current Slack thread session
 
 #### Scenario: User replies Approve Always
 
 - **GIVEN** an approval prompt is displayed in a Slack thread
 - **WHEN** the user replies `C`
-- **THEN** a `ToolInteractionResponse` with `ApprovedAlways` is sent to the session
+- **THEN** the session produces a `ToolInteractionResponse` with `ApprovedAlways`
 - **AND** the approval is persisted to `tool-approvals.json`
 
 #### Scenario: User replies Deny
 
 - **GIVEN** an approval prompt is displayed
 - **WHEN** the user replies `D`
-- **THEN** a `ToolInteractionResponse` with `Denied` is sent to the session
+- **THEN** the session produces a `ToolInteractionResponse` with `Denied`
 - **AND** the tool receives a denial result
 
 #### Scenario: No pending approval means reply falls through as normal message
 
 - **GIVEN** no approval request is pending for the Slack thread
 - **WHEN** a user sends `A`, `B`, `C`, or `D`
-- **THEN** the message is not treated as an approval response
+- **THEN** the session classifies the text as a normal user message
+- **AND** the text enters conversation history as a user turn
+
+#### Scenario: Text reply delivered when binding has been re-spawned cold
+
+- **GIVEN** an approval prompt is displayed in a Slack thread
+- **AND** the per-thread `SlackThreadBindingActor` has been stopped and re-spawned
+- **AND** the re-spawned binding holds no in-memory approval state
+- **WHEN** the user replies with a single approval option character
+- **THEN** the binding forwards the text unconditionally to the session
+- **AND** the session resolves the pending approval correctly
 
 ## ADDED Requirements
 
