@@ -281,9 +281,13 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         IReadOnlyList<ApprovalEntry> approvedEntries,
         string? cwd)
     {
+        // Fail-closed on a missing/empty Command argument: a malformed
+        // shell invocation cannot be "already approved" — the agent must
+        // round-trip through the gate so the operator sees what was
+        // attempted.
         var command = GetCommand(arguments);
         if (string.IsNullOrWhiteSpace(command))
-            return true; // empty command, nothing to approve
+            return false;
 
         // Messy commands cannot be auto-approved: the matcher cannot extract a
         // candidate verb-chain to evaluate against the persisted store, so
@@ -292,9 +296,13 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (ShellTokenizer.IsMessyCompoundCommand(command))
             return false;
 
+        // Fail-closed on a parser miss: BashParser swallows exceptions and
+        // unparseable results return an empty candidate list. Treating that
+        // as "approved" would silently auto-allow any command our parser
+        // regresses on. Force the gate instead.
         var candidates = ExtractCandidates(toolName, arguments);
         if (candidates.Count == 0)
-            return true;
+            return false;
 
         foreach (var candidate in candidates)
         {

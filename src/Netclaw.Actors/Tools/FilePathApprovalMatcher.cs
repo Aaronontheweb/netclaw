@@ -58,7 +58,13 @@ public sealed class FilePathApprovalMatcher : IToolApprovalMatcher
         IReadOnlyList<ApprovalEntry> approvedEntries,
         string? cwd)
     {
+        // Fail-closed when no verbs can be extracted: an empty foreach
+        // would otherwise fall through to "approved" purely because there
+        // was nothing to check.
         var verbs = ExtractCandidateVerbs(toolName, arguments);
+        if (verbs.Count == 0)
+            return false;
+
         foreach (var verb in verbs)
         {
             if (!ApprovalPatternMatching.MatchesAny(verb, approvedEntries))
