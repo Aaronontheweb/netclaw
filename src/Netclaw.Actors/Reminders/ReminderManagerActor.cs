@@ -260,6 +260,16 @@ public sealed partial class ReminderManagerActor : ReceiveActor
             }
 
             nextFire = scheduleResult.NextFire;
+
+            // Persist the (possibly rescheduled) interval first-fire time so a daemon
+            // restart re-uses the same anchor instead of resetting "now + interval".
+            if (normalized.Schedule.Type == ReminderScheduleType.Interval && nextFire is not null)
+            {
+                normalized = normalized with
+                {
+                    Schedule = normalized.Schedule with { FireAt = nextFire }
+                };
+            }
         }
         else
         {
@@ -829,8 +839,6 @@ public sealed partial class ReminderManagerActor : ReceiveActor
                             ? explicitFirst
                             : now.Add(interval);
 
-                    definition.Schedule.FireAt = first;
-
                     var result = await _client.ScheduleRecurringReminderAsync(key, first, interval, payload);
                     return result.ResponseCode == ReminderScheduleResponseCode.Success
                         ? ScheduleAttempt.Ok(first)
@@ -937,13 +945,13 @@ public sealed partial class ReminderManagerActor : ReceiveActor
             _failureCounts.Count));
     }
 
-    private sealed record ScheduleAttempt(bool IsSuccess, DateTimeOffset? NextFire, string? ErrorMessage)
+    private sealed record ScheduleAttempt(bool IsSuccess, DateTimeOffset? NextFire, string? ErrorMessage) : INoSerializationVerificationNeeded
     {
         public static ScheduleAttempt Ok(DateTimeOffset? nextFire) => new(true, nextFire, null);
         public static ScheduleAttempt Fail(string message) => new(false, null, message);
     }
 
-    private sealed record ReminderAudienceAuthorizationResult(bool IsSuccess, TrustAudience? EffectiveAudience, string? ErrorMessage)
+    private sealed record ReminderAudienceAuthorizationResult(bool IsSuccess, TrustAudience? EffectiveAudience, string? ErrorMessage) : INoSerializationVerificationNeeded
     {
         public static ReminderAudienceAuthorizationResult Success(TrustAudience effectiveAudience)
             => new(true, effectiveAudience, null);
@@ -952,7 +960,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
             => new(false, null, errorMessage);
     }
 
-    internal sealed record ReconcileReminders
+    internal sealed record ReconcileReminders : INoSerializationVerificationNeeded
     {
         public static readonly ReconcileReminders Instance = new();
     }
@@ -961,5 +969,5 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     /// Ack sent back to <see cref="ReconcileReminders"/> callers so they can
     /// synchronize on reconcile completion instead of polling.
     /// </summary>
-    internal sealed record ReconcileCompleted(int CancelledOrphans, int RestoredSchedules, int DeletedOneShots, int DisabledExpired = 0);
+    internal sealed record ReconcileCompleted(int CancelledOrphans, int RestoredSchedules, int DeletedOneShots, int DisabledExpired = 0) : INoSerializationVerificationNeeded;
 }

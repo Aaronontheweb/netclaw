@@ -20,6 +20,7 @@ using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Memory;
 using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Protocol;
+using Netclaw.Actors.Tests.Hosting;
 using Netclaw.Actors.Tests.Sessions;
 using Netclaw.Channels.Slack;
 using Netclaw.Configuration;
@@ -94,6 +95,11 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
         services.AddSingleton(new SessionObservability(null, null));
     }
 
+    // serialize-messages = on interacts poorly with Akka.Streams (the channel output
+    // pipeline) — stream stage internals stop delivering output messages, not for
+    // serialization reasons but because of dispatch behavior under verification.
+    // Verification stays off here until the Akka.Streams interop is investigated.
+    // The session-side regression net is covered by LlmSessionTestBase derivatives.
     protected override void ConfigureAkka(AkkaConfigurationBuilder builder, IServiceProvider provider)
     {
         builder

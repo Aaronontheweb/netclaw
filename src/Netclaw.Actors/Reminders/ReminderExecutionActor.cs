@@ -468,6 +468,6 @@ internal sealed class ReminderExecutionActor : ReceiveActor
         _log.Error(ex, "{0}", msg);
     }
 
-    private sealed record ExecutionStarted;
-    private sealed record ExecutionOutput(SessionOutput Output);
+    private sealed record ExecutionStarted : INoSerializationVerificationNeeded;
+    private sealed record ExecutionOutput(SessionOutput Output) : INoSerializationVerificationNeeded;
 }
