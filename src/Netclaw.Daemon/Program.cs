@@ -891,10 +891,13 @@ static void ConfigureDaemonServices(
     services.AddSingleton(memoryIndexLayer);
     services.AddSingleton<IContextLayerProvider>(memoryIndexLayer);
 
-    // Subagent discovery context layer — updated by ToolIndexUpdater after file-based agents load
-    var subAgentDiscoveryLayer = new SubAgentDiscoveryContextLayer(subAgentConfig);
-    services.AddSingleton(subAgentDiscoveryLayer);
-    services.AddSingleton<IContextLayerProvider>(subAgentDiscoveryLayer);
+    // Subagent discovery context layer — rebuilds the catalog on demand from the live file snapshot.
+    services.AddSingleton(sp => new SubAgentDiscoveryContextLayer(
+        subAgentConfig,
+        sp.GetRequiredService<SubAgentDefinitionRegistry>(),
+        sp.GetRequiredService<FileSubAgentDefinitionLoader>(),
+        paths));
+    services.AddSingleton<IContextLayerProvider>(sp => sp.GetRequiredService<SubAgentDiscoveryContextLayer>());
 
     // Current time context layer — transient per-turn grounding for date/time-sensitive prompts
     services.AddSingleton<IContextLayerProvider, CurrentTimeContextLayer>();
@@ -1012,7 +1015,8 @@ static void ConfigureDaemonServices(
         sp.GetService<SkillRegistry>(),
         sp.GetService<IToolApprovalService>(),
         sp.GetService<SubAgentDefinitionRegistry>(),
-        sp.GetService<SubAgentSpawner>()));
+        sp.GetService<SubAgentSpawner>(),
+        sp.GetService<FileSubAgentDefinitionLoader>()));
 
     services.AddSingleton(sp => new SessionMemoryServices(
         sp.GetService<IMemoryExtractor>() ?? NullMemoryExtractor.Instance,

@@ -16,8 +16,12 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class FileSubAgentDefinitionLoader
 {
+    private sealed record LoadSnapshot(string Fingerprint, IReadOnlyList<SubAgentProfile> Profiles);
+
     private readonly string _agentsDirectory;
     private readonly ILogger<FileSubAgentDefinitionLoader> _logger;
+    private readonly object _snapshotGate = new();
+    private LoadSnapshot? _lastSnapshot;
 
     public FileSubAgentDefinitionLoader(NetclawPaths paths, ILogger<FileSubAgentDefinitionLoader> logger)
     {
@@ -31,6 +35,65 @@ public sealed class FileSubAgentDefinitionLoader
     /// Duplicate <c>name</c> values across files are rejected for all but the first occurrence.
     /// </summary>
     public IReadOnlyList<SubAgentProfile> LoadAll()
+    {
+        return LoadCurrentSnapshot(ComputeDirectoryFingerprint()).Profiles;
+    }
+
+    public bool RefreshIfChanged(out IReadOnlyList<SubAgentProfile> profiles)
+    {
+        var fingerprint = ComputeDirectoryFingerprint();
+
+        lock (_snapshotGate)
+        {
+            if (_lastSnapshot is not null && string.Equals(_lastSnapshot.Fingerprint, fingerprint, StringComparison.Ordinal))
+            {
+                profiles = _lastSnapshot.Profiles;
+                return false;
+            }
+        }
+
+        profiles = LoadCurrentSnapshot(fingerprint).Profiles;
+        return true;
+    }
+
+    /// <summary>
+    /// Detect on-disk changes and, if any, replace the registry's file-loaded
+    /// profiles. Returns true when the registry was modified.
+    /// </summary>
+    public bool SyncInto(SubAgentDefinitionRegistry registry)
+    {
+        ArgumentNullException.ThrowIfNull(registry);
+
+        if (!RefreshIfChanged(out var profiles))
+            return false;
+
+        registry.ReplaceFileProfiles(profiles);
+        return true;
+    }
+
+    private LoadSnapshot LoadCurrentSnapshot(string fingerprint)
+    {
+        lock (_snapshotGate)
+        {
+            if (_lastSnapshot is not null && string.Equals(_lastSnapshot.Fingerprint, fingerprint, StringComparison.Ordinal))
+                return _lastSnapshot;
+        }
+
+        // Read disk outside the lock so other callers aren't blocked. A concurrent loader
+        // may race us; the gate-protected install below accepts whichever snapshot lands
+        // first with the same fingerprint.
+        var profiles = LoadProfilesFromDisk();
+        var newSnapshot = new LoadSnapshot(fingerprint, profiles);
+
+        lock (_snapshotGate)
+        {
+            if (_lastSnapshot is null || !string.Equals(_lastSnapshot.Fingerprint, fingerprint, StringComparison.Ordinal))
+                _lastSnapshot = newSnapshot;
+            return _lastSnapshot;
+        }
+    }
+
+    private IReadOnlyList<SubAgentProfile> LoadProfilesFromDisk()
     {
         if (!Directory.Exists(_agentsDirectory))
         {
@@ -48,7 +111,6 @@ public sealed class FileSubAgentDefinitionLoader
         var results = new List<SubAgentProfile>();
         var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // Enumerate files in a stable order so duplicate-name diagnostics are deterministic.
         foreach (var filePath in files.OrderBy(p => p, StringComparer.Ordinal))
         {
             var profile = TryParse(filePath);
@@ -71,6 +133,25 @@ public sealed class FileSubAgentDefinitionLoader
         }
 
         return results;
+    }
+
+    private string ComputeDirectoryFingerprint()
+    {
+        if (!Directory.Exists(_agentsDirectory))
+            return "missing";
+
+        // Length is part of the fingerprint so rapid edits within a single mtime tick
+        // still register as a change. mtime alone is unreliable on low-resolution filesystems
+        // and during fast successive writes.
+        var files = Directory.GetFiles(_agentsDirectory, "*.md")
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .Select(path =>
+            {
+                var info = new FileInfo(path);
+                return $"{path}|{info.Length}|{info.LastWriteTimeUtc.Ticks}";
+            });
+
+        return string.Join(";", files);
     }
 
     private SubAgentProfile? TryParse(string filePath)
@@ -122,8 +203,21 @@ public sealed class FileSubAgentDefinitionLoader
         // This matches Claude Code's agent format where tools are not specified.
         var tools = frontmatter.Tools ?? [];
 
-        var modelRole = ParseModelRole(frontmatter.ModelRole);
-        var visibility = ParseVisibility(frontmatter.Visibility);
+        if (!TryParseModelRole(frontmatter.ModelRole, out var modelRole))
+        {
+            _logger.LogWarning(
+                "Agent '{Name}' at {Path} has invalid modelRole '{Value}' (expected Main or Compaction) — skipping",
+                frontmatter.Name, filePath, frontmatter.ModelRole);
+            return null;
+        }
+
+        if (!TryParseVisibility(frontmatter.Visibility, out var visibility))
+        {
+            _logger.LogWarning(
+                "Agent '{Name}' at {Path} has invalid visibility '{Value}' (expected user-facing or internal) — skipping",
+                frontmatter.Name, filePath, frontmatter.Visibility);
+            return null;
+        }
 
         return new SubAgentProfile
         {
@@ -138,26 +232,27 @@ public sealed class FileSubAgentDefinitionLoader
         };
     }
 
-    private static ModelRole ParseModelRole(string? value)
+    private static bool TryParseModelRole(string? value, out ModelRole role)
     {
         if (string.IsNullOrWhiteSpace(value))
-            return ModelRole.Compaction;
+        {
+            role = ModelRole.Compaction;
+            return true;
+        }
 
-        return Enum.TryParse<ModelRole>(value, ignoreCase: true, out var parsed)
-            ? parsed
-            : ModelRole.Compaction;
+        return Enum.TryParse(value, ignoreCase: true, out role);
     }
 
-    private static SubAgentVisibility ParseVisibility(string? value)
+    private static bool TryParseVisibility(string? value, out SubAgentVisibility visibility)
     {
         if (string.IsNullOrWhiteSpace(value))
-            return SubAgentVisibility.UserFacing;
+        {
+            visibility = SubAgentVisibility.UserFacing;
+            return true;
+        }
 
-        // Accept both "user-facing" (hyphenated, matches frontmatter convention)
-        // and "UserFacing" (PascalCase, matches the enum value name).
+        // Accept both `user-facing` (frontmatter convention) and `UserFacing` (enum name).
         var normalized = value.Replace("-", "", StringComparison.Ordinal);
-        return Enum.TryParse<SubAgentVisibility>(normalized, ignoreCase: true, out var parsed)
-            ? parsed
-            : SubAgentVisibility.UserFacing;
+        return Enum.TryParse(normalized, ignoreCase: true, out visibility);
     }
 }

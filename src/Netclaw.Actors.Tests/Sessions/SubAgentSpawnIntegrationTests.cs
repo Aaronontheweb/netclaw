@@ -154,6 +154,7 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
             registry,
             toolAccessPolicy,
             approvalService: null,
+            new StaticSystemPromptProvider(MainIdentityMarker),
             Microsoft.Extensions.Logging.Abstractions.NullLogger<SubAgentSpawner>.Instance);
 
         registry.Register(new SpawnAgentTool(subAgentRegistry, spawner, subAgentPaths));

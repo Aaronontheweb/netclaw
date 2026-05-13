@@ -153,6 +153,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly Skills.SkillRegistry? _skillRegistry;
     private readonly SubAgentDefinitionRegistry? _subAgentRegistry;
     private readonly SubAgentSpawner? _subAgentSpawner;
+    private readonly FileSubAgentDefinitionLoader? _subAgentLoader;
 
     // Memory recall state (transient — reset at turn boundaries and compaction)
     private readonly SessionRecallManager _recallManager = new();
@@ -199,6 +200,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _skillRegistry = tools?.SkillRegistry;
         _subAgentRegistry = tools?.SubAgentRegistry;
         _subAgentSpawner = tools?.SubAgentSpawner;
+        _subAgentLoader = tools?.SubAgentLoader;
         _toolExecutor = tools?.ToolExecutor;
         _auditLogger = tools?.AuditLogger;
         _toolAccessPolicy = tools?.AccessPolicy;
@@ -2694,6 +2696,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             return true;
         }
 
+        _subAgentLoader?.SyncInto(_subAgentRegistry);
+
         var profile = _subAgentRegistry.TryGetByName(routedSubagent);
         if (profile is null)
         {
@@ -2786,6 +2790,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 Audience = _currentTurnSource is null ? null : _currentTurnSource.Audience.ToWireValue(),
                 Boundary = _currentTurnSource?.Boundary,
                 ChannelType = _currentTurnSource is null ? null : _currentTurnSource.ChannelType.ToWireValue(),
+                ProjectDirectory = _state.WorkingContext.ProjectDirectory,
                 SupportsInteractiveApproval = false,
             };
 
