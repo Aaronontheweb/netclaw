@@ -23,6 +23,8 @@ public sealed class OpenAiCodexCapabilityResolver : IModelCapabilityResolver
                 m.OutputModalities,
                 m.ContextWindowTokens));
 
+    public string? ProviderType => "openai";
+
     public Task<ResolvedModelCapabilities?> ResolveAsync(
         string modelId, CancellationToken ct = default)
     {

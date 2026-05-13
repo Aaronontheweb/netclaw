@@ -284,7 +284,8 @@ public sealed class OpenAiCodexTests
 
             Assert.NotNull(result);
             Assert.Equal(256_000, result.ContextWindowTokens);
-            Assert.True(result.InputModalities.HasFlag(ModelModality.Text | ModelModality.Image));
+            Assert.NotNull(result.InputModalities);
+            Assert.True(result.InputModalities.Value.HasFlag(ModelModality.Text | ModelModality.Image));
             Assert.Equal(ModelModality.Text, result.OutputModalities);
         }
 
