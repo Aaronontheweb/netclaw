@@ -658,14 +658,6 @@ static void ConfigureDaemonServices(
     var shellCommandPolicy = new ShellCommandPolicy(toolConfig.HardDenyPatterns, hardDenyOverrides);
     services.AddSingleton(shellCommandPolicy);
 
-    // Trust-zones new approval architecture — two-store per-audience
-    // persistence (verbPatterns + trustedZones) plus the three-layer
-    // GateEvaluator. Registered alongside the v2 ToolApprovalStore during
-    // transition; v2 stays authoritative until the gate-evaluator
-    // integration in ToolAccessPolicy completes and the v2 path is
-    // decommissioned in a future change.
-    var audienceTrustStore = new AudienceTrustStore(paths.TrustZonesPath);
-    services.AddSingleton(audienceTrustStore);
     services.AddShellParser();
 
     // Subagent timeout configuration
@@ -707,23 +699,8 @@ static void ConfigureDaemonServices(
     var safeVerbs = SafeVerbLoader.Load();
     services.AddSingleton(safeVerbs);
 
-    // Trust-zones gate evaluator + composer. The composer takes
-    // (audience profiles + persisted store + safe-verbs) at construction
-    // and produces a TrustState per call (audience + session_dir +
-    // session-scope grants). The evaluator runs the three-layer pipeline
-    // over a ParsedCommand against that TrustState. Both are registered
-    // as singletons — they are pure-function services with no per-call
-    // mutable state. Plumbed into ToolAccessPolicy below as the fast-path
-    // auto-allow check ahead of the v2 matcher.
     var bashParser = new BashParser();
     services.AddSingleton<IShellParser>(bashParser);
-    var gateEvaluator = new GateEvaluator(shellCommandPolicy, bashParser);
-    services.AddSingleton(gateEvaluator);
-    var trustStateComposer = new TrustStateComposer(
-        toolConfig.AudienceProfiles,
-        audienceTrustStore,
-        safeVerbs);
-    services.AddSingleton(trustStateComposer);
 
     var toolAccessPolicy = new ToolAccessPolicy(
         toolConfig,
@@ -733,9 +710,7 @@ static void ConfigureDaemonServices(
         toolPathPolicy,
         featureGates,
         shellTrustZonePolicy,
-        safeVerbs,
-        gateEvaluator,
-        trustStateComposer);
+        safeVerbs);
     services.AddSingleton(toolAccessPolicy);
 
     var toolApprovalStore = new ToolApprovalStore(paths.ToolApprovalsPath);

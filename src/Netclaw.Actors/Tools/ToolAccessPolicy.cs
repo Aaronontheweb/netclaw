@@ -24,8 +24,6 @@ public sealed class ToolAccessPolicy
     private readonly IToolApprovalMatcher _fileApprovalMatcher;
     private readonly FeatureGates _featureGates;
     private readonly ScopedShellSafeVerbPolicy? _safeVerbPolicy;
-    private readonly GateEvaluator? _gateEvaluator;
-    private readonly TrustStateComposer? _trustStateComposer;
 
     public ToolAccessPolicy(
         ToolConfig toolConfig,
@@ -35,9 +33,7 @@ public sealed class ToolAccessPolicy
         ToolPathPolicy? toolPathPolicy = null,
         FeatureGates? featureGates = null,
         IShellTrustZonePolicy? shellTrustZonePolicy = null,
-        SafeVerbList? safeVerbs = null,
-        GateEvaluator? gateEvaluator = null,
-        TrustStateComposer? trustStateComposer = null)
+        SafeVerbList? safeVerbs = null)
     {
         _toolConfig = toolConfig;
         _defaults = defaults;
@@ -48,8 +44,6 @@ public sealed class ToolAccessPolicy
         _fileApprovalMatcher = fileApprovalMatcher ?? DefaultApprovalMatcher.Instance;
         _featureGates = featureGates ?? FeatureGates.AllEnabled;
         _safeVerbPolicy = safeVerbs is not null ? new ScopedShellSafeVerbPolicy(safeVerbs) : null;
-        _gateEvaluator = gateEvaluator;
-        _trustStateComposer = trustStateComposer;
     }
 
     public int MaxToolTimeoutSeconds => _toolConfig.MaxToolTimeoutSeconds;
@@ -255,12 +249,10 @@ public sealed class ToolAccessPolicy
         // Use the shared extractor so JsonElement-valued arguments (the
         // shape LLM-generated tool calls arrive in) get string-converted
         // correctly. The direct `is string` pattern previously here
-        // silently returned null for every real shell call, which
-        // disabled both the hard-deny pre-check at AuthorizeInvocation
-        // and the trust-zones GateEvaluator fast-path in
-        // CheckApprovalGate. The matcher's GetCommand uses
-        // ToolArgumentHelper.GetString — mirror it here for
-        // consistency.
+        // silently returned null for every real shell call, which disabled
+        // the hard-deny pre-check at AuthorizeInvocation. The matcher's
+        // GetCommand uses ToolArgumentHelper.GetString — mirror it here
+        // for consistency.
         if (arguments is null)
             return null;
 
@@ -342,63 +334,11 @@ public sealed class ToolAccessPolicy
         if (isShell && context is not null)
             context.Cwd = context.ResolveShellCwd(ExtractWorkingDirectory(arguments));
 
-        // Trust-zones fast path: ahead of the v2 safe-verb short-circuit and
-        // the v2 (verb, directory) matcher, ask the new GateEvaluator
-        // whether the command would auto-pass under the trust-zones model
-        // (read-only verb in trusted zone, or a clause matching a
-        // persisted/session verb pattern). If yes, the call runs silently
-        // without round-tripping through the v2 prompt path. If the
-        // evaluator wants any prompts or hits a hard-deny, fall through
-        // to the existing v2 logic so the existing 5-button prompt UI
-        // and persistence path stay in charge of user-facing approval
-        // until the v2 prompt builders are rewritten.
-        //
-        // This is the load-bearing change for reminder/non-interactive
-        // workflow reliability: when an operator configures broad audience
-        // baseline zones and pre-approves verb patterns via CLI, reminders
-        // firing read-only verbs inside trusted zones auto-allow here and
-        // never hit the prompt-required v2 path.
-        var shellCommandForGate = isShell ? ExtractShellCommand(arguments) : null;
-        if (isShell
-            && !isMessy
-            && _gateEvaluator is not null
-            && _trustStateComposer is not null
-            && context is not null
-            && context.SessionDirectory is not null
-            && !string.IsNullOrEmpty(shellCommandForGate))
-        {
-            var trustState = _trustStateComposer.Compose(
-                audience,
-                context.SessionDirectory,
-                sessionTrustedZones: null,    // session-scope state lives on
-                sessionVerbPatterns: null);   // LlmSessionActor; wire when prompts move to new shape
-            var evaluation = _gateEvaluator.Evaluate(shellCommandForGate, audience, trustState);
-
-            if (evaluation.OverallDecision == OverallGateDecision.HardDenied)
-            {
-                return ToolAccessDecision.Deny($"hard_deny_{evaluation.HardDenyCategory ?? "unknown"}");
-            }
-
-            if (evaluation.OverallDecision == OverallGateDecision.Approved)
-            {
-                return ToolAccessDecision.Allow();
-            }
-
-            // NeedsPrompt → fall through to v2 path below. v2 will produce
-            // its own ApprovalContext with the existing 5-button shape.
-            // The new audience trust store doesn't get written on v2
-            // button clicks yet — operator can pre-populate via
-            // `netclaw approvals trust-verb` etc., or wait for the prompt
-            // builder rewrite to land.
-        }
-
-        // Safe-verb ∩ safe-space short-circuit (layer 1.5). Runs only for shell
-        // and only when the matcher could extract candidate verbs cleanly —
-        // messy commands always prompt regardless of verb membership.
-        // Retained as a fallback for sessions/configurations that don't
-        // exercise the GateEvaluator fast path above (no audience baseline
-        // zones, no persisted verbPatterns) — the v2 safe-space check
-        // still catches read-only verbs in session_dir/project_dir.
+        // Safe-verb ∩ safe-space short-circuit. Runs only for shell and only
+        // when the matcher could extract candidate verbs cleanly — messy
+        // commands always prompt regardless of verb membership. Auto-allows
+        // demonstrably read-only verbs (cat/ls/grep/find/git status/...)
+        // when the cwd is inside session_dir or project_dir.
         if (_safeVerbPolicy is not null
             && context is not null
             && isShell

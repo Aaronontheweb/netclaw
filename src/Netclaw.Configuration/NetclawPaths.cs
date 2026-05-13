@@ -81,16 +81,6 @@ public sealed class NetclawPaths
     public string ToolApprovalsPath => Path.Combine(ConfigDirectory, "tool-approvals.json");
 
     /// <summary>
-    /// Per-audience trust-zones store for the new approval architecture
-    /// (verbPatterns + trustedZones per audience). Sibling to
-    /// <see cref="ToolApprovalsPath"/> during transition so the v2 store can
-    /// keep handling existing entries while the new code path migrates.
-    /// Will eventually replace <see cref="ToolApprovalsPath"/> when the
-    /// trust-zones rewrite is fully wired and v2 is removed.
-    /// </summary>
-    public string TrustZonesPath => Path.Combine(ConfigDirectory, "trust-zones.json");
-
-    /// <summary>
     /// Operator-authored hard-deny override file consulted by the
     /// structured hard-deny pipeline. Optional; missing or empty file
     /// yields zero overrides and the shipped defaults apply alone.
