@@ -9,11 +9,39 @@ using Netclaw.Configuration;
 namespace Netclaw.Providers.SelfHosted;
 
 /// <summary>
-/// Wraps the raw probe results an OpenAI-compatible capability resolver
-/// shares across strategy implementations. <see cref="PropsJson"/> is null
-/// when the backend has no <c>/props</c> endpoint (e.g. vLLM returns 404).
+/// Pre-parsed probe results shared across strategy implementations. The
+/// resolver owns the underlying <see cref="JsonDocument"/> lifetime, so
+/// <see cref="JsonElement"/> references here are valid only for the
+/// duration of one <c>ResolveAsync</c> call. <see cref="PropsRoot"/> is
+/// null when the backend has no <c>/props</c> endpoint (e.g. vLLM 404).
 /// </summary>
-internal sealed record BackendProbe(string ModelId, string ModelsJson, string? PropsJson);
+internal sealed record BackendProbe(string ModelId, JsonElement ModelsRoot, JsonElement? PropsRoot)
+{
+    /// <summary>
+    /// Locates the <c>/v1/models</c> entry matching <see cref="ModelId"/>
+    /// by case-insensitive <c>id</c> comparison. Returns false when no
+    /// entry matches or the response shape is unexpected.
+    /// </summary>
+    public bool TryFindModelEntry(out JsonElement entry)
+    {
+        entry = default;
+        if (!ModelsRoot.TryGetProperty("data", out var data) ||
+            data.ValueKind != JsonValueKind.Array)
+            return false;
+
+        foreach (var model in data.EnumerateArray())
+        {
+            if (model.TryGetProperty("id", out var id) &&
+                id.ValueKind == JsonValueKind.String &&
+                string.Equals(id.GetString(), ModelId, StringComparison.OrdinalIgnoreCase))
+            {
+                entry = model;
+                return true;
+            }
+        }
+        return false;
+    }
+}
 
 /// <summary>
 /// Backend-specific parser for an OpenAI-compatible endpoint. The
@@ -44,7 +72,7 @@ internal sealed class VllmBackendStrategy : IOpenAiBackendStrategy
 
     public bool Matches(BackendProbe probe)
     {
-        if (!TryFindModelEntry(probe, out var model))
+        if (!probe.TryFindModelEntry(out var model))
             return false;
 
         if (model.TryGetProperty("owned_by", out var ownedBy) &&
@@ -53,14 +81,14 @@ internal sealed class VllmBackendStrategy : IOpenAiBackendStrategy
             return true;
 
         // /props 404 + max_model_len present is also a strong vLLM signal.
-        return probe.PropsJson is null &&
+        return probe.PropsRoot is null &&
                model.TryGetProperty("max_model_len", out var mml) &&
                mml.ValueKind == JsonValueKind.Number;
     }
 
     public ResolvedModelCapabilities? Parse(BackendProbe probe)
     {
-        if (!TryFindModelEntry(probe, out var model))
+        if (!probe.TryFindModelEntry(out var model))
             return null;
 
         int? contextWindow = null;
@@ -73,27 +101,6 @@ internal sealed class VllmBackendStrategy : IOpenAiBackendStrategy
         // vLLM exposes no modality information; null fields signal that
         // downstream resolvers in the chain (HuggingFace) should fill in.
         return new ResolvedModelCapabilities(probe.ModelId, null, null, contextWindow);
-    }
-
-    private static bool TryFindModelEntry(BackendProbe probe, out JsonElement entry)
-    {
-        entry = default;
-        using var doc = JsonDocument.Parse(probe.ModelsJson);
-        if (!doc.RootElement.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
-            return false;
-
-        foreach (var model in data.EnumerateArray())
-        {
-            if (model.TryGetProperty("id", out var id) &&
-                id.ValueKind == JsonValueKind.String &&
-                string.Equals(id.GetString(), probe.ModelId, StringComparison.OrdinalIgnoreCase))
-            {
-                entry = model.Clone();
-                return true;
-            }
-        }
-        return false;
     }
 }
 
@@ -110,10 +117,10 @@ internal sealed class LlamaCppBackendStrategy : IOpenAiBackendStrategy
 
     public bool Matches(BackendProbe probe)
     {
-        if (probe.PropsJson is not null)
+        if (probe.PropsRoot is not null)
             return true;
 
-        if (!TryFindModelEntry(probe, out var model))
+        if (!probe.TryFindModelEntry(out var model))
             return false;
 
         return model.TryGetProperty("meta", out var meta) &&
@@ -126,7 +133,7 @@ internal sealed class LlamaCppBackendStrategy : IOpenAiBackendStrategy
     {
         // Start with what /v1/models tells us about context window.
         int? contextWindow = null;
-        if (TryFindModelEntry(probe, out var model) &&
+        if (probe.TryFindModelEntry(out var model) &&
             model.TryGetProperty("meta", out var meta) &&
             meta.ValueKind == JsonValueKind.Object &&
             meta.TryGetProperty("n_ctx_train", out var ctx) &&
@@ -137,12 +144,9 @@ internal sealed class LlamaCppBackendStrategy : IOpenAiBackendStrategy
 
         // /props overrides — runtime-effective n_ctx and vision flag.
         var inputModalities = ModelModality.Text;
-        if (probe.PropsJson is not null)
+        if (probe.PropsRoot is JsonElement props)
         {
-            using var propsDoc = JsonDocument.Parse(probe.PropsJson);
-            var root = propsDoc.RootElement;
-
-            if (root.TryGetProperty("default_generation_settings", out var dgs) &&
+            if (props.TryGetProperty("default_generation_settings", out var dgs) &&
                 dgs.ValueKind == JsonValueKind.Object &&
                 dgs.TryGetProperty("params", out var parameters) &&
                 parameters.ValueKind == JsonValueKind.Object &&
@@ -152,7 +156,7 @@ internal sealed class LlamaCppBackendStrategy : IOpenAiBackendStrategy
                 contextWindow = nCtx.GetInt32();
             }
 
-            if (root.TryGetProperty("modalities", out var modalities) &&
+            if (props.TryGetProperty("modalities", out var modalities) &&
                 modalities.ValueKind == JsonValueKind.Object &&
                 modalities.TryGetProperty("vision", out var vision) &&
                 vision.ValueKind is JsonValueKind.True or JsonValueKind.False &&
@@ -164,27 +168,6 @@ internal sealed class LlamaCppBackendStrategy : IOpenAiBackendStrategy
 
         return new ResolvedModelCapabilities(
             probe.ModelId, inputModalities, ModelModality.Text, contextWindow);
-    }
-
-    private static bool TryFindModelEntry(BackendProbe probe, out JsonElement entry)
-    {
-        entry = default;
-        using var doc = JsonDocument.Parse(probe.ModelsJson);
-        if (!doc.RootElement.TryGetProperty("data", out var data) ||
-            data.ValueKind != JsonValueKind.Array)
-            return false;
-
-        foreach (var model in data.EnumerateArray())
-        {
-            if (model.TryGetProperty("id", out var id) &&
-                id.ValueKind == JsonValueKind.String &&
-                string.Equals(id.GetString(), probe.ModelId, StringComparison.OrdinalIgnoreCase))
-            {
-                entry = model.Clone();
-                return true;
-            }
-        }
-        return false;
     }
 }
 

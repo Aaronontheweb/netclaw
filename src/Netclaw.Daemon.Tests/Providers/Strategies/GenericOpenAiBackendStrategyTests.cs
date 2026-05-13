@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Text.Json;
 using Netclaw.Providers.SelfHosted;
 using Xunit;
 
@@ -13,14 +14,16 @@ public sealed class GenericOpenAiBackendStrategyTests
     [Fact]
     public void Matches_AnyShape()
     {
-        var probe = new BackendProbe("any", """{}""", PropsJson: null);
+        using var doc = JsonDocument.Parse("""{}""");
+        var probe = new BackendProbe("any", doc.RootElement, PropsRoot: null);
         Assert.True(new GenericOpenAiBackendStrategy().Matches(probe));
     }
 
     [Fact]
     public void Parse_ReturnsAllFieldsNull()
     {
-        var probe = new BackendProbe("any-model", """{}""", PropsJson: null);
+        using var doc = JsonDocument.Parse("""{}""");
+        var probe = new BackendProbe("any-model", doc.RootElement, PropsRoot: null);
         var result = new GenericOpenAiBackendStrategy().Parse(probe);
 
         Assert.NotNull(result);

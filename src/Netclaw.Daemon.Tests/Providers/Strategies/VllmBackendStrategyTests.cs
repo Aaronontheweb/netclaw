@@ -3,7 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using Netclaw.Configuration;
+using System.Text.Json;
 using Netclaw.Providers.SelfHosted;
 using Xunit;
 
@@ -33,7 +33,8 @@ public sealed class VllmBackendStrategyTests
     [Fact]
     public void Matches_OwnedByVllm()
     {
-        var probe = new BackendProbe("Qwen/Qwen3.6-VL-30B-FP8", VllmModelsJson, PropsJson: null);
+        using var doc = JsonDocument.Parse(VllmModelsJson);
+        var probe = new BackendProbe("Qwen/Qwen3.6-VL-30B-FP8", doc.RootElement, PropsRoot: null);
         Assert.True(new VllmBackendStrategy().Matches(probe));
     }
 
@@ -44,7 +45,8 @@ public sealed class VllmBackendStrategyTests
         const string strippedJson = """
         { "object": "list", "data": [ { "id": "model-x", "max_model_len": 131072 } ] }
         """;
-        var probe = new BackendProbe("model-x", strippedJson, PropsJson: null);
+        using var doc = JsonDocument.Parse(strippedJson);
+        var probe = new BackendProbe("model-x", doc.RootElement, PropsRoot: null);
         Assert.True(new VllmBackendStrategy().Matches(probe));
     }
 
@@ -54,14 +56,16 @@ public sealed class VllmBackendStrategyTests
         const string json = """
         { "object": "list", "data": [ { "id": "model-x" } ] }
         """;
-        var probe = new BackendProbe("model-x", json, PropsJson: null);
+        using var doc = JsonDocument.Parse(json);
+        var probe = new BackendProbe("model-x", doc.RootElement, PropsRoot: null);
         Assert.False(new VllmBackendStrategy().Matches(probe));
     }
 
     [Fact]
     public void Parse_ReturnsMaxModelLenAsContext_LeavesModalitiesNull()
     {
-        var probe = new BackendProbe("Qwen/Qwen3.6-VL-30B-FP8", VllmModelsJson, PropsJson: null);
+        using var doc = JsonDocument.Parse(VllmModelsJson);
+        var probe = new BackendProbe("Qwen/Qwen3.6-VL-30B-FP8", doc.RootElement, PropsRoot: null);
         var result = new VllmBackendStrategy().Parse(probe);
 
         Assert.NotNull(result);
@@ -78,7 +82,8 @@ public sealed class VllmBackendStrategyTests
         // Strategy can't say anything useful when the served model is
         // not in the catalog. Returning null lets the composite continue
         // through the rest of the chain.
-        var probe = new BackendProbe("other-model", VllmModelsJson, PropsJson: null);
+        using var doc = JsonDocument.Parse(VllmModelsJson);
+        var probe = new BackendProbe("other-model", doc.RootElement, PropsRoot: null);
         var result = new VllmBackendStrategy().Parse(probe);
 
         Assert.Null(result);

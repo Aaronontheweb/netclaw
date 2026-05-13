@@ -61,10 +61,9 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
         var payload = BuildPayload(messages, options, stream: true);
         using var request = BuildRequest(payload);
 
-        // Wall-clock measurement for prompt_ms fallback on backends that
-        // don't emit server-side timings (vLLM, generic OpenAI-compat).
-        // Measured request-send → first content delta — includes network
-        // RTT, so flagged as client-measured downstream.
+        // Wall-clock prompt_ms fallback for backends that don't emit
+        // server-side timings — locked at first content delta, includes
+        // network RTT.
         var requestSentAt = System.Diagnostics.Stopwatch.GetTimestamp();
         double? wallClockPromptMs = null;
 
@@ -109,6 +108,10 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
             using var document = JsonDocument.Parse(ssePayload);
             foreach (var update in ParseStreamingUpdates(document.RootElement, pendingToolCalls, wallClockPromptMs))
             {
+                if (update.Contents.Count > 0)
+                    wallClockPromptMs ??=
+                        System.Diagnostics.Stopwatch.GetElapsedTime(requestSentAt).TotalMilliseconds;
+
                 var suppressThisUpdate = false;
                 foreach (var item in update.Contents)
                 {
@@ -118,24 +121,16 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
                             accumulatedText.Append(tc.Text);
                             textDeltaCount++;
                             textDeltaChars += tc.Text?.Length ?? 0;
-                            // First content delta locks the wall-clock prompt latency.
-                            // Subsequent token deltas don't extend the measurement.
-                            wallClockPromptMs ??=
-                                System.Diagnostics.Stopwatch.GetElapsedTime(requestSentAt).TotalMilliseconds;
                             if (filter.ShouldSuppress(tc.Text))
                                 suppressThisUpdate = true;
                             break;
                         case TextReasoningContent rc:
                             thinkingDeltaCount++;
                             thinkingDeltaChars += rc.Text?.Length ?? 0;
-                            wallClockPromptMs ??=
-                                System.Diagnostics.Stopwatch.GetElapsedTime(requestSentAt).TotalMilliseconds;
                             break;
                         case FunctionCallContent:
                             hadStructuredToolCalls = true;
                             toolCallDeltaCount++;
-                            wallClockPromptMs ??=
-                                System.Diagnostics.Stopwatch.GetElapsedTime(requestSentAt).TotalMilliseconds;
                             break;
                     }
                 }
@@ -534,7 +529,7 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
     private static IEnumerable<ChatResponseUpdate> ParseStreamingUpdates(
         JsonElement root,
         Dictionary<int, PendingToolCall> pendingToolCalls,
-        double? wallClockPromptMs = null)
+        double? wallClockPromptMs)
     {
         if (!root.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
         {
@@ -658,9 +653,7 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
         }
     }
 
-    // Backend-specific telemetry extractors are applied in sequence on every
-    // response. Field paths don't overlap across supported backends, so order
-    // doesn't matter — whichever shape is present wins.
+    // Field paths don't overlap between backends, so order is irrelevant.
     private static readonly IReadOnlyList<ITimingsExtractor> TimingsExtractors =
     [
         new LlamaCppTimingsExtractor(),
@@ -716,30 +709,6 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
         }
 
         return details;
-    }
-
-    private static bool TryGetLong(JsonElement obj, string name, out long value)
-    {
-        if (obj.TryGetProperty(name, out var prop)
-            && prop.ValueKind == JsonValueKind.Number
-            && prop.TryGetInt64(out value))
-        {
-            return true;
-        }
-        value = 0;
-        return false;
-    }
-
-    private static bool TryGetDouble(JsonElement obj, string name, out double value)
-    {
-        if (obj.TryGetProperty(name, out var prop)
-            && prop.ValueKind == JsonValueKind.Number
-            && prop.TryGetDouble(out value))
-        {
-            return true;
-        }
-        value = 0;
-        return false;
     }
 
     private static ChatFinishReason? ParseFinishReason(JsonElement choice)

@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Text.Json;
 using Netclaw.Configuration;
 using Netclaw.Providers.SelfHosted;
 using Xunit;
@@ -26,14 +27,17 @@ public sealed class LlamaCppBackendStrategyTests
     [Fact]
     public void Matches_PropsPresent()
     {
-        var probe = new BackendProbe("any-model", """{"object":"list","data":[]}""", PropsJson: "{}");
+        using var models = JsonDocument.Parse("""{"object":"list","data":[]}""");
+        using var props = JsonDocument.Parse("{}");
+        var probe = new BackendProbe("any-model", models.RootElement, props.RootElement);
         Assert.True(new LlamaCppBackendStrategy().Matches(probe));
     }
 
     [Fact]
     public void Matches_MetaNCtxTrain_PresentEvenWithoutProps()
     {
-        var probe = new BackendProbe("Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf", ModelsJsonWithMetaCtx, PropsJson: null);
+        using var models = JsonDocument.Parse(ModelsJsonWithMetaCtx);
+        var probe = new BackendProbe("Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf", models.RootElement, PropsRoot: null);
         Assert.True(new LlamaCppBackendStrategy().Matches(probe));
     }
 
@@ -46,7 +50,9 @@ public sealed class LlamaCppBackendStrategyTests
           "modalities": { "vision": true }
         }
         """;
-        var probe = new BackendProbe("Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf", ModelsJsonWithMetaCtx, propsJson);
+        using var models = JsonDocument.Parse(ModelsJsonWithMetaCtx);
+        using var props = JsonDocument.Parse(propsJson);
+        var probe = new BackendProbe("Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf", models.RootElement, props.RootElement);
 
         var result = new LlamaCppBackendStrategy().Parse(probe);
 
@@ -59,7 +65,8 @@ public sealed class LlamaCppBackendStrategyTests
     [Fact]
     public void Parse_FallsBackToMetaNCtxTrain_WhenPropsAbsent()
     {
-        var probe = new BackendProbe("Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf", ModelsJsonWithMetaCtx, PropsJson: null);
+        using var models = JsonDocument.Parse(ModelsJsonWithMetaCtx);
+        var probe = new BackendProbe("Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf", models.RootElement, PropsRoot: null);
 
         var result = new LlamaCppBackendStrategy().Parse(probe);
 
@@ -71,8 +78,9 @@ public sealed class LlamaCppBackendStrategyTests
     [Fact]
     public void Parse_VisionDisabled_StaysTextOnly()
     {
-        const string propsJson = """{"modalities":{"vision":false}}""";
-        var probe = new BackendProbe("Qwen3.5", ModelsJsonWithMetaCtx, propsJson);
+        using var models = JsonDocument.Parse(ModelsJsonWithMetaCtx);
+        using var props = JsonDocument.Parse("""{"modalities":{"vision":false}}""");
+        var probe = new BackendProbe("Qwen3.5", models.RootElement, props.RootElement);
 
         var result = new LlamaCppBackendStrategy().Parse(probe);
 

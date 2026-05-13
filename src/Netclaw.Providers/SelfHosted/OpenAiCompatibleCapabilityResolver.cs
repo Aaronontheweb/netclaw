@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Net.Http.Headers;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Netclaw.Configuration;
 
@@ -56,8 +57,7 @@ public sealed class OpenAiCompatibleCapabilityResolver : IModelCapabilityResolve
             modelsResponse.EnsureSuccessStatusCode();
             var modelsJson = await modelsResponse.Content.ReadAsStringAsync(ct);
 
-            // /props is llama.cpp-specific. vLLM returns 404; treat any
-            // non-success as "no /props" so strategies can react.
+            // /props is llama.cpp-specific. vLLM 404s; treat any non-success as "no /props".
             string? propsJson = null;
             using (var propsRequest = new HttpRequestMessage(HttpMethod.Get, "/props"))
             {
@@ -67,20 +67,10 @@ public sealed class OpenAiCompatibleCapabilityResolver : IModelCapabilityResolve
                     propsJson = await propsResponse.Content.ReadAsStringAsync(ct);
             }
 
-            var probe = new BackendProbe(modelId, modelsJson, propsJson);
-
-            foreach (var strategy in Strategies)
-            {
-                if (!strategy.Matches(probe))
-                    continue;
-
-                _logger.LogInformation(
-                    "OpenAI-compatible backend detected as {Backend} for model {ModelId}",
-                    strategy.Name, modelId);
-                return strategy.Parse(probe);
-            }
-
-            return null;
+            using var modelsDoc = JsonDocument.Parse(modelsJson);
+            using var propsDoc = propsJson is null ? null : JsonDocument.Parse(propsJson);
+            var probe = new BackendProbe(modelId, modelsDoc.RootElement, propsDoc?.RootElement);
+            return Dispatch(probe);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -94,8 +84,31 @@ public sealed class OpenAiCompatibleCapabilityResolver : IModelCapabilityResolve
     /// without standing up an HTTP server. Production code goes through
     /// <see cref="ResolveAsync"/>.
     /// </summary>
-    internal static ResolvedModelCapabilities? ResolveFromProbe(BackendProbe probe)
+    internal ResolvedModelCapabilities? Dispatch(BackendProbe probe)
     {
+        foreach (var strategy in Strategies)
+        {
+            if (!strategy.Matches(probe))
+                continue;
+
+            _logger.LogInformation(
+                "OpenAI-compatible backend detected as {Backend} for model {ModelId}",
+                strategy.Name, probe.ModelId);
+            return strategy.Parse(probe);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Test helper that parses raw JSON strings into a <see cref="BackendProbe"/>
+    /// and runs the strategy chain. Fixture caller owns the
+    /// <see cref="JsonDocument"/> lifetime via the <c>using</c> blocks.
+    /// </summary>
+    internal static ResolvedModelCapabilities? ResolveFromProbe(string modelId, string modelsJson, string? propsJson)
+    {
+        using var modelsDoc = JsonDocument.Parse(modelsJson);
+        using var propsDoc = propsJson is null ? null : JsonDocument.Parse(propsJson);
+        var probe = new BackendProbe(modelId, modelsDoc.RootElement, propsDoc?.RootElement);
         foreach (var strategy in Strategies)
         {
             if (strategy.Matches(probe))

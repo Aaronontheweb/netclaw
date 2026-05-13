@@ -977,11 +977,9 @@ static void ConfigureDaemonServices(
                 openAiCompatibleEndpoint,
                 openAiCompatibleApiKey));
     }
-    // Lookup map: modelId → provider type (e.g. "openai-compatible", "ollama").
-    // Used by CompositeCapabilityResolver to skip provider-native resolvers
-    // whose provider doesn't own the model being queried. Built from the
-    // active ModelSelection at startup so multi-model deployments
-    // (Main on one provider, Compaction on another) get correct scoping.
+    // modelId → provider type lookup for CompositeCapabilityResolver scoping.
+    // Covers Main + optional Compaction independently so multi-provider
+    // deployments resolve each model's capabilities against the right backend.
     var modelProviderLookup = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
     if (!string.IsNullOrWhiteSpace(models.Main.ModelId))
         modelProviderLookup[models.Main.ModelId] = mainProviderType;

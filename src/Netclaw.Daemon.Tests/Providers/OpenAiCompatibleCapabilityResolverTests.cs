@@ -19,8 +19,6 @@ public sealed class OpenAiCompatibleCapabilityResolverTests
     [Fact]
     public void ResolveFromProbe_VllmShape_DispatchesToVllmStrategy()
     {
-        // vLLM /v1/models exposes max_model_len at the top level of the
-        // model entry and owns "vllm" as the owned_by value. /props 404s.
         const string modelsJson = """
         {
           "object": "list",
@@ -34,9 +32,9 @@ public sealed class OpenAiCompatibleCapabilityResolverTests
           ]
         }
         """;
-        var probe = new BackendProbe("Qwen/Qwen3.6-VL-30B-FP8", modelsJson, PropsJson: null);
 
-        var result = OpenAiCompatibleCapabilityResolver.ResolveFromProbe(probe);
+        var result = OpenAiCompatibleCapabilityResolver.ResolveFromProbe(
+            "Qwen/Qwen3.6-VL-30B-FP8", modelsJson, propsJson: null);
 
         Assert.NotNull(result);
         Assert.Equal(256_000, result.ContextWindowTokens);
@@ -48,8 +46,6 @@ public sealed class OpenAiCompatibleCapabilityResolverTests
     [Fact]
     public void ResolveFromProbe_LlamaCppShape_DispatchesToLlamaCppStrategy()
     {
-        // llama.cpp exposes context window in meta.n_ctx_train on /v1/models
-        // and serves /props with modality and runtime n_ctx data.
         const string modelsJson = """
         {
           "object": "list",
@@ -67,9 +63,9 @@ public sealed class OpenAiCompatibleCapabilityResolverTests
           "modalities": { "vision": true }
         }
         """;
-        var probe = new BackendProbe("Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf", modelsJson, propsJson);
 
-        var result = OpenAiCompatibleCapabilityResolver.ResolveFromProbe(probe);
+        var result = OpenAiCompatibleCapabilityResolver.ResolveFromProbe(
+            "Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf", modelsJson, propsJson);
 
         Assert.NotNull(result);
         // /props.n_ctx wins over meta.n_ctx_train when both are present.
@@ -84,9 +80,9 @@ public sealed class OpenAiCompatibleCapabilityResolverTests
         const string modelsJson = """
         { "object": "list", "data": [ { "id": "mystery-model" } ] }
         """;
-        var probe = new BackendProbe("mystery-model", modelsJson, PropsJson: null);
 
-        var result = OpenAiCompatibleCapabilityResolver.ResolveFromProbe(probe);
+        var result = OpenAiCompatibleCapabilityResolver.ResolveFromProbe(
+            "mystery-model", modelsJson, propsJson: null);
 
         Assert.NotNull(result);
         Assert.Null(result.InputModalities);
