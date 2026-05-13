@@ -53,9 +53,19 @@ public static class PathExpansion
                 : Path.Combine(home, expanded[1..].TrimStart('/', '\\'));
         }
 
-        expanded = expanded.Replace("$HOME", home, StringComparison.OrdinalIgnoreCase);
-        expanded = expanded.Replace("${HOME}", home, StringComparison.OrdinalIgnoreCase);
-        expanded = expanded.Replace("%USERPROFILE%", home, StringComparison.OrdinalIgnoreCase);
+        // Skip substring scans entirely when no env-var sigil is present — the
+        // typical absolute-path candidate has neither (matches the perf
+        // short-circuits introduced by #973).
+        if (expanded.Contains('$', StringComparison.Ordinal))
+        {
+            expanded = expanded.Replace("$HOME", home, StringComparison.OrdinalIgnoreCase);
+            expanded = expanded.Replace("${HOME}", home, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (expanded.Contains('%', StringComparison.Ordinal))
+        {
+            expanded = expanded.Replace("%USERPROFILE%", home, StringComparison.OrdinalIgnoreCase);
+        }
 
         // Only canonicalize separators when an expansion actually happened.
         // string.Replace returns the same instance when no match is found, so
