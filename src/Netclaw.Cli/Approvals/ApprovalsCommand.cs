@@ -21,6 +21,9 @@ internal static class ApprovalsCommand
 
     private sealed record RevokeOptions(string? Pattern, TrustAudience? Audience, string? Tool, bool RevokeAll);
 
+    private sealed record TrustVerbOptions(string Verb, TrustAudience Audience, string Tool);
+
+    public const string DefaultTrustVerbTool = "shell_execute";
 
     public static Task<int> RunAsync(
         string[] args,
@@ -34,6 +37,7 @@ internal static class ApprovalsCommand
         {
             "list" => Task.FromResult(RunList(args, paths, writer)),
             "revoke" => Task.FromResult(RunRevoke(args, paths, writer)),
+            "trust-verb" => Task.FromResult(RunTrustVerb(args, paths, writer)),
             "help" or "-h" or "--help" => Task.FromResult(WriteHelp(writer)),
             _ => Task.FromResult(WriteHelp(writer)),
         };
@@ -51,7 +55,7 @@ internal static class ApprovalsCommand
 
         if (opts.EmitJson)
         {
-            writer.WriteLine(JsonSerializer.Serialize(view, JsonDefaults.Indented));
+            writer.WriteLine(JsonSerializer.Serialize(view, JsonDefaults.IndentedOmitNull));
             return 0;
         }
 
@@ -64,12 +68,12 @@ internal static class ApprovalsCommand
         var first = true;
         foreach (var (audienceKey, tools) in view.Audiences)
         {
-            foreach (var (toolName, patterns) in tools)
+            foreach (var (toolName, entries) in tools)
             {
                 if (!first) writer.WriteLine();
                 writer.WriteLine($"{audienceKey} / {toolName}");
-                foreach (var pattern in patterns)
-                    writer.WriteLine($"  {pattern}");
+                foreach (var entry in entries)
+                    writer.WriteLine($"  {entry.FormatScope()}");
                 first = false;
             }
         }
@@ -102,6 +106,18 @@ internal static class ApprovalsCommand
             return 1;
         }
 
+        // Could not parse — the CLI is the deliberate scriptable path, so
+        // we reject unrecognized inputs loudly rather than silently treat a
+        // bare verb as a global wildcard.
+        if (!ApprovalEntry.TryParseScope(opts.Pattern, out var lookup, out var parseError))
+        {
+            writer.WriteLine($"Error: {parseError}");
+            writer.WriteLine("Could not parse revoke pattern '" + opts.Pattern + "'.");
+            writer.WriteLine("Patterns must use the form '<verb> in <directory>' or '<verb> anywhere',");
+            writer.WriteLine("matching the labels emitted by 'netclaw approvals list'.");
+            return 1;
+        }
+
         var snapshot = store.Snapshot();
         var removedAny = false;
 
@@ -117,7 +133,7 @@ internal static class ApprovalsCommand
                 if (opts.Tool is not null && !string.Equals(toolName, opts.Tool, StringComparison.Ordinal))
                     continue;
 
-                if (store.RemoveApproval(audience, toolName, opts.Pattern))
+                if (store.RemoveApproval(audience, toolName, lookup))
                 {
                     writer.WriteLine($"Removed '{opts.Pattern}' from {audienceKey} / {toolName}.");
                     removedAny = true;
@@ -132,6 +148,74 @@ internal static class ApprovalsCommand
         }
 
         return 0;
+    }
+
+    private static int RunTrustVerb(string[] args, NetclawPaths paths, TextWriter writer)
+    {
+        if (TryParseTrustVerbFlags(args, writer) is not { } opts)
+            return 1;
+
+        var store = new ToolApprovalStore(paths.ToolApprovalsPath);
+        WarnIfQuarantined(store, writer);
+
+        var entry = new ApprovalEntry { Verb = opts.Verb, Directory = null };
+
+        var existing = store.GetApprovedEntries(opts.Audience, opts.Tool);
+        var alreadyTrusted = existing.Any(e => ToolApprovalEntryComparer.Equals(e, entry));
+
+        if (alreadyTrusted)
+        {
+            writer.WriteLine($"No changes: '{opts.Verb} anywhere' is already trusted for {opts.Audience.ToWireValue()} / {opts.Tool}.");
+            return 0;
+        }
+
+        store.AddApproval(opts.Audience, opts.Tool, entry);
+        writer.WriteLine($"Trusted '{opts.Verb} anywhere' for {opts.Audience.ToWireValue()} / {opts.Tool}.");
+        return 0;
+    }
+
+    private static TrustVerbOptions? TryParseTrustVerbFlags(string[] args, TextWriter writer)
+    {
+        string? verb = null;
+        TrustAudience? audience = null;
+        string? tool = null;
+
+        for (var i = 2; i < args.Length; i++)
+        {
+            switch (TryConsumeSharedFlag(args, ref i, writer, ref audience, ref tool))
+            {
+                case FlagOutcome.Consumed: continue;
+                case FlagOutcome.Error: return null;
+            }
+
+            var arg = args[i];
+            if (arg.StartsWith("--", StringComparison.Ordinal))
+            {
+                writer.WriteLine($"Error: Unknown flag: {arg}");
+                return null;
+            }
+
+            if (verb is not null)
+            {
+                writer.WriteLine($"Error: Unexpected extra argument: {arg}");
+                return null;
+            }
+            verb = arg;
+        }
+
+        if (string.IsNullOrWhiteSpace(verb))
+        {
+            writer.WriteLine("Usage: netclaw approvals trust-verb <verb> [--audience personal|team|public] [--tool <name>]");
+            writer.WriteLine();
+            writer.WriteLine("Adds a global-wildcard '(verb, null)' approval entry — the verb runs in any cwd");
+            writer.WriteLine("without prompting. Used to pre-approve verbs for unattended/scheduled tasks.");
+            return null;
+        }
+
+        return new TrustVerbOptions(
+            Verb: verb!.Trim(),
+            Audience: audience ?? TrustAudience.Personal,
+            Tool: string.IsNullOrWhiteSpace(tool) ? DefaultTrustVerbTool : tool);
     }
 
     private static int RunRevokeAll(RevokeOptions opts, ToolApprovalStore store, TextWriter writer)
@@ -159,16 +243,23 @@ internal static class ApprovalsCommand
         writer.WriteLine("  (none) | tui      Launch the interactive approvals TUI.");
         writer.WriteLine("  list              List persistent approvals from tool-approvals.json.");
         writer.WriteLine("                    Flags: --audience <personal|team|public>, --tool <name>, --json");
-        writer.WriteLine("  revoke <pattern>  Remove an exact-match approval entry.");
+        writer.WriteLine("  revoke <pattern>  Remove an approval entry by its user-visible form:");
+        writer.WriteLine("                      '<verb> in <directory>'  — folder-scoped grant");
+        writer.WriteLine("                      '<verb> anywhere'         — global wildcard");
         writer.WriteLine("                    Flags: --audience <personal|team|public>, --tool <name>");
         writer.WriteLine("  revoke --tool <name> --all");
         writer.WriteLine("                    Remove every approval entry for a tool.");
         writer.WriteLine("                    Flags: --audience <personal|team|public>");
+        writer.WriteLine("  trust-verb <verb> Add a global-wildcard '(verb, null)' approval — the verb runs");
+        writer.WriteLine("                    in any cwd without prompting. Use to pre-approve verbs for");
+        writer.WriteLine("                    unattended or scheduled invocations.");
+        writer.WriteLine("                    Flags: --audience <personal|team|public> (default personal)");
+        writer.WriteLine("                           --tool <name>                       (default shell_execute)");
         writer.WriteLine("  help              Show this message.");
         writer.WriteLine();
         writer.WriteLine("Exit codes: 0 success, 1 user error or no match.");
         writer.WriteLine();
-        writer.WriteLine("The daemon does not require a restart after a revoke; the next approval");
+        writer.WriteLine("The daemon does not require a restart after these mutations; the next approval");
         writer.WriteLine("check re-reads the file.");
         return 0;
     }
@@ -285,7 +376,7 @@ internal static class ApprovalsCommand
     }
 
     private static ApprovalsListView BuildView(
-        IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<string>>> snapshot,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, IReadOnlyList<ApprovalEntry>>> snapshot,
         TrustAudience? audienceFilter,
         string? toolFilter)
     {
@@ -299,13 +390,17 @@ internal static class ApprovalsCommand
                 if (parsed != audienceFilter.Value) continue;
             }
 
-            var filteredTools = new SortedDictionary<string, List<string>>(StringComparer.Ordinal);
-            foreach (var (toolName, patterns) in tools)
+            var filteredTools = new SortedDictionary<string, List<ApprovalEntry>>(StringComparer.Ordinal);
+            foreach (var (toolName, entries) in tools)
             {
                 if (toolFilter is not null && !string.Equals(toolName, toolFilter, StringComparison.Ordinal))
                     continue;
-                if (patterns.Count == 0) continue;
-                filteredTools[toolName] = [.. patterns.OrderBy(p => p, StringComparer.Ordinal)];
+                if (entries.Count == 0) continue;
+                filteredTools[toolName] =
+                [
+                    .. entries.OrderBy(static e => e.Verb, StringComparer.Ordinal)
+                              .ThenBy(static e => e.Directory ?? string.Empty, StringComparer.Ordinal)
+                ];
             }
 
             if (filteredTools.Count > 0)
@@ -317,11 +412,21 @@ internal static class ApprovalsCommand
 
     private static void WarnIfQuarantined(ToolApprovalStore store, TextWriter writer)
     {
-        if (!File.Exists(store.QuarantinePath))
-            return;
+        // Two quarantine paths exist after the v2 cutover:
+        //   - .v1.bak  : legacy v1 file detected and moved aside on upgrade
+        //   - .invalid : malformed (unparseable) file moved aside as fail-closed
+        // Operators see different remediation guidance for each.
+        if (File.Exists(store.V1QuarantinePath))
+        {
+            writer.WriteLine($"Note: Your previous approvals were quarantined to '{store.V1QuarantinePath}' during the v2 schema upgrade.");
+            writer.WriteLine("      Inspect or restore manually if needed; the daemon started with an empty v2 store.");
+        }
 
-        writer.WriteLine($"Warning: A quarantined approvals file exists at '{store.QuarantinePath}'.");
-        writer.WriteLine("         The active file was reset to empty after a parse failure.");
-        writer.WriteLine("         Inspect the .invalid copy before restoring grants.");
+        if (File.Exists(store.MalformedQuarantinePath))
+        {
+            writer.WriteLine($"Warning: A malformed approvals file was quarantined to '{store.MalformedQuarantinePath}'.");
+            writer.WriteLine("         The active file was reset to empty after a parse failure.");
+            writer.WriteLine("         Inspect the .invalid copy before restoring grants.");
+        }
     }
 }

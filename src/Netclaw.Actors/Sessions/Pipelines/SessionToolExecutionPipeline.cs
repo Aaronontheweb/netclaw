@@ -52,7 +52,9 @@ internal static class SessionToolExecutionPipeline
         int maxToolTimeoutSeconds = 600,
         ILogger? logger = null,
         int shellTimeoutSeconds = 60,
-        IActorRef? backgroundJobManager = null)
+        IActorRef? backgroundJobManager = null,
+        string? projectDirectory = null,
+        bool setWorkingDirectoryAvailable = false)
     {
         try
         {
@@ -72,11 +74,13 @@ internal static class SessionToolExecutionPipeline
                 CancellationToken.None,
                 approvalChannel,
                 emitApprovalRequest,
-                approvalTimeout ?? TimeSpan.FromMinutes(5),
+                approvalTimeout ?? Timeout.InfiniteTimeSpan,
                 maxToolTimeoutSeconds,
                 logger,
                 shellTimeoutSeconds,
-                backgroundJobManager));
+                backgroundJobManager,
+                projectDirectory,
+                setWorkingDirectoryAvailable));
             var results = await Task.WhenAll(tasks);
 
             var fileAttachments = results.SelectMany(r => r.FileAttachments).ToList();
@@ -126,7 +130,9 @@ internal static class SessionToolExecutionPipeline
         int maxToolTimeoutSeconds = 600,
         ILogger? logger = null,
         int shellTimeoutSeconds = 60,
-        IActorRef? backgroundJobManager = null)
+        IActorRef? backgroundJobManager = null,
+        string? projectDirectory = null,
+        bool setWorkingDirectoryAvailable = false)
     {
         var (meta, cleanedTc) = ToolCallMetaExtractor.Extract(tc);
         tc = cleanedTc;
@@ -139,7 +145,7 @@ internal static class SessionToolExecutionPipeline
 
         var sw = Stopwatch.StartNew();
         string resultText;
-        var context = BuildToolExecutionContext(sessionId, source, sessionDir, spawnChildActor);
+        var context = BuildToolExecutionContext(sessionId, source, sessionDir, spawnChildActor, projectDirectory);
         context.RequestedTimeoutSeconds = (int)timeout.TotalSeconds;
         if (approvalChannel is not null && emitApprovalRequest is not null)
         {
@@ -286,8 +292,10 @@ internal static class SessionToolExecutionPipeline
                 AdoptedSpeakerIds = source?.AdoptedSpeakerIds ?? [],
                 PersistedAdoptedContext = source?.HasAdoptedContext ?? false,
                 Patterns = ctx.Patterns,
-                ApprovalEntries = ctx.ApprovalEntries,
-                DirectoryRoots = ctx.DirectoryRoots,
+                CandidateVerbs = ctx.CandidateVerbs,
+                Candidates = ctx.Candidates ?? [],
+                Cwd = ctx.Cwd,
+                IsMessy = ctx.IsMessy,
                 Options = ctx.Options
                     .Select(o => new ToolInteractionOption(o.Key, o.Label))
                     .ToList()
@@ -297,7 +305,10 @@ internal static class SessionToolExecutionPipeline
 
             sw.Stop();
 
-            if (decision is ApprovalDecision.ApprovedOnce or ApprovalDecision.ApprovedSession or ApprovalDecision.ApprovedAlways)
+            if (decision is ApprovalDecision.ApprovedOnce
+                or ApprovalDecision.ApprovedSession
+                or ApprovalDecision.ApprovedAlways
+                or ApprovalDecision.ApprovedEverywhere)
             {
                 // Retry execution now that approval is granted
                 // (Approve-once is retried through transient context state; broader scopes
@@ -340,7 +351,21 @@ internal static class SessionToolExecutionPipeline
                 var reason = decision == ApprovalDecision.TimedOut
                     ? "Tool access denied: approval_timed_out"
                     : $"Tool access denied: approval_denied_by_user ({tc.Name} requires interactive approval and the user declined it)";
-                resultText = reason;
+
+                // When a shell call is denied because its cwd is outside both
+                // session_dir and project_dir, surface a one-line hint pointing
+                // the agent at set_working_directory so it can self-correct on
+                // the next turn rather than re-prompting the user. Suppressed
+                // for non-shell tools, timeouts, hard-deny paths, and
+                // audiences that can't call set_working_directory.
+                var hint = BuildSetWorkingDirectoryHint(
+                    toolName: tc.Name,
+                    decision: decision,
+                    cwd: context.Cwd,
+                    sessionDirectory: context.SessionDirectory,
+                    projectDirectory: context.ProjectDirectory,
+                    setWorkingDirectoryAvailable: setWorkingDirectoryAvailable);
+                resultText = string.IsNullOrEmpty(hint) ? reason : $"{reason}\n{hint}";
 
                 // Denied audit entries should describe the exact blocked units
                 // the user saw in the prompt. Broader reusable approval entries
@@ -610,7 +635,8 @@ internal static class SessionToolExecutionPipeline
         SessionId sessionId,
         MessageSource? source,
         string sessionDir,
-        Func<object, string, CancellationToken, Task<object>> spawnChildActor)
+        Func<object, string, CancellationToken, Task<object>> spawnChildActor,
+        string? projectDirectory)
     {
         var context = new ToolExecutionContext(sessionId.Value, sessionDir);
         context.Audience = source is null ? null : source.Audience.ToWireValue();
@@ -618,6 +644,7 @@ internal static class SessionToolExecutionPipeline
         context.ChannelType = source is null ? null : source.ChannelType.ToWireValue();
         context.SupportsInteractiveApproval = source?.ChannelType.SupportsInteractiveApproval();
         context.SpawnChildActor = spawnChildActor;
+        context.ProjectDirectory = projectDirectory;
         return context;
     }
 
@@ -649,5 +676,59 @@ internal static class SessionToolExecutionPipeline
         var omittedChars = resultText.Length - maxInlineToolResultChars;
         return resultText[..maxInlineToolResultChars]
                + $"\n[tool result truncated: omitted {omittedChars} chars to protect context window]";
+    }
+
+    /// <summary>
+    /// Returns a one-line agent-facing hint pointing at <c>set_working_directory</c>
+    /// when a shell call was denied specifically because its cwd is outside
+    /// both <see cref="ToolExecutionContext.SessionDirectory"/> and
+    /// <see cref="ToolExecutionContext.ProjectDirectory"/>. Empty for any
+    /// other denial path so hard-deny refusals, timeouts, and unrelated
+    /// approval declines do not get misleading "use set_working_directory"
+    /// guidance.
+    /// </summary>
+    internal static string BuildSetWorkingDirectoryHint(
+        string toolName,
+        ApprovalDecision decision,
+        string? cwd,
+        string? sessionDirectory,
+        string? projectDirectory,
+        bool setWorkingDirectoryAvailable)
+    {
+        if (!setWorkingDirectoryAvailable)
+            return string.Empty;
+
+        if (decision != ApprovalDecision.Denied)
+            return string.Empty;
+
+        if (!string.Equals(toolName, Tools.ShellTool.ToolName, StringComparison.Ordinal))
+            return string.Empty;
+
+        if (string.IsNullOrWhiteSpace(cwd))
+            return string.Empty;
+
+        // Already inside a safe space — denial was for a different reason.
+        if (IsCwdInsideSafeSpace(cwd, sessionDirectory)
+            || IsCwdInsideSafeSpace(cwd, projectDirectory))
+        {
+            return string.Empty;
+        }
+
+        return $"Hint: '{cwd}' is outside the session's trusted scope. Call set_working_directory \"{cwd}\" first, then retry — that brings the directory into your trusted scope so the approval policy can reason about it.";
+    }
+
+    private static bool IsCwdInsideSafeSpace(string cwd, string? safeSpace)
+    {
+        if (string.IsNullOrWhiteSpace(safeSpace))
+            return false;
+
+        try
+        {
+            return Netclaw.Security.PathUtility.IsWithinRoot(cwd, safeSpace);
+        }
+        catch (Exception ex) when (ex is ArgumentException or IOException)
+        {
+            return false;
+        }
     }
 }

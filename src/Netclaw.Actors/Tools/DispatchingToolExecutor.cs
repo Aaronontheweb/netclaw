@@ -105,19 +105,62 @@ public sealed class DispatchingToolExecutor : IToolExecutor
         {
             var approvalContext = accessDecision.ApprovalContext
                 ?? throw new InvalidOperationException("Approval decision missing approval context.");
-            var audience = SecurityPolicyDefaults.TryParseAudience(context?.Audience, out var parsed)
-                ? parsed
-                : SecurityPolicyDefaults.ResolveAudienceFromSessionId(context?.SessionId);
-            var unapproved = await _approvalService.GetUnapprovedPatternsAsync(
-                context?.SessionId,
-                audience,
-                new ToolName(toolCall.Name),
-                approvalContext.ApprovalEntries,
-                ct);
 
-            accessDecision = unapproved.Count == 0
-                ? ToolAccessDecision.Allow()
-                : ToolAccessDecision.RequiresApproval(approvalContext);
+            // Cwd resolution happens upstream in ToolAccessPolicy.CheckApprovalGate
+            // for shell tools, so context.Cwd is already populated when the
+            // gate produced an approval context. Other tools have no
+            // directory anchor; cwd stays null.
+
+            // Messy commands cannot be persistently approved — the matcher
+            // refuses to extract verb chains we could match a future
+            // invocation against. Always round-trip through the user, even if
+            // the candidate-verbs list happens to be empty for unrelated
+            // reasons (which would otherwise short-circuit to allow).
+            if (approvalContext.IsMessy)
+            {
+                accessDecision = ToolAccessDecision.RequiresApproval(approvalContext);
+            }
+            else
+            {
+                var audience = SecurityPolicyDefaults.TryParseAudience(context?.Audience, out var parsed)
+                    ? parsed
+                    : SecurityPolicyDefaults.ResolveAudienceFromSessionId(context?.SessionId);
+
+                // Pure side-effect candidates (echo "X" with no path/redirect,
+                // bash :, true/false) are not persisted on Always-here clicks
+                // and must also be treated as authorized at match time —
+                // otherwise the matcher would see them as unapproved on retry
+                // after the click, throw ToolApprovalRequiredException again,
+                // and fail the turn (the outer try/catch is already inside
+                // the conditional catch so a re-throw escapes).
+                var verbsForCheck = approvalContext.Candidates is { Count: > 0 } candidates
+                    ? candidates
+                        .Where(c => !ApprovalPatternMatching.IsPureSideEffect(c))
+                        .Select(c => c.Verb)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList()
+                    : approvalContext.CandidateVerbs;
+
+                if (verbsForCheck.Count == 0)
+                {
+                    // Every candidate is side-effect-only — auto-allow.
+                    accessDecision = ToolAccessDecision.Allow();
+                }
+                else
+                {
+                    var unapproved = await _approvalService.GetUnapprovedPatternsAsync(
+                        context?.SessionId,
+                        audience,
+                        new ToolName(toolCall.Name),
+                        verbsForCheck,
+                        context?.Cwd,
+                        ct);
+
+                    accessDecision = unapproved.Count == 0
+                        ? ToolAccessDecision.Allow()
+                        : ToolAccessDecision.RequiresApproval(approvalContext);
+                }
+            }
         }
 
         if (accessDecision.NeedsApproval
@@ -154,13 +197,35 @@ public sealed class DispatchingToolExecutor : IToolExecutor
         if (approvalContext is null)
             return false;
 
+        // Tool-name match is required for any one-time bypass — without it
+        // we could never tell which tool the grant applies to.
+        if (!string.IsNullOrEmpty(context.OneTimeApprovedToolName)
+            && !string.Equals(context.OneTimeApprovedToolName, toolCall.Name, StringComparison.Ordinal))
+            return false;
+
+        // Messy commands (bash control-flow, unbalanced quotes/brackets)
+        // have no extractable verb-chain patterns, so the user prompt only
+        // offers Once+Deny. ApprovedOnce on a messy command MUST bypass on
+        // the tool-name match alone — there are no patterns to compare on
+        // either side. Without this branch, clicking Once on a complex
+        // command lands the retry into AuthorizeCoreAsync, hits the empty-
+        // patterns guard below, and throws ToolApprovalRequiredException
+        // (surfacing as "I encountered an error executing a tool"). The
+        // per-retry cleanup at SessionToolExecutionPipeline.cs:467-475
+        // still clears OneTimeApprovedToolName afterward, so the messy
+        // bypass cannot be reused for subsequent calls.
+        if (approvalContext.IsMessy
+            && !string.IsNullOrEmpty(context.OneTimeApprovedToolName)
+            && string.Equals(context.OneTimeApprovedToolName, toolCall.Name, StringComparison.Ordinal))
+            return true;
+
         if (context.OneTimeApprovedPatterns.Count == 0)
             return false;
 
         if (approvalContext.Patterns.Count == 0)
             return false;
 
-        if (!string.Equals(context.OneTimeApprovedToolName, toolCall.Name, StringComparison.Ordinal))
+        if (string.IsNullOrEmpty(context.OneTimeApprovedToolName))
             return false;
 
         return approvalContext.Patterns.All(pattern => context.OneTimeApprovedPatterns.Contains(pattern));

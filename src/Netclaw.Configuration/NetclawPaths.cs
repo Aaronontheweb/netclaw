@@ -79,6 +79,13 @@ public sealed class NetclawPaths
     public string ConfigDirectory => Path.Combine(BasePath, "config");
     public string WebhooksDirectory => Path.Combine(ConfigDirectory, "webhooks");
     public string ToolApprovalsPath => Path.Combine(ConfigDirectory, "tool-approvals.json");
+
+    /// <summary>
+    /// Operator-authored hard-deny override file consulted by the
+    /// structured hard-deny pipeline. Optional; missing or empty file
+    /// yields zero overrides and the shipped defaults apply alone.
+    /// </summary>
+    public string HardDenyOverridesPath => Path.Combine(ConfigDirectory, "hard-deny-overrides.json");
     public string NetclawConfigPath => Path.Combine(ConfigDirectory, "netclaw.json");
     public string ClientConfigPath => Path.Combine(ClientDirectory, "config.json");
     public string SecretsPath => Path.Combine(ConfigDirectory, "secrets.json");

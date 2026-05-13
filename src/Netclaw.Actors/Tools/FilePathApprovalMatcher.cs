@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
 
@@ -43,30 +44,32 @@ public sealed class FilePathApprovalMatcher : IToolApprovalMatcher
         return [toolName.Value];
     }
 
-    public IReadOnlyList<string> ExtractApprovalEntries(ToolName toolName, IDictionary<string, object?>? arguments)
+    public IReadOnlyList<string> ExtractCandidateVerbs(ToolName toolName, IDictionary<string, object?>? arguments)
         => ExtractPatterns(toolName, arguments);
 
-    public bool IsApproved(ToolName toolName, IDictionary<string, object?>? arguments, IEnumerable<string> approvedPatterns)
-    {
-        var patterns = ExtractPatterns(toolName, arguments);
-        foreach (var pattern in patterns)
-        {
-            var matched = false;
-            foreach (var approved in approvedPatterns)
-            {
-                if (string.Equals(pattern, approved, StringComparison.OrdinalIgnoreCase))
-                {
-                    matched = true;
-                    break;
-                }
-            }
+    public IReadOnlyList<ApprovalCandidate> ExtractCandidates(ToolName toolName, IDictionary<string, object?>? arguments)
+        => ExtractCandidateVerbs(toolName, arguments)
+            .Select(v => new ApprovalCandidate(v, Directory: null))
+            .ToList();
 
-            if (!matched)
+    public bool IsApproved(
+        ToolName toolName,
+        IDictionary<string, object?>? arguments,
+        IReadOnlyList<ApprovalEntry> approvedEntries,
+        string? cwd)
+    {
+        var verbs = ExtractCandidateVerbs(toolName, arguments);
+        foreach (var verb in verbs)
+        {
+            if (!ApprovalPatternMatching.MatchesAny(verb, approvedEntries))
                 return false;
         }
 
         return true;
     }
+
+    public bool IsMessy(ToolName toolName, IDictionary<string, object?>? arguments)
+        => false;
 
     public string FormatForDisplay(ToolName toolName, IDictionary<string, object?>? arguments)
     {
@@ -75,9 +78,6 @@ public sealed class FilePathApprovalMatcher : IToolApprovalMatcher
 
         return toolName.Value;
     }
-
-    public IReadOnlyList<DirectoryApprovalRoot> ExtractDirectoryRoots(ToolName toolName, IDictionary<string, object?>? arguments)
-        => [];
 
     private bool TryGetControlPlaneRelativePath(
         IDictionary<string, object?>? arguments,
