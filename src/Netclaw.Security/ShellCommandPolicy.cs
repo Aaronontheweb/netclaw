@@ -8,11 +8,11 @@ namespace Netclaw.Security;
 /// <summary>
 /// Result of evaluating a shell command against the hard deny list.
 /// </summary>
-public sealed record ShellCommandDecision(bool Allowed, string? DenyReason = null, string? DenyCategory = null)
+public sealed record ShellCommandDecision(bool Allowed, string? DenyReason = null, DenyCategory? DenyCategory = null)
 {
     public static ShellCommandDecision Allow() => new(true);
 
-    public static ShellCommandDecision Deny(string reason, string category) => new(false, reason, category);
+    public static ShellCommandDecision Deny(string reason, DenyCategory category) => new(false, reason, category);
 }
 
 /// <summary>
@@ -165,7 +165,7 @@ public sealed class ShellCommandPolicy
         if (tokens.Count == 0)
             return null;
 
-        return new VerbChainDenyPattern(tokens, raw, "custom_deny");
+        return new VerbChainDenyPattern(tokens, raw, DenyCategory.CustomDeny);
     }
 
     // ── Default deny patterns ──
@@ -173,23 +173,23 @@ public sealed class ShellCommandPolicy
     private static readonly IReadOnlyList<DenyPattern> DefaultDenyPatterns =
     [
         // Self-destruction: killing the netclaw daemon
-        new VerbChainDenyPattern(["netclaw", "daemon", "stop"], "Cannot stop the daemon from within a session", "self_destructive"),
-        new VerbChainDenyPattern(["netclaw", "daemon", "kill"], "Cannot kill the daemon from within a session", "self_destructive"),
-        new VerbChainDenyPattern(["systemctl", "stop", "netclaw"], "Cannot stop the netclaw service", "self_destructive"),
-        new VerbChainDenyPattern(["systemctl", "kill", "netclaw"], "Cannot kill the netclaw service", "self_destructive"),
+        new VerbChainDenyPattern(["netclaw", "daemon", "stop"], "Cannot stop the daemon from within a session", DenyCategory.SelfDestructive),
+        new VerbChainDenyPattern(["netclaw", "daemon", "kill"], "Cannot kill the daemon from within a session", DenyCategory.SelfDestructive),
+        new VerbChainDenyPattern(["systemctl", "stop", "netclaw"], "Cannot stop the netclaw service", DenyCategory.SelfDestructive),
+        new VerbChainDenyPattern(["systemctl", "kill", "netclaw"], "Cannot kill the netclaw service", DenyCategory.SelfDestructive),
 
         // Process killing patterns targeting netclaw
-        new ProcessKillDenyPattern("Cannot kill processes from within a session", "self_destructive"),
+        new ProcessKillDenyPattern("Cannot kill processes from within a session", DenyCategory.SelfDestructive),
 
         // Privilege escalation: the agent must never elevate privileges.
         // If it needs elevated access, the daemon should run as a user with those permissions.
-        new PrivilegeEscalationDenyPattern("Cannot escalate privileges from within a session", "privilege_escalation"),
+        new PrivilegeEscalationDenyPattern("Cannot escalate privileges from within a session", DenyCategory.PrivilegeEscalation),
 
         // System-destructive: rm -rf on root or home
-        new RmRfRootDenyPattern("Cannot remove root or home directories", "system_destructive"),
+        new RmRfRootDenyPattern("Cannot remove root or home directories", DenyCategory.SystemDestructive),
 
         // Filesystem destruction (mkfs, mkfs.ext4, mkfs.xfs, etc.)
-        new VerbPrefixDenyPattern("mkfs", "Cannot create filesystems", "system_destructive"),
+        new VerbPrefixDenyPattern("mkfs", "Cannot create filesystems", DenyCategory.SystemDestructive),
     ];
 
     /// <summary>
@@ -198,15 +198,15 @@ public sealed class ShellCommandPolicy
     /// </summary>
     private static readonly IReadOnlyList<RawStringPattern> DefaultRawStringPatterns =
     [
-        new(":(){ :|:& };:", "Fork bomb detected", "system_destructive"),
-        new(":(){:|:&};:", "Fork bomb detected", "system_destructive"),
+        new(":(){ :|:& };:", "Fork bomb detected", DenyCategory.SystemDestructive),
+        new(":(){:|:&};:", "Fork bomb detected", DenyCategory.SystemDestructive),
     ];
 
-    internal sealed record RawStringPattern(string Pattern, string Reason, string Category);
+    internal sealed record RawStringPattern(string Pattern, string Reason, DenyCategory Category);
 
     // ── Pattern types ──
 
-    internal abstract record DenyPattern(string Reason, string Category)
+    internal abstract record DenyPattern(string Reason, DenyCategory Category)
     {
         public abstract bool Matches(IReadOnlyList<string> tokens);
     }
@@ -217,7 +217,7 @@ public sealed class ShellCommandPolicy
     internal sealed record VerbChainDenyPattern(
         IReadOnlyList<string> VerbChain,
         string Reason,
-        string Category) : DenyPattern(Reason, Category)
+        DenyCategory Category) : DenyPattern(Reason, Category)
     {
         public override bool Matches(IReadOnlyList<string> tokens)
         {
@@ -242,7 +242,7 @@ public sealed class ShellCommandPolicy
     internal sealed record VerbPrefixDenyPattern(
         string Prefix,
         string Reason,
-        string Category) : DenyPattern(Reason, Category)
+        DenyCategory Category) : DenyPattern(Reason, Category)
     {
         public override bool Matches(IReadOnlyList<string> tokens)
         {
@@ -258,7 +258,7 @@ public sealed class ShellCommandPolicy
     /// Matches kill/killall/pkill commands. These are categorically denied because
     /// the agent could target the daemon process or other critical processes.
     /// </summary>
-    internal sealed record ProcessKillDenyPattern(string Reason, string Category)
+    internal sealed record ProcessKillDenyPattern(string Reason, DenyCategory Category)
         : DenyPattern(Reason, Category)
     {
         private static readonly HashSet<string> KillVerbs = new(StringComparer.OrdinalIgnoreCase)
@@ -281,7 +281,7 @@ public sealed class ShellCommandPolicy
     /// These are categorically denied because the agent should never
     /// need to elevate privileges beyond the daemon user.
     /// </summary>
-    internal sealed record PrivilegeEscalationDenyPattern(string Reason, string Category)
+    internal sealed record PrivilegeEscalationDenyPattern(string Reason, DenyCategory Category)
         : DenyPattern(Reason, Category)
     {
         private static readonly HashSet<string> EscalationVerbs = new(StringComparer.OrdinalIgnoreCase)
@@ -302,7 +302,7 @@ public sealed class ShellCommandPolicy
     /// <summary>
     /// Matches rm -rf targeting root (/) or home (~/ or $HOME).
     /// </summary>
-    internal sealed record RmRfRootDenyPattern(string Reason, string Category)
+    internal sealed record RmRfRootDenyPattern(string Reason, DenyCategory Category)
         : DenyPattern(Reason, Category)
     {
         public override bool Matches(IReadOnlyList<string> tokens)
@@ -371,7 +371,7 @@ public sealed class ShellCommandPolicy
         IReadOnlyList<string>? ArgFlags,
         PathConstraint? FirstPath,
         string Reason,
-        string Category) : DenyPattern(Reason, Category)
+        DenyCategory Category) : DenyPattern(Reason, Category)
     {
         public override bool Matches(IReadOnlyList<string> tokens)
         {

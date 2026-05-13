@@ -140,7 +140,8 @@ public sealed class ToolAccessPolicy
         {
             var hardDenyDecision = _shellCommandPolicy.Evaluate(shellCommand);
             if (!hardDenyDecision.Allowed)
-                return ToolAccessDecision.Deny($"hard_deny_{hardDenyDecision.DenyCategory ?? "unknown"}");
+                return ToolAccessDecision.Deny(
+                    $"hard_deny_{hardDenyDecision.DenyCategory?.ToWireName() ?? "unknown"}");
         }
 
         var workingDirectory = ExtractWorkingDirectory(arguments);

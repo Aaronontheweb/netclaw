@@ -328,10 +328,10 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         => GetCommand(arguments) ?? "(empty command)";
 
     private static string? GetCommand(IDictionary<string, object?>? arguments)
-        => arguments is null ? null : ToolArgumentHelper.GetString(arguments, "Command");
+        => ToolArgumentHelper.GetString(arguments, "Command");
 
     private static string? GetWorkingDirectory(IDictionary<string, object?>? arguments)
-        => arguments is null ? null : ToolArgumentHelper.GetString(arguments, "WorkingDirectory");
+        => ToolArgumentHelper.GetString(arguments, "WorkingDirectory");
 
     private static void TraverseApprovalUnits(string command, Action<string> visitUnit)
     {

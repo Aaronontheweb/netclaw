@@ -136,10 +136,19 @@ public static class PathUtility
             }
         }
 
-        if (!string.IsNullOrWhiteSpace(home))
+        if (string.IsNullOrWhiteSpace(home))
+            return expanded;
+
+        // Skip the three substring scans entirely when no env-var sigil is
+        // present — the typical absolute-path candidate has neither.
+        if (expanded.Contains('$', StringComparison.Ordinal))
         {
             expanded = expanded.Replace("$HOME", home, StringComparison.OrdinalIgnoreCase);
             expanded = expanded.Replace("${HOME}", home, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (expanded.Contains('%', StringComparison.Ordinal))
+        {
             expanded = expanded.Replace("%USERPROFILE%", home, StringComparison.OrdinalIgnoreCase);
         }
 
