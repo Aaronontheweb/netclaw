@@ -20,6 +20,12 @@ namespace Netclaw.Actors.Serialization;
 /// Akka's <c>FindSerializerForType</c> short-circuits on first match, so
 /// overlapping interface bindings produce iteration-order-dependent
 /// behavior.
+///
+/// A type may legitimately implement both this marker and
+/// <c>Akka.Actor.INoSerializationVerificationNeeded</c>. That means "bound
+/// to proto for journal/wire serialization, but local-dispatch skips the
+/// roundtrip" — usually because the type carries an ephemeral field the
+/// proto mapping drops (e.g. <c>SendUserMessage.Source</c>).
 /// </remarks>
 public interface INetclawSerializableMessage
 {

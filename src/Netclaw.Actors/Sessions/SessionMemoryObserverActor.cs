@@ -31,7 +31,7 @@ namespace Netclaw.Actors.Sessions;
 /// persistence. Token usage from the sidecar call is included in the result
 /// so the parent can emit it through the standard usage pipeline.</para>
 ///
-/// <para>Persistent: journals <see cref="MemoriesDistilled"/> events so the
+/// <para>Persistent: journals <see cref="MemoriesDistilledV2"/> events so the
 /// skip list of already-proposed anchors survives across session incarnations.</para>
 /// </summary>
 public sealed class SessionMemoryObserverActor : ReceivePersistentActor
@@ -45,10 +45,6 @@ public sealed class SessionMemoryObserverActor : ReceivePersistentActor
     private readonly ILoggingAdapter _log = Context.GetLogger();
 
     private readonly StringBuilder _transcript = new();
-    // V1 backward compat: sessions with existing MemoriesDistilled journal
-    // entries only carry anchor slugs. _proposedAnchors is populated during
-    // V1 recovery so those anchors are not lost. New sessions use V2 events
-    // and populate _proposedMemories instead.
     private readonly HashSet<string> _proposedAnchors = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ProposedMemoryContext> _proposedMemories = [];
     private bool _hasNewContent;
@@ -87,15 +83,6 @@ public sealed class SessionMemoryObserverActor : ReceivePersistentActor
         _timeProvider = timeProvider ?? TimeProvider.System;
 
         PersistenceId = $"memory-observer-{sessionId.Value}";
-
-        Recover<MemoriesDistilled>(evt =>
-        {
-            foreach (var anchor in evt.Anchors)
-            {
-                _proposedAnchors.Add(anchor);
-                _proposedMemories.Add(new ProposedMemoryContext(anchor, anchor, string.Empty));
-            }
-        });
 
         Recover<MemoriesDistilledV2>(evt =>
         {
@@ -771,9 +758,6 @@ public sealed class SessionMemoryObserverActor : ReceivePersistentActor
         long? OutputTokens,
         string? FailureReason) : INotInfluenceReceiveTimeout, INoSerializationVerificationNeeded;
 }
-
-/// <summary>Journaled event recording which anchors were proposed in a distillation.</summary>
-public sealed record MemoriesDistilled(IReadOnlyList<string> Anchors, long TimestampMs);
 
 /// <summary>Journaled event recording proposed anchors with title and content context for deduplication.</summary>
 public sealed record MemoriesDistilledV2(

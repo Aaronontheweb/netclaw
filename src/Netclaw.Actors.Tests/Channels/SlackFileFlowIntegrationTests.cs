@@ -95,11 +95,9 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
         services.AddSingleton(new SessionObservability(null, null));
     }
 
-    // serialize-messages = on interacts poorly with Akka.Streams (the channel output
-    // pipeline) — stream stage internals stop delivering output messages, not for
-    // serialization reasons but because of dispatch behavior under verification.
-    // Verification stays off here until the Akka.Streams interop is investigated.
-    // The session-side regression net is covered by LlmSessionTestBase derivatives.
+    // serialize-messages = on causes the Akka.Streams channel output pipeline to stop
+    // delivering messages — no SerializationException, just silently dropped output.
+    // Verification stays off until the Akka.Streams interop is investigated separately.
     protected override void ConfigureAkka(AkkaConfigurationBuilder builder, IServiceProvider provider)
     {
         builder

@@ -1250,7 +1250,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
 
     private sealed record ThreadOutput(SessionOutput Output) : INoSerializationVerificationNeeded;
     private sealed record OutputStreamTerminated(int Generation, Exception? Cause) : INoSerializationVerificationNeeded;
-    private sealed record ReinitializePipeline(string Reason);
+    private sealed record ReinitializePipeline(string Reason) : INoSerializationVerificationNeeded;
     private sealed class PendingApprovalRequest(ToolInteractionRequest request)
     {
         public ToolInteractionRequest Request { get; } = request;
