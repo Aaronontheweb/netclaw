@@ -60,6 +60,14 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
     {
         var payload = BuildPayload(messages, options, stream: true);
         using var request = BuildRequest(payload);
+
+        // Wall-clock measurement for prompt_ms fallback on backends that
+        // don't emit server-side timings (vLLM, generic OpenAI-compat).
+        // Measured request-send → first content delta — includes network
+        // RTT, so flagged as client-measured downstream.
+        var requestSentAt = System.Diagnostics.Stopwatch.GetTimestamp();
+        double? wallClockPromptMs = null;
+
         using var response = await _httpClient.SendAsync(
             request,
             HttpCompletionOption.ResponseHeadersRead,
@@ -99,7 +107,7 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
                 break;
 
             using var document = JsonDocument.Parse(ssePayload);
-            foreach (var update in ParseStreamingUpdates(document.RootElement, pendingToolCalls))
+            foreach (var update in ParseStreamingUpdates(document.RootElement, pendingToolCalls, wallClockPromptMs))
             {
                 var suppressThisUpdate = false;
                 foreach (var item in update.Contents)
@@ -110,16 +118,24 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
                             accumulatedText.Append(tc.Text);
                             textDeltaCount++;
                             textDeltaChars += tc.Text?.Length ?? 0;
+                            // First content delta locks the wall-clock prompt latency.
+                            // Subsequent token deltas don't extend the measurement.
+                            wallClockPromptMs ??=
+                                System.Diagnostics.Stopwatch.GetElapsedTime(requestSentAt).TotalMilliseconds;
                             if (filter.ShouldSuppress(tc.Text))
                                 suppressThisUpdate = true;
                             break;
                         case TextReasoningContent rc:
                             thinkingDeltaCount++;
                             thinkingDeltaChars += rc.Text?.Length ?? 0;
+                            wallClockPromptMs ??=
+                                System.Diagnostics.Stopwatch.GetElapsedTime(requestSentAt).TotalMilliseconds;
                             break;
                         case FunctionCallContent:
                             hadStructuredToolCalls = true;
                             toolCallDeltaCount++;
+                            wallClockPromptMs ??=
+                                System.Diagnostics.Stopwatch.GetElapsedTime(requestSentAt).TotalMilliseconds;
                             break;
                     }
                 }
@@ -515,12 +531,15 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
         };
     }
 
-    private static IEnumerable<ChatResponseUpdate> ParseStreamingUpdates(JsonElement root, Dictionary<int, PendingToolCall> pendingToolCalls)
+    private static IEnumerable<ChatResponseUpdate> ParseStreamingUpdates(
+        JsonElement root,
+        Dictionary<int, PendingToolCall> pendingToolCalls,
+        double? wallClockPromptMs = null)
     {
         if (!root.TryGetProperty("choices", out var choices) || choices.GetArrayLength() == 0)
         {
             // The final usage-only chunk has an empty choices array — still parse usage
-            var usageOnly = ParseUsage(root);
+            var usageOnly = ParseUsage(root, wallClockPromptMs);
             if (usageOnly is not null)
                 yield return new ChatResponseUpdate(ChatRole.Assistant, [new UsageContent(usageOnly)]);
             yield break;
@@ -604,7 +623,7 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
         }
 
         // Usage may appear in the final streaming chunk (when stream_options.include_usage is set)
-        var usage = ParseUsage(root);
+        var usage = ParseUsage(root, wallClockPromptMs);
         if (usage is not null)
             contents.Add(new UsageContent(usage));
 
@@ -639,14 +658,27 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
         }
     }
 
+    // Backend-specific telemetry extractors are applied in sequence on every
+    // response. Field paths don't overlap across supported backends, so order
+    // doesn't matter — whichever shape is present wins.
+    private static readonly IReadOnlyList<ITimingsExtractor> TimingsExtractors =
+    [
+        new LlamaCppTimingsExtractor(),
+        new VllmTimingsExtractor(),
+    ];
+
     /// <summary>
-    /// Parses the <c>usage</c> object from an OpenAI-compatible response or streaming chunk.
-    /// Also reads the llama.cpp <c>timings</c> object when present, mapping <c>cache_n</c>
-    /// to <see cref="UsageDetails.CachedInputTokenCount"/> and storing throughput/latency
-    /// fields in <see cref="UsageDetails.AdditionalCounts"/>.
-    /// Returns null when the usage field is absent or not an object.
+    /// Parses the <c>usage</c> object from an OpenAI-compatible response or
+    /// streaming chunk. Runs every registered <see cref="ITimingsExtractor"/>
+    /// against the root element so backend-specific telemetry (llama.cpp's
+    /// <c>timings</c> object, vLLM's <c>usage.prompt_tokens_details.cached_tokens</c>)
+    /// lands in <see cref="UsageDetails"/>. When the server doesn't supply
+    /// its own prompt latency, <paramref name="wallClockPromptMs"/> fills the
+    /// integer-encoded <c>prompt_us</c> field — typically a streaming-mode
+    /// measurement between request send and first-content-byte. Returns null
+    /// when the usage field is absent or not an object.
     /// </summary>
-    internal static UsageDetails? ParseUsage(JsonElement root)
+    internal static UsageDetails? ParseUsage(JsonElement root, double? wallClockPromptMs = null)
     {
         if (!root.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
             return null;
@@ -668,53 +700,22 @@ public sealed class OpenAiCompatibleChatClient : IChatClient
             TotalTokenCount = totalTokens ?? (promptTokens ?? 0) + (completionTokens ?? 0)
         };
 
-        // llama.cpp includes a sibling `timings` object with cache and throughput data.
-        // This is not part of the OpenAI spec — gracefully skip when absent.
-        if (root.TryGetProperty("timings", out var timings) && timings.ValueKind == JsonValueKind.Object)
+        foreach (var extractor in TimingsExtractors)
+            extractor.Extract(root, details);
+
+        // Wall-clock fallback: only kicks in when no server-side prompt
+        // latency was supplied (vLLM and most generic backends). Includes
+        // network RTT — flagged as client-measured in the metric, not
+        // server-side honest prompt eval time.
+        if (wallClockPromptMs is { } promptMs &&
+            (details.AdditionalCounts is null ||
+             !details.AdditionalCounts.ContainsKey(TimingsKeys.PromptUs)))
         {
-            ParseLlamaCppTimings(timings, details);
+            var additional = details.AdditionalCounts ??= [];
+            additional[TimingsKeys.PromptUs] = (long)(promptMs * 1000);
         }
 
         return details;
-    }
-
-    // llama.cpp's OpenAI-compatible endpoint returns a `timings` object alongside
-    // `usage`. Because M.E.AI's UsageDetails.AdditionalCounts is typed
-    // AdditionalPropertiesDictionary<long>, floating-point timing values are encoded
-    // as integer scale factors: microseconds for latency, ×100 for tokens-per-second.
-    // These keys are the only canonical definition; consumers (LlmSessionActor)
-    // duplicate the strings they read and must stay in sync.
-    internal const string PromptUsKey = "prompt_us";
-    internal const string PromptTokPerSecX100Key = "prompt_tok_per_sec_x100";
-    internal const string PredictedUsKey = "predicted_us";
-    internal const string PredictedTokPerSecX100Key = "predicted_tok_per_sec_x100";
-
-    /// <summary>
-    /// Reads llama.cpp-specific timing fields into <see cref="UsageDetails"/>.
-    /// <c>cache_n</c> maps to <see cref="UsageDetails.CachedInputTokenCount"/>;
-    /// throughput and latency fields go into <see cref="UsageDetails.AdditionalCounts"/>
-    /// via integer-encoded keys (see the PromptUsKey/PredictedTokPerSecX100Key
-    /// constants above). Consumers decode by dividing out the scale factor.
-    /// </summary>
-    internal static void ParseLlamaCppTimings(JsonElement timings, UsageDetails details)
-    {
-        if (TryGetLong(timings, "cache_n", out var cacheN))
-            details.CachedInputTokenCount = cacheN;
-
-        if (TryGetDouble(timings, "prompt_ms", out var promptMs))
-            Additional(details)[PromptUsKey] = (long)(promptMs * 1000);
-
-        if (TryGetDouble(timings, "prompt_per_second", out var promptPerSec))
-            Additional(details)[PromptTokPerSecX100Key] = (long)(promptPerSec * 100);
-
-        if (TryGetDouble(timings, "predicted_ms", out var predictedMs))
-            Additional(details)[PredictedUsKey] = (long)(predictedMs * 1000);
-
-        if (TryGetDouble(timings, "predicted_per_second", out var predictedPerSec))
-            Additional(details)[PredictedTokPerSecX100Key] = (long)(predictedPerSec * 100);
-
-        static AdditionalPropertiesDictionary<long> Additional(UsageDetails d)
-            => d.AdditionalCounts ??= [];
     }
 
     private static bool TryGetLong(JsonElement obj, string name, out long value)

@@ -977,6 +977,18 @@ static void ConfigureDaemonServices(
                 openAiCompatibleEndpoint,
                 openAiCompatibleApiKey));
     }
+    // Lookup map: modelId → provider type (e.g. "openai-compatible", "ollama").
+    // Used by CompositeCapabilityResolver to skip provider-native resolvers
+    // whose provider doesn't own the model being queried. Built from the
+    // active ModelSelection at startup so multi-model deployments
+    // (Main on one provider, Compaction on another) get correct scoping.
+    var modelProviderLookup = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+    if (!string.IsNullOrWhiteSpace(models.Main.ModelId))
+        modelProviderLookup[models.Main.ModelId] = mainProviderType;
+    if (models.Compaction is { ModelId: { Length: > 0 } compactionId } &&
+        providers.TryGetValue(models.Compaction.Provider, out var compactionProvider))
+        modelProviderLookup[compactionId] = compactionProvider.Type;
+
     services.AddSingleton<IModelCapabilityResolver>(sp =>
     {
         var resolvers = new List<IModelCapabilityResolver>
@@ -992,7 +1004,8 @@ static void ConfigureDaemonServices(
 
         return new CompositeCapabilityResolver(
             resolvers,
-            sp.GetRequiredService<ILogger<CompositeCapabilityResolver>>());
+            sp.GetRequiredService<ILogger<CompositeCapabilityResolver>>(),
+            modelId => modelProviderLookup.TryGetValue(modelId, out var pt) ? pt : null);
     });
 
     // Composite dependency records for LlmSessionActor DI resolution
@@ -1217,7 +1230,9 @@ static ResolvedModelCapabilities? ResolveStartupCapabilities(
             {
                 logger.LogInformation(
                     "Auto-detected model capabilities for {ModelId}: input={Input}, output={Output}, context_window={ContextWindow}",
-                    modelId, ollamaResult.InputModalities, ollamaResult.OutputModalities,
+                    modelId,
+                    ollamaResult.InputModalities?.ToString() ?? "unknown",
+                    ollamaResult.OutputModalities?.ToString() ?? "unknown",
                     ollamaResult.ContextWindowTokens?.ToString() ?? "unknown");
                 return ollamaResult;
             }
@@ -1238,7 +1253,9 @@ static ResolvedModelCapabilities? ResolveStartupCapabilities(
             {
                 logger.LogInformation(
                     "Auto-detected model capabilities for {ModelId}: input={Input}, output={Output}, context_window={ContextWindow}",
-                    modelId, openAiCompatibleResult.InputModalities, openAiCompatibleResult.OutputModalities,
+                    modelId,
+                    openAiCompatibleResult.InputModalities?.ToString() ?? "unknown",
+                    openAiCompatibleResult.OutputModalities?.ToString() ?? "unknown",
                     openAiCompatibleResult.ContextWindowTokens?.ToString() ?? "unknown");
                 return openAiCompatibleResult;
             }
@@ -1257,7 +1274,9 @@ static ResolvedModelCapabilities? ResolveStartupCapabilities(
         {
             logger.LogInformation(
                 "Auto-detected model capabilities for {ModelId}: input={Input}, output={Output}, context_window={ContextWindow}",
-                modelId, result.InputModalities, result.OutputModalities,
+                modelId,
+                result.InputModalities?.ToString() ?? "unknown",
+                result.OutputModalities?.ToString() ?? "unknown",
                 result.ContextWindowTokens?.ToString() ?? "unknown");
         }
         else

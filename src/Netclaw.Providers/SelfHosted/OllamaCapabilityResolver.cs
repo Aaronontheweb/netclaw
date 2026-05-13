@@ -32,6 +32,8 @@ public sealed class OllamaCapabilityResolver : IModelCapabilityResolver
         _endpoint = endpoint.TrimEnd('/');
     }
 
+    public string? ProviderType => "ollama";
+
     public async Task<ResolvedModelCapabilities?> ResolveAsync(
         string modelId, CancellationToken ct = default)
     {
