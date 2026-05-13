@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Akka.Actor;
 using Microsoft.Extensions.AI;
 using Netclaw.Tools;
 
@@ -33,12 +34,17 @@ public sealed record SubAgentDefinition
     /// Whether successful free-form output should be converted into structured findings.
     /// </summary>
     public bool EmitStructuredFindings { get; init; }
+
+    /// <summary>
+    /// Optional project-scoped identity content inherited from the parent session.
+    /// </summary>
+    public string? ProjectInstructions { get; init; }
 }
 
 /// <summary>
 /// Message sent to a <see cref="SubAgentActor"/> to begin execution.
 /// </summary>
-public sealed record RunSubAgent
+public sealed record RunSubAgent : INoSerializationVerificationNeeded
 {
     /// <summary>The task for the subagent to perform (becomes part of the user message).</summary>
     public required string Task { get; init; }
@@ -72,6 +78,16 @@ public sealed record RunSubAgent
     public string? ChannelType { get; init; }
 
     /// <summary>
+    /// Parent session's session directory snapshot when the subagent was spawned.
+    /// </summary>
+    public string? ParentSessionDirectory { get; init; }
+
+    /// <summary>
+    /// Parent session's project directory snapshot when the subagent was spawned.
+    /// </summary>
+    public string? ParentProjectDirectory { get; init; }
+
+    /// <summary>
     /// Parent session's approval bridge. When provided, the sub-agent can route
     /// approval requests back to the interactive user instead of auto-denying.
     /// </summary>
@@ -81,7 +97,7 @@ public sealed record RunSubAgent
 /// <summary>
 /// Result returned by a <see cref="SubAgentActor"/> when execution completes.
 /// </summary>
-public sealed record SubAgentResult
+public sealed record SubAgentResult : INoSerializationVerificationNeeded
 {
     /// <summary>Whether the subagent completed successfully.</summary>
     public required bool Success { get; init; }

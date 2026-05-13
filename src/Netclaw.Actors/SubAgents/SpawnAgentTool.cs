@@ -25,6 +25,7 @@ public sealed partial class SpawnAgentTool : NetclawTool<SpawnAgentTool.Params>
     private readonly SubAgentSpawner _spawner;
     private readonly NetclawPaths _paths;
     private readonly SubAgentConfig _subAgentConfig;
+    private readonly FileSubAgentDefinitionLoader? _loader;
 
     public record Params(
         [property: Description("Name of the subagent to invoke (see available-subagents in context)")]
@@ -39,12 +40,14 @@ public sealed partial class SpawnAgentTool : NetclawTool<SpawnAgentTool.Params>
         string? Context = null);
 
     public SpawnAgentTool(SubAgentDefinitionRegistry registry, SubAgentSpawner spawner, NetclawPaths paths,
-        SubAgentConfig? subAgentConfig = null)
+        SubAgentConfig? subAgentConfig = null,
+        FileSubAgentDefinitionLoader? loader = null)
     {
         _registry = registry;
         _spawner = spawner;
         _paths = paths;
         _subAgentConfig = subAgentConfig ?? new SubAgentConfig();
+        _loader = loader;
     }
 
     protected override Task<string> ExecuteAsync(Params args, CancellationToken ct)
@@ -62,6 +65,8 @@ public sealed partial class SpawnAgentTool : NetclawTool<SpawnAgentTool.Params>
 
         if (string.IsNullOrWhiteSpace(args.Task))
             return "Error: 'task' parameter is required.";
+
+        _loader?.SyncInto(_registry);
 
         var profile = _registry.TryGetByName(args.Agent);
         if (profile is null || profile.Visibility != SubAgentVisibility.UserFacing)

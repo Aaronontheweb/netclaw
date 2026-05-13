@@ -153,6 +153,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly Skills.SkillRegistry? _skillRegistry;
     private readonly SubAgentDefinitionRegistry? _subAgentRegistry;
     private readonly SubAgentSpawner? _subAgentSpawner;
+    private readonly FileSubAgentDefinitionLoader? _subAgentLoader;
 
     // Memory recall state (transient — reset at turn boundaries and compaction)
     private readonly SessionRecallManager _recallManager = new();
@@ -161,6 +162,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private bool _restartDrainRequested;
     private bool _passivationCompleted;
+    private bool _passivationFinalStopScheduled;
     private IActorRef? _restartDrainReplyTo;
     private string? _pendingRestartNotice;
     private string? _turnRestartNotice;
@@ -198,6 +200,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _skillRegistry = tools?.SkillRegistry;
         _subAgentRegistry = tools?.SubAgentRegistry;
         _subAgentSpawner = tools?.SubAgentSpawner;
+        _subAgentLoader = tools?.SubAgentLoader;
         _toolExecutor = tools?.ToolExecutor;
         _auditLogger = tools?.AuditLogger;
         _toolAccessPolicy = tools?.AccessPolicy;
@@ -1358,6 +1361,15 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private static readonly TimeSpan PassivationGracePeriod = TimeSpan.FromSeconds(5);
     private static readonly object PassivationTimerKey = new();
 
+    // After distillation + snapshot complete we wait this long for a racing
+    // user-initiated message to abort the stop. Closes the race where a
+    // SendUserMessage forwarded by the parent arrives in the child's mailbox
+    // microseconds after Context.Stop(Self) would have been dispatched.
+    // 100 ms is geological time for an in-proc Akka hop, and idle-driven
+    // passivation does not care about an extra 100 ms.
+    private static readonly TimeSpan PassivationFinalStopDelay = TimeSpan.FromMilliseconds(100);
+    private static readonly object PassivationFinalStopTimerKey = new();
+
     private void Passivating()
     {
         // Disable idle timeout — we're shutting down
@@ -1391,7 +1403,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             }
 
             _log.Info("Aborting passivation due to new user message");
-            Timers.Cancel(PassivationTimerKey);
+            AbortPassivationTimers();
             TransitionTo(SessionPhase.Ready);
             HandleIncomingUserMessage(cmd);
         });
@@ -1409,6 +1421,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             CompletePassivation();
         });
 
+        // No racing message arrived during the post-snapshot grace window — commit the stop.
+        Command<PassivationFinalStop>(_ =>
+        {
+            _log.Info("Passivation grace window elapsed, finalizing stop");
+            FinalizePassivation();
+        });
+
         Command<DeliveryFailed>(msg =>
         {
             if (_restartDrainRequested)
@@ -1418,7 +1437,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             }
 
             _log.Info("Aborting passivation due to delivery feedback");
-            Timers.Cancel(PassivationTimerKey);
+            AbortPassivationTimers();
             TransitionTo(SessionPhase.Ready);
             HandleDeliveryFailedWhenReady(msg);
         });
@@ -1435,17 +1454,45 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         }
     }
 
+    // Enters the post-distillation grace window: persist the final snapshot
+    // and arm a short timer. Any user-initiated message arriving in the
+    // mailbox during this window cancels the timer (via AbortPassivationTimers)
+    // and resurrects the actor in Ready — avoiding a full stop + respawn +
+    // recovery cycle. If nothing arrives, the timer fires PassivationFinalStop
+    // and we proceed to FinalizePassivation.
     private void CompletePassivation()
+    {
+        if (_passivationFinalStopScheduled)
+            return;
+
+        _passivationFinalStopScheduled = true;
+        SaveSnapshot(BuildSnapshot());
+        Timers.StartSingleTimer(
+            PassivationFinalStopTimerKey,
+            new PassivationFinalStop(),
+            PassivationFinalStopDelay);
+    }
+
+    // Actual termination after the grace window expires. The observer
+    // notification is deferred to this point so it never fires for an
+    // aborted passivation.
+    private void FinalizePassivation()
     {
         if (_passivationCompleted)
             return;
 
         _passivationCompleted = true;
         _lifecycleObserver?.OnSessionDeactivated(_sessionId);
-        SaveSnapshot(BuildSnapshot());
         _restartDrainReplyTo?.Tell(CommandAck.For(_sessionId));
         _restartDrainReplyTo = null;
         Context.Stop(Self);
+    }
+
+    private void AbortPassivationTimers()
+    {
+        Timers.Cancel(PassivationTimerKey);
+        Timers.Cancel(PassivationFinalStopTimerKey);
+        _passivationFinalStopScheduled = false;
     }
 
     // Outer hang-detector for the whole compaction pipeline. The inner observer
@@ -2531,7 +2578,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     /// a registered skill, activation path selection is deterministic:
     /// metadata.subagent route first, then inline injection when metadata is absent.
     /// </summary>
-    private bool TryHandleSlashCommand(string userContent, List<SerializableMediaReference> mediaRefs)
+    private bool TryHandleSlashCommand(string userContent, IReadOnlyList<SerializableMediaReference> mediaRefs)
     {
         if (_skillRegistry is null || string.IsNullOrWhiteSpace(userContent) || userContent[0] != '/')
             return false;
@@ -2583,7 +2630,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         return true;
     }
 
-    private bool HandleInlineSlashCommand(SkillEntry skill, string remainder, List<SerializableMediaReference> mediaRefs)
+    private bool HandleInlineSlashCommand(SkillEntry skill, string remainder, IReadOnlyList<SerializableMediaReference> mediaRefs)
     {
         string skillBody;
         try
@@ -2629,7 +2676,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         return true;
     }
 
-    private bool TryHandleRoutedSlashCommand(SkillEntry skill, string remainder, List<SerializableMediaReference> mediaRefs, string routedSubagent)
+    private bool TryHandleRoutedSlashCommand(SkillEntry skill, string remainder, IReadOnlyList<SerializableMediaReference> mediaRefs, string routedSubagent)
     {
         if (_subAgentRegistry is null || _subAgentSpawner is null)
         {
@@ -2648,6 +2695,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             TryReplyAck();
             return true;
         }
+
+        _subAgentLoader?.SyncInto(_subAgentRegistry);
 
         var profile = _subAgentRegistry.TryGetByName(routedSubagent);
         if (profile is null)
@@ -2741,6 +2790,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 Audience = _currentTurnSource is null ? null : _currentTurnSource.Audience.ToWireValue(),
                 Boundary = _currentTurnSource?.Boundary,
                 ChannelType = _currentTurnSource is null ? null : _currentTurnSource.ChannelType.ToWireValue(),
+                ProjectDirectory = _state.WorkingContext.ProjectDirectory,
                 SupportsInteractiveApproval = false,
             };
 
@@ -2922,9 +2972,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private SessionSnapshot BuildSnapshot()
     {
-        var snapshot = _state.ToSnapshot();
-        snapshot.EligibleDeliveryTurnNumber = _deliveryRetry.EligibleTurnNumber;
-        return snapshot;
+        return _state.ToSnapshot() with { EligibleDeliveryTurnNumber = _deliveryRetry.EligibleTurnNumber };
     }
 
     private void MaybeSnapshot()
@@ -3126,7 +3174,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // the path arguments the agent originally passed, rather than
         // collapsing everything to cwd. Empty list when the request did
         // not carry candidate-level data (e.g. older callers).
-        IReadOnlyList<ApprovalCandidate> Candidates);
+        IReadOnlyList<ApprovalCandidate> Candidates) : INoSerializationVerificationNeeded;
 
     private async Task PersistApprovalCandidatesAsync(
         PendingToolInteraction pending,
@@ -3331,12 +3379,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private sealed record RoutedSkillExecutionCompleted(
         string SkillName,
         string SubagentName,
-        SubAgentResult Result);
+        SubAgentResult Result) : INoSerializationVerificationNeeded;
 
     private sealed record RoutedSkillExecutionFailed(
         string SkillName,
         string SubagentName,
-        string ErrorMessage);
+        string ErrorMessage) : INoSerializationVerificationNeeded;
 
     private sealed record RoutedSkillSubAgentActivity(
         long TimestampMs,
@@ -3345,7 +3393,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         int ToolCount,
         bool? Success,
         TimeSpan? Duration,
-        int FindingsCount);
+        int FindingsCount) : INoSerializationVerificationNeeded;
 
     private void BindTurnTelemetry(MessageSource? source)
     {

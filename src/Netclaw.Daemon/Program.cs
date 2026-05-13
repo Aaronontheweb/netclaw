@@ -891,10 +891,13 @@ static void ConfigureDaemonServices(
     services.AddSingleton(memoryIndexLayer);
     services.AddSingleton<IContextLayerProvider>(memoryIndexLayer);
 
-    // Subagent discovery context layer — updated by ToolIndexUpdater after file-based agents load
-    var subAgentDiscoveryLayer = new SubAgentDiscoveryContextLayer(subAgentConfig);
-    services.AddSingleton(subAgentDiscoveryLayer);
-    services.AddSingleton<IContextLayerProvider>(subAgentDiscoveryLayer);
+    // Subagent discovery context layer — rebuilds the catalog on demand from the live file snapshot.
+    services.AddSingleton(sp => new SubAgentDiscoveryContextLayer(
+        subAgentConfig,
+        sp.GetRequiredService<SubAgentDefinitionRegistry>(),
+        sp.GetRequiredService<FileSubAgentDefinitionLoader>(),
+        paths));
+    services.AddSingleton<IContextLayerProvider>(sp => sp.GetRequiredService<SubAgentDiscoveryContextLayer>());
 
     // Current time context layer — transient per-turn grounding for date/time-sensitive prompts
     services.AddSingleton<IContextLayerProvider, CurrentTimeContextLayer>();
@@ -977,6 +980,16 @@ static void ConfigureDaemonServices(
                 openAiCompatibleEndpoint,
                 openAiCompatibleApiKey));
     }
+    // modelId → provider type lookup for CompositeCapabilityResolver scoping.
+    // Covers Main + optional Compaction independently so multi-provider
+    // deployments resolve each model's capabilities against the right backend.
+    var modelProviderLookup = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+    if (!string.IsNullOrWhiteSpace(models.Main.ModelId))
+        modelProviderLookup[models.Main.ModelId] = mainProviderType;
+    if (models.Compaction is { ModelId: { Length: > 0 } compactionId } &&
+        providers.TryGetValue(models.Compaction.Provider, out var compactionProvider))
+        modelProviderLookup[compactionId] = compactionProvider.Type;
+
     services.AddSingleton<IModelCapabilityResolver>(sp =>
     {
         var resolvers = new List<IModelCapabilityResolver>
@@ -992,7 +1005,8 @@ static void ConfigureDaemonServices(
 
         return new CompositeCapabilityResolver(
             resolvers,
-            sp.GetRequiredService<ILogger<CompositeCapabilityResolver>>());
+            sp.GetRequiredService<ILogger<CompositeCapabilityResolver>>(),
+            modelId => modelProviderLookup.TryGetValue(modelId, out var pt) ? pt : null);
     });
 
     // Composite dependency records for LlmSessionActor DI resolution
@@ -1012,7 +1026,8 @@ static void ConfigureDaemonServices(
         sp.GetService<SkillRegistry>(),
         sp.GetService<IToolApprovalService>(),
         sp.GetService<SubAgentDefinitionRegistry>(),
-        sp.GetService<SubAgentSpawner>()));
+        sp.GetService<SubAgentSpawner>(),
+        sp.GetService<FileSubAgentDefinitionLoader>()));
 
     services.AddSingleton(sp => new SessionMemoryServices(
         sp.GetService<IMemoryExtractor>() ?? NullMemoryExtractor.Instance,
@@ -1217,7 +1232,9 @@ static ResolvedModelCapabilities? ResolveStartupCapabilities(
             {
                 logger.LogInformation(
                     "Auto-detected model capabilities for {ModelId}: input={Input}, output={Output}, context_window={ContextWindow}",
-                    modelId, ollamaResult.InputModalities, ollamaResult.OutputModalities,
+                    modelId,
+                    ollamaResult.InputModalities?.ToString() ?? "unknown",
+                    ollamaResult.OutputModalities?.ToString() ?? "unknown",
                     ollamaResult.ContextWindowTokens?.ToString() ?? "unknown");
                 return ollamaResult;
             }
@@ -1238,7 +1255,9 @@ static ResolvedModelCapabilities? ResolveStartupCapabilities(
             {
                 logger.LogInformation(
                     "Auto-detected model capabilities for {ModelId}: input={Input}, output={Output}, context_window={ContextWindow}",
-                    modelId, openAiCompatibleResult.InputModalities, openAiCompatibleResult.OutputModalities,
+                    modelId,
+                    openAiCompatibleResult.InputModalities?.ToString() ?? "unknown",
+                    openAiCompatibleResult.OutputModalities?.ToString() ?? "unknown",
                     openAiCompatibleResult.ContextWindowTokens?.ToString() ?? "unknown");
                 return openAiCompatibleResult;
             }
@@ -1257,7 +1276,9 @@ static ResolvedModelCapabilities? ResolveStartupCapabilities(
         {
             logger.LogInformation(
                 "Auto-detected model capabilities for {ModelId}: input={Input}, output={Output}, context_window={ContextWindow}",
-                modelId, result.InputModalities, result.OutputModalities,
+                modelId,
+                result.InputModalities?.ToString() ?? "unknown",
+                result.OutputModalities?.ToString() ?? "unknown",
                 result.ContextWindowTokens?.ToString() ?? "unknown");
         }
         else

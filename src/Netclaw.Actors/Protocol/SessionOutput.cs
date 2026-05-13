@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Akka.Actor;
 using Netclaw.Configuration;
 using Netclaw.Security;
 
@@ -18,7 +19,7 @@ namespace Netclaw.Actors.Protocol;
 ///   <see cref="SessionTitleOutput"/>) are always delivered.
 /// - Content messages require the matching flag in the subscriber's filter.
 /// </summary>
-public abstract record SessionOutput : IWithSessionId
+public abstract record SessionOutput : IWithSessionId, INoSerializationVerificationNeeded
 {
     public required SessionId SessionId { get; init; }
 
