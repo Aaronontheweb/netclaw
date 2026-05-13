@@ -16,10 +16,10 @@ namespace Netclaw.Security;
 /// </summary>
 public static class ApprovalPatternMatching
 {
-    // Case-sensitivity rules live in Netclaw.Configuration so the operator CLI
-    // and the daemon gate use exactly the same comparer — see
-    // ToolApprovalEntryComparer for the rationale.
-    private static StringComparison ApprovalEntryComparison => ToolApprovalEntryComparer.Comparison;
+    // Verb equality routes through ToolApprovalEntryComparer.Equals so the
+    // operator CLI and the daemon gate stay in lock-step on case rules. See
+    // ToolApprovalEntryComparer for the rationale (POSIX is case-sensitive
+    // for $PATH lookups; Windows is not).
 
     /// <summary>
     /// Returns true when <paramref name="approvedEntries"/> contains an entry
@@ -56,7 +56,7 @@ public static class ApprovalPatternMatching
 
         foreach (var entry in approvedEntries)
         {
-            if (!string.Equals(entry.Verb, candidateVerb, ApprovalEntryComparison))
+            if (!ToolApprovalEntryComparer.Equals(entry.Verb, candidateVerb))
                 continue;
 
             // Global wildcard: matches any candidate by definition.
@@ -132,7 +132,7 @@ public static class ApprovalPatternMatching
     {
         foreach (var approved in approvedEntries)
         {
-            if (string.Equals(approved.Verb, candidate, ApprovalEntryComparison))
+            if (ToolApprovalEntryComparer.Equals(approved.Verb, candidate))
                 return true;
         }
 
