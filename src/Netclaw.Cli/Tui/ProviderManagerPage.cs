@@ -663,9 +663,9 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
             .Height(3));
 
         children.WithChild(new TextNode("").Height(1));
-        children.WithChild(new TextNode("  Renames the config entry only. Model roles that reference")
+        children.WithChild(new TextNode("  Renames the provider and cascades the change to any model")
             .WithForeground(Color.Gray));
-        children.WithChild(new TextNode("  the old name will need to be reassigned with `netclaw model set`.")
+        children.WithChild(new TextNode("  role(s) that reference it. Restart the daemon for changes to take effect.")
             .WithForeground(Color.Gray));
 
         return children;
