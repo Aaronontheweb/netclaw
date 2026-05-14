@@ -681,7 +681,10 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
             return;
         }
 
-        StatusMessage.Value = $"Renamed '{oldName}' to '{trimmed}'. Restart daemon for changes to take effect.";
+        StatusMessage.Value = result.ReassignedModelRoles.Count > 0
+            ? $"Renamed '{oldName}' to '{trimmed}'. Reassigned model role(s): {string.Join(", ", result.ReassignedModelRoles)}. Restart daemon for changes to take effect."
+            : $"Renamed '{oldName}' to '{trimmed}'. Restart daemon for changes to take effect.";
+
         RenameNewName = null;
         DetailProvider = null;
         RefreshAndProbeAll();

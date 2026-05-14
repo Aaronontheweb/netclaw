@@ -188,6 +188,93 @@ public sealed class ProviderRenamerTests : IDisposable
     }
 
     [Fact]
+    public void Rename_CascadesToAllMatchingModelRoles()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-vllm"] = new Dictionary<string, object> { ["Type"] = "openai-compatible" },
+                ["my-ollama"] = new Dictionary<string, object> { ["Type"] = "ollama" }
+            },
+            ["Models"] = new Dictionary<string, object>
+            {
+                ["Main"] = new Dictionary<string, object>
+                {
+                    ["Provider"] = "my-vllm",
+                    ["ModelId"] = "Qwen/Qwen3-30B"
+                },
+                ["Fallback"] = new Dictionary<string, object>
+                {
+                    ["Provider"] = "my-vllm",
+                    ["ModelId"] = "Qwen/Qwen3-7B"
+                },
+                ["Compaction"] = new Dictionary<string, object>
+                {
+                    ["Provider"] = "my-ollama",
+                    ["ModelId"] = "qwen3:7b"
+                }
+            }
+        });
+
+        var result = ProviderRenamer.Rename(_paths, "my-vllm", "lab-a100");
+
+        Assert.True(result.Success);
+        Assert.Equal(new[] { "Main", "Fallback" }, result.ReassignedModelRoles);
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(_paths.NetclawConfigPath));
+        var models = doc.RootElement.GetProperty("Models");
+        Assert.Equal("lab-a100", models.GetProperty("Main").GetProperty("Provider").GetString());
+        Assert.Equal("lab-a100", models.GetProperty("Fallback").GetProperty("Provider").GetString());
+        Assert.Equal("my-ollama", models.GetProperty("Compaction").GetProperty("Provider").GetString());
+    }
+
+    [Fact]
+    public void Rename_NoModelsSection_ReportsEmptyReassignments()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-vllm"] = new Dictionary<string, object> { ["Type"] = "openai-compatible" }
+            }
+        });
+
+        var result = ProviderRenamer.Rename(_paths, "my-vllm", "lab-a100");
+
+        Assert.True(result.Success);
+        Assert.Empty(result.ReassignedModelRoles);
+    }
+
+    [Fact]
+    public void Rename_CascadeIsCaseInsensitive()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-vllm"] = new Dictionary<string, object> { ["Type"] = "openai-compatible" }
+            },
+            ["Models"] = new Dictionary<string, object>
+            {
+                ["Main"] = new Dictionary<string, object>
+                {
+                    ["Provider"] = "MY-VLLM",
+                    ["ModelId"] = "x"
+                }
+            }
+        });
+
+        var result = ProviderRenamer.Rename(_paths, "my-vllm", "lab-a100");
+
+        Assert.True(result.Success);
+        Assert.Contains("Main", result.ReassignedModelRoles);
+    }
+
+    [Fact]
     public void Rename_TrimsWhitespaceOnNewName()
     {
         WriteConfig(new Dictionary<string, object>

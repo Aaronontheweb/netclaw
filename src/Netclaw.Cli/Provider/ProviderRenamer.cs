@@ -3,27 +3,39 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Text.Json;
 using Netclaw.Cli.Config;
 using Netclaw.Configuration;
 
 namespace Netclaw.Cli.Provider;
 
 /// <summary>
-/// Renames a provider entry in <c>netclaw.json</c> and
-/// <c>.secrets/netclaw-secrets.json</c> by swapping the dictionary key.
-/// Rename-only: does not migrate references in <c>Models.*.Provider</c>
-/// or anywhere else.
+/// Renames a provider entry across <c>netclaw.json</c> and
+/// <c>.secrets/netclaw-secrets.json</c>. Swaps the <c>Providers</c>
+/// dictionary key and cascades the rename to any
+/// <c>Models.{Main,Fallback,Compaction}.Provider</c> entries that pointed
+/// at the old name, so the daemon never sees a dangling reference after
+/// a rename.
 /// </summary>
-internal readonly record struct RenameResult(bool Success, string? ErrorMessage)
+internal readonly record struct RenameResult(
+    bool Success,
+    string? ErrorMessage,
+    IReadOnlyList<string> ReassignedModelRoles)
 {
-    public static RenameResult Ok() => new(true, null);
-    public static RenameResult Fail(string message) => new(false, message);
+    public static RenameResult Ok(IReadOnlyList<string> reassignedRoles) =>
+        new(true, null, reassignedRoles);
+
+    public static RenameResult Fail(string message) =>
+        new(false, message, Array.Empty<string>());
 }
 
 internal static class ProviderRenamer
 {
+    private static readonly string[] ModelRoleNames = ["Main", "Fallback", "Compaction"];
+
     /// <summary>
-    /// Rename a provider in both config files.
+    /// Rename a provider, cascading the rename to any model roles that
+    /// reference it.
     /// </summary>
     /// <remarks>
     /// Validation rules:
@@ -62,6 +74,9 @@ internal static class ProviderRenamer
         var entry = providers[oldName];
         providers.Remove(oldName);
         providers[trimmed] = entry;
+
+        var reassigned = CascadeRenameModelRoles(config, oldName, trimmed);
+
         ConfigFileHelper.WriteConfigFile(paths.NetclawConfigPath, config);
 
         if (secretProviders is not null && secretProviders.TryGetValue(oldName, out var secretEntry))
@@ -71,7 +86,41 @@ internal static class ProviderRenamer
             ConfigFileHelper.WriteSecretsFile(paths, secrets);
         }
 
-        return RenameResult.Ok();
+        return RenameResult.Ok(reassigned);
+    }
+
+    private static List<string> CascadeRenameModelRoles(
+        Dictionary<string, object> config, string oldName, string newName)
+    {
+        var reassigned = new List<string>();
+        var models = ConfigFileHelper.GetSectionOrNull(config, "Models");
+        if (models is null) return reassigned;
+
+        foreach (var roleName in ModelRoleNames)
+        {
+            var role = ConfigFileHelper.GetSectionOrNull(models, roleName);
+            if (role is null || !role.TryGetValue("Provider", out var providerValue))
+                continue;
+
+            // The leaf value may still be a JsonElement (loaded straight from
+            // disk) or already a string (if the section was re-materialized
+            // earlier in this call). Normalize both.
+            var current = providerValue switch
+            {
+                JsonElement je when je.ValueKind == JsonValueKind.String => je.GetString(),
+                string s => s,
+                _ => null
+            };
+
+            if (current is not null
+                && string.Equals(current, oldName, StringComparison.OrdinalIgnoreCase))
+            {
+                role["Provider"] = newName;
+                reassigned.Add(roleName);
+            }
+        }
+
+        return reassigned;
     }
 
     private static bool HasCollision(

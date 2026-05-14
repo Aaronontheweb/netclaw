@@ -58,13 +58,9 @@ internal static class ProviderCommand
 
         writer.WriteLine($"Renamed provider '{oldName}' to '{newName}'.");
 
-        // Warn about orphan model references so the user can fix them.
-        var referencingRoles = GetReferencingModelRoles(oldName, paths);
-        if (referencingRoles.Count > 0)
+        if (result.ReassignedModelRoles.Count > 0)
         {
-            writer.WriteLine();
-            writer.WriteLine($"Warning: model role(s) {string.Join(", ", referencingRoles)} still reference the old name '{oldName}'.");
-            writer.WriteLine($"Run `netclaw model set <role> --provider {newName}` to reassign.");
+            writer.WriteLine($"Reassigned model role(s): {string.Join(", ", result.ReassignedModelRoles)}.");
         }
 
         return 0;
@@ -414,14 +410,23 @@ internal static class ProviderCommand
     /// Check which model roles reference the given provider name.
     /// </summary>
     internal static List<string> GetReferencingModelRoles(string providerName, NetclawPaths paths)
+        => GetReferencingModelRoleEntries(providerName, paths).Select(e => e.Role).ToList();
+
+    /// <summary>
+    /// Like <see cref="GetReferencingModelRoles"/> but also returns each role's current
+    /// <c>ModelId</c> so callers can build a fully copy-pasteable
+    /// <c>netclaw model set</c> command in their guidance output.
+    /// </summary>
+    internal static List<(string Role, string ModelId)> GetReferencingModelRoleEntries(
+        string providerName, NetclawPaths paths)
     {
-        var roles = new List<string>();
+        var entries = new List<(string, string)>();
         if (!File.Exists(paths.NetclawConfigPath))
-            return roles;
+            return entries;
 
         using var doc = JsonDocument.Parse(File.ReadAllText(paths.NetclawConfigPath));
         if (!doc.RootElement.TryGetProperty("Models", out var models))
-            return roles;
+            return entries;
 
         foreach (var roleName in new[] { "Main", "Fallback", "Compaction" })
         {
@@ -429,11 +434,14 @@ internal static class ProviderCommand
                 role.TryGetProperty("Provider", out var provider) &&
                 string.Equals(provider.GetString(), providerName, StringComparison.OrdinalIgnoreCase))
             {
-                roles.Add(roleName);
+                var modelId = role.TryGetProperty("ModelId", out var mid)
+                    ? mid.GetString() ?? "<model-id>"
+                    : "<model-id>";
+                entries.Add((roleName, modelId));
             }
         }
 
-        return roles;
+        return entries;
     }
 
     private static void WriteProviderGuidance(IProviderDescriptor descriptor, TextWriter writer)
