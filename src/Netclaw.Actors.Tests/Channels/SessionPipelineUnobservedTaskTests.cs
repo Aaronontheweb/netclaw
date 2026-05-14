@@ -91,8 +91,6 @@ public sealed class SessionPipelineUnobservedTaskTests : TestKit
         var simulatedAbrupt = new InvalidOperationException("simulated abrupt teardown");
         killSwitch.Abort(simulatedAbrupt);
 
-        // Both await-with-catch blocks below are the production pattern from
-        // SessionPipelineHandle.ObserveTerminationAsync after the Keep.Both fix.
         Exception? watchFailure = null;
         try
         {
