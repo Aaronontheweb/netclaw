@@ -344,6 +344,75 @@ public sealed class ProviderManagerViewModelTests : IDisposable
     }
 
     [Fact]
+    public void TrySetNewProviderName_OnFailure_PreservesCandidateForRedraw()
+    {
+        // When validation fails the user's typed text must survive on the
+        // view model so the next view build re-prefills the input with what
+        // they typed; otherwise their entry vanishes when ErrorMessage
+        // triggers a redraw.
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-vllm"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "openai-compatible",
+                    ["Endpoint"] = "http://localhost:8080"
+                }
+            }
+        });
+
+        using var vm = CreateViewModel();
+        vm.RefreshDisplayProviders();
+        vm.NewProviderName = "lab-default";
+
+        Assert.False(vm.TrySetNewProviderName("MY-VLLM", out _));
+
+        Assert.Equal("MY-VLLM", vm.NewProviderName);
+    }
+
+    [Fact]
+    public async Task ConfirmRename_OnFailure_PreservesCandidateForRedraw()
+    {
+        // Same redraw-preservation rule as TrySetNewProviderName, but for the
+        // rename flow: a failed rename must leave the bad name on the view
+        // model so the next redraw re-prefills the input.
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-vllm"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "openai-compatible",
+                    ["Endpoint"] = "http://localhost:8080"
+                },
+                ["my-ollama"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "ollama",
+                    ["Endpoint"] = "http://localhost:11434"
+                }
+            }
+        });
+
+        using var vm = CreateViewModel();
+        await ActivateAndProbeAsync(vm);
+
+        var idx = vm.DisplayProviders.FindIndex(p => p.ConfiguredName == "my-vllm");
+        vm.DetailProvider = vm.DisplayProviders[idx];
+        vm.CurrentState.Value = ProviderManagerState.RenameProvider;
+        vm.RenameNewName = "my-vllm";
+
+        // Collides with the other existing provider.
+        vm.ConfirmRename("my-ollama");
+
+        Assert.Equal(ProviderManagerState.RenameProvider, vm.CurrentState.Value);
+        Assert.NotEmpty(vm.ErrorMessage.Value);
+        Assert.Equal("my-ollama", vm.RenameNewName);
+    }
+
+    [Fact]
     public async Task ActivateSelectedProvider_Healthy_TransitionsToDetails()
     {
         WriteConfig(new Dictionary<string, object>

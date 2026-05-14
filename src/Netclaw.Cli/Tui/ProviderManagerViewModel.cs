@@ -396,6 +396,11 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
     public bool TrySetNewProviderName(string? proposed, out string error)
     {
         var trimmed = proposed?.Trim() ?? string.Empty;
+
+        // Persist the candidate on both success and failure so a redraw
+        // triggered by ErrorMessage doesn't wipe out the user's input.
+        NewProviderName = trimmed;
+
         if (string.IsNullOrEmpty(trimmed))
         {
             error = "Provider name cannot be empty.";
@@ -412,7 +417,6 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
             }
         }
 
-        NewProviderName = trimmed;
         error = string.Empty;
         return true;
     }
@@ -654,17 +658,14 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
 
         var trimmed = proposed?.Trim() ?? string.Empty;
 
-        if (string.IsNullOrEmpty(trimmed))
-        {
-            ErrorMessage.Value = "Provider name cannot be empty.";
-            RequestRedraw();
-            return;
-        }
+        // Persist the candidate so a redraw triggered by ErrorMessage doesn't
+        // wipe out the user's input on the validation-failure path below.
+        RenameNewName = trimmed;
 
-        // No-op if the name is unchanged (case-sensitive equality — case-only
-        // edits are treated as a no-op rather than a collision to avoid the
-        // rename-to-itself trap).
-        if (string.Equals(trimmed, oldName, StringComparison.OrdinalIgnoreCase))
+        // Exact match is a no-op so the user can re-confirm without writing.
+        // Case-only edits (e.g. "my-vllm" → "My-Vllm") fall through to the
+        // renamer, which rewrites the key in place.
+        if (string.Equals(trimmed, oldName, StringComparison.Ordinal))
         {
             RenameNewName = null;
             CurrentState.Value = ProviderManagerState.Details;

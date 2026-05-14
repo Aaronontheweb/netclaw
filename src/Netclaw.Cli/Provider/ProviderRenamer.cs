@@ -59,13 +59,11 @@ internal static class ProviderRenamer
         if (secretProviders is not null && HasCollision(secretProviders, oldName, trimmed))
             return RenameResult.Fail($"A provider named '{trimmed}' already exists in secrets.");
 
-        // Swap the key in the config dictionary.
         var entry = providers[oldName];
         providers.Remove(oldName);
         providers[trimmed] = entry;
         ConfigFileHelper.WriteConfigFile(paths.NetclawConfigPath, config);
 
-        // Swap the key in the secrets dictionary if a secrets entry exists.
         if (secretProviders is not null && secretProviders.TryGetValue(oldName, out var secretEntry))
         {
             secretProviders.Remove(oldName);
