@@ -46,6 +46,12 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
     private readonly ILoggingAdapter _log;
     private readonly List<PendingApprovalRequest> _pendingApprovalRequests = [];
 
+    // Distinguishes "cold-spawned binding that never observed a ToolInteractionRequest"
+    // from "binding that observed at least one, then cleared its list on TurnCompleted."
+    // The former blind-forwards approval responses to the session (#979); the latter
+    // treats unknown callIds as stale and drops them.
+    private bool _hasObservedApprovalRequest;
+
     private static readonly TimeSpan PipelineInitTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan ReinitializeDelay = TimeSpan.FromSeconds(2);
     private static readonly object ReinitializeTimerKey = new();
@@ -604,14 +610,15 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             return;
         }
 
-        if (result is ApprovalLookupResult.NotFound)
+        // Stale path: this binding has previously observed an approval request and
+        // cleared its list (e.g., on TurnCompleted). Subsequent responses for unknown
+        // callIds are stale — drop at the binding rather than forwarding to the session.
+        if (pending is null && _hasObservedApprovalRequest)
         {
-            _log.Info("Ignoring Discord approval response for unknown call id {0}", message.CallId);
-            ChannelTelemetry.For(ChannelType.Discord).RecordExtra("interactionErrors", "unknown_call_id");
+            _log.Info("Dropping stale Discord approval response for call {0}; no local pending entry after turn-cleared list", message.CallId);
+            ChannelTelemetry.For(ChannelType.Discord).RecordExtra("interactionErrors", "stale_after_turn");
             return;
         }
-
-        _pendingApprovalRequests.Remove(pending!);
 
         await _dependencies.Pipeline.SendFeedbackAsync(new ToolInteractionResponse
         {
@@ -621,7 +628,22 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             SenderId = message.SenderId.Value
         });
 
-        await TryResolveApprovalPromptAsync(pending!, message.SelectedKey, message.SenderId.Value);
+        if (pending is not null)
+        {
+            _pendingApprovalRequests.Remove(pending);
+            await TryResolveApprovalPromptAsync(pending, message.SelectedKey, message.SenderId.Value);
+        }
+        else
+        {
+            // Cold-spawn path (#979): binding has no original ToolInteractionRequest to
+            // drive the resolved-state redraw. The approval still routes; the message
+            // just stays in its pre-resolution form. Persistence across daemon restart
+            // is tracked separately by #939.
+            _log.Info(
+                "Forwarded Discord approval response for call {0} to session without local pending entry; redraw skipped",
+                message.CallId);
+            ChannelTelemetry.For(ChannelType.Discord).RecordExtra("interactionErrors", "cold_spawn_redraw_skipped");
+        }
     }
 
     private async Task TryResolveApprovalPromptAsync(
@@ -766,6 +788,7 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
                 break;
 
             case ToolInteractionRequest request when string.Equals(request.Kind, "approval", StringComparison.OrdinalIgnoreCase):
+                _hasObservedApprovalRequest = true;
                 var pendingApproval = new PendingApprovalRequest(request);
                 _pendingApprovalRequests.Add(pendingApproval);
 

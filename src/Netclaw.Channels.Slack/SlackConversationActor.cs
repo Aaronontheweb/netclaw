@@ -181,13 +181,16 @@ public sealed class SlackConversationActor : ReceiveActor
 
         Receive<SlackApprovalResponse>(message =>
         {
+            // Lazy-spawn the thread binding when missing. The button click carries everything
+            // needed to address the session deterministically (channel + thread => SessionId),
+            // so a passivated/cold child must not silently drop the response — the per-thread
+            // binding then forwards to the session actor, which is the authority on pending
+            // calls. See issue #979 for the production passivation incident.
             var threadActorName = Uri.EscapeDataString(message.ThreadTs.Value);
-            var thread = Context.Child(threadActorName);
-            if (thread.IsNobody())
-            {
-                _log.Info("Ignoring Slack approval response for missing thread {0}", message.ThreadTs.Value);
-                return;
-            }
+            var thread = Context.Child(threadActorName)
+                .GetOrElse(() => Context.ActorOf(
+                    CreateThreadProps(message.ChannelId, message.ThreadTs),
+                    threadActorName));
 
             thread.Forward(message);
         });

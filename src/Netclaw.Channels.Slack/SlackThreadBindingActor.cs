@@ -37,6 +37,12 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
     private PostResult? _lastFailedPost;
     private readonly List<PendingApprovalRequest> _pendingApprovalRequests = [];
 
+    // Distinguishes "cold-spawned binding that never observed a ToolInteractionRequest"
+    // from "binding that observed at least one, then cleared its list on TurnCompleted."
+    // The former blind-forwards approval responses to the session (#979); the latter
+    // treats unknown callIds as stale and drops them.
+    private bool _hasObservedApprovalRequest;
+
     private readonly SessionPipelineHandle _handle;
     private SlackEventTs? _cursorTs;
     private SlackEventTs? _pendingCursorTs;
@@ -120,9 +126,8 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             }
         });
 
-        CommandAny(msg =>
+        CommandAny(_ =>
         {
-            if (msg is not InitializePipeline)
                 Stash.Stash();
         });
     }
@@ -1028,6 +1033,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             // to OutputFilter.Text (final assembled text), not TextStreaming.
 
             case ToolInteractionRequest interaction:
+                _hasObservedApprovalRequest = true;
                 var pendingApproval = new PendingApprovalRequest(interaction);
                 _pendingApprovalRequests.Add(pendingApproval);
                 var promptMessageTs = await HandleApprovalRequestAsync(interaction);
@@ -1138,17 +1144,31 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
 
     private async Task HandleApprovalResponseAsync(SlackApprovalResponse message)
     {
-        if (_pendingApprovalRequests.Count == 0)
-            return;
-
         var pendingIndex = _pendingApprovalRequests.FindIndex(request =>
             string.Equals(request.Request.CallId, message.CallId, StringComparison.Ordinal));
+        var pending = pendingIndex >= 0 ? _pendingApprovalRequests[pendingIndex] : null;
 
-        if (pendingIndex < 0)
+        // Stale path: this binding has previously observed an approval request and
+        // cleared its list (e.g., on TurnCompleted). Subsequent responses for unknown
+        // callIds are stale — drop them at the binding rather than forwarding to the
+        // session. This preserves Approvals_cleared_on_turn_completed semantics.
+        if (pending is null && _hasObservedApprovalRequest)
+        {
+            _log.Info(
+                "Dropping stale Slack button approval response for call {CallId}; no local pending entry after turn-cleared list",
+                message.CallId);
             return;
+        }
 
-        var pending = _pendingApprovalRequests[pendingIndex];
-        if (!ApprovalButtonValueCodec.CanApprove(pending.Request.RequesterPrincipal, pending.Request.RequesterSenderId, message.SenderId))
+        // CanApprove fast-path: if the binding still holds the original request we can
+        // post the wrong-requester warning locally without round-tripping through the
+        // session. When the binding has been cold-spawned (no local pending entry and
+        // no prior observation) the session re-runs CanApprove against its own
+        // pending-call state — see #979.
+        if (pending is not null && !ApprovalButtonValueCodec.CanApprove(
+                pending.Request.RequesterPrincipal,
+                pending.Request.RequesterSenderId,
+                message.SenderId))
         {
             await SafePostAsync(":warning: Only the requesting user can approve this tool action.");
             return;
@@ -1159,24 +1179,36 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             await _dependencies.Pipeline.SendFeedbackAsync(new ToolInteractionResponse
             {
                 SessionId = _sessionId,
-                CallId = pending.Request.CallId,
+                CallId = message.CallId,
                 SelectedKey = message.SelectedKey,
                 SenderId = message.SenderId
             });
 
-            _pendingApprovalRequests.RemoveAt(pendingIndex);
+            if (pending is not null)
+            {
+                _pendingApprovalRequests.RemoveAt(pendingIndex);
+                await TryResolveApprovalPromptAsync(pending, message.SelectedKey, message.SenderId);
 
-            await TryResolveApprovalPromptAsync(pending, message.SelectedKey, message.SenderId);
-
-            _log.Info(
-                "Recorded Slack button approval response for call {CallId} sender={SenderId} selection={SelectedKey}",
-                pending.Request.CallId,
-                message.SenderId,
-                message.SelectedKey);
+                _log.Info(
+                    "Recorded Slack button approval response for call {CallId} sender={SenderId} selection={SelectedKey}",
+                    pending.Request.CallId,
+                    message.SenderId,
+                    message.SelectedKey);
+            }
+            else
+            {
+                // Cold-spawn path: binding has no original ToolInteractionRequest to drive
+                // the resolved-state redraw. The approval still routes; the button just
+                // stays in its pre-resolution form. Persisting requests across passivation
+                // is tracked separately by #939.
+                _log.Info(
+                    "Forwarded Slack button approval response for call {CallId} to session without local pending entry; redraw skipped",
+                    message.CallId);
+            }
         }
         catch (Exception ex)
         {
-            _log.Error(ex, "Failed to route Slack button approval response for call {CallId}", pending.Request.CallId);
+            _log.Error(ex, "Failed to route Slack button approval response for call {CallId}", message.CallId);
         }
     }
 
