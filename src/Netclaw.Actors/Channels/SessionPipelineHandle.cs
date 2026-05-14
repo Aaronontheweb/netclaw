@@ -102,14 +102,22 @@ public sealed class SessionPipelineHandle
             .Run(materializer);
 
         var generation = ++_pipelineGeneration;
-        var outputTerminated = materialized.Output
+
+        // Keep.Both retains both materialized Task<Done>s so we can observe both.
+        // Akka.Streams creates a TaskCompletionSource for WatchTermination AND
+        // for Sink.ForEach (IgnoreSink). On stream fault, both TCSes are set to
+        // the same exception, but .NET tracks "observed" per-Task — so if we
+        // observe only the WatchTermination task (Keep.Left), the discarded
+        // foreach Task is finalized while faulted and fires
+        // TaskScheduler.UnobservedTaskException.
+        var (watchTerminated, sinkTerminated) = materialized.Output
             .WatchTermination((_, done) => done)
             .ToMaterialized(
                 Sink.ForEach<SessionOutput>(onOutput),
-                Keep.Left)
+                Keep.Both)
             .Run(materializer);
 
-        _outputCompletion = outputTerminated;
+        _outputCompletion = watchTerminated;
 
         _ = ObserveTerminationAsync();
 
@@ -117,14 +125,32 @@ public sealed class SessionPipelineHandle
 
         async Task ObserveTerminationAsync()
         {
+            Exception? failure = null;
             try
             {
-                await outputTerminated;
-                onStreamTerminated(generation, null);
+                await watchTerminated.ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                onStreamTerminated(generation, ex);
+                failure = ex;
+            }
+
+            try
+            {
+                await sinkTerminated.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                failure ??= ex;
+            }
+
+            try
+            {
+                onStreamTerminated(generation, failure);
+            }
+            catch (Exception cbEx)
+            {
+                _log.Error(cbEx, "{0} onStreamTerminated callback threw", _materializerNamePrefix);
             }
         }
         _inputQueue = inputQueue;
@@ -158,12 +184,26 @@ public sealed class SessionPipelineHandle
             .ToMaterialized(materialized.Input, Keep.Left)
             .Run(materializer);
 
-        _outputCompletion = materialized.Output
+        // SourceQueueLogic.PostStop sets StreamDetachedException on its internal
+        // _completion TCS. The task is exposed via WatchCompletionAsync(); when
+        // unobserved, it surfaces as TaskScheduler.UnobservedTaskException on
+        // teardown (e.g. abrupt actor-system shutdown during hot reload).
+        ObserveSilently(inputQueue.WatchCompletionAsync());
+
+        var (watchTerminated, sinkTerminated) = materialized.Output
             .WatchTermination((_, done) => done)
             .ToMaterialized(
                 Sink.ForEach<SessionOutput>(onOutput),
-                Keep.Left)
+                Keep.Both)
             .Run(materializer);
+
+        // Same Sink.ForEach foreach-task issue as InitializeWithChannelAsync.
+        // Queue-mode actors don't subscribe to OutputStreamTerminated, so just
+        // observe the sink task silently — the watch task is awaited by
+        // DrainAsync below.
+        ObserveSilently(sinkTerminated);
+
+        _outputCompletion = watchTerminated;
 
         _session = materialized;
 
@@ -254,4 +294,22 @@ public sealed class SessionPipelineHandle
         _inputQueue?.TryComplete();
     }
 
+    /// <summary>
+    /// Attach a synchronous continuation that reads <see cref="Task.Exception"/>
+    /// on fault, marking the task as observed so it doesn't surface as a
+    /// <see cref="TaskScheduler.UnobservedTaskException"/> on the finalizer
+    /// thread. Akka.Streams creates several internal <see cref="Task{Done}"/>
+    /// instances on stages like <c>Sink.ForEach</c> and <c>Source.Queue</c>
+    /// that fault during stream teardown; this is how we silence their
+    /// finalizer noise without losing visibility into real failures (which
+    /// surface through <c>WatchTermination</c> / <c>OutputStreamTerminated</c>).
+    /// </summary>
+    private static void ObserveSilently(Task task)
+    {
+        _ = task.ContinueWith(
+            static t => { _ = t.Exception; },
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
 }

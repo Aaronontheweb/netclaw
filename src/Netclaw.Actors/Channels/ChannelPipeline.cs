@@ -263,6 +263,11 @@ public sealed class SessionPipeline : ISessionPipeline
         // Akka guarantees FIFO delivery from a single sender (this stream
         // stage thread), so JoinSession is always processed before the
         // SendUserMessage that follows it.
+        // Wrap Sink.ForEach with MapMaterializedValue so the inner IgnoreSink
+        // Task<Done> is observed on fault. Without this, abrupt stream teardown
+        // (e.g. ActorSystem shutdown) faults the discarded foreach task and
+        // surfaces as TaskScheduler.UnobservedTaskException — see comment in
+        // SessionPipelineHandle.ObserveSilently for the full mechanism.
         var inputSink = Flow.Create<ChannelInput>()
             .Select(input => MapToCommand(input, sessionId, options, _paths))
             .Via(killSwitch.Flow<SendUserMessage>())
@@ -279,6 +284,14 @@ public sealed class SessionPipeline : ISessionPipeline
                 // leaves AckTarget null → existing NoSender fire-and-forget.
                 var ackTarget = cmd.Source?.AckTarget ?? ActorRefs.NoSender;
                 sessionManager.Tell(cmd, ackTarget);
+            }).MapMaterializedValue(task =>
+            {
+                _ = task.ContinueWith(
+                    static t => { _ = t.Exception; },
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                return NotUsed.Instance;
             }));
 
         // Outbound: pre-materialized subscriber → kill switch → exposed Source.

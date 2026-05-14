@@ -83,7 +83,17 @@ public sealed class RecordingSessionPipeline : ISessionPipeline
                         gate.Writer.TryWrite(true);
                     }
                 })
-                .MapMaterializedValue<NotUsed>(_ => NotUsed.Instance);
+                .MapMaterializedValue<NotUsed>(task =>
+                {
+                    // Observe Sink.ForEach's internal Task<Done> so abrupt
+                    // teardown faults don't leak as unobserved task exceptions.
+                    _ = task.ContinueWith(
+                        static t => { _ = t.Exception; },
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                    return NotUsed.Instance;
+                });
 
             // Wait for gate signal, then emit all outputs.
             output = Source.UnfoldAsync<int, SessionOutput>(0, async state =>
@@ -106,7 +116,17 @@ public sealed class RecordingSessionPipeline : ISessionPipeline
         else
         {
             input = Sink.ForEach<ChannelInput>(ci => CapturedInputs.Enqueue(ci))
-                .MapMaterializedValue<NotUsed>(_ => NotUsed.Instance);
+                .MapMaterializedValue<NotUsed>(task =>
+                {
+                    // Observe Sink.ForEach's internal Task<Done> so abrupt
+                    // teardown faults don't leak as unobserved task exceptions.
+                    _ = task.ContinueWith(
+                        static t => { _ = t.Exception; },
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                    return NotUsed.Instance;
+                });
 
             output = Source.From(outputs)
                 .Concat(Source.Never<SessionOutput>())
