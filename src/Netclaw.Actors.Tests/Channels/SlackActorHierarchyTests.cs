@@ -84,6 +84,38 @@ public sealed class SlackActorHierarchyTests(ITestOutputHelper output) : TestKit
         Assert.Equal("U1", routed.SenderId);
     }
 
+    // Regression for #979: when the per-thread binding has been passivated (e.g., the
+    // channel-level conversation actor restarted), an inbound SlackApprovalResponse must
+    // still reach the thread binding. Previously the conversation actor dropped the
+    // message with "Ignoring Slack approval response for missing thread {ThreadTs}".
+    [Fact]
+    public async Task Conversation_lazy_spawns_thread_when_approval_response_arrives_cold()
+    {
+        var sink = CreateTestProbe("approval-cold-thread-sink");
+        var deps = CreateDependencies(
+            threadPropsFactory: (_, _, _, _) => Props.Create(() => new ForwardActor(sink.Ref)));
+
+        var conversation = Sys.ActorOf(
+            SlackConversationActor.CreateProps(new SlackChannelId("C1"), deps),
+            "slack-conversation-cold-approval");
+
+        // No prior inbound message — no thread child has been created. This mirrors
+        // the production incident where the channel-level conversation actor was
+        // freshly re-spawned after passivation and had no per-thread children.
+        conversation.Tell(new SlackApprovalResponse(
+            new SlackChannelId("C1"),
+            new SlackThreadTs("999.1"),
+            "call-cold",
+            ApprovalOptionKeys.ApproveOnce,
+            "U1"));
+
+        var routed = await sink.ExpectMsgAsync<SlackApprovalResponse>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal("call-cold", routed.CallId);
+        Assert.Equal(ApprovalOptionKeys.ApproveOnce, routed.SelectedKey);
+        Assert.Equal("U1", routed.SenderId);
+    }
+
     [Fact]
     public async Task Conversation_requires_mention_to_start_and_allows_thread_followups()
     {

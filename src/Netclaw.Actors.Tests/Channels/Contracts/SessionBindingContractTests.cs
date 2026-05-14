@@ -362,6 +362,37 @@ public abstract class SessionBindingContractTests : TestKit
         }, cancellationToken: ct);
     }
 
+    // Conformance for #979: a binding spawned without prior in-memory state (no
+    // ToolInteractionRequest seen on its output stream) must still route inbound
+    // approval responses to the session via SendFeedbackAsync. This mirrors the
+    // production case where channel-adapter passivation kills the binding and a
+    // re-spawned instance receives the user's button click cold. Both Slack and
+    // Discord adapters inherit this test.
+    [Fact]
+    public async Task Approval_response_routes_to_session_when_binding_has_no_local_pending_state()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var detector = new ConfigurablePromptInjectionDetector(PromptInjectionResult.Safe());
+        var sid = new SessionId("session-cold-binding-approval");
+
+        // Empty output stream: the binding will never populate its
+        // _pendingApprovalRequests list. Simulates a passivated/re-spawned binding.
+        var pipeline = new RecordingSessionPipeline(_ => []);
+
+        var actor = CreateBindingActor(sid, pipeline, detector);
+
+        actor.Tell(CreateApprovalResponse("call-cold", ApprovalOptionKeys.ApproveOnce, "user-1"), TestActor);
+
+        await AwaitAssertAsync(() =>
+        {
+            var feedback = pipeline.RecordedFeedback.OfType<ToolInteractionResponse>().ToList();
+            Assert.Single(feedback);
+            Assert.Equal("call-cold", feedback[0].CallId);
+            Assert.Equal(ApprovalOptionKeys.ApproveOnce, feedback[0].SelectedKey);
+            Assert.Equal("user-1", feedback[0].SenderId);
+        }, cancellationToken: ct);
+    }
+
     [Fact]
     public async Task Text_approval_response_resolves_pending()
     {

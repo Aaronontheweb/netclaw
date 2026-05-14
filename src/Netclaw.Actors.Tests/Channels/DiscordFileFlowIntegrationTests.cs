@@ -51,6 +51,7 @@ public sealed class DiscordFileFlowIntegrationTests : TestKit
     {
         services.AddSingleton<IChatClientProvider>(new SingleClientProvider(_chatClient));
         services.AddSingleton(_paths);
+        services.AddSingleton<Netclaw.Actors.Jobs.BackgroundJobDefinitionStore>();
         services.AddSingleton(new ModelCapabilities
         {
             ModelId = "fake-model",

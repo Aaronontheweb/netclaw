@@ -117,6 +117,33 @@ public sealed class DiscordConversationActorTests(ITestOutputHelper output) : Te
         Assert.Equal("call-1", approval.CallId);
     }
 
+    // Regression for #979 (Discord side): when the per-session binding has been
+    // passivated, an inbound DiscordGatewayInteraction must still reach the session
+    // binding. Previously the conversation actor dropped with "Ignoring Discord
+    // interaction for missing session binding".
+    [Fact]
+    public async Task Button_interaction_lazy_spawns_session_binding_when_cold()
+    {
+        var sink = CreateTestProbe("interaction-cold-binding");
+        var conversation = CreateConversation("ch-1", sink);
+
+        // No prior message — no session binding child has been created. Mirrors
+        // the production passivation incident on the Discord adapter tree.
+        conversation.Tell(new DiscordGatewayInteraction(
+            ChannelId: new DiscordChannelId("ch-1"),
+            ThreadOrMessageId: new DiscordThreadOrMessageId("thread-ch-cold"),
+            CallId: "call-cold",
+            SelectedKey: ApprovalOptionKeys.ApproveOnce,
+            SenderId: new DiscordUserId("u-1"),
+            RequesterSenderId: new DiscordUserId("u-1"),
+            ReceivedAt: TimeProvider.System.GetUtcNow()));
+
+        var approval = await sink.ExpectMsgAsync<DiscordApprovalResponse>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal("call-cold", approval.CallId);
+        Assert.Equal(ApprovalOptionKeys.ApproveOnce, approval.SelectedKey);
+    }
+
     [Fact]
     public async Task ACL_denied_messages_not_routed()
     {
@@ -329,25 +356,6 @@ public sealed class DiscordConversationActorTests(ITestOutputHelper output) : Te
         var inbound = await sink.ExpectMsgAsync<DiscordThreadInbound>(
             cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal("what is the weather?", inbound.Text);
-    }
-
-    [Fact]
-    public async Task Interaction_for_missing_session_ignored()
-    {
-        var sink = CreateTestProbe("interaction-missing");
-        var conversation = CreateConversation("ch-1", sink);
-
-        conversation.Tell(new DiscordGatewayInteraction(
-            ChannelId: new DiscordChannelId("ch-1"),
-            ThreadOrMessageId: new DiscordThreadOrMessageId("nonexistent"),
-            CallId: "call-1",
-            SelectedKey: ApprovalOptionKeys.ApproveOnce,
-            SenderId: new DiscordUserId("u-1"),
-            RequesterSenderId: null,
-            ReceivedAt: TimeProvider.System.GetUtcNow()));
-
-        await sink.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(250),
-            TestContext.Current.CancellationToken);
     }
 
     [Fact]

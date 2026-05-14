@@ -189,17 +189,18 @@ internal sealed class DiscordConversationActor : ReceiveActor
 
     private void HandleGatewayInteraction(DiscordGatewayInteraction interaction)
     {
-        var actorName = BuildActorName(_channelId, interaction.ThreadOrMessageId);
-        var sessionBinding = Context.Child(actorName);
-        if (sessionBinding.IsNobody())
-        {
-            _log.Info(
-                "Ignoring Discord interaction for missing session binding channel={0} threadOrMessage={1}",
-                _channelId.Value,
-                interaction.ThreadOrMessageId.Value);
-            ChannelTelemetry.For(ChannelType.Discord).RecordExtra("interactionErrors", "missing_session_binding");
-            return;
-        }
+        // Lazy-spawn the session binding when missing. The interaction payload carries
+        // everything needed to address the session deterministically; a passivated/cold
+        // child must not silently drop the response. See issue #979 for the production
+        // passivation incident (symmetric with Slack's conversation/thread tree).
+        var replyChannelId = new DiscordReplyChannelId(interaction.ThreadOrMessageId.Value);
+        var sessionId = new SessionId($"{_channelId.Value}/{interaction.ThreadOrMessageId.Value}");
+        var sessionBinding = GetOrCreateSessionBinding(
+            sessionId,
+            _channelId,
+            replyChannelId,
+            interaction.ThreadOrMessageId,
+            rootMessageId: null);
 
         ChannelTelemetry.For(ChannelType.Discord).RecordEventRouted("interaction");
         sessionBinding.Forward(new DiscordApprovalResponse(
