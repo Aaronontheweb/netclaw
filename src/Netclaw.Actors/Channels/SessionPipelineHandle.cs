@@ -102,10 +102,14 @@ public sealed class SessionPipelineHandle
             .Run(materializer);
 
         var generation = ++_pipelineGeneration;
+
+        // ObservingFault wraps Sink.ForEach so its internal IgnoreSink TCS is
+        // observed on fault — without it, abrupt teardown leaks the discarded
+        // Task<Done> as TaskScheduler.UnobservedTaskException.
         var outputTerminated = materialized.Output
             .WatchTermination((_, done) => done)
             .ToMaterialized(
-                Sink.ForEach<SessionOutput>(onOutput),
+                Sink.ForEach<SessionOutput>(onOutput).ObservingFault(),
                 Keep.Left)
             .Run(materializer);
 
@@ -117,14 +121,23 @@ public sealed class SessionPipelineHandle
 
         async Task ObserveTerminationAsync()
         {
+            Exception? failure = null;
             try
             {
-                await outputTerminated;
-                onStreamTerminated(generation, null);
+                await outputTerminated.ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                onStreamTerminated(generation, ex);
+                failure = ex;
+            }
+
+            try
+            {
+                onStreamTerminated(generation, failure);
+            }
+            catch (Exception cbEx)
+            {
+                _log.Error(cbEx, "{0} onStreamTerminated callback threw", _materializerNamePrefix);
             }
         }
         _inputQueue = inputQueue;
@@ -158,10 +171,15 @@ public sealed class SessionPipelineHandle
             .ToMaterialized(materialized.Input, Keep.Left)
             .Run(materializer);
 
+        // SourceQueueLogic.PostStop sets StreamDetachedException on its
+        // _completion TCS unconditionally — observe it so unused queue-mode
+        // sessions don't leak the fault on teardown.
+        StreamTaskObservation.ObserveSilently(inputQueue.WatchCompletionAsync());
+
         _outputCompletion = materialized.Output
             .WatchTermination((_, done) => done)
             .ToMaterialized(
-                Sink.ForEach<SessionOutput>(onOutput),
+                Sink.ForEach<SessionOutput>(onOutput).ObservingFault(),
                 Keep.Left)
             .Run(materializer);
 

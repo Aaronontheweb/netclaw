@@ -279,7 +279,7 @@ public sealed class SessionPipeline : ISessionPipeline
                 // leaves AckTarget null → existing NoSender fire-and-forget.
                 var ackTarget = cmd.Source?.AckTarget ?? ActorRefs.NoSender;
                 sessionManager.Tell(cmd, ackTarget);
-            }));
+            }).ObservingFault());
 
         // Outbound: pre-materialized subscriber → kill switch → exposed Source.
         // When a lifecycle observer is registered, tap the stream so every output
