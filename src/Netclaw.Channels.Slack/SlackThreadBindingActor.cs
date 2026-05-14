@@ -781,13 +781,14 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             if (new SlackEventId(item.MessageId ?? string.Empty).TryGetEventTs() is not { } itemTs)
                 continue;
 
-            // Keep the cursor event itself during fresh-runtime hydration.
-            // If the daemon restarts while a turn is still in-flight, the
-            // session actor may recover with no completed turns even though the
-            // cursor already advanced to the last inbound user message.
-            // Including ts == cursor prevents that newest pre-restart user turn
-            // from being dropped from rebuilt context.
-            if (cursor is { } c && itemTs.CompareTo(c) < 0)
+            // Strict: only include messages newer than the cursor. PR #733's
+            // "cursor advances only on TurnCompleted" guarantees that
+            // ts == cursor means the session already has that message persisted
+            // — re-including it here on a restart hydration would duplicate it.
+            // The in-flight-crash case is handled too: a turn that didn't
+            // complete leaves the cursor un-advanced, so the message has
+            // ts > cursor and is correctly included in the gap.
+            if (cursor is { } c && itemTs.CompareTo(c) <= 0)
                 continue;
 
             candidates.Add(item);

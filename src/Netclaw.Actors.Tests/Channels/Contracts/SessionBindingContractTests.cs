@@ -1279,4 +1279,71 @@ public abstract class SessionBindingContractTests : TestKit
         }, cancellationToken: ct);
     }
 
+    /// <summary>
+    /// Regression test for the daemon-restart duplicate-message bug.
+    /// After a supervised restart where the cursor has advanced to the same ts
+    /// as a message still returned by the thread history fetcher, the second
+    /// hydration must NOT re-emit that message. Otherwise the session ends up
+    /// with the message persisted twice — once from the first lifecycle's
+    /// backfill, and once from the second lifecycle's restart hydration —
+    /// which is the path that reintroduced the duplicate-image overflow
+    /// (D0AC6CKBK5K/1778728886.944599) after the daemon was restarted to
+    /// swap the fallback model.
+    /// </summary>
+    [Fact]
+    public async Task Hydration_after_restart_does_not_re_emit_message_at_cursor_position()
+    {
+        if (!SupportsThreadHydration) return;
+
+        var ct = TestContext.Current.CancellationToken;
+        var detector = new ConfigurablePromptInjectionDetector(PromptInjectionResult.Safe());
+        var sid = new SessionId("session-restart-no-dupe-at-cursor");
+        var historyFetcher = new RecordingThreadHistoryFetcher();
+        historyFetcher.SetHistory(CreateHistoryItems(1));
+
+        var turnNumber = 0;
+        var pipeline1 = new RecordingSessionPipeline(_ =>
+        [
+            new TextOutput { SessionId = sid, Text = $"reply {Interlocked.Increment(ref turnNumber)}" },
+            new TurnCompleted { SessionId = sid, TurnNumber = turnNumber, Outcome = TurnOutcome.Completed }
+        ], reactive: true);
+
+        var actor1 = CreateBindingActorWithHydration(sid, pipeline1, detector, historyFetcher);
+        await AwaitAssertAsync(() => Assert.NotNull(pipeline1.CapturedOptions), cancellationToken: ct);
+
+        // First lifecycle: hydration treats the single history item as the
+        // trigger, enqueues one backfill input, and the actor's _pendingCursorTs
+        // is set to that item's ts.
+        await AwaitAssertAsync(() => Assert.True(pipeline1.CapturedInputs.Count >= 1),
+            cancellationToken: ct);
+
+        // Wait for TurnCompleted — this advances the cursor to the trigger's ts.
+        await AwaitAssertAsync(() =>
+        {
+            Assert.Contains(GetPostedTexts(), p => p.Contains("reply"));
+        }, cancellationToken: ct);
+
+        ClearPostedTexts();
+        await actor1.GracefulStop(TimeSpan.FromSeconds(5));
+
+        // Simulate daemon restart with the same persistent identity (journal
+        // recovers _cursorTs). The history fetcher still returns the same item
+        // because Slack/Discord don't forget messages between our restarts.
+        historyFetcher.ResetFetchCount();
+        var pipeline2 = new RecordingSessionPipeline(_ => []);
+
+        CreateBindingActorWithHydration(sid, pipeline2, detector, historyFetcher);
+        await AwaitAssertAsync(() => Assert.NotNull(pipeline2.CapturedOptions), cancellationToken: ct);
+        await AwaitAssertAsync(() => Assert.Equal(1, historyFetcher.FetchCount),
+            cancellationToken: ct);
+
+        // The cursor is exactly at the history item's ts. A correct gap filter
+        // excludes it (it's already in the session's persisted history). A
+        // buggy filter that admits ts == cursor re-emits the message a second
+        // time, doubling its contents (text + any attachments) in the session.
+        // Assert nothing was enqueued.
+        await AwaitAssertAsync(() => Assert.Empty(pipeline2.CapturedInputs),
+            cancellationToken: ct);
+    }
+
 }

@@ -401,11 +401,14 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             if (TryParseSnowflake(item.MessageId ?? string.Empty) is not { } itemSnowflake)
                 continue;
 
-            // Keep the cursor message itself during fresh-runtime hydration.
-            // If the daemon restarts while a turn is still in-flight, the
-            // session actor may recover with no completed turns even though the
-            // cursor already advanced to the last inbound user message.
-            if (cursor is { } c && itemSnowflake < c)
+            // Strict: only include messages newer than the cursor. PR #733's
+            // "cursor advances only on TurnCompleted" guarantees that
+            // snowflake == cursor means the session already has that message
+            // persisted — re-including it here on a restart hydration would
+            // duplicate it. The in-flight-crash case is handled too: a turn
+            // that didn't complete leaves the cursor un-advanced, so the
+            // message has snowflake > cursor and is correctly included in the gap.
+            if (cursor is { } c && itemSnowflake <= c)
                 continue;
 
             candidates.Add(item);
