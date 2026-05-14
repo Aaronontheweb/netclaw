@@ -243,7 +243,7 @@ public sealed class ProviderManagerViewModelTests : IDisposable
     }
 
     [Fact]
-    public void ActivateSelectedProvider_Unconfigured_StartsAddFlow()
+    public void ActivateSelectedProvider_Unconfigured_StartsAtAddName()
     {
         using var vm = CreateViewModel();
         vm.RefreshDisplayProviders();
@@ -254,13 +254,31 @@ public sealed class ProviderManagerViewModelTests : IDisposable
         vm.SelectedProviderIndex = ollamaIndex;
         vm.ActivateSelectedProvider();
 
-        // Ollama has [None] auth, so goes straight to AddCredentials
-        Assert.Equal(ProviderManagerState.AddCredentials, vm.CurrentState.Value);
+        // Add flow always starts at AddName regardless of auth type so the
+        // user can confirm or override the auto-generated provider name.
+        Assert.Equal(ProviderManagerState.AddName, vm.CurrentState.Value);
         Assert.Equal("ollama", vm.NewProviderType);
+        Assert.False(string.IsNullOrEmpty(vm.NewProviderName));
     }
 
     [Fact]
-    public void ActivateSelectedProvider_Unconfigured_ApiKeyProvider_GoesToAuthSelect()
+    public void AdvanceAfterName_NoAuthProvider_GoesToCredentials()
+    {
+        using var vm = CreateViewModel();
+        vm.RefreshDisplayProviders();
+        vm.CurrentState.Value = ProviderManagerState.List;
+
+        var ollamaIndex = vm.DisplayProviders.FindIndex(p => p.ProviderType == "ollama");
+        vm.SelectedProviderIndex = ollamaIndex;
+        vm.ActivateSelectedProvider();
+        vm.AdvanceAfterName();
+
+        // Ollama has [None] auth, so AdvanceAfterName routes to AddCredentials.
+        Assert.Equal(ProviderManagerState.AddCredentials, vm.CurrentState.Value);
+    }
+
+    [Fact]
+    public void AdvanceAfterName_ApiKeyProvider_GoesToAuthSelect()
     {
         using var vm = CreateViewModel();
         vm.RefreshDisplayProviders();
@@ -269,9 +287,60 @@ public sealed class ProviderManagerViewModelTests : IDisposable
         var anthropicIndex = vm.DisplayProviders.FindIndex(p => p.ProviderType == "anthropic");
         vm.SelectedProviderIndex = anthropicIndex;
         vm.ActivateSelectedProvider();
+        vm.AdvanceAfterName();
 
         Assert.Equal(ProviderManagerState.AddSelectAuth, vm.CurrentState.Value);
         Assert.Equal("anthropic", vm.NewProviderType);
+    }
+
+    [Fact]
+    public void TrySetNewProviderName_TrimsAndAcceptsUniqueName()
+    {
+        using var vm = CreateViewModel();
+        vm.RefreshDisplayProviders();
+
+        Assert.True(vm.TrySetNewProviderName("  lab-a100  ", out var err));
+        Assert.Equal("", err);
+        Assert.Equal("lab-a100", vm.NewProviderName);
+    }
+
+    [Fact]
+    public void TrySetNewProviderName_RejectsEmptyAndWhitespace()
+    {
+        using var vm = CreateViewModel();
+        vm.RefreshDisplayProviders();
+
+        Assert.False(vm.TrySetNewProviderName("", out var err1));
+        Assert.NotEmpty(err1);
+
+        Assert.False(vm.TrySetNewProviderName("   ", out var err2));
+        Assert.NotEmpty(err2);
+
+        Assert.False(vm.TrySetNewProviderName(null, out var err3));
+        Assert.NotEmpty(err3);
+    }
+
+    [Fact]
+    public void TrySetNewProviderName_RejectsCollisionCaseInsensitive()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-vllm"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "openai-compatible",
+                    ["Endpoint"] = "http://localhost:8080"
+                }
+            }
+        });
+
+        using var vm = CreateViewModel();
+        vm.RefreshDisplayProviders();
+
+        Assert.False(vm.TrySetNewProviderName("MY-VLLM", out var err));
+        Assert.Contains("my-vllm", err, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -421,6 +490,7 @@ public sealed class ProviderManagerViewModelTests : IDisposable
         var idx = vm.DisplayProviders.FindIndex(p => p.ProviderType == "openrouter");
         vm.SelectedProviderIndex = idx;
         vm.ActivateSelectedProvider();
+        vm.AdvanceAfterName();
 
         vm.SelectAuthMethod(AuthMethod.ApiKey);
         vm.NewApiKey = "sk-test-key";
@@ -458,6 +528,7 @@ public sealed class ProviderManagerViewModelTests : IDisposable
         var idx = vm.DisplayProviders.FindIndex(p => p.ProviderType == "openrouter");
         vm.SelectedProviderIndex = idx;
         vm.ActivateSelectedProvider();
+        vm.AdvanceAfterName();
         vm.SelectAuthMethod(AuthMethod.ApiKey);
 
         vm.NewApiKey = "sk-test";
@@ -479,6 +550,7 @@ public sealed class ProviderManagerViewModelTests : IDisposable
         var idx = vm.DisplayProviders.FindIndex(p => p.ProviderType == "openrouter");
         vm.SelectedProviderIndex = idx;
         vm.ActivateSelectedProvider();
+        vm.AdvanceAfterName();
         vm.SelectAuthMethod(AuthMethod.ApiKey);
 
         vm.NewApiKey = "sk-test";
@@ -568,6 +640,22 @@ public sealed class ProviderManagerViewModelTests : IDisposable
     }
 
     [Fact]
+    public void GoBack_FromAddName_ReturnsToList()
+    {
+        using var vm = CreateViewModel();
+        vm.RefreshDisplayProviders();
+        vm.CurrentState.Value = ProviderManagerState.List;
+
+        var idx = vm.DisplayProviders.FindIndex(p => p.ProviderType == "anthropic");
+        vm.SelectedProviderIndex = idx;
+        vm.ActivateSelectedProvider();
+        Assert.Equal(ProviderManagerState.AddName, vm.CurrentState.Value);
+
+        vm.GoBack();
+        Assert.Equal(ProviderManagerState.List, vm.CurrentState.Value);
+    }
+
+    [Fact]
     public void GoBack_FromAddSelectAuth_ReturnsToList()
     {
         using var vm = CreateViewModel();
@@ -577,6 +665,7 @@ public sealed class ProviderManagerViewModelTests : IDisposable
         var idx = vm.DisplayProviders.FindIndex(p => p.ProviderType == "anthropic");
         vm.SelectedProviderIndex = idx;
         vm.ActivateSelectedProvider();
+        vm.AdvanceAfterName();
         Assert.Equal(ProviderManagerState.AddSelectAuth, vm.CurrentState.Value);
 
         vm.GoBack();
@@ -691,6 +780,129 @@ public sealed class ProviderManagerViewModelTests : IDisposable
         vm.GoBack();
 
         Assert.Equal(ProviderManagerState.List, vm.CurrentState.Value);
+    }
+
+    [Fact]
+    public async Task AddProvider_UsesCustomNameWhenUserProvidesOne()
+    {
+        using var vm = CreateViewModel();
+        await ActivateAndProbeAsync(vm);
+
+        var idx = vm.DisplayProviders.FindIndex(p => p.ProviderType == "openrouter");
+        vm.SelectedProviderIndex = idx;
+        vm.ActivateSelectedProvider();
+
+        // User edits the name on the AddName step.
+        Assert.True(vm.TrySetNewProviderName("lab-a100", out _));
+        vm.AdvanceAfterName();
+
+        vm.SelectAuthMethod(AuthMethod.ApiKey);
+        vm.NewApiKey = "sk-test-key";
+        vm.SubmitCredentials();
+
+        await vm.ProbeCompletion!.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        vm.ConfirmAdd();
+        await vm.EagerProbeCompletion!.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        var config = JsonDocument.Parse(File.ReadAllText(_paths.NetclawConfigPath));
+        var providerNames = config.RootElement.GetProperty("Providers").EnumerateObject()
+            .Select(p => p.Name).ToList();
+        Assert.Single(providerNames);
+        Assert.Equal("lab-a100", providerNames[0]);
+    }
+
+    [Fact]
+    public async Task StartRename_TransitionsToRenameProvider()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-vllm"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "openai-compatible",
+                    ["Endpoint"] = "http://localhost:8080"
+                }
+            }
+        });
+
+        using var vm = CreateViewModel();
+        await ActivateAndProbeAsync(vm);
+
+        var idx = vm.DisplayProviders.FindIndex(p => p.ConfiguredName == "my-vllm");
+        vm.SelectedProviderIndex = idx;
+        vm.ActivateSelectedProvider();
+        // Force into Details (probe outcome doesn't matter here).
+        vm.DetailProvider = vm.DisplayProviders[idx];
+
+        vm.StartRename();
+
+        Assert.Equal(ProviderManagerState.RenameProvider, vm.CurrentState.Value);
+        Assert.Equal("my-vllm", vm.RenameNewName);
+    }
+
+    [Fact]
+    public async Task ConfirmRename_SwapsKeyAndReturnsToList()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-vllm"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "openai-compatible",
+                    ["Endpoint"] = "http://localhost:8080"
+                }
+            }
+        });
+
+        using var vm = CreateViewModel();
+        await ActivateAndProbeAsync(vm);
+
+        var idx = vm.DisplayProviders.FindIndex(p => p.ConfiguredName == "my-vllm");
+        vm.DetailProvider = vm.DisplayProviders[idx];
+        vm.CurrentState.Value = ProviderManagerState.Details;
+
+        vm.ConfirmRename("lab-a100");
+        await vm.EagerProbeCompletion!.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.Equal(ProviderManagerState.List, vm.CurrentState.Value);
+
+        var config = JsonDocument.Parse(File.ReadAllText(_paths.NetclawConfigPath));
+        var providers = config.RootElement.GetProperty("Providers");
+        Assert.False(providers.TryGetProperty("my-vllm", out _));
+        Assert.True(providers.TryGetProperty("lab-a100", out _));
+    }
+
+    [Fact]
+    public async Task ConfirmRename_EmptyName_KeepsCurrentStateAndSetsError()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-vllm"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "openai-compatible",
+                    ["Endpoint"] = "http://localhost:8080"
+                }
+            }
+        });
+
+        using var vm = CreateViewModel();
+        await ActivateAndProbeAsync(vm);
+
+        var idx = vm.DisplayProviders.FindIndex(p => p.ConfiguredName == "my-vllm");
+        vm.DetailProvider = vm.DisplayProviders[idx];
+        vm.CurrentState.Value = ProviderManagerState.RenameProvider;
+
+        vm.ConfirmRename("   ");
+
+        Assert.Equal(ProviderManagerState.RenameProvider, vm.CurrentState.Value);
+        Assert.NotEmpty(vm.ErrorMessage.Value);
     }
 
     private ProviderManagerViewModel CreateViewModel()
