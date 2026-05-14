@@ -60,6 +60,7 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
     {
         services.AddSingleton<IChatClientProvider>(new SingleClientProvider(_chatClient));
         services.AddSingleton(_paths);
+        services.AddSingleton<Netclaw.Actors.Jobs.BackgroundJobDefinitionStore>();
         services.AddSingleton(new ModelCapabilities
         {
             ModelId = "fake-model",
@@ -929,6 +930,64 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             Assert.Equal(new SlackEventTs("1.0"), updated.MessageTs);
             Assert.Contains(ApprovalOptionKeys.ApproveSessionLabel, updated.Text, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(updated.Blocks ?? [], block => block is ActionsBlock);
+        }, duration: TimeSpan.FromSeconds(10), cancellationToken: TestContext.Current.CancellationToken);
+
+        Watch(actor);
+        Sys.Stop(actor);
+        await ExpectTerminatedAsync(actor, cancellationToken: TestContext.Current.CancellationToken);
+    }
+
+    // Regression for #979 — second-layer drop. A cold-spawned binding (no prior
+    // ToolInteractionRequest seen) must still forward an inbound approval response
+    // to the session. Previously the binding bailed at `_pendingApprovalRequests.Count == 0`.
+    [Fact]
+    public async Task Button_approval_response_forwards_to_session_when_binding_cold_spawned()
+    {
+        // No ToolInteractionRequest in the output stream → binding's
+        // _pendingApprovalRequests stays empty after subscription.
+        var feedbackPipeline = new RecordingSessionPipeline([]);
+
+        var deps = new SlackGatewayDependencies(
+            Pipeline: feedbackPipeline,
+            IngressGate: null,
+            ActorSystem: Sys,
+            TimeProvider: TimeProvider.System,
+            Options: new SlackChannelOptions
+            {
+                Enabled = true,
+                MentionOnly = false,
+                AllowDirectMessages = true,
+                BotToken = new SensitiveString("xoxb-fake-token")
+            },
+            BotUserId: new SlackUserId("UBOT"),
+            DefaultChannelId: null,
+            ReplyClient: _replyClient,
+            ContentScanner: new NullContentScanner(),
+            ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
+            AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
+            ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
+            Paths: _paths);
+
+        var actor = Sys.ActorOf(SlackThreadBindingActor.CreateProps(
+            new SessionId("D7/9061.1"),
+            new SlackChannelId("D7"),
+            new SlackThreadTs("9061.1"),
+            deps), "slack-thread-cold-approval-forward-test");
+
+        actor.Tell(new SlackApprovalResponse(
+            new SlackChannelId("D7"),
+            new SlackThreadTs("9061.1"),
+            "call-cold-binding",
+            ApprovalOptionKeys.ApproveOnce,
+            "U123"));
+
+        await AwaitAssertAsync(() =>
+        {
+            var feedback = Assert.Single(feedbackPipeline.Feedback);
+            var response = Assert.IsType<ToolInteractionResponse>(feedback);
+            Assert.Equal("call-cold-binding", response.CallId);
+            Assert.Equal(ApprovalOptionKeys.ApproveOnce, response.SelectedKey);
+            Assert.Equal("U123", response.SenderId);
         }, duration: TimeSpan.FromSeconds(10), cancellationToken: TestContext.Current.CancellationToken);
 
         Watch(actor);

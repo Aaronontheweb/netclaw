@@ -19,6 +19,10 @@ using SlackNet.WebApi;
 
 namespace Netclaw.Channels.Slack;
 
+/// <summary>
+/// There is only one SlackChannel per process - it multiplexes all of the actual Slack conversations,
+/// irrespective of their channel / DM  etc, down to the thread binding actors that own discrete sessions.
+/// </summary>
 public sealed class SlackChannel : IChannel, IEventHandler<MessageEvent>, IEventHandler<AppMention>
 {
     private readonly ISessionPipeline _pipeline;
