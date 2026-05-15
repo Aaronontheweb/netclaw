@@ -316,6 +316,10 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
 
         _nameInput = new TextInputNode().WithPlaceholder($"my-{providerType}");
         _nameInput.Text = ViewModel.NewProviderName ?? string.Empty;
+        // Termina's Text setter leaves the cursor at position 0. Synthesize
+        // End so the user can immediately edit the suffix instead of having
+        // their first keystroke insert before the pre-filled name.
+        _nameInput.HandleInput(new ConsoleKeyInfo('\0', ConsoleKey.End, shift: false, alt: false, control: false));
         _nameInput.OnFocused();
         _lastFocusedInput = _nameInput;
 
@@ -648,6 +652,10 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
 
         _renameInput = new TextInputNode().WithPlaceholder(item.ConfiguredName ?? "");
         _renameInput.Text = ViewModel.RenameNewName ?? item.ConfiguredName ?? string.Empty;
+        // Termina's Text setter leaves the cursor at position 0. Synthesize
+        // End so the user can immediately edit the suffix instead of having
+        // their first keystroke insert before the pre-filled name.
+        _renameInput.HandleInput(new ConsoleKeyInfo('\0', ConsoleKey.End, shift: false, alt: false, control: false));
         _renameInput.OnFocused();
         _lastFocusedInput = _renameInput;
 
