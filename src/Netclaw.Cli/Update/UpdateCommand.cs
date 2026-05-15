@@ -385,10 +385,8 @@ internal static class UpdateCommand
         }
         catch (Exception ex)
         {
-            // Swallow: a failed background check must never produce stderr
-            // output mid-TUI. The notice simply doesn't surface this run.
-            // Debug.WriteLine is conditionally compiled and a no-op in Release;
-            // it never writes to stderr or the alt-screen.
+            // A failed background check must never write to stderr mid-TUI;
+            // Debug.WriteLine is a no-op in Release and bypasses the alt-screen.
             System.Diagnostics.Debug.WriteLine(
                 $"background update check failed: {ex.Message}");
         }
