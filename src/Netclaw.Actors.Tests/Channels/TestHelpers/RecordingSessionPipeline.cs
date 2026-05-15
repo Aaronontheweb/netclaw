@@ -83,7 +83,7 @@ public sealed class RecordingSessionPipeline : ISessionPipeline
                         gate.Writer.TryWrite(true);
                     }
                 })
-                .MapMaterializedValue<NotUsed>(_ => NotUsed.Instance);
+                .ObservingFault();
 
             // Wait for gate signal, then emit all outputs.
             output = Source.UnfoldAsync<int, SessionOutput>(0, async state =>
@@ -106,7 +106,7 @@ public sealed class RecordingSessionPipeline : ISessionPipeline
         else
         {
             input = Sink.ForEach<ChannelInput>(ci => CapturedInputs.Enqueue(ci))
-                .MapMaterializedValue<NotUsed>(_ => NotUsed.Instance);
+                .ObservingFault();
 
             output = Source.From(outputs)
                 .Concat(Source.Never<SessionOutput>())
