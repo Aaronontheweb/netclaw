@@ -47,7 +47,7 @@ public class SubAgentActorTests : TestKit
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
 
         var result = await agent.Ask<SubAgentResult>(
-            new RunSubAgent { Task = "Say hello", Timeout = TimeSpan.FromSeconds(5) },
+            new RunSubAgent { Task = "Say hello", Timeout = TimeSpan.FromSeconds(5) , Audience = TrustAudience.Personal.ToWireValue() },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.True(result.Success);
@@ -73,7 +73,7 @@ public class SubAgentActorTests : TestKit
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
 
         var result = await agent.Ask<SubAgentResult>(
-            new RunSubAgent { Task = "Greet the user", Timeout = TimeSpan.FromSeconds(5) },
+            new RunSubAgent { Task = "Greet the user", Timeout = TimeSpan.FromSeconds(5) , Audience = TrustAudience.Personal.ToWireValue() },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.True(result.Success);
@@ -104,7 +104,8 @@ public class SubAgentActorTests : TestKit
                 Task = "Inspect the inherited paths.",
                 Timeout = TimeSpan.FromSeconds(5),
                 ParentSessionDirectory = "/tmp/netclaw/sessions/abc",
-                ParentProjectDirectory = "/home/user/workspaces/netclaw"
+                ParentProjectDirectory = "/home/user/workspaces/netclaw",
+                Audience = TrustAudience.Personal.ToWireValue(),
             },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
@@ -131,7 +132,8 @@ public class SubAgentActorTests : TestKit
             {
                 Task = "Inspect inherited paths.",
                 Timeout = TimeSpan.FromSeconds(5),
-                ParentSessionDirectory = "/tmp/netclaw/sessions/xyz"
+                ParentSessionDirectory = "/tmp/netclaw/sessions/xyz",
+                Audience = TrustAudience.Personal.ToWireValue(),
             },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
@@ -158,7 +160,8 @@ public class SubAgentActorTests : TestKit
             {
                 Task = "First run.",
                 Timeout = TimeSpan.FromSeconds(5),
-                ParentProjectDirectory = "/home/user/workspaces/project-a"
+                ParentProjectDirectory = "/home/user/workspaces/project-a",
+                Audience = TrustAudience.Personal.ToWireValue(),
             },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.True(firstResult.Success);
@@ -176,7 +179,8 @@ public class SubAgentActorTests : TestKit
             {
                 Task = "Second run after parent project switch.",
                 Timeout = TimeSpan.FromSeconds(5),
-                ParentProjectDirectory = "/home/user/workspaces/project-b"
+                ParentProjectDirectory = "/home/user/workspaces/project-b",
+                Audience = TrustAudience.Personal.ToWireValue(),
             },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.True(secondResult.Success);
@@ -192,7 +196,7 @@ public class SubAgentActorTests : TestKit
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
 
         var result = await agent.Ask<SubAgentResult>(
-            new RunSubAgent { Task = "Do the thing.", Timeout = TimeSpan.FromSeconds(5) },
+            new RunSubAgent { Task = "Do the thing.", Timeout = TimeSpan.FromSeconds(5) , Audience = TrustAudience.Personal.ToWireValue() },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.True(result.Success);
@@ -210,7 +214,7 @@ public class SubAgentActorTests : TestKit
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
 
         var result = await agent.Ask<SubAgentResult>(
-            new RunSubAgent { Task = "Do the thing.", Timeout = TimeSpan.FromSeconds(5) },
+            new RunSubAgent { Task = "Do the thing.", Timeout = TimeSpan.FromSeconds(5) , Audience = TrustAudience.Personal.ToWireValue() },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.True(result.Success);
@@ -252,7 +256,7 @@ public class SubAgentActorTests : TestKit
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient, policy, approvalService: null));
 
         var result = await agent.Ask<SubAgentResult>(
-            new RunSubAgent { Task = "Try the shell tool", Timeout = TimeSpan.FromSeconds(5) },
+            new RunSubAgent { Task = "Try the shell tool", Timeout = TimeSpan.FromSeconds(5) , Audience = TrustAudience.Personal.ToWireValue() },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.True(result.Success);
@@ -301,7 +305,8 @@ public class SubAgentActorTests : TestKit
             {
                 Task = "Run the same approval-gated tool twice",
                 Timeout = TimeSpan.FromSeconds(5),
-                ApprovalBridge = approvalBridge
+                ApprovalBridge = approvalBridge,
+                Audience = TrustAudience.Personal.ToWireValue(),
             },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
@@ -327,7 +332,7 @@ public class SubAgentActorTests : TestKit
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
 
         var result = await agent.Ask<SubAgentResult>(
-            new RunSubAgent { Task = "Loop forever", Timeout = TimeSpan.FromSeconds(10) },
+            new RunSubAgent { Task = "Loop forever", Timeout = TimeSpan.FromSeconds(10) , Audience = TrustAudience.Personal.ToWireValue() },
             TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         // After 10 tool iterations, forces a no-tools call which returns text
@@ -347,7 +352,7 @@ public class SubAgentActorTests : TestKit
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
 
         var result = await agent.Ask<SubAgentResult>(
-            new RunSubAgent { Task = "Slow task", Timeout = TimeSpan.FromMilliseconds(500) },
+            new RunSubAgent { Task = "Slow task", Timeout = TimeSpan.FromMilliseconds(500) , Audience = TrustAudience.Personal.ToWireValue() },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.False(result.Success);
@@ -363,7 +368,7 @@ public class SubAgentActorTests : TestKit
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, throwingClient));
 
         var result = await agent.Ask<SubAgentResult>(
-            new RunSubAgent { Task = "Fail", Timeout = TimeSpan.FromSeconds(5) },
+            new RunSubAgent { Task = "Fail", Timeout = TimeSpan.FromSeconds(5) , Audience = TrustAudience.Personal.ToWireValue() },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.False(result.Success);
@@ -379,7 +384,7 @@ public class SubAgentActorTests : TestKit
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
         Watch(agent);
 
-        agent.Tell(new RunSubAgent { Task = "Done", Timeout = TimeSpan.FromSeconds(5) });
+        agent.Tell(new RunSubAgent { Task = "Done", Timeout = TimeSpan.FromSeconds(5) , Audience = TrustAudience.Personal.ToWireValue() });
 
         // SubAgentResult arrives before Terminated — drain it first
         await ExpectMsgAsync<SubAgentResult>(cancellationToken: TestContext.Current.CancellationToken);
@@ -449,7 +454,7 @@ public class SubAgentActorTests : TestKit
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
 
         var result = await agent.Ask<SubAgentResult>(
-            new RunSubAgent { Task = "Summarize research", Timeout = TimeSpan.FromSeconds(5) },
+            new RunSubAgent { Task = "Summarize research", Timeout = TimeSpan.FromSeconds(5) , Audience = TrustAudience.Personal.ToWireValue() },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.True(result.Success);
@@ -467,7 +472,7 @@ public class SubAgentActorTests : TestKit
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
 
         var result = await agent.Ask<SubAgentResult>(
-            new RunSubAgent { Task = "Summarize research", Timeout = TimeSpan.FromSeconds(5) },
+            new RunSubAgent { Task = "Summarize research", Timeout = TimeSpan.FromSeconds(5) , Audience = TrustAudience.Personal.ToWireValue() },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.True(result.Success);
@@ -491,7 +496,8 @@ public class SubAgentActorTests : TestKit
             {
                 Task = "Summarize the recent commits.",
                 RuntimeContext = "Workspace is netclaw on branch feature/foo.",
-                Timeout = TimeSpan.FromSeconds(5)
+                Timeout = TimeSpan.FromSeconds(5),
+                Audience = TrustAudience.Personal.ToWireValue(),
             },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
@@ -520,7 +526,8 @@ public class SubAgentActorTests : TestKit
             new RunSubAgent
             {
                 Task = "Do the thing.",
-                Timeout = TimeSpan.FromSeconds(5)
+                Timeout = TimeSpan.FromSeconds(5),
+                Audience = TrustAudience.Personal.ToWireValue(),
             },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 

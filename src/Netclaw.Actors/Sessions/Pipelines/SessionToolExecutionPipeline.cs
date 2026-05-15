@@ -568,17 +568,24 @@ internal static class SessionToolExecutionPipeline
             return new ToolCallResult(message, [], [], []);
         }
 
+        // A background job inherits the submitting turn's trust context. There is
+        // no safe default — defaulting a missing source to Personal would silently
+        // escalate the job's audience. A null source here is a programming error.
+        if (source is null)
+            throw new InvalidOperationException(
+                "Background-job submission requires a turn source; trust context cannot be defaulted.");
+
         var startCmd = new StartBackgroundJob
         {
             Command = command,
             WorkingDirectory = workingDirectory,
             SessionId = sessionId,
             Rationale = meta.Rationale ?? "background shell execution",
-            Audience = source?.Audience ?? TrustAudience.Personal,
-            Boundary = source?.Boundary ?? SecurityPolicyDefaults.PersonalBoundary,
-            OriginChannelType = source?.ChannelType ?? ChannelType.Tui,
+            Audience = source.Audience,
+            Boundary = source.Boundary,
+            OriginChannelType = source.ChannelType,
             TimeoutSeconds = timeoutSeconds,
-            SenderId = source?.SenderId
+            SenderId = source.SenderId
         };
 
         try

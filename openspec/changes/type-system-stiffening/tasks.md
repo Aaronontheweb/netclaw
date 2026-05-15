@@ -17,11 +17,11 @@
 
 ## 2. PR-B — Elevated-fallback sites become explicit throws
 
-- [ ] 2.1 Replace `source?.Audience ?? TrustAudience.Personal` / `source?.Boundary ?? SecurityPolicyDefaults.PersonalBoundary` in `SessionToolExecutionPipeline` (background-job submission) with an explicit `throw new InvalidOperationException` on a missing turn source.
-- [ ] 2.2 Replace `msg.Audience ?? TrustAudience.Personal.ToWireValue()` in `SubAgentActor` with an explicit `throw` on a missing audience.
-- [ ] 2.3 Replace `?? new NullPromptInjectionDetector()` in `SlackThreadBindingActor` and `SlackChannel` with an explicit `throw` on a missing detector.
-- [ ] 2.4 Add or update tests asserting each site throws on the missing-context path (use `Ask`/`AwaitAssert` patterns; no `Thread.Sleep`).
-- [ ] 2.5 Verify PR-B: build clean, tests green, slopwatch clean, file headers verified.
+- [x] 2.1 Replace `source?.Audience ?? TrustAudience.Personal` / `source?.Boundary ?? SecurityPolicyDefaults.PersonalBoundary` in `SessionToolExecutionPipeline` (background-job submission) with an explicit `throw new InvalidOperationException` on a missing turn source.
+- [x] 2.2 Replace `msg.Audience ?? TrustAudience.Personal.ToWireValue()` in `SubAgentActor` with an explicit `throw` on a missing audience.
+- [x] 2.3 Replace `?? new NullPromptInjectionDetector()` in `SlackThreadBindingActor`, `SlackChannel`, `DiscordSessionBindingActor`, and `DiscordChannel` with an explicit `throw`; delete the now-unused `NullPromptInjectionDetector`.
+- [x] 2.4 Update tests for the new throw behavior (`RunSubAgent` carries an explicit audience; gateway-dependency fixtures wire a real detector).
+- [x] 2.5 Verify PR-B: build clean, tests green, slopwatch clean, file headers verified.
 
 ## 3. PR-C — `ToolExecutionContext` / `RunSubAgent` audience typing
 

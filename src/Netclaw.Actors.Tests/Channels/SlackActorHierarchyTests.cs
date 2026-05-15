@@ -284,7 +284,8 @@ public sealed class SlackActorHierarchyTests(ITestOutputHelper output) : TestKit
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
             Paths: TestSlackGatewayDeps.NewTestPaths(),
             ConversationPropsFactory: conversationPropsFactory,
-            ThreadPropsFactory: threadPropsFactory);
+            ThreadPropsFactory: threadPropsFactory,
+            PromptInjectionDetector: SafePromptInjectionDetector.Instance);
     }
 
     private static SlackInboundMessage CreateMessage(

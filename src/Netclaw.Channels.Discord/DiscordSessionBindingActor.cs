@@ -78,7 +78,13 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
         _threadOrMessageId = threadOrMessageId;
         _rootMessageId = rootMessageId;
         _dependencies = dependencies;
-        _promptInjectionDetector = dependencies.PromptInjectionDetector ?? new NullPromptInjectionDetector();
+        // Fail loud rather than substituting a no-op detector — a no-op reports
+        // every input as safe, silently disabling injection scanning. A null
+        // here means broken gateway wiring.
+        _promptInjectionDetector = dependencies.PromptInjectionDetector
+            ?? throw new InvalidOperationException(
+                "DiscordGatewayDependencies.PromptInjectionDetector is not wired; "
+                + "prompt-injection scanning cannot be silently disabled.");
 
         _log = Context.GetLogger()
             .WithContext("Adapter", "discord")

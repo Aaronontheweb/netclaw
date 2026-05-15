@@ -65,7 +65,13 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         _channelId = channelId;
         _threadTs = threadTs;
         _dependencies = dependencies;
-        _promptInjectionDetector = dependencies.PromptInjectionDetector ?? new NullPromptInjectionDetector();
+        // Fail loud rather than substituting a no-op detector — a no-op reports
+        // every input as safe, silently disabling injection scanning. A null
+        // here means broken gateway wiring.
+        _promptInjectionDetector = dependencies.PromptInjectionDetector
+            ?? throw new InvalidOperationException(
+                "SlackGatewayDependencies.PromptInjectionDetector is not wired; "
+                + "prompt-injection scanning cannot be silently disabled.");
         _handle = new SessionPipelineHandle(dependencies.Pipeline, Context.GetLogger(), "slack-thread");
         _log = Context.GetLogger()
             .WithContext("Adapter", "slack")

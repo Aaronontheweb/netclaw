@@ -288,7 +288,8 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
         await sessionManager.Ask<CommandAck>(new SendUserMessage
         {
             SessionId = sessionId,
-            Content = "/ops-route check daemon health"
+            Content = "/ops-route check daemon health",
+            Source = BuildPersonalSource()
         }, TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
 
         var text = await ExpectTextOutputAsync(subscriber, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);

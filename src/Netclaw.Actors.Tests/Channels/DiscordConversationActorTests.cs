@@ -458,6 +458,7 @@ public sealed class DiscordConversationActorTests(ITestOutputHelper output) : Te
             ModelCapabilities: TestDiscordGatewayDeps.DefaultVisionCapableModel,
             Paths: TestDiscordGatewayDeps.NewTestPaths(),
             BotUserId: botUserId,
+            PromptInjectionDetector: SafePromptInjectionDetector.Instance,
             SessionPropsFactory: sessionPropsFactory);
     }
 

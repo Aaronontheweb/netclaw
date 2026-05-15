@@ -312,7 +312,8 @@ public sealed class DiscordGatewayActorTests(ITestOutputHelper output) : TestKit
             AudienceProfiles: TestDiscordGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestDiscordGatewayDeps.DefaultVisionCapableModel,
             Paths: TestDiscordGatewayDeps.NewTestPaths(),
-            ConversationPropsFactory: conversationPropsFactory);
+            ConversationPropsFactory: conversationPropsFactory,
+            PromptInjectionDetector: SafePromptInjectionDetector.Instance);
     }
 
     private static DiscordGatewayMessage CreateMessage(
