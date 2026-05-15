@@ -209,7 +209,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         {
             Id = id.Value,
             Title = title,
-            Audience = authorization.EffectiveAudience,
+            Audience = effectiveAudience,
             Boundary = effectiveBoundary,
             CreatedBy = string.IsNullOrWhiteSpace(cmd.Definition.CreatedBy)
                 ? "system"

@@ -40,26 +40,27 @@ programming error and SHALL raise an explicit exception.
 ### Requirement: Persisted job records carry required trust fields
 
 The persisted `BackgroundJobDefinition` and `ActiveJobInfo` records SHALL
-declare their audience and boundary fields as `required` and non-optional.
-Deserialization of a legacy persisted job document that lacks these fields
-SHALL fail loudly, identifying the document and the missing field. The system
-SHALL NOT silently backfill a missing trust field with the previous `Personal`
+declare their audience and boundary fields as `required` and non-optional, so
+that every in-process construction is enforced by the compiler. A legacy
+`BackgroundJobDefinition` JSON document that lacks these fields SHALL be
+backfilled at load with a conservative fail-closed value — `Public` audience
+and the public boundary — and the backfill SHALL be logged at warning level
+naming the document. The system SHALL NOT backfill the previous `Personal`
 default.
 
-#### Scenario: Legacy job document missing trust fields fails loud
+#### Scenario: Legacy job document is backfilled fail-closed at load
 
 - **GIVEN** a persisted `BackgroundJobDefinition` JSON document that predates
   this change and lacks an audience or boundary field
-- **WHEN** the daemon attempts to deserialize it
-- **THEN** deserialization throws an explicit error naming the document and
-  the missing field
+- **WHEN** the job store deserializes it
+- **THEN** the missing audience is set to `Public` and the missing boundary to
+  the public boundary
+- **AND** a warning naming the document is logged
 - **AND** no `Personal` audience or boundary is substituted
 
-#### Scenario: Doctor detects and remediates legacy job documents
+#### Scenario: Current job documents round-trip unchanged
 
-- **GIVEN** legacy job documents missing trust fields exist in the persistence
-  directory
-- **WHEN** the operator runs `netclaw doctor`
-- **THEN** the check reports the affected documents
-- **AND** `netclaw doctor --fix` backfills an explicit conservative
-  (`Public`) audience and the public boundary after operator confirmation
+- **GIVEN** a `BackgroundJobDefinition` written after this change with explicit
+  audience and boundary
+- **WHEN** the job store deserializes it
+- **THEN** the audience and boundary are read verbatim with no warning logged

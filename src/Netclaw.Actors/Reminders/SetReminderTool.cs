@@ -244,8 +244,11 @@ public sealed partial class SetReminderTool : NetclawTool<SetReminderTool.Params
             Delivery = delivery,
             DeliveryRequired = args.DeliveryRequired,
             DeliveryInstructions = args.DeliveryInstructions,
-            Audience = audience,
-            Boundary = boundary,
+            // Draft trust context — ReminderManagerActor re-resolves and
+            // re-authorizes Audience/Boundary before persisting. Prefer the
+            // explicitly requested audience, then the creating session's.
+            Audience = audience ?? sourceAudience ?? TrustAudience.Public,
+            Boundary = boundary ?? SecurityPolicyDefaults.PublicBoundary,
             Enabled = true,
             ExpiresAt = expiresAt,
             CreatedBy = "llm-tool",

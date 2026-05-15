@@ -129,19 +129,38 @@ it is a free-form partition label with no parse step. `SecurityPolicyDefaults.Pa
 and `ResolveAudienceWithFallback` become dead code on the read path and are
 deleted. `RunSubAgent.Audience` changes correspondingly.
 
-### D6 — Persisted records: loud JSON converter, no on-disk migration
+### D6 — Persisted records: conservative backfill at load, no on-disk migration
 
 `BackgroundJobDefinition`, `ActiveJobInfo`, `ReminderDefinition` make their
-trust fields `required`. Backward compatibility is handled at deserialization,
-not by a one-time disk migration (operator's stated preference). A shared
-`RequiredFieldConverter<T>`-style helper detects a legacy document missing a
-trust field and **throws** with a message naming the document and field. A new
-`netclaw doctor` check scans the persistence directory for such documents and
-offers `--fix` to backfill an explicit *conservative* (`Public` /
-`PublicBoundary`) value — never the old elevated `Personal` default — with
-operator confirmation. *Alternative considered*: silent backfill at
-deserialization — rejected; it is precisely the silent fallback the
-constitution forbids, and on these records it would re-introduce the escalation.
+trust fields `required` — this is the type-system win: every in-process
+construction is compiler-enforced. Backward compatibility is handled at
+deserialization, not by a one-time disk migration (operator's stated
+preference).
+
+`ActiveJobInfo` is protobuf-serialized; proto3 has no notion of an absent
+field, and a legacy record deserializes its audience to enum `0`, which is
+`TrustAudience.Public` (fail-closed). So `ActiveJobInfo` needs no special
+handling — `required` is purely a compile-time change there.
+
+`BackgroundJobDefinition` and `ReminderDefinition` are JSON
+(`BackgroundJobDefinitionStore`, `ReminderDefinitionStore`). On the
+deserialization path each store parses the document into a `JsonObject`,
+detects an absent `Audience`/`Boundary` key, logs a warning naming the file,
+and injects a **conservative fail-closed** value (`Public` / public boundary —
+never the old elevated `Personal`) before deserializing. The store, not a
+`JsonConverter`, owns this because it has both the file path (for the log
+message) and a logger; a `JsonConverter` has neither. A small shared helper
+(`LegacyTrustFieldBackfill`) holds the detect-inject-log logic so both stores
+share one implementation.
+
+This is not a silent fallback: the substitution is loud (a logged warning) and
+fail-closed (`Public`, the least-privileged audience — it cannot escalate a
+job or reminder). Loading a pre-upgrade document is a defined, normal upgrade
+condition, which the `trust-context-integrity` spec explicitly permits a
+conservative substitution for. *Alternative considered*: throw on a legacy
+document — rejected; it forces an effective migration, which the operator
+explicitly ruled out, for no security gain over a fail-closed conservative
+backfill.
 
 ### D7 — Sequencing as four independent PRs
 
@@ -157,11 +176,12 @@ independently reviewable and compiler-verified.
 - **Large mechanical diff across channel adapters** → The compiler drives the
   refactor: every missing `required` field is a build error pointing at the
   exact callsite. Fix per error, no guesswork. Tests adapt the same way.
-- **Legacy persisted documents fail to load loudly** → This is intentional, but
-  could surprise an operator upgrading across this change. Mitigation: the
-  `netclaw doctor` check detects affected documents *before* a session tries to
-  load them, and `--fix` provides a guided remediation. Document in the upgrade
-  notes.
+- **Legacy persisted documents silently load with a downgraded audience** →
+  A pre-upgrade job/reminder that was `Personal` loads as `Public` after this
+  change. Mitigation: the substitution is logged at warning level naming the
+  file, so it is observable. The downgrade is fail-closed — the job/reminder
+  runs with fewer grants, never more — so the worst case is an operator
+  re-running an under-privileged job, not an escalation.
 - **`throw` on a missing turn source could crash a session if the invariant is
   wrong** → The invariant (every tool execution and background-job submission
   has a turn source) is established by D1/D3 making `MessageSource` mandatory.
@@ -171,27 +191,19 @@ independently reviewable and compiler-verified.
 - **`ToolExecutionContext.Audience` retype touches every tool** → Blast radius
   is bounded to tools that read `context.Audience` (enumerated in the proposal
   impact section). Mechanical; compiler-verified.
-- **Conservative `Public` backfill in doctor `--fix` could under-privilege a
-  job that was legitimately `Personal`** → Accepted trade-off: a job that loses
-  privilege fails closed (operator re-runs it); the inverse (silent `Personal`)
-  is an escalation. The doctor prompts the operator, who can choose otherwise.
 
 ## Migration Plan
 
 1. PR-A → PR-B → PR-C → PR-D land in order; each is a normal `dev`-branch PR
    with green build + tests.
 2. No deployment-time migration. On first daemon start after PR-D, any legacy
-   persisted document missing trust fields will fail to load loudly.
-3. Operators upgrading across PR-D run `netclaw doctor`; if affected documents
-   are reported, `netclaw doctor --fix` backfills conservative values after
-   confirmation.
-4. **Rollback**: each PR is independently revertable. PR-D's converter is
-   additive (it only adds a loud failure path); reverting it restores the
-   permissive deserialization. No data is rewritten unless the operator
-   explicitly runs `--fix`.
+   persisted job/reminder document missing trust fields is backfilled at load
+   with a conservative fail-closed value and a logged warning. A regression
+   test exercises the legacy-reminder convert-on-read path end-to-end.
+3. **Rollback**: each PR is independently revertable. PR-D's backfill is
+   confined to the two stores' deserialization paths; reverting it restores
+   the prior behavior. No on-disk data is rewritten by this change.
 
 ## Open Questions
 
-- None blocking. The doctor `--fix` backfill value is fixed as `Public` /
-  `PublicBoundary` per D6; if an operator needs a different value they decline
-  `--fix` and edit the document directly.
+- None.

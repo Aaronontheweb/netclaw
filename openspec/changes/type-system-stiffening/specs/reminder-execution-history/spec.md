@@ -3,32 +3,26 @@
 ### Requirement: Persisted reminder definitions carry required trust fields
 
 A persisted `ReminderDefinition` SHALL declare its audience and boundary fields
-as `required` and non-optional. Deserialization of a legacy reminder document
-that lacks these fields SHALL fail loudly, identifying the document and the
-missing field. The system SHALL NOT silently substitute a default audience or
-boundary for a persisted reminder.
+as `required` and non-optional, so that every in-process construction is
+enforced by the compiler. A legacy reminder JSON document that lacks these
+fields SHALL be backfilled at load with a conservative fail-closed value —
+`Public` audience and the public boundary — and the backfill SHALL be logged at
+warning level naming the document. The system SHALL NOT backfill an elevated
+default.
 
-#### Scenario: Legacy reminder document missing trust fields fails loud
+#### Scenario: Legacy reminder document is backfilled fail-closed at load
 
 - **GIVEN** a persisted `ReminderDefinition` JSON document that predates this
   change and lacks an audience or boundary field
-- **WHEN** the daemon attempts to deserialize it
-- **THEN** deserialization throws an explicit error naming the document and
-  the missing field
-- **AND** no audience or boundary value is substituted
+- **WHEN** the reminder store deserializes it
+- **THEN** the missing audience is set to `Public` and the missing boundary to
+  the public boundary
+- **AND** a warning naming the document is logged
+- **AND** the reminder remains executable with no loss of its other fields
 
-#### Scenario: Doctor detects and remediates legacy reminder documents
+#### Scenario: Current reminder documents round-trip unchanged
 
-- **GIVEN** legacy reminder documents missing trust fields exist in the
-  persistence directory
-- **WHEN** the operator runs `netclaw doctor`
-- **THEN** the check reports the affected documents
-- **AND** `netclaw doctor --fix` backfills an explicit conservative
-  (`Public`) audience and the public boundary after operator confirmation
-
-#### Scenario: Reminder execution still rejects a missing audience
-
-- **GIVEN** a reminder reaches execution
-- **WHEN** the reminder definition's audience is somehow absent
-- **THEN** the reminder execution actor throws rather than executing with a
-  substituted audience
+- **GIVEN** a `ReminderDefinition` written after this change with explicit
+  audience and boundary
+- **WHEN** the reminder store deserializes it
+- **THEN** the audience and boundary are read verbatim with no warning logged

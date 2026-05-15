@@ -113,6 +113,7 @@ public sealed class ReminderEndpointAuthorizationTests : IDisposable
                     FireAt = now.AddMinutes(30)
                 },
                 Audience = effectiveAudience,
+                Boundary = SecurityPolicyDefaults.PersonalBoundary,
                 Enabled = true,
                 CreatedBy = "test",
                 CreatedAt = now,
@@ -144,16 +145,8 @@ public sealed class ReminderEndpointAuthorizationTests : IDisposable
                 });
             }
 
-            if (request.Definition.Audience is not { } audience)
-            {
-                return Results.BadRequest(new
-                {
-                    error = "Reminder definition must include a valid audience for import.",
-                    code = ReminderSaveError.Validation.ToString(),
-                    id = request.Definition.Id
-                });
-            }
-
+            // Audience is required non-nullable since issue #994; null check is no longer needed.
+            var audience = request.Definition.Audience;
             if (audience > TrustAudience.Personal)
             {
                 return Results.BadRequest(new
@@ -214,17 +207,20 @@ public sealed class ReminderEndpointAuthorizationTests : IDisposable
     }
 
     [Fact]
-    public async Task Import_rejects_missing_audience_without_persisting()
+    public async Task Import_requires_authenticated_authority_context()
     {
-        await using var app = await CreateAppAsync(spoofLoopback: true);
+        // Audience is now required non-nullable (issue #994). The import endpoint
+        // still requires authentication — an unauthenticated call must be rejected
+        // before the definition can be persisted.
+        await using var app = await CreateAppAsync(spoofLoopback: false);
         var client = app.GetTestClient();
         var now = _timeProvider.GetUtcNow();
 
         var response = await client.PostAsJsonAsync("/api/reminders/import", new ReminderImportRequest(
             new ReminderDefinition
             {
-                Id = "rest-import-missing-audience",
-                Title = "rest-import-missing-audience",
+                Id = "rest-import-unauthorized",
+                Title = "rest-import-unauthorized",
                 Instructions = "check status",
                 Delivery = new ReminderDelivery { Kind = DeliveryKind.None },
                 DeliveryInstructions = "reply",
@@ -233,16 +229,16 @@ public sealed class ReminderEndpointAuthorizationTests : IDisposable
                     Type = ReminderScheduleType.OneShot,
                     FireAt = now.AddMinutes(30)
                 },
+                Audience = TrustAudience.Personal,
+                Boundary = SecurityPolicyDefaults.PersonalBoundary,
                 Enabled = true,
                 CreatedBy = "test",
                 CreatedAt = now,
                 UpdatedAt = now
             }), TestContext.Current.CancellationToken);
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
-        Assert.Contains("must include a valid audience", body.GetProperty("error").GetString());
-        Assert.Null(_definitionStore.Get(new ReminderId("rest-import-missing-audience")));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Null(_definitionStore.Get(new ReminderId("rest-import-unauthorized")));
     }
 
     [Fact]

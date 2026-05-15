@@ -5,6 +5,9 @@
 // -----------------------------------------------------------------------
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Netclaw.Actors.Persistence;
 using Netclaw.Configuration;
 
 namespace Netclaw.Actors.Reminders;
@@ -27,10 +30,12 @@ public sealed class ReminderDefinitionStore
     private readonly string _directory;
     private readonly object _sync = new();
     private readonly List<DroppedInvalidReminderDefinition> _droppedInvalidDefinitions = [];
+    private readonly ILogger _logger;
 
-    public ReminderDefinitionStore(NetclawPaths paths)
+    public ReminderDefinitionStore(NetclawPaths paths, ILogger<ReminderDefinitionStore>? logger = null)
     {
         _directory = paths.RemindersDirectory;
+        _logger = logger ?? NullLogger<ReminderDefinitionStore>.Instance;
         Directory.CreateDirectory(_directory);
         PruneInvalidDefinitions();
     }
@@ -177,12 +182,16 @@ public sealed class ReminderDefinitionStore
         }
     }
 
-    private static ReadResult TryReadDefinition(string path)
+    private ReadResult TryReadDefinition(string path)
     {
         try
         {
             var text = File.ReadAllText(path);
-            var definition = JsonSerializer.Deserialize<ReminderDefinition>(text, JsonOptions);
+            // Backfill trust fields on pre-#994 documents before deserialization,
+            // so a legacy reminder converts on read instead of failing the
+            // required-member check and being pruned as invalid.
+            var patched = LegacyTrustFieldBackfill.ApplyIfNeeded(text, path, _logger);
+            var definition = JsonSerializer.Deserialize<ReminderDefinition>(patched, JsonOptions);
             if (definition is null || string.IsNullOrWhiteSpace(definition.Id))
             {
                 return new ReadResult(

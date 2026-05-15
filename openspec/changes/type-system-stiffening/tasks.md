@@ -33,16 +33,15 @@
 - [x] 3.6 Update affected tests for the typed audience.
 - [x] 3.7 Verify PR-C: build clean, tests green, slopwatch clean, file headers verified. Eval suite not triggered — PR-C is an internal type change and does not alter model-facing tool schemas, grant categories, or definitions.
 
-## 4. PR-D — Persisted records + loud JSON converter + doctor check
+## 4. PR-D — Persisted records: required trust fields + conservative backfill on read
 
-- [ ] 4.1 Add a shared `RequiredFieldConverter`-style JSON converter helper (`Netclaw.Configuration/Json/` or `Netclaw.Actors/Persistence/`) that throws, naming the document and missing field, when a `required` trust field is absent in a legacy document.
-- [ ] 4.2 Make `BackgroundJobDefinition.Audience`/`Boundary` (`Netclaw.Actors/Jobs/BackgroundJobProtocol.cs`) `required`; wire the converter.
-- [ ] 4.3 Make `ActiveJobInfo.Audience`/`Boundary` (`Netclaw.Actors/Jobs/ActiveJobInfo.cs`) `required`; wire the converter.
-- [ ] 4.4 Make `ReminderDefinition.Audience`/`Boundary` (`Netclaw.Actors/Reminders/ReminderProtocol.cs`) `required` and non-nullable; wire the converter.
-- [ ] 4.5 Add a `netclaw doctor` check (`Netclaw.Cli/Doctor/`) that scans the persistence directory for legacy job/reminder documents missing trust fields and reports them.
-- [ ] 4.6 Implement `netclaw doctor --fix` backfill that writes an explicit conservative (`Public` / public boundary) value after operator confirmation.
-- [ ] 4.7 Add tests: legacy document fails loud on deserialize; doctor check detects affected documents; `--fix` backfills conservative values.
-- [ ] 4.8 Verify PR-D: build clean, tests green, slopwatch clean, file headers verified; run `./evals/run-evals.sh` (persistence/config change).
+- [x] 4.1 Add a shared `LegacyTrustFieldBackfill` helper (`Netclaw.Actors/Persistence/`) that, given a job/reminder JSON document and a logger, detects an absent-or-null `Audience`/`Boundary` key, logs a warning naming the document, and injects conservative fail-closed values (`Public` / public boundary).
+- [x] 4.2 Make `BackgroundJobDefinition.Audience`/`Boundary` (`Netclaw.Actors/Jobs/BackgroundJobProtocol.cs`) `required`; wire the backfill into `BackgroundJobDefinitionStore`'s deserialize path.
+- [x] 4.3 Make `ActiveJobInfo.Audience`/`Boundary` (`Netclaw.Actors/Jobs/ActiveJobInfo.cs`) `required` — compile-time only; `ActiveJobInfo` is protobuf-serialized and proto3 defaults a missing audience to `Public` (fail-closed).
+- [x] 4.4 Make `ReminderDefinition.Audience`/`Boundary` (`Netclaw.Actors/Reminders/ReminderProtocol.cs`) `required` and non-nullable; wire the backfill into `ReminderDefinitionStore`'s deserialize path.
+- [x] 4.5 Fix in-process construction sites that omit the now-required trust fields (`SetReminderTool`, `ReminderManagerActor`, `ReminderExecutionActor` dead null-checks).
+- [x] 4.6 Add tests: a legacy reminder document missing trust fields converts-on-read intact (regression test — backfills `Public`, logs a warning, all other fields preserved, file not pruned); the legacy-job equivalent; and current documents round-trip verbatim.
+- [x] 4.7 Verify PR-D: build clean, tests green, slopwatch clean, file headers verified.
 
 ## 5. Cross-cutting verification and documentation
 

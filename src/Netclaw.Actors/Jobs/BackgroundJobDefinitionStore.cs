@@ -5,6 +5,9 @@
 // -----------------------------------------------------------------------
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Netclaw.Actors.Persistence;
 using Netclaw.Configuration;
 
 namespace Netclaw.Actors.Jobs;
@@ -23,11 +26,19 @@ public sealed class BackgroundJobDefinitionStore
 
     private readonly string _directory;
     private readonly object _sync = new();
+    private readonly ILogger _logger;
 
-    public BackgroundJobDefinitionStore(NetclawPaths paths)
+    public BackgroundJobDefinitionStore(NetclawPaths paths, ILogger<BackgroundJobDefinitionStore>? logger = null)
     {
         _directory = paths.JobsDirectory;
+        _logger = logger ?? NullLogger<BackgroundJobDefinitionStore>.Instance;
         Directory.CreateDirectory(_directory);
+    }
+
+    private BackgroundJobDefinition? Deserialize(string text, string path)
+    {
+        var patched = LegacyTrustFieldBackfill.ApplyIfNeeded(text, path, _logger);
+        return JsonSerializer.Deserialize<BackgroundJobDefinition>(patched, JsonOptions);
     }
 
     public BackgroundJobDefinition? Get(BackgroundJobId id)
@@ -41,7 +52,7 @@ public sealed class BackgroundJobDefinitionStore
             try
             {
                 var text = File.ReadAllText(path);
-                return JsonSerializer.Deserialize<BackgroundJobDefinition>(text, JsonOptions);
+                return Deserialize(text, path);
             }
             catch
             {
@@ -63,7 +74,7 @@ public sealed class BackgroundJobDefinitionStore
                 try
                 {
                     var text = File.ReadAllText(file);
-                    var def = JsonSerializer.Deserialize<BackgroundJobDefinition>(text, JsonOptions);
+                    var def = Deserialize(text, file);
                     if (def is not null && !string.IsNullOrWhiteSpace(def.Id))
                         list.Add(def);
                 }

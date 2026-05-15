@@ -117,8 +117,7 @@ internal sealed class ReminderExecutionActor : ReceiveActor
                 : new SessionId($"reminder/{_definition.Id}/{_timeProvider.GetUtcNow().ToUnixTimeMilliseconds()}");
 
             _sessionIdValue = sessionId.Value;
-            if (_definition.Audience is not { } audience)
-                throw new InvalidOperationException($"Reminder '{_definition.Id}' is missing a persisted execution audience.");
+            var audience = _definition.Audience;
 
             _log.Info(
                 $"ReminderExecution Initialized: execution_id={_executionId} reminder_id={_definition.Id} session_id={sessionId.Value} audience={audience} source=stored-definition");
@@ -179,8 +178,7 @@ internal sealed class ReminderExecutionActor : ReceiveActor
             _sessionIdValue = sessionId.Value;
             var originChannelType = _definition.Delivery.OriginChannelType!.Value;
 
-            if (_definition.Audience is not { } audience)
-                throw new InvalidOperationException($"Reminder '{_definition.Id}' is missing a persisted execution audience.");
+            var audience = _definition.Audience;
 
             var reminderDeliveryKey = $"{_definition.Id}:{_dispatchedAt.ToUnixTimeMilliseconds()}";
 

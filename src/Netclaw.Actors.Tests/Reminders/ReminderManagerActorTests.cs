@@ -201,6 +201,8 @@ public class ReminderManagerActorTests : TestKit
                 Type = ReminderScheduleType.OneShot,
                 FireAt = now.AddHours(-1)
             },
+            Audience = TrustAudience.Public,
+            Boundary = SecurityPolicyDefaults.PublicBoundary,
             Enabled = true,
             CreatedBy = "test",
             CreatedAt = now.AddHours(-2),
@@ -294,12 +296,17 @@ public class ReminderManagerActorTests : TestKit
     }
 
     [Fact]
-    public async Task Save_omitted_audience_persists_source_audience()
+    public async Task Save_explicit_audience_within_source_authority_is_persisted()
     {
+        // Audience is now required non-nullable on ReminderDefinition (#994 type-stiffening).
+        // The definition specifies an explicit audience; the manager persists it when it does
+        // not exceed the source authority. Here the definition requests Public and source
+        // authority is Team — Public <= Team, so it should succeed and Public is stored.
         var manager = await GetManagerAsync();
-        var definition = CreateDefinition("inherit-source", "Check inheritance") with
+        var definition = CreateDefinition("explicit-audience", "Check explicit audience") with
         {
-            Audience = null
+            Audience = TrustAudience.Public,
+            Boundary = SecurityPolicyDefaults.PublicBoundary
         };
 
         var response = await manager.Ask<ReminderSavedResponse>(
@@ -313,7 +320,7 @@ public class ReminderManagerActorTests : TestKit
 
         var saved = _definitionStore.Get(response.Id);
         Assert.NotNull(saved);
-        Assert.Equal(TrustAudience.Team, saved!.Audience);
+        Assert.Equal(TrustAudience.Public, saved!.Audience);
     }
 
     /// <summary>
@@ -363,6 +370,7 @@ public class ReminderManagerActorTests : TestKit
                 FireAt = now.AddHours(1)
             },
             Audience = TrustAudience.Team,
+            Boundary = SecurityPolicyDefaults.SlackWorkspaceBoundary,
             Enabled = true,
             CreatedBy = "test",
             CreatedAt = now,
@@ -438,6 +446,7 @@ public class ReminderManagerActorTests : TestKit
                 FireAt = now.AddHours(1)
             },
             Audience = TrustAudience.Team,
+            Boundary = SecurityPolicyDefaults.TrustedInstanceBoundary,
             Enabled = true,
             CreatedBy = "test",
             CreatedAt = now,
@@ -584,6 +593,8 @@ public class ReminderManagerActorTests : TestKit
                 FireAt = now.AddMinutes(30)
             },
             ExpiresAt = now.AddHours(-1),
+            Audience = TrustAudience.Public,
+            Boundary = SecurityPolicyDefaults.PublicBoundary,
             Enabled = true,
             CreatedBy = "test",
             CreatedAt = now.AddDays(-1),
@@ -627,6 +638,8 @@ public class ReminderManagerActorTests : TestKit
                 FireAt = now
             },
             ExpiresAt = now.AddSeconds(-1),
+            Audience = TrustAudience.Public,
+            Boundary = SecurityPolicyDefaults.PublicBoundary,
             Enabled = true,
             CreatedBy = "test",
             CreatedAt = now.AddDays(-1),
@@ -707,6 +720,7 @@ public class ReminderManagerActorTests : TestKit
                 },
                 ExpiresAt = now.AddMilliseconds(200),
                 Audience = TrustAudience.Team,
+                Boundary = SecurityPolicyDefaults.TeamBoundary,
                 Enabled = true,
                 CreatedBy = "test",
                 CreatedAt = now,
@@ -925,6 +939,8 @@ public class ReminderManagerActorTests : TestKit
                 Type = ReminderScheduleType.OneShot,
                 FireAt = now.AddHours(1)
             },
+            Audience = TrustAudience.Team,
+            Boundary = SecurityPolicyDefaults.TeamBoundary,
             Enabled = true,
             CreatedBy = "test",
             CreatedAt = now,
@@ -958,6 +974,7 @@ public class ReminderManagerActorTests : TestKit
                 FireAt = now.AddMinutes(5)
             },
             Audience = TrustAudience.Team,
+            Boundary = SecurityPolicyDefaults.TeamBoundary,
             Enabled = true,
             CreatedBy = "test",
             CreatedAt = now,

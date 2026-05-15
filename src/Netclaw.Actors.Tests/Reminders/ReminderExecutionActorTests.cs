@@ -254,6 +254,7 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
                 FireAt = now.AddHours(1)
             },
             Audience = TrustAudience.Team,
+            Boundary = SecurityPolicyDefaults.TeamBoundary,
             Enabled = true,
             CreatedBy = "test",
             CreatedAt = now,
@@ -356,30 +357,10 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
         Assert.Equal(TrustAudience.Personal, pipeline.CapturedInput!.Audience);
     }
 
-    [Fact]
-    public async Task Execution_fails_when_definition_audience_missing()
-    {
-        var pipeline = new ScriptedSessionPipeline(sessionId =>
-        [
-            new TurnCompleted { SessionId = sessionId, TurnNumber = 1 }
-        ]);
-
-        var definition = CreateDefinition("audience-fallback") with
-        {
-            DeliveryInstructions = string.Empty,
-            Audience = null
-        };
-        var probe = CreateTestProbe();
-        Sys.ActorOf(
-            Props.Create(() => new ParentProxy(probe.Ref, definition, pipeline, _historyStore)),
-            "exec-audience-fallback");
-
-        var completed = await probe.ExpectMsgAsync<ReminderExecutionCompleted>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
-
-        Assert.False(completed.Success);
-        Assert.Contains("missing a persisted execution audience", completed.ErrorMessage);
-        Assert.Null(pipeline.CapturedOptions);
-    }
+    // Note: Execution_fails_when_definition_audience_missing was removed in issue #994.
+    // Audience is now required TrustAudience (non-nullable), so the missing-audience
+    // failure path no longer exists in ReminderExecutionActor. The type system enforces
+    // that every ReminderDefinition carries an explicit Audience at construction time.
 
     [Fact]
     public async Task Execution_uses_stored_audience_directly()

@@ -367,7 +367,9 @@ public class SetReminderToolTests : TestKit
         Assert.Null(cmd.Definition.Delivery.SessionId);
         Assert.Null(cmd.Definition.Delivery.OriginChannelType);
         Assert.Null(cmd.Definition.Delivery.Address);
-        Assert.Null(cmd.Definition.Boundary);
+        // Boundary is now required non-nullable (#994): when no source context is present,
+        // the tool fills it with the fail-closed PublicBoundary default.
+        Assert.Equal(SecurityPolicyDefaults.PublicBoundary, cmd.Definition.Boundary);
 
         probe.Reply(new ReminderSavedResponse(
             new ReminderId(cmd.Definition.Id),
@@ -499,7 +501,9 @@ public class SetReminderToolTests : TestKit
         });
 
         var cmd = await probe.ExpectMsgAsync<SaveReminderCommand>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
-        Assert.Null(cmd.Definition.Audience);
+        // Audience is now required non-nullable (#994): when not specified in tool args,
+        // the tool fills it from the source context audience before sending the command.
+        Assert.Equal(TrustAudience.Team, cmd.Definition.Audience);
         Assert.Equal(TrustAudience.Team, cmd.Authorization?.SourceAudience);
 
         probe.Reply(new ReminderSavedResponse(

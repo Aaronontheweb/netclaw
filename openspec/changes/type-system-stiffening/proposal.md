@@ -43,10 +43,13 @@ gate so the next PR #993 cannot compile.
   silently degrading to `Public` at gate-check time. `RunSubAgent.Audience`
   changes correspondingly.
 - Persisted records (`BackgroundJobDefinition`, `ActiveJobInfo`,
-  `ReminderDefinition`) make their trust fields `required`. Backward
-  compatibility for legacy JSON documents is handled by a JSON converter that
-  fails loud on missing fields (no on-disk migration), with a `netclaw doctor`
-  check and `--fix` path.
+  `ReminderDefinition`) make their trust fields `required` — enforcing every
+  in-process construction at compile time. Backward compatibility for legacy
+  JSON documents is handled at deserialization: the job/reminder stores detect
+  a document missing trust fields, log a warning naming the file, and backfill
+  a conservative fail-closed value (`Public` / public boundary — never the old
+  `Personal`). No on-disk migration and no doctor tooling — legacy documents
+  load gracefully and fail closed.
 
 ## Capabilities
 
@@ -71,8 +74,9 @@ gate so the next PR #993 cannot compile.
   turn source is present rather than defaulting to `Personal` audience;
   persisted job records SHALL carry explicit trust fields.
 - `reminder-execution-history`: Persisted reminder definitions SHALL carry
-  explicit, required trust fields; legacy documents missing them SHALL fail
-  loud with an operator-facing remediation path.
+  explicit, required trust fields; legacy documents missing them SHALL be
+  backfilled at load with a conservative fail-closed value and a logged
+  warning.
 - `netclaw-tools`: `ToolExecutionContext` SHALL carry audience as a parsed
   `TrustAudience`, not a wire string; an unparseable audience SHALL fail at
   construction.
@@ -91,10 +95,12 @@ gate so the next PR #993 cannot compile.
   `WebhookExecutionActor`), `Netclaw.Cli` (new `doctor` check).
 - **APIs**: Internal-only. No wire-format or on-disk-format change — the JSON
   converter preserves the existing serialized shape. No public NuGet surface.
-- **Persistence**: Legacy `BackgroundJobDefinition` / `ActiveJobInfo` /
-  `ReminderDefinition` JSON documents that predate this change and lack trust
-  fields will fail to deserialize loudly; `netclaw doctor --fix` backfills an
-  explicit conservative value with operator confirmation.
+- **Persistence**: No on-disk or on-wire format change. Legacy
+  `BackgroundJobDefinition` / `ReminderDefinition` JSON documents that predate
+  this change and lack trust fields are backfilled at load with a conservative
+  fail-closed value and a logged warning. `ActiveJobInfo` is protobuf-serialized
+  — proto3 defaults a missing audience to `Public` (fail-closed) — so it needs
+  no special handling.
 - **Tests**: `Netclaw.Actors.Tests`, `Netclaw.Channels.Slack.Tests`,
   `Netclaw.Channels.Discord.Tests`, `Netclaw.Daemon.Tests` adapt mechanically
   to the required-property and primary-constructor shapes.
