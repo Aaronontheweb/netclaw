@@ -383,10 +383,14 @@ internal static class UpdateCommand
                     $"Update available: v{result.CurrentVersion} → v{result.LatestVersion} — {hint}";
             }
         }
-        catch
+        catch (Exception ex)
         {
             // Swallow: a failed background check must never produce stderr
             // output mid-TUI. The notice simply doesn't surface this run.
+            // Debug.WriteLine is conditionally compiled and a no-op in Release;
+            // it never writes to stderr or the alt-screen.
+            System.Diagnostics.Debug.WriteLine(
+                $"background update check failed: {ex.Message}");
         }
     }
 
