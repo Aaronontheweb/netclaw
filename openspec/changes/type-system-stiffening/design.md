@@ -129,13 +129,11 @@ it is a free-form partition label with no parse step. `SecurityPolicyDefaults.Pa
 and `ResolveAudienceWithFallback` become dead code on the read path and are
 deleted. `RunSubAgent.Audience` changes correspondingly.
 
-### D6 — Persisted records: conservative backfill at load, no on-disk migration
+### D6 — Persisted records: reject legacy documents at load, no backfill
 
 `BackgroundJobDefinition`, `ActiveJobInfo`, `ReminderDefinition` make their
 trust fields `required` — this is the type-system win: every in-process
-construction is compiler-enforced. Backward compatibility is handled at
-deserialization, not by a one-time disk migration (operator's stated
-preference).
+construction is compiler-enforced.
 
 `ActiveJobInfo` is protobuf-serialized; proto3 has no notion of an absent
 field, and a legacy record deserializes its audience to enum `0`, which is
@@ -143,45 +141,50 @@ field, and a legacy record deserializes its audience to enum `0`, which is
 handling — `required` is purely a compile-time change there.
 
 `BackgroundJobDefinition` and `ReminderDefinition` are JSON
-(`BackgroundJobDefinitionStore`, `ReminderDefinitionStore`). On the
-deserialization path each store parses the document into a `JsonObject`,
-detects an absent `Audience`/`Boundary` key, logs a warning naming the file,
-and injects a **conservative fail-closed** value (`Public` / public boundary —
-never the old elevated `Personal`) before deserializing. The store, not a
-`JsonConverter`, owns this because it has both the file path (for the log
-message) and a logger; a `JsonConverter` has neither. A small shared helper
-(`LegacyTrustFieldBackfill`) holds the detect-inject-log logic so both stores
-share one implementation.
+(`BackgroundJobDefinitionStore`, `ReminderDefinitionStore`). A legacy document
+that omits the trust keys (or carries an explicit `null`) is **rejected** at
+load — not coerced to a substitute audience. On the deserialization path each
+store parses the document into a `JsonObject` and checks for the trust keys via
+a shared helper (`LegacyTrustFieldGuard.MissingTrustFields`); if any are
+absent, the store logs an **error** naming the file and the missing fields,
+and excludes the document — `Get` returns null, `List` skips it. The reminder
+store returns the rejection without deleting the file (it is operator-authored
+data, distinct from corrupt JSON, so the operator can repair or remove it).
 
-This is not a silent fallback: the substitution is loud (a logged warning) and
-fail-closed (`Public`, the least-privileged audience — it cannot escalate a
-job or reminder). Loading a pre-upgrade document is a defined, normal upgrade
-condition, which the `trust-context-integrity` spec explicitly permits a
-conservative substitution for. *Alternative considered*: throw on a legacy
-document — rejected; it forces an effective migration, which the operator
-explicitly ruled out, for no security gain over a fail-closed conservative
-backfill.
+There is no backfill. A job or reminder with no persisted trust context cannot
+be run safely: its trust tier is unknown, and these features are typically
+disabled at the most-restrictive audience — so a `Public` substitute would
+fabricate a nonsensical state (a feature that is gated off), and a `Personal`
+substitute would silently escalate privilege. *Alternatives considered*:
+(a) backfill `Public` — rejected, it produces a job/reminder in a
+contradictory state (running at an audience where the feature is disabled);
+(b) backfill `Personal` — rejected, an elevated default is precisely the
+anti-pattern this change exists to remove. Rejecting the document is the only
+choice that neither escalates nor fabricates. Pre-#994 a legacy reminder
+already failed (it threw at execution for a missing audience); rejecting it at
+load is the same outcome, surfaced earlier and without a per-fire crash.
 
 ### D7 — Sequencing as four independent PRs
 
 PR-A (`ChannelInput`/`MessageSource`/`SourceProvenance`/`MessageSourceFactory`/
 `SessionPipelineOptions` + adapters), PR-B (elevated-fallback throws), PR-C
-(`ToolExecutionContext`/`RunSubAgent` typing), PR-D (persisted records +
-converter + doctor). PR-A is a prerequisite for PR-B (it establishes the
-non-null `source` invariant). PR-C and PR-D are independent of A/B. Each is
-independently reviewable and compiler-verified.
+(`ToolExecutionContext`/`RunSubAgent` typing), PR-D (persisted records:
+`required` trust fields + legacy-document rejection). PR-A is a prerequisite
+for PR-B (it establishes the non-null `source` invariant). PR-C and PR-D are
+independent of A/B. Each is independently reviewable and compiler-verified.
 
 ## Risks / Trade-offs
 
 - **Large mechanical diff across channel adapters** → The compiler drives the
   refactor: every missing `required` field is a build error pointing at the
   exact callsite. Fix per error, no guesswork. Tests adapt the same way.
-- **Legacy persisted documents silently load with a downgraded audience** →
-  A pre-upgrade job/reminder that was `Personal` loads as `Public` after this
-  change. Mitigation: the substitution is logged at warning level naming the
-  file, so it is observable. The downgrade is fail-closed — the job/reminder
-  runs with fewer grants, never more — so the worst case is an operator
-  re-running an under-privileged job, not an escalation.
+- **Legacy persisted documents stop loading** → A pre-#994 job/reminder file
+  with no trust fields is rejected at load and no longer runs. Mitigation: the
+  rejection is logged at error level naming the file and the missing fields,
+  and the file is preserved so the operator can repair (add the fields) or
+  remove it. For reminders this matches the pre-#994 outcome (a missing
+  audience already failed at execution); the failure simply moves earlier and
+  loses the per-fire crash loop.
 - **`throw` on a missing turn source could crash a session if the invariant is
   wrong** → The invariant (every tool execution and background-job submission
   has a turn source) is established by D1/D3 making `MessageSource` mandatory.
@@ -197,12 +200,13 @@ independently reviewable and compiler-verified.
 1. PR-A → PR-B → PR-C → PR-D land in order; each is a normal `dev`-branch PR
    with green build + tests.
 2. No deployment-time migration. On first daemon start after PR-D, any legacy
-   persisted job/reminder document missing trust fields is backfilled at load
-   with a conservative fail-closed value and a logged warning. A regression
-   test exercises the legacy-reminder convert-on-read path end-to-end.
-3. **Rollback**: each PR is independently revertable. PR-D's backfill is
+   persisted job/reminder document missing trust fields is rejected at load
+   with an error log; the file is preserved. An operator who wants such a job
+   or reminder back adds the `audience`/`boundary` fields or recreates it.
+   Regression tests exercise the legacy-document rejection for both stores.
+3. **Rollback**: each PR is independently revertable. PR-D's rejection is
    confined to the two stores' deserialization paths; reverting it restores
-   the prior behavior. No on-disk data is rewritten by this change.
+   the prior behavior. No on-disk data is rewritten or deleted by this change.
 
 ## Open Questions
 

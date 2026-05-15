@@ -37,8 +37,21 @@ public sealed class BackgroundJobDefinitionStore
 
     private BackgroundJobDefinition? Deserialize(string text, string path)
     {
-        var patched = LegacyTrustFieldBackfill.ApplyIfNeeded(text, path, _logger);
-        return JsonSerializer.Deserialize<BackgroundJobDefinition>(patched, JsonOptions);
+        // A pre-#994 job document with no persisted trust context cannot be run
+        // safely — its trust tier is unknown. Reject it loudly rather than
+        // coerce a substitute audience.
+        var missing = LegacyTrustFieldGuard.MissingTrustFields(text);
+        if (missing.Count > 0)
+        {
+            _logger.LogError(
+                "Background job document {Path} predates issue #994 and is missing required "
+                + "trust field(s): {MissingFields}. The job will not be loaded — a job with no "
+                + "persisted audience cannot be run safely. Recreate the job or remove the file.",
+                path, string.Join(", ", missing));
+            return null;
+        }
+
+        return JsonSerializer.Deserialize<BackgroundJobDefinition>(text, JsonOptions);
     }
 
     public BackgroundJobDefinition? Get(BackgroundJobId id)

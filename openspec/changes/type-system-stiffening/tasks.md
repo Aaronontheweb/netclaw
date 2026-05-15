@@ -33,19 +33,19 @@
 - [x] 3.6 Update affected tests for the typed audience.
 - [x] 3.7 Verify PR-C: build clean, tests green, slopwatch clean, file headers verified. Eval suite not triggered — PR-C is an internal type change and does not alter model-facing tool schemas, grant categories, or definitions.
 
-## 4. PR-D — Persisted records: required trust fields + conservative backfill on read
+## 4. PR-D — Persisted records: required trust fields, reject legacy documents
 
-- [x] 4.1 Add a shared `LegacyTrustFieldBackfill` helper (`Netclaw.Actors/Persistence/`) that, given a job/reminder JSON document and a logger, detects an absent-or-null `Audience`/`Boundary` key, logs a warning naming the document, and injects conservative fail-closed values (`Public` / public boundary).
-- [x] 4.2 Make `BackgroundJobDefinition.Audience`/`Boundary` (`Netclaw.Actors/Jobs/BackgroundJobProtocol.cs`) `required`; wire the backfill into `BackgroundJobDefinitionStore`'s deserialize path.
+- [x] 4.1 Add a shared `LegacyTrustFieldGuard` helper (`Netclaw.Actors/Persistence/`) that, given a job/reminder JSON document, returns which `audience`/`boundary` keys are absent or explicitly null.
+- [x] 4.2 Make `BackgroundJobDefinition.Audience`/`Boundary` (`Netclaw.Actors/Jobs/BackgroundJobProtocol.cs`) `required`; reject a legacy document in `BackgroundJobDefinitionStore` — log an error and exclude it from `Get`/`List`.
 - [x] 4.3 Make `ActiveJobInfo.Audience`/`Boundary` (`Netclaw.Actors/Jobs/ActiveJobInfo.cs`) `required` — compile-time only; `ActiveJobInfo` is protobuf-serialized and proto3 defaults a missing audience to `Public` (fail-closed).
-- [x] 4.4 Make `ReminderDefinition.Audience`/`Boundary` (`Netclaw.Actors/Reminders/ReminderProtocol.cs`) `required` and non-nullable; wire the backfill into `ReminderDefinitionStore`'s deserialize path.
+- [x] 4.4 Make `ReminderDefinition.Audience`/`Boundary` (`Netclaw.Actors/Reminders/ReminderProtocol.cs`) `required` and non-nullable; reject a legacy document in `ReminderDefinitionStore` — log an error, exclude it from `Get`/`List`, preserve the file (do not prune it as corrupt JSON).
 - [x] 4.5 Fix in-process construction sites that omit the now-required trust fields (`SetReminderTool`, `ReminderManagerActor`, `ReminderExecutionActor` dead null-checks).
-- [x] 4.6 Add tests: a legacy reminder document missing trust fields converts-on-read intact (regression test — backfills `Public`, logs a warning, all other fields preserved, file not pruned); the legacy-job equivalent; and current documents round-trip verbatim.
+- [x] 4.6 Add tests: a legacy reminder document missing trust fields is rejected and preserved (regression test — excluded from `Get`/`List`, error logged, file kept); the legacy-job equivalent; and current documents round-trip verbatim.
 - [x] 4.7 Verify PR-D: build clean, tests green, slopwatch clean, file headers verified.
 
 ## 5. Cross-cutting verification and documentation
 
 - [ ] 5.1 Manual smoke: restart the daemon with the Personal-DM Slack configuration from PR #993; confirm `shell_execute` is permitted (no Public downgrade).
-- [ ] 5.2 Manual smoke: attempt to deserialize a known legacy `*.job.json` / reminder document; confirm the converter fails loud and `netclaw doctor` reports it.
-- [ ] 5.3 Update operator-facing docs / runbook with the upgrade note for legacy persisted documents and the `netclaw doctor --fix` remediation path.
+- [ ] 5.2 Manual smoke: place a known legacy `*.job.json` / reminder document (no trust fields) in the persistence directory; confirm the store rejects it loudly (error logged, job/reminder not loaded) and leaves the file in place.
+- [ ] 5.3 Update operator-facing docs / runbook with the upgrade note: legacy job/reminder documents missing trust fields are rejected at load and must be recreated or have `audience`/`boundary` added.
 - [ ] 5.4 Run `/opsx-verify` against this change, then `/opsx-sync` and `/opsx-archive`.

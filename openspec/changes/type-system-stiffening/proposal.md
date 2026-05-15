@@ -44,12 +44,14 @@ gate so the next PR #993 cannot compile.
   changes correspondingly.
 - Persisted records (`BackgroundJobDefinition`, `ActiveJobInfo`,
   `ReminderDefinition`) make their trust fields `required` — enforcing every
-  in-process construction at compile time. Backward compatibility for legacy
-  JSON documents is handled at deserialization: the job/reminder stores detect
-  a document missing trust fields, log a warning naming the file, and backfill
-  a conservative fail-closed value (`Public` / public boundary — never the old
-  `Personal`). No on-disk migration and no doctor tooling — legacy documents
-  load gracefully and fail closed.
+  in-process construction at compile time. A legacy JSON document missing trust
+  fields is **rejected** at load: the job/reminder store logs an error naming
+  the file, excludes the document (it is not loaded or scheduled), and
+  preserves the file for operator inspection. There is no backfill — a job or
+  reminder with no persisted trust context cannot be run safely, and these
+  features are typically disabled at the most-restrictive audience, so coercing
+  a substitute audience would fabricate a nonsensical or privilege-escalating
+  state. No on-disk migration and no doctor tooling.
 
 ## Capabilities
 
@@ -72,11 +74,13 @@ gate so the next PR #993 cannot compile.
   fallback.
 - `background-job-execution`: Background-job submission SHALL fail loud when no
   turn source is present rather than defaulting to `Personal` audience;
-  persisted job records SHALL carry explicit trust fields.
+  persisted job records SHALL carry explicit, required trust fields, and a
+  legacy job document missing them SHALL be rejected at load rather than
+  coerced.
 - `reminder-execution-history`: Persisted reminder definitions SHALL carry
-  explicit, required trust fields; legacy documents missing them SHALL be
-  backfilled at load with a conservative fail-closed value and a logged
-  warning.
+  explicit, required trust fields; a legacy document missing them SHALL be
+  rejected at load — logged as an error, excluded from scheduling, and the file
+  preserved — never coerced to a substitute audience.
 - `netclaw-tools`: `ToolExecutionContext` SHALL carry audience as a parsed
   `TrustAudience`, not a wire string; an unparseable audience SHALL fail at
   construction.
@@ -87,20 +91,21 @@ gate so the next PR #993 cannot compile.
 ## Impact
 
 - **Affected code**: `Netclaw.Actors` (`Channels/`, `Sessions/Pipelines/`,
-  `SubAgents/`, `Jobs/`, `Reminders/`), `Netclaw.Tools.Abstractions`
-  (`ToolExecutionContext`), `Netclaw.Security` (`SecurityPolicyDefaults` —
-  `ParseAudienceOrPublic` / `ResolveAudienceWithFallback` become dead code),
+  `SubAgents/`, `Jobs/`, `Reminders/`, `Persistence/`), `Netclaw.Tools.Abstractions`
+  (`ToolExecutionContext`), `Netclaw.Configuration` (`SecurityPolicyDefaults` —
+  `ParseAudienceOrPublic` deleted, `ResolveAudienceWithFallback` retyped),
   `Netclaw.Channels.Slack` / `Netclaw.Channels.Discord` (binding actors and
   history fetchers), `Netclaw.Daemon` (`SignalRSessionActor`,
-  `WebhookExecutionActor`), `Netclaw.Cli` (new `doctor` check).
-- **APIs**: Internal-only. No wire-format or on-disk-format change — the JSON
-  converter preserves the existing serialized shape. No public NuGet surface.
-- **Persistence**: No on-disk or on-wire format change. Legacy
-  `BackgroundJobDefinition` / `ReminderDefinition` JSON documents that predate
-  this change and lack trust fields are backfilled at load with a conservative
-  fail-closed value and a logged warning. `ActiveJobInfo` is protobuf-serialized
-  — proto3 defaults a missing audience to `Public` (fail-closed) — so it needs
-  no special handling.
+  `WebhookExecutionActor`).
+- **APIs**: Internal-only. No wire-format or on-disk-format change. No public
+  NuGet surface.
+- **Persistence**: No on-disk or on-wire format change. A legacy
+  `BackgroundJobDefinition` / `ReminderDefinition` JSON document that predates
+  this change and lacks trust fields is rejected at load — logged as an error,
+  excluded, the file preserved. The job/reminder does not run. `ActiveJobInfo`
+  is protobuf-serialized; proto3 cannot express an absent field, so a legacy
+  record deserializes its audience to enum `0` = `Public` (fail-closed) — it
+  needs no special handling.
 - **Tests**: `Netclaw.Actors.Tests`, `Netclaw.Channels.Slack.Tests`,
   `Netclaw.Channels.Discord.Tests`, `Netclaw.Daemon.Tests` adapt mechanically
   to the required-property and primary-constructor shapes.

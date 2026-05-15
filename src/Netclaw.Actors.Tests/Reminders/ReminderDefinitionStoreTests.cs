@@ -76,16 +76,17 @@ public sealed class ReminderDefinitionStoreTests : IDisposable
     }
 
     /// <summary>
-    /// Regression test for issue #994 legacy-document backfill.
-    /// A pre-#994 document missing <c>audience</c> and <c>boundary</c> keys must
-    /// load successfully with fail-closed Public defaults, must NOT be deleted,
-    /// and the store must log a warning naming the file.
+    /// Regression test for issue #994. A pre-#994 reminder document missing the
+    /// required <c>audience</c>/<c>boundary</c> keys carries no trust context
+    /// and cannot be run safely. The store SHALL reject it loudly — exclude it
+    /// from <c>Get</c>/<c>List</c> and log an error — and SHALL preserve the
+    /// file (operator-authored data, not corrupt JSON), never coercing a
+    /// substitute audience.
     /// </summary>
     [Fact]
-    public void Legacy_reminder_without_trust_fields_converts_on_read()
+    public void Legacy_reminder_without_trust_fields_is_rejected_and_preserved()
     {
         // Authentic legacy shape: camelCase keys, no audience or boundary, enums as strings.
-        // FireAtMs is a long (unix milliseconds). CreatedAtMs and UpdatedAtMs are longs.
         const long fireAtMs = 1_800_000_000_000L; // some arbitrary future timestamp
         var reminderId = "legacy-no-trust";
         var legacyJson = $$"""
@@ -115,35 +116,17 @@ public sealed class ReminderDefinitionStoreTests : IDisposable
         var logger = new CapturingLogger<ReminderDefinitionStore>();
         var store = new ReminderDefinitionStore(_paths, logger);
 
-        // The file must not be deleted — a legacy doc is not invalid, just old.
-        Assert.True(File.Exists(filePath), "Legacy reminder file must NOT be pruned on load.");
+        // Rejected — not coerced to a substitute audience.
+        Assert.Null(store.Get(new ReminderId(reminderId)));
+        Assert.Empty(store.List());
 
-        // Get by id
-        var byGet = store.Get(new ReminderId(reminderId));
-        Assert.NotNull(byGet);
-        Assert.Equal(TrustAudience.Public, byGet!.Audience);
-        Assert.Equal(SecurityPolicyDefaults.PublicBoundary, byGet.Boundary);
+        // Preserved — a legacy doc is operator data, not corrupt JSON; the
+        // operator must be able to repair or remove it.
+        Assert.True(File.Exists(filePath), "Legacy reminder file must NOT be deleted.");
 
-        // All other fields must survive intact
-        Assert.Equal(reminderId, byGet.Id);
-        Assert.Equal("Legacy Check", byGet.Title);
-        Assert.Equal(ReminderScheduleType.OneShot, byGet.Schedule.Type);
-        Assert.Equal(fireAtMs, byGet.Schedule.FireAtMs);
-        Assert.Equal("Check the build status.", byGet.Instructions);
-        Assert.Equal(DeliveryKind.None, byGet.Delivery.Kind);
-        Assert.True(byGet.Enabled);
-        Assert.Equal("alice", byGet.CreatedBy);
-
-        // List must also surface the backfilled reminder
-        var listed = store.List();
-        Assert.Single(listed);
-        Assert.Equal(reminderId, listed[0].Id);
-        Assert.Equal(TrustAudience.Public, listed[0].Audience);
-        Assert.Equal(SecurityPolicyDefaults.PublicBoundary, listed[0].Boundary);
-
-        // A warning must have been logged on load (at most two — Get + List each read the file)
-        Assert.NotEmpty(logger.Warnings);
-        Assert.Contains(logger.Warnings, w => w.Contains(reminderId) || w.Contains("audience"));
+        // Loud — an error naming the document and the missing fields was logged.
+        Assert.NotEmpty(logger.Errors);
+        Assert.Contains(logger.Errors, e => e.Contains(reminderId) && e.Contains("audience"));
     }
 
     /// <summary>
@@ -195,12 +178,13 @@ public sealed class ReminderDefinitionStoreTests : IDisposable
 }
 
 /// <summary>
-/// Capturing <see cref="ILogger{T}"/> that records formatted warning messages.
-/// Used to verify the legacy-document backfill warning is emitted on read.
+/// Capturing <see cref="ILogger{T}"/> that records formatted messages by level.
+/// Used to verify the store logs a loud error when it rejects a legacy document.
 /// </summary>
 internal sealed class CapturingLogger<T> : ILogger<T>
 {
     public List<string> Warnings { get; } = [];
+    public List<string> Errors { get; } = [];
 
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -213,7 +197,10 @@ internal sealed class CapturingLogger<T> : ILogger<T>
         Exception? exception,
         Func<TState, Exception?, string> formatter)
     {
-        if (logLevel >= LogLevel.Warning)
-            Warnings.Add(formatter(state, exception));
+        var message = formatter(state, exception);
+        if (logLevel >= LogLevel.Error)
+            Errors.Add(message);
+        else if (logLevel == LogLevel.Warning)
+            Warnings.Add(message);
     }
 }

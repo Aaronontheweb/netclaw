@@ -43,24 +43,23 @@ The persisted `BackgroundJobDefinition` and `ActiveJobInfo` records SHALL
 declare their audience and boundary fields as `required` and non-optional, so
 that every in-process construction is enforced by the compiler. A legacy
 `BackgroundJobDefinition` JSON document that lacks these fields SHALL be
-backfilled at load with a conservative fail-closed value — `Public` audience
-and the public boundary — and the backfill SHALL be logged at warning level
-naming the document. The system SHALL NOT backfill the previous `Personal`
-default.
+rejected at load — the job store SHALL log an error naming the document and the
+missing fields and SHALL exclude the document from `Get` and `List`. The system
+SHALL NOT substitute an audience or boundary for a job with no persisted trust
+context — neither the previous `Personal` default nor a `Public` fallback.
 
-#### Scenario: Legacy job document is backfilled fail-closed at load
+#### Scenario: Legacy job document is rejected at load
 
 - **GIVEN** a persisted `BackgroundJobDefinition` JSON document that predates
   this change and lacks an audience or boundary field
-- **WHEN** the job store deserializes it
-- **THEN** the missing audience is set to `Public` and the missing boundary to
-  the public boundary
-- **AND** a warning naming the document is logged
-- **AND** no `Personal` audience or boundary is substituted
+- **WHEN** the job store reads it
+- **THEN** the document is excluded — `Get` returns nothing and `List` omits it
+- **AND** an error naming the document and the missing fields is logged
+- **AND** no audience or boundary is substituted, so the job does not run
 
 #### Scenario: Current job documents round-trip unchanged
 
 - **GIVEN** a `BackgroundJobDefinition` written after this change with explicit
   audience and boundary
 - **WHEN** the job store deserializes it
-- **THEN** the audience and boundary are read verbatim with no warning logged
+- **THEN** the audience and boundary are read verbatim with no error logged

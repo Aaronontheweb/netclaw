@@ -22,12 +22,14 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
     }
 
     /// <summary>
-    /// Regression test for issue #994 legacy-document backfill.
-    /// A pre-#994 background job document missing <c>audience</c> and <c>boundary</c> keys
-    /// must load successfully with fail-closed Public defaults and must NOT be deleted.
+    /// Regression test for issue #994. A pre-#994 background job document missing
+    /// the required <c>audience</c>/<c>boundary</c> keys carries no trust context
+    /// and cannot be run safely. The store SHALL reject it loudly — exclude it
+    /// from <c>Get</c>/<c>List</c> and log an error — never coercing a substitute
+    /// audience.
     /// </summary>
     [Fact]
-    public void Legacy_job_without_trust_fields_loads_with_public_audience()
+    public void Legacy_job_without_trust_fields_is_rejected()
     {
         // Authentic legacy shape: camelCase keys, enums as strings, no audience or boundary.
         var jobId = "legacy-job-001";
@@ -49,30 +51,13 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
         var logger = new CapturingJobLogger<BackgroundJobDefinitionStore>();
         var store = new BackgroundJobDefinitionStore(_paths, logger);
 
-        // Get by id — must load with Public defaults, not throw
-        var byGet = store.Get(new BackgroundJobId(jobId));
-        Assert.NotNull(byGet);
-        Assert.Equal(TrustAudience.Public, byGet!.Audience);
-        Assert.Equal(SecurityPolicyDefaults.PublicBoundary, byGet.Boundary);
+        // Rejected — not coerced to a substitute audience.
+        Assert.Null(store.Get(new BackgroundJobId(jobId)));
+        Assert.Empty(store.List());
 
-        // All other fields must survive intact
-        Assert.Equal(jobId, byGet.Id);
-        Assert.Equal("make build", byGet.Command);
-        Assert.Equal("C0TEST/1712000000.000001", byGet.SessionId);
-        Assert.Equal("Build the project artifacts.", byGet.Rationale);
-        Assert.Equal(BackgroundJobStatus.Pending, byGet.Status);
-        Assert.Equal(600, byGet.TimeoutSeconds);
-
-        // List must also surface the backfilled job
-        var listed = store.List();
-        Assert.Single(listed);
-        Assert.Equal(jobId, listed[0].Id);
-        Assert.Equal(TrustAudience.Public, listed[0].Audience);
-        Assert.Equal(SecurityPolicyDefaults.PublicBoundary, listed[0].Boundary);
-
-        // A warning must have been logged for the backfill operation
-        Assert.NotEmpty(logger.Warnings);
-        Assert.Contains(logger.Warnings, w => w.Contains(jobId) || w.Contains("audience"));
+        // Loud — an error naming the document and the missing fields was logged.
+        Assert.NotEmpty(logger.Errors);
+        Assert.Contains(logger.Errors, e => e.Contains(jobId) && e.Contains("audience"));
     }
 
     /// <summary>
@@ -118,12 +103,13 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
 }
 
 /// <summary>
-/// Capturing <see cref="ILogger{T}"/> that records formatted warning messages.
-/// Used to verify the legacy-document backfill warning is emitted on read.
+/// Capturing <see cref="ILogger{T}"/> that records formatted messages by level.
+/// Used to verify the store logs a loud error when it rejects a legacy document.
 /// </summary>
 internal sealed class CapturingJobLogger<T> : ILogger<T>
 {
     public List<string> Warnings { get; } = [];
+    public List<string> Errors { get; } = [];
 
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
@@ -136,7 +122,10 @@ internal sealed class CapturingJobLogger<T> : ILogger<T>
         Exception? exception,
         Func<TState, Exception?, string> formatter)
     {
-        if (logLevel >= LogLevel.Warning)
-            Warnings.Add(formatter(state, exception));
+        var message = formatter(state, exception);
+        if (logLevel >= LogLevel.Error)
+            Errors.Add(message);
+        else if (logLevel == LogLevel.Warning)
+            Warnings.Add(message);
     }
 }

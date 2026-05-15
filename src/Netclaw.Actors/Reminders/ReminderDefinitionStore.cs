@@ -187,11 +187,24 @@ public sealed class ReminderDefinitionStore
         try
         {
             var text = File.ReadAllText(path);
-            // Backfill trust fields on pre-#994 documents before deserialization,
-            // so a legacy reminder converts on read instead of failing the
-            // required-member check and being pruned as invalid.
-            var patched = LegacyTrustFieldBackfill.ApplyIfNeeded(text, path, _logger);
-            var definition = JsonSerializer.Deserialize<ReminderDefinition>(patched, JsonOptions);
+            // A pre-#994 reminder document with no persisted trust context cannot
+            // be run safely. Reject it loudly without coercing a substitute
+            // audience, and keep the file — it is operator-authored data, not
+            // corrupt JSON, so the operator can repair or remove it.
+            var missingTrustFields = LegacyTrustFieldGuard.MissingTrustFields(text);
+            if (missingTrustFields.Count > 0)
+            {
+                var fields = string.Join(", ", missingTrustFields);
+                _logger.LogError(
+                    "Reminder document {Path} predates issue #994 and is missing required "
+                    + "trust field(s): {MissingFields}. The reminder will not be loaded or "
+                    + "scheduled — a reminder with no persisted audience cannot be run safely. "
+                    + "Recreate the reminder or remove the file.",
+                    path, fields);
+                return new ReadResult(null, $"missing trust field(s): {fields}", ShouldDelete: false);
+            }
+
+            var definition = JsonSerializer.Deserialize<ReminderDefinition>(text, JsonOptions);
             if (definition is null || string.IsNullOrWhiteSpace(definition.Id))
             {
                 return new ReadResult(
