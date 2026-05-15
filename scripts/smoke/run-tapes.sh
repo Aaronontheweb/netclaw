@@ -28,16 +28,24 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SMOKE_SCRIPTS="${ROOT_DIR}/scripts/smoke"
 TAPES_DIR="${ROOT_DIR}/tests/smoke-interactive/tapes"
 
-# PR-gating subset. Order matters: help.tape is the cheapest harness check.
+# PR-gating subset. Order matters: cheapest harness checks first so
+# CI sees fast feedback on whether the harness itself is healthy
+# before sinking minutes into the wizard / probe tapes.
 LIGHT_TAPES=(
   help
   init-wizard
+  provider-add
+  provider-rename
+  tui-cleanup
 )
 
 # Nightly full suite. As more tapes are authored, append them here.
 FULL_TAPES=(
   help
   init-wizard
+  provider-add
+  provider-rename
+  tui-cleanup
 )
 
 usage() {
