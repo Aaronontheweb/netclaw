@@ -506,7 +506,7 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
         Assert.Equal(2, _clientProvider.Compaction.CallCount);
         Assert.NotNull(_recordingFileReadTool);
         Assert.True(_recordingFileReadTool!.WasCalled);
-        Assert.Equal(TrustAudience.Team.ToWireValue(), _recordingFileReadTool.LastContext?.Audience);
+        Assert.Equal(TrustAudience.Team, _recordingFileReadTool.LastContext?.Audience);
         Assert.Equal(source.Boundary, _recordingFileReadTool.LastContext?.Boundary);
     }
 

@@ -219,7 +219,7 @@ public class AttachFileToolTests : IDisposable
 
         var context = new ToolExecutionContext("signalr/thread-1", currentSessionDir)
         {
-            Audience = TrustAudience.Personal.ToWireValue(),
+            Audience = TrustAudience.Personal,
             Boundary = SecurityPolicyDefaults.TrustedInstanceBoundary,
             ChannelType = "signalr"
         };
@@ -248,7 +248,7 @@ public class AttachFileToolTests : IDisposable
 
         var context = new ToolExecutionContext("slack/thread-1", sessionDir)
         {
-            Audience = TrustAudience.Public.ToWireValue(),
+            Audience = TrustAudience.Public,
             Boundary = SecurityPolicyDefaults.PublicBoundary,
             ChannelType = "slack"
         };
@@ -280,7 +280,7 @@ public class AttachFileToolTests : IDisposable
 
             var context = new ToolExecutionContext("signalr/thread-1", currentSessionDir)
             {
-                Audience = TrustAudience.Personal.ToWireValue(),
+                Audience = TrustAudience.Personal,
                 Boundary = SecurityPolicyDefaults.TrustedInstanceBoundary,
                 ChannelType = "signalr"
             };

@@ -25,13 +25,13 @@
 
 ## 3. PR-C — `ToolExecutionContext` / `RunSubAgent` audience typing
 
-- [ ] 3.1 Change `ToolExecutionContext.Audience` (`Netclaw.Tools.Abstractions`) from `string?` to `TrustAudience?`.
-- [ ] 3.2 Update the write sites that build `ToolExecutionContext` (`SessionToolExecutionPipeline`, `SubAgentActor`) to parse the audience to `TrustAudience` at construction.
-- [ ] 3.3 Update read sites (`SpawnAgentTool`, `ToolAccessPolicy.ResolveAudience`, `CheckBackgroundJobTool`, `ScopedFileAccessPolicy` profile resolution) to consume the typed audience.
-- [ ] 3.4 Change `RunSubAgent.Audience` (`Netclaw.Actors/SubAgents/SubAgentProtocol.cs`) from `string?` to `TrustAudience?`.
-- [ ] 3.5 Delete `SecurityPolicyDefaults.ParseAudienceOrPublic` and `ResolveAudienceWithFallback` once they are dead on the read path; fix any remaining callers.
-- [ ] 3.6 Update affected tests for the typed audience.
-- [ ] 3.7 Verify PR-C: build clean, tests green, slopwatch clean, file headers verified; run `./evals/run-evals.sh` (tool-definition change).
+- [x] 3.1 Change `ToolExecutionContext.Audience` (`Netclaw.Tools.Abstractions`) from `string?` to `TrustAudience?`.
+- [x] 3.2 Update the write sites that build `ToolExecutionContext` (`SessionToolExecutionPipeline`, `LlmSessionActor`, `SubAgentActor`, daemon REST reminder path) to set the typed audience directly.
+- [x] 3.3 Update read sites (`SpawnAgentTool`, `SubAgentSpawner`, `SkillLoadTool`, `SkillReadResourceTool`, `ToolAccessPolicy`, `CheckBackgroundJobTool`, `SetReminderTool`, `ToolRegistry`) to consume the typed audience.
+- [x] 3.4 Change `RunSubAgent.Audience` (`Netclaw.Actors/SubAgents/SubAgentProtocol.cs`) from `string?` to `TrustAudience?`.
+- [x] 3.5 Delete `SecurityPolicyDefaults.ParseAudienceOrPublic`; retype `ResolveAudienceWithFallback` (and `MemoryPolicyScopeResolver.ResolveAudience`) to take `TrustAudience?` so no wire-string parsing remains on the read path.
+- [x] 3.6 Update affected tests for the typed audience.
+- [x] 3.7 Verify PR-C: build clean, tests green, slopwatch clean, file headers verified. Eval suite not triggered — PR-C is an internal type change and does not alter model-facing tool schemas, grant categories, or definitions.
 
 ## 4. PR-D — Persisted records + loud JSON converter + doctor check
 

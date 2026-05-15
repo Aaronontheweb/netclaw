@@ -42,9 +42,7 @@ public sealed partial class CheckBackgroundJobTool : NetclawTool<CheckBackground
 
         var jobId = new BackgroundJobId(args.JobId);
         var sessionId = context.SessionId ?? "";
-        var audience = TrustAudience.Personal;
-        if (!string.IsNullOrEmpty(context.Audience))
-            Enum.TryParse(context.Audience, true, out audience);
+        var audience = context.Audience ?? TrustAudience.Personal;
         var boundary = context.Boundary ?? SecurityPolicyDefaults.PersonalBoundary;
 
         if (args.Cancel)

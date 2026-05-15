@@ -3,6 +3,8 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Configuration;
+
 namespace Netclaw.Tools;
 
 /// <summary>
@@ -63,7 +65,12 @@ public sealed class ToolExecutionContext
         SessionDirectory = sessionDirectory;
     }
 
-    public string? Audience { get; set; }
+    /// <summary>
+    /// Parsed trust audience for this tool call. A parsed <see cref="TrustAudience"/>
+    /// rather than a wire string — an unparseable value fails when the context is
+    /// built, not at a later authorization check.
+    /// </summary>
+    public TrustAudience? Audience { get; set; }
 
     public string? Boundary { get; set; }
 

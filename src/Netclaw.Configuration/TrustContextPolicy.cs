@@ -127,13 +127,6 @@ public static class SecurityPolicyDefaults
         _ => throw new ArgumentOutOfRangeException(nameof(audience), audience, null)
     };
 
-    /// <summary>
-    /// Parses audience from wire format, defaulting to <see cref="TrustAudience.Public"/> on failure.
-    /// Use in defense-in-depth tool gates where unparseable input must deny access.
-    /// </summary>
-    public static TrustAudience ParseAudienceOrPublic(string? wire)
-        => TryParseAudience(wire, out var a) ? a : TrustAudience.Public;
-
     public static bool TryParseAudience(string? wire, out TrustAudience audience)
     {
         if (string.Equals(wire, "public", StringComparison.OrdinalIgnoreCase))
@@ -224,15 +217,13 @@ public static class SecurityPolicyDefaults
 
     /// <summary>
     /// Resolves the effective audience for a tool invocation, preferring the
-    /// explicit <paramref name="configuredAudience"/> wire value when it parses
-    /// and falling back to <see cref="ResolveAudienceFromSessionId"/> otherwise.
-    /// Centralizes the pattern previously copied across the scoped-policy /
-    /// dispatching / audience-profile helpers in <c>Netclaw.Actors.Tools</c>.
+    /// explicit parsed <paramref name="configuredAudience"/> when present and
+    /// falling back to <see cref="ResolveAudienceFromSessionId"/> only when no
+    /// audience was supplied at all. There is no wire-string parsing here — the
+    /// audience is parsed once, upstream, when the execution context is built.
     /// </summary>
-    public static TrustAudience ResolveAudienceWithFallback(string? configuredAudience, string? sessionId)
-        => TryParseAudience(configuredAudience, out var parsed)
-            ? parsed
-            : ResolveAudienceFromSessionId(sessionId);
+    public static TrustAudience ResolveAudienceWithFallback(TrustAudience? configuredAudience, string? sessionId)
+        => configuredAudience ?? ResolveAudienceFromSessionId(sessionId);
 
     public static string ResolveBoundaryFromAudience(TrustAudience audience) => audience switch
     {

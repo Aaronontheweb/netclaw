@@ -212,14 +212,9 @@ public sealed partial class SetReminderTool : NetclawTool<SetReminderTool.Params
             audience = parsedAudience;
         }
 
-        TrustAudience? sourceAudience = null;
-        if (!string.IsNullOrWhiteSpace(context.Audience))
-        {
-            if (!SecurityPolicyDefaults.TryParseAudience(context.Audience, out var parsedSourceAudience))
-                return $"Error: Invalid source audience '{context.Audience}' in tool execution context.";
-
-            sourceAudience = parsedSourceAudience;
-        }
+        // Audience is already parsed on the execution context — no wire-string
+        // parse, no parse-failure fallback.
+        TrustAudience? sourceAudience = context.Audience;
 
         string? boundary = null;
         if (!string.IsNullOrWhiteSpace(context.Boundary))

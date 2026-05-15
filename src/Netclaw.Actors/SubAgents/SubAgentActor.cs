@@ -107,12 +107,12 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             // A sub-agent inherits the spawning session's audience. A spawn with no
             // audience is a programming error — defaulting to Personal would
             // silently grant the sub-agent broader trust than its parent.
-            if (string.IsNullOrWhiteSpace(msg.Audience))
+            if (msg.Audience is not { } subAgentAudience)
                 throw new InvalidOperationException(
                     "Sub-agent spawn requires an explicit audience inherited from the parent session.");
 
             _toolExecutionContext = new ToolExecutionContext(scopeId, msg.ParentSessionDirectory);
-            _toolExecutionContext.Audience = msg.Audience;
+            _toolExecutionContext.Audience = subAgentAudience;
             _toolExecutionContext.Boundary = msg.Boundary;
             _toolExecutionContext.ChannelType = msg.ChannelType;
             _toolExecutionContext.ProjectDirectory = msg.ParentProjectDirectory;

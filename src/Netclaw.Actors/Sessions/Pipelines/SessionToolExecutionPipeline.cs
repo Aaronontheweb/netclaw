@@ -646,7 +646,7 @@ internal static class SessionToolExecutionPipeline
         string? projectDirectory)
     {
         var context = new ToolExecutionContext(sessionId.Value, sessionDir);
-        context.Audience = source is null ? null : source.Audience.ToWireValue();
+        context.Audience = source?.Audience;
         context.Boundary = source?.Boundary;
         context.ChannelType = source is null ? null : source.ChannelType.ToWireValue();
         context.SupportsInteractiveApproval = source?.ChannelType.SupportsInteractiveApproval();

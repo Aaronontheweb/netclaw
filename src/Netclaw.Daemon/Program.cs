@@ -1387,7 +1387,7 @@ static void MapReminderEndpoints(WebApplication app)
         var restSchedulingConfig = serviceProvider.GetRequiredService<SchedulingConfig>();
         var tool = new Netclaw.Actors.Reminders.SetReminderTool(manager, timeProvider, restSchedulingConfig, reminderResolvers);
         var toolContext = new Netclaw.Tools.ToolExecutionContext(sessionId: null, sessionDirectory: null);
-        toolContext.Audience = authorization?.SourceAudience?.ToWireValue();
+        toolContext.Audience = authorization?.SourceAudience;
         toolContext.ChannelType = "manual";
         var result = await tool.ExecuteAsync(
             new Dictionary<string, object?>
