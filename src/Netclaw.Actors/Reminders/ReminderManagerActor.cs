@@ -199,7 +199,9 @@ public sealed partial class ReminderManagerActor : ReceiveActor
             return;
         }
 
-        var effectiveAudience = authorization.EffectiveAudience ?? TrustAudience.Public;
+        // Non-null on the success path — IsSuccess was checked above, and a
+        // successful ReminderAudienceAuthorizationResult always carries an audience.
+        var effectiveAudience = authorization.EffectiveAudience!.Value;
         var effectiveBoundary = ResolveReminderBoundary(
             cmd.Definition.Boundary,
             cmd.Definition.Delivery.OriginChannelType,
@@ -289,7 +291,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     }
 
     private static ReminderAudienceAuthorizationResult ValidateRequestedAudience(
-        TrustAudience? requestedAudience,
+        TrustAudience requestedAudience,
         ReminderAudienceAuthorizationContext? authorization)
     {
         if (authorization?.SourceAudience is not { } sourceAudience)
@@ -298,7 +300,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
                 "Reminder audience authorization context is required.");
         }
 
-        var effectiveAudience = requestedAudience ?? sourceAudience;
+        var effectiveAudience = requestedAudience;
         if (effectiveAudience > sourceAudience)
         {
             var sourceDescription = string.IsNullOrWhiteSpace(authorization.SourceDescription)

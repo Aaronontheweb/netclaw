@@ -57,6 +57,25 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
+    public async Task Spawn_without_audience_fails_fast_with_unsuccessful_result()
+    {
+        var fakeClient = new FakeChatClient();
+        var definition = CreateDefinition();
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
+
+        // A RunSubAgent with no audience must not run — the sub-agent must reply
+        // with an unsuccessful result immediately, not crash and make the caller
+        // wait out the Ask timeout. A generous Ask timeout would still elapse if
+        // the actor merely threw; this asserts the prompt failure reply.
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent { Task = "Do the thing", Timeout = TimeSpan.FromSeconds(5), Audience = null },
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Contains("audience", result.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Tool_call_executes_and_continues()
     {
         var fakeTool = new FakeNetclawTool("greet", "Hello from tool!");

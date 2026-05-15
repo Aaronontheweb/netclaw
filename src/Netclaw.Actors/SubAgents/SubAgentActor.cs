@@ -106,10 +106,21 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 : $"subagent/{_definition.Name}/{Guid.NewGuid():N}";
             // A sub-agent inherits the spawning session's audience. A spawn with no
             // audience is a programming error — defaulting to Personal would
-            // silently grant the sub-agent broader trust than its parent.
+            // silently grant the sub-agent broader trust than its parent. Fail the
+            // run immediately with a result so the caller fails fast, rather than
+            // throwing (which crashes the actor and makes the caller wait out the
+            // Ask timeout).
             if (msg.Audience is not { } subAgentAudience)
-                throw new InvalidOperationException(
-                    "Sub-agent spawn requires an explicit audience inherited from the parent session.");
+            {
+                _log.Error(
+                    "SubAgent [{AgentName}] spawn rejected: RunSubAgent carried no trust audience.",
+                    _definition.Name);
+                Complete(
+                    success: false,
+                    "Sub-agent spawn failed: no trust audience was provided. A sub-agent "
+                    + "must inherit the spawning session's audience.");
+                return;
+            }
 
             _toolExecutionContext = new ToolExecutionContext(scopeId, msg.ParentSessionDirectory);
             _toolExecutionContext.Audience = subAgentAudience;
