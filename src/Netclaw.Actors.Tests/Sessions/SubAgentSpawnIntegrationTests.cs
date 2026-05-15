@@ -517,6 +517,8 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
             SenderId = "test-user",
             Audience = TrustAudience.Personal,
             Boundary = SecurityPolicyDefaults.ResolveBoundaryFromChannelType(ChannelType.Tui.ToWireValue(), TrustAudience.Personal),
+            Principal = PrincipalClassification.Operator,
+            Provenance = new SourceProvenance(TransportAuthenticity.LocalProcess, PayloadTaint.Trusted),
             ReceivedAt = DateTimeOffset.UtcNow
         };
     }
@@ -529,6 +531,8 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
             SenderId = "reminder-executor",
             Audience = TrustAudience.Team,
             Boundary = SecurityPolicyDefaults.ResolveBoundaryFromChannelType(ChannelType.Reminder.ToWireValue(), TrustAudience.Team),
+            Principal = PrincipalClassification.VerifiedAutomation,
+            Provenance = new SourceProvenance(TransportAuthenticity.LocalProcess, PayloadTaint.Trusted),
             ReceivedAt = DateTimeOffset.UtcNow,
             ReminderId = reminderId
         };

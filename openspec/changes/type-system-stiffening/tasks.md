@@ -1,19 +1,19 @@
 ## 1. PR-A — Trust-bearing record shapes
 
-- [ ] 1.1 Convert `SourceProvenance` (`Netclaw.Actors/Channels/SourceProvenance.cs`) to a 2-parameter primary constructor `(TransportAuthenticity, PayloadTaint)`; keep `SourceScope`/`SourceKind` as optional `init`; remove the `Unknown` sentinel defaults.
-- [ ] 1.2 Remove the `SourceProvenance.StrictDefault()` factory; update its callers to construct an explicit `new SourceProvenance(TransportAuthenticity.Unverified, PayloadTaint.Public)` where a conservative value is genuinely needed.
-- [ ] 1.3 Make `ChannelInput.Audience`, `Boundary`, `Principal`, `Provenance` (`Netclaw.Actors/Channels/ChannelInput.cs`) `required` and non-nullable.
-- [ ] 1.4 Make `MessageSource.Audience`, `Boundary`, `Principal`, `Provenance` (`Netclaw.Actors/Channels/MessageSource.cs`) `required`; delete the four sentinel-default initializers.
-- [ ] 1.5 Remove the four `?? options.DefaultX` fallback arms in `MessageSourceFactory.Create` (`Netclaw.Actors/Channels/ChannelPipeline.cs`); assign trust fields directly from `input`.
-- [ ] 1.6 Delete `SessionPipelineOptions.DefaultAudience`, `DefaultBoundary`, `DefaultPrincipal`, `DefaultProvenance`.
-- [ ] 1.7 Update `SlackThreadBindingActor.BuildOptions` and `SlackThreadHistoryFetcher.ConvertMessageAsync` to stamp explicit `Audience`, `Boundary`, `Principal`, `Provenance` onto every `ChannelInput`.
-- [ ] 1.8 Update `DiscordSessionBindingActor.BuildOptions` and `DiscordThreadHistoryFetcher` to stamp explicit trust context onto every `ChannelInput`.
-- [ ] 1.9 Update `SignalRSessionActor.BuildOptions` (`Netclaw.Daemon/Gateway`) to stamp explicit trust context.
-- [ ] 1.10 Update `WebhookExecutionActor.InitializeAsync` (`Netclaw.Daemon/Webhooks`) to stamp explicit trust context onto its `ChannelInput`.
-- [ ] 1.11 Update `ReminderExecutionActor.InitializeAsync` (`Netclaw.Actors/Reminders`) to stamp explicit trust context onto its `ChannelInput`.
-- [ ] 1.12 Fix all remaining compiler errors from the required-property change across `Netclaw.Actors`, channel projects, and `Netclaw.Daemon`.
-- [ ] 1.13 Update affected unit tests (`Netclaw.Actors.Tests`, `Netclaw.Channels.Slack.Tests`, `Netclaw.Channels.Discord.Tests`, `Netclaw.Daemon.Tests`) to construct trust-bearing records with explicit trust context.
-- [ ] 1.14 Verify PR-A: `dotnet build` clean, `dotnet test` green for affected projects, `dotnet slopwatch analyze` no new violations, `./scripts/Add-FileHeaders.ps1 -Verify` passes.
+- [x] 1.1 Convert `SourceProvenance` (`Netclaw.Actors/Channels/SourceProvenance.cs`) to a 2-parameter primary constructor `(TransportAuthenticity, PayloadTaint)`; keep `SourceScope`/`SourceKind` as optional `init`; remove the `Unknown` sentinel defaults.
+- [x] 1.2 Remove the `SourceProvenance.StrictDefault()` factory; update its callers to construct an explicit `new SourceProvenance(TransportAuthenticity.Unverified, PayloadTaint.Public)` where a conservative value is genuinely needed.
+- [x] 1.3 Make `ChannelInput.Audience`, `Boundary`, `Principal`, `Provenance` (`Netclaw.Actors/Channels/ChannelInput.cs`) `required` and non-nullable.
+- [x] 1.4 Make `MessageSource.Audience`, `Boundary`, `Principal`, `Provenance` (`Netclaw.Actors/Channels/MessageSource.cs`) `required`; delete the four sentinel-default initializers.
+- [x] 1.5 Remove the four `?? options.DefaultX` fallback arms in `MessageSourceFactory.Create` (`Netclaw.Actors/Channels/ChannelPipeline.cs`); assign trust fields directly from `input`.
+- [x] 1.6 Delete `SessionPipelineOptions.DefaultAudience`, `DefaultBoundary`, `DefaultPrincipal`, `DefaultProvenance`.
+- [x] 1.7 Update `SlackThreadBindingActor.BuildOptions` and `SlackThreadHistoryFetcher.ConvertMessageAsync` to stamp explicit `Audience`, `Boundary`, `Principal`, `Provenance` onto every `ChannelInput`.
+- [x] 1.8 Update `DiscordSessionBindingActor.BuildOptions` and `DiscordThreadHistoryFetcher` to stamp explicit trust context onto every `ChannelInput`.
+- [x] 1.9 Update `SignalRSessionActor.BuildOptions` (`Netclaw.Daemon/Gateway`) to stamp explicit trust context.
+- [x] 1.10 Update `WebhookExecutionActor.InitializeAsync` (`Netclaw.Daemon/Webhooks`) to stamp explicit trust context onto its `ChannelInput`.
+- [x] 1.11 Update `ReminderExecutionActor.InitializeAsync` (`Netclaw.Actors/Reminders`) to stamp explicit trust context onto its `ChannelInput`.
+- [x] 1.12 Fix all remaining compiler errors from the required-property change across `Netclaw.Actors`, channel projects, and `Netclaw.Daemon`.
+- [x] 1.13 Update affected unit tests (`Netclaw.Actors.Tests`, `Netclaw.Channels.Slack.Tests`, `Netclaw.Channels.Discord.Tests`, `Netclaw.Daemon.Tests`) to construct trust-bearing records with explicit trust context.
+- [x] 1.14 Verify PR-A: `dotnet build` clean, `dotnet test` green for affected projects, `dotnet slopwatch analyze` no new violations, `./scripts/Add-FileHeaders.ps1 -Verify` passes.
 
 ## 2. PR-B — Elevated-fallback sites become explicit throws
 

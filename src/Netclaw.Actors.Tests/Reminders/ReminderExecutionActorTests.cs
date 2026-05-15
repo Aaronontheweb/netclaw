@@ -305,6 +305,7 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
         Func<SessionId, IReadOnlyList<SessionOutput>> outputFactory) : ISessionPipeline
     {
         public SessionPipelineOptions? CapturedOptions { get; private set; }
+        public ChannelInput? CapturedInput { get; private set; }
 
         public Task<MaterializedSession> CreateAsync(
             SessionId sessionId,
@@ -316,13 +317,13 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
 
             var killSwitch = KillSwitches.Shared($"scripted-{sessionId.Value}");
 
-            var input = Sink.Ignore<ChannelInput>()
+            var captureInputSink = Sink.ForEach<ChannelInput>(ci => CapturedInput = ci)
                 .MapMaterializedValue<NotUsed>(_ => NotUsed.Instance);
 
             var output = Source.From(outputFactory(sessionId).ToList())
                 .Via(killSwitch.Flow<SessionOutput>());
 
-            return Task.FromResult(new MaterializedSession(input, output, killSwitch));
+            return Task.FromResult(new MaterializedSession(captureInputSink, output, killSwitch));
         }
 
         public Task SendFeedbackAsync(IWithSessionId feedback, CancellationToken ct = default) =>
@@ -351,8 +352,8 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
 
         await probe.ExpectMsgAsync<ReminderExecutionCompleted>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
 
-        Assert.NotNull(pipeline.CapturedOptions);
-        Assert.Equal(TrustAudience.Personal, pipeline.CapturedOptions!.DefaultAudience);
+        Assert.NotNull(pipeline.CapturedInput);
+        Assert.Equal(TrustAudience.Personal, pipeline.CapturedInput!.Audience);
     }
 
     [Fact]
@@ -400,8 +401,8 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
 
         await probe.ExpectMsgAsync<ReminderExecutionCompleted>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
 
-        Assert.NotNull(pipeline.CapturedOptions);
-        Assert.Equal(TrustAudience.Team, pipeline.CapturedOptions!.DefaultAudience);
+        Assert.NotNull(pipeline.CapturedInput);
+        Assert.Equal(TrustAudience.Team, pipeline.CapturedInput!.Audience);
     }
 
     // ── History integration tests ─────────────────────────────────────────────

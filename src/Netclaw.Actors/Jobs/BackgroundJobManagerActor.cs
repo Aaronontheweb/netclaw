@@ -284,10 +284,10 @@ public sealed class BackgroundJobManagerActor : ReceiveActor
             Audience = def.Audience,
             Boundary = def.Boundary,
             Principal = PrincipalClassification.VerifiedAutomation,
-            Provenance = new SourceProvenance
+            Provenance = new SourceProvenance(
+                TransportAuthenticity.LocalProcess,
+                PayloadTaint.Trusted)
             {
-                TransportAuthenticity = TransportAuthenticity.LocalProcess,
-                PayloadTaint = PayloadTaint.Trusted,
                 SourceKind = SourceKind
             },
             ReceivedAt = _timeProvider.GetUtcNow(),

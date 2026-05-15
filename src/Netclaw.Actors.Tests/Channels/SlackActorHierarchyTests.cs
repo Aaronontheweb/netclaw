@@ -435,10 +435,8 @@ public sealed class SlackActorHierarchyTests(ITestOutputHelper output) : TestKit
         Audience = TrustAudience.Personal,
         Boundary = SecurityPolicyDefaults.SlackWorkspaceBoundary,
         Principal = PrincipalClassification.VerifiedAutomation,
-        Provenance = new SourceProvenance
+        Provenance = new SourceProvenance(TransportAuthenticity.LocalProcess, PayloadTaint.Trusted)
         {
-            TransportAuthenticity = TransportAuthenticity.LocalProcess,
-            PayloadTaint = PayloadTaint.Trusted,
             SourceKind = "reminder"
         },
         ReceivedAt = DateTimeOffset.UtcNow,

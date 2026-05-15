@@ -130,16 +130,6 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
     private SessionPipelineOptions BuildOptions() => new()
     {
         ChannelType = ChannelType.Discord,
-        DefaultAudience = TrustAudience.Team,
-        DefaultBoundary = SecurityPolicyDefaults.TrustedInstanceBoundary,
-        DefaultPrincipal = PrincipalClassification.UntrustedExternal,
-        DefaultProvenance = new SourceProvenance
-        {
-            TransportAuthenticity = TransportAuthenticity.Verified,
-            PayloadTaint = PayloadTaint.Public,
-            SourceKind = "discord",
-            SourceScope = _channelId.Value
-        },
         Filter = OutputFilter.Text | OutputFilter.Files
     };
 

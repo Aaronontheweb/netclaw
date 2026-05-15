@@ -246,9 +246,8 @@ public sealed class DiscordGatewayActorTests(ITestOutputHelper output) : TestKit
                 Audience = TrustAudience.Team,
                 Boundary = "trusted-instance",
                 Principal = PrincipalClassification.TrustedInternal,
-                Provenance = new SourceProvenance
+                Provenance = new SourceProvenance(TransportAuthenticity.Verified, PayloadTaint.Trusted)
                 {
-                    TransportAuthenticity = TransportAuthenticity.Verified,
                     SourceKind = "reminder"
                 },
                 ReminderId = "rem-1"
@@ -281,9 +280,8 @@ public sealed class DiscordGatewayActorTests(ITestOutputHelper output) : TestKit
                 Audience = TrustAudience.Team,
                 Boundary = "trusted-instance",
                 Principal = PrincipalClassification.TrustedInternal,
-                Provenance = new SourceProvenance
+                Provenance = new SourceProvenance(TransportAuthenticity.Verified, PayloadTaint.Trusted)
                 {
-                    TransportAuthenticity = TransportAuthenticity.Verified,
                     SourceKind = "reminder"
                 },
                 ReminderId = "rem-1"

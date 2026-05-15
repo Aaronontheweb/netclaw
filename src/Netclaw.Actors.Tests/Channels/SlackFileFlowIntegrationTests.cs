@@ -756,7 +756,7 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             SenderId: "U123",
             Audience: TrustAudience.Personal,
             Principal: PrincipalClassification.Operator,
-            Provenance: SourceProvenance.StrictDefault(),
+            Provenance: new SourceProvenance(TransportAuthenticity.Unverified, PayloadTaint.Public),
             Text: "a",
             ReceivedAt: TimeProvider.System.GetUtcNow()));
 

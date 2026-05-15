@@ -693,15 +693,6 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
     private SessionPipelineOptions BuildOptions() => new()
     {
         ChannelType = Actors.Channels.ChannelType.Slack,
-        DefaultAudience = TrustAudience.Public,
-        DefaultBoundary = SecurityPolicyDefaults.SlackWorkspaceBoundary,
-        DefaultPrincipal = PrincipalClassification.UntrustedExternal,
-        DefaultProvenance = new SourceProvenance
-        {
-            TransportAuthenticity = TransportAuthenticity.Verified,
-            PayloadTaint = PayloadTaint.Public,
-            SourceKind = "slack"
-        },
         Filter = OutputFilter.Text | OutputFilter.Files
     };
 
@@ -739,6 +730,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             ChannelId = _channelId.Value,
             MessageId = triggeringMessage.EventId.Value,
             Audience = triggeringMessage.Audience,
+            Boundary = SecurityPolicyDefaults.SlackWorkspaceBoundary,
             Principal = triggeringMessage.Principal,
             Provenance = triggeringMessage.Provenance,
             Contents = liveContents,

@@ -130,15 +130,6 @@ internal sealed class ReminderExecutionActor : ReceiveActor
                 new SessionPipelineOptions
                 {
                     ChannelType = Channels.ChannelType.Reminder,
-                    DefaultAudience = audience,
-                    DefaultBoundary = SecurityPolicyDefaults.LocalDaemonBoundary,
-                    DefaultPrincipal = PrincipalClassification.VerifiedAutomation,
-                    DefaultProvenance = new SourceProvenance
-                    {
-                        TransportAuthenticity = TransportAuthenticity.LocalProcess,
-                        PayloadTaint = PayloadTaint.Trusted,
-                        SourceKind = "reminder"
-                    },
                     Filter = OutputFilter.TextStreaming | OutputFilter.ToolCalls
                 },
                 output => self.Tell(new ExecutionOutput(output)));
@@ -149,6 +140,15 @@ internal sealed class ReminderExecutionActor : ReceiveActor
             {
                 SenderId = "reminder-system",
                 ChannelId = _definition.Delivery.Address,
+                Audience = audience,
+                Boundary = SecurityPolicyDefaults.LocalDaemonBoundary,
+                Principal = PrincipalClassification.VerifiedAutomation,
+                Provenance = new SourceProvenance(
+                    TransportAuthenticity.LocalProcess,
+                    PayloadTaint.Trusted)
+                {
+                    SourceKind = "reminder"
+                },
                 Contents = [new TextContent(prompt)],
                 ReceivedAt = _timeProvider.GetUtcNow()
             });
@@ -201,10 +201,10 @@ internal sealed class ReminderExecutionActor : ReceiveActor
                         channelType: originChannelType.ToWireValue(),
                         audience: audience),
                 Principal = PrincipalClassification.VerifiedAutomation,
-                Provenance = new SourceProvenance
+                Provenance = new SourceProvenance(
+                    TransportAuthenticity.LocalProcess,
+                    PayloadTaint.Trusted)
                 {
-                    TransportAuthenticity = TransportAuthenticity.LocalProcess,
-                    PayloadTaint = PayloadTaint.Trusted,
                     SourceKind = "reminder"
                 },
                 ReceivedAt = _dispatchedAt,
