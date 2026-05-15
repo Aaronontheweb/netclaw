@@ -454,6 +454,46 @@ public class SetReminderToolTests : TestKit
     }
 
     [Fact]
+    public async Task Downscoped_audience_rewrites_boundary_to_requested_audience_scope()
+    {
+        var probe = CreateTestProbe();
+        var tool = new SetReminderTool(probe, _timeProvider, new SchedulingConfig());
+        var context = new ToolExecutionContext("signalr/thread-1", null)
+        {
+            Audience = TrustAudience.Personal,
+            Boundary = SecurityPolicyDefaults.TrustedInstanceBoundary,
+            ChannelType = "signalr"
+        };
+
+        var execution = Task.Run(async () =>
+        {
+            var result = await tool.ExecuteAsync(new Dictionary<string, object?>
+            {
+                ["Id"] = "downscope-boundary",
+                ["Name"] = "downscope-boundary",
+                ["Prompt"] = "check status",
+                ["ScheduleType"] = "once",
+                ["Schedule"] = "30m",
+                ["Audience"] = "public",
+                ["DeliveryKind"] = "none"
+            }, context);
+            return result;
+        });
+
+        var cmd = await probe.ExpectMsgAsync<SaveReminderCommand>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(TrustAudience.Public, cmd.Definition.Audience);
+        Assert.Equal(SecurityPolicyDefaults.PublicBoundary, cmd.Definition.Boundary);
+
+        probe.Reply(new ReminderSavedResponse(
+            new ReminderId(cmd.Definition.Id),
+            cmd.Definition.Title,
+            Success: true,
+            NextFire: _timeProvider.GetUtcNow().AddMinutes(30)));
+
+        await execution;
+    }
+
+    [Fact]
     public async Task Rejects_invalid_audience()
     {
         var probe = CreateTestProbe();

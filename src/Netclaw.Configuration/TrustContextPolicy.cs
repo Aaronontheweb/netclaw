@@ -233,6 +233,70 @@ public static class SecurityPolicyDefaults
         _ => PublicBoundary
     };
 
+    /// <summary>
+    /// Canonicalizes a known trust boundary string. Returns false when the
+    /// boundary is blank or not one of Netclaw's supported persisted values.
+    /// </summary>
+    public static bool TryNormalizeBoundary(string? boundary, out string normalizedBoundary)
+    {
+        normalizedBoundary = PublicBoundary;
+        if (string.IsNullOrWhiteSpace(boundary))
+            return false;
+
+        var trimmed = boundary.Trim();
+        if (string.Equals(trimmed, PublicBoundary, StringComparison.OrdinalIgnoreCase))
+        {
+            normalizedBoundary = PublicBoundary;
+            return true;
+        }
+
+        if (string.Equals(trimmed, TeamBoundary, StringComparison.OrdinalIgnoreCase))
+        {
+            normalizedBoundary = TeamBoundary;
+            return true;
+        }
+
+        if (string.Equals(trimmed, PersonalBoundary, StringComparison.OrdinalIgnoreCase))
+        {
+            normalizedBoundary = PersonalBoundary;
+            return true;
+        }
+
+        if (string.Equals(trimmed, TrustedInstanceBoundary, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(trimmed, SlackWorkspaceBoundary, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(trimmed, LocalDaemonBoundary, StringComparison.OrdinalIgnoreCase))
+        {
+            normalizedBoundary = TrustedInstanceBoundary;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Returns true when a boundary is a supported canonical value whose scope
+    /// does not exceed the supplied audience. Narrower boundaries are allowed:
+    /// for example, a Personal audience may persist a Public boundary.
+    /// </summary>
+    public static bool IsBoundaryCompatibleWithAudience(string boundary, TrustAudience audience)
+    {
+        if (!TryNormalizeBoundary(boundary, out var normalizedBoundary))
+            return false;
+
+        if (string.Equals(normalizedBoundary, TrustedInstanceBoundary, StringComparison.Ordinal))
+            return audience is TrustAudience.Team or TrustAudience.Personal;
+
+        var boundaryAudience = normalizedBoundary switch
+        {
+            PublicBoundary => TrustAudience.Public,
+            TeamBoundary => TrustAudience.Team,
+            PersonalBoundary => TrustAudience.Personal,
+            _ => throw new ArgumentOutOfRangeException(nameof(boundary), boundary, null)
+        };
+
+        return boundaryAudience <= audience;
+    }
+
     public static EffectivePolicyDefaults Resolve(SecurityPolicyConfig? config)
     {
         var strictDefaults = config?.StrictDefaults ?? true;

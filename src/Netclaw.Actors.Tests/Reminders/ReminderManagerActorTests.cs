@@ -237,7 +237,8 @@ public class ReminderManagerActorTests : TestKit
         var manager = await GetManagerAsync();
         var definition = CreateDefinition($"audience-{requestedAudience}-{sourceAudience}", "Check audience") with
         {
-            Audience = requestedAudience
+            Audience = requestedAudience,
+            Boundary = SecurityPolicyDefaults.ResolveBoundaryFromAudience(requestedAudience)
         };
 
         var response = await manager.Ask<ReminderSavedResponse>(
@@ -321,6 +322,103 @@ public class ReminderManagerActorTests : TestKit
         var saved = _definitionStore.Get(response.Id);
         Assert.NotNull(saved);
         Assert.Equal(TrustAudience.Public, saved!.Audience);
+    }
+
+    [Fact]
+    public async Task Save_rejects_boundary_that_exceeds_requested_audience()
+    {
+        var manager = await GetManagerAsync();
+        var definition = CreateDefinition("public-boundary-mismatch", "Check mismatch") with
+        {
+            Audience = TrustAudience.Public,
+            Boundary = SecurityPolicyDefaults.PersonalBoundary
+        };
+
+        var response = await manager.Ask<ReminderSavedResponse>(
+            new SaveReminderCommand(
+                definition,
+                Authorization: new ReminderAudienceAuthorizationContext(TrustAudience.Personal, "test")),
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+
+        Assert.False(response.Success);
+        Assert.Equal(ReminderSaveError.Validation, response.Error);
+        Assert.Contains("not allowed for audience 'public'", response.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task Save_allows_narrower_boundary_than_requested_audience()
+    {
+        var manager = await GetManagerAsync();
+        var definition = CreateDefinition("narrow-boundary", "Check narrow boundary") with
+        {
+            Audience = TrustAudience.Personal,
+            Boundary = SecurityPolicyDefaults.PublicBoundary
+        };
+
+        var response = await manager.Ask<ReminderSavedResponse>(
+            new SaveReminderCommand(
+                definition,
+                Authorization: new ReminderAudienceAuthorizationContext(TrustAudience.Personal, "test")),
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(response.Success);
+
+        var saved = _definitionStore.Get(response.Id);
+        Assert.NotNull(saved);
+        Assert.Equal(SecurityPolicyDefaults.PublicBoundary, saved!.Boundary);
+    }
+
+    [Fact]
+    public async Task Startup_emits_alert_for_legacy_reminder_missing_trust_fields()
+    {
+        const string reminderId = "legacy-reminder-alert";
+        var now = TimeProvider.System.GetUtcNow();
+        var paths = new NetclawPaths(_basePath);
+        paths.EnsureDirectoriesExist();
+        var filePath = Path.Combine(paths.RemindersDirectory, $"{Uri.EscapeDataString(reminderId)}.json");
+        File.WriteAllText(filePath, $$"""
+            {
+              "id": "{{reminderId}}",
+              "title": "Legacy Reminder",
+              "instructions": "Check status",
+              "delivery": { "kind": "None" },
+              "schedule": { "type": "OneShot", "fireAtMs": {{now.AddHours(1).ToUnixTimeMilliseconds()}} },
+              "enabled": true,
+              "createdBy": "test",
+              "createdAtMs": {{now.ToUnixTimeMilliseconds()}},
+              "updatedAtMs": {{now.ToUnixTimeMilliseconds()}}
+            }
+            """);
+
+        var store = new ReminderDefinitionStore(paths);
+        var sink = new TestNotificationSink();
+        var pipeline = new SessionPipeline(
+            Sys,
+            new RequiredActor<SessionManagerActorKey>(ActorRegistry.For(Sys)),
+            new NetclawPaths(Path.Combine(Path.GetTempPath(), $"netclaw-test-{Guid.NewGuid():N}")));
+        var defaults = new EffectivePolicyDefaults(
+            DeploymentPosture.Team, TrustAudience.Team, ShellExecutionMode.Off, false);
+
+        Sys.ActorOf(
+            Props.Create(() => new ReminderManagerActor(
+                pipeline,
+                defaults,
+                new SchedulingConfig(),
+                TimeProvider.System,
+                store,
+                new ReminderHistoryStore(paths),
+                sink)),
+            "legacy-reminder-alert-manager");
+
+        await AwaitAssertAsync(() =>
+        {
+            Assert.Contains(sink.Alerts, alert =>
+                alert.Category == AlertType.ReminderSchemaDropped
+                && alert.Summary.Contains(reminderId, StringComparison.Ordinal));
+            return Task.CompletedTask;
+        }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
     }
 
     /// <summary>

@@ -26,6 +26,8 @@ public sealed class BackgroundJobDefinitionStore
 
     private readonly string _directory;
     private readonly object _sync = new();
+    private readonly Dictionary<string, RejectedLegacyBackgroundJobDefinition> _rejectedLegacyDefinitions =
+        new(StringComparer.Ordinal);
     private readonly ILogger _logger;
 
     public BackgroundJobDefinitionStore(NetclawPaths paths, ILogger<BackgroundJobDefinitionStore>? logger = null)
@@ -43,6 +45,7 @@ public sealed class BackgroundJobDefinitionStore
         var missing = LegacyTrustFieldGuard.MissingTrustFields(text);
         if (missing.Count > 0)
         {
+            RecordRejectedLegacyDefinition(path, $"missing trust field(s): {string.Join(", ", missing)}");
             _logger.LogError(
                 "Background job document {Path} predates issue #994 and is missing required "
                 + "trust field(s): {MissingFields}. The job will not be loaded — a job with no "
@@ -52,6 +55,23 @@ public sealed class BackgroundJobDefinitionStore
         }
 
         return JsonSerializer.Deserialize<BackgroundJobDefinition>(text, JsonOptions);
+    }
+
+    /// <summary>
+    /// Returns and clears background job definitions rejected because they
+    /// predate the required trust-field schema.
+    /// </summary>
+    public IReadOnlyList<RejectedLegacyBackgroundJobDefinition> ConsumeRejectedLegacyDefinitions()
+    {
+        lock (_sync)
+        {
+            if (_rejectedLegacyDefinitions.Count == 0)
+                return [];
+
+            var snapshot = _rejectedLegacyDefinitions.Values.ToArray();
+            _rejectedLegacyDefinitions.Clear();
+            return snapshot;
+        }
     }
 
     public BackgroundJobDefinition? Get(BackgroundJobId id)
@@ -149,4 +169,28 @@ public sealed class BackgroundJobDefinitionStore
         var encoded = Uri.EscapeDataString(id.Value);
         return Path.Combine(_directory, $"{encoded}.json");
     }
+
+    private void RecordRejectedLegacyDefinition(string path, string reason)
+    {
+        var jobId = DecodeJobIdFromPath(path);
+        _rejectedLegacyDefinitions[jobId] = new RejectedLegacyBackgroundJobDefinition(jobId, reason);
+    }
+
+    private static string DecodeJobIdFromPath(string path)
+    {
+        var encoded = Path.GetFileNameWithoutExtension(path);
+        if (string.IsNullOrWhiteSpace(encoded))
+            return "unknown";
+
+        try
+        {
+            return Uri.UnescapeDataString(encoded);
+        }
+        catch
+        {
+            return encoded;
+        }
+    }
 }
+
+public sealed record RejectedLegacyBackgroundJobDefinition(string JobId, string Reason);

@@ -214,14 +214,24 @@ public sealed partial class SetReminderTool : NetclawTool<SetReminderTool.Params
 
         // Audience is already parsed on the execution context — no wire-string
         // parse, no parse-failure fallback.
-        TrustAudience? sourceAudience = context.Audience;
+        var sourceAudience = context.Audience;
+        var effectiveRequestedAudience = audience ?? sourceAudience;
 
         string? boundary = null;
         if (!string.IsNullOrWhiteSpace(context.Boundary))
             boundary = context.Boundary.Trim();
 
-        if (string.IsNullOrWhiteSpace(boundary) && sourceAudience is { } resolvedSourceAudience)
-            boundary = SecurityPolicyDefaults.ResolveBoundaryFromAudience(resolvedSourceAudience);
+        // When a reminder explicitly downscopes its audience, it must not carry
+        // over the creating session's broader boundary. Recompute the boundary
+        // from the requested audience instead.
+        if (audience is { } explicitAudience && explicitAudience != sourceAudience)
+        {
+            boundary = SecurityPolicyDefaults.ResolveBoundaryFromAudience(explicitAudience);
+        }
+        else if (string.IsNullOrWhiteSpace(boundary))
+        {
+            boundary = SecurityPolicyDefaults.ResolveBoundaryFromAudience(effectiveRequestedAudience);
+        }
 
         DateTimeOffset? expiresAt = null;
         if (!string.IsNullOrWhiteSpace(args.ExpiresIn))
@@ -247,7 +257,7 @@ public sealed partial class SetReminderTool : NetclawTool<SetReminderTool.Params
             // Draft trust context — ReminderManagerActor re-resolves and
             // re-authorizes Audience/Boundary before persisting. Prefer the
             // explicitly requested audience, then the creating session's.
-            Audience = audience ?? sourceAudience ?? TrustAudience.Public,
+            Audience = effectiveRequestedAudience,
             Boundary = boundary ?? SecurityPolicyDefaults.PublicBoundary,
             Enabled = true,
             ExpiresAt = expiresAt,

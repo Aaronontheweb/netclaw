@@ -81,6 +81,7 @@ public static class ReminderEndpointRouteBuilderExtensions
             var toolContext = new ToolExecutionContext(sessionId: null, sessionDirectory: null)
             {
                 Audience = reminderSourceAudience,
+                Boundary = SecurityPolicyDefaults.ResolveBoundaryFromChannelType("manual", reminderSourceAudience),
             };
             toolContext.ChannelType = "manual";
             var result = await tool.ExecuteAsync(

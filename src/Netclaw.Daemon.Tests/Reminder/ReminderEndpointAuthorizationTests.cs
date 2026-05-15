@@ -290,6 +290,33 @@ public sealed class ReminderEndpointAuthorizationTests : IAsyncDisposable
         Assert.NotNull(saveCmd);
         // Operator loopback → authorization carries Personal audience
         Assert.Equal(TrustAudience.Personal, saveCmd.Authorization?.SourceAudience);
+        Assert.Equal(SecurityPolicyDefaults.TrustedInstanceBoundary, saveCmd.Definition.Boundary);
+    }
+
+    [Fact]
+    public async Task Create_downscoped_public_audience_rewrites_boundary_to_public()
+    {
+        await using var app = await CreateAppAsync(spoofLoopback: true);
+        var client = app.GetTestClient();
+
+        var response = await client.PostAsJsonAsync("/api/reminders", new
+        {
+            id = "rest-create-public-boundary",
+            name = "rest-create-public-boundary",
+            prompt = "check status",
+            scheduleType = "once",
+            schedule = "30m",
+            deliveryKind = "none",
+            audience = "public"
+        }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var saveCmd = _testActor.ReceivedMessages.OfType<SaveReminderCommand>()
+            .FirstOrDefault(x => x.Definition.Id == "rest-create-public-boundary");
+        Assert.NotNull(saveCmd);
+        Assert.Equal(TrustAudience.Public, saveCmd.Definition.Audience);
+        Assert.Equal(SecurityPolicyDefaults.PublicBoundary, saveCmd.Definition.Boundary);
     }
 
     [Fact]

@@ -30,6 +30,8 @@ public sealed class ReminderDefinitionStore
     private readonly string _directory;
     private readonly object _sync = new();
     private readonly List<DroppedInvalidReminderDefinition> _droppedInvalidDefinitions = [];
+    private readonly Dictionary<string, RejectedLegacyReminderDefinition> _rejectedLegacyDefinitions =
+        new(StringComparer.Ordinal);
     private readonly ILogger _logger;
 
     public ReminderDefinitionStore(NetclawPaths paths, ILogger<ReminderDefinitionStore>? logger = null)
@@ -52,6 +54,23 @@ public sealed class ReminderDefinitionStore
 
             var snapshot = _droppedInvalidDefinitions.ToArray();
             _droppedInvalidDefinitions.Clear();
+            return snapshot;
+        }
+    }
+
+    /// <summary>
+    /// Returns and clears reminder definitions rejected because they predate the
+    /// required trust-field schema.
+    /// </summary>
+    public IReadOnlyList<RejectedLegacyReminderDefinition> ConsumeRejectedLegacyDefinitions()
+    {
+        lock (_sync)
+        {
+            if (_rejectedLegacyDefinitions.Count == 0)
+                return [];
+
+            var snapshot = _rejectedLegacyDefinitions.Values.ToArray();
+            _rejectedLegacyDefinitions.Clear();
             return snapshot;
         }
     }
@@ -182,6 +201,12 @@ public sealed class ReminderDefinitionStore
         }
     }
 
+    private void RecordRejectedLegacyDefinition(string path, string reason)
+    {
+        var reminderId = DecodeReminderIdFromPath(path);
+        _rejectedLegacyDefinitions[reminderId] = new RejectedLegacyReminderDefinition(reminderId, reason);
+    }
+
     private ReadResult TryReadDefinition(string path)
     {
         try
@@ -201,6 +226,7 @@ public sealed class ReminderDefinitionStore
                     + "scheduled — a reminder with no persisted audience cannot be run safely. "
                     + "Recreate the reminder or remove the file.",
                     path, fields);
+                RecordRejectedLegacyDefinition(path, $"missing trust field(s): {fields}");
                 return new ReadResult(null, $"missing trust field(s): {fields}", ShouldDelete: false);
             }
 
@@ -233,3 +259,4 @@ public sealed class ReminderDefinitionStore
 }
 
 public sealed record DroppedInvalidReminderDefinition(string ReminderId, string Reason);
+public sealed record RejectedLegacyReminderDefinition(string ReminderId, string Reason);

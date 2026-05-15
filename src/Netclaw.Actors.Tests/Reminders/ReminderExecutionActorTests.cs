@@ -386,6 +386,31 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
         Assert.Equal(TrustAudience.Team, pipeline.CapturedInput!.Audience);
     }
 
+    [Fact]
+    public async Task Execution_uses_persisted_boundary_for_non_current_session_reminders()
+    {
+        var pipeline = new ScriptedSessionPipeline(sessionId =>
+        [
+            new TurnCompleted { SessionId = sessionId, TurnNumber = 1 }
+        ]);
+
+        var definition = CreateDefinition("boundary-preserved") with
+        {
+            Boundary = SecurityPolicyDefaults.PublicBoundary,
+            Delivery = new ReminderDelivery { Kind = DeliveryKind.None },
+            DeliveryInstructions = string.Empty
+        };
+        var probe = CreateTestProbe();
+        Sys.ActorOf(
+            Props.Create(() => new ParentProxy(probe.Ref, definition, pipeline, _historyStore)),
+            "exec-boundary-preserved");
+
+        await probe.ExpectMsgAsync<ReminderExecutionCompleted>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.NotNull(pipeline.CapturedInput);
+        Assert.Equal(SecurityPolicyDefaults.PublicBoundary, pipeline.CapturedInput!.Boundary);
+    }
+
     // ── History integration tests ─────────────────────────────────────────────
 
     [Fact]

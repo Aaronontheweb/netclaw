@@ -186,8 +186,7 @@ public sealed record ReminderDefinition
     /// Persisted execution audience for this reminder.
     /// Conversational and tool-created reminders inherit the creating
     /// session/channel audience at mint time. Legacy documents missing this
-    /// field are backfilled fail-closed to <see cref="TrustAudience.Public"/>
-    /// on load.
+    /// field are rejected at load and are never scheduled.
     /// </summary>
     public required TrustAudience Audience { get; init; }
 
@@ -195,8 +194,7 @@ public sealed record ReminderDefinition
     /// Persisted execution boundary for this reminder.
     /// For Mode B reminders this mirrors the creating session's effective trust
     /// boundary so reminder re-entry does not widen scope. Legacy documents
-    /// missing this field are backfilled fail-closed to the public boundary on
-    /// load.
+    /// missing this field are rejected at load and are never scheduled.
     /// </summary>
     public required string Boundary { get; init; }
 
