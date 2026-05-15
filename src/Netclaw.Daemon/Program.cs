@@ -1375,6 +1375,15 @@ static void MapReminderEndpoints(WebApplication app)
         var manager = await actor.GetAsync(ct);
         var authorization = ResolveReminderAuthorizationContext(mapper, httpContext);
 
+        // Creating a reminder requires Operator authority — ResolveReminderAuthorizationContext
+        // returns null for a non-Operator caller. Reject here: the tool-execution context's
+        // audience is now required and non-nullable, so a null authorization would otherwise
+        // be silently defaulted, smuggling the request past the actor's authority check.
+        if (authorization?.SourceAudience is not { } reminderSourceAudience)
+            return Results.Problem(
+                detail: "Creating a reminder requires Operator authority.",
+                statusCode: StatusCodes.Status403Forbidden);
+
         var effectiveId = !string.IsNullOrWhiteSpace(request.Id)
             ? request.Id
             : Netclaw.Actors.Reminders.ReminderIdGenerator.Generate(request.Name).Value;
@@ -1386,8 +1395,10 @@ static void MapReminderEndpoints(WebApplication app)
         var reminderResolvers = serviceProvider.GetServices<Netclaw.Actors.Reminders.IReminderTargetResolver>();
         var restSchedulingConfig = serviceProvider.GetRequiredService<SchedulingConfig>();
         var tool = new Netclaw.Actors.Reminders.SetReminderTool(manager, timeProvider, restSchedulingConfig, reminderResolvers);
-        var toolContext = new Netclaw.Tools.ToolExecutionContext(sessionId: null, sessionDirectory: null);
-        toolContext.Audience = authorization?.SourceAudience;
+        var toolContext = new Netclaw.Tools.ToolExecutionContext(sessionId: null, sessionDirectory: null)
+        {
+            Audience = reminderSourceAudience,
+        };
         toolContext.ChannelType = "manual";
         var result = await tool.ExecuteAsync(
             new Dictionary<string, object?>

@@ -645,8 +645,13 @@ internal static class SessionToolExecutionPipeline
         Func<object, string, CancellationToken, Task<object>> spawnChildActor,
         string? projectDirectory)
     {
-        var context = new ToolExecutionContext(sessionId.Value, sessionDir);
-        context.Audience = source?.Audience;
+        // A turn with no source carries no trust context — fall closed to the
+        // most-restrictive audience. The default is resolved once, here, so every
+        // downstream tool gate reads a guaranteed audience.
+        var context = new ToolExecutionContext(sessionId.Value, sessionDir)
+        {
+            Audience = source?.Audience ?? TrustAudience.Public,
+        };
         context.Boundary = source?.Boundary;
         context.ChannelType = source is null ? null : source.ChannelType.ToWireValue();
         context.SupportsInteractiveApproval = source?.ChannelType.SupportsInteractiveApproval();

@@ -42,9 +42,9 @@ public sealed partial class CheckBackgroundJobTool : NetclawTool<CheckBackground
 
         var jobId = new BackgroundJobId(args.JobId);
         var sessionId = context.SessionId ?? "";
-        // Fail closed when the execution context carries no audience/boundary:
-        // a missing audience must not grant the elevated Personal scope.
-        var audience = context.Audience ?? TrustAudience.Public;
+        var audience = context.Audience;
+        // Boundary, unlike Audience, is still nullable on the context — fall
+        // closed to the public boundary when it is absent.
         var boundary = context.Boundary ?? SecurityPolicyDefaults.PublicBoundary;
 
         if (args.Cancel)

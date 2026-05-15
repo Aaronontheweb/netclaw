@@ -327,7 +327,7 @@ public class SetReminderToolTests : TestKit
         // Session id present but ChannelType is null — pre-v0.16 context
         // shape or an unusual caller. Fail loud, do not silently persist a
         // headless reminder that would drop on the floor at fire time.
-        var context = new ToolExecutionContext("C0123ABC/1234567890.123456", null);
+        var context = new ToolExecutionContext("C0123ABC/1234567890.123456", null) { Audience = TrustAudience.Personal };
 
         var result = await tool.ExecuteAsync(new Dictionary<string, object?>
         {

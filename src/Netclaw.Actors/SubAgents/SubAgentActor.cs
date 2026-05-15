@@ -122,8 +122,10 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 return;
             }
 
-            _toolExecutionContext = new ToolExecutionContext(scopeId, msg.ParentSessionDirectory);
-            _toolExecutionContext.Audience = subAgentAudience;
+            _toolExecutionContext = new ToolExecutionContext(scopeId, msg.ParentSessionDirectory)
+            {
+                Audience = subAgentAudience,
+            };
             _toolExecutionContext.Boundary = msg.Boundary;
             _toolExecutionContext.ChannelType = msg.ChannelType;
             _toolExecutionContext.ProjectDirectory = msg.ParentProjectDirectory;

@@ -77,8 +77,8 @@ public sealed class SpawnAgentToolTests : IDisposable
     {
         var registry = new SubAgentDefinitionRegistry();
         var tool = new SpawnAgentTool(registry, spawner: null!, _paths);
-        // Audience is now a parsed TrustAudience? — null is treated as Public by SpawnAgentTool.
-        var badCtx = new ToolExecutionContext(null, null) { Audience = null };
+        // Audience is non-nullable; Public is the minimum-privilege audience, equivalent to the old null/unset default.
+        var badCtx = new ToolExecutionContext(null, null) { Audience = TrustAudience.Public };
 
         var result = await tool.ExecuteAsync(new Dictionary<string, object?>
         {

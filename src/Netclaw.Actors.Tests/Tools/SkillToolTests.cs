@@ -107,8 +107,8 @@ public class SkillToolTests : IDisposable
             """);
         ScanSkills();
 
-        // Audience is now a parsed TrustAudience? — null is treated as Public by SkillLoadTool.
-        var badCtx = new Netclaw.Tools.ToolExecutionContext(null, null) { Audience = null };
+        // Audience is non-nullable; Public is the minimum-privilege audience, equivalent to the old null/unset default.
+        var badCtx = new Netclaw.Tools.ToolExecutionContext(null, null) { Audience = TrustAudience.Public };
         var tool = new SkillLoadTool(_registry, new NoOpSkillContentScanner());
         var result = await tool.ExecuteAsync(
             ToolInput.Create("Name", "guarded-skill"), badCtx, TestContext.Current.CancellationToken);
