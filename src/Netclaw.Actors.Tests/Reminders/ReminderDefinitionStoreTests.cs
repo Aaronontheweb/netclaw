@@ -59,7 +59,7 @@ public sealed class ReminderDefinitionStoreTests : IDisposable
                 FireAt = now.AddMinutes(30)
             },
             Audience = TrustAudience.Public,
-            Boundary = SecurityPolicyDefaults.PublicBoundary,
+            Boundary = TrustBoundary.Public,
             Enabled = true,
             CreatedBy = "test",
             CreatedAt = now,
@@ -154,7 +154,7 @@ public sealed class ReminderDefinitionStoreTests : IDisposable
                 FireAt = now.AddHours(1)
             },
             Audience = TrustAudience.Personal,
-            Boundary = SecurityPolicyDefaults.PersonalBoundary,
+            Boundary = TrustBoundary.Personal,
             Enabled = true,
             CreatedBy = "bob",
             CreatedAt = now,
@@ -167,7 +167,7 @@ public sealed class ReminderDefinitionStoreTests : IDisposable
 
         Assert.NotNull(loaded);
         Assert.Equal(TrustAudience.Personal, loaded!.Audience);
-        Assert.Equal(SecurityPolicyDefaults.PersonalBoundary, loaded.Boundary);
+        Assert.Equal(TrustBoundary.Personal, loaded.Boundary);
         Assert.Equal(id, loaded.Id.Value);
         Assert.Equal("Round-trip check", loaded.Title);
     }
@@ -195,7 +195,7 @@ public sealed class ReminderDefinitionStoreTests : IDisposable
             Delivery = new ReminderDelivery { Kind = DeliveryKind.None },
             Schedule = new ReminderSchedule { Type = ReminderScheduleType.OneShot, FireAt = now.AddHours(1) },
             Audience = TrustAudience.Personal,
-            Boundary = SecurityPolicyDefaults.PersonalBoundary
+            Boundary = TrustBoundary.Personal
         };
 
         var json = JsonSerializer.Serialize(definition, options);
