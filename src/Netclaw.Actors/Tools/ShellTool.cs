@@ -134,18 +134,36 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
             }
             catch (OperationCanceledException)
             {
+                var killClosedPipes = true;
+
                 try
                 {
                     process.Kill(entireProcessTree: true);
                 }
-                catch (Exception ex) when (ex is InvalidOperationException or Win32Exception)
+                catch (InvalidOperationException ex)
                 {
-                    // Already exited (TOCTOU race), or the OS refused the kill.
+                    // Already exited between cancellation detection and kill.
                     Debug.WriteLine($"shell_execute: process kill skipped — {ex.Message}");
                 }
+                catch (Win32Exception ex)
+                {
+                    // If the OS refuses the kill, the child may keep stdout/stderr
+                    // open forever. Close our read ends so cancellation still
+                    // returns promptly instead of hanging in ReadToEndAsync.
+                    killClosedPipes = false;
+                    Debug.WriteLine($"shell_execute: process kill skipped — {ex.Message}");
+                    process.StandardOutput.Dispose();
+                    process.StandardError.Dispose();
+                }
 
-                // The kill closes the pipes, so the reads now drain to EOF.
-                await Task.WhenAll(stdoutTask, stderrTask);
+                try
+                {
+                    await Task.WhenAll(stdoutTask, stderrTask);
+                }
+                catch (Exception ex) when (!killClosedPipes && ex is IOException or ObjectDisposedException)
+                {
+                    Debug.WriteLine($"shell_execute: pipe drain aborted — {ex.Message}");
+                }
 
                 return timeoutCts.IsCancellationRequested
                     ? $"Error: Command timed out after {effectiveTimeoutSeconds} seconds."

@@ -73,17 +73,20 @@ public class ShellToolTests
     }
 
     [Fact]
-    public async Task Caller_cancellation_returns_gracefully()
+    public async Task Caller_cancellation_kills_child_process_tree_and_returns_gracefully()
     {
         // Reproduces the session-pipeline path: ShellTool's own timeout is long,
         // and cancellation instead arrives via the *outer* ct (the pipeline's
         // per-tool deadline). ShellTool must catch that, kill the process, and
         // return a message rather than letting the cancellation escape as an
-        // exception. If the kill failed, draining the pipes would hang and this
-        // test would never complete — so a passing run also proves the process
-        // was terminated.
+        // exception. On Unix the command also spawns a background child that
+        // inherits stdout/stderr; if the tree kill regresses, that child keeps
+        // the pipe write-ends open and the test never completes.
         var tool = new ShellTool(new ToolConfig { ShellTimeoutSeconds = 100 });
-        var args = ToolInput.Create("Command", "sleep 120");
+        var command = OperatingSystem.IsWindows()
+            ? "ping 127.0.0.1 -n 120 > nul"
+            : "sleep 120 & wait";
+        var args = ToolInput.Create("Command", command);
         var context = new ToolExecutionContext("test/thread", Path.GetTempPath())
         {
             Audience = TrustAudience.Personal,
