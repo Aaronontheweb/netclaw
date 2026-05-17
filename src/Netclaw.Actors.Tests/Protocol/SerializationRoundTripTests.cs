@@ -698,6 +698,106 @@ public sealed class SerializationRoundTripTests : TestKit
     }
 
     [Fact]
+    public void SessionSnapshot_pending_tool_interactions_round_trip()
+    {
+        // Covers every field type on PendingToolInteractionRecord: the
+        // TrustAudience enum, nullable RequesterSenderId / RequesterPrincipal
+        // (one populated, one null), ApprovalCandidateRecord with both a
+        // populated and a null Directory, and empty and populated string lists.
+        var wrapped = new SessionSnapshot
+        {
+            TurnCount = 4,
+            History = [],
+            PendingToolInteractions =
+            [
+                new SessionSnapshot.PendingToolInteractionRecord
+                {
+                    CallId = "call-pending-1",
+                    ToolName = "shell_execute",
+                    Patterns = ["git status", "ls"],
+                    CandidateVerbs = ["git", "ls"],
+                    Audience = Netclaw.Configuration.TrustAudience.Team,
+                    RequesterSenderId = new SenderId("U12345"),
+                    RequesterPrincipal = Netclaw.Configuration.PrincipalClassification.Operator,
+                    Cwd = "/home/user/project",
+                    Candidates =
+                    [
+                        new SessionSnapshot.ApprovalCandidateRecord { Verb = "git", Directory = "/home/user/project" },
+                        new SessionSnapshot.ApprovalCandidateRecord { Verb = "ls", Directory = null }
+                    ]
+                },
+                new SessionSnapshot.PendingToolInteractionRecord
+                {
+                    CallId = "call-pending-2",
+                    ToolName = "fetch_url",
+                    Patterns = [],
+                    CandidateVerbs = [],
+                    Audience = Netclaw.Configuration.TrustAudience.Public,
+                    RequesterSenderId = null,
+                    RequesterPrincipal = null,
+                    Cwd = null,
+                    Candidates = []
+                }
+            ]
+        };
+
+        var result = RoundTrip(wrapped);
+
+        Assert.Equal(2, result.PendingToolInteractions.Count);
+
+        var first = result.PendingToolInteractions[0];
+        Assert.Equal("call-pending-1", first.CallId);
+        Assert.Equal("shell_execute", first.ToolName);
+        Assert.Equal(new[] { "git status", "ls" }, first.Patterns);
+        Assert.Equal(new[] { "git", "ls" }, first.CandidateVerbs);
+        Assert.Equal(Netclaw.Configuration.TrustAudience.Team, first.Audience);
+        Assert.Equal(new SenderId("U12345"), first.RequesterSenderId);
+        Assert.Equal(Netclaw.Configuration.PrincipalClassification.Operator, first.RequesterPrincipal);
+        Assert.Equal("/home/user/project", first.Cwd);
+        Assert.Equal(2, first.Candidates.Count);
+        Assert.Equal("git", first.Candidates[0].Verb);
+        Assert.Equal("/home/user/project", first.Candidates[0].Directory);
+        Assert.Equal("ls", first.Candidates[1].Verb);
+        Assert.Null(first.Candidates[1].Directory);
+
+        var second = result.PendingToolInteractions[1];
+        Assert.Equal("call-pending-2", second.CallId);
+        Assert.Equal("fetch_url", second.ToolName);
+        Assert.Empty(second.Patterns);
+        Assert.Empty(second.CandidateVerbs);
+        Assert.Equal(Netclaw.Configuration.TrustAudience.Public, second.Audience);
+        Assert.Null(second.RequesterSenderId);
+        Assert.Null(second.RequesterPrincipal);
+        Assert.Null(second.Cwd);
+        Assert.Empty(second.Candidates);
+    }
+
+    [Fact]
+    public void SessionSnapshot_with_no_pending_tool_interactions_round_trips_to_empty_list()
+    {
+        // Backward compatibility: a snapshot written before the
+        // pending_tool_interactions field existed deserializes with an empty
+        // list (proto3 default) — never null, never an exception.
+        var wrapped = new SessionSnapshot
+        {
+            TurnCount = 2,
+            History = []
+        };
+
+        var expected = new Serialization.Proto.SessionSnapshotProto
+        {
+            TurnCount = 2
+        }.ToByteArray();
+
+        // No pending interactions => byte-identical to the pre-field proto.
+        Assert.Equal(expected, Serialize(wrapped));
+
+        var result = RoundTrip(wrapped);
+        Assert.NotNull(result.PendingToolInteractions);
+        Assert.Empty(result.PendingToolInteractions);
+    }
+
+    [Fact]
     public void AdoptedContextRecorded_sender_id_wrap_is_byte_identical_to_raw_primitive_proto()
     {
         // Pass 7c wraps the adopted-context SenderId / AuthorizerSenderId fields

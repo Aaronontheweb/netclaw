@@ -54,7 +54,9 @@ internal static class SessionToolExecutionPipeline
         int shellTimeoutSeconds = 60,
         IActorRef? backgroundJobManager = null,
         string? projectDirectory = null,
-        bool setWorkingDirectoryAvailable = false)
+        bool setWorkingDirectoryAvailable = false,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? oneTimeApprovalPreSeed = null,
+        TrustAudience? audienceOverride = null)
     {
         try
         {
@@ -80,7 +82,12 @@ internal static class SessionToolExecutionPipeline
                 shellTimeoutSeconds,
                 backgroundJobManager,
                 projectDirectory,
-                setWorkingDirectoryAvailable));
+                setWorkingDirectoryAvailable,
+                oneTimeApprovalPreSeed is not null
+                && oneTimeApprovalPreSeed.TryGetValue(tc.CallId, out var preSeedPatterns)
+                    ? preSeedPatterns
+                    : null,
+                audienceOverride));
             var results = await Task.WhenAll(tasks);
 
             var fileAttachments = results.SelectMany(r => r.FileAttachments).ToList();
@@ -132,7 +139,9 @@ internal static class SessionToolExecutionPipeline
         int shellTimeoutSeconds = 60,
         IActorRef? backgroundJobManager = null,
         string? projectDirectory = null,
-        bool setWorkingDirectoryAvailable = false)
+        bool setWorkingDirectoryAvailable = false,
+        IReadOnlyList<string>? oneTimeApprovalPreSeed = null,
+        TrustAudience? audienceOverride = null)
     {
         var (meta, cleanedTc) = ToolCallMetaExtractor.Extract(tc);
         tc = cleanedTc;
@@ -145,8 +154,22 @@ internal static class SessionToolExecutionPipeline
 
         var sw = Stopwatch.StartNew();
         string resultText;
-        var context = BuildToolExecutionContext(sessionId, source, sessionDir, spawnChildActor, projectDirectory);
+        var context = BuildToolExecutionContext(sessionId, source, sessionDir, spawnChildActor, projectDirectory, audienceOverride);
         context.RequestedTimeoutSeconds = (int)timeout.TotalSeconds;
+
+        // Re-drive of an ApprovedOnce approval: the user already clicked
+        // "approve once" before the session passivated, but there is no
+        // persisted grant to satisfy the gate on the cold-recovered re-drive.
+        // Pre-seed the one-time approval bypass for exactly this call id so the
+        // gate passes once without emitting a duplicate approval prompt. The
+        // bypass is still tool-name- and pattern-matched inside the gate
+        // (DispatchingToolExecutor.IsOneTimeApprovalSatisfied) and the pipeline
+        // clears it after the attempt — it cannot leak to any other call.
+        if (oneTimeApprovalPreSeed is not null)
+        {
+            context.OneTimeApprovedToolName = tc.Name;
+            context.SetOneTimeApprovedPatterns(oneTimeApprovalPreSeed);
+        }
         if (approvalChannel is not null && emitApprovalRequest is not null)
         {
             context.ApprovalBridge = new ParentSessionApprovalBridge(
@@ -645,14 +668,22 @@ internal static class SessionToolExecutionPipeline
         MessageSource? source,
         string sessionDir,
         Func<object, string, CancellationToken, Task<object>> spawnChildActor,
-        string? projectDirectory)
+        string? projectDirectory,
+        TrustAudience? audienceOverride = null)
     {
         // A turn with no source carries no trust context — fall closed to the
         // most-restrictive audience. The default is resolved once, here, so every
         // downstream tool gate reads a guaranteed audience.
+        //
+        // audienceOverride is set only by the post-approval re-drive of a
+        // cold-recovered session: the live MessageSource is gone, but the
+        // parked turn's audience was persisted, so the re-driven call runs
+        // under the audience its approval grant was recorded against rather
+        // than the fail-closed Public default. It is never an escalation —
+        // the override carries the parked turn's own audience.
         var context = new ToolExecutionContext(sessionId.Value, sessionDir)
         {
-            Audience = source?.Audience ?? TrustAudience.Public,
+            Audience = audienceOverride ?? source?.Audience ?? TrustAudience.Public,
         };
         context.Boundary = source?.Boundary;
         context.ChannelType = source is null ? null : source.ChannelType.ToWireValue();

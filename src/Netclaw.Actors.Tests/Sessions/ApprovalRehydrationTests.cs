@@ -1,0 +1,590 @@
+// -----------------------------------------------------------------------
+// <copyright file="ApprovalRehydrationTests.cs" company="Petabridge, LLC">
+//      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
+// </copyright>
+// -----------------------------------------------------------------------
+using Akka.Actor;
+using Akka.Hosting;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+using Netclaw.Actors.Channels;
+using Netclaw.Actors.Hosting;
+using Netclaw.Actors.Protocol;
+using Netclaw.Actors.Sessions;
+using Netclaw.Actors.Tools;
+using Netclaw.Configuration;
+using Xunit;
+
+namespace Netclaw.Actors.Tests.Sessions;
+
+/// <summary>
+/// Integration tests for persisted tool-approval interactions: a tool batch
+/// parks on a human-approval gate, the session passivates / cold-respawns, and
+/// the approval click that arrives afterward must re-drive the parked batch
+/// rather than being silently dropped.
+/// </summary>
+public sealed class ApprovalRehydrationTests : LlmSessionTestBase
+{
+    private readonly FakeChatClient _fakeChatClient = new();
+    private readonly ApprovalGateToolExecutor _toolExecutor = new();
+
+    public ApprovalRehydrationTests(ITestOutputHelper output) : base(output)
+    {
+    }
+
+    protected override void ConfigureSessionServices(IServiceCollection services)
+    {
+        services.AddSingleton<IChatClientProvider>(new SingleClientProvider(_fakeChatClient));
+        services.AddSingleton(new ModelCapabilities
+        {
+            ModelId = "fake-model",
+            ContextWindowTokens = 128_000,
+        });
+        services.AddSingleton(new SessionConfig
+        {
+            // Disable idle-timeout passivation — tests drive passivation
+            // explicitly by stopping the child actor.
+            IdleTimeout = TimeSpan.Zero,
+            Tuning = new SessionTuning
+            {
+                SnapshotInterval = 1,
+                TitleGenerationInterval = 0,
+                MaxInlineToolResultChars = 200,
+            }
+        });
+        services.AddSingleton<ISystemPromptProvider>(new StaticSystemPromptProvider(
+            "You are a test assistant with tools."));
+        services.AddSingleton<IToolExecutor>(_toolExecutor);
+
+        var registry = new ToolRegistry();
+        registry.Register(
+            AIFunctionFactory.Create((string command) => $"ran {command}", "shell_execute"),
+            "shell_execute");
+        services.AddSingleton(registry);
+    }
+
+    [Fact]
+    public async Task Passivated_session_resumes_tool_batch_when_approval_arrives()
+    {
+        const string callId = "call-shell-1";
+        _toolExecutor.GatedTools.Add("shell_execute");
+
+        _fakeChatClient.ToolCallsOnFirstCall =
+        [
+            new FunctionCallContent(callId, "shell_execute",
+                new Dictionary<string, object?> { ["command"] = "git status" })
+        ];
+
+        var sessionId = new SessionId("test-channel/resume-after-passivation");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("resume-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Run git status"
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        // The tool batch is announced (ToolCallOutput) then parks on the
+        // approval gate (ToolInteractionRequest).
+        await subscriber.ExpectMsgAsync<ToolCallOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        var request = await subscriber.ExpectMsgAsync<ToolInteractionRequest>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(callId, request.CallId.Value);
+        Assert.Equal("shell_execute", request.ToolName.Value);
+
+        // First tool attempt threw the approval-required exception — the tool
+        // has not actually executed yet.
+        Assert.Equal(0, _toolExecutor.SuccessfulExecutions);
+
+        // Force a cold respawn: stop the session actor. The snapshot saved when
+        // the approval request was created carries the pending interaction.
+        await ColdRespawnAsync(sessionId);
+
+        // Re-join to cold-respawn the session — it recovers the pending
+        // interaction from the snapshot and lands in Ready.
+        var subscriberB = CreateTestProbe("resume-sub-b");
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriberB)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriberB.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        // The approval click arrives after recovery.
+        sessionManager.Tell(new ToolInteractionResponse
+        {
+            SessionId = sessionId,
+            CallId = new Netclaw.Tools.ToolCallId(callId),
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce),
+            SenderId = new SenderId("local-user")
+        });
+
+        // The parked batch re-drives: the tool executes successfully (the
+        // ApprovedOnce pre-seed bypassed the gate without a duplicate prompt)
+        // and the follow-up LLM call produces a final text response.
+        await subscriberB.ExpectMsgAsync<ToolResultOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriberB.ExpectMsgAsync<TextOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        var completed = await subscriberB.ExpectMsgAsync<TurnCompleted>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(TurnOutcome.Completed, completed.Outcome);
+
+        Assert.Equal(1, _toolExecutor.SuccessfulExecutions);
+
+        // No duplicate approval prompt was emitted for the re-driven call.
+        await subscriberB.ExpectNoMsgAsync(
+            TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Idle_session_with_pending_interaction_redrives_when_approval_arrives()
+    {
+        const string callId = "call-shell-idle";
+        _toolExecutor.GatedTools.Add("shell_execute");
+
+        _fakeChatClient.ToolCallsOnFirstCall =
+        [
+            new FunctionCallContent(callId, "shell_execute",
+                new Dictionary<string, object?> { ["command"] = "ls" })
+        ];
+
+        var sessionId = new SessionId("test-channel/idle-redrive");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("idle-redrive-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "List the directory"
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        await subscriber.ExpectMsgAsync<ToolCallOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        var request = await subscriber.ExpectMsgAsync<ToolInteractionRequest>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(callId, request.CallId.Value);
+
+        // Without stopping the actor, send the approval response. The session
+        // is in Ready (the parked tool-loop task is the only thing in flight,
+        // there is no live Processing turn for an idle deferred-passivation
+        // session) — the Ready handler re-drives the batch from history.
+        sessionManager.Tell(new ToolInteractionResponse
+        {
+            SessionId = sessionId,
+            CallId = new Netclaw.Tools.ToolCallId(callId),
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce),
+            SenderId = new SenderId("local-user")
+        });
+
+        await subscriber.ExpectMsgAsync<ToolResultOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<TextOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        var completed = await subscriber.ExpectMsgAsync<TurnCompleted>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(TurnOutcome.Completed, completed.Outcome);
+        Assert.Equal(1, _toolExecutor.SuccessfulExecutions);
+    }
+
+    [Fact]
+    public async Task Unknown_call_id_fails_loud_with_expired_prompt_message()
+    {
+        // A session with history but no pending interaction. Send a response
+        // for a call id that was never parked.
+        var sessionId = new SessionId("test-channel/expired-prompt");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("expired-prompt-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        // Complete a normal text turn so the session is in Ready with history.
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Hello"
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<TextOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<TurnCompleted>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        sessionManager.Tell(new ToolInteractionResponse
+        {
+            SessionId = sessionId,
+            CallId = new Netclaw.Tools.ToolCallId("call-never-existed"),
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce),
+            SenderId = new SenderId("local-user")
+        });
+
+        var notice = await subscriber.ExpectMsgAsync<TextOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Contains("expired", notice.Text, StringComparison.OrdinalIgnoreCase);
+
+        // No LLM call or tool dispatch was triggered.
+        Assert.Equal(0, _toolExecutor.SuccessfulExecutions);
+    }
+
+    [Fact]
+    public async Task Non_requester_response_is_rejected_after_recovery()
+    {
+        const string callId = "call-shell-auth";
+        _toolExecutor.GatedTools.Add("shell_execute");
+
+        _fakeChatClient.ToolCallsOnFirstCall =
+        [
+            new FunctionCallContent(callId, "shell_execute",
+                new Dictionary<string, object?> { ["command"] = "git status" })
+        ];
+
+        var sessionId = new SessionId("test-channel/auth-parity");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("auth-parity-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        // Drive the turn with an explicit requester so the pending record
+        // carries a concrete requester sender id.
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Run git status",
+            Source = RequesterSource("U-requester")
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        await subscriber.ExpectMsgAsync<ToolCallOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<ToolInteractionRequest>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        // A different user clicks approve — must be rejected.
+        sessionManager.Tell(new ToolInteractionResponse
+        {
+            SessionId = sessionId,
+            CallId = new Netclaw.Tools.ToolCallId(callId),
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce),
+            SenderId = new SenderId("U-imposter")
+        });
+
+        var rejection = await subscriber.ExpectMsgAsync<TextOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Contains("only the requesting user", rejection.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, _toolExecutor.SuccessfulExecutions);
+    }
+
+    [Fact]
+    public async Task Cold_recovered_redrive_runs_at_original_turn_audience()
+    {
+        const string callId = "call-shell-aud";
+        _toolExecutor.GatedTools.Add("shell_execute");
+
+        _fakeChatClient.ToolCallsOnFirstCall =
+        [
+            new FunctionCallContent(callId, "shell_execute",
+                new Dictionary<string, object?> { ["command"] = "git status" })
+        ];
+
+        var sessionId = new SessionId("test-channel/redrive-audience");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("redrive-aud-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        // Drive the turn at Team audience — the pending interaction persists it.
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Run git status",
+            Source = RequesterSource("U-requester")
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        await subscriber.ExpectMsgAsync<ToolCallOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<ToolInteractionRequest>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        // Cold respawn: the transient _currentTurnSource is lost; only the
+        // snapshotted pending interaction carries the turn's trust context.
+        await ColdRespawnAsync(sessionId);
+
+        var subscriberB = CreateTestProbe("redrive-aud-sub-b");
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriberB)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriberB.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        sessionManager.Tell(new ToolInteractionResponse
+        {
+            SessionId = sessionId,
+            CallId = new Netclaw.Tools.ToolCallId(callId),
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce),
+            SenderId = new SenderId("U-requester")
+        });
+
+        await subscriberB.ExpectMsgAsync<ToolResultOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriberB.ExpectMsgAsync<TextOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        var completed = await subscriberB.ExpectMsgAsync<TurnCompleted>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(TurnOutcome.Completed, completed.Outcome);
+
+        // The re-drive ran at the original turn's Team audience — not the
+        // fail-closed Public a null cold-recovery source would have forced.
+        Assert.Equal(1, _toolExecutor.SuccessfulExecutions);
+        Assert.Equal(TrustAudience.Team, _toolExecutor.LastExecutionAudience);
+    }
+
+    [Fact]
+    public async Task Recovered_session_with_parked_approval_heals_history_when_user_sends_a_message()
+    {
+        const string callId = "call-shell-abandon";
+        _toolExecutor.GatedTools.Add("shell_execute");
+
+        _fakeChatClient.ToolCallsOnFirstCall =
+        [
+            new FunctionCallContent(callId, "shell_execute",
+                new Dictionary<string, object?> { ["command"] = "git status" })
+        ];
+
+        var sessionId = new SessionId("test-channel/abandon-parked-batch");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("abandon-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Run git status"
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        await subscriber.ExpectMsgAsync<ToolCallOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<ToolInteractionRequest>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        // Cold respawn — the snapshot carries the parked interaction and the
+        // assistant tool_use with no matching tool_result.
+        await ColdRespawnAsync(sessionId);
+
+        var subscriberB = CreateTestProbe("abandon-sub-b");
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriberB)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriberB.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        // The user abandons the approval by sending a new message instead of
+        // clicking. The parked tool_use must be closed with a synthetic result
+        // so the new turn's LLM call ships well-formed history.
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Never mind — just say hello"
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        await subscriberB.ExpectMsgAsync<TextOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        var completed = await subscriberB.ExpectMsgAsync<TurnCompleted>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(TurnOutcome.Completed, completed.Outcome);
+
+        // The gated tool never ran — it was abandoned, not re-driven.
+        Assert.Equal(0, _toolExecutor.SuccessfulExecutions);
+
+        // The post-recovery LLM call's history carries a synthetic tool result
+        // for the parked call — no orphaned assistant tool_use.
+        var lastCall = _fakeChatClient.ReceivedMessages[^1];
+        var healed = lastCall.Any(m => m.Role == Microsoft.Extensions.AI.ChatRole.Tool
+            && m.Contents.OfType<FunctionResultContent>().Any(r => r.CallId == callId));
+        Assert.True(healed, "parked tool_use should be closed with a synthetic tool result");
+
+        // A late click on the abandoned prompt is now treated as expired.
+        sessionManager.Tell(new ToolInteractionResponse
+        {
+            SessionId = sessionId,
+            CallId = new Netclaw.Tools.ToolCallId(callId),
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce),
+            SenderId = new SenderId("local-user")
+        });
+        var notice = await subscriberB.ExpectMsgAsync<TextOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Contains("expired", notice.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Tool_interaction_response_during_passivation_aborts_shutdown()
+    {
+        var sessionId = new SessionId("test-channel/passivation-approval");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("passivation-approval-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        var escapedId = Uri.EscapeDataString(sessionId.Value);
+        var child = await Sys.ActorSelection($"/user/session-manager/{escapedId}")
+            .ResolveOne(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Watch(child);
+
+        // Drop the subscriber and force the idle timeout so the session enters
+        // Passivating (the ReceiveTimeout handler defers while subscribers exist).
+        child.Tell(new LeaveSession(subscriber) { SessionId = sessionId });
+        child.Tell(ReceiveTimeout.Instance);
+
+        // An approval response arriving during Passivating must abort the
+        // shutdown rather than dead-letter into a stopping actor.
+        child.Tell(new ToolInteractionResponse
+        {
+            SessionId = sessionId,
+            CallId = new Netclaw.Tools.ToolCallId("call-never-parked"),
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce),
+            SenderId = new SenderId("local-user")
+        });
+
+        // The actor does not stop — passivation was aborted. (The expired-prompt
+        // notice has no subscriber to land on here; Passivating only happens
+        // with zero subscribers. The point under test is that the shutdown is
+        // aborted, not completed.)
+        await ExpectNoMsgAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+    }
+
+    /// <summary>
+    /// Cold-respawns a session: resolves its actor, stops it, and waits for
+    /// termination. The next JoinSession/SendUserMessage re-creates it through
+    /// the session manager, recovering from the journal and snapshot.
+    /// </summary>
+    private async Task ColdRespawnAsync(SessionId sessionId)
+    {
+        var escapedId = Uri.EscapeDataString(sessionId.Value);
+        var child = await Sys.ActorSelection($"/user/session-manager/{escapedId}")
+            .ResolveOne(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Watch(child);
+        Sys.Stop(child);
+        await ExpectTerminatedAsync(child, cancellationToken: TestContext.Current.CancellationToken);
+    }
+
+    private MessageSource RequesterSource(string senderId) => new()
+    {
+        ChannelType = ChannelType.Slack,
+        SenderId = new SenderId(senderId),
+        Audience = TrustAudience.Team,
+        Boundary = TrustBoundary.Team,
+        Principal = PrincipalClassification.TrustedInternal,
+        Provenance = new SourceProvenance(
+            TransportAuthenticity.Verified, PayloadTaint.Public),
+        ReceivedAt = DateTimeOffset.UtcNow,
+    };
+}
+
+/// <summary>
+/// Fake <see cref="IToolExecutor"/> that mimics the production approval gate:
+/// a tool in <see cref="GatedTools"/> throws <see cref="ToolApprovalRequiredException"/>
+/// on its first attempt unless the execution context carries a one-time
+/// approval grant for that tool (<see cref="Netclaw.Tools.ToolExecutionContext.OneTimeApprovedToolName"/>).
+/// This is exactly the bypass <c>DispatchingToolExecutor.IsOneTimeApprovalSatisfied</c>
+/// applies, so a re-driven <c>ApprovedOnce</c> batch that pre-seeds the context
+/// passes the gate here without a second prompt.
+/// </summary>
+internal sealed class ApprovalGateToolExecutor : IToolExecutor
+{
+    private int _successfulExecutions;
+
+    public int SuccessfulExecutions => _successfulExecutions;
+
+    /// <summary>Tool names that require interactive approval before execution.</summary>
+    public HashSet<string> GatedTools { get; } = [];
+
+    /// <summary>
+    /// Audience on the execution context of the most recent successful
+    /// execution. A cold-recovered re-drive must run at the original turn's
+    /// audience — not the fail-closed <see cref="TrustAudience.Public"/> a null
+    /// source would force — so a persisted-scope grant still matches the gate.
+    /// </summary>
+    public TrustAudience? LastExecutionAudience { get; private set; }
+
+    public Task AuthorizeAsync(
+        FunctionCallContent toolCall,
+        Netclaw.Tools.ToolExecutionContext? context = null,
+        CancellationToken ct = default)
+        => Task.CompletedTask;
+
+    public Task<string> ExecuteAsync(
+        FunctionCallContent toolCall,
+        Netclaw.Tools.ToolExecutionContext? context = null,
+        CancellationToken ct = default)
+    {
+        if (GatedTools.Contains(toolCall.Name))
+        {
+            var hasOneTimeGrant = context is not null
+                && string.Equals(context.OneTimeApprovedToolName, toolCall.Name, StringComparison.Ordinal);
+
+            if (!hasOneTimeGrant)
+            {
+                throw new ToolApprovalRequiredException(new ToolApprovalContext(
+                    toolCall.Name,
+                    $"Tool {toolCall.Name} requires approval",
+                    Patterns: [toolCall.Name],
+                    CandidateVerbs: [toolCall.Name],
+                    Options:
+                    [
+                        new ToolApprovalOption(
+                            new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce), "Approve once"),
+                        new ToolApprovalOption(
+                            new ApprovalOptionKey(ApprovalOptionKeys.Deny), "Deny")
+                    ],
+                    Cwd: null,
+                    IsMessy: false,
+                    Candidates: [new Netclaw.Security.ApprovalCandidate(toolCall.Name, Directory: null)]));
+            }
+        }
+
+        LastExecutionAudience = context?.Audience;
+        Interlocked.Increment(ref _successfulExecutions);
+        return Task.FromResult($"[executed {toolCall.Name}]");
+    }
+}

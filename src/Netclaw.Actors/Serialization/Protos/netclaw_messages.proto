@@ -167,6 +167,28 @@ message SessionSnapshotProto {
     repeated string adopted_speaker_ids = 10;
   }
 
+  // In-flight tool-approval interaction persisted so a recovered session can
+  // re-drive a parked tool batch after an approval click arrives post-recovery.
+  message PendingToolInteractionProto {
+    message ApprovalCandidateProto {
+      string verb = 1;
+      optional string directory = 2;
+    }
+
+    string call_id = 1;
+    string tool_name = 2;
+    repeated string patterns = 3;
+    repeated string candidate_verbs = 4;
+    TrustAudience audience = 5;
+    optional string requester_sender_id = 6;
+    // PrincipalClassification enum value; absent when the requester had no
+    // principal hint. proto3 cannot express the C# nullable directly, so the
+    // presence bit on this optional field carries the null state.
+    optional int32 requester_principal = 7;
+    optional string cwd = 8;
+    repeated ApprovalCandidateProto candidates = 9;
+  }
+
   repeated SerializableChatMessageProto history = 1;
   int32 turn_count = 2;
   optional string title = 3;
@@ -175,6 +197,7 @@ message SessionSnapshotProto {
   WorkingContextProto working_context = 6;
   repeated ActiveJobInfoProto active_background_jobs = 7;
   repeated AdoptedContextSnapshotRecord adopted_context_records = 8;
+  repeated PendingToolInteractionProto pending_tool_interactions = 9;
 }
 
 // ── Broadcasts ──

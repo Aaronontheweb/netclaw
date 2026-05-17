@@ -227,6 +227,8 @@ internal static class NetclawProtoMapper
         proto.History.AddRange(snap.History.Select(ToProto));
         proto.ActiveBackgroundJobs.AddRange(snap.ActiveBackgroundJobs.Select(ToProto));
         proto.AdoptedContextRecords.AddRange(snap.AdoptedContextRecords.Select(ToAdoptedContextSnapshotRecord));
+        proto.PendingToolInteractions.AddRange(
+            snap.PendingToolInteractions.Select(ToPendingToolInteractionProto));
         return proto;
     }
 
@@ -240,7 +242,65 @@ internal static class NetclawProtoMapper
         WorkingContext = proto.WorkingContext is not null ? FromProto(proto.WorkingContext) : null,
         History = proto.History.Select(FromProto).ToArray(),
         ActiveBackgroundJobs = proto.ActiveBackgroundJobs.Select(FromProto).ToArray(),
-        AdoptedContextRecords = proto.AdoptedContextRecords.Select(FromAdoptedContextSnapshotRecord).ToArray()
+        AdoptedContextRecords = proto.AdoptedContextRecords.Select(FromAdoptedContextSnapshotRecord).ToArray(),
+        PendingToolInteractions = proto.PendingToolInteractions
+            .Select(FromPendingToolInteractionProto).ToArray()
+    };
+
+    private static Proto.SessionSnapshotProto.Types.PendingToolInteractionProto ToPendingToolInteractionProto(
+        SessionSnapshot.PendingToolInteractionRecord r)
+    {
+        var proto = new Proto.SessionSnapshotProto.Types.PendingToolInteractionProto
+        {
+            CallId = r.CallId,
+            ToolName = r.ToolName,
+            Audience = (Proto.TrustAudience)(int)r.Audience
+        };
+        proto.Patterns.AddRange(r.Patterns);
+        proto.CandidateVerbs.AddRange(r.CandidateVerbs);
+        if (r.RequesterSenderId is not null)
+            proto.RequesterSenderId = r.RequesterSenderId.Value.Value;
+        if (r.RequesterPrincipal is not null)
+            proto.RequesterPrincipal = (int)r.RequesterPrincipal.Value;
+        if (r.Cwd is not null)
+            proto.Cwd = r.Cwd;
+        proto.Candidates.AddRange(r.Candidates.Select(ToApprovalCandidateProto));
+        return proto;
+    }
+
+    private static SessionSnapshot.PendingToolInteractionRecord FromPendingToolInteractionProto(
+        Proto.SessionSnapshotProto.Types.PendingToolInteractionProto proto) => new()
+    {
+        CallId = proto.CallId,
+        ToolName = proto.ToolName,
+        Patterns = proto.Patterns.ToArray(),
+        CandidateVerbs = proto.CandidateVerbs.ToArray(),
+        Audience = (Configuration.TrustAudience)(int)proto.Audience,
+        RequesterSenderId = proto.HasRequesterSenderId ? new SenderId(proto.RequesterSenderId) : null,
+        RequesterPrincipal = proto.HasRequesterPrincipal
+            ? (Configuration.PrincipalClassification)proto.RequesterPrincipal
+            : null,
+        Cwd = proto.HasCwd ? proto.Cwd : null,
+        Candidates = proto.Candidates.Select(FromApprovalCandidateProto).ToArray()
+    };
+
+    private static Proto.SessionSnapshotProto.Types.PendingToolInteractionProto.Types.ApprovalCandidateProto
+        ToApprovalCandidateProto(SessionSnapshot.ApprovalCandidateRecord c)
+    {
+        var proto = new Proto.SessionSnapshotProto.Types.PendingToolInteractionProto.Types.ApprovalCandidateProto
+        {
+            Verb = c.Verb
+        };
+        if (c.Directory is not null)
+            proto.Directory = c.Directory;
+        return proto;
+    }
+
+    private static SessionSnapshot.ApprovalCandidateRecord FromApprovalCandidateProto(
+        Proto.SessionSnapshotProto.Types.PendingToolInteractionProto.Types.ApprovalCandidateProto proto) => new()
+    {
+        Verb = proto.Verb,
+        Directory = proto.HasDirectory ? proto.Directory : null
     };
 
     private static Proto.SessionSnapshotProto.Types.AdoptedContextSnapshotRecord ToAdoptedContextSnapshotRecord(
