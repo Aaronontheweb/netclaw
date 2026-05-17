@@ -25,12 +25,13 @@ Wait+Screen@10s /Added provider 'seed-ollama'|TAPE\$/
 Type "netclaw provider"
 Enter
 
-# Wait for the list rendering and confirm our seeded provider is there.
-# Termina rebuilds the SelectionList input handler on each state
-# transition; the screen anchor resolves slightly before the handler is
-# wired up, so Sleep 300ms lets input land correctly (same pattern as
-# provider-add.tape).
-Wait+Screen@10s /seed-ollama/
+# Wait for the probe to complete. ActivateSelectedProvider() is a no-op
+# while health == Probing, so we must wait for the ✓ checkmark (healthy)
+# before pressing Enter. The list renders seed-ollama immediately with a
+# spinner, but Enter would be silently ignored until the probe settles.
+# 30s covers slow CI; Ollama is pre-loaded in the smoke image so it's
+# typically < 5s.
+Wait+Screen@30s /✓ seed-ollama/
 Sleep 300ms
 
 # The seeded provider is at index 0 and highlighted by default —
