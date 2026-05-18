@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Collect failure artifacts from the native smoke harness (no Docker).
-#
-# Native successor to scripts/smoke/collect-logs.sh. Copies per-scenario
+# Collect failure artifacts from the native smoke harness — per-scenario
 # NETCLAW_HOME logs + config, the Ollama serve log, tape GIFs/PNGs, and
 # harness stdout into a destination directory.
 #

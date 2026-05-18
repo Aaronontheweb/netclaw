@@ -40,6 +40,14 @@ jobs:
         with:
           global-json-file: ./global.json
 
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/Directory.Packages.props', '**/Directory.Build.props', 'global.json') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
       - name: Publish binaries
         shell: bash
         run: |
@@ -88,6 +96,8 @@ jobs:
         with:
           path: ~/.ollama/models
           key: ollama-models-${{ env.SMOKE_OLLAMA_MODEL }}-${{ env.SMOKE_OLLAMA_ALT_MODEL }}
+          restore-keys: |
+            ollama-models-
 
       - name: Run native smoke (light)
         shell: bash
@@ -95,13 +105,6 @@ jobs:
           mkdir -p smoke-logs
           set -o pipefail
           scripts/smoke/run-smoke.sh light 2>&1 | tee smoke-logs/run-smoke.log
-
-      - name: Collect smoke artifacts
-        if: always()
-        shell: bash
-        run: |
-          mkdir -p smoke-logs
-          scripts/smoke/collect-artifacts.sh smoke-logs || true
 
       - name: Upload smoke artifacts
         if: always()

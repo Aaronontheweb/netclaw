@@ -1,13 +1,5 @@
 #!/usr/bin/env bash
 # stats.sh — `netclaw stats` text / json / --days / skills surfaces.
-#
-# Folded from scripts/smoke/check.sh (~lines 340-382). The stats command
-# reads from the running daemon, which needs at least one completed
-# session to report token counters — so this scenario seeds config,
-# starts a daemon, runs a headless prompt, then exercises stats.
-#
-# Self-contained: seeds provider + model config, starts a fresh daemon,
-# asserts, stops it.
 
 set -euo pipefail
 
@@ -15,25 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../../scripts/smoke/lib/common.sh
 . "${SCRIPT_DIR}/../../../scripts/smoke/lib/common.sh"
 
-SMOKE_MODEL="${SMOKE_OLLAMA_MODEL:-qwen2:0.5b}"
-OLLAMA_ENDPOINT="${SMOKE_OLLAMA_ENDPOINT:-http://localhost:11434}"
-
-nc() { run_timed "$STEP_TIMEOUT_SECONDS" "$NETCLAW_SMOKE_CLI" "$@"; }
-
-cleanup() { stop_daemon; }
-trap cleanup EXIT
-
-log "Seeding provider + model config..."
-nc provider add local-ollama ollama --endpoint "$OLLAMA_ENDPOINT"
-nc model set main local-ollama "$SMOKE_MODEL"
-
-log "Starting daemon for stats tests..."
-if ! start_daemon; then
-  fail "daemon did not start"
-  summarize || exit 1
-  exit 1
-fi
-wait_for_health || { fail "daemon health endpoint not ready"; summarize || exit 1; exit 1; }
+seed_and_start_daemon
 
 log "Creating a completed session so stats has data..."
 nc chat -p "Say hello in one word" || true

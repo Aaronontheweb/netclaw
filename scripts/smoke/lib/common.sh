@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# Shared helpers for the native (non-Docker) smoke harness.
-#
-# Source this file; do not execute it. De-Dockerized versions of the
-# helpers that used to live in scripts/smoke/check.sh — the daemon now
-# runs as a native host process bound to loopback 127.0.0.1:5199.
+# Shared helpers for the native smoke harness — source, do not execute.
 #
 # Callers must export before sourcing or before calling the helpers:
 #   NETCLAW_SMOKE_CLI     absolute path to the `netclaw` binary
@@ -58,7 +54,8 @@ run_timed() {
   elif command -v perl >/dev/null 2>&1; then
     perl -e 'alarm shift; exec @ARGV' "$secs" "$@"
   else
-    "$@"
+    echo "ERROR: no timeout mechanism (timeout/gtimeout/perl) found; cannot bound '$*'." >&2
+    return 1
   fi
 }
 
@@ -108,4 +105,36 @@ wait_for_health() {
 stop_daemon() {
   : "${NETCLAW_SMOKE_CLI:?NETCLAW_SMOKE_CLI must be set}"
   run_timed "$STOP_TIMEOUT_SECONDS" "$NETCLAW_SMOKE_CLI" daemon stop >/dev/null 2>&1 || true
+}
+
+# ── Scenario helpers ─────────────────────────────────────────────────────────
+
+# Smoke model + Ollama endpoint defaults — shared by every scenario so
+# they cannot drift apart.
+SMOKE_MODEL="${SMOKE_OLLAMA_MODEL:-qwen2:0.5b}"
+OLLAMA_ENDPOINT="${SMOKE_OLLAMA_ENDPOINT:-http://localhost:11434}"
+
+# nc — run the netclaw CLI under the per-step timeout.
+nc() { run_timed "$STEP_TIMEOUT_SECONDS" "$NETCLAW_SMOKE_CLI" "$@"; }
+
+# die <msg> — record a failure, print the summary, exit non-zero.
+die() { fail "$1"; summarize || true; exit 1; }
+
+# seed_provider_model — write a minimal provider + main-model config so a
+# fresh NETCLAW_HOME has a usable provider before the daemon starts.
+seed_provider_model() {
+  nc provider add local-ollama ollama --endpoint "$OLLAMA_ENDPOINT"
+  nc model set main local-ollama "$SMOKE_MODEL"
+}
+
+# seed_and_start_daemon — the common scenario preamble: install the daemon
+# stop trap, seed config, start the daemon, wait for health. die()s on
+# failure.
+seed_and_start_daemon() {
+  trap stop_daemon EXIT
+  log "Seeding provider + model config..."
+  seed_provider_model
+  log "Starting daemon..."
+  start_daemon || die "daemon did not start"
+  wait_for_health || die "daemon health endpoint not ready"
 }
