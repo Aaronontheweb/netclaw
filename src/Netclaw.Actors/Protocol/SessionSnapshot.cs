@@ -6,7 +6,6 @@
 using Netclaw.Actors.Jobs;
 using Netclaw.Actors.Serialization;
 using Netclaw.Actors.Sessions;
-using Netclaw.Configuration;
 
 namespace Netclaw.Actors.Protocol;
 
@@ -51,53 +50,6 @@ public sealed record SessionSnapshot : INetclawSerializableMessage
             Array.Empty<AdoptedContextSnapshotMessage>();
     }
 
-    /// <summary>
-    /// A single <c>(verb, directory)</c> approval candidate clause carried by a
-    /// persisted <see cref="PendingToolInteractionRecord"/>. Framework-owned
-    /// persistence mirror of <see cref="Netclaw.Security.ApprovalCandidate"/>.
-    /// </summary>
-    public sealed record ApprovalCandidateRecord
-    {
-        public string Verb { get; init; } = string.Empty;
-
-        public string? Directory { get; init; }
-    }
-
-    /// <summary>
-    /// Persisted form of an in-flight tool-approval interaction. A turn parks
-    /// when a tool call needs human approval; persisting the pending
-    /// interaction lets a recovered session re-drive the parked tool batch
-    /// once a Slack/Discord approval click arrives after passivation.
-    /// </summary>
-    public sealed record PendingToolInteractionRecord
-    {
-        /// <summary>Tool call id of the parked invocation (the runtime dictionary key).</summary>
-        public string CallId { get; init; } = string.Empty;
-
-        public string ToolName { get; init; } = string.Empty;
-
-        public IReadOnlyList<string> Patterns { get; init; } = Array.Empty<string>();
-
-        public IReadOnlyList<string> CandidateVerbs { get; init; } = Array.Empty<string>();
-
-        public TrustAudience Audience { get; init; }
-
-        public TrustBoundary? Boundary { get; init; }
-
-        public string? ChannelType { get; init; }
-
-        public bool? SupportsInteractiveApproval { get; init; }
-
-        public SenderId? RequesterSenderId { get; init; }
-
-        public PrincipalClassification? RequesterPrincipal { get; init; }
-
-        public string? Cwd { get; init; }
-
-        public IReadOnlyList<ApprovalCandidateRecord> Candidates { get; init; } =
-            Array.Empty<ApprovalCandidateRecord>();
-    }
-
     public IReadOnlyList<SerializableChatMessage> History { get; init; } =
         Array.Empty<SerializableChatMessage>();
 
@@ -128,14 +80,4 @@ public sealed record SessionSnapshot : INetclawSerializableMessage
 
     public IReadOnlyList<AdoptedContextSnapshotRecord> AdoptedContextRecords { get; init; } =
         Array.Empty<AdoptedContextSnapshotRecord>();
-
-    /// <summary>
-    /// In-flight tool-approval interactions awaiting a user decision. Persisted
-    /// so a recovered session can re-drive a parked tool batch after a
-    /// Slack/Discord approval click arrives post-passivation. Empty when no
-    /// approval is pending — which is the case for any snapshot written before
-    /// this field existed (proto3 default).
-    /// </summary>
-    public IReadOnlyList<PendingToolInteractionRecord> PendingToolInteractions { get; init; } =
-        Array.Empty<PendingToolInteractionRecord>();
 }

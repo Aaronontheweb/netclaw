@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.2.2"
+  version: "2.2.3"
 ---
 
 # Netclaw Operations
@@ -348,21 +348,15 @@ compound command includes pure side-effect verbs (`echo`, `printf`, `:`,
 authorized for the current call by the click but no `ApprovalEntry` is
 written for them. Recording every literal `echo "==="` would be noise.
 
-**Prompts survive passivation and restart.** A pending approval prompt is
-persisted in the session snapshot, so if the session goes idle or the daemon
-restarts before the user clicks, the click is still honored when it arrives —
-the parked tool batch is re-driven and the turn continues. The only case where
-a click does nothing is a genuinely expired prompt (the turn already failed or
-was superseded); the session then posts a visible "approval prompt has expired"
-notice rather than silently dropping the click. If a user reports a stale
-button, ask them to re-issue the request.
-
-**Whole-batch replay caveat.** Recovery resumes from the last durable assistant
-tool-call message, not from per-tool checkpoints. If a mixed batch was
-interrupted after one sibling already finished in memory and another sibling was
- still waiting on approval, the recovered session may re-run the already-finished
- sibling too. This is an accepted MVP limitation; if duplicate side effects would
- matter, ask the user to re-issue the action as a single-tool step.
+**Prompts survive passivation and restart.** Pending approval prompts are
+journaled with their requester and trust context, so if the session goes idle or
+the daemon restarts before the user clicks, the click is still honored when it
+arrives. Completed sibling tool results are journaled per call, so recovery
+re-drives unresolved calls rather than replaying the whole batch. The only case
+where a click does nothing is a genuinely expired prompt (the turn already
+failed or was superseded); the session then posts a visible "approval prompt has
+expired" notice rather than silently dropping the click. If a user reports a
+stale button, ask them to re-issue the request.
 
 **Why you may not see a prompt at all.** If the user invokes a read-only verb
 (say `grep`) with a path argument under a tree the operator has previously

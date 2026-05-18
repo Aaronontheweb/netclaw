@@ -61,6 +61,9 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
         registry.Register(
             AIFunctionFactory.Create((string command) => $"ran {command}", "shell_execute"),
             "shell_execute");
+        registry.Register(
+            AIFunctionFactory.Create((string path) => $"read {path}", "read_file"),
+            "read_file");
         services.AddSingleton(registry);
     }
 
@@ -106,12 +109,12 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
         // has not actually executed yet.
         Assert.Equal(0, _toolExecutor.SuccessfulExecutions);
 
-        // Force a cold respawn: stop the session actor. The snapshot saved when
-        // the approval request was created carries the pending interaction.
+        // Force a cold respawn: stop the session actor. The journaled approval
+        // request carries the pending interaction.
         await ColdRespawnAsync(sessionId);
 
         // Re-join to cold-respawn the session — it recovers the pending
-        // interaction from the snapshot and lands in Ready.
+        // interaction from journaled events and lands in Ready.
         var subscriberB = CreateTestProbe("resume-sub-b");
         await sessionManager.Ask<SessionJoined>(new JoinSession(subscriberB)
         {
@@ -145,6 +148,93 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
         // No duplicate approval prompt was emitted for the re-driven call.
         await subscriberB.ExpectNoMsgAsync(
             TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Recovered_batch_does_not_reexecute_completed_sibling_tool_call()
+    {
+        const string readCallId = "call-read-1";
+        const string shellCallId = "call-shell-2";
+        _toolExecutor.GatedTools.Add("shell_execute");
+
+        _fakeChatClient.ToolCallsOnFirstCall =
+        [
+            new FunctionCallContent(readCallId, "read_file",
+                new Dictionary<string, object?> { ["path"] = "README.md" }),
+            new FunctionCallContent(shellCallId, "shell_execute",
+                new Dictionary<string, object?> { ["command"] = "git status" })
+        ];
+
+        var sessionId = new SessionId("test-channel/no-duplicate-sibling");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("no-duplicate-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Read and then run git status"
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        await subscriber.ExpectMsgAsync<ToolCallOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<ToolCallOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        ToolInteractionRequest? request = null;
+        ToolResultOutput? readResult = null;
+        await AwaitAssertAsync(async () =>
+        {
+            while (request is null || readResult is null)
+            {
+                var msg = await subscriber.FishForMessageAsync<object>(m =>
+                    m is ToolInteractionRequest or ToolResultOutput,
+                    TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+                if (msg is ToolInteractionRequest r)
+                    request = r;
+                if (msg is ToolResultOutput tr && tr.CallId.Value == readCallId)
+                    readResult = tr;
+            }
+        }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(shellCallId, request!.CallId.Value);
+        Assert.Equal(1, _toolExecutor.ExecutionsFor("read_file"));
+        Assert.Equal(0, _toolExecutor.ExecutionsFor("shell_execute"));
+
+        await ColdRespawnAsync(sessionId);
+
+        var subscriberB = CreateTestProbe("no-duplicate-sub-b");
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriberB)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriberB.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        sessionManager.Tell(new ToolInteractionResponse
+        {
+            SessionId = sessionId,
+            CallId = new Netclaw.Tools.ToolCallId(shellCallId),
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce),
+            SenderId = new SenderId("local-user")
+        });
+
+        var shellResult = await subscriberB.ExpectMsgAsync<ToolResultOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(shellCallId, shellResult.CallId.Value);
+        await subscriberB.ExpectMsgAsync<TextOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriberB.ExpectMsgAsync<TurnCompleted>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, _toolExecutor.ExecutionsFor("read_file"));
+        Assert.Equal(1, _toolExecutor.ExecutionsFor("shell_execute"));
     }
 
     [Fact]
@@ -336,7 +426,7 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
             TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
 
         // Cold respawn: the transient _currentTurnSource is lost; only the
-        // snapshotted pending interaction carries the turn's trust context.
+        // journaled approval request carries the turn's trust context.
         await ColdRespawnAsync(sessionId);
 
         var subscriberB = CreateTestProbe("redrive-aud-sub-b");
@@ -535,7 +625,7 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
         await subscriber.ExpectMsgAsync<ToolInteractionRequest>(
             TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
 
-        // Cold respawn — the snapshot carries the parked interaction and the
+        // Cold respawn — the journal carries the parked interaction and the
         // assistant tool_use with no matching tool_result.
         await ColdRespawnAsync(sessionId);
 
@@ -686,6 +776,10 @@ internal sealed class ApprovalGateToolExecutor : IToolExecutor
 
     public bool? LastSupportsInteractiveApproval { get; private set; }
 
+    public int ExecutionsFor(string toolName) => _executionsByTool.GetValueOrDefault(toolName);
+
+    private readonly Dictionary<string, int> _executionsByTool = new(StringComparer.Ordinal);
+
     public Task AuthorizeAsync(
         FunctionCallContent toolCall,
         Netclaw.Tools.ToolExecutionContext? context = null,
@@ -726,6 +820,7 @@ internal sealed class ApprovalGateToolExecutor : IToolExecutor
         LastExecutionBoundary = context?.Boundary;
         LastExecutionChannelType = context?.ChannelType;
         LastSupportsInteractiveApproval = context?.SupportsInteractiveApproval;
+        _executionsByTool[toolCall.Name] = _executionsByTool.GetValueOrDefault(toolCall.Name) + 1;
         Interlocked.Increment(ref _successfulExecutions);
         return Task.FromResult($"[executed {toolCall.Name}]");
     }

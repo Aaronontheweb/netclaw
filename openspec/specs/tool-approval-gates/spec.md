@@ -181,11 +181,12 @@ evaluate a prompt; a clock-driven auto-deny silently transitions the
 workflow to a denied state and manufactures race conditions (late clicks
 landing in already-terminated workflows) for zero security benefit.
 
-The set of pending tool interactions SHALL be persisted in the session
-snapshot so the pause survives idle passivation, turn failure, and actor
-restart. On recovery the session SHALL restore the pending interactions and,
-when the approval response arrives, SHALL re-drive the paused tool batch from
-the last assistant message rather than dropping the response. An approval
+Tool-batch start, per-tool results, approval requests, approval resolutions,
+and abandonment closures SHALL be journaled so the pause survives idle
+passivation, turn failure, and actor restart without relying on snapshots to
+carry unjournaled in-flight state. On recovery the session SHALL restore pending
+interactions from the journal and, when an approval response arrives, SHALL
+re-drive only unresolved tool calls that are eligible to run. An approval
 response whose call is not pending and cannot be reconstructed from session
 history SHALL fail loud with a user-visible "approval prompt expired" message;
 it SHALL NOT be silently discarded.
@@ -222,32 +223,31 @@ it SHALL NOT be silently discarded.
 - **THEN** the tool returns "Command denied by user" as the tool result
 - **AND** no command is executed
 
-#### Scenario: Pending approval persisted to the session snapshot
+#### Scenario: Pending approval persisted to the session journal
 
 - **GIVEN** a tool call has emitted an approval prompt and the turn is paused
-- **WHEN** the session writes a snapshot
-- **THEN** the snapshot SHALL include the pending tool interaction, keyed by call id
+- **WHEN** the session persists the approval request
+- **THEN** the journal SHALL include the pending tool interaction, keyed by call id
 - **AND** the persisted interaction SHALL carry the requester identity, audience,
   and trust context needed to re-drive the call faithfully
 
 #### Scenario: Pending approval survives idle passivation and cold recovery
 
 - **GIVEN** a session with a pending approval prompt is idle-passivated and stopped
-- **WHEN** the session is cold-respawned and recovers from its snapshot
+- **WHEN** the session is cold-respawned and recovers from its journal/snapshot path
 - **THEN** the recovered session SHALL restore the pending tool interaction
 - **AND** an approval response arriving afterward SHALL re-drive the tool batch
   and continue the turn
 - **AND** the same requester-only `CanApprove` check and grant-persistence rules
   apply as on the live path
 
-#### Scenario: Whole-batch re-drive may repeat completed sibling calls
+#### Scenario: Re-drive does not repeat completed sibling calls
 
-- **GIVEN** a tool batch was interrupted after one sibling finished in memory
+- **GIVEN** a tool batch was interrupted after one sibling completed and journaled its result
 - **AND** another sibling was still pending approval when the session stopped
-- **WHEN** the recovered session re-drives the parked tool batch from the last durable assistant tool-call message
-- **THEN** the already-completed sibling call MAY execute again
-- **AND** partial in-memory sibling results are NOT recovered independently
-- **AND** this whole-batch replay behavior is an accepted MVP limitation
+- **WHEN** the recovered session re-drives unresolved calls from the last durable assistant tool-call message
+- **THEN** the already-completed sibling call SHALL NOT execute again
+- **AND** its journaled tool result SHALL remain in the transcript used for the follow-up LLM call
 
 #### Scenario: Approval response for an expired call fails loud
 

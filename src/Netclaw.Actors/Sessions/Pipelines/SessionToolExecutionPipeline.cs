@@ -55,17 +55,22 @@ internal static class SessionToolExecutionPipeline
         IActorRef? backgroundJobManager = null,
         string? projectDirectory = null,
         bool setWorkingDirectoryAvailable = false,
+        bool streamToolResults = false,
         IReadOnlyDictionary<string, IReadOnlyList<string>>? oneTimeApprovalPreSeed = null,
         TrustAudience? audienceOverride = null,
         TrustBoundary? boundaryOverride = null,
         string? channelTypeOverride = null,
         bool? supportsInteractiveApprovalOverride = null,
+        SenderId? requesterSenderIdOverride = null,
+        PrincipalClassification? requesterPrincipalOverride = null,
         IReadOnlyDictionary<string, ApprovalDecision>? decisionOverride = null)
     {
         try
         {
             // Execute all tool calls in parallel -- each is independent
-            var tasks = toolCalls.Select(tc => ExecuteSingleToolAsync(
+            var tasks = toolCalls.Select(async tc =>
+            {
+                var result = await ExecuteSingleToolAsync(
                 executor,
                 tc,
                 sessionId,
@@ -95,10 +100,22 @@ internal static class SessionToolExecutionPipeline
                 boundaryOverride,
                 channelTypeOverride,
                 supportsInteractiveApprovalOverride,
+                requesterSenderIdOverride,
+                requesterPrincipalOverride,
                 decisionOverride is not null && decisionOverride.TryGetValue(tc.CallId, out var overrideDecision)
                     ? overrideDecision
-                    : null));
+                    : null);
+                if (streamToolResults)
+                    self.Tell(new ToolExecutionSingleCompleted(result));
+                return result;
+            });
             var results = await Task.WhenAll(tasks);
+
+            if (streamToolResults)
+            {
+                self.Tell(new ToolExecutionBatchCompleted());
+                return;
+            }
 
             var fileAttachments = results.SelectMany(r => r.FileAttachments).ToList();
             self.Tell(new ToolExecutionCompleted
@@ -155,6 +172,8 @@ internal static class SessionToolExecutionPipeline
         TrustBoundary? boundaryOverride = null,
         string? channelTypeOverride = null,
         bool? supportsInteractiveApprovalOverride = null,
+        SenderId? requesterSenderIdOverride = null,
+        PrincipalClassification? requesterPrincipalOverride = null,
         ApprovalDecision? decisionOverride = null)
     {
         var (meta, cleanedTc) = ToolCallMetaExtractor.Extract(tc);
@@ -199,8 +218,8 @@ internal static class SessionToolExecutionPipeline
                 approvalChannel,
                 emitApprovalRequest,
                 sessionId,
-                source?.SenderId,
-                source?.Principal,
+                requesterSenderIdOverride ?? source?.SenderId,
+                requesterPrincipalOverride ?? source?.Principal,
                 source?.HasAdoptedContext ?? false,
                 source?.HasThirdPartyAdoptedContext ?? false,
                 source?.AdoptedSpeakerIds ?? []);

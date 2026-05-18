@@ -76,6 +76,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly Dictionary<IActorRef, OutputFilter> _subscribers = [];
     private readonly List<AITool> _availableTools = [];
     private readonly Dictionary<string, PendingToolInteraction> _pendingToolInteractions = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _activeToolBatchCallIds = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _completedToolCallIds = new(StringComparer.Ordinal);
+    private bool _toolBatchTaskCompleted;
     private MessageSource? _currentTurnSource;
     private readonly ToolRegistry? _fullRegistry;
     private readonly ToolAccessPolicy? _toolAccessPolicy;
@@ -237,20 +240,22 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // ── Recovery handlers ──
         Recover<TurnRecorded>(evt =>
         {
-            _state = _state.Apply(evt);
-            // A recorded turn means the tool loop ran to a final assistant
-            // message — any pending interactions captured by an earlier
-            // snapshot are stale. The journal supersedes the snapshot.
+            ApplyTurnRecorded(evt);
             _pendingToolInteractions.Clear();
+            ClearActiveToolBatchTracking();
         });
         Recover<SessionTitleSet>(evt => _state = _state.Apply(evt));
         Recover<SessionCompacted>(evt =>
         {
             _state = _state.Apply(evt);
-            // A compaction boundary means no tool batch is mid-flight; clear
-            // any pending interactions restored from an earlier snapshot.
             _pendingToolInteractions.Clear();
+            ClearActiveToolBatchTracking();
         });
+        Recover<ToolBatchStarted>(ApplyToolBatchStarted);
+        Recover<ToolCallRecorded>(ApplyToolCallRecorded);
+        Recover<ToolApprovalRequested>(ApplyToolApprovalRequested);
+        Recover<ToolApprovalResolved>(ApplyToolApprovalResolved);
+        Recover<ToolBatchAbandoned>(ApplyToolBatchAbandoned);
         Recover<SnapshotOffer>(offer =>
         {
             if (offer.Snapshot is SessionSnapshot snapshot)
@@ -258,14 +263,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 _state = SessionState.FromSnapshot(snapshot);
                 if (snapshot.EligibleDeliveryTurnNumber is { } eligibleTurn)
                     _deliveryRetry.MarkEligible(eligibleTurn);
-
-                _pendingToolInteractions.Clear();
-                foreach (var record in snapshot.PendingToolInteractions)
-                    _pendingToolInteractions[record.CallId] = MapToPendingToolInteraction(record);
-                if (snapshot.PendingToolInteractions.Count > 0)
-                    _log.Info(
-                        "Recovered {Count} pending tool interaction(s) from snapshot",
-                        snapshot.PendingToolInteractions.Count);
 
                 _log.Info("Recovered from snapshot (turns={TurnCount})", _state.TurnCount);
             }
@@ -580,6 +577,29 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             }
         });
 
+        Command<ToolExecutionSingleCompleted>(msg =>
+        {
+            var result = msg.Result;
+            Persist(new ToolCallRecorded
+            {
+                SessionId = _sessionId,
+                ToolResult = result.Message,
+                RecordedAtMs = NowMs()
+            }, evt =>
+            {
+                ApplyToolCallRecorded(evt);
+                ProcessToolCallResult(result);
+                TryCompleteStreamedToolBatch();
+            });
+        });
+
+        Command<ToolExecutionBatchCompleted>(_ =>
+        {
+            _watchdog.Stop(Timers);
+            _toolBatchTaskCompleted = true;
+            TryCompleteStreamedToolBatch();
+        });
+
         Command<ToolExecutionCompleted>(msg =>
         {
             _watchdog.Stop(Timers);
@@ -819,27 +839,35 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         Command<ToolInteractionRequest>(msg =>
         {
-            _pendingToolInteractions[msg.CallId.Value] = new PendingToolInteraction(
-                msg.CallId.Value,
-                msg.ToolName.Value,
-                msg.Patterns,
-                msg.CandidateVerbs,
-                CurrentTurnAudience(),
-                _currentTurnSource?.Boundary,
-                _currentTurnSource?.ChannelType.ToWireValue(),
-                _currentTurnSource?.ChannelType.SupportsInteractiveApproval(),
-                msg.RequesterSenderId?.Value,
-                msg.RequesterPrincipal,
-                msg.Cwd,
-                msg.Candidates);
+            var evt = new ToolApprovalRequested
+            {
+                SessionId = _sessionId,
+                CallId = msg.CallId.Value,
+                ToolName = msg.ToolName.Value,
+                Patterns = msg.Patterns,
+                CandidateVerbs = msg.CandidateVerbs,
+                Audience = CurrentTurnAudience(),
+                Boundary = _currentTurnSource?.Boundary,
+                ChannelType = _currentTurnSource?.ChannelType.ToWireValue(),
+                SupportsInteractiveApproval = _currentTurnSource?.ChannelType.SupportsInteractiveApproval(),
+                RequesterSenderId = msg.RequesterSenderId,
+                RequesterPrincipal = msg.RequesterPrincipal,
+                Cwd = msg.Cwd,
+                Candidates = msg.Candidates
+                    .Select(c => new ToolApprovalRequested.ApprovalCandidateRecord
+                    {
+                        Verb = c.Verb,
+                        Directory = c.Directory
+                    })
+                    .ToArray(),
+                RequestedAtMs = NowMs()
+            };
 
-            EmitOutput(msg);
-
-            // Persist immediately so a pending approval is durable the moment
-            // it is created — closes the window where the session crashes or
-            // passivates before the next periodic snapshot and the approval
-            // click would otherwise have nothing to re-drive.
-            SaveSnapshot(BuildSnapshot());
+            Persist(evt, e =>
+            {
+                ApplyToolApprovalRequested(e);
+                EmitOutput(msg);
+            });
         });
 
         CommandAsync<ToolInteractionResponse>(async msg =>
@@ -850,11 +878,18 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 return;
             }
 
-            if (await AuthorizeApprovalResponseAsync(pending, msg) is not { } decision)
-                return;
+            try
+            {
+                if (await AuthorizeApprovalResponseAsync(pending, msg) is not { } decision)
+                    return;
 
-            // Complete the TCS so the blocked pipeline task can proceed
-            _approvalChannel.Complete(msg.CallId, decision);
+                PersistApprovalResolved(msg, decision, () =>
+                    _approvalChannel.Complete(msg.CallId, decision));
+            }
+            catch (Exception ex)
+            {
+                FailCurrentTurn("I couldn't persist that approval decision. Please try again.", ex, ErrorCategory.ToolFailure);
+            }
         });
 
         Command<LlmCallFailed>(msg =>
@@ -1649,9 +1684,31 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // fire again if the model stalls later in the chain.
         _turnState.ResetEmptyResponseGuards();
 
-        // Add assistant message (with tool calls) to history
         var assistantMsg = ChatMessageConverter.FromAiMessage(lastMessage);
-        _state = _state with { History = _state.History.Add(assistantMsg) };
+        var userMsg = _state.FindLastUserMessage() ?? new SerializableChatMessage
+        {
+            Role = Protocol.ChatRole.User,
+            Content = string.Empty
+        };
+
+        Persist(new ToolBatchStarted
+        {
+            SessionId = _sessionId,
+            UserMessage = userMsg,
+            AssistantMessage = assistantMsg,
+            StartedAtMs = NowMs()
+        }, evt =>
+        {
+            ApplyToolBatchStarted(evt);
+            EmitAndDispatchToolBatch(lastMessage, toolCalls, usage);
+        });
+    }
+
+    private void EmitAndDispatchToolBatch(
+        AiChatMessage lastMessage,
+        List<FunctionCallContent> toolCalls,
+        UsageDetails? usage)
+    {
 
         // Surface preamble text immediately before tool execution starts.
         // TextOutput handles the non-streaming (single-delta) path where no
@@ -1734,9 +1791,17 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         TrustBoundary? boundaryOverride = null,
         string? channelTypeOverride = null,
         bool? supportsInteractiveApprovalOverride = null,
+        SenderId? requesterSenderIdOverride = null,
+        PrincipalClassification? requesterPrincipalOverride = null,
         IReadOnlyDictionary<string, IReadOnlyList<string>>? oneTimeApprovalPreSeed = null,
         IReadOnlyDictionary<string, ApprovalDecision>? decisionOverride = null)
     {
+        _activeToolBatchCallIds.Clear();
+        foreach (var tc in toolCalls)
+            _activeToolBatchCallIds.Add(tc.CallId);
+        _completedToolCallIds.Clear();
+        _toolBatchTaskCompleted = false;
+
         // Execute tools async — results come back as ToolExecutionCompleted
         TurnLog().Info("turn_tool_call_batch count={Count} tools={Tools}",
             toolCalls.Count,
@@ -1802,11 +1867,14 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             backgroundJobManager: bgJobManager,
             projectDirectory: _state.WorkingContext.ProjectDirectory,
             setWorkingDirectoryAvailable: setWorkingDirectoryAvailable,
+            streamToolResults: true,
             oneTimeApprovalPreSeed: oneTimeApprovalPreSeed,
             audienceOverride: audienceOverride,
             boundaryOverride: boundaryOverride,
             channelTypeOverride: channelTypeOverride,
             supportsInteractiveApprovalOverride: supportsInteractiveApprovalOverride,
+            requesterSenderIdOverride: requesterSenderIdOverride,
+            requesterPrincipalOverride: requesterPrincipalOverride,
             decisionOverride: decisionOverride);
     }
 
@@ -2020,8 +2088,21 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // tool_use with no matching tool_result is rejected by the provider
         // API, which would otherwise wedge every subsequent turn.
         if (_pendingToolInteractions.Count > 0)
-            AbandonParkedToolBatch();
+        {
+            var abandoned = BuildToolBatchAbandonedEvent();
+            Persist(abandoned, evt =>
+            {
+                ApplyToolBatchAbandoned(evt);
+                ContinueIncomingUserMessage(cmd);
+            });
+            return;
+        }
 
+        ContinueIncomingUserMessage(cmd);
+    }
+
+    private void ContinueIncomingUserMessage(SendUserMessage cmd)
+    {
         _deliveryRetry.Clear();
         _currentTurnSource = cmd.Source;
         _currentTrustContext = _trustContextDeriver?.Derive(cmd.Source);
@@ -3052,66 +3133,111 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     {
         return _state.ToSnapshot() with
         {
-            EligibleDeliveryTurnNumber = _deliveryRetry.EligibleTurnNumber,
-            PendingToolInteractions = MapPendingInteractionRecords()
+            EligibleDeliveryTurnNumber = _deliveryRetry.EligibleTurnNumber
         };
     }
 
-    /// <summary>
-    /// Projects the actor-transient <see cref="_pendingToolInteractions"/>
-    /// dictionary into the persistence-safe records carried by
-    /// <see cref="SessionSnapshot.PendingToolInteractions"/>.
-    /// </summary>
-    private IReadOnlyList<SessionSnapshot.PendingToolInteractionRecord> MapPendingInteractionRecords()
+    private void ApplyTurnRecorded(TurnRecorded evt)
     {
-        if (_pendingToolInteractions.Count == 0)
-            return Array.Empty<SessionSnapshot.PendingToolInteractionRecord>();
-
-        return _pendingToolInteractions.Values
-            .Select(p => new SessionSnapshot.PendingToolInteractionRecord
+        var lastUser = _state.FindLastUserMessage();
+        if (lastUser == evt.UserMessage)
+        {
+            _state = _state with
             {
-                CallId = p.CallId,
-                ToolName = p.ToolName,
-                Patterns = p.Patterns,
-                CandidateVerbs = p.CandidateVerbs,
-                Audience = p.Audience,
-                Boundary = p.Boundary,
-                ChannelType = p.ChannelType,
-                SupportsInteractiveApproval = p.SupportsInteractiveApproval,
-                RequesterSenderId = p.RequesterSenderId is null ? null : new SenderId(p.RequesterSenderId),
-                RequesterPrincipal = p.RequesterPrincipal,
-                Cwd = p.Cwd,
-                Candidates = p.Candidates
-                    .Select(c => new SessionSnapshot.ApprovalCandidateRecord
-                    {
-                        Verb = c.Verb,
-                        Directory = c.Directory
-                    })
-                    .ToArray()
-            })
+                History = _state.History.Add(evt.AssistantReply),
+                TurnCount = _state.TurnCount + 1
+            };
+            return;
+        }
+
+        _state = _state.Apply(evt);
+    }
+
+    private void ApplyToolBatchStarted(ToolBatchStarted evt)
+    {
+        if (_state.FindLastUserMessage() != evt.UserMessage)
+            _state = _state with { History = _state.History.Add(evt.UserMessage) };
+
+        if (!_state.History.Contains(evt.AssistantMessage))
+            _state = _state with { History = _state.History.Add(evt.AssistantMessage) };
+
+        _activeToolBatchCallIds.Clear();
+        foreach (var call in evt.AssistantMessage.ToolCalls)
+            _activeToolBatchCallIds.Add(call.CallId.Value);
+        _completedToolCallIds.Clear();
+        foreach (var result in FindToolResultsFor(evt.AssistantMessage))
+            _completedToolCallIds.Add(result.ToolCallId!.Value.Value);
+        _toolBatchTaskCompleted = false;
+    }
+
+    private void ApplyToolCallRecorded(ToolCallRecorded evt)
+    {
+        if (evt.ToolResult.ToolCallId is { } toolCallId
+            && _state.History.Any(m => m.Role == Protocol.ChatRole.Tool
+                && m.ToolCallId?.Value == toolCallId.Value))
+        {
+            _completedToolCallIds.Add(toolCallId.Value);
+            return;
+        }
+
+        _state = _state with { History = _state.History.Add(evt.ToolResult) };
+        if (evt.ToolResult.ToolCallId is { } id)
+            _completedToolCallIds.Add(id.Value);
+    }
+
+    private void ApplyToolApprovalRequested(ToolApprovalRequested evt)
+    {
+        _pendingToolInteractions[evt.CallId] = new PendingToolInteraction(
+            evt.CallId,
+            evt.ToolName,
+            evt.Patterns,
+            evt.CandidateVerbs,
+            evt.Audience,
+            evt.Boundary,
+            evt.ChannelType,
+            evt.SupportsInteractiveApproval,
+            evt.RequesterSenderId?.Value,
+            evt.RequesterPrincipal,
+            evt.Cwd,
+            evt.Candidates.Select(c => new ApprovalCandidate(c.Verb, c.Directory)).ToArray());
+    }
+
+    private void ApplyToolApprovalResolved(ToolApprovalResolved evt)
+        => _pendingToolInteractions.Remove(evt.CallId);
+
+    private void ApplyToolBatchAbandoned(ToolBatchAbandoned evt)
+    {
+        foreach (var result in evt.ToolResults)
+            ApplyToolCallRecorded(new ToolCallRecorded
+            {
+                SessionId = evt.SessionId,
+                ToolResult = result,
+                RecordedAtMs = evt.AbandonedAtMs
+            });
+        _pendingToolInteractions.Clear();
+        ClearActiveToolBatchTracking();
+    }
+
+    private void ClearActiveToolBatchTracking()
+    {
+        _activeToolBatchCallIds.Clear();
+        _completedToolCallIds.Clear();
+        _toolBatchTaskCompleted = false;
+    }
+
+    private IReadOnlyList<SerializableChatMessage> FindToolResultsFor(SerializableChatMessage assistantMsg)
+    {
+        var ids = assistantMsg.ToolCalls.Select(c => c.CallId.Value).ToHashSet(StringComparer.Ordinal);
+        return _state.History
+            .Where(m => m.Role == Protocol.ChatRole.Tool
+                && m.ToolCallId is not null
+                && ids.Contains(m.ToolCallId.Value.Value))
             .ToArray();
     }
 
-    /// <summary>
-    /// Inverse of <see cref="MapPendingInteractionRecords"/>: rebuilds the
-    /// runtime <see cref="PendingToolInteraction"/> from a persisted record.
-    /// </summary>
-    private static PendingToolInteraction MapToPendingToolInteraction(
-        SessionSnapshot.PendingToolInteractionRecord r) => new(
-            r.CallId,
-            r.ToolName,
-            r.Patterns,
-            r.CandidateVerbs,
-            r.Audience,
-            r.Boundary,
-            r.ChannelType,
-            r.SupportsInteractiveApproval,
-            r.RequesterSenderId?.Value,
-            r.RequesterPrincipal,
-            r.Cwd,
-            r.Candidates
-                .Select(c => new ApprovalCandidate(c.Verb, c.Directory))
-                .ToArray());
+    private bool HasToolResult(string callId)
+        => _state.History.Any(m => m.Role == Protocol.ChatRole.Tool
+            && m.ToolCallId?.Value == callId);
 
     private void MaybeSnapshot()
     {
@@ -3253,8 +3379,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     /// handler so the requester check and grant-scope rules stay in lockstep.
     /// Returns the decision, or null when the responder is not the requesting
     /// user — a rejection notice has already been emitted in that case. On a
-    /// non-null return the pending interaction has been removed from
-    /// <see cref="_pendingToolInteractions"/>.
+    /// non-null return means authorization succeeded; the caller is
+    /// responsible for journaling <see cref="ToolApprovalResolved"/>.
     /// </summary>
     private async Task<ApprovalDecision?> AuthorizeApprovalResponseAsync(
         PendingToolInteraction pending, ToolInteractionResponse msg)
@@ -3288,8 +3414,25 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             await PersistApprovalCandidatesAsync(pending, decision, CancellationToken.None);
         }
 
-        _pendingToolInteractions.Remove(msg.CallId.Value);
         return decision;
+    }
+
+    private void PersistApprovalResolved(
+        ToolInteractionResponse msg,
+        ApprovalDecision decision,
+        Action afterPersist)
+    {
+        Persist(new ToolApprovalResolved
+        {
+            SessionId = _sessionId,
+            CallId = msg.CallId.Value,
+            Decision = decision.ToString(),
+            ResolvedAtMs = NowMs()
+        }, evt =>
+        {
+            ApplyToolApprovalResolved(evt);
+            afterPersist();
+        });
     }
 
     /// <summary>
@@ -3317,8 +3460,25 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             return;
         }
 
-        if (await AuthorizeApprovalResponseAsync(pending, msg) is not { } decision)
+        ApprovalDecision decision;
+        try
+        {
+            if (await AuthorizeApprovalResponseAsync(pending, msg) is not { } authorizedDecision)
+                return;
+            decision = authorizedDecision;
+        }
+        catch (Exception ex)
+        {
+            EmitOutput(new ErrorOutput
+            {
+                SessionId = _sessionId,
+                Message = "I couldn't persist that approval decision. Please try again.",
+                Category = ErrorCategory.ToolFailure,
+                CorrelationId = Guid.NewGuid(),
+                Cause = ex
+            });
             return;
+        }
 
         // ApprovedOnce has no persisted grant — pre-seed a one-time approval
         // bypass scoped to exactly this call id so the re-driven batch skips
@@ -3341,7 +3501,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             };
         }
 
-        RedriveToolBatchForApproval(callId, pending, preSeed, decisionOverride);
+        PersistApprovalResolved(msg, decision, () =>
+            RedriveToolBatchForApproval(callId, pending, preSeed, decisionOverride));
     }
 
     /// <summary>
@@ -3372,7 +3533,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // Rebuild the FunctionCallContent batch from the persisted assistant
         // message — tool arguments are durably stored in SerializableToolCall.
         var aiMessage = ChatMessageConverter.ToAiMessage(assistantMsg);
-        var toolCalls = aiMessage.Contents.OfType<FunctionCallContent>().ToList();
+        var toolCalls = aiMessage.Contents
+            .OfType<FunctionCallContent>()
+            .Where(tc => !HasToolResult(tc.CallId)
+                && (tc.CallId == callId || !_pendingToolInteractions.ContainsKey(tc.CallId)))
+            .ToList();
         if (toolCalls.Count == 0)
         {
             _log.Warning(
@@ -3393,6 +3558,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             boundaryOverride: pending.Boundary,
             channelTypeOverride: pending.ChannelType,
             supportsInteractiveApprovalOverride: pending.SupportsInteractiveApproval,
+            requesterSenderIdOverride: pending.RequesterSenderId is null ? null : new SenderId(pending.RequesterSenderId),
+            requesterPrincipalOverride: pending.RequesterPrincipal,
             oneTimeApprovalPreSeed: oneTimeApprovalPreSeed,
             decisionOverride: decisionOverride);
     }
@@ -3412,28 +3579,18 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             if (candidate.Role != Protocol.ChatRole.Assistant || candidate.ToolCalls.Count == 0)
                 continue;
 
-            // A batch is "answered" once a Tool-role result exists for any of
-            // its calls — by §1.1 the whole batch completes atomically, so a
-            // single matching result means this batch is not the parked one.
-            var answered = false;
-            for (var j = i + 1; j < _state.History.Count && !answered; j++)
-            {
-                var later = _state.History[j];
-                if (later.Role != Protocol.ChatRole.Tool || later.ToolCallId is null)
-                    continue;
-                answered = candidate.ToolCalls.Any(
-                    tc => tc.CallId.Value == later.ToolCallId.Value.Value);
-            }
-
-            if (answered)
-                continue;
-
             if (callId is not null
                 && candidate.ToolCalls.All(tc => tc.CallId.Value != callId))
             {
                 // This unanswered batch is not the one the response targets.
                 return null;
             }
+
+            if (callId is not null && HasToolResult(callId))
+                return null;
+
+            if (callId is null && candidate.ToolCalls.All(tc => HasToolResult(tc.CallId.Value)))
+                continue;
 
             return candidate;
         }
@@ -3442,31 +3599,32 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     }
 
     /// <summary>
-    /// Closes a parked tool batch the user abandoned by sending a new message
-    /// instead of answering its approval prompt. Appends a synthetic
+    /// Builds the durable event for a parked tool batch the user abandoned by
+    /// sending a new message instead of answering its approval prompt. Carries a synthetic
     /// <see cref="Protocol.ChatRole.Tool"/> result for every unanswered tool
     /// call in the tail assistant message so history stays well-formed — an
     /// assistant tool_use with no matching tool_result is rejected by the
     /// provider API — then clears <see cref="_pendingToolInteractions"/>.
     /// </summary>
-    private void AbandonParkedToolBatch()
+    private ToolBatchAbandoned BuildToolBatchAbandonedEvent()
     {
         var assistantMsg = FindRedrivableAssistantMessage(callId: null);
+        var results = new List<SerializableChatMessage>();
         if (assistantMsg is not null)
         {
             foreach (var call in assistantMsg.ToolCalls)
             {
-                _state = _state with
+                if (HasToolResult(call.CallId.Value))
+                    continue;
+
+                results.Add(new SerializableChatMessage
                 {
-                    History = _state.History.Add(new SerializableChatMessage
-                    {
-                        Role = Protocol.ChatRole.Tool,
-                        Content = "Tool call was not completed — the request was "
-                            + "superseded by a new message before approval was given.",
-                        ToolCallId = call.CallId,
-                        Name = call.Name.Value
-                    })
-                };
+                    Role = Protocol.ChatRole.Tool,
+                    Content = "Tool call was not completed — the request was "
+                        + "superseded by a new message before approval was given.",
+                    ToolCallId = call.CallId,
+                    Name = call.Name.Value
+                });
             }
 
             _log.Info(
@@ -3474,7 +3632,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 assistantMsg.ToolCalls.Count);
         }
 
-        _pendingToolInteractions.Clear();
+        return new ToolBatchAbandoned
+        {
+            SessionId = _sessionId,
+            ToolResults = results,
+            AbandonedAtMs = NowMs()
+        };
     }
 
     private void FailCurrentTurn(string errorMessage, Exception cause, ErrorCategory category = ErrorCategory.Unknown)
@@ -3620,6 +3783,204 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 directory,
                 ct);
         }
+    }
+
+    private void ProcessToolCallResult(Pipelines.ToolCallResult result)
+    {
+        var emittedRunIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var finding in result.AcceptedSubAgentFindings)
+        {
+            if (emittedRunIds.Add(finding.RunId))
+            {
+                var runSummary = result.CompletedSubAgentRuns
+                    .FirstOrDefault(x => string.Equals(x.RunId, finding.RunId, StringComparison.Ordinal));
+
+                EmitOutput(new SubAgentOutput
+                {
+                    SessionId = _sessionId,
+                    TimestampMs = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
+                    AgentName = finding.AgentName,
+                    Phase = Netclaw.Actors.SubAgents.SubAgentPhase.Completed,
+                    Success = true,
+                    Duration = finding.Duration,
+                    MemoryDecision = finding.Decision.ToWireValue(),
+                    MemoryDecisionReason = finding.DecisionReason,
+                    FindingsCount = runSummary?.FindingsCount ?? 1
+                }, OutputFilter.ToolCalls);
+            }
+
+            if (finding.Decision != SubAgentFindingReviewDecision.Accepted)
+                continue;
+
+            EnqueueCheckpointFireAndForget(new MemoryCheckpointRequest(
+                SessionId: _sessionId,
+                TurnId: _activeTurnId,
+                TriggerType: Memory.CheckpointTriggerType.SubagentFindings,
+                Priority: 80,
+                Payload: new MemoryCheckpointPayload(
+                    SessionId: _sessionId.Value,
+                    TriggerType: "subagent-findings",
+                    Source: finding.AgentName.Value,
+                    Content: finding.Content,
+                    UserContent: null,
+                    AssistantContent: finding.Content,
+                    IsExplicitRequest: false,
+                    HasVerifiedToolFinding: false,
+                    IsCompactionBoundary: false,
+                    HasAcceptedSubAgentFinding: true,
+                    Boundary: CurrentMemoryBoundary(),
+                    Audience: CurrentMemoryAudience(),
+                    Sensitivity: finding.Sensitivity.ToWireValue(),
+                    RecallMode: finding.RecallMode.ToWireValue(),
+                    Confidence: finding.Confidence,
+                    Title: finding.Title,
+                    Kind: finding.Kind,
+                    UpdateSemantics: finding.UpdateSemantics,
+                    Evidence: finding.Evidence,
+                    FreshnessAtMs: finding.FreshnessAtMs)));
+        }
+
+        foreach (var run in result.CompletedSubAgentRuns)
+        {
+            if (!emittedRunIds.Add(run.RunId))
+                continue;
+
+            EmitOutput(new SubAgentOutput
+            {
+                SessionId = _sessionId,
+                TimestampMs = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
+                AgentName = run.AgentName,
+                Phase = Netclaw.Actors.SubAgents.SubAgentPhase.Completed,
+                Success = run.Success,
+                Duration = run.Duration,
+                MemoryDecision = run.MemoryDecision,
+                MemoryDecisionReason = run.MemoryDecisionReason,
+                FindingsCount = run.FindingsCount
+            }, OutputFilter.ToolCalls);
+        }
+
+        var toolMessage = result.Message;
+        if (toolMessage.ToolCallId is not { } toolCallId)
+            throw new InvalidOperationException(
+                $"Tool-result message for tool '{toolMessage.Name ?? "unknown"}' has no ToolCallId.");
+
+        var preview = toolMessage.Content is { Length: > 200 }
+            ? toolMessage.Content[..200] + "..."
+            : toolMessage.Content ?? "(null)";
+        _log.Info("Tool [{ToolName}] (call={CallId}) result: {Result}",
+            toolMessage.Name ?? "unknown", toolCallId.Value, preview);
+
+        EmitOutput(new ToolResultOutput
+        {
+            SessionId = _sessionId,
+            CallId = toolCallId,
+            ToolName = new ToolName(toolMessage.Name ?? "unknown"),
+            Result = toolMessage.Content ?? string.Empty
+        }, OutputFilter.ToolCalls);
+
+        var updatedContext = WorkingContextUpdater.UpdateFromToolResults(
+            _state.WorkingContext,
+            _state.History,
+            [toolMessage],
+            _log);
+        if (!ReferenceEquals(updatedContext, _state.WorkingContext))
+            _state = _state with { WorkingContext = updatedContext };
+
+        if (toolMessage.Name is "load_tool" && toolMessage.Content is not null)
+            TryActivateDiscoveredTool(toolMessage.Content.Trim());
+
+        if (toolMessage.Name is "set_working_directory" && toolMessage.Content is not null)
+        {
+            var projectDir = toolMessage.Content.Trim();
+            if (Path.IsPathRooted(projectDir))
+            {
+                var next = _state.WorkingContext.WithProjectDirectory(projectDir);
+                if (!ReferenceEquals(next, _state.WorkingContext))
+                {
+                    _state = _state with { WorkingContext = next };
+                    SetSystemPrompt();
+                    _log.Info("Project directory set to {ProjectDir}", projectDir);
+                }
+            }
+        }
+
+        foreach (var file in result.FileAttachments)
+        {
+            EmitOutput(new FileOutput
+            {
+                SessionId = _sessionId,
+                TimestampMs = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
+                FilePath = file.FilePath,
+                FileName = file.FileName,
+                MimeType = new Netclaw.Security.MimeType(file.MimeType)
+            }, OutputFilter.Files);
+        }
+    }
+
+    private void TryCompleteStreamedToolBatch()
+    {
+        if (!_toolBatchTaskCompleted)
+            return;
+
+        if (_completedToolCallIds.Count < _activeToolBatchCallIds.Count)
+            return;
+
+        CompleteToolBatch(_completedToolCallIds.Count);
+    }
+
+    private void CompleteToolBatch(int resultCount)
+    {
+        var budgetStatus = _turnState.RecordToolCompletion(resultCount, _config.MaxToolCallsPerTurn);
+
+        var dupNudge = _turnState.CheckForDuplicates();
+        if (dupNudge is not null)
+        {
+            TurnLog().Warning(
+                "turn_duplicate_tool_detected tool={ToolName} count={Count} iteration={Iteration}",
+                dupNudge.ToolName, dupNudge.Count, _turnState.ToolIterationCount);
+            _state = _state.AddSystemNudge(dupNudge.NudgeText);
+        }
+
+        if (_buffer.Count > 0)
+        {
+            TurnLog().Info("turn_mid_loop_buffer_drain count={BufferCount} iteration={Iteration}",
+                _buffer.Count, _turnState.ToolIterationCount);
+            foreach (var buffered in _buffer)
+            {
+                var refs = buffered.MediaReferences.Count > 0 ? buffered.MediaReferences : null;
+                _state = _state.AddUserMessage(buffered.Content, refs);
+            }
+            _buffer.Clear();
+        }
+
+        switch (budgetStatus)
+        {
+            case ToolBudgetStatus.Exhausted exhausted:
+                TurnLog().Warning("turn_tool_call_limit_reached callCount={CallCount} max={Max} iteration={Iteration}",
+                    _turnState.ToolCallCount, _config.MaxToolCallsPerTurn, _turnState.ToolIterationCount);
+                _state = _state.AddSystemNudge(exhausted.NudgeText);
+                FireLlmCall(forceNoTools: true);
+                return;
+            case ToolBudgetStatus.NudgeNeeded nudge:
+                _state = _state.AddSystemNudge(nudge.NudgeText);
+                break;
+        }
+
+        if (ShouldCompact())
+        {
+            _log.Info("Compaction threshold reached during tool loop ({InputTokens} tokens >= {Threshold} limit), starting compaction",
+                _lastInputTokenCount, _model.CompactionTokenLimit(_config.Tuning.CompactionThreshold));
+            _resumeToolLoopAfterCompaction = true;
+            Self.Tell(new CompactionTriggered(_lastInputTokenCount));
+            TransitionTo(SessionPhase.Compacting);
+            return;
+        }
+
+        _pendingToolInteractions.Clear();
+        ClearActiveToolBatchTracking();
+        TurnLog().Info("turn_tool_execution_complete iteration={Iteration} callCount={CallCount} max={Max} resultCount={ResultCount}",
+            _turnState.ToolIterationCount, _turnState.ToolCallCount, _config.MaxToolCallsPerTurn, resultCount);
+        FireLlmCall();
     }
 
     /// <summary>

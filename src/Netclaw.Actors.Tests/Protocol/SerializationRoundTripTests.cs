@@ -698,98 +698,55 @@ public sealed class SerializationRoundTripTests : TestKit
     }
 
     [Fact]
-    public void SessionSnapshot_pending_tool_interactions_round_trip()
+    public void ToolApprovalRequested_round_trips_all_persisted_context()
     {
-        // Covers every field type on PendingToolInteractionRecord: the
-        // TrustAudience enum, nullable RequesterSenderId / RequesterPrincipal
-        // (one populated, one null), ApprovalCandidateRecord with both a
-        // populated and a null Directory, and empty and populated string lists.
-        var wrapped = new SessionSnapshot
+        var wrapped = new ToolApprovalRequested
         {
-            TurnCount = 4,
-            History = [],
-            PendingToolInteractions =
+            SessionId = new SessionId("C123/1700000000.000001"),
+            CallId = "call-pending-1",
+            ToolName = "shell_execute",
+            Patterns = ["git status", "ls"],
+            CandidateVerbs = ["git", "ls"],
+            Audience = Netclaw.Configuration.TrustAudience.Team,
+            Boundary = Netclaw.Configuration.TrustBoundary.Team,
+            ChannelType = "slack",
+            SupportsInteractiveApproval = true,
+            RequesterSenderId = new SenderId("U12345"),
+            RequesterPrincipal = Netclaw.Configuration.PrincipalClassification.Operator,
+            Cwd = "/home/user/project",
+            Candidates =
             [
-                new SessionSnapshot.PendingToolInteractionRecord
-                {
-                    CallId = "call-pending-1",
-                    ToolName = "shell_execute",
-                    Patterns = ["git status", "ls"],
-                    CandidateVerbs = ["git", "ls"],
-                    Audience = Netclaw.Configuration.TrustAudience.Team,
-                    Boundary = Netclaw.Configuration.TrustBoundary.Team,
-                    ChannelType = "slack",
-                    SupportsInteractiveApproval = true,
-                    RequesterSenderId = new SenderId("U12345"),
-                    RequesterPrincipal = Netclaw.Configuration.PrincipalClassification.Operator,
-                    Cwd = "/home/user/project",
-                    Candidates =
-                    [
-                        new SessionSnapshot.ApprovalCandidateRecord { Verb = "git", Directory = "/home/user/project" },
-                        new SessionSnapshot.ApprovalCandidateRecord { Verb = "ls", Directory = null }
-                    ]
-                },
-                new SessionSnapshot.PendingToolInteractionRecord
-                {
-                    CallId = "call-pending-2",
-                    ToolName = "fetch_url",
-                    Patterns = [],
-                    CandidateVerbs = [],
-                    Audience = Netclaw.Configuration.TrustAudience.Public,
-                    Boundary = null,
-                    ChannelType = null,
-                    SupportsInteractiveApproval = null,
-                    RequesterSenderId = null,
-                    RequesterPrincipal = null,
-                    Cwd = null,
-                    Candidates = []
-                }
-            ]
+                new ToolApprovalRequested.ApprovalCandidateRecord { Verb = "git", Directory = "/home/user/project" },
+                new ToolApprovalRequested.ApprovalCandidateRecord { Verb = "ls", Directory = null }
+            ],
+            RequestedAtMs = 1700000000000
         };
 
         var result = RoundTrip(wrapped);
 
-        Assert.Equal(2, result.PendingToolInteractions.Count);
-
-        var first = result.PendingToolInteractions[0];
-        Assert.Equal("call-pending-1", first.CallId);
-        Assert.Equal("shell_execute", first.ToolName);
-        Assert.Equal(new[] { "git status", "ls" }, first.Patterns);
-        Assert.Equal(new[] { "git", "ls" }, first.CandidateVerbs);
-        Assert.Equal(Netclaw.Configuration.TrustAudience.Team, first.Audience);
-        Assert.Equal(Netclaw.Configuration.TrustBoundary.Team, first.Boundary);
-        Assert.Equal("slack", first.ChannelType);
-        Assert.True(first.SupportsInteractiveApproval);
-        Assert.Equal(new SenderId("U12345"), first.RequesterSenderId);
-        Assert.Equal(Netclaw.Configuration.PrincipalClassification.Operator, first.RequesterPrincipal);
-        Assert.Equal("/home/user/project", first.Cwd);
-        Assert.Equal(2, first.Candidates.Count);
-        Assert.Equal("git", first.Candidates[0].Verb);
-        Assert.Equal("/home/user/project", first.Candidates[0].Directory);
-        Assert.Equal("ls", first.Candidates[1].Verb);
-        Assert.Null(first.Candidates[1].Directory);
-
-        var second = result.PendingToolInteractions[1];
-        Assert.Equal("call-pending-2", second.CallId);
-        Assert.Equal("fetch_url", second.ToolName);
-        Assert.Empty(second.Patterns);
-        Assert.Empty(second.CandidateVerbs);
-        Assert.Equal(Netclaw.Configuration.TrustAudience.Public, second.Audience);
-        Assert.Null(second.Boundary);
-        Assert.Null(second.ChannelType);
-        Assert.Null(second.SupportsInteractiveApproval);
-        Assert.Null(second.RequesterSenderId);
-        Assert.Null(second.RequesterPrincipal);
-        Assert.Null(second.Cwd);
-        Assert.Empty(second.Candidates);
+        Assert.Equal(wrapped.SessionId, result.SessionId);
+        Assert.Equal(wrapped.CallId, result.CallId);
+        Assert.Equal(wrapped.ToolName, result.ToolName);
+        Assert.Equal(wrapped.Patterns, result.Patterns);
+        Assert.Equal(wrapped.CandidateVerbs, result.CandidateVerbs);
+        Assert.Equal(wrapped.Audience, result.Audience);
+        Assert.Equal(wrapped.Boundary, result.Boundary);
+        Assert.Equal(wrapped.ChannelType, result.ChannelType);
+        Assert.Equal(wrapped.SupportsInteractiveApproval, result.SupportsInteractiveApproval);
+        Assert.Equal(wrapped.RequesterSenderId, result.RequesterSenderId);
+        Assert.Equal(wrapped.RequesterPrincipal, result.RequesterPrincipal);
+        Assert.Equal(wrapped.Cwd, result.Cwd);
+        Assert.Equal(2, result.Candidates.Count);
+        Assert.Equal("git", result.Candidates[0].Verb);
+        Assert.Equal("/home/user/project", result.Candidates[0].Directory);
+        Assert.Equal("ls", result.Candidates[1].Verb);
+        Assert.Null(result.Candidates[1].Directory);
+        Assert.Equal(wrapped.RequestedAtMs, result.RequestedAtMs);
     }
 
     [Fact]
-    public void SessionSnapshot_with_no_pending_tool_interactions_round_trips_to_empty_list()
+    public void SessionSnapshot_has_no_pending_approval_projection()
     {
-        // Backward compatibility: a snapshot written before the
-        // pending_tool_interactions field existed deserializes with an empty
-        // list (proto3 default) — never null, never an exception.
         var wrapped = new SessionSnapshot
         {
             TurnCount = 2,
@@ -801,12 +758,7 @@ public sealed class SerializationRoundTripTests : TestKit
             TurnCount = 2
         }.ToByteArray();
 
-        // No pending interactions => byte-identical to the pre-field proto.
         Assert.Equal(expected, Serialize(wrapped));
-
-        var result = RoundTrip(wrapped);
-        Assert.NotNull(result.PendingToolInteractions);
-        Assert.Empty(result.PendingToolInteractions);
     }
 
     [Fact]
