@@ -8,9 +8,15 @@
 # Usage:
 #   scripts/smoke/run-smoke.sh <profile> [filters...]
 #
-#   <profile>   light | full | <scenario-or-tape-short-name>
+#   <profile>   light | full | screenshots | <scenario-or-tape-short-name>
 #   [filters]   when <profile> is light/full, restrict to the named
 #               tapes/scenarios (optional)
+#
+# The `screenshots` profile provisions Ollama + the binary exactly like
+# `light`, then runs the capture tapes under tests/smoke/tapes/screenshots/
+# and compares each emitted PNG byte-for-byte against the approved baseline
+# in tests/smoke/screenshots/<frame>.approved.png. Missing baselines and
+# mismatches fail the run; the actual/diff PNGs are collected for review.
 #
 # What it does, in order:
 #   1) Resolve the binaries: use NETCLAW_SMOKE_CLI / NETCLAW_SMOKE_DAEMON
@@ -37,6 +43,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SMOKE_SCRIPTS="${ROOT_DIR}/scripts/smoke"
 TAPES_DIR="${ROOT_DIR}/tests/smoke/tapes"
 SCENARIOS_DIR="${ROOT_DIR}/tests/smoke/scenarios"
+SHOT_TAPES_DIR="${ROOT_DIR}/tests/smoke/tapes/screenshots"
+SHOT_PREAMBLE="${TAPES_DIR}/screenshot-preamble.tape"
+SHOT_BASELINE_DIR="${ROOT_DIR}/tests/smoke/screenshots"
 
 SMOKE_RID="${SMOKE_RID:-linux-x64}"
 SMOKE_LOG_DIR="${SMOKE_LOG_DIR:-${ROOT_DIR}/smoke-logs}"
@@ -57,6 +66,20 @@ LIGHT_SCENARIOS=(
 )
 FULL_SCENARIOS=("${LIGHT_SCENARIOS[@]}")
 
+# Screenshot capture tapes (under tests/smoke/tapes/screenshots/). Each tape
+# may emit several `Screenshot "/tmp/shot-<frame>.png"` directives. SHOT_FRAMES
+# is the full set of frame names the harness compares against baselines — it
+# MUST stay in sync with the Screenshot paths in those tapes.
+SHOT_TAPES=(help wizard-screens provider-manager)
+SHOT_FRAMES=(
+  help
+  wizard-provider-picker
+  wizard-security-posture
+  wizard-identity
+  provider-manager-empty
+  provider-manager-add-name
+)
+
 usage() {
   sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
   exit 2
@@ -73,6 +96,7 @@ filters=("$@")
 
 tapes=()
 scenarios=()
+shots_mode=0
 
 case "$mode" in
   light)
@@ -82,6 +106,11 @@ case "$mode" in
   full)
     tapes=("${FULL_TAPES[@]}")
     scenarios=("${FULL_SCENARIOS[@]}")
+    ;;
+  screenshots)
+    # Provision like `light` (the wizard frames need a reachable provider)
+    # but run the capture tapes + PNG comparison instead of flow tapes.
+    shots_mode=1
     ;;
   *)
     if [[ -f "${TAPES_DIR}/${mode}.tape" ]]; then
@@ -233,17 +262,107 @@ run_one_scenario() {
   fi
 }
 
-# Tapes first (harness-level checks fail fast), then scenarios. All are
-# attempted regardless of earlier failures so CI gets a complete artifact set.
-for tape in "${tapes[@]:-}"; do
-  [[ -z "$tape" ]] && continue
-  run_one_tape "$tape"
-done
+# ── Screenshot regression ────────────────────────────────────────────────────
 
-for scenario in "${scenarios[@]:-}"; do
-  [[ -z "$scenario" ]] && continue
-  run_one_scenario "$scenario"
-done
+# Artifact dir for screenshot review PNGs (actual / diff / candidate).
+SHOT_ARTIFACT_DIR="${SMOKE_LOG_DIR}/screenshots"
+
+# run_shot_tape <tape> — run one capture tape through run-native-tape.sh,
+# pointed at the screenshot preamble + tapes/screenshots/ body dir. The
+# capture tapes have no assertion; run-native-tape.sh handles that already.
+run_shot_tape() {
+  local tape="$1"
+  echo
+  echo "════════════════════════════════════════════════════════"
+  echo "Screenshot tape: ${tape}"
+  echo "════════════════════════════════════════════════════════"
+  local home="${RUN_ROOT}/home/shot-${tape}"
+  rm -rf "$home"
+  if ! NETCLAW_HOME="$home" \
+       NETCLAW_SMOKE_CLI="$NETCLAW_SMOKE_CLI" \
+       NETCLAW_SMOKE_DAEMON="$NETCLAW_SMOKE_DAEMON" \
+       ARTIFACT_DIR="${SMOKE_LOG_DIR}/tapes/shot-${tape}" \
+       TAPE_PREAMBLE="$SHOT_PREAMBLE" \
+       TAPE_BODY_DIR="$SHOT_TAPES_DIR" \
+       bash "${SMOKE_SCRIPTS}/run-native-tape.sh" "$tape"; then
+    failed+=("shot-tape:${tape}")
+  fi
+}
+
+# compare_shot_frame <frame> — compare /tmp/shot-<frame>.png against the
+# committed baseline. Records a failure (and writes review PNGs) on a
+# missing capture, missing baseline, or pixel mismatch.
+compare_shot_frame() {
+  local frame="$1"
+  local capture="/tmp/shot-${frame}.png"
+  local baseline="${SHOT_BASELINE_DIR}/${frame}.approved.png"
+  mkdir -p "$SHOT_ARTIFACT_DIR"
+
+  if [[ ! -f "$capture" ]]; then
+    echo "  FAIL: ${frame} — no capture at ${capture} (tape did not emit it)" >&2
+    failed+=("shot:${frame}")
+    return
+  fi
+
+  if [[ ! -f "$baseline" ]]; then
+    cp "$capture" "${SHOT_ARTIFACT_DIR}/${frame}.actual.png"
+    echo "  FAIL: ${frame} — no approved baseline." >&2
+    echo "        Review the uploaded PNG and commit it as" >&2
+    echo "        tests/smoke/screenshots/${frame}.approved.png" >&2
+    echo "        (actual saved to ${SHOT_ARTIFACT_DIR}/${frame}.actual.png)" >&2
+    failed+=("shot:${frame}")
+    return
+  fi
+
+  if cmp -s "$baseline" "$capture"; then
+    echo "  PASS: ${frame} — pixel-identical to baseline."
+    return
+  fi
+
+  # Mismatch — keep the actual, and a visual diff if ImageMagick is around.
+  cp "$capture" "${SHOT_ARTIFACT_DIR}/${frame}.actual.png"
+  echo "  FAIL: ${frame} — differs from baseline." >&2
+  echo "        actual saved to ${SHOT_ARTIFACT_DIR}/${frame}.actual.png" >&2
+  if command -v compare >/dev/null 2>&1; then
+    # `compare` exits non-zero on any difference; that is expected here.
+    compare "$baseline" "$capture" "${SHOT_ARTIFACT_DIR}/${frame}.diff.png" \
+      >/dev/null 2>&1 || true
+    if [[ -f "${SHOT_ARTIFACT_DIR}/${frame}.diff.png" ]]; then
+      echo "        diff saved to ${SHOT_ARTIFACT_DIR}/${frame}.diff.png" >&2
+    fi
+  else
+    echo "        (ImageMagick 'compare' not found — no diff PNG generated)" >&2
+  fi
+  failed+=("shot:${frame}")
+}
+
+if [[ "$shots_mode" -eq 1 ]]; then
+  # Fresh /tmp so a stale capture from an earlier run cannot be compared.
+  rm -f /tmp/shot-*.png
+  for tape in "${SHOT_TAPES[@]}"; do
+    run_shot_tape "$tape"
+  done
+
+  echo
+  echo "════════════════════════════════════════════════════════"
+  echo "Screenshot comparison"
+  echo "════════════════════════════════════════════════════════"
+  for frame in "${SHOT_FRAMES[@]}"; do
+    compare_shot_frame "$frame"
+  done
+else
+  # Tapes first (harness-level checks fail fast), then scenarios. All are
+  # attempted regardless of earlier failures so CI gets a complete artifact set.
+  for tape in "${tapes[@]:-}"; do
+    [[ -z "$tape" ]] && continue
+    run_one_tape "$tape"
+  done
+
+  for scenario in "${scenarios[@]:-}"; do
+    [[ -z "$scenario" ]] && continue
+    run_one_scenario "$scenario"
+  done
+fi
 
 # ── 5) Collect artifacts on failure ──────────────────────────────────────────
 
@@ -262,4 +381,8 @@ if (( ${#failed[@]} > 0 )); then
 fi
 
 echo
-echo "All smoke checks passed (${#tapes[@]} tape(s), ${#scenarios[@]} scenario(s))."
+if [[ "$shots_mode" -eq 1 ]]; then
+  echo "All screenshot frames matched their baselines (${#SHOT_FRAMES[@]} frame(s))."
+else
+  echo "All smoke checks passed (${#tapes[@]} tape(s), ${#scenarios[@]} scenario(s))."
+fi
