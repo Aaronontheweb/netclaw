@@ -22,6 +22,13 @@
 #   TAPE_TIMEOUT_S    hard timeout per tape (default: 600)
 #   ARTIFACT_DIR      failure artifact dir (default: smoke-logs/tapes/<name>)
 #   KEEP_TEMP         set to 1 to retain the combined tape for inspection
+#   TAPE_PREAMBLE     preamble file to prepend  (default: <TAPES_DIR>/preamble.tape)
+#   TAPE_BODY_DIR     directory holding <name>.tape (default: TAPES_DIR)
+#
+# TAPE_PREAMBLE / TAPE_BODY_DIR let the `screenshots` mode of run-smoke.sh
+# point this runner at screenshot-preamble.tape and tests/smoke/tapes/
+# screenshots/ without forking the runner. When both are unset the flow-tape
+# behavior is byte-identical to before they existed.
 
 set -euo pipefail
 
@@ -48,8 +55,11 @@ NETCLAW_BIN_DIR="$(cd "$(dirname "$NETCLAW_SMOKE_CLI")" && pwd)"
 # Per-tape NETCLAW_HOME on the host filesystem.
 NETCLAW_HOME="${NETCLAW_HOME:-$(mktemp -d)/tape-home-${TAPE_NAME}}"
 
-preamble="${TAPES_DIR}/preamble.tape"
-body="${TAPES_DIR}/${TAPE_NAME}.tape"
+# Preamble + body dir are overridable so the screenshots mode can swap in
+# screenshot-preamble.tape + tests/smoke/tapes/screenshots/. Defaults keep
+# the flow-tape behavior unchanged.
+preamble="${TAPE_PREAMBLE:-${TAPES_DIR}/preamble.tape}"
+body="${TAPE_BODY_DIR:-${TAPES_DIR}}/${TAPE_NAME}.tape"
 assertion="${ASSERT_DIR}/${TAPE_NAME}.sh"
 
 if [[ ! -f "$preamble" ]]; then
