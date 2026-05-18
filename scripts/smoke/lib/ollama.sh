@@ -11,10 +11,10 @@
 #   ollama_pull <model>       pull a model with retries (top flake source)
 #
 # Environment knobs:
-#   SMOKE_OLLAMA_MODEL      primary model       (default: qwen2:0.5b)
-#   SMOKE_OLLAMA_ALT_MODEL  alternate model     (default: all-minilm:latest)
-#   OLLAMA_HOST             host:port to bind   (default: 127.0.0.1:11434)
-#   RUN_ROOT                run-scoped temp dir (set by run-smoke.sh)
+#   SMOKE_OLLAMA_MODEL       primary model       (default: qwen2:0.5b)
+#   SMOKE_OLLAMA_ALT_MODEL   alternate model     (default: all-minilm:latest)
+#   OLLAMA_HOST              host:port to bind   (default: 127.0.0.1:11434)
+#   RUN_ROOT                 run-scoped temp dir (set by run-smoke.sh)
 
 SMOKE_OLLAMA_MODEL="${SMOKE_OLLAMA_MODEL:-qwen2:0.5b}"
 SMOKE_OLLAMA_ALT_MODEL="${SMOKE_OLLAMA_ALT_MODEL:-all-minilm:latest}"
