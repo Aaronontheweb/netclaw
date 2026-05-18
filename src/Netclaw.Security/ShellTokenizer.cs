@@ -76,8 +76,8 @@ public static class ShellTokenizer
     internal static readonly HashSet<string> SingleTokenCommandVerbs = new(StringComparer.OrdinalIgnoreCase)
     {
         "date", "whoami", "id", "groups", "hostname", "uname", "uptime",
-        "free", "ps", "printenv", "nproc", "which",
-        "Get-Date", "Get-Process", "Get-ComputerInfo",
+        "free", "nproc", "which",
+        "Get-Date", "Get-ComputerInfo",
     };
 
     /// <summary>

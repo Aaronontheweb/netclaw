@@ -332,10 +332,12 @@ The approval gate runs three layers in order:
    declared safe space (`session_dir` or `project_dir`), the call auto-runs
    with no prompt. The list covers demonstrably read-only verbs: file readers
    (`ls`, `grep`, `cat`, …), system/info verbs (`date`, `whoami`, `uname`,
-   `ps`, …), and read-only `git`/`gh` queries (`git status`, `git log`,
+   `uptime`, …), and read-only `git`/`gh` queries (`git status`, `git log`,
    `gh pr view`, `gh run list`, …). Mutating verbs (`git push`, `git fetch`,
-   `rm`, `sed -i`), command-prefixing verbs (`env`, `xargs`, `sudo`), and
-   network-writing verbs (`gh api`, `curl`) are never on the list.
+   `rm`, `sed -i`), command-prefixing verbs (`env`, `xargs`, `sudo`),
+   network-writing verbs (`gh api`, `curl`), and environment/process-inspection
+   verbs (`printenv`, `ps`) are never on the list — the safe-space gate
+   cannot scope a verb that dumps the environment or the process table.
 3. **Interactive prompt** — everything else. Five buttons:
    - **Once** — run this one time, persist nothing.
    - **This chat** — allow the verbs in this directory for the rest of the
