@@ -134,12 +134,15 @@ How it differs from the flow tapes:
 - The harness points `run-native-tape.sh` at them via the `TAPE_PREAMBLE`
   and `TAPE_BODY_DIR` env vars.
 
-They still follow the core authoring rules above: no literal `Sleep` for
-synchronization (the documented Termina-relayout `Sleep 300ms` guard is
-the only exception), and an anchored `Wait+Screen` immediately before
-every `Screenshot` so the shot fires on a fully rendered frame. Never
-screenshot a screen with a version string, timestamp, spinner, or token
-counter — pick a different settled frame instead.
+Every `Screenshot` is preceded by an anchored `Wait+Screen` (we are on the
+right screen) and **bracketed by `Sleep 1s`** — one before so the TUI has
+finished painting, one after so the next keystroke cannot leak into the
+capture. This is the one place a literal `Sleep` is correct: the no-`Sleep`
+rule above is about flow-tape step *synchronization*, whereas a screenshot
+needs the frame to be visually *settled*, and a settled static screen
+captured at +1s is still deterministic. Never screenshot a screen with a
+version string, timestamp, spinner, or token counter — pick a different
+settled frame instead.
 
 ### Baseline workflow
 

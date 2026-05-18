@@ -13,8 +13,8 @@
 #
 # Navigation + anchors mirror tapes/provider-add.tape; see that file and
 # src/Netclaw.Cli/Tui/ProviderManagerPage.cs for the synchronization
-# rationale (including the short Termina-relayout `Sleep 300ms` guards).
-# Every Screenshot directive fires IMMEDIATELY after the Wait+Screen anchor.
+# rationale. Each Screenshot is bracketed by Sleep 1s to settle the frame
+# and keep the next keystroke from leaking into the capture.
 #
 # Determinism note: the empty provider list and the AddName step are static
 # (no version string, timestamp, spinner, or token counter). The async
@@ -33,8 +33,9 @@ Enter
 # "(not configured)" row plus the "+ Add new provider..." sentinel.
 # Anchor on "Ollama" (a guaranteed type row) so we know the list rendered.
 Wait+Screen@10s /Ollama/
-Sleep 300ms
+Sleep 1s
 Screenshot "/tmp/shot-provider-manager-empty.png"
+Sleep 1s
 
 # Provider type list (alphabetical by TypeKey): anthropic, ollama, openai,
 # openai-compatible, openrouter. Anthropic is highlighted by default; one
@@ -44,8 +45,9 @@ Enter
 
 # ─── Frame 2: Name your provider ─────────────────────────────────────
 Wait+Screen@10s /Name your provider/
-Sleep 300ms
+Sleep 1s
 Screenshot "/tmp/shot-provider-manager-add-name.png"
+Sleep 1s
 
 # We have the two frames we came for; quit the TUI back to the shell.
 Ctrl+Q

@@ -13,8 +13,8 @@
 #
 # Navigation + anchors mirror tapes/init-wizard.tape; see that file and
 # src/Netclaw.Cli/Tui/Wizard/Steps/*StepView.cs for the synchronization
-# rationale. Every Screenshot directive fires IMMEDIATELY after the
-# Wait+Screen anchor that proves the final state rendered.
+# rationale. Each Screenshot is bracketed by Sleep 1s — VHS can otherwise
+# capture an unsettled frame, or let the next keystroke leak into the shot.
 #
 # Determinism note: these three screens carry no version string, timestamp,
 # spinner, or token counter. The model-discovery screen IS skipped here —
@@ -30,7 +30,9 @@ Enter
 
 # ─── Frame 1: Provider picker ────────────────────────────────────────
 Wait+Screen@10s /Choose your LLM provider:/
+Sleep 1s
 Screenshot "/tmp/shot-wizard-provider-picker.png"
+Sleep 1s
 
 # Provider list ordering is alphabetical by TypeKey:
 #   anthropic, ollama, openai, openai-compatible, openrouter
@@ -57,7 +59,9 @@ Enter
 
 # ─── Frame 2: Security posture ───────────────────────────────────────
 Wait+Screen@10s /Who will interact with this Netclaw instance/
+Sleep 1s
 Screenshot "/tmp/shot-wizard-security-posture.png"
+Sleep 1s
 # Personal is the first / default-highlighted option.
 Enter
 
@@ -78,7 +82,9 @@ Enter
 
 # ─── Frame 3: Identity (Agent name) ──────────────────────────────────
 Wait+Screen@10s /Agent name:/
+Sleep 1s
 Screenshot "/tmp/shot-wizard-identity.png"
+Sleep 1s
 
 # We have the three frames we came for; abandon the wizard. Ctrl+C drops
 # out of the interactive prompt back to the shell — there is no config to

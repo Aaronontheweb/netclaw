@@ -13,9 +13,13 @@ Output "/tmp/tape-shot-help.gif"
 
 Type "netclaw --help"
 Enter
-# Anchor on the usage header so the screen is fully settled before we shoot.
+# Anchor on the usage header, then settle. VHS Screenshot can otherwise
+# catch a frame mid-render; the Sleep after keeps the next keystroke from
+# leaking into the capture.
 Wait+Screen@10s /Usage:/
+Sleep 1s
 Screenshot "/tmp/shot-help.png"
+Sleep 1s
 
 Type "exit"
 Enter
