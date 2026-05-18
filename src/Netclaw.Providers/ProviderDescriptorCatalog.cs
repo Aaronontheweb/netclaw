@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ProviderDescriptorCatalog.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -8,6 +8,7 @@ using Netclaw.Providers.GitHubCopilot;
 using Netclaw.Providers.OpenAi;
 using Netclaw.Providers.OpenRouter;
 using Netclaw.Providers.SelfHosted;
+using Netclaw.Providers.VeniceAi;
 
 namespace Netclaw.Providers;
 
@@ -23,7 +24,8 @@ public sealed class ProviderDescriptorCatalog
         OpenAiDescriptor openAi,
         AnthropicDescriptor anthropic,
         OpenRouterDescriptor openRouter,
-        GitHubCopilotDescriptor gitHubCopilot)
+        GitHubCopilotDescriptor gitHubCopilot,
+        VeniceAiDescriptor veniceAi)
     {
         Ollama = ollama;
         OpenAiCompatible = openAiCompatible;
@@ -31,7 +33,8 @@ public sealed class ProviderDescriptorCatalog
         Anthropic = anthropic;
         OpenRouter = openRouter;
         GitHubCopilot = gitHubCopilot;
-        All = [Ollama, OpenAiCompatible, OpenAi, Anthropic, OpenRouter, GitHubCopilot];
+        VeniceAi = veniceAi;
+        All = [Ollama, OpenAiCompatible, OpenAi, Anthropic, OpenRouter, GitHubCopilot, VeniceAi];
     }
 
     public OllamaDescriptor Ollama { get; }
@@ -45,6 +48,8 @@ public sealed class ProviderDescriptorCatalog
     public OpenRouterDescriptor OpenRouter { get; }
 
     public GitHubCopilotDescriptor GitHubCopilot { get; }
+
+    public VeniceAiDescriptor VeniceAi { get; }
 
     public IReadOnlyList<IProviderDescriptor> All { get; }
 
@@ -62,6 +67,7 @@ public sealed class ProviderDescriptorCatalog
             new OpenAiDescriptor(httpClient, timeProvider),
             new AnthropicDescriptor(httpClient),
             new OpenRouterDescriptor(httpClient),
-            new GitHubCopilotDescriptor(httpClient, copilotTokenExchanger));
+            new GitHubCopilotDescriptor(httpClient, copilotTokenExchanger),
+            new VeniceAiDescriptor(httpClient));
     }
 }
