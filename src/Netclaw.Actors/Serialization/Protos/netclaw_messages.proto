@@ -187,6 +187,9 @@ message SessionSnapshotProto {
     optional int32 requester_principal = 7;
     optional string cwd = 8;
     repeated ApprovalCandidateProto candidates = 9;
+    optional string boundary = 10;
+    optional string channel_type = 11;
+    optional bool supports_interactive_approval = 12;
   }
 
   repeated SerializableChatMessageProto history = 1;

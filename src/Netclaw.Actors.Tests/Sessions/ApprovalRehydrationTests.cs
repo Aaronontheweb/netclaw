@@ -25,6 +25,7 @@ namespace Netclaw.Actors.Tests.Sessions;
 /// </summary>
 public sealed class ApprovalRehydrationTests : LlmSessionTestBase
 {
+    private static readonly DateTimeOffset FixedReceivedAt = new(2026, 5, 17, 12, 0, 0, TimeSpan.Zero);
     private readonly FakeChatClient _fakeChatClient = new();
     private readonly ApprovalGateToolExecutor _toolExecutor = new();
 
@@ -369,6 +370,138 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
     }
 
     [Fact]
+    public async Task Cold_recovered_denied_approval_returns_denial_result_without_reprompting()
+    {
+        const string callId = "call-shell-denied";
+        _toolExecutor.GatedTools.Add("shell_execute");
+
+        _fakeChatClient.ToolCallsOnFirstCall =
+        [
+            new FunctionCallContent(callId, "shell_execute",
+                new Dictionary<string, object?> { ["command"] = "git status" })
+        ];
+
+        var sessionId = new SessionId("test-channel/denied-redrive");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("denied-redrive-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Run git status"
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        await subscriber.ExpectMsgAsync<ToolCallOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<ToolInteractionRequest>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        await ColdRespawnAsync(sessionId);
+
+        var subscriberB = CreateTestProbe("denied-redrive-sub-b");
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriberB)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriberB.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        sessionManager.Tell(new ToolInteractionResponse
+        {
+            SessionId = sessionId,
+            CallId = new Netclaw.Tools.ToolCallId(callId),
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.Deny),
+            SenderId = new SenderId("local-user")
+        });
+
+        var toolResult = await subscriberB.ExpectMsgAsync<ToolResultOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriberB.ExpectMsgAsync<TextOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        var completed = await subscriberB.ExpectMsgAsync<TurnCompleted>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(TurnOutcome.Completed, completed.Outcome);
+        Assert.Contains("approval_denied_by_user", toolResult.Result, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, _toolExecutor.SuccessfulExecutions);
+        await subscriberB.ExpectNoMsgAsync(
+            TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Cold_recovered_redrive_restores_boundary_and_channel_support_flags()
+    {
+        const string callId = "call-shell-trust-context";
+        _toolExecutor.GatedTools.Add("shell_execute");
+
+        _fakeChatClient.ToolCallsOnFirstCall =
+        [
+            new FunctionCallContent(callId, "shell_execute",
+                new Dictionary<string, object?> { ["command"] = "git status" })
+        ];
+
+        var sessionId = new SessionId("test-channel/redrive-trust-context");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("redrive-trust-context-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Run git status",
+            Source = RequesterSource("U-requester")
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        await subscriber.ExpectMsgAsync<ToolCallOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<ToolInteractionRequest>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        await ColdRespawnAsync(sessionId);
+
+        var subscriberB = CreateTestProbe("redrive-trust-context-sub-b");
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriberB)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriberB.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        sessionManager.Tell(new ToolInteractionResponse
+        {
+            SessionId = sessionId,
+            CallId = new Netclaw.Tools.ToolCallId(callId),
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce),
+            SenderId = new SenderId("U-requester")
+        });
+
+        await subscriberB.ExpectMsgAsync<ToolResultOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriberB.ExpectMsgAsync<TextOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriberB.ExpectMsgAsync<TurnCompleted>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(TrustAudience.Team, _toolExecutor.LastExecutionAudience);
+        Assert.Equal(TrustBoundary.Team, _toolExecutor.LastExecutionBoundary);
+        Assert.Equal(ChannelType.Slack.ToWireValue(), _toolExecutor.LastExecutionChannelType);
+        Assert.True(_toolExecutor.LastSupportsInteractiveApproval);
+    }
+
+    [Fact]
     public async Task Recovered_session_with_parked_approval_heals_history_when_user_sends_a_message()
     {
         const string callId = "call-shell-abandon";
@@ -517,7 +650,7 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
         Principal = PrincipalClassification.TrustedInternal,
         Provenance = new SourceProvenance(
             TransportAuthenticity.Verified, PayloadTaint.Public),
-        ReceivedAt = DateTimeOffset.UtcNow,
+        ReceivedAt = FixedReceivedAt,
     };
 }
 
@@ -546,6 +679,12 @@ internal sealed class ApprovalGateToolExecutor : IToolExecutor
     /// source would force — so a persisted-scope grant still matches the gate.
     /// </summary>
     public TrustAudience? LastExecutionAudience { get; private set; }
+
+    public TrustBoundary? LastExecutionBoundary { get; private set; }
+
+    public string? LastExecutionChannelType { get; private set; }
+
+    public bool? LastSupportsInteractiveApproval { get; private set; }
 
     public Task AuthorizeAsync(
         FunctionCallContent toolCall,
@@ -584,6 +723,9 @@ internal sealed class ApprovalGateToolExecutor : IToolExecutor
         }
 
         LastExecutionAudience = context?.Audience;
+        LastExecutionBoundary = context?.Boundary;
+        LastExecutionChannelType = context?.ChannelType;
+        LastSupportsInteractiveApproval = context?.SupportsInteractiveApproval;
         Interlocked.Increment(ref _successfulExecutions);
         return Task.FromResult($"[executed {toolCall.Name}]");
     }

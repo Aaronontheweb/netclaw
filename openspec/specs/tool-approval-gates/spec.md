@@ -240,6 +240,15 @@ it SHALL NOT be silently discarded.
 - **AND** the same requester-only `CanApprove` check and grant-persistence rules
   apply as on the live path
 
+#### Scenario: Whole-batch re-drive may repeat completed sibling calls
+
+- **GIVEN** a tool batch was interrupted after one sibling finished in memory
+- **AND** another sibling was still pending approval when the session stopped
+- **WHEN** the recovered session re-drives the parked tool batch from the last durable assistant tool-call message
+- **THEN** the already-completed sibling call MAY execute again
+- **AND** partial in-memory sibling results are NOT recovered independently
+- **AND** this whole-batch replay behavior is an accepted MVP limitation
+
 #### Scenario: Approval response for an expired call fails loud
 
 - **GIVEN** a session has no pending interaction for the responded call id
@@ -858,4 +867,3 @@ shares the candidate's verb, no near-miss diagnostic SHALL be emitted
 - **WHEN** the gate evaluates the candidate
 - **THEN** the candidate remains unapproved
 - **AND** the user is still prompted
-

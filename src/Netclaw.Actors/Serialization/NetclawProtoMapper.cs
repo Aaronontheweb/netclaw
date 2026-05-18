@@ -258,6 +258,12 @@ internal static class NetclawProtoMapper
         };
         proto.Patterns.AddRange(r.Patterns);
         proto.CandidateVerbs.AddRange(r.CandidateVerbs);
+        if (r.Boundary is not null)
+            proto.Boundary = r.Boundary.Value.Value;
+        if (r.ChannelType is not null)
+            proto.ChannelType = r.ChannelType;
+        if (r.SupportsInteractiveApproval is not null)
+            proto.SupportsInteractiveApproval = r.SupportsInteractiveApproval.Value;
         if (r.RequesterSenderId is not null)
             proto.RequesterSenderId = r.RequesterSenderId.Value.Value;
         if (r.RequesterPrincipal is not null)
@@ -276,6 +282,9 @@ internal static class NetclawProtoMapper
         Patterns = proto.Patterns.ToArray(),
         CandidateVerbs = proto.CandidateVerbs.ToArray(),
         Audience = (Configuration.TrustAudience)(int)proto.Audience,
+        Boundary = proto.HasBoundary ? new Configuration.TrustBoundary(proto.Boundary) : null,
+        ChannelType = proto.HasChannelType ? proto.ChannelType : null,
+        SupportsInteractiveApproval = proto.HasSupportsInteractiveApproval ? proto.SupportsInteractiveApproval : null,
         RequesterSenderId = proto.HasRequesterSenderId ? new SenderId(proto.RequesterSenderId) : null,
         RequesterPrincipal = proto.HasRequesterPrincipal
             ? (Configuration.PrincipalClassification)proto.RequesterPrincipal

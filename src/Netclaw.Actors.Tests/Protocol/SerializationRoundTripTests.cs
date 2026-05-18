@@ -717,6 +717,9 @@ public sealed class SerializationRoundTripTests : TestKit
                     Patterns = ["git status", "ls"],
                     CandidateVerbs = ["git", "ls"],
                     Audience = Netclaw.Configuration.TrustAudience.Team,
+                    Boundary = Netclaw.Configuration.TrustBoundary.Team,
+                    ChannelType = "slack",
+                    SupportsInteractiveApproval = true,
                     RequesterSenderId = new SenderId("U12345"),
                     RequesterPrincipal = Netclaw.Configuration.PrincipalClassification.Operator,
                     Cwd = "/home/user/project",
@@ -733,6 +736,9 @@ public sealed class SerializationRoundTripTests : TestKit
                     Patterns = [],
                     CandidateVerbs = [],
                     Audience = Netclaw.Configuration.TrustAudience.Public,
+                    Boundary = null,
+                    ChannelType = null,
+                    SupportsInteractiveApproval = null,
                     RequesterSenderId = null,
                     RequesterPrincipal = null,
                     Cwd = null,
@@ -751,6 +757,9 @@ public sealed class SerializationRoundTripTests : TestKit
         Assert.Equal(new[] { "git status", "ls" }, first.Patterns);
         Assert.Equal(new[] { "git", "ls" }, first.CandidateVerbs);
         Assert.Equal(Netclaw.Configuration.TrustAudience.Team, first.Audience);
+        Assert.Equal(Netclaw.Configuration.TrustBoundary.Team, first.Boundary);
+        Assert.Equal("slack", first.ChannelType);
+        Assert.True(first.SupportsInteractiveApproval);
         Assert.Equal(new SenderId("U12345"), first.RequesterSenderId);
         Assert.Equal(Netclaw.Configuration.PrincipalClassification.Operator, first.RequesterPrincipal);
         Assert.Equal("/home/user/project", first.Cwd);
@@ -766,6 +775,9 @@ public sealed class SerializationRoundTripTests : TestKit
         Assert.Empty(second.Patterns);
         Assert.Empty(second.CandidateVerbs);
         Assert.Equal(Netclaw.Configuration.TrustAudience.Public, second.Audience);
+        Assert.Null(second.Boundary);
+        Assert.Null(second.ChannelType);
+        Assert.Null(second.SupportsInteractiveApproval);
         Assert.Null(second.RequesterSenderId);
         Assert.Null(second.RequesterPrincipal);
         Assert.Null(second.Cwd);

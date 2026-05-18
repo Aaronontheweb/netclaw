@@ -82,6 +82,12 @@ public sealed record SessionSnapshot : INetclawSerializableMessage
 
         public TrustAudience Audience { get; init; }
 
+        public TrustBoundary? Boundary { get; init; }
+
+        public string? ChannelType { get; init; }
+
+        public bool? SupportsInteractiveApproval { get; init; }
+
         public SenderId? RequesterSenderId { get; init; }
 
         public PrincipalClassification? RequesterPrincipal { get; init; }

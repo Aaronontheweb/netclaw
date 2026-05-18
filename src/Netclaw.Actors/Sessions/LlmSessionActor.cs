@@ -825,6 +825,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 msg.Patterns,
                 msg.CandidateVerbs,
                 CurrentTurnAudience(),
+                _currentTurnSource?.Boundary,
+                _currentTurnSource?.ChannelType.ToWireValue(),
+                _currentTurnSource?.ChannelType.SupportsInteractiveApproval(),
                 msg.RequesterSenderId?.Value,
                 msg.RequesterPrincipal,
                 msg.Cwd,
@@ -1326,6 +1329,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     {
         if (_restartDrainRequested)
         {
+            _deferredApprovalResponse = null;
             ClearBufferedMessagesForRestartDrain();
             _resumeToolLoopAfterCompaction = false;
             TransitionTo(SessionPhase.Ready);
@@ -1727,7 +1731,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private void DispatchToolBatch(
         List<FunctionCallContent> toolCalls,
         TrustAudience? audienceOverride = null,
-        IReadOnlyDictionary<string, IReadOnlyList<string>>? oneTimeApprovalPreSeed = null)
+        TrustBoundary? boundaryOverride = null,
+        string? channelTypeOverride = null,
+        bool? supportsInteractiveApprovalOverride = null,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? oneTimeApprovalPreSeed = null,
+        IReadOnlyDictionary<string, ApprovalDecision>? decisionOverride = null)
     {
         // Execute tools async — results come back as ToolExecutionCompleted
         TurnLog().Info("turn_tool_call_batch count={Count} tools={Tools}",
@@ -1795,7 +1803,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             projectDirectory: _state.WorkingContext.ProjectDirectory,
             setWorkingDirectoryAvailable: setWorkingDirectoryAvailable,
             oneTimeApprovalPreSeed: oneTimeApprovalPreSeed,
-            audienceOverride: audienceOverride);
+            audienceOverride: audienceOverride,
+            boundaryOverride: boundaryOverride,
+            channelTypeOverride: channelTypeOverride,
+            supportsInteractiveApprovalOverride: supportsInteractiveApprovalOverride,
+            decisionOverride: decisionOverride);
     }
 
     private void HandleTextResponse(
@@ -3063,6 +3075,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 Patterns = p.Patterns,
                 CandidateVerbs = p.CandidateVerbs,
                 Audience = p.Audience,
+                Boundary = p.Boundary,
+                ChannelType = p.ChannelType,
+                SupportsInteractiveApproval = p.SupportsInteractiveApproval,
                 RequesterSenderId = p.RequesterSenderId is null ? null : new SenderId(p.RequesterSenderId),
                 RequesterPrincipal = p.RequesterPrincipal,
                 Cwd = p.Cwd,
@@ -3088,6 +3103,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             r.Patterns,
             r.CandidateVerbs,
             r.Audience,
+            r.Boundary,
+            r.ChannelType,
+            r.SupportsInteractiveApproval,
             r.RequesterSenderId?.Value,
             r.RequesterPrincipal,
             r.Cwd,
@@ -3306,6 +3324,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // bypass scoped to exactly this call id so the re-driven batch skips
         // the gate once without emitting a duplicate approval prompt.
         IReadOnlyDictionary<string, IReadOnlyList<string>>? preSeed = null;
+        IReadOnlyDictionary<string, ApprovalDecision>? decisionOverride = null;
         if (decision == ApprovalDecision.ApprovedOnce)
         {
             preSeed = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
@@ -3314,7 +3333,15 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             };
         }
 
-        RedriveToolBatchForApproval(callId, pending.Audience, preSeed);
+        if (decision is ApprovalDecision.Denied or ApprovalDecision.TimedOut)
+        {
+            decisionOverride = new Dictionary<string, ApprovalDecision>(StringComparer.Ordinal)
+            {
+                [callId] = decision
+            };
+        }
+
+        RedriveToolBatchForApproval(callId, pending, preSeed, decisionOverride);
     }
 
     /// <summary>
@@ -3322,16 +3349,15 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     /// while the session was idle. Reconstructs the batch from the last
     /// assistant message in history whose tool calls have no later tool result,
     /// transitions to <see cref="SessionPhase.Processing"/>, and dispatches it
-    /// under <paramref name="audience"/> — the audience the parked turn ran at
-    /// and the audience its approval grant was recorded against. After cold
-    /// recovery <see cref="_currentTurnSource"/> is null, so passing the
-    /// persisted audience explicitly is what keeps the re-driven call off the
-    /// fail-closed <see cref="TrustAudience.Public"/> default.
+    /// under the parked turn's persisted trust context. After cold recovery
+    /// <see cref="_currentTurnSource"/> is null, so the persisted trust fields
+    /// are what keep the re-driven call faithful to the original turn.
     /// </summary>
     private void RedriveToolBatchForApproval(
         string callId,
-        TrustAudience audience,
-        IReadOnlyDictionary<string, IReadOnlyList<string>>? oneTimeApprovalPreSeed)
+        PendingToolInteraction pending,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? oneTimeApprovalPreSeed,
+        IReadOnlyDictionary<string, ApprovalDecision>? decisionOverride)
     {
         var assistantMsg = FindRedrivableAssistantMessage(callId);
         if (assistantMsg is null)
@@ -3361,7 +3387,14 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             toolCalls.Count, callId);
 
         TransitionTo(SessionPhase.Processing);
-        DispatchToolBatch(toolCalls, audienceOverride: audience, oneTimeApprovalPreSeed: oneTimeApprovalPreSeed);
+        DispatchToolBatch(
+            toolCalls,
+            audienceOverride: pending.Audience,
+            boundaryOverride: pending.Boundary,
+            channelTypeOverride: pending.ChannelType,
+            supportsInteractiveApprovalOverride: pending.SupportsInteractiveApproval,
+            oneTimeApprovalPreSeed: oneTimeApprovalPreSeed,
+            decisionOverride: decisionOverride);
     }
 
     /// <summary>
@@ -3503,6 +3536,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         IReadOnlyList<string> Patterns,
         IReadOnlyList<string> CandidateVerbs,
         TrustAudience Audience,
+        TrustBoundary? Boundary,
+        string? ChannelType,
+        bool? SupportsInteractiveApproval,
         string? RequesterSenderId,
         PrincipalClassification? RequesterPrincipal,
         string? Cwd,
