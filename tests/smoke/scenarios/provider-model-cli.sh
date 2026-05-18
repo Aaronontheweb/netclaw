@@ -1,13 +1,5 @@
 #!/usr/bin/env bash
-# provider-model-cli.sh — provider add/list/remove + model set/list/discover/
-# switch/clear against a live native Ollama.
-#
-# Folded from scripts/smoke/check.sh (~lines 155-238). De-Dockerized: the
-# CLI builds up config in a fresh NETCLAW_HOME and the provider endpoint
-# points at the native Ollama on localhost.
-#
-# A daemon is NOT required for these CLI subcommands — they operate on the
-# config files directly. We do not start one.
+# provider-model-cli.sh — provider/model CLI subcommands; no daemon required.
 
 set -euo pipefail
 
@@ -15,11 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../../scripts/smoke/lib/common.sh
 . "${SCRIPT_DIR}/../../../scripts/smoke/lib/common.sh"
 
-SMOKE_MODEL="${SMOKE_OLLAMA_MODEL:-qwen2:0.5b}"
 ALT_MODEL="${SMOKE_OLLAMA_ALT_MODEL:-all-minilm:latest}"
-OLLAMA_ENDPOINT="${SMOKE_OLLAMA_ENDPOINT:-http://localhost:11434}"
-
-nc() { run_timed "$STEP_TIMEOUT_SECONDS" "$NETCLAW_SMOKE_CLI" "$@"; }
 
 log "Testing provider add (local-ollama)..."
 nc provider add local-ollama ollama --endpoint "$OLLAMA_ENDPOINT"

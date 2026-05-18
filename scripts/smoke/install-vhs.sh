@@ -15,7 +15,11 @@
 set -euo pipefail
 
 VHS_VERSION="${VHS_VERSION:-0.11.0}"
-VHS_LINUX_X64_SHA256="${VHS_LINUX_X64_SHA256:-SKIP_VERIFY}"
+# SHA256 of vhs_0.11.0_Linux_x86_64.tar.gz from the upstream checksums.txt.
+# When bumping VHS_VERSION, refresh this with the curl command in the header
+# comment above. The pin matters for screenshot regression: a VHS bump can
+# change the bundled font/renderer and silently drift every baseline PNG.
+VHS_LINUX_X64_SHA256="${VHS_LINUX_X64_SHA256:-99cb634587eaae0473c1ea377db80c3a048c27f99fe0a7febb1a1e8cb7ee5009}"
 # 0.11.0 is the minimum that supports `Wait+Screen /pattern/`.
 # Earlier versions (e.g. 0.8.0) parse `Wait` as an unknown command.
 

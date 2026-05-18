@@ -446,7 +446,9 @@ jobs:
         --file=./feeds/releases/manifest.pub
         --content-type=text/plain
 
-    - name: Upload Linux install script to R2
+    # install.sh is the unified Unix installer — it handles Linux AND macOS
+    # (uname -s -> darwin -> osx-arm64). There is intentionally one Unix script.
+    - name: Upload Unix (Linux + macOS) install script to R2
       env:
         CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
