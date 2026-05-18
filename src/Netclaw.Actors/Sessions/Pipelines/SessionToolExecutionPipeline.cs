@@ -261,7 +261,7 @@ internal static class SessionToolExecutionPipeline
                 }
             }
 
-            resultText = await ExecuteToolAttemptAsync(executor, tc, context, timeout, ct);
+            resultText = await ExecuteToolAttemptAsync(executor, tc, context, timeout, timeProvider, ct);
             sw.Stop();
 
             auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
@@ -339,7 +339,7 @@ internal static class SessionToolExecutionPipeline
                         string.Join(", ", ctx.Patterns));
                 }
 
-                resultText = await ExecuteToolAttemptAsync(executor, tc, context, timeout, ct);
+                resultText = await ExecuteToolAttemptAsync(executor, tc, context, timeout, timeProvider, ct);
                 sw.Stop();
 
                 var patternStr = string.Join(", ", ctx.Patterns);
@@ -441,27 +441,25 @@ internal static class SessionToolExecutionPipeline
         FunctionCallContent toolCall,
         ToolExecutionContext context,
         TimeSpan timeout,
+        TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
         var grantedOneTimeToolName = context.OneTimeApprovedToolName;
         var grantedOneTimePatterns = context.OneTimeApprovedPatterns;
 
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        if (timeout != Timeout.InfiniteTimeSpan)
-            timeoutCts.CancelAfter(timeout);
-
         try
         {
-            return await executor.ExecuteAsync(toolCall, context, timeoutCts.Token);
-        }
-        catch (OperationCanceledException ex)
-            when (!cancellationToken.IsCancellationRequested
-                  && timeout != Timeout.InfiniteTimeSpan
-                  && timeoutCts.IsCancellationRequested)
-        {
-            throw new TimeoutException(
-                $"Tool execution exceeded timeout of {timeout.TotalSeconds:F0}s",
-                ex);
+            // Consumed as a stream under a per-call inactivity watchdog. A
+            // non-streaming tool emits only the terminal item, so a flat budget
+            // is equivalent to the former timeout; inactivity throws
+            // TimeoutException, which the caller turns into a per-tool error.
+            return await StreamingToolWatchdog.ConsumeAsync(
+                executor.ExecuteStreamAsync(toolCall, context, cancellationToken),
+                toolCall.Name,
+                ToolWatchdogBudget.Flat(timeout),
+                timeProvider,
+                onActivity: null,
+                cancellationToken);
         }
         finally
         {
