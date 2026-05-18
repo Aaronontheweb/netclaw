@@ -1,12 +1,5 @@
 #!/usr/bin/env bash
 # reminders.sh — reminder create / list / history / delete lifecycle.
-#
-# Folded from scripts/smoke/check.sh (~lines 384-438). Schedules a
-# one-shot reminder, waits for it to execute and record history, then
-# permanently deletes it and verifies it is fully removed.
-#
-# Self-contained: seeds provider + model config, starts a fresh daemon,
-# asserts, stops it.
 
 set -euo pipefail
 
@@ -14,26 +7,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../../scripts/smoke/lib/common.sh
 . "${SCRIPT_DIR}/../../../scripts/smoke/lib/common.sh"
 
-SMOKE_MODEL="${SMOKE_OLLAMA_MODEL:-qwen2:0.5b}"
-OLLAMA_ENDPOINT="${SMOKE_OLLAMA_ENDPOINT:-http://localhost:11434}"
 REMINDER_WAIT_TIMEOUT="${REMINDER_WAIT_TIMEOUT:-150}"
 
-nc() { run_timed "$STEP_TIMEOUT_SECONDS" "$NETCLAW_SMOKE_CLI" "$@"; }
-
-cleanup() { stop_daemon; }
-trap cleanup EXIT
-
-log "Seeding provider + model config..."
-nc provider add local-ollama ollama --endpoint "$OLLAMA_ENDPOINT"
-nc model set main local-ollama "$SMOKE_MODEL"
-
-log "Starting daemon for reminder tests..."
-if ! start_daemon; then
-  fail "daemon did not start"
-  summarize || exit 1
-  exit 1
-fi
-wait_for_health || { fail "daemon health endpoint not ready"; summarize || exit 1; exit 1; }
+seed_and_start_daemon
 
 REMINDER_ID="smoke-lifecycle-$$"
 

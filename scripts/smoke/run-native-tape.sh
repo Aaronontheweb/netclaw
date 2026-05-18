@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# Run a single VHS tape against the native netclaw binary (no Docker).
-#
-# Native successor to scripts/smoke/run-tape.sh. The binary runs as a
-# host process; tapes live in tests/smoke/tapes/ and assertions in
-# tests/smoke/assertions/.
+# Run a single VHS tape against the native netclaw binary.
 #
 # Usage:
 #   scripts/smoke/run-native-tape.sh <tape-short-name>
@@ -125,7 +121,8 @@ if command -v timeout >/dev/null 2>&1; then
 elif command -v gtimeout >/dev/null 2>&1; then
   gtimeout "${TAPE_TIMEOUT_S}" vhs "$combined" || vhs_status=$?
 else
-  vhs "$combined" || vhs_status=$?
+  echo "ERROR: no timeout tool (timeout/gtimeout) found; refusing to run vhs unbounded." >&2
+  exit 1
 fi
 
 if [[ $vhs_status -ne 0 ]]; then

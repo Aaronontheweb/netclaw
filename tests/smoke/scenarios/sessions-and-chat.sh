@@ -1,12 +1,5 @@
 #!/usr/bin/env bash
-# sessions-and-chat.sh — headless chat, session catalog API, multi-turn
-# resume, and --json output.
-#
-# Folded from scripts/smoke/check.sh (~lines 279-338). De-Dockerized: the
-# daemon is a native host process; curl hits loopback directly.
-#
-# Self-contained: seeds provider + model config, starts a fresh daemon,
-# asserts, stops it.
+# sessions-and-chat.sh — headless chat, session catalog API, multi-turn resume, --json.
 
 set -euo pipefail
 
@@ -14,25 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../../scripts/smoke/lib/common.sh
 . "${SCRIPT_DIR}/../../../scripts/smoke/lib/common.sh"
 
-SMOKE_MODEL="${SMOKE_OLLAMA_MODEL:-qwen2:0.5b}"
-OLLAMA_ENDPOINT="${SMOKE_OLLAMA_ENDPOINT:-http://localhost:11434}"
-
-nc() { run_timed "$STEP_TIMEOUT_SECONDS" "$NETCLAW_SMOKE_CLI" "$@"; }
-
-cleanup() { stop_daemon; }
-trap cleanup EXIT
-
-log "Seeding provider + model config..."
-nc provider add local-ollama ollama --endpoint "$OLLAMA_ENDPOINT"
-nc model set main local-ollama "$SMOKE_MODEL"
-
-log "Starting daemon for session/chat tests..."
-if ! start_daemon; then
-  fail "daemon did not start"
-  summarize || exit 1
-  exit 1
-fi
-wait_for_health || { fail "daemon health endpoint not ready"; summarize || exit 1; exit 1; }
+seed_and_start_daemon
 
 log "Sending a headless prompt to create a session..."
 nc chat -p "Say hello in one word" || true
@@ -80,7 +55,7 @@ echo "$turn2_output"
 if echo "$turn2_output" | grep -qi "hello"; then
   pass "multi-turn: response referenced 'hello'"
 else
-  # Model quality issue, not a CLI bug — WARN, not fail (matches check.sh).
+  # Model quality issue, not a CLI bug — WARN, not fail.
   warn "multi-turn continuity: response did not reference 'hello' (model quality, not CLI bug)"
 fi
 

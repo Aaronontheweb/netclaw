@@ -83,25 +83,12 @@ jobs:
           echo "NETCLAW_SMOKE_CLI=$(pwd)/publish/cli/netclaw" >> "$GITHUB_ENV"
           echo "NETCLAW_SMOKE_DAEMON=$(pwd)/publish/daemon/netclawd" >> "$GITHUB_ENV"
 
-      - name: Cache Ollama model store
-        uses: actions/cache@v4
-        with:
-          path: ~/.ollama/models
-          key: ollama-models-${{ env.SMOKE_OLLAMA_MODEL }}-${{ env.SMOKE_OLLAMA_ALT_MODEL }}
-
       - name: Run native smoke (light)
         shell: bash
         run: |
           mkdir -p smoke-logs
           set -o pipefail
           scripts/smoke/run-smoke.sh light 2>&1 | tee smoke-logs/run-smoke.log
-
-      - name: Collect smoke artifacts
-        if: always()
-        shell: bash
-        run: |
-          mkdir -p smoke-logs
-          scripts/smoke/collect-artifacts.sh smoke-logs || true
 
       - name: Upload smoke artifacts
         if: always()

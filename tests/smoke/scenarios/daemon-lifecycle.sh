@@ -1,10 +1,5 @@
 #!/usr/bin/env bash
-# daemon-lifecycle.sh — native daemon start / status / health / stop.
-#
-# Folded from scripts/smoke/check.sh (~lines 85-153). De-Dockerized: the
-# daemon runs as a native host process bound to loopback 127.0.0.1:5199.
-#
-# Self-contained: starts a fresh daemon, asserts, stops it.
+# daemon-lifecycle.sh — daemon start / status / health / stop on empty config.
 
 set -euo pipefail
 
@@ -12,16 +7,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../../../scripts/smoke/lib/common.sh
 . "${SCRIPT_DIR}/../../../scripts/smoke/lib/common.sh"
 
-cleanup() { stop_daemon; }
-trap cleanup EXIT
+trap stop_daemon EXIT
 
 log "daemon-lifecycle: starting daemon..."
 if start_daemon; then
   pass "daemon start: daemon reports running"
 else
-  fail "daemon start: daemon did not report running"
-  summarize || exit 1
-  exit 1
+  die "daemon start: daemon did not report running"
 fi
 
 log "Checking daemon status..."
