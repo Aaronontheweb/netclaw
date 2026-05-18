@@ -21,6 +21,21 @@ public sealed class SafeVerbLoaderTests
         Assert.True(list.Contains("sed -n"));
         Assert.False(list.Contains("git push"));
         Assert.False(list.Contains("rm"));
+
+        // Read-only system/info verbs and read-only git/gh queries added by
+        // the safe-verb expansion.
+        Assert.True(list.Contains("date"));
+        Assert.True(list.Contains("ps"));
+        Assert.True(list.Contains("whoami"));
+        Assert.True(list.Contains("git describe"));
+        Assert.True(list.Contains("gh pr view"));
+        Assert.True(list.Contains("gh run list"));
+
+        // Excluded on purpose: env can prefix an arbitrary command; git fetch
+        // mutates the object store; gh api can issue any HTTP method.
+        Assert.False(list.Contains("env"));
+        Assert.False(list.Contains("git fetch"));
+        Assert.False(list.Contains("gh api"));
     }
 
     [Fact]
@@ -34,6 +49,13 @@ public sealed class SafeVerbLoaderTests
         Assert.True(list.Contains("Test-Path"));
         Assert.True(list.Contains("git status"));
         Assert.False(list.Contains("Remove-Item"));
+
+        // Read-only verbs added by the safe-verb expansion.
+        Assert.True(list.Contains("Get-Date"));
+        Assert.True(list.Contains("whoami"));
+        Assert.True(list.Contains("git describe"));
+        Assert.True(list.Contains("gh pr view"));
+        Assert.False(list.Contains("gh api"));
     }
 
     [Fact]

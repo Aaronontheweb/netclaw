@@ -216,6 +216,25 @@ public sealed class ShellTokenizerTests
         Assert.Equal(expected, ShellTokenizer.ExtractVerbChain(input));
     }
 
+    [Theory]
+    // Single-token command verbs (date, ps, which, ...) have no sub-command
+    // grammar — depth-1 capping keeps their call-specific operand (a format
+    // string, a process selector, a lookup target) out of the verb chain so
+    // the bundled safe-verb list can match them by exact equality.
+    [InlineData("date +%Y-%m-%d", "date")]
+    [InlineData("date", "date")]
+    [InlineData("ps aux", "ps")]
+    [InlineData("ps -ef", "ps")]
+    [InlineData("which ilspycmd", "which")]
+    [InlineData("id aaron", "id")]
+    [InlineData("uname -a", "uname")]
+    [InlineData("printenv PATH", "printenv")]
+    [InlineData("whoami", "whoami")]
+    public void ExtractVerbChain_caps_single_token_command_verbs(string input, string expected)
+    {
+        Assert.Equal(expected, ShellTokenizer.ExtractVerbChain(input));
+    }
+
     // ── IsPathToken ──
 
     [Theory]
