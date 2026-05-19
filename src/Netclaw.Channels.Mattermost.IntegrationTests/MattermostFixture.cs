@@ -49,35 +49,41 @@ public sealed class MattermostFixture : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
-        _container = new ContainerBuilder()
-            .WithImage("mattermost/mattermost-preview")
-            .WithPortBinding(8065, true)
-            .WithEnvironment("MM_SERVICESETTINGS_ENABLEOPENSERVER", "true")
-            .WithEnvironment("MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION", "true")
-            .WithEnvironment("MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS", "true")
-            .WithEnvironment("MM_TEAMSETTINGS_ENABLEOPENSERVER", "true")
-            .WithEnvironment("MM_SERVICESETTINGS_ENABLETESTING", "true")
-            .WithWaitStrategy(Wait.ForUnixContainer()
-                .UntilHttpRequestIsSucceeded(r => r
-                    .ForPort(8065)
-                    .ForPath("/api/v4/system/ping")
-                    .ForStatusCode(HttpStatusCode.OK))
-                .AddCustomWaitStrategy(new WaitUntilApiReady()))
-            .Build();
-
+        IContainer? container = null;
         try
         {
-            await _container.StartAsync();
+            // Both the builder chain and StartAsync can surface a
+            // Docker-unavailable error, so both run inside the try.
+            container = new ContainerBuilder()
+                .WithImage("mattermost/mattermost-preview")
+                .WithPortBinding(8065, true)
+                .WithEnvironment("MM_SERVICESETTINGS_ENABLEOPENSERVER", "true")
+                .WithEnvironment("MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION", "true")
+                .WithEnvironment("MM_SERVICESETTINGS_ENABLEUSERACCESSTOKENS", "true")
+                .WithEnvironment("MM_TEAMSETTINGS_ENABLEOPENSERVER", "true")
+                .WithEnvironment("MM_SERVICESETTINGS_ENABLETESTING", "true")
+                .WithWaitStrategy(Wait.ForUnixContainer()
+                    .UntilHttpRequestIsSucceeded(r => r
+                        .ForPort(8065)
+                        .ForPath("/api/v4/system/ping")
+                        .ForStatusCode(HttpStatusCode.OK))
+                    .AddCustomWaitStrategy(new WaitUntilApiReady()))
+                .Build();
+
+            await container.StartAsync();
         }
         catch (Exception ex) when (IsDockerUnavailable(ex))
         {
             // No Docker/container runtime on this host (e.g. the Windows and
             // macOS CI runners). These integration tests are best-effort and
             // must never block CI — every test in the collection self-skips.
+            if (container is not null)
+                await container.DisposeAsync();
             SkipReason = $"Docker is not available; Mattermost integration tests skipped. ({ex.GetType().Name}: {ex.Message})";
             return;
         }
 
+        _container = container;
         var port = _container.GetMappedPublicPort(8065);
         ServerUrl = $"http://localhost:{port}";
 
