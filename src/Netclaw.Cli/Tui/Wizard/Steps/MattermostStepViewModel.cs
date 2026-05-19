@@ -10,8 +10,9 @@ namespace Netclaw.Cli.Tui.Wizard.Steps;
 
 /// <summary>
 /// Wizard step for configuring Mattermost integration.
-/// 7 sub-steps: enable -> server URL -> bot token -> allowed channel IDs -> DM enabled ->
-/// user access choice -> allowed user IDs (conditional) -> callback URL.
+/// 8 sub-steps (allowed user IDs is shown only when restricting to specific users):
+/// enable -> server URL -> bot token -> channel IDs -> DM enabled -> user access choice ->
+/// allowed user IDs (conditional) -> callback URL.
 /// Mattermost is self-hosted, so the server URL is collected up front and there is no
 /// auth probe — the wizard validates configuration locally.
 /// </summary>
@@ -128,7 +129,7 @@ public sealed class MattermostStepViewModel : IWizardStepViewModel, IChannelAdap
         var minSubStep = SkipEnableSubStep ? 1 : 0;
 
         // Skip over the allowed-user-IDs sub-step when not restricting.
-        if (_currentSubStep == 7 && !RestrictToSpecificUsers && minSubStep <= 5)
+        if (_currentSubStep == 7 && !RestrictToSpecificUsers)
         {
             _currentSubStep = 5;
             return true;

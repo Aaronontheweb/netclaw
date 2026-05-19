@@ -135,14 +135,7 @@ public static class MattermostActionEndpointExtensions
                 return Results.StatusCode(500);
             }
 
-            var decisionLabel = selectedKey switch
-            {
-                ApprovalOptionKeys.ApproveOnce => ApprovalOptionKeys.ApproveOnceLabel,
-                ApprovalOptionKeys.ApproveSession => ApprovalOptionKeys.ApproveSessionLabel,
-                ApprovalOptionKeys.ApproveAlways => ApprovalOptionKeys.ApproveAlwaysLabel,
-                ApprovalOptionKeys.Deny => ApprovalOptionKeys.DenyLabel,
-                _ => selectedKey
-            };
+            var decisionLabel = ApprovalOptionKeys.LabelFor(selectedKey);
 
             var response = new ActionCallbackResponse
             {

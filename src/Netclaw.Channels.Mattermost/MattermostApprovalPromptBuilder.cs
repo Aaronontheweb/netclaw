@@ -76,7 +76,7 @@ internal static class MattermostApprovalPromptBuilder
 
     public static string BuildDecisionStatus(string selectedKey)
     {
-        var label = GetDecisionLabel(selectedKey);
+        var label = ApprovalOptionKeys.LabelFor(selectedKey);
         return $"Recorded approval decision: {label}.";
     }
 
@@ -88,7 +88,7 @@ internal static class MattermostApprovalPromptBuilder
         var statusEmoji = selectedKey == ApprovalOptionKeys.Deny
             ? ":no_entry:"
             : ":white_check_mark:";
-        var decisionLabel = GetDecisionLabel(selectedKey);
+        var decisionLabel = ApprovalOptionKeys.LabelFor(selectedKey);
 
         var sb = new StringBuilder();
         sb.Append(statusEmoji).AppendLine(" **Tool approval resolved**");
@@ -143,16 +143,6 @@ internal static class MattermostApprovalPromptBuilder
         sb.Append("**Adopted context:** present").AppendLine();
         sb.Append("**Speakers:** `").Append(string.Join(", ", request.AdoptedSpeakerIds)).AppendLine("`");
     }
-
-    private static string GetDecisionLabel(string selectedKey)
-        => selectedKey switch
-        {
-            ApprovalOptionKeys.ApproveOnce => ApprovalOptionKeys.ApproveOnceLabel,
-            ApprovalOptionKeys.ApproveSession => ApprovalOptionKeys.ApproveSessionLabel,
-            ApprovalOptionKeys.ApproveAlways => ApprovalOptionKeys.ApproveAlwaysLabel,
-            ApprovalOptionKeys.Deny => ApprovalOptionKeys.DenyLabel,
-            _ => selectedKey
-        };
 
     private static string GetButtonStyle(string optionKey)
         => optionKey switch

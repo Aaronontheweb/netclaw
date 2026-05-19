@@ -242,10 +242,6 @@ public sealed class MattermostStepView : IWizardStepView
             })
             .DisposeWith(callbacks.Subscriptions);
 
-        // The callback URL is only used for interactive approval buttons. The Mattermost
-        // server must be able to reach this URL — so it should be left blank unless the
-        // Netclaw daemon's HTTP port is reachable from the Mattermost server (i.e. a
-        // non-Local exposure mode). When blank, approvals fall back to text replies.
         return Layouts.Vertical()
             .WithChild(new TextNode("  Callback URL for interactive approvals (press Enter to skip):")
                 .WithForeground(Color.White))
