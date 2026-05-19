@@ -344,6 +344,96 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
     }
 
     [Fact]
+    public async Task Recovered_session_abandons_batch_when_crash_happens_after_approval_resolved_before_tool_result()
+    {
+        const string callId = "call-shell-crash-after-resolve";
+        _toolExecutor.GatedTools.Add("shell_execute");
+
+        _fakeChatClient.ToolCallsOnFirstCall =
+        [
+            new FunctionCallContent(callId, "shell_execute",
+                new Dictionary<string, object?> { ["command"] = "git status" })
+        ];
+
+        var sessionId = new SessionId("test-channel/crash-after-approval-resolved");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("crash-resolve-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Run git status"
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        await subscriber.ExpectMsgAsync<ToolCallOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<ToolInteractionRequest>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        await ColdRespawnAsync(sessionId);
+
+        var subscriberB = CreateTestProbe("crash-resolve-sub-b");
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriberB)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriberB.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        _toolExecutor.BlockNextSuccessfulExecution("shell_execute");
+        sessionManager.Tell(new ToolInteractionResponse
+        {
+            SessionId = sessionId,
+            CallId = new Netclaw.Tools.ToolCallId(callId),
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce),
+            SenderId = new SenderId("local-user")
+        });
+
+        await _toolExecutor.BlockedExecutionStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        await ColdRespawnAsync(sessionId);
+        _toolExecutor.FailBlockedExecution();
+
+        var subscriberC = CreateTestProbe("crash-resolve-sub-c");
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriberC)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriberC.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        await subscriberC.ExpectNoMsgAsync(
+            TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken);
+
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Never mind, just say hello"
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        await subscriberC.ExpectMsgAsync<TextOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        var completed = await subscriberC.ExpectMsgAsync<TurnCompleted>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(TurnOutcome.Completed, completed.Outcome);
+        Assert.Equal(0, _toolExecutor.SuccessfulExecutions);
+
+        var lastCall = _fakeChatClient.ReceivedMessages[^1];
+        var healed = lastCall.Any(m => m.Role == Microsoft.Extensions.AI.ChatRole.Tool
+            && m.Contents.OfType<FunctionResultContent>().Any(r => r.CallId == callId));
+        Assert.True(healed, "resolved-but-interrupted tool_use should be closed with a synthetic tool result");
+    }
+
+    [Fact]
     public async Task Idle_session_with_pending_interaction_redrives_when_approval_arrives()
     {
         const string callId = "call-shell-idle";
@@ -862,8 +952,13 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
 internal sealed class ApprovalGateToolExecutor : IToolExecutor
 {
     private int _successfulExecutions;
+    private string? _blockedToolName;
+    private TaskCompletionSource<object?>? _blockedExecutionRelease;
 
     public int SuccessfulExecutions => _successfulExecutions;
+
+    public TaskCompletionSource<object?> BlockedExecutionStarted { get; private set; } =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Tool names that require interactive approval before execution.</summary>
     public HashSet<string> GatedTools { get; } = [];
@@ -892,7 +987,7 @@ internal sealed class ApprovalGateToolExecutor : IToolExecutor
         CancellationToken ct = default)
         => Task.CompletedTask;
 
-    public Task<string> ExecuteAsync(
+    public async Task<string> ExecuteAsync(
         FunctionCallContent toolCall,
         Netclaw.Tools.ToolExecutionContext? context = null,
         CancellationToken ct = default)
@@ -922,12 +1017,33 @@ internal sealed class ApprovalGateToolExecutor : IToolExecutor
             }
         }
 
+        if (string.Equals(_blockedToolName, toolCall.Name, StringComparison.Ordinal))
+        {
+            _blockedToolName = null;
+            var release = _blockedExecutionRelease!;
+            BlockedExecutionStarted.TrySetResult(null);
+            await release.Task.WaitAsync(ct);
+        }
+
         LastExecutionAudience = context?.Audience;
         LastExecutionBoundary = context?.Boundary;
         LastExecutionChannelType = context?.ChannelType;
         LastSupportsInteractiveApproval = context?.SupportsInteractiveApproval;
         _executionsByTool[toolCall.Name] = _executionsByTool.GetValueOrDefault(toolCall.Name) + 1;
         Interlocked.Increment(ref _successfulExecutions);
-        return Task.FromResult($"[executed {toolCall.Name}]");
+        return $"[executed {toolCall.Name}]";
+    }
+
+    public void BlockNextSuccessfulExecution(string toolName)
+    {
+        _blockedToolName = toolName;
+        _blockedExecutionRelease = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        BlockedExecutionStarted = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
+    public void FailBlockedExecution()
+    {
+        _blockedExecutionRelease?.TrySetException(new InvalidOperationException("Simulated actor crash during tool execution."));
+        _blockedExecutionRelease = null;
     }
 }

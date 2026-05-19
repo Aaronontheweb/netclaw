@@ -389,6 +389,21 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 return;
             }
 
+            if (_resolvedToolApprovals.Count > 0)
+            {
+                _log.Info(
+                    "Session idle with {ResolvedApprovalCount} resolved approval(s) but no completed tool result; abandoning parked tool batch before passivation",
+                    _resolvedToolApprovals.Count);
+                var abandoned = BuildToolBatchAbandonedEvent(
+                    "Tool call was not completed — the session became idle before the approved action completed.");
+                Persist(abandoned, evt =>
+                {
+                    ApplyToolBatchAbandoned(evt);
+                    TransitionTo(SessionPhase.Passivating);
+                });
+                return;
+            }
+
             _log.Info("Session idle, entering passivation (timeout={Timeout})", _config.IdleTimeout);
             TransitionTo(SessionPhase.Passivating);
         });
@@ -2349,6 +2364,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             {
                 Sender.Tell(joined);
             }
+
+            // If replay found an approval decision but no durable tool result,
+            // do not replay the approved side effect after restart. Close the
+            // orphaned tool_use blocks so the next user turn has valid history.
+            AbandonResolvedToolBatchAfterRecovery();
         });
 
         Command<LeaveSession>(cmd =>
@@ -3514,13 +3534,30 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         return true;
     }
 
+    private bool AbandonResolvedToolBatchAfterRecovery()
+    {
+        if (_resolvedToolApprovals.Count == 0)
+            return false;
+
+        if (_pendingToolInteractions.Count > 0)
+            return false;
+
+        _log.Info(
+            "Abandoning recovered parked tool batch with {ResolvedApprovalCount} resolved approval(s) after restart",
+            _resolvedToolApprovals.Count);
+        var abandoned = BuildToolBatchAbandonedEvent(
+            "Tool call was not completed — the session restarted after approval before the action completed.");
+        Persist(abandoned, ApplyToolBatchAbandoned);
+
+        return true;
+    }
+
     private ApprovalRedrivePlan BuildApprovalRedrivePlan(SerializableChatMessage assistantMessage)
     {
-        // Approval redrive is the cold/idle recovery path: the user clicked an
-        // approval prompt after the original tool-loop task was gone, so the
-        // actor must reconstruct and dispatch the parked tool call from history.
-        // This plan carries only the transient overrides needed for that one
-        // reconstructed dispatch; persisted grants are handled earlier.
+        // Approval redrive is only for a live actor processing a fresh click
+        // after the original tool-loop task is gone. If replay shows an approval
+        // was already resolved before restart but no tool result was recorded,
+        // we abandon the parked batch instead of replaying side effects.
         var preSeed = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
         var decisionOverride = new Dictionary<string, ApprovalDecision>(StringComparer.Ordinal);
         foreach (var call in assistantMessage.ToolCalls)
@@ -3616,11 +3653,16 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     /// provider API — then clears <see cref="_pendingToolInteractions"/>.
     /// </summary>
     private ToolBatchAbandoned BuildToolBatchAbandonedEvent()
+        => BuildToolBatchAbandonedEvent(
+            "Tool call was not completed — the request was "
+            + "superseded by a new message before approval was given.");
+
+    private ToolBatchAbandoned BuildToolBatchAbandonedEvent(string resultContent)
     {
         var assistantMsg = ParkedToolBatchHistory.FindRedrivableAssistantMessage(_state.History, callId: null);
         IReadOnlyList<SerializableChatMessage> results = assistantMsg is null
             ? []
-            : ParkedToolBatchHistory.BuildSyntheticAbandonResults(_state.History, assistantMsg);
+            : ParkedToolBatchHistory.BuildSyntheticAbandonResults(_state.History, assistantMsg, resultContent);
         if (assistantMsg is not null)
         {
             _log.Info(
@@ -4294,7 +4336,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         public static IReadOnlyList<SerializableChatMessage> BuildSyntheticAbandonResults(
             IReadOnlyList<SerializableChatMessage> history,
-            SerializableChatMessage assistantMessage)
+            SerializableChatMessage assistantMessage,
+            string resultContent)
         {
             var results = new List<SerializableChatMessage>();
             foreach (var call in assistantMessage.ToolCalls)
@@ -4302,18 +4345,19 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 if (HasToolResult(history, call.CallId.Value))
                     continue;
 
-                results.Add(CreateAbandonedToolResult(call));
+                results.Add(CreateAbandonedToolResult(call, resultContent));
             }
 
             return results;
         }
 
-        private static SerializableChatMessage CreateAbandonedToolResult(SerializableToolCall call)
+        private static SerializableChatMessage CreateAbandonedToolResult(
+            SerializableToolCall call,
+            string resultContent)
             => new()
             {
                 Role = Protocol.ChatRole.Tool,
-                Content = "Tool call was not completed — the request was "
-                    + "superseded by a new message before approval was given.",
+                Content = resultContent,
                 ToolCallId = call.CallId,
                 Name = call.Name.Value
             };
