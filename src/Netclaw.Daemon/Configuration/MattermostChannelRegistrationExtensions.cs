@@ -28,22 +28,32 @@ public static class MattermostChannelRegistrationExtensions
         if (!mattermostOptions.Enabled)
             return;
 
-        mattermostOptions.BotToken.RequireValid("Mattermost:BotToken");
-        var serverUrl = mattermostOptions.ServerUrl
-            ?? throw new InvalidOperationException("Mattermost:ServerUrl is required when Mattermost channel is enabled.");
+        // Token and server-URL validity are NOT checked here: an exception
+        // thrown from this registration path aborts host construction and
+        // crashes the daemon. A missing/invalid token or URL is handled as a
+        // contained channel failure in MattermostChannel.StartAsync instead
+        // (see issue #1033). The fallback values below are only ever
+        // materialized for a misconfigured channel, which degrades before the
+        // transport client is used.
+        var serverUrl = string.IsNullOrWhiteSpace(mattermostOptions.ServerUrl)
+            ? "https://mattermost.invalid"
+            : mattermostOptions.ServerUrl;
+        var botToken = mattermostOptions.BotToken?.Value ?? string.Empty;
 
-        services.AddSingleton(_ => new MattermostClient(serverUrl, mattermostOptions.BotToken!.Value));
+        services.AddSingleton(_ => new MattermostClient(serverUrl, botToken));
 
         services.AddHttpClient("mattermost-files", client =>
         {
-            client.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", mattermostOptions.BotToken!.Value);
+            if (!string.IsNullOrEmpty(botToken))
+                client.DefaultRequestHeaders.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", botToken);
         });
         services.AddHttpClient("mattermost-api", client =>
         {
             client.BaseAddress = new Uri(serverUrl.TrimEnd('/'));
-            client.DefaultRequestHeaders.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", mattermostOptions.BotToken!.Value);
+            if (!string.IsNullOrEmpty(botToken))
+                client.DefaultRequestHeaders.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", botToken);
         });
         // Ephemeral signing key for HMAC verification of button callbacks.
         // Regenerated each daemon start — stale buttons from prior runs are rejected.

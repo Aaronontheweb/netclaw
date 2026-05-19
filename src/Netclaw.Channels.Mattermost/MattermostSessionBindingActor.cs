@@ -55,6 +55,12 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
     private string? _cursorPostId;
     private string? _pendingCursorPostId;
 
+    // Distinguishes a cold-spawned binding that never observed a ToolInteractionRequest
+    // from one whose pending list was cleared after a completed turn. The former
+    // blind-forwards approval responses to the session (#979); the latter drops them
+    // as stale rather than re-routing a response for an already-finished turn.
+    private bool _hasObservedApprovalRequest;
+
     public ITimerScheduler Timers { get; set; } = null!;
 
     public MattermostSessionBindingActor(
@@ -482,14 +488,18 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             return;
         }
 
-        if (result is ApprovalLookupResult.NotFound)
+        // Stale path: this binding previously observed an approval request and
+        // cleared its pending list (e.g., on TurnCompleted). A later response for
+        // an unknown call is stale — drop it at the binding rather than routing a
+        // response for an already-finished turn.
+        if (pending is null && _hasObservedApprovalRequest)
         {
-            _log.Info("Ignoring Mattermost approval response for unknown call id {0}", message.CallId);
-            ChannelTelemetry.For(ChannelType.Mattermost).RecordExtra("interactionErrors", "unknown_call_id");
+            _log.Info(
+                "Dropping stale Mattermost approval response for call {0}; no local pending entry after turn-cleared list",
+                message.CallId);
+            ChannelTelemetry.For(ChannelType.Mattermost).RecordExtra("interactionErrors", "stale_after_turn");
             return;
         }
-
-        _pendingApprovalRequests.Remove(pending!);
 
         await _dependencies.Pipeline.SendFeedbackAsync(new ToolInteractionResponse
         {
@@ -499,7 +509,22 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             SenderId = new SenderId(message.SenderId.Value)
         });
 
-        await TryResolveApprovalPromptAsync(pending!, message.SelectedKey, message.SenderId.Value);
+        if (pending is not null)
+        {
+            _pendingApprovalRequests.Remove(pending);
+            await TryResolveApprovalPromptAsync(pending, message.SelectedKey, message.SenderId.Value);
+        }
+        else
+        {
+            // Cold-spawn path (#979): the binding was re-spawned after passivation
+            // and never observed the original ToolInteractionRequest. The approval
+            // still routes by session identity to the session actor; only the
+            // prompt redraw is skipped because there is no local prompt post.
+            _log.Info(
+                "Forwarded Mattermost approval response for call {0} to session without local pending entry; redraw skipped",
+                message.CallId);
+            ChannelTelemetry.For(ChannelType.Mattermost).RecordExtra("interactionErrors", "cold_spawn_redraw_skipped");
+        }
     }
 
     private async Task TryResolveApprovalPromptAsync(
@@ -643,6 +668,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                 break;
 
             case ToolInteractionRequest request when string.Equals(request.Kind, "approval", StringComparison.OrdinalIgnoreCase):
+                _hasObservedApprovalRequest = true;
                 var pendingApproval = new PendingApprovalRequest(request);
                 _pendingApprovalRequests.Add(pendingApproval);
 
