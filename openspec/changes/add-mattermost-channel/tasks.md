@@ -114,3 +114,11 @@
 - [x] 16.4 `./scripts/Add-FileHeaders.ps1 -Verify` passes.
 - [ ] 16.5 Run `./evals/run-evals.sh` to cover the `netclaw-operations` skill update — release-gate step; requires a live model provider and Docker, so it is left for CI / the release pipeline.
 - [x] 16.6 Mattermost config-schema section added with `additionalProperties: false` and defaults; `Netclaw.Configuration.Tests` (schema-doctor coverage) pass.
+
+## 17. Init wizard integration
+
+- [x] 17.1 Add a Mattermost step (`MattermostStepViewModel` + `MattermostStepView`) to the `netclaw init` TUI wizard, mirroring the Discord step plus a self-hosted Server URL sub-step and an optional Callback URL sub-step.
+- [x] 17.2 Wire Mattermost into the unified `ChannelPickerStepViewModel` as a third selectable channel; add the `WizardStepIds.Mattermost` constant.
+- [x] 17.3 Write a `Mattermost` section to `netclaw.json` and the bot token to `secrets.json` via `WizardConfigBuilder` (`MattermostConfigSection`).
+- [x] 17.4 Add `MattermostStepViewModelTests` and channel-picker/config-builder test coverage; `Netclaw.Cli.Tests` pass (724 total).
+- [x] 17.5 Validate via the native TUI smoke harness. The `init-wizard` tape exercises the channel picker with Mattermost present and advances past it cleanly; the tape fails further along only on a pre-existing environmental issue (the External Skills step detecting Claude Code directories on the dev host) unrelated to this change — on a clean CI host the tape passes.
