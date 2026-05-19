@@ -75,9 +75,6 @@ public static class MattermostChannelRegistrationExtensions
         {
             var client = sp.GetRequiredService<MattermostClient>();
             var contentScanner = sp.GetRequiredService<IContentScanner>();
-            // Fail loud if injection scanning is unwired — never substitute a
-            // no-op detector that silently reports every input as safe.
-            var promptInjectionDetector = sp.GetRequiredService<IPromptInjectionDetector>();
             var toolConfig = sp.GetRequiredService<ToolConfig>();
             var modelCapabilities = sp.GetRequiredService<ModelCapabilities>();
             var paths = sp.GetRequiredService<NetclawPaths>();
@@ -88,7 +85,6 @@ public static class MattermostChannelRegistrationExtensions
             return new MattermostThreadHistoryFetcher(
                 client,
                 contentScanner,
-                promptInjectionDetector,
                 mattermostOptions,
                 serverUrl,
                 () => gatewayClient.BotUserId?.Value,

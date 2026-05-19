@@ -48,7 +48,6 @@ public sealed class MattermostThreadHistoryFetcher : IThreadHistoryFetcher
     private readonly MessageFetcher _messageFetcher;
     private readonly FileDownloader _fileDownloader;
     private readonly IContentScanner _contentScanner;
-    private readonly IPromptInjectionDetector _promptInjectionDetector;
     private readonly MattermostChannelOptions _options;
     private readonly string _serverUrl;
     private readonly string? _botUserId;
@@ -60,7 +59,6 @@ public sealed class MattermostThreadHistoryFetcher : IThreadHistoryFetcher
     public MattermostThreadHistoryFetcher(
         MattermostClient client,
         IContentScanner contentScanner,
-        IPromptInjectionDetector promptInjectionDetector,
         MattermostChannelOptions options,
         string serverUrl,
         Func<string?> botUserIdFactory,
@@ -72,7 +70,6 @@ public sealed class MattermostThreadHistoryFetcher : IThreadHistoryFetcher
             (rootPostId, cancellationToken) => FetchRawMessagesAsync(client, rootPostId, botUserIdFactory(), serverUrl, cancellationToken, logger),
             (fileId, stagingDir, maxBytes, ct) => DownloadFileViaSdkAsync(client, fileId, stagingDir, maxBytes, ct),
             contentScanner,
-            promptInjectionDetector,
             options,
             serverUrl,
             botUserIdFactory(), // safe: ConnectAsync resolves BotUserId before this constructor runs
@@ -87,7 +84,6 @@ public sealed class MattermostThreadHistoryFetcher : IThreadHistoryFetcher
         MessageFetcher messageFetcher,
         FileDownloader fileDownloader,
         IContentScanner contentScanner,
-        IPromptInjectionDetector promptInjectionDetector,
         MattermostChannelOptions options,
         string serverUrl,
         string? botUserId,
@@ -99,7 +95,6 @@ public sealed class MattermostThreadHistoryFetcher : IThreadHistoryFetcher
         _messageFetcher = messageFetcher;
         _fileDownloader = fileDownloader;
         _contentScanner = contentScanner;
-        _promptInjectionDetector = promptInjectionDetector;
         _options = options;
         _serverUrl = serverUrl.TrimEnd('/');
         _botUserId = botUserId;
