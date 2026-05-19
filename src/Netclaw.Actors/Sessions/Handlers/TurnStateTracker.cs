@@ -155,12 +155,15 @@ internal sealed class TurnStateTracker
 
     /// <summary>
     /// The LLM produced no reply text and no tool calls. Determine what the
-    /// actor should do. <paramref name="hasThinking"/> is true when the model
-    /// emitted reasoning but no final answer (a thinking-only response) — that
-    /// case gets a nudge telling the model to surface its answer.
+    /// actor should do. Expects <paramref name="kind"/> to be
+    /// <see cref="LlmResponseKind.ThinkingOnly"/> or
+    /// <see cref="LlmResponseKind.Empty"/>; a thinking-only response gets a
+    /// nudge telling the model to surface its answer.
     /// </summary>
-    public EmptyResponseAction EvaluateEmptyResponse(bool hasThinking)
+    public EmptyResponseAction EvaluateEmptyResponse(LlmResponseKind kind)
     {
+        var hasThinking = kind == LlmResponseKind.ThinkingOnly;
+
         // Pre-tool: LLM hasn't done any tool work yet
         if (ToolIterationCount == 0)
         {

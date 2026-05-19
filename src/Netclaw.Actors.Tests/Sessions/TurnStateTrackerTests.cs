@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Sessions.Handlers;
 using Xunit;
 
@@ -18,21 +19,27 @@ public sealed class TurnStateTrackerTests
 {
     private const string ThinkingNudgeMarker = "only reasoning";
 
+    public enum ToolPhase
+    {
+        BeforeAnyToolUse,
+        AfterToolUse,
+    }
+
     [Theory]
-    [InlineData(true, true, true)]     // post-tool, thinking-only → thinking nudge
-    [InlineData(true, false, false)]   // post-tool, empty → generic nudge
-    [InlineData(false, true, true)]    // pre-tool, thinking-only → thinking nudge
-    [InlineData(false, false, false)]  // pre-tool, empty → generic nudge
-    public void EmptyResponse_NudgeMatchesThinkingState(bool afterToolWork, bool hasThinking, bool expectThinkingNudge)
+    [InlineData(ToolPhase.AfterToolUse, LlmResponseKind.ThinkingOnly)]
+    [InlineData(ToolPhase.AfterToolUse, LlmResponseKind.Empty)]
+    [InlineData(ToolPhase.BeforeAnyToolUse, LlmResponseKind.ThinkingOnly)]
+    [InlineData(ToolPhase.BeforeAnyToolUse, LlmResponseKind.Empty)]
+    public void EmptyResponse_NudgeMatchesResponseKind(ToolPhase phase, LlmResponseKind kind)
     {
         var tracker = new TurnStateTracker();
-        if (afterToolWork)
+        if (phase == ToolPhase.AfterToolUse)
             tracker.RecordToolCompletion(resultCount: 1, maxToolCallsPerTurn: 30);
 
-        var action = tracker.EvaluateEmptyResponse(hasThinking);
+        var action = tracker.EvaluateEmptyResponse(kind);
 
         var retry = Assert.IsType<EmptyResponseAction.Retry>(action);
-        if (expectThinkingNudge)
+        if (kind == LlmResponseKind.ThinkingOnly)
             Assert.Contains(ThinkingNudgeMarker, retry.NudgeText);
         else
             Assert.DoesNotContain(ThinkingNudgeMarker, retry.NudgeText);
@@ -45,11 +52,11 @@ public sealed class TurnStateTrackerTests
         tracker.RecordToolCompletion(resultCount: 1, maxToolCallsPerTurn: 30);
 
         // The first three consecutive thinking-only responses retry.
-        Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(hasThinking: true));
-        Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(hasThinking: true));
-        Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(hasThinking: true));
+        Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly));
+        Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly));
+        Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly));
 
         // Only the fourth fails the turn.
-        Assert.IsType<EmptyResponseAction.Fail>(tracker.EvaluateEmptyResponse(hasThinking: true));
+        Assert.IsType<EmptyResponseAction.Fail>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly));
     }
 }
