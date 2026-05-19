@@ -1,0 +1,344 @@
+// -----------------------------------------------------------------------
+// <copyright file="MattermostApprovalPromptBuilderTests.cs" company="Petabridge, LLC">
+//      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
+// </copyright>
+// -----------------------------------------------------------------------
+using Netclaw.Actors.Protocol;
+using Netclaw.Channels.Mattermost;
+using Xunit;
+
+namespace Netclaw.Actors.Tests.Channels;
+
+public sealed class MattermostApprovalPromptBuilderTests
+{
+    [Fact]
+    public void BuildTextPrompt_contains_tool_name_and_options()
+    {
+        var request = new ToolInteractionRequest
+        {
+            SessionId = new SessionId("test/session"),
+            Kind = "approval",
+            CallId = new Netclaw.Tools.ToolCallId("call-1"),
+            ToolName = new Netclaw.Tools.ToolName("git_push"),
+            DisplayText = "push to origin/main",
+            Patterns = ["origin/main"],
+            Options = [
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveOnceKey, ApprovalOptionKeys.ApproveOnceLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveSessionKey, ApprovalOptionKeys.ApproveSessionLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveAlwaysKey, ApprovalOptionKeys.ApproveAlwaysLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.DenyKey, ApprovalOptionKeys.DenyLabel)
+            ]
+        };
+
+        var prompt = MattermostApprovalPromptBuilder.BuildTextPrompt(request);
+
+        Assert.Contains("git_push", prompt);
+        Assert.Contains("push to origin/main", prompt);
+        Assert.Contains("origin/main", prompt);
+        Assert.Contains("A)", prompt);
+        Assert.Contains("B)", prompt);
+        Assert.Contains("C)", prompt);
+        Assert.Contains("D)", prompt);
+    }
+
+    [Fact]
+    public void BuildTextPrompt_omits_pattern_when_empty()
+    {
+        var request = new ToolInteractionRequest
+        {
+            SessionId = new SessionId("test/session"),
+            Kind = "approval",
+            CallId = new Netclaw.Tools.ToolCallId("call-2"),
+            ToolName = new Netclaw.Tools.ToolName("read_file"),
+            DisplayText = "read config.json",
+            Patterns = [],
+            Options = [
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveOnceKey, ApprovalOptionKeys.ApproveOnceLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.DenyKey, ApprovalOptionKeys.DenyLabel)
+            ]
+        };
+
+        var prompt = MattermostApprovalPromptBuilder.BuildTextPrompt(request);
+
+        Assert.DoesNotContain("Pattern:", prompt);
+    }
+
+    [Fact]
+    public void BuildDecisionStatus_formats_known_keys()
+    {
+        Assert.Contains("Approve once", MattermostApprovalPromptBuilder.BuildDecisionStatus(ApprovalOptionKeys.ApproveOnce));
+        Assert.Contains("Approve always", MattermostApprovalPromptBuilder.BuildDecisionStatus(ApprovalOptionKeys.ApproveAlways));
+        Assert.Contains("Deny", MattermostApprovalPromptBuilder.BuildDecisionStatus(ApprovalOptionKeys.Deny));
+    }
+
+    [Fact]
+    public void BuildDecisionStatus_passes_through_unknown_key()
+    {
+        var status = MattermostApprovalPromptBuilder.BuildDecisionStatus("custom_key");
+        Assert.Contains("custom_key", status);
+    }
+
+    [Fact]
+    public void BuildResolvedPromptText_approve_once_shows_checkmark()
+    {
+        var request = new ToolInteractionRequest
+        {
+            SessionId = new SessionId("test/session"),
+            Kind = "approval",
+            CallId = new Netclaw.Tools.ToolCallId("call-r1"),
+            ToolName = new Netclaw.Tools.ToolName("git_push"),
+            DisplayText = "push to origin/main",
+            Patterns = ["origin/main"],
+            Options = [new ToolInteractionOption(ApprovalOptionKeys.ApproveOnceKey, ApprovalOptionKeys.ApproveOnceLabel)]
+        };
+
+        var text = MattermostApprovalPromptBuilder.BuildResolvedPromptText(
+            request, ApprovalOptionKeys.ApproveOnce, "user-42");
+
+        Assert.Contains(":white_check_mark:", text);
+        Assert.Contains("git_push", text);
+        Assert.Contains("push to origin/main", text);
+        Assert.Contains("origin/main", text);
+        Assert.Contains(ApprovalOptionKeys.ApproveOnceLabel, text);
+        Assert.Contains("@user-42", text);
+    }
+
+    [Fact]
+    public void BuildResolvedPromptText_deny_shows_no_entry()
+    {
+        var request = new ToolInteractionRequest
+        {
+            SessionId = new SessionId("test/session"),
+            Kind = "approval",
+            CallId = new Netclaw.Tools.ToolCallId("call-r2"),
+            ToolName = new Netclaw.Tools.ToolName("rm_file"),
+            DisplayText = "delete /etc/passwd",
+            Options = [new ToolInteractionOption(ApprovalOptionKeys.DenyKey, ApprovalOptionKeys.DenyLabel)]
+        };
+
+        var text = MattermostApprovalPromptBuilder.BuildResolvedPromptText(
+            request, ApprovalOptionKeys.Deny, "user-99");
+
+        Assert.Contains(":no_entry:", text);
+        Assert.Contains(ApprovalOptionKeys.DenyLabel, text);
+        Assert.DoesNotContain(":white_check_mark:", text);
+    }
+
+    [Fact]
+    public void BuildResolvedPromptText_omits_patterns_when_empty()
+    {
+        var request = new ToolInteractionRequest
+        {
+            SessionId = new SessionId("test/session"),
+            Kind = "approval",
+            CallId = new Netclaw.Tools.ToolCallId("call-r3"),
+            ToolName = new Netclaw.Tools.ToolName("read_file"),
+            DisplayText = "read config.json",
+            Patterns = [],
+            Options = [new ToolInteractionOption(ApprovalOptionKeys.ApproveOnceKey, ApprovalOptionKeys.ApproveOnceLabel)]
+        };
+
+        var text = MattermostApprovalPromptBuilder.BuildResolvedPromptText(
+            request, ApprovalOptionKeys.ApproveOnce, "user-1");
+
+        Assert.DoesNotContain("Pattern", text);
+    }
+
+    [Fact]
+    public void BuildButtonPrompt_produces_attachment_with_four_buttons()
+    {
+        var request = CreateStandardRequest();
+
+        var (text, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
+            request, "http://localhost:5199/api/mattermost/actions", "root-post-1");
+
+        Assert.Contains("Tool approval required", text);
+        Assert.Contains("git_push", text);
+        Assert.Contains("reply with `A`, `B`, `C`, or `D`", text);
+
+        Assert.Single(attachments);
+        var attachment = attachments[0];
+        Assert.NotNull(attachment.Actions);
+        Assert.Equal(4, attachment.Actions!.Count);
+    }
+
+    [Fact]
+    public void BuildButtonPrompt_buttons_encode_context_correctly()
+    {
+        var request = CreateStandardRequest();
+
+        var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
+            request, "http://callback:5199/api/mattermost/actions", "root-post-1");
+
+        var approveOnce = attachments[0].Actions![0];
+        Assert.Equal("tool_approval_approve_once", approveOnce.Id);
+        Assert.Equal(ApprovalOptionKeys.ApproveOnceLabel, approveOnce.Name);
+        Assert.Equal("http://callback:5199/api/mattermost/actions", approveOnce.IntegrationUrl);
+        Assert.Equal("call-btn-1", approveOnce.Context["call_id"]);
+        Assert.Equal(ApprovalOptionKeys.ApproveOnce, approveOnce.Context["selected_key"]);
+        Assert.Equal("requester-1", approveOnce.Context["requester_sender_id"]);
+        Assert.Equal("root-post-1", approveOnce.Context["root_post_id"]);
+    }
+
+    [Fact]
+    public void BuildButtonPrompt_deny_button_has_danger_style()
+    {
+        var request = CreateStandardRequest();
+
+        var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
+            request, "http://localhost/api/mattermost/actions", "root-post-1");
+
+        var denyButton = attachments[0].Actions!.Single(a => a.Id == "tool_approval_deny");
+        Assert.Equal("danger", denyButton.Style);
+    }
+
+    [Fact]
+    public void BuildButtonPrompt_approve_once_has_primary_style()
+    {
+        var request = CreateStandardRequest();
+
+        var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
+            request, "http://localhost/api/mattermost/actions", "root-post-1");
+
+        var approveOnce = attachments[0].Actions!.Single(a => a.Id == "tool_approval_approve_once");
+        Assert.Equal("primary", approveOnce.Style);
+    }
+
+    [Fact]
+    public void BuildResolvedAttachment_approve_shows_green_color()
+    {
+        var request = CreateStandardRequest();
+        var attachment = MattermostApprovalPromptBuilder.BuildResolvedAttachment(
+            request, ApprovalOptionKeys.ApproveOnce, "user-42");
+
+        Assert.Equal("#2EA44F", attachment.Color);
+        Assert.Contains(":white_check_mark:", attachment.Text!);
+        Assert.Contains("git_push", attachment.Text!);
+        Assert.Contains("@user-42", attachment.Text!);
+        Assert.Null(attachment.Actions);
+    }
+
+    [Fact]
+    public void BuildResolvedAttachment_deny_shows_red_color()
+    {
+        var request = CreateStandardRequest();
+        var attachment = MattermostApprovalPromptBuilder.BuildResolvedAttachment(
+            request, ApprovalOptionKeys.Deny, "user-99");
+
+        Assert.Equal("#CC0000", attachment.Color);
+        Assert.Contains(":no_entry:", attachment.Text!);
+        Assert.Null(attachment.Actions);
+    }
+
+    [Fact]
+    public void BuildButtonPrompt_with_signing_key_includes_signature()
+    {
+        var request = CreateStandardRequest();
+        var signingKey = MattermostCallbackSigner.GenerateKey();
+
+        var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
+            request, "http://localhost/api/mattermost/actions", "root-post-1", signingKey);
+
+        foreach (var action in attachments[0].Actions!)
+        {
+            Assert.True(action.Context.ContainsKey("signature"), $"Button '{action.Id}' missing signature");
+            Assert.NotEmpty(action.Context["signature"]);
+        }
+    }
+
+    [Fact]
+    public void BuildButtonPrompt_without_signing_key_omits_signature()
+    {
+        var request = CreateStandardRequest();
+
+        var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
+            request, "http://localhost/api/mattermost/actions", "root-post-1");
+
+        foreach (var action in attachments[0].Actions!)
+        {
+            Assert.False(action.Context.ContainsKey("signature"), $"Button '{action.Id}' should not have signature");
+        }
+    }
+
+    [Fact]
+    public void BuildButtonPrompt_signatures_are_verifiable()
+    {
+        var request = CreateStandardRequest();
+        var signingKey = MattermostCallbackSigner.GenerateKey();
+
+        var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
+            request, "http://localhost/api/mattermost/actions", "root-post-1", signingKey);
+
+        var approveOnce = attachments[0].Actions![0];
+        var verified = MattermostCallbackSigner.Verify(
+            signingKey,
+            approveOnce.Context["call_id"],
+            approveOnce.Context["selected_key"],
+            approveOnce.Context["requester_sender_id"],
+            approveOnce.Context["root_post_id"],
+            approveOnce.Context["signature"]);
+
+        Assert.True(verified);
+    }
+
+    [Fact]
+    public void BuildButtonPrompt_signature_rejects_tampered_selected_key()
+    {
+        var request = CreateStandardRequest();
+        var signingKey = MattermostCallbackSigner.GenerateKey();
+
+        var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
+            request, "http://localhost/api/mattermost/actions", "root-post-1", signingKey);
+
+        var approveOnce = attachments[0].Actions![0];
+        var verified = MattermostCallbackSigner.Verify(
+            signingKey,
+            approveOnce.Context["call_id"],
+            "approve_always", // tampered: was approve_once
+            approveOnce.Context["requester_sender_id"],
+            approveOnce.Context["root_post_id"],
+            approveOnce.Context["signature"]);
+
+        Assert.False(verified);
+    }
+
+    [Fact]
+    public void BuildButtonPrompt_signature_rejects_wrong_key()
+    {
+        var request = CreateStandardRequest();
+        var signingKey = MattermostCallbackSigner.GenerateKey();
+        var wrongKey = MattermostCallbackSigner.GenerateKey();
+
+        var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
+            request, "http://localhost/api/mattermost/actions", "root-post-1", signingKey);
+
+        var approveOnce = attachments[0].Actions![0];
+        var verified = MattermostCallbackSigner.Verify(
+            wrongKey,
+            approveOnce.Context["call_id"],
+            approveOnce.Context["selected_key"],
+            approveOnce.Context["requester_sender_id"],
+            approveOnce.Context["root_post_id"],
+            approveOnce.Context["signature"]);
+
+        Assert.False(verified);
+    }
+
+    private static ToolInteractionRequest CreateStandardRequest()
+        => new()
+        {
+            SessionId = new SessionId("test/session"),
+            Kind = "approval",
+            CallId = new Netclaw.Tools.ToolCallId("call-btn-1"),
+            ToolName = new Netclaw.Tools.ToolName("git_push"),
+            DisplayText = "push to origin/main",
+            RequesterSenderId = new SenderId("requester-1"),
+            Patterns = ["origin/main"],
+            Options = [
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveOnceKey, ApprovalOptionKeys.ApproveOnceLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveSessionKey, ApprovalOptionKeys.ApproveSessionLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.ApproveAlwaysKey, ApprovalOptionKeys.ApproveAlwaysLabel),
+                new ToolInteractionOption(ApprovalOptionKeys.DenyKey, ApprovalOptionKeys.DenyLabel)
+            ]
+        };
+}
