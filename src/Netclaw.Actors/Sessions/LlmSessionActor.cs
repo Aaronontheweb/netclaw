@@ -76,6 +76,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly Dictionary<IActorRef, OutputFilter> _subscribers = [];
     private readonly List<AITool> _availableTools = [];
     private readonly Dictionary<string, PendingToolInteraction> _pendingToolInteractions = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ResolvedToolApproval> _resolvedToolApprovals = new(StringComparer.Ordinal);
     // Live-only coordination for the currently executing streamed tool batch.
     // Durable recovery derives unanswered calls from _state.History.
     private readonly ActiveToolBatchTracker _activeToolBatch = new();
@@ -242,6 +243,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             ApplyTurnRecorded(evt);
             _pendingToolInteractions.Clear();
+            _resolvedToolApprovals.Clear();
             ClearActiveToolBatchTracking();
         });
         Recover<SessionTitleSet>(evt => _state = _state.Apply(evt));
@@ -249,6 +251,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             _state = _state.Apply(evt);
             _pendingToolInteractions.Clear();
+            _resolvedToolApprovals.Clear();
             ClearActiveToolBatchTracking();
         });
         Recover<ToolBatchStarted>(ApplyToolBatchStarted);
@@ -822,6 +825,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             // Fire follow-up LLM call with tool results in context
             _pendingToolInteractions.Clear();
+            _resolvedToolApprovals.Clear();
             TurnLog().Info("turn_tool_execution_complete iteration={Iteration} callCount={CallCount} max={Max} resultCount={ResultCount}",
                 _turnState.ToolIterationCount, _turnState.ToolCallCount, _config.MaxToolCallsPerTurn, msg.ToolResults.Count);
             FireLlmCall();
@@ -3199,10 +3203,18 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             evt.RequesterPrincipal,
             evt.Cwd,
             evt.Candidates.Select(c => new ApprovalCandidate(c.Verb, c.Directory)).ToArray());
+        _resolvedToolApprovals.Remove(evt.CallId);
     }
 
     private void ApplyToolApprovalResolved(ToolApprovalResolved evt)
-        => _pendingToolInteractions.Remove(evt.CallId);
+    {
+        var decision = Enum.TryParse<ApprovalDecision>(evt.Decision, ignoreCase: true, out var parsed)
+            ? parsed
+            : ApprovalDecision.Denied;
+
+        if (_pendingToolInteractions.Remove(evt.CallId, out var pending))
+            _resolvedToolApprovals[evt.CallId] = new ResolvedToolApproval(pending, decision);
+    }
 
     private void ApplyToolBatchAbandoned(ToolBatchAbandoned evt)
     {
@@ -3214,6 +3226,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 RecordedAtMs = evt.AbandonedAtMs
             });
         _pendingToolInteractions.Clear();
+        _resolvedToolApprovals.Clear();
         ClearActiveToolBatchTracking();
     }
 
@@ -3463,50 +3476,77 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             return;
         }
 
-        var redrivePlan = BuildApprovalRedrivePlan(callId, pending, decision);
-
         PersistApprovalResolved(msg, decision, () =>
-            RedriveToolBatchForApproval(
-                callId,
-                pending,
-                redrivePlan.OneTimeApprovalPreSeed,
-                redrivePlan.DecisionOverride));
+            TryRedriveToolBatchAfterApproval(callId));
     }
 
-    private static ApprovalRedrivePlan BuildApprovalRedrivePlan(
-        string callId,
-        PendingToolInteraction pending,
-        ApprovalDecision decision)
+    private bool TryRedriveToolBatchAfterApproval(string callId)
+    {
+        var assistantMsg = ParkedToolBatchHistory.FindRedrivableAssistantMessage(_state.History, callId);
+        if (assistantMsg is null)
+        {
+            _log.Warning(
+                "Cannot re-drive tool batch for call {CallId}: no unanswered assistant tool batch in history",
+                callId);
+            EmitExpiredPromptNotice();
+            return false;
+        }
+
+        if (assistantMsg.ToolCalls.Any(tc => _pendingToolInteractions.ContainsKey(tc.CallId.Value)))
+        {
+            _log.Info(
+                "Deferring parked tool batch re-drive for call {CallId}: sibling approval(s) still pending",
+                callId);
+            return false;
+        }
+
+        if (!_resolvedToolApprovals.TryGetValue(callId, out var resolved))
+        {
+            _log.Warning(
+                "Cannot re-drive tool batch for call {CallId}: approval decision was not recoverable",
+                callId);
+            EmitExpiredPromptNotice();
+            return false;
+        }
+
+        var redrivePlan = BuildApprovalRedrivePlan(assistantMsg);
+        RedriveToolBatchForApproval(callId, resolved.Pending, redrivePlan);
+        return true;
+    }
+
+    private ApprovalRedrivePlan BuildApprovalRedrivePlan(SerializableChatMessage assistantMessage)
     {
         // Approval redrive is the cold/idle recovery path: the user clicked an
         // approval prompt after the original tool-loop task was gone, so the
         // actor must reconstruct and dispatch the parked tool call from history.
         // This plan carries only the transient overrides needed for that one
         // reconstructed dispatch; persisted grants are handled earlier.
-        IReadOnlyDictionary<string, IReadOnlyList<string>>? preSeed = null;
-        if (decision == ApprovalDecision.ApprovedOnce)
+        var preSeed = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        var decisionOverride = new Dictionary<string, ApprovalDecision>(StringComparer.Ordinal);
+        foreach (var call in assistantMessage.ToolCalls)
         {
-            // ApprovedOnce has no persisted grant. Pre-seed only this call so
-            // the re-drive skips the gate once without broadening approval.
-            preSeed = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
+            if (!_resolvedToolApprovals.TryGetValue(call.CallId.Value, out var resolved))
+                continue;
+
+            if (resolved.Decision == ApprovalDecision.ApprovedOnce)
             {
-                [callId] = pending.Patterns
-            };
+                // ApprovedOnce has no persisted grant. Pre-seed only this call
+                // so the re-drive skips the gate once without broadening approval.
+                preSeed[call.CallId.Value] = resolved.Pending.Patterns;
+            }
+
+            if (resolved.Decision is ApprovalDecision.Denied or ApprovalDecision.TimedOut)
+            {
+                // Denials and timeouts still need a tool_result so provider
+                // history stays well-formed, but the reconstructed dispatch
+                // must not execute the tool or ask for approval again.
+                decisionOverride[call.CallId.Value] = resolved.Decision;
+            }
         }
 
-        IReadOnlyDictionary<string, ApprovalDecision>? decisionOverride = null;
-        if (decision is ApprovalDecision.Denied or ApprovalDecision.TimedOut)
-        {
-            // Denials and timeouts still need a tool_result so provider history
-            // stays well-formed, but the reconstructed dispatch must not execute
-            // the tool or ask for approval again.
-            decisionOverride = new Dictionary<string, ApprovalDecision>(StringComparer.Ordinal)
-            {
-                [callId] = decision
-            };
-        }
-
-        return new ApprovalRedrivePlan(preSeed, decisionOverride);
+        return new ApprovalRedrivePlan(
+            preSeed.Count == 0 ? null : preSeed,
+            decisionOverride.Count == 0 ? null : decisionOverride);
     }
 
     /// <summary>
@@ -3521,8 +3561,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private void RedriveToolBatchForApproval(
         string callId,
         PendingToolInteraction pending,
-        IReadOnlyDictionary<string, IReadOnlyList<string>>? oneTimeApprovalPreSeed,
-        IReadOnlyDictionary<string, ApprovalDecision>? decisionOverride)
+        ApprovalRedrivePlan redrivePlan)
     {
         var assistantMsg = ParkedToolBatchHistory.FindRedrivableAssistantMessage(_state.History, callId);
         if (assistantMsg is null)
@@ -3564,8 +3603,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             supportsInteractiveApprovalOverride: pending.SupportsInteractiveApproval,
             requesterSenderIdOverride: pending.RequesterSenderId is null ? null : new SenderId(pending.RequesterSenderId),
             requesterPrincipalOverride: pending.RequesterPrincipal,
-            oneTimeApprovalPreSeed: oneTimeApprovalPreSeed,
-            decisionOverride: decisionOverride);
+            oneTimeApprovalPreSeed: redrivePlan.OneTimeApprovalPreSeed,
+            decisionOverride: redrivePlan.DecisionOverride);
     }
 
     /// <summary>
@@ -3603,6 +3642,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         CompleteBackgroundJobInFlight(_currentTurnSource?.BackgroundJobId);
         _deliveryRetry.Clear();
         _pendingToolInteractions.Clear();
+        _resolvedToolApprovals.Clear();
         Timers.Cancel(StreamingRetryTimerKey);
         _state = _state.AddErrorReply(errorMessage);
 
@@ -3673,6 +3713,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private sealed record ApprovalRedrivePlan(
         IReadOnlyDictionary<string, IReadOnlyList<string>>? OneTimeApprovalPreSeed,
         IReadOnlyDictionary<string, ApprovalDecision>? DecisionOverride);
+
+    private sealed record ResolvedToolApproval(
+        PendingToolInteraction Pending,
+        ApprovalDecision Decision);
 
     private async Task PersistApprovalCandidatesAsync(
         PendingToolInteraction pending,
@@ -3935,6 +3979,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         }
 
         _pendingToolInteractions.Clear();
+        _resolvedToolApprovals.Clear();
         ClearActiveToolBatchTracking();
         TurnLog().Info("turn_tool_execution_complete iteration={Iteration} callCount={CallCount} max={Max} resultCount={ResultCount}",
             _turnState.ToolIterationCount, _turnState.ToolCallCount, _config.MaxToolCallsPerTurn, resultCount);

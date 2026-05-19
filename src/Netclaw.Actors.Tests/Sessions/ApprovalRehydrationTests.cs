@@ -238,6 +238,112 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
     }
 
     [Fact]
+    public async Task Recovered_batch_waits_for_all_pending_sibling_approvals_before_redrive()
+    {
+        const string readCallId = "call-read-pending";
+        const string shellCallId = "call-shell-pending";
+        _toolExecutor.GatedTools.Add("read_file");
+        _toolExecutor.GatedTools.Add("shell_execute");
+
+        _fakeChatClient.ToolCallsOnFirstCall =
+        [
+            new FunctionCallContent(readCallId, "read_file",
+                new Dictionary<string, object?> { ["path"] = "README.md" }),
+            new FunctionCallContent(shellCallId, "shell_execute",
+                new Dictionary<string, object?> { ["command"] = "git status" })
+        ];
+
+        var sessionId = new SessionId("test-channel/multi-pending-approval");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("multi-pending-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Read the file and run git status"
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        await subscriber.ExpectMsgAsync<ToolCallOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<ToolCallOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        var approvalCallIds = new HashSet<string>(StringComparer.Ordinal);
+        await AwaitAssertAsync(async () =>
+        {
+            while (approvalCallIds.Count < 2)
+            {
+                var request = await subscriber.ExpectMsgAsync<ToolInteractionRequest>(
+                    TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+                approvalCallIds.Add(request.CallId.Value);
+            }
+        }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Contains(readCallId, approvalCallIds);
+        Assert.Contains(shellCallId, approvalCallIds);
+
+        await ColdRespawnAsync(sessionId);
+
+        var subscriberB = CreateTestProbe("multi-pending-sub-b");
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriberB)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriberB.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        sessionManager.Tell(new ToolInteractionResponse
+        {
+            SessionId = sessionId,
+            CallId = new Netclaw.Tools.ToolCallId(readCallId),
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce),
+            SenderId = new SenderId("local-user")
+        });
+
+        // One sibling approval is still pending, so the recovered session must
+        // not advance the LLM with a half-closed assistant tool-call batch.
+        await subscriberB.ExpectNoMsgAsync(
+            TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken);
+        Assert.Equal(0, _toolExecutor.SuccessfulExecutions);
+
+        sessionManager.Tell(new ToolInteractionResponse
+        {
+            SessionId = sessionId,
+            CallId = new Netclaw.Tools.ToolCallId(shellCallId),
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce),
+            SenderId = new SenderId("local-user")
+        });
+
+        var resultCallIds = new HashSet<string>(StringComparer.Ordinal);
+        await AwaitAssertAsync(async () =>
+        {
+            while (resultCallIds.Count < 2)
+            {
+                var result = await subscriberB.ExpectMsgAsync<ToolResultOutput>(
+                    TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+                resultCallIds.Add(result.CallId.Value);
+            }
+        }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        await subscriberB.ExpectMsgAsync<TextOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        var completed = await subscriberB.ExpectMsgAsync<TurnCompleted>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(TurnOutcome.Completed, completed.Outcome);
+        Assert.Contains(readCallId, resultCallIds);
+        Assert.Contains(shellCallId, resultCallIds);
+        Assert.Equal(1, _toolExecutor.ExecutionsFor("read_file"));
+        Assert.Equal(1, _toolExecutor.ExecutionsFor("shell_execute"));
+    }
+
+    [Fact]
     public async Task Idle_session_with_pending_interaction_redrives_when_approval_arrives()
     {
         const string callId = "call-shell-idle";
