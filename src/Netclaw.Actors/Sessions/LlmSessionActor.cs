@@ -76,9 +76,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly Dictionary<IActorRef, OutputFilter> _subscribers = [];
     private readonly List<AITool> _availableTools = [];
     private readonly Dictionary<string, PendingToolInteraction> _pendingToolInteractions = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _activeToolBatchCallIds = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _completedToolCallIds = new(StringComparer.Ordinal);
-    private bool _toolBatchTaskCompleted;
+    private readonly ActiveToolBatchTracker _activeToolBatch = new();
     private MessageSource? _currentTurnSource;
     private readonly ToolRegistry? _fullRegistry;
     private readonly ToolAccessPolicy? _toolAccessPolicy;
@@ -596,7 +594,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         Command<ToolExecutionBatchCompleted>(_ =>
         {
             _watchdog.Stop(Timers);
-            _toolBatchTaskCompleted = true;
+            _activeToolBatch.MarkExecutionTaskCompleted();
             TryCompleteStreamedToolBatch();
         });
 
@@ -1796,11 +1794,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         IReadOnlyDictionary<string, IReadOnlyList<string>>? oneTimeApprovalPreSeed = null,
         IReadOnlyDictionary<string, ApprovalDecision>? decisionOverride = null)
     {
-        _activeToolBatchCallIds.Clear();
-        foreach (var tc in toolCalls)
-            _activeToolBatchCallIds.Add(tc.CallId);
-        _completedToolCallIds.Clear();
-        _toolBatchTaskCompleted = false;
+        _activeToolBatch.Start(toolCalls);
 
         // Execute tools async — results come back as ToolExecutionCompleted
         TurnLog().Info("turn_tool_call_batch count={Count} tools={Tools}",
@@ -3161,13 +3155,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (!_state.History.Contains(evt.AssistantMessage))
             _state = _state with { History = _state.History.Add(evt.AssistantMessage) };
 
-        _activeToolBatchCallIds.Clear();
-        foreach (var call in evt.AssistantMessage.ToolCalls)
-            _activeToolBatchCallIds.Add(call.CallId.Value);
-        _completedToolCallIds.Clear();
-        foreach (var result in FindToolResultsFor(evt.AssistantMessage))
-            _completedToolCallIds.Add(result.ToolCallId!.Value.Value);
-        _toolBatchTaskCompleted = false;
+        _activeToolBatch.Start(evt.AssistantMessage, FindToolResultsFor(evt.AssistantMessage));
     }
 
     private void ApplyToolCallRecorded(ToolCallRecorded evt)
@@ -3176,13 +3164,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             && _state.History.Any(m => m.Role == Protocol.ChatRole.Tool
                 && m.ToolCallId?.Value == toolCallId.Value))
         {
-            _completedToolCallIds.Add(toolCallId.Value);
+            _activeToolBatch.RecordCompleted(toolCallId.Value);
             return;
         }
 
         _state = _state with { History = _state.History.Add(evt.ToolResult) };
         if (evt.ToolResult.ToolCallId is { } id)
-            _completedToolCallIds.Add(id.Value);
+            _activeToolBatch.RecordCompleted(id.Value);
     }
 
     private void ApplyToolApprovalRequested(ToolApprovalRequested evt)
@@ -3220,9 +3208,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void ClearActiveToolBatchTracking()
     {
-        _activeToolBatchCallIds.Clear();
-        _completedToolCallIds.Clear();
-        _toolBatchTaskCompleted = false;
+        _activeToolBatch.Clear();
     }
 
     private IReadOnlyList<SerializableChatMessage> FindToolResultsFor(SerializableChatMessage assistantMsg)
@@ -3919,13 +3905,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void TryCompleteStreamedToolBatch()
     {
-        if (!_toolBatchTaskCompleted)
+        if (!_activeToolBatch.CanComplete)
             return;
 
-        if (_completedToolCallIds.Count < _activeToolBatchCallIds.Count)
-            return;
-
-        CompleteToolBatch(_completedToolCallIds.Count);
+        CompleteToolBatch(_activeToolBatch.CompletedCount);
     }
 
     private void CompleteToolBatch(int resultCount)
@@ -4231,5 +4214,65 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SessionId = _sessionId
             });
         });
+    }
+
+    private sealed class ActiveToolBatchTracker
+    {
+        private readonly HashSet<string> _expectedCallIds = new(StringComparer.Ordinal);
+        private readonly HashSet<string> _completedCallIds = new(StringComparer.Ordinal);
+
+        public int CompletedCount => _completedCallIds.Count;
+
+        public bool CanComplete => ExecutionTaskCompleted
+            && _completedCallIds.Count >= _expectedCallIds.Count;
+
+        private bool ExecutionTaskCompleted { get; set; }
+
+        public void Start(
+            SerializableChatMessage assistantMessage,
+            IEnumerable<SerializableChatMessage> existingResults)
+        {
+            ClearExpectedCallIds();
+            foreach (var call in assistantMessage.ToolCalls)
+                _expectedCallIds.Add(call.CallId.Value);
+
+            ClearCompletedCallIds();
+            foreach (var result in existingResults)
+            {
+                if (result.ToolCallId is { } id)
+                    _completedCallIds.Add(id.Value);
+            }
+
+            ExecutionTaskCompleted = false;
+        }
+
+        public void Start(IEnumerable<FunctionCallContent> toolCalls)
+        {
+            ClearExpectedCallIds();
+            foreach (var call in toolCalls)
+                _expectedCallIds.Add(call.CallId);
+
+            ClearCompletedCallIds();
+            ExecutionTaskCompleted = false;
+        }
+
+        public void RecordCompleted(string callId)
+            => _completedCallIds.Add(callId);
+
+        public void MarkExecutionTaskCompleted()
+            => ExecutionTaskCompleted = true;
+
+        public void Clear()
+        {
+            ClearExpectedCallIds();
+            ClearCompletedCallIds();
+            ExecutionTaskCompleted = false;
+        }
+
+        private void ClearExpectedCallIds()
+            => _expectedCallIds.Clear();
+
+        private void ClearCompletedCallIds()
+            => _completedCallIds.Clear();
     }
 }
