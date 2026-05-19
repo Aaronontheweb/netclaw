@@ -83,14 +83,18 @@ public sealed class MattermostThreadHistoryIntegrationTests
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(PollTimeout);
+        using var timer = new PeriodicTimer(PollInterval);
 
-        while (!cts.Token.IsCancellationRequested)
+        while (!cts.IsCancellationRequested)
         {
             var result = await client.GetThreadPostsAsync(rootPostId);
             if (result.Posts.Count >= minCount)
                 return result;
 
-            await Task.Delay(PollInterval, cts.Token);
+            // The poll's deadline is enforced by the cts-driven loop condition;
+            // the per-tick wait itself need not observe the token.
+            if (!await timer.WaitForNextTickAsync(CancellationToken.None))
+                break;
         }
 
         return await client.GetThreadPostsAsync(rootPostId);

@@ -45,8 +45,9 @@ public sealed partial class LookupMattermostUserTool : NetclawTool<LookupMatterm
             query = query[1..];
 
         var sb = new StringBuilder();
+        Exception? lookupError = null;
 
-        // Try username lookup first
+        // Try username lookup first.
         try
         {
             var user = await _client.GetUserByUsernameAsync(query);
@@ -56,12 +57,15 @@ public sealed partial class LookupMattermostUserTool : NetclawTool<LookupMatterm
                 return sb.ToString().TrimEnd();
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // Username not found — fall through to email lookup
+            // A username miss falls through to the email lookup. A real
+            // transport/auth failure is captured and surfaced below — it must
+            // not masquerade as a clean "no matching user found".
+            lookupError = ex;
         }
 
-        // Try email lookup
+        // Try email lookup.
         if (query.Contains('@', StringComparison.Ordinal))
         {
             try
@@ -73,13 +77,15 @@ public sealed partial class LookupMattermostUserTool : NetclawTool<LookupMatterm
                     return sb.ToString().TrimEnd();
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // Email not found either
+                lookupError = ex;
             }
         }
 
-        return "No matching user found. Try an exact username (without @) or email address.";
+        return lookupError is not null
+            ? $"No matching user found. The Mattermost lookup reported an error: {lookupError.Message}"
+            : "No matching user found. Try an exact username (without @) or email address.";
     }
 
     private bool IsFilteredOut(global::Mattermost.Models.Users.User user)
