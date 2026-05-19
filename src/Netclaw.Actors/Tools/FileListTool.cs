@@ -27,13 +27,15 @@ public sealed partial class FileListTool : NetclawTool<FileListTool.Params>
     private const int MaxEntries = 1000;
 
     private readonly ScopedFileAccessPolicy _fileAccessPolicy;
+    private readonly ToolPathPolicy? _pathPolicy;
 
     public record Params(
         [property: Description("Absolute path to the directory to list")] string Path);
 
-    public FileListTool(ToolConfig config, NetclawPaths? paths = null)
+    public FileListTool(ToolConfig config, NetclawPaths? paths = null, ToolPathPolicy? pathPolicy = null)
     {
         _fileAccessPolicy = new ScopedFileAccessPolicy(config, paths);
+        _pathPolicy = pathPolicy;
     }
 
     protected override Task<string> ExecuteAsync(Params args, CancellationToken ct)
@@ -50,6 +52,9 @@ public sealed partial class FileListTool : NetclawTool<FileListTool.Params>
         if (!_fileAccessPolicy.TryResolveReadPath(args.Path, context, out var authorizedPath, out var accessError))
             return Task.FromResult(accessError);
 
+        if (_pathPolicy?.IsReadDenied(authorizedPath) == true)
+            return Task.FromResult(FileToolErrors.CredentialReadDenied(authorizedPath));
+
         if (!Directory.Exists(authorizedPath))
         {
             return Task.FromResult(File.Exists(authorizedPath)
@@ -59,7 +64,7 @@ public sealed partial class FileListTool : NetclawTool<FileListTool.Params>
 
         try
         {
-            return Task.FromResult(FormatListing(authorizedPath));
+            return Task.FromResult(FormatListing(authorizedPath, _pathPolicy));
         }
         catch (UnauthorizedAccessException)
         {
@@ -71,13 +76,15 @@ public sealed partial class FileListTool : NetclawTool<FileListTool.Params>
         }
     }
 
-    private static string FormatListing(string directory)
+    private static string FormatListing(string directory, ToolPathPolicy? pathPolicy)
     {
         var dirs = Directory.EnumerateDirectories(directory)
+            .Where(path => pathPolicy?.IsReadDenied(path) != true)
             .Select(Path.GetFileName)
             .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
             .ToList();
         var files = Directory.EnumerateFiles(directory)
+            .Where(path => pathPolicy?.IsReadDenied(path) != true)
             .Select(Path.GetFileName)
             .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
             .ToList();

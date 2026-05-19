@@ -104,6 +104,48 @@ public sealed class FileListToolTests : IDisposable
         Assert.Contains("Directory not found", result);
     }
 
+    [Fact]
+    public async Task Listing_denied_directory_returns_access_denied()
+    {
+        var protectedDir = Path.Combine(_sessionDir, "webhooks");
+        Directory.CreateDirectory(protectedDir);
+
+        var policy = new ToolPathPolicy([protectedDir]);
+        var tool = new FileListTool(new ToolConfig(), pathPolicy: policy);
+
+        var result = await tool.ExecuteAsync(
+            ToolInput.Create("Path", protectedDir),
+            CreatePersonalContext(),
+            CancellationToken.None);
+
+        Assert.Contains("Access denied", result);
+        Assert.Contains("cannot be read", result);
+    }
+
+    [Fact]
+    public async Task Listing_filters_denied_child_entries()
+    {
+        var protectedDir = Path.Combine(_sessionDir, "webhooks");
+        var protectedFile = Path.Combine(_sessionDir, "secrets.json");
+        var visibleFile = Path.Combine(_sessionDir, "notes.txt");
+
+        Directory.CreateDirectory(protectedDir);
+        await File.WriteAllTextAsync(protectedFile, "secret", TestContext.Current.CancellationToken);
+        await File.WriteAllTextAsync(visibleFile, "visible", TestContext.Current.CancellationToken);
+
+        var policy = new ToolPathPolicy([protectedDir], [protectedFile, protectedDir], [protectedDir]);
+        var tool = new FileListTool(new ToolConfig(), pathPolicy: policy);
+
+        var result = await tool.ExecuteAsync(
+            ToolInput.Create("Path", _sessionDir),
+            CreatePersonalContext(),
+            CancellationToken.None);
+
+        Assert.Contains("notes.txt", result);
+        Assert.DoesNotContain("secrets.json", result);
+        Assert.DoesNotContain("webhooks", result);
+    }
+
     private ToolExecutionContext CreateTeamContext()
         => new("slack/thread-1", _sessionDir)
         {
@@ -117,6 +159,14 @@ public sealed class FileListToolTests : IDisposable
         {
             Audience = TrustAudience.Public,
             Boundary = TrustBoundary.Public,
+            ChannelType = "slack"
+        };
+
+    private ToolExecutionContext CreatePersonalContext()
+        => new("slack/thread-1", _sessionDir)
+        {
+            Audience = TrustAudience.Personal,
+            Boundary = TrustBoundary.TrustedInstance,
             ChannelType = "slack"
         };
 }
