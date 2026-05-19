@@ -176,6 +176,8 @@ internal sealed class ToolAudienceProfileResolver
         => toolName.Value is "shell_execute"
             or "file_read"
             or "file_write"
+            or "file_edit"
+            or "file_list"
             or "attach_file"
             or "skill_manage"
             or "set_webhook"

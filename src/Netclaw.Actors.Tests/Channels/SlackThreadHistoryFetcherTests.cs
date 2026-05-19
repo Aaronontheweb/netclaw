@@ -224,6 +224,9 @@ public sealed class SlackThreadHistoryFetcherTests
     [Fact]
     public async Task Historical_non_image_files_are_downloaded_and_announced_path_only()
     {
+        // PDFs require an audience whose attachment policy permits the Document
+        // category — pin the channel to Team (Public is image-only).
+        _options.ChannelAudiences["D1"] = "team";
         _replies.Set("D1", "2000.0", null, new ConversationMessagesResponse
         {
             Messages =

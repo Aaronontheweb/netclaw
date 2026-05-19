@@ -194,7 +194,7 @@ shape, confirm that strict-default fallback is active, or verify that
     "AudienceProfiles": {
       "Public": {
         "ToolsMode": "Allowlist",
-        "AllowedTools": ["file_read", "file_write", "attach_file"],
+        "AllowedTools": ["file_read", "file_list", "attach_file"],
         "McpServersMode": "Allowlist",
         "AllowedMcpServers": [],
         "ReadFiles": { "Mode": "Roots", "Roots": ["{session_dir}"] },
@@ -203,7 +203,11 @@ shape, confirm that strict-default fallback is active, or verify that
       },
       "Team": {
         "ToolsMode": "Allowlist",
-        "AllowedTools": ["file_read", "attach_file"],
+        "AllowedTools": [
+          "file_read", "file_list", "file_write", "file_edit", "attach_file",
+          "skill_manage", "set_reminder", "list_reminders", "cancel_reminder",
+          "get_reminder_history", "set_working_directory"
+        ],
         "McpServersMode": "Allowlist",
         "AllowedMcpServers": [],
         "ReadFiles": { "Mode": "Roots", "Roots": ["{session_dir}"] },
@@ -227,7 +231,7 @@ shape, confirm that strict-default fallback is active, or verify that
 | `ShellMode` | string? | `null` | Optional shell mode override (`Off`, `SandboxOnly`, `HostAllowed`). Falls back to security posture defaults when omitted. |
 | `ShellTimeoutSeconds` | int | `60` | Timeout for shell command execution. |
 | `MaxOutputChars` | int | `32000` | Maximum characters captured from tool output. |
-| `AudienceProfiles` | object | built-in defaults | Per-audience tool, MCP server, and filesystem scopes. `public` and `team` default to session-scoped file access with no MCP servers allowed until the operator opts in, while `personal` defaults to unrestricted tool/file access and all MCP servers unless customized. |
+| `AudienceProfiles` | object | built-in defaults | Per-audience tool, MCP server, and filesystem scopes. Default tool grants are monotonic — `public` ⊆ `team` ⊆ `personal`. `public` gets read-only file tools (`file_read`, `file_list`, `attach_file`); `team` adds the file-mutation, scheduling, and skill tools but not `shell_execute`, the webhook tools, or any MCP server; `personal` defaults to unrestricted tool/file access and all MCP servers. `public` and `team` keep session-scoped file access until the operator opts in. |
 
 ### MCP Servers
 
