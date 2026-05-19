@@ -752,7 +752,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (!analysis.HasText && analysis.ToolCalls.Count == 0)
         {
             var label = analysis.HasThinking ? "thinking-only" : "empty";
-            switch (_turnState.EvaluateEmptyResponse())
+            switch (_turnState.EvaluateEmptyResponse(analysis.HasThinking))
             {
                 case EmptyResponseAction.Retry retry:
                     _log.Warning("LLM produced {Label} response ({ThinkingChars} chars) — retrying with nudge",
