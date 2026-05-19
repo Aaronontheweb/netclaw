@@ -100,10 +100,17 @@ public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
     {
         if (content.Length <= maxChars)
             return content;
-        var truncated = content[..maxChars];
-        var nextLine = truncated.Count(c => c == '\n') + 1;
-        var totalLines = content.Count(c => c == '\n') + 1;
-        return truncated + $"\n[output truncated at line {nextLine} of {totalLines} — use Offset={nextLine} with Limit to continue reading]";
+        int newlinesBefore = 0, totalNewlines = 0;
+        for (var i = 0; i < content.Length; i++)
+        {
+            if (content[i] != '\n') continue;
+            totalNewlines++;
+            if (i < maxChars) newlinesBefore++;
+        }
+        var nextLine = newlinesBefore + 1;
+        var totalLines = totalNewlines + 1;
+        return string.Concat(content.AsSpan(0, maxChars),
+            $"\n[output truncated at line {nextLine} of {totalLines} — use Offset={nextLine} with Limit to continue reading]");
     }
 
     private static async Task<string> ReadLinesAsync(
@@ -129,10 +136,7 @@ public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
             linesRead++;
 
             if (sb.Length >= maxChars)
-            {
-                var truncated = sb.ToString()[..maxChars];
-                return truncated + $"\n[output truncated — use Offset={lineNumber} with Limit to continue reading]";
-            }
+                return sb.ToString(0, maxChars) + $"\n[output truncated at line {lineNumber} — use Offset={lineNumber} with Limit to continue reading]";
         }
 
         return sb.ToString();
