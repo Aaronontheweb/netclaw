@@ -75,12 +75,10 @@ public sealed partial class FileListTool : NetclawTool<FileListTool.Params>
     {
         var dirs = Directory.EnumerateDirectories(directory)
             .Select(Path.GetFileName)
-            .Where(static name => !string.IsNullOrEmpty(name))
             .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
             .ToList();
         var files = Directory.EnumerateFiles(directory)
             .Select(Path.GetFileName)
-            .Where(static name => !string.IsNullOrEmpty(name))
             .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
