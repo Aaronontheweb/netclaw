@@ -76,6 +76,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly Dictionary<IActorRef, OutputFilter> _subscribers = [];
     private readonly List<AITool> _availableTools = [];
     private readonly Dictionary<string, PendingToolInteraction> _pendingToolInteractions = new(StringComparer.Ordinal);
+    // Live-only coordination for the currently executing streamed tool batch.
+    // Durable recovery derives unanswered calls from _state.History.
     private readonly ActiveToolBatchTracker _activeToolBatch = new();
     private MessageSource? _currentTurnSource;
     private readonly ToolRegistry? _fullRegistry;
@@ -3149,28 +3151,37 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void ApplyToolBatchStarted(ToolBatchStarted evt)
     {
+        ApplyToolBatchHistory(evt);
+        RestoreActiveToolBatchFrom(evt);
+    }
+
+    private void ApplyToolBatchHistory(ToolBatchStarted evt)
+    {
         if (_state.FindLastUserMessage() != evt.UserMessage)
             _state = _state with { History = _state.History.Add(evt.UserMessage) };
 
         if (!_state.History.Contains(evt.AssistantMessage))
             _state = _state with { History = _state.History.Add(evt.AssistantMessage) };
+    }
 
-        _activeToolBatch.Start(evt.AssistantMessage, FindToolResultsFor(evt.AssistantMessage));
+    private void RestoreActiveToolBatchFrom(ToolBatchStarted evt)
+    {
+        _activeToolBatch.Start(
+            evt.AssistantMessage,
+            ParkedToolBatchHistory.FindToolResultsFor(_state.History, evt.AssistantMessage));
     }
 
     private void ApplyToolCallRecorded(ToolCallRecorded evt)
     {
-        if (evt.ToolResult.ToolCallId is { } toolCallId
-            && _state.History.Any(m => m.Role == Protocol.ChatRole.Tool
-                && m.ToolCallId?.Value == toolCallId.Value))
+        if (evt.ToolResult.ToolCallId is { } toolCallId)
         {
             _activeToolBatch.RecordCompleted(toolCallId.Value);
-            return;
+
+            if (ParkedToolBatchHistory.HasToolResult(_state.History, toolCallId.Value))
+                return;
         }
 
         _state = _state with { History = _state.History.Add(evt.ToolResult) };
-        if (evt.ToolResult.ToolCallId is { } id)
-            _activeToolBatch.RecordCompleted(id.Value);
     }
 
     private void ApplyToolApprovalRequested(ToolApprovalRequested evt)
@@ -3210,20 +3221,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     {
         _activeToolBatch.Clear();
     }
-
-    private IReadOnlyList<SerializableChatMessage> FindToolResultsFor(SerializableChatMessage assistantMsg)
-    {
-        var ids = assistantMsg.ToolCalls.Select(c => c.CallId.Value).ToHashSet(StringComparer.Ordinal);
-        return _state.History
-            .Where(m => m.Role == Protocol.ChatRole.Tool
-                && m.ToolCallId is not null
-                && ids.Contains(m.ToolCallId.Value.Value))
-            .ToArray();
-    }
-
-    private bool HasToolResult(string callId)
-        => _state.History.Any(m => m.Role == Protocol.ChatRole.Tool
-            && m.ToolCallId?.Value == callId);
 
     private void MaybeSnapshot()
     {
@@ -3466,29 +3463,50 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             return;
         }
 
-        // ApprovedOnce has no persisted grant — pre-seed a one-time approval
-        // bypass scoped to exactly this call id so the re-driven batch skips
-        // the gate once without emitting a duplicate approval prompt.
+        var redrivePlan = BuildApprovalRedrivePlan(callId, pending, decision);
+
+        PersistApprovalResolved(msg, decision, () =>
+            RedriveToolBatchForApproval(
+                callId,
+                pending,
+                redrivePlan.OneTimeApprovalPreSeed,
+                redrivePlan.DecisionOverride));
+    }
+
+    private static ApprovalRedrivePlan BuildApprovalRedrivePlan(
+        string callId,
+        PendingToolInteraction pending,
+        ApprovalDecision decision)
+    {
+        // Approval redrive is the cold/idle recovery path: the user clicked an
+        // approval prompt after the original tool-loop task was gone, so the
+        // actor must reconstruct and dispatch the parked tool call from history.
+        // This plan carries only the transient overrides needed for that one
+        // reconstructed dispatch; persisted grants are handled earlier.
         IReadOnlyDictionary<string, IReadOnlyList<string>>? preSeed = null;
-        IReadOnlyDictionary<string, ApprovalDecision>? decisionOverride = null;
         if (decision == ApprovalDecision.ApprovedOnce)
         {
+            // ApprovedOnce has no persisted grant. Pre-seed only this call so
+            // the re-drive skips the gate once without broadening approval.
             preSeed = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
             {
                 [callId] = pending.Patterns
             };
         }
 
+        IReadOnlyDictionary<string, ApprovalDecision>? decisionOverride = null;
         if (decision is ApprovalDecision.Denied or ApprovalDecision.TimedOut)
         {
+            // Denials and timeouts still need a tool_result so provider history
+            // stays well-formed, but the reconstructed dispatch must not execute
+            // the tool or ask for approval again.
             decisionOverride = new Dictionary<string, ApprovalDecision>(StringComparer.Ordinal)
             {
                 [callId] = decision
             };
         }
 
-        PersistApprovalResolved(msg, decision, () =>
-            RedriveToolBatchForApproval(callId, pending, preSeed, decisionOverride));
+        return new ApprovalRedrivePlan(preSeed, decisionOverride);
     }
 
     /// <summary>
@@ -3506,7 +3524,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         IReadOnlyDictionary<string, IReadOnlyList<string>>? oneTimeApprovalPreSeed,
         IReadOnlyDictionary<string, ApprovalDecision>? decisionOverride)
     {
-        var assistantMsg = FindRedrivableAssistantMessage(callId);
+        var assistantMsg = ParkedToolBatchHistory.FindRedrivableAssistantMessage(_state.History, callId);
         if (assistantMsg is null)
         {
             _log.Warning(
@@ -3521,7 +3539,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         var aiMessage = ChatMessageConverter.ToAiMessage(assistantMsg);
         var toolCalls = aiMessage.Contents
             .OfType<FunctionCallContent>()
-            .Where(tc => !HasToolResult(tc.CallId)
+            .Where(tc => !ParkedToolBatchHistory.HasToolResult(_state.History, tc.CallId)
                 && (tc.CallId == callId || !_pendingToolInteractions.ContainsKey(tc.CallId)))
             .ToList();
         if (toolCalls.Count == 0)
@@ -3551,40 +3569,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     }
 
     /// <summary>
-    /// Locates the tail assistant message in history that carries tool calls
-    /// for which no later <see cref="ChatRole.Tool"/> result message exists —
-    /// i.e. the parked, unanswered tool batch. Returns null when history has no
-    /// such batch (the prompt has expired). When <paramref name="callId"/> is
-    /// non-null, also requires the batch to contain that specific call id.
-    /// </summary>
-    private SerializableChatMessage? FindRedrivableAssistantMessage(string? callId)
-    {
-        for (var i = _state.History.Count - 1; i >= 0; i--)
-        {
-            var candidate = _state.History[i];
-            if (candidate.Role != Protocol.ChatRole.Assistant || candidate.ToolCalls.Count == 0)
-                continue;
-
-            if (callId is not null
-                && candidate.ToolCalls.All(tc => tc.CallId.Value != callId))
-            {
-                // This unanswered batch is not the one the response targets.
-                return null;
-            }
-
-            if (callId is not null && HasToolResult(callId))
-                return null;
-
-            if (callId is null && candidate.ToolCalls.All(tc => HasToolResult(tc.CallId.Value)))
-                continue;
-
-            return candidate;
-        }
-
-        return null;
-    }
-
-    /// <summary>
     /// Builds the durable event for a parked tool batch the user abandoned by
     /// sending a new message instead of answering its approval prompt. Carries a synthetic
     /// <see cref="Protocol.ChatRole.Tool"/> result for every unanswered tool
@@ -3594,25 +3578,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     /// </summary>
     private ToolBatchAbandoned BuildToolBatchAbandonedEvent()
     {
-        var assistantMsg = FindRedrivableAssistantMessage(callId: null);
-        var results = new List<SerializableChatMessage>();
+        var assistantMsg = ParkedToolBatchHistory.FindRedrivableAssistantMessage(_state.History, callId: null);
+        IReadOnlyList<SerializableChatMessage> results = assistantMsg is null
+            ? []
+            : ParkedToolBatchHistory.BuildSyntheticAbandonResults(_state.History, assistantMsg);
         if (assistantMsg is not null)
         {
-            foreach (var call in assistantMsg.ToolCalls)
-            {
-                if (HasToolResult(call.CallId.Value))
-                    continue;
-
-                results.Add(new SerializableChatMessage
-                {
-                    Role = Protocol.ChatRole.Tool,
-                    Content = "Tool call was not completed — the request was "
-                        + "superseded by a new message before approval was given.",
-                    ToolCallId = call.CallId,
-                    Name = call.Name.Value
-                });
-            }
-
             _log.Info(
                 "Abandoned parked tool batch ({Count} call(s)) superseded by a new user message",
                 assistantMsg.ToolCalls.Count);
@@ -3698,6 +3669,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // collapsing everything to cwd. Empty list when the request did
         // not carry candidate-level data (e.g. older callers).
         IReadOnlyList<ApprovalCandidate> Candidates) : INoSerializationVerificationNeeded;
+
+    private sealed record ApprovalRedrivePlan(
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? OneTimeApprovalPreSeed,
+        IReadOnlyDictionary<string, ApprovalDecision>? DecisionOverride);
 
     private async Task PersistApprovalCandidatesAsync(
         PendingToolInteraction pending,
@@ -4214,6 +4189,89 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SessionId = _sessionId
             });
         });
+    }
+
+    private static class ParkedToolBatchHistory
+    {
+        public static IReadOnlyList<SerializableChatMessage> FindToolResultsFor(
+            IReadOnlyList<SerializableChatMessage> history,
+            SerializableChatMessage assistantMessage)
+        {
+            var ids = assistantMessage.ToolCalls
+                .Select(c => c.CallId.Value)
+                .ToHashSet(StringComparer.Ordinal);
+
+            return history
+                .Where(m => m.Role == Protocol.ChatRole.Tool
+                    && m.ToolCallId is not null
+                    && ids.Contains(m.ToolCallId.Value.Value))
+                .ToArray();
+        }
+
+        public static bool HasToolResult(
+            IReadOnlyList<SerializableChatMessage> history,
+            string callId)
+            => history.Any(m => m.Role == Protocol.ChatRole.Tool
+                && m.ToolCallId?.Value == callId);
+
+        /// <summary>
+        /// Locates the tail assistant message carrying unanswered tool calls.
+        /// When <paramref name="callId"/> is set, a newer unanswered batch for a
+        /// different call expires this response instead of re-driving stale work.
+        /// </summary>
+        public static SerializableChatMessage? FindRedrivableAssistantMessage(
+            IReadOnlyList<SerializableChatMessage> history,
+            string? callId)
+        {
+            for (var i = history.Count - 1; i >= 0; i--)
+            {
+                var candidate = history[i];
+                if (candidate.Role != Protocol.ChatRole.Assistant || candidate.ToolCalls.Count == 0)
+                    continue;
+
+                if (callId is not null
+                    && candidate.ToolCalls.All(tc => tc.CallId.Value != callId))
+                {
+                    return null;
+                }
+
+                if (callId is not null && HasToolResult(history, callId))
+                    return null;
+
+                if (callId is null && candidate.ToolCalls.All(tc => HasToolResult(history, tc.CallId.Value)))
+                    continue;
+
+                return candidate;
+            }
+
+            return null;
+        }
+
+        public static IReadOnlyList<SerializableChatMessage> BuildSyntheticAbandonResults(
+            IReadOnlyList<SerializableChatMessage> history,
+            SerializableChatMessage assistantMessage)
+        {
+            var results = new List<SerializableChatMessage>();
+            foreach (var call in assistantMessage.ToolCalls)
+            {
+                if (HasToolResult(history, call.CallId.Value))
+                    continue;
+
+                results.Add(CreateAbandonedToolResult(call));
+            }
+
+            return results;
+        }
+
+        private static SerializableChatMessage CreateAbandonedToolResult(SerializableToolCall call)
+            => new()
+            {
+                Role = Protocol.ChatRole.Tool,
+                Content = "Tool call was not completed — the request was "
+                    + "superseded by a new message before approval was given.",
+                ToolCallId = call.CallId,
+                Name = call.Name.Value
+            };
     }
 
     private sealed class ActiveToolBatchTracker
