@@ -66,9 +66,9 @@ public sealed class MattermostApprovalPromptBuilderTests
     [Fact]
     public void BuildDecisionStatus_formats_known_keys()
     {
-        Assert.Contains("Approve once", MattermostApprovalPromptBuilder.BuildDecisionStatus(ApprovalOptionKeys.ApproveOnce));
-        Assert.Contains("Approve always", MattermostApprovalPromptBuilder.BuildDecisionStatus(ApprovalOptionKeys.ApproveAlways));
-        Assert.Contains("Deny", MattermostApprovalPromptBuilder.BuildDecisionStatus(ApprovalOptionKeys.Deny));
+        Assert.Contains(ApprovalOptionKeys.ApproveOnceLabel, MattermostApprovalPromptBuilder.BuildDecisionStatus(ApprovalOptionKeys.ApproveOnce));
+        Assert.Contains(ApprovalOptionKeys.ApproveAlwaysLabel, MattermostApprovalPromptBuilder.BuildDecisionStatus(ApprovalOptionKeys.ApproveAlways));
+        Assert.Contains(ApprovalOptionKeys.DenyLabel, MattermostApprovalPromptBuilder.BuildDecisionStatus(ApprovalOptionKeys.Deny));
     }
 
     [Fact]

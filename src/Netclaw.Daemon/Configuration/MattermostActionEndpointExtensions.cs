@@ -19,6 +19,20 @@ public static class MattermostActionEndpointExtensions
 
     public static void MapMattermostActionEndpoint(this WebApplication app)
     {
+        // The interactive callback endpoint is only exposed when the Mattermost
+        // channel is enabled AND interactive approvals are configured (a non-empty
+        // CallbackUrl, which provisions the HMAC signing key). When that is not the
+        // case, no inbound HTTP surface is registered for the channel — approvals
+        // use the text-reply fallback instead. See spec netclaw-gateway-security:
+        // "Channel-owned interactive callback endpoint safeguards".
+        var options = app.Services.GetService<MattermostChannelOptions>();
+        if (options is null
+            || !options.Enabled
+            || string.IsNullOrWhiteSpace(options.CallbackUrl))
+        {
+            return;
+        }
+
         app.MapPost("/api/mattermost/actions", async (
             HttpContext httpContext,
             IServiceProvider sp,
@@ -71,17 +85,23 @@ public static class MattermostActionEndpointExtensions
             if (string.IsNullOrEmpty(rootPostId))
                 return Results.BadRequest("Missing required context field: root_post_id.");
 
-            // Verify HMAC signature to prove we created these buttons
+            // Verify the HMAC signature to prove this daemon minted the button.
+            // Fail closed: if no signing key is registered the endpoint does not
+            // accept callbacks at all — signature verification is never skipped.
             var signingKey = sp.GetService<MattermostCallbackSigningKey>();
-            if (signingKey?.Key is { } key)
+            if (signingKey?.Key is not { } key)
             {
-                payload.Context.TryGetValue("signature", out var signature);
-                if (string.IsNullOrEmpty(signature)
-                    || !MattermostCallbackSigner.Verify(key, callId, selectedKey, requesterSenderId ?? string.Empty, rootPostId, signature))
-                {
-                    logger.LogWarning("Rejected Mattermost action callback with invalid HMAC signature for call {CallId}", callId);
-                    return Results.Unauthorized();
-                }
+                logger.LogWarning(
+                    "Rejected Mattermost action callback: interactive approvals are not configured for this daemon.");
+                return Results.NotFound();
+            }
+
+            payload.Context.TryGetValue("signature", out var signature);
+            if (string.IsNullOrEmpty(signature)
+                || !MattermostCallbackSigner.Verify(key, callId, selectedKey, requesterSenderId ?? string.Empty, rootPostId, signature))
+            {
+                logger.LogWarning("Rejected Mattermost action callback with invalid HMAC signature for call {CallId}", callId);
+                return Results.Unauthorized();
             }
 
             var options = sp.GetRequiredService<MattermostChannelOptions>();

@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.4.0"
+  version: "2.5.0"
 ---
 
 # Netclaw Operations
@@ -78,7 +78,7 @@ audience sessions cannot use scheduling tools regardless of the config flag.
 Delivery contract parameters:
 
 - `delivery_kind`: required, one of `current_session`, `channel`, `none`
-- `delivery_transport`: required when `delivery_kind=channel` (e.g. `slack`, `discord`)
+- `delivery_transport`: required when `delivery_kind=channel` (e.g. `slack`, `discord`, `mattermost`)
 - `delivery_address`: required when `delivery_kind=channel` (`#channel`, `@user`, or canonical ID)
 - `delivery_required`: optional bool, default `true`; set `false` only for audit/cleanup tasks
 - `delivery_instructions`: optional content guidance only (never routing)
@@ -136,6 +136,8 @@ use the channel's proactive-post tool:
 
 - Slack: `send_slack_message` — posts to a channel or DMs a user.
 - Discord: `send_discord_message` — posts to a channel only.
+- Mattermost: `send_mattermost_message` — posts to a channel, or DMs a user
+  when direct messages are enabled.
 
 `send_discord_message` posts the `message` to a Discord channel and creates a
 conversation thread off it, so user replies route back to a live session.
@@ -143,6 +145,12 @@ Provide `channel_id` (or omit it to use the configured default channel); an
 optional `thread_name` titles the thread. The channel must be in the Discord
 allow-list. Discord DM targets are not supported yet — the tool posts to
 channels only.
+
+`send_mattermost_message` behaves like the Slack tool: it posts the `message`
+to a Mattermost channel (or, when `AllowDirectMessages` is enabled, a user's
+direct-message channel) and threads replies back to a live session. Mattermost
+direct messages are addressable, so `delivery_kind=channel` reminders may
+target a DM (`@user`) — unlike Discord.
 
 ### Approval Requirements for Reminders and Webhooks
 
