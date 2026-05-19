@@ -179,6 +179,8 @@ internal sealed class ToolAudienceProfileResolver
             or "file_edit"
             or "file_list"
             or "attach_file"
+            or "web_search"
+            or "web_fetch"
             or "skill_manage"
             or "set_webhook"
             or "list_webhooks"

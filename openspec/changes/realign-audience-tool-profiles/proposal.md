@@ -16,13 +16,16 @@ documented security model incoherent.
   `Public ⊆ Team ⊆ Personal`.
 - **BREAKING** (default-config behavior): `Public` default `AllowedTools`
   becomes `[file_read, file_list, attach_file]` — read, enumerate, and attach
-  only. It loses `file_write` and (via the gating fix below) `file_edit`.
+  only. It loses `file_write`, `file_edit`, `web_search`, and `web_fetch`.
 - `Team` default `AllowedTools` is widened to every useful profile-managed tool
   except shell, webhooks, and MCP: `file_read`, `file_list`, `file_write`,
-  `file_edit`, `attach_file`, `skill_manage`, the four reminder tools, and
-  `set_working_directory`.
-- `file_edit` joins the profile-managed tool set so it is audience-gated like
-  `file_write`, closing a hidden allowlist bypass.
+  `file_edit`, `attach_file`, `web_search`, `web_fetch`, `skill_manage`, the
+  four reminder tools, and `set_working_directory`.
+- `file_edit`, `web_search`, and `web_fetch` join the profile-managed tool set
+  so they are audience-gated like `file_write`, closing hidden allowlist
+  bypasses. `web_search`/`web_fetch` were previously available to every
+  audience including Public — a Public (untrusted) session could drive
+  outbound web requests, including `web_fetch` against arbitrary URLs.
 - New read-only `file_list` directory-enumeration tool, policy-gated and scoped
   to each audience's existing filesystem read roots, so non-Personal audiences
   can discover files without `shell_execute`. Shell stays Personal-only.
@@ -32,7 +35,7 @@ documented security model incoherent.
   `ChannelAudiences` overrides (including `dm`) still take precedence.
 - Webhooks and MCP server access remain Personal / operator-opt-in.
 
-In scope for MVP: the five changes above and their tests, spec, schema, and
+In scope for MVP: the changes above and their tests, spec, schema, and
 system-skill updates. Out of scope: granting `Team` webhook or MCP access,
 and any change to the `shell_execute` Personal-only hard gate.
 
@@ -45,8 +48,8 @@ and any change to the `shell_execute` Personal-only hard gate.
 ### Modified Capabilities
 
 - `netclaw-acl`: default audience tool-profile grants become monotonic across
-  `Public ⊆ Team ⊆ Personal`; `file_edit` becomes a profile-managed,
-  audience-gated tool rather than universally allowed.
+  `Public ⊆ Team ⊆ Personal`; `file_edit`, `web_search`, and `web_fetch` become
+  profile-managed, audience-gated tools rather than universally allowed.
 - `netclaw-tools`: adds the `file_list` directory-enumeration tool as a
   policy-gated first-party tool.
 - `netclaw-input-adapters`: inbound DM trust-context derivation resolves a
@@ -66,9 +69,11 @@ and any change to the `shell_execute` Personal-only hard gate.
 - **System skills**: `netclaw-operations` SKILL.md (set_working_directory
   availability, new `file_list` tool, DM-classification note).
 - **Security impact**: tightens the least-trusted `Public` audience to no
-  file-mutation tools, closes the `file_edit` allowlist bypass, and prevents an
-  untrusted external DM from reaching `Team`-level grants. Net reduction in
-  default attack surface.
+  file-mutation and no outbound web tools, closes the `file_edit` /
+  `web_search` / `web_fetch` allowlist bypasses, and prevents an untrusted
+  external DM from reaching `Team`-level grants. Net reduction in default
+  attack surface — notably, a Public session can no longer drive `web_fetch`
+  against arbitrary URLs.
 - **Operational impact**: configs that explicitly define `Tools.AudienceProfiles`
   are unaffected (each profile falls back independently). Configs relying on
   defaults gain the monotonic grants. Operators who intentionally want all DMs

@@ -350,6 +350,7 @@ public class DispatchingToolExecutorTests
         Assert.True(policy.IsToolExposed(registry.GetByName("file_edit")!, teamContext));
         Assert.True(policy.IsToolExposed(registry.GetByName("attach_file")!, teamContext));
         Assert.True(policy.IsToolExposed(registry.GetByName("set_working_directory")!, teamContext));
+        Assert.True(policy.IsToolExposed(registry.GetByName("web_fetch")!, teamContext));
         Assert.False(policy.IsToolExposed(registry.GetByName("shell_execute")!, teamContext));
         Assert.False(policy.IsToolExposed(registry.GetByName("set_webhook")!, teamContext));
         Assert.False(policy.IsToolExposed(registry.GetByName("list_webhooks")!, teamContext));
@@ -389,6 +390,7 @@ public class DispatchingToolExecutorTests
         Assert.False(policy.IsToolExposed(registry.GetByName("file_edit")!, publicContext));
         Assert.False(policy.IsToolExposed(registry.GetByName("shell_execute")!, publicContext));
         Assert.False(policy.IsToolExposed(registry.GetByName("set_working_directory")!, publicContext));
+        Assert.False(policy.IsToolExposed(registry.GetByName("web_fetch")!, publicContext));
     }
 
     [Fact]

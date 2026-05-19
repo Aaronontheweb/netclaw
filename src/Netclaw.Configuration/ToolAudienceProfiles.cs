@@ -142,9 +142,10 @@ public static class ToolAudienceProfileDefaults
 
     // Audience tool grants are monotonic: Public ⊆ Team ⊆ Personal. Public is
     // the least-trusted, fail-closed audience — read, enumerate, and attach
-    // only, no file-mutation tools. WriteFiles stays session-scoped so an
-    // operator who deliberately re-grants Public a write tool still gets the
-    // safe session-directory scope rather than an unusable profile.
+    // only: no file-mutation tools and no outbound web tools (web_search /
+    // web_fetch). WriteFiles stays session-scoped so an operator who
+    // deliberately re-grants Public a write tool still gets the safe
+    // session-directory scope rather than an unusable profile.
     public static ToolAudienceProfile CreatePublic() => new()
     {
         AllowedTools = ["file_read", "file_list", "attach_file"],
@@ -163,8 +164,9 @@ public static class ToolAudienceProfileDefaults
         AllowedTools =
         [
             "file_read", "file_list", "file_write", "file_edit", "attach_file",
-            "skill_manage", "set_reminder", "list_reminders", "cancel_reminder",
-            "get_reminder_history", "set_working_directory"
+            "web_search", "web_fetch", "skill_manage", "set_reminder",
+            "list_reminders", "cancel_reminder", "get_reminder_history",
+            "set_working_directory"
         ],
         ReadFiles = CreateSessionScopedFilesystemAccess(),
         WriteFiles = CreateSessionScopedFilesystemAccess(),

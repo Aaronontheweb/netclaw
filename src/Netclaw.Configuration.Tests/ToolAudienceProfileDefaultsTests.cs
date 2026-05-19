@@ -27,7 +27,7 @@ public sealed class ToolAudienceProfileDefaultsTests
     }
 
     [Fact]
-    public void Team_default_grants_file_scheduling_and_skill_tools()
+    public void Team_default_grants_file_web_scheduling_and_skill_tools()
     {
         var team = ToolAudienceProfileDefaults.CreateTeam().AllowedTools;
 
@@ -36,12 +36,23 @@ public sealed class ToolAudienceProfileDefaultsTests
         Assert.Contains("file_write", team);
         Assert.Contains("file_edit", team);
         Assert.Contains("attach_file", team);
+        Assert.Contains("web_search", team);
+        Assert.Contains("web_fetch", team);
         Assert.Contains("skill_manage", team);
         Assert.Contains("set_reminder", team);
         Assert.Contains("list_reminders", team);
         Assert.Contains("cancel_reminder", team);
         Assert.Contains("get_reminder_history", team);
         Assert.Contains("set_working_directory", team);
+    }
+
+    [Fact]
+    public void Public_default_excludes_outbound_web_tools()
+    {
+        var publicProfile = ToolAudienceProfileDefaults.CreatePublic();
+
+        Assert.DoesNotContain("web_search", publicProfile.AllowedTools);
+        Assert.DoesNotContain("web_fetch", publicProfile.AllowedTools);
     }
 
     [Fact]

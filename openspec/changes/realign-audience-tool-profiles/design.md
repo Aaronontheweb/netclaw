@@ -27,7 +27,8 @@ The defects and the agreed fix are described in `proposal.md`.
 **Goals:**
 
 - Default profile-managed grants monotonic across `Public ⊆ Team ⊆ Personal`.
-- `file_edit` gated by the audience allowlist like every other write-class tool.
+- `file_edit`, `web_search`, and `web_fetch` gated by the audience allowlist
+  like every other write-class / outbound tool — Public gets none of them.
 - Non-Personal audiences can enumerate directories without `shell_execute`.
 - `Team` audience reachable only by operator-vetted users / explicit channels.
 
@@ -56,12 +57,18 @@ visible, and (b) an explicit list is fail-closed for future profile-managed
 tools — a newly added tool stays denied for Team until someone consciously adds
 it, rather than silently landing in Team's grants.
 
-**`file_edit` and `file_list` join `IsProfileManagedTool`.** `file_edit` being
-absent is a hidden bypass — it edits files for every audience regardless of the
-allowlist. Adding it (and the new `file_list`) makes the allowlist authoritative
-for all file tools. Consequence: a custom config whose explicit Team/Public
-`AllowedTools` omits `file_edit` will now correctly deny it; this is closing the
-bypass, not a regression.
+**`file_edit`, `file_list`, `web_search`, and `web_fetch` join
+`IsProfileManagedTool`.** `file_edit`, `web_search`, and `web_fetch` were
+absent — a hidden bypass that exposed them to every audience regardless of the
+allowlist. For `web_search`/`web_fetch` that meant a Public (untrusted) session
+could drive outbound web requests, including `web_fetch` against arbitrary URLs
+(an SSRF / untrusted-content-ingestion surface). Adding them (plus the new
+`file_list`) makes the allowlist authoritative for all file and web tools, and
+keeps the deployment-wide search feature flag as an orthogonal kill switch.
+Consequence: a custom config whose explicit Team/Personal `AllowedTools` omits
+one of these will now correctly deny it; this is closing the bypass, not a
+regression. Default `Team` and `Personal` retain all of them; `Public` gets
+none.
 
 **`file_list` reuses `ScopedFileAccessPolicy`, no new profile field.** The
 listing tool resolves its target through the existing read-access path, so it
@@ -90,17 +97,18 @@ the `AllowedTools` allowlist, not the filesystem scope.
 ## Risks / Trade-offs
 
 - **Public default-config regression** — operators relying on the default
-  Public profile lose `file_write` / `file_edit` in public channels. →
-  Mitigation: documented as BREAKING; the intent is exactly this tightening;
-  explicit `Tools.AudienceProfiles.Public` override remains available.
+  Public profile lose `file_write` / `file_edit` and `web_search` / `web_fetch`
+  in public channels. → Mitigation: documented as BREAKING; the intent is
+  exactly this tightening; explicit `Tools.AudienceProfiles.Public` override
+  remains available.
 - **DM reclassification surprises operators** — a workflow where a non-vetted
   user DMs the bot and expected Team-level tools now gets Public. → Mitigation:
   `ChannelAudiences.dm = "team"` restores the old behavior explicitly;
   documented in configuration.md and the `netclaw-operations` skill.
-- **`file_edit` gating affects custom configs** — an explicit allowlist that
-  omitted `file_edit` silently allowed it before and denies it now. →
-  Mitigation: this is the correct fail-closed behavior; called out in release
-  notes / spec delta.
+- **`file_edit` / `web_search` / `web_fetch` gating affects custom configs** —
+  an explicit allowlist that omitted one of them silently allowed it before and
+  denies it now. → Mitigation: this is the correct fail-closed behavior; called
+  out in release notes / spec delta. Default `Team`/`Personal` retain all three.
 - **New enumeration surface on Public** — `file_list` lets a Public session
   enumerate its session dir. → Mitigation: read-only, session-scoped, with
   sanitized denied-path errors (no root-path leakage), mirroring

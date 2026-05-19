@@ -1,10 +1,11 @@
 ## 1. Default audience profiles and tool gating
 
 - [x] 1.1 In `Netclaw.Configuration/ToolAudienceProfiles.cs`, set `CreatePublic()` `AllowedTools` to `[file_read, file_list, attach_file]` (`WriteFiles` stays session-scoped — see design.md).
-- [x] 1.2 In `CreateTeam()`, set `AllowedTools` to `[file_read, file_list, file_write, file_edit, attach_file, skill_manage, set_reminder, list_reminders, cancel_reminder, get_reminder_history, set_working_directory]`; keep `ToolsMode = Allowlist` and MCP disabled.
+- [x] 1.2 In `CreateTeam()`, set `AllowedTools` to `[file_read, file_list, file_write, file_edit, attach_file, web_search, web_fetch, skill_manage, set_reminder, list_reminders, cancel_reminder, get_reminder_history, set_working_directory]`; keep `ToolsMode = Allowlist` and MCP disabled.
 - [x] 1.3 Add a code comment on the factory methods stating the monotonic invariant `Public ⊆ Team ⊆ Personal`.
-- [x] 1.4 In `Netclaw.Actors/Tools/ToolAudienceProfileResolver.cs`, add `file_edit` and `file_list` to `IsProfileManagedTool`.
+- [x] 1.4 In `Netclaw.Actors/Tools/ToolAudienceProfileResolver.cs`, add `file_edit`, `file_list`, `web_search`, and `web_fetch` to `IsProfileManagedTool`.
 - [x] 1.5 Verify `netclaw-config.v1.schema.json` `AllowedTools` accepts arbitrary tool-name strings; if it enumerates names, add `file_list`.
+- [x] 1.6 Gate `web_search`/`web_fetch` as profile-managed tools — Public loses outbound web access; Team and Personal keep it. The deployment-wide search feature flag stays an orthogonal kill switch.
 
 ## 2. file_list directory-enumeration tool
 
