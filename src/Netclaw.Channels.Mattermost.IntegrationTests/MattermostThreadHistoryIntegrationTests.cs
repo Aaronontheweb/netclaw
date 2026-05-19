@@ -16,7 +16,10 @@ namespace Netclaw.Channels.Mattermost.IntegrationTests;
 [Collection("Mattermost")]
 public sealed class MattermostThreadHistoryIntegrationTests
 {
-    private static readonly TimeSpan PollTimeout = TimeSpan.FromSeconds(10);
+    // Generous ceiling: thread posts must propagate through a containerized
+    // Mattermost server, which is slow on a loaded CI runner. Polling stops as
+    // soon as the expected posts appear, so this only bounds the failure case.
+    private static readonly TimeSpan PollTimeout = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(100);
 
     private readonly MattermostFixture _fixture;

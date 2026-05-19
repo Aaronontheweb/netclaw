@@ -21,6 +21,12 @@ public sealed class MattermostGatewayIntegrationTests : IAsyncLifetime
     private MattermostClient? _botClient;
     private MattermostNetGatewayClient? _gateway;
 
+    // Generous ceiling for a real WebSocket round-trip through a containerized
+    // Mattermost server — a loaded CI runner is far slower than a dev machine.
+    // The TaskCompletionSource resolves as soon as the event arrives, so this
+    // only bounds the failure case; it does not slow the happy path.
+    private static readonly TimeSpan EventTimeout = TimeSpan.FromSeconds(60);
+
     public MattermostGatewayIntegrationTests(MattermostFixture fixture)
     {
         _fixture = fixture;
@@ -69,7 +75,7 @@ public sealed class MattermostGatewayIntegrationTests : IAsyncLifetime
 
         await _fixture.PostAsTestUserAsync(_fixture.ChannelId, "Hello from integration test");
 
-        var received = await receivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+        var received = await receivedTcs.Task.WaitAsync(EventTimeout, ct);
 
         Assert.Equal(_fixture.ChannelId, received.ChannelId.Value);
         Assert.Contains("Hello from integration test", received.Text);
@@ -94,7 +100,7 @@ public sealed class MattermostGatewayIntegrationTests : IAsyncLifetime
 
         await _fixture.PostAsTestUserAsync(_fixture.ChannelId, "Thread reply message", rootId: rootPostId);
 
-        var reply = await replyTcs.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+        var reply = await replyTcs.Task.WaitAsync(EventTimeout, ct);
 
         Assert.Equal(rootPostId, reply.RootPostId.Value);
         Assert.Contains("Thread reply message", reply.Text);
