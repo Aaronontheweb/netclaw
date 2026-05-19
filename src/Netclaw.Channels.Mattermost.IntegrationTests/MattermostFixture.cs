@@ -41,6 +41,12 @@ public sealed class MattermostFixture : IAsyncLifetime
     public string ChannelId { get; private set; } = string.Empty;
     public string TestUserId { get; private set; } = string.Empty;
 
+    /// <summary>
+    /// Set when no Docker/container runtime is available, so every test in the
+    /// collection self-skips instead of failing. Null when the container started.
+    /// </summary>
+    public string? SkipReason { get; private set; }
+
     public async ValueTask InitializeAsync()
     {
         _container = new ContainerBuilder()
@@ -59,7 +65,18 @@ public sealed class MattermostFixture : IAsyncLifetime
                 .AddCustomWaitStrategy(new WaitUntilApiReady()))
             .Build();
 
-        await _container.StartAsync();
+        try
+        {
+            await _container.StartAsync();
+        }
+        catch (Exception ex) when (IsDockerUnavailable(ex))
+        {
+            // No Docker/container runtime on this host (e.g. the Windows and
+            // macOS CI runners). These integration tests are best-effort and
+            // must never block CI — every test in the collection self-skips.
+            SkipReason = $"Docker is not available; Mattermost integration tests skipped. ({ex.GetType().Name}: {ex.Message})";
+            return;
+        }
 
         var port = _container.GetMappedPublicPort(8065);
         ServerUrl = $"http://localhost:{port}";
@@ -99,6 +116,39 @@ public sealed class MattermostFixture : IAsyncLifetime
     {
         if (_container is not null)
             await _container.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Skips the calling test when no container runtime started the Mattermost
+    /// server. Call this first in each test's setup so the suite degrades to
+    /// skipped rather than failed on hosts without Docker.
+    /// </summary>
+    public void SkipIfUnavailable()
+    {
+        if (SkipReason is not null)
+            Assert.Skip(SkipReason);
+    }
+
+    /// <summary>
+    /// Recognizes the exception types Testcontainers throws when no Docker
+    /// daemon is reachable. On Linux runners with Docker none of these match
+    /// and the suite runs normally.
+    /// </summary>
+    private static bool IsDockerUnavailable(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current.GetType().Name.Contains("Docker", StringComparison.Ordinal))
+                return true;
+
+            var msg = current.Message ?? "";
+            if (msg.Contains("Docker", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("named pipe", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("/var/run/docker.sock", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
     }
 
     public HttpClient CreateHttpClient()

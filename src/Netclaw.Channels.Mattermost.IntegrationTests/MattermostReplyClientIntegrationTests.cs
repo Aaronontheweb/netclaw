@@ -26,6 +26,7 @@ public sealed class MattermostReplyClientIntegrationTests
     [Fact]
     public async Task PostReplyAsync_creates_top_level_post()
     {
+        _fixture.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         using var botClient = new MattermostClient(_fixture.ServerUrl, _fixture.BotToken);
         using var apiClient = _fixture.CreateBotApiClient();
@@ -45,6 +46,7 @@ public sealed class MattermostReplyClientIntegrationTests
     [Fact]
     public async Task PostReplyAsync_creates_thread_reply()
     {
+        _fixture.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         using var botClient = new MattermostClient(_fixture.ServerUrl, _fixture.BotToken);
         using var apiClient = _fixture.CreateBotApiClient();
@@ -68,6 +70,7 @@ public sealed class MattermostReplyClientIntegrationTests
     [Fact]
     public async Task UpdatePostAsync_modifies_message_text()
     {
+        _fixture.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         using var botClient = new MattermostClient(_fixture.ServerUrl, _fixture.BotToken);
         using var apiClient = _fixture.CreateBotApiClient();
@@ -87,6 +90,7 @@ public sealed class MattermostReplyClientIntegrationTests
     [Fact]
     public async Task PostNewThreadAsync_creates_top_level_post_and_returns_root_id()
     {
+        _fixture.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         using var botClient = new MattermostClient(_fixture.ServerUrl, _fixture.BotToken);
         var outboundClient = new MattermostNetOutboundClient(botClient);
@@ -105,6 +109,7 @@ public sealed class MattermostReplyClientIntegrationTests
     [Fact]
     public async Task OpenDmChannelAsync_creates_dm_channel_with_test_user()
     {
+        _fixture.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         using var botClient = new MattermostClient(_fixture.ServerUrl, _fixture.BotToken);
         // Initialize CurrentUserInfo — in production this is done by the shared gateway client

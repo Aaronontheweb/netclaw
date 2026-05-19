@@ -29,6 +29,7 @@ public sealed class MattermostThreadHistoryIntegrationTests
     [Fact]
     public async Task GetThreadPostsAsync_returns_thread_messages_in_order()
     {
+        _fixture.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         using var botClient = new MattermostClient(_fixture.ServerUrl, _fixture.BotToken);
 
@@ -45,6 +46,7 @@ public sealed class MattermostThreadHistoryIntegrationTests
     [Fact]
     public async Task GetThreadPostsAsync_includes_root_post()
     {
+        _fixture.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         using var botClient = new MattermostClient(_fixture.ServerUrl, _fixture.BotToken);
 
@@ -61,6 +63,7 @@ public sealed class MattermostThreadHistoryIntegrationTests
     [Fact]
     public async Task Bot_can_read_its_own_posts_in_thread()
     {
+        _fixture.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         using var botClient = new MattermostClient(_fixture.ServerUrl, _fixture.BotToken);
 

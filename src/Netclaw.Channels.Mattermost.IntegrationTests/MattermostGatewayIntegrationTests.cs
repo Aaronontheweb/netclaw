@@ -28,6 +28,7 @@ public sealed class MattermostGatewayIntegrationTests : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
+        _fixture.SkipIfUnavailable();
         _botClient = new MattermostClient(_fixture.ServerUrl, _fixture.BotToken);
         _gateway = new MattermostNetGatewayClient(
             _botClient,
