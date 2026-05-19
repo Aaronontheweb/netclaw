@@ -177,7 +177,19 @@ public sealed class DaemonClientReconnectIntegrationTests
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseKestrel();
         builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
-        builder.Services.AddSignalR();
+
+        // Both DaemonClients in this file use serverTimeout: 2s so they notice a
+        // dead host fast. SignalR's contract is that the client's ServerTimeout
+        // must be at least 2x the server's KeepAliveInterval — otherwise the
+        // client tears down a perfectly healthy *idle* connection when no server
+        // ping arrives within ServerTimeout. The default KeepAliveInterval is
+        // 15s, so a 2s ServerTimeout would drop every idle connection after 2s.
+        // On a slow CI runner that turns the post-restart reconnect into an
+        // unbounded flap loop that never settles on a stable Connected event.
+        // A 200ms keep-alive keeps the 2s ServerTimeout valid (10x margin) so
+        // reconnected connections stay up.
+        builder.Services.AddSignalR(options =>
+            options.KeepAliveInterval = TimeSpan.FromMilliseconds(200));
         builder.Services.AddSingleton<FakeHubState>();
 
         var app = builder.Build();
