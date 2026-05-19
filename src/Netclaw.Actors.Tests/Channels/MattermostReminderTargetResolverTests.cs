@@ -13,17 +13,32 @@ public sealed class MattermostReminderTargetResolverTests
 {
     private readonly MattermostReminderTargetResolver _resolver = new();
 
-    [Theory]
-    [InlineData("abcdefghijklmnopqrstuvwxyz")]
-    [InlineData("@abcdefghijklmnopqrstuvwxyz")]
-    public async Task Resolves_user_targets_to_canonical_user_id(string input)
+    [Fact]
+    public async Task Resolves_at_prefixed_user_target_to_canonical_user_id()
     {
-        var result = await _resolver.ResolveAsync(input, TestContext.Current.CancellationToken);
+        var result = await _resolver.ResolveAsync(
+            "@abcdefghijklmnopqrstuvwxyz",
+            TestContext.Current.CancellationToken);
 
         Assert.True(result.Success);
         Assert.Equal(ReminderTargetKind.User, result.Kind);
         Assert.Equal("abcdefghijklmnopqrstuvwxyz", result.ResolvedId);
         Assert.Null(result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task Rejects_bare_id_as_ambiguous()
+    {
+        // A bare 26-char ID could be a user or a channel; the resolver must not
+        // guess, because guessing could deliver a reminder to the wrong audience.
+        var result = await _resolver.ResolveAsync(
+            "abcdefghijklmnopqrstuvwxyz",
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Equal(ReminderTargetKind.Unknown, result.Kind);
+        Assert.Null(result.ResolvedId);
+        Assert.Contains("Ambiguous", result.ErrorMessage);
     }
 
     [Fact]
