@@ -169,3 +169,22 @@ skipped rather than failed.
   invalid, expired, or replayed tokens, and routes only into existing sessions.
   If you do not need interactive approval buttons, leave `CallbackUrl` unset to
   keep the inbound HTTP surface closed.
+- **Always populate `AllowedUserIds`** on a production Mattermost configuration.
+  An empty allow-list means the daemon accepts inbound events and callback
+  clicks from *any* Mattermost user the bot can see — the action-token check
+  still rejects forged clicks, but any user who can legitimately click a button
+  posted in a shared channel could approve or deny on behalf of others. The
+  `netclaw init` wizard prompts for this; manual configurations should set
+  it explicitly.
+- **Action-token store is in-memory only.** Buttons posted before a Netclaw
+  restart will return "no longer valid" when clicked after the daemon comes
+  back up — the underlying request stays pending on the session actor, but
+  the user has to ask the agent to re-issue the approval prompt. The
+  callback endpoint must be reached via TLS terminating at the daemon (or on
+  a trusted internal network) — `payload.UserId` is trusted as the
+  clicker's identity, so a network attacker between Mattermost and Netclaw
+  who can rewrite headers in plaintext could substitute another user's ID.
+- The callback store enforces a hard cap of 10,000 outstanding tokens with
+  FIFO eviction of the oldest unconsumed entries. This defends against
+  memory pressure from minted-but-never-clicked buttons; under normal
+  operation the cap is never reached.
