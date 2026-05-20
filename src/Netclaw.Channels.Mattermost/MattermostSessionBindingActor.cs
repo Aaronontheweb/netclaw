@@ -749,7 +749,8 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             return;
         }
 
-        object feedbackResult;
+        ICommandReply feedbackResult;
+        using var feedbackCts = new CancellationTokenSource(OperationTimeout);
         try
         {
             feedbackResult = await _dependencies.Pipeline.SendFeedbackAndWaitAsync(new ToolInteractionResponse
@@ -758,7 +759,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                 CallId = message.CallId,
                 SelectedKey = new ApprovalOptionKey(message.SelectedKey),
                 SenderId = new SenderId(message.SenderId.Value)
-            }, OperationTimeout);
+            }, feedbackCts.Token);
         }
         catch (Exception ex)
         {
@@ -767,23 +768,30 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             return;
         }
 
-        if (feedbackResult is CommandNack nack)
+        CommandAck ack;
+        switch (feedbackResult)
         {
-            if (string.Equals(nack.Reason, "approval_wrong_requester", StringComparison.Ordinal))
-                await SafeReplyAsync(WrongRequesterWarning);
+            case CommandNack nack:
+                if (string.Equals(nack.Reason, "approval_wrong_requester", StringComparison.Ordinal))
+                    await SafeReplyAsync(WrongRequesterWarning);
+                ReplyIfExpected(replyTo, nack);
+                return;
 
-            ReplyIfExpected(replyTo, nack);
-            return;
-        }
+            case CommandAck ok:
+                ack = ok;
+                break;
 
-        if (feedbackResult is not CommandAck ack)
-        {
-            _log.Warning(
-                "Mattermost approval response for call {CallId} returned unexpected feedback result {ResultType}",
-                message.CallId,
-                feedbackResult.GetType().Name);
-            ReplyIfExpected(replyTo, CommandNack.For(_sessionId, "approval_persist_failed"));
-            return;
+            default:
+                // Unreachable: ICommandReply is implemented only by CommandAck
+                // and CommandNack. Kept as a defensive guard so an unexpected
+                // future implementer surfaces a structured Nack instead of an
+                // unobservable null reference.
+                _log.Warning(
+                    "Mattermost approval response for call {CallId} returned unexpected feedback result {ResultType}",
+                    message.CallId,
+                    feedbackResult.GetType().Name);
+                ReplyIfExpected(replyTo, CommandNack.For(_sessionId, "approval_persist_failed"));
+                return;
         }
 
         if (pending is not null)

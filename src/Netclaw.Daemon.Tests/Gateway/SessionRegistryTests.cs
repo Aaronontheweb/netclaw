@@ -282,7 +282,7 @@ public sealed class SessionRegistryTests
         public Task SendFeedbackAsync(IWithSessionId feedback, CancellationToken ct = default)
             => Task.CompletedTask;
 
-        public Task<object> SendFeedbackAndWaitAsync(IWithSessionId feedback, TimeSpan timeout, CancellationToken ct = default)
-            => Task.FromResult<object>(CommandAck.For(feedback.SessionId));
+        public Task<ICommandReply> SendFeedbackAndWaitAsync(IWithSessionId feedback, CancellationToken ct = default)
+            => Task.FromResult<ICommandReply>(CommandAck.For(feedback.SessionId));
     }
 }

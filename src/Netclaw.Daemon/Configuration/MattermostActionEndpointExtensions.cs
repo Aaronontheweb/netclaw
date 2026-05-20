@@ -48,7 +48,7 @@ public static class MattermostActionEndpointExtensions
 
         app.MapPost("/api/mattermost/actions", async (
             HttpContext httpContext,
-            ActorSystem actorSystem,
+            IRequiredActor<MattermostGatewayActorKey> gatewayActor,
             TimeProvider timeProvider,
             MattermostChannelOptions options,
             MattermostCallbackActionStore actionStore,
@@ -112,8 +112,18 @@ public static class MattermostActionEndpointExtensions
                 return Results.BadRequest("Callback routing data did not match the issued action.");
             }
 
-            var registry = ActorRegistry.For(actorSystem);
-            if (!registry.TryGet<MattermostGatewayActorKey>(out var gateway))
+            // Bound the actor-resolution wait so a daemon still mid-startup
+            // returns 503 fast instead of letting the HTTP request hang behind
+            // an actor system that's not yet ready.
+            using var gatewayResolveCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            gatewayResolveCts.CancelAfter(TimeSpan.FromSeconds(2));
+
+            IActorRef gateway;
+            try
+            {
+                gateway = await gatewayActor.GetAsync(gatewayResolveCts.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 logger.LogError("Mattermost callback received before the Mattermost gateway actor was registered.");
                 return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
@@ -132,12 +142,11 @@ public static class MattermostActionEndpointExtensions
 
             try
             {
-                var feedbackResult = await gateway.Ask<object>(
-                    interaction,
-                    TimeSpan.FromSeconds(10),
-                    cancellationToken: ct);
+                using var askCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                askCts.CancelAfter(TimeSpan.FromSeconds(10));
+                var reply = await gateway.Ask<ICommandReply>(interaction, askCts.Token);
 
-                return feedbackResult switch
+                return reply switch
                 {
                     CommandAck => Results.Json(new ActionCallbackResponse
                     {

@@ -352,16 +352,26 @@ public sealed class MattermostActionEndpointExtensionsTests(ITestOutputHelper ou
         bool useRealRateLimiter = false,
         bool registerGatewayActor = true)
     {
+        IRequiredActor<MattermostGatewayActorKey> requiredActor;
         if (registerGatewayActor)
         {
             var gateway = Sys.ActorOf(Props.Create(() => new GatewayResponderActor(gatewayResponseFactory, recorder)));
-            ActorRegistry.For(Sys).Register<MattermostGatewayActorKey>(gateway);
+            requiredActor = new FakeRequiredActor(gateway);
+        }
+        else
+        {
+            // Simulates the daemon-startup race where the HTTP endpoint is
+            // bound but the channel has not yet registered its gateway actor.
+            // GetAsync never completes, so the endpoint must time out and
+            // return 503 — see the 503 regression test.
+            requiredActor = new FakeRequiredActor(unresolved: true);
         }
 
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
 
         builder.Services.AddSingleton<ActorSystem>(Sys);
+        builder.Services.AddSingleton<IRequiredActor<MattermostGatewayActorKey>>(requiredActor);
         builder.Services.AddSingleton<TimeProvider>(time);
         builder.Services.AddSingleton(new MattermostChannelOptions
         {
@@ -405,6 +415,47 @@ public sealed class MattermostActionEndpointExtensionsTests(ITestOutputHelper ou
                 recorder.Record(interaction);
                 Sender.Tell(gatewayResponseFactory(interaction));
             });
+        }
+    }
+
+    /// <summary>
+    /// Wraps an <see cref="IActorRef"/> as <see cref="IRequiredActor{TKey}"/> so
+    /// the test host can inject it without bringing in the full Akka.Hosting
+    /// service registration. When <c>unresolved</c> is true,
+    /// <see cref="GetAsync"/> never completes — used to exercise the 503 path
+    /// when the channel hasn't registered its gateway actor yet.
+    /// </summary>
+    private sealed class FakeRequiredActor : IRequiredActor<MattermostGatewayActorKey>
+    {
+        private readonly IActorRef _actorRef;
+        private readonly bool _unresolved;
+
+        public FakeRequiredActor(IActorRef actorRef)
+        {
+            _actorRef = actorRef;
+            _unresolved = false;
+        }
+
+        public FakeRequiredActor(bool unresolved)
+        {
+            _actorRef = ActorRefs.Nobody;
+            _unresolved = unresolved;
+        }
+
+        public IActorRef ActorRef => _actorRef;
+
+        public Task<IActorRef> GetAsync(CancellationToken cancellationToken = default)
+        {
+            if (!_unresolved)
+                return Task.FromResult(_actorRef);
+
+            // Mirror IRequiredActor.GetAsync's real semantics when the keyed
+            // actor has not yet been registered: the promise never completes
+            // on its own — the caller must time out via its own CT. Used to
+            // exercise the 503 path.
+            var tcs = new TaskCompletionSource<IActorRef>(TaskCreationOptions.RunContinuationsAsynchronously);
+            cancellationToken.Register(() => tcs.TrySetCanceled(cancellationToken));
+            return tcs.Task;
         }
     }
 
