@@ -144,6 +144,21 @@ Common failure patterns:
 - `Mattermost rejected the bot token (HTTP 401).`
   - Re-issue the bot token and update `secrets.json`.
 
+## Integration tests (opt-in)
+
+The `Netclaw.Channels.Mattermost.IntegrationTests` project boots a real
+`mattermost/mattermost-preview` container via Testcontainers. By design it is
+excluded from required CI — a developer or dedicated CI lane opts in with:
+
+```bash
+NETCLAW_RUN_MATTERMOST_INTEGRATION_TESTS=1 \
+  dotnet test src/Netclaw.Channels.Mattermost.IntegrationTests
+```
+
+Without the env var, every test in the collection self-skips. Docker must be
+reachable when the env var is set; otherwise the suite still degrades to
+skipped rather than failed.
+
 ## Security notes
 
 - Treat Mattermost bot tokens as secrets. If a token appears in logs, chat,

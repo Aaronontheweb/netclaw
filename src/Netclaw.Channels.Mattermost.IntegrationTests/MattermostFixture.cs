@@ -49,6 +49,19 @@ public sealed class MattermostFixture : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
+        // Opt-in by design: these integration tests stand up a real Mattermost
+        // container via Testcontainers and run a multi-second handshake against
+        // it. They are excluded from required CI (PR description, task 14.5) and
+        // only execute when the developer (or a dedicated CI lane) explicitly
+        // sets NETCLAW_RUN_MATTERMOST_INTEGRATION_TESTS=1. Default CI sees the
+        // env var unset and every test in the collection self-skips.
+        var optIn = Environment.GetEnvironmentVariable("NETCLAW_RUN_MATTERMOST_INTEGRATION_TESTS");
+        if (!string.Equals(optIn, "1", StringComparison.Ordinal))
+        {
+            SkipReason = "Mattermost integration tests are opt-in; set NETCLAW_RUN_MATTERMOST_INTEGRATION_TESTS=1 to run.";
+            return;
+        }
+
         IContainer? container = null;
         try
         {

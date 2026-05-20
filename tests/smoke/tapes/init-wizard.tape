@@ -90,12 +90,12 @@ Enter
 Wait+Screen@10s /Notification webhook URL/
 Enter
 
-# ─── Step 7: External Skills ─────────────────────────────────────────
-Wait+Screen@10s /External skill directories detected:|Add a custom skill directory/
-Enter
-
-Wait+Screen@10s /Add a custom skill directory/
-Enter
+# ─── Step 7: External Skills (skipped in smoke) ─────────────────────
+# ExternalSkillsStep.IsApplicable returns false when _detectedSources.Count == 0.
+# The smoke host has no Claude Code etc., so the wizard goes straight
+# from Identity → SkillFeeds with no External Skills prompts. If that ever
+# changes (smoke host starts seeding Claude Code), we'll need to handle
+# the "External skill directories detected" multi-select + custom dir input.
 
 # ─── Step 8: Skill Feeds ────────────────────────────────────────────
 Wait+Screen@10s /Connect to a private skill server/
