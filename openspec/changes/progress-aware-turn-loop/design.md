@@ -1,5 +1,4 @@
 ## Context
-## Context
 
 The session turn loop currently uses `SessionConfig.MaxToolCallsPerTurn` to cap
 work inside one user turn. That limit counts individual tool calls, which makes

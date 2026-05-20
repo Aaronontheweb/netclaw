@@ -40,7 +40,7 @@ public class MaxToolIterationTests : LlmSessionTestBase
         });
         services.AddSingleton(new SessionConfig
         {
-            MaxToolCallsPerTurn = 3,
+            MaxToolIterationsPerTurn = 3,
             Tuning = new SessionTuning
             {
                 SnapshotInterval = 5,

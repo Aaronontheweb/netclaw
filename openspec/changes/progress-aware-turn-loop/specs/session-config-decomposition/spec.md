@@ -1,5 +1,4 @@
 ## MODIFIED Requirements
-## MODIFIED Requirements
 
 ### Requirement: Slimmed SessionConfig with TimeSpan timeouts
 

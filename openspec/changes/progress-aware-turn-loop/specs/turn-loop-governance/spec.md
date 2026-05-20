@@ -1,5 +1,4 @@
 ## ADDED Requirements
-## ADDED Requirements
 
 ### Requirement: Per-turn tool loop limit is iteration-based
 

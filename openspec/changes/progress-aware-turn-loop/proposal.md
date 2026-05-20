@@ -1,5 +1,4 @@
 ## Why
-## Why
 
 The current `MaxToolCallsPerTurn` limit is the wrong control surface for long
 productive turns. It counts raw tool calls, so a single LLM response that

@@ -151,7 +151,7 @@ Tuning parameters for LLM session behavior.
     "CompactionThreshold": 0.75,
     "SnapshotInterval": 20,
     "KeepRecentToolResults": 3,
-    "MaxToolCallsPerTurn": 30,
+    "MaxToolIterationsPerTurn": 60,
     "SidecarLlmTimeoutSeconds": 90,
     "TurnLlmTimeoutSeconds": 180,
     "ToolExecutionTimeoutSeconds": 90
@@ -164,7 +164,7 @@ Tuning parameters for LLM session behavior.
 | `CompactionThreshold` | double | `0.75` | Context usage ratio (0.0–1.0) at which compaction triggers. |
 | `SnapshotInterval` | int | `20` | Number of turns between persistence snapshots. |
 | `KeepRecentToolResults` | int | `3` | Recent tool call/result pairs kept in full during compaction. |
-| `MaxToolCallsPerTurn` | int | `30` | Max individual tool calls per turn. At ~75% a budget nudge is injected; at 100% tools are stripped and the model is asked to summarize. |
+| `MaxToolIterationsPerTurn` | int | `60` | Max LLM-to-tools-to-LLM iterations per turn. One LLM response with any number of parallel tool calls counts as exactly one iteration. At ~75% a budget nudge is injected; at 100% tools are stripped and the model is asked to summarize. |
 | `SidecarLlmTimeoutSeconds` | int | `90` | Timeout for sidecar LLM calls (title generation, observer summaries, memory extraction). |
 | `TurnLlmTimeoutSeconds` | int | `180` | Timeout for the primary per-turn LLM streaming call before forcing an error/recovery path. |
 | `ToolExecutionTimeoutSeconds` | int | `90` | Per-tool-call inactivity budget. A tool must produce its first result or stream item within this time, and each later item resets the budget. |
@@ -492,7 +492,7 @@ export NETCLAW_Telemetry__Enabled="true"
 export NETCLAW_Telemetry__Otlp__Endpoint="http://127.0.0.1:4317"
 
 # Override session settings
-export NETCLAW_Session__MaxToolCallsPerTurn="30"
+export NETCLAW_Session__MaxToolIterationsPerTurn="60"
 ```
 
 ## Complete Example
@@ -526,7 +526,7 @@ export NETCLAW_Session__MaxToolCallsPerTurn="30"
     "CompactionThreshold": 0.75,
     "SnapshotInterval": 20,
     "KeepRecentToolResults": 3,
-    "MaxToolCallsPerTurn": 30,
+    "MaxToolIterationsPerTurn": 60,
     "TurnLlmTimeoutSeconds": 180,
     "ToolExecutionTimeoutSeconds": 90
   },
