@@ -190,17 +190,11 @@ internal sealed class MattermostConversationActor : ReceiveActor
             return;
         }
 
-        var actorName = BuildActorName(_channelId, interaction.RootPostId);
-        var sessionBinding = Context.Child(actorName);
-        if (sessionBinding.IsNobody())
-        {
-            _log.Info(
-                "Ignoring Mattermost interaction for missing session binding channel={0} rootPost={1}",
-                _channelId.Value,
-                interaction.RootPostId.Value);
-            ChannelTelemetry.For(ChannelType.Mattermost).RecordExtra("interactionErrors", "missing_session_binding");
-            return;
-        }
+        var sessionId = new SessionId($"{_channelId.Value}/{interaction.RootPostId.Value}");
+        var sessionBinding = GetOrCreateSessionBinding(
+            sessionId,
+            _channelId,
+            interaction.RootPostId);
 
         ChannelTelemetry.For(ChannelType.Mattermost).RecordEventRouted("interaction");
         sessionBinding.Forward(new MattermostApprovalResponse(

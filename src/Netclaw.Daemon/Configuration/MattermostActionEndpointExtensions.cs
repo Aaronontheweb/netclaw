@@ -5,11 +5,13 @@
 // -----------------------------------------------------------------------
 using System.Text.Json;
 using System.Threading.RateLimiting;
+using Akka.Actor;
+using Akka.Hosting;
 using Microsoft.AspNetCore.RateLimiting;
+using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Channels.Mattermost;
-using Netclaw.Tools;
 
 namespace Netclaw.Daemon.Configuration;
 
@@ -42,7 +44,8 @@ public static class MattermostActionEndpointExtensions
 
         app.MapPost("/api/mattermost/actions", async (
             HttpContext httpContext,
-            ISessionPipeline pipeline,
+            ActorSystem actorSystem,
+            TimeProvider timeProvider,
             MattermostChannelOptions options,
             MattermostCallbackActionStore actionStore,
             ILogger<MattermostChannel> logger,
@@ -98,30 +101,38 @@ public static class MattermostActionEndpointExtensions
                 }, JsonOptions);
             }
 
-            if (!string.Equals(payload.ChannelId, storedAction.ChannelId, StringComparison.Ordinal)
-                || !string.Equals(payload.PostId, storedAction.RootPostId, StringComparison.Ordinal))
+            if (!string.Equals(payload.ChannelId, storedAction.ChannelId, StringComparison.Ordinal))
             {
                 logger.LogWarning(
-                    "Rejected Mattermost action callback with mismatched routing data channel={ChannelId} post={PostId}",
-                    payload.ChannelId,
-                    payload.PostId);
+                    "Rejected Mattermost action callback with mismatched routing data channel={ChannelId}",
+                    payload.ChannelId);
                 return Results.BadRequest("Callback routing data did not match the issued action.");
             }
 
-            var response = new ToolInteractionResponse
+            var registry = ActorRegistry.For(actorSystem);
+            if (!registry.TryGet<MattermostGatewayActorKey>(out var gateway))
             {
-                SessionId = new SessionId($"{storedAction.ChannelId}/{storedAction.RootPostId}"),
-                CallId = new ToolCallId(storedAction.CallId),
-                SelectedKey = new ApprovalOptionKey(storedAction.SelectedKey),
-                SenderId = new SenderId(payload.UserId)
-            };
+                logger.LogError("Mattermost callback received before the Mattermost gateway actor was registered.");
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }
+
+            var interaction = new MattermostGatewayInteraction(
+                ChannelId: new MattermostChannelId(storedAction.ChannelId),
+                RootPostId: new MattermostRootPostId(storedAction.RootPostId),
+                CallId: storedAction.CallId,
+                SelectedKey: storedAction.SelectedKey,
+                SenderId: new MattermostUserId(payload.UserId),
+                RequesterSenderId: storedAction.RequesterSenderId is { Length: > 0 } requesterSenderId
+                    ? new MattermostUserId(requesterSenderId)
+                    : null,
+                ReceivedAt: timeProvider.GetUtcNow());
 
             try
             {
-                var feedbackResult = await pipeline.SendFeedbackAndWaitAsync(
-                    response,
+                var feedbackResult = await gateway.Ask<object>(
+                    interaction,
                     TimeSpan.FromSeconds(10),
-                    ct);
+                    cancellationToken: ct);
 
                 return feedbackResult switch
                 {

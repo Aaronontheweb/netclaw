@@ -725,11 +725,13 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
 
     private async Task HandleApprovalResponseAsync(MattermostApprovalResponse message)
     {
+        var replyTo = Sender;
         var (result, pending) = ResolvePendingRequest(message.SenderId, message.CallId);
 
         if (result is ApprovalLookupResult.WrongRequester)
         {
             await SafeReplyAsync(WrongRequesterWarning);
+            ReplyIfExpected(replyTo, CommandNack.For(_sessionId, "approval_wrong_requester"));
             return;
         }
 
@@ -743,16 +745,46 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                 "Dropping stale Mattermost approval response for call {0}; no local pending entry after turn-cleared list",
                 message.CallId);
             ChannelTelemetry.For(ChannelType.Mattermost).RecordExtra("interactionErrors", "stale_after_turn");
+            ReplyIfExpected(replyTo, CommandNack.For(_sessionId, "approval_prompt_expired"));
             return;
         }
 
-        await _dependencies.Pipeline.SendFeedbackAsync(new ToolInteractionResponse
+        object feedbackResult;
+        try
         {
-            SessionId = _sessionId,
-            CallId = message.CallId,
-            SelectedKey = new ApprovalOptionKey(message.SelectedKey),
-            SenderId = new SenderId(message.SenderId.Value)
-        });
+            feedbackResult = await _dependencies.Pipeline.SendFeedbackAndWaitAsync(new ToolInteractionResponse
+            {
+                SessionId = _sessionId,
+                CallId = message.CallId,
+                SelectedKey = new ApprovalOptionKey(message.SelectedKey),
+                SenderId = new SenderId(message.SenderId.Value)
+            }, OperationTimeout);
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Failed to route Mattermost approval response for call {CallId}", message.CallId);
+            ReplyIfExpected(replyTo, CommandNack.For(_sessionId, "approval_persist_failed"));
+            return;
+        }
+
+        if (feedbackResult is CommandNack nack)
+        {
+            if (string.Equals(nack.Reason, "approval_wrong_requester", StringComparison.Ordinal))
+                await SafeReplyAsync(WrongRequesterWarning);
+
+            ReplyIfExpected(replyTo, nack);
+            return;
+        }
+
+        if (feedbackResult is not CommandAck ack)
+        {
+            _log.Warning(
+                "Mattermost approval response for call {CallId} returned unexpected feedback result {ResultType}",
+                message.CallId,
+                feedbackResult.GetType().Name);
+            ReplyIfExpected(replyTo, CommandNack.For(_sessionId, "approval_persist_failed"));
+            return;
+        }
 
         if (pending is not null)
         {
@@ -770,6 +802,8 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                 message.CallId);
             ChannelTelemetry.For(ChannelType.Mattermost).RecordExtra("interactionErrors", "cold_spawn_redraw_skipped");
         }
+
+        ReplyIfExpected(replyTo, ack);
     }
 
     private async Task TryResolveApprovalPromptAsync(
@@ -1083,6 +1117,14 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         {
             _log.Error(ex, "Failed to send auto-deny feedback for call {CallId}", callId);
         }
+    }
+
+    private void ReplyIfExpected(IActorRef replyTo, object response)
+    {
+        if (replyTo.IsNobody() || Equals(replyTo, ActorRefs.Nobody) || Equals(replyTo, Context.System.DeadLetters))
+            return;
+
+        replyTo.Tell(response);
     }
 
     private static readonly TimeSpan OperationTimeout = TimeSpan.FromSeconds(10);

@@ -104,6 +104,8 @@ public sealed class MattermostSessionBindingContractTests(ITestOutputHelper outp
 
     protected override ChannelType ExpectedChannelType => ChannelType.Mattermost;
 
+    protected override bool SupportsApprovalSenderReplies => true;
+
     protected override bool SupportsThreadHydration => true;
 
     private long _hydrationEventCounter;

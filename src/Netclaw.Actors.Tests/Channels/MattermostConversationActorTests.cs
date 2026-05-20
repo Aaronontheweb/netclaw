@@ -320,8 +320,9 @@ public sealed class MattermostConversationActorTests(ITestOutputHelper output) :
             RequesterSenderId: null,
             ReceivedAt: TimeProvider.System.GetUtcNow()));
 
-        await sink.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(250),
-            TestContext.Current.CancellationToken);
+        var approval = await sink.ExpectMsgAsync<MattermostApprovalResponse>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal("call-1", approval.CallId.Value);
     }
 
     [Fact]
