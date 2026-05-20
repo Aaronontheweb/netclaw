@@ -8,6 +8,7 @@ using Akka.Hosting;
 using Akka.Persistence.Hosting;
 using Microsoft.Extensions.AI;
 using Netclaw.Actors.Channels;
+using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Tests.Channels.TestHelpers;
 using Netclaw.Channels.Mattermost;
@@ -25,7 +26,11 @@ public sealed class MattermostSessionBindingContractTests(ITestOutputHelper outp
 
     protected override void ConfigureAkka(AkkaConfigurationBuilder builder, IServiceProvider provider)
     {
-        builder.WithInMemoryJournal().WithInMemorySnapshotStore();
+        // WithNetclawSerialization registers the strict-serialization checker the
+        // daemon uses, so any persisted event lacking INetclawSerializableMessage
+        // or a proto manifest will fail loudly in tests instead of silently
+        // surviving on the in-memory journal — matches Slack/Discord contract tests.
+        builder.WithInMemoryJournal().WithInMemorySnapshotStore().WithNetclawSerialization();
     }
 
     protected override IActorRef CreateBindingActor(

@@ -38,9 +38,14 @@ public sealed class MattermostReminderTargetResolver : IReminderTargetResolver
             var channelId = raw[8..].Trim();
             if (IsMattermostId(channelId))
             {
+                // Preserve the "channel:" prefix in the canonical form. Mattermost
+                // channel IDs and user IDs are both 26-char alphanumeric strings,
+                // so the bare ID is indistinguishable downstream — the reminder
+                // prompt builder and send_mattermost_message dispatcher need the
+                // prefix to know whether to target a channel or open a DM.
                 return Task.FromResult(new ReminderTargetResolution(
                     Success: true,
-                    ResolvedId: channelId,
+                    ResolvedId: $"channel:{channelId}",
                     Kind: ReminderTargetKind.Channel,
                     ErrorMessage: null));
             }
@@ -57,9 +62,13 @@ public sealed class MattermostReminderTargetResolver : IReminderTargetResolver
             var userId = raw[1..].Trim();
             if (IsMattermostId(userId))
             {
+                // See the "channel:" branch above: the "@" prefix is preserved in
+                // the canonical form so the prompt builder and the DM-open path
+                // can distinguish a user target from a channel target. Without
+                // this the bare ID looks identical to a channel ID.
                 return Task.FromResult(new ReminderTargetResolution(
                     Success: true,
-                    ResolvedId: userId,
+                    ResolvedId: $"@{userId}",
                     Kind: ReminderTargetKind.User,
                     ErrorMessage: null));
             }

@@ -1441,13 +1441,11 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
 
     private void ApplyCursorAdvanced(CursorAdvanced advanced)
     {
-        _cursorPostId = advanced.CursorPostId;
+        _cursorPostId = advanced.Cursor;
 
         if (!IsRecovering && LastSequenceNr > 1 && LastSequenceNr % 10 == 0)
             DeleteMessages(LastSequenceNr - 1);
     }
-
-    private readonly record struct CursorAdvanced(string CursorPostId);
 
     private sealed record InitializePipeline
     {
