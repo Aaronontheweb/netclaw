@@ -64,7 +64,7 @@
 
 ## 10. Reminders and scheduled delivery
 
-- [x] 10.1 `MattermostReminderTargetResolver` canonicalizing `channel:<id>` and `@<userId>` targets; bare ambiguous IDs rejected.
+- [x] 10.1 `MattermostReminderTargetResolver` canonicalizing `channel:<channelId>` and `@<userId>` targets (prefix preserved in canonical form so downstream dispatch can tell a channel post from a DM open); bare ambiguous IDs rejected.
 - [x] 10.2 `Channel`-delivery reminders spawn a fresh continuable session with the reminder's stored audience.
 - [x] 10.3 `CurrentSession`-delivery reminders re-enter the originating session via the gateway trusted-turn handler.
 - [x] 10.4 Duplicate reminder execution prevented; no `ReceiveTimeout` that kills long LLM chains.
@@ -72,9 +72,9 @@
 ## 11. Interactive approvals and callback endpoint
 
 - [x] 11.1 `MattermostApprovalPromptBuilder` and interactive-button approval prompts.
-- [x] 11.2 HMAC signer/verifier using a per-daemon ephemeral key for callback payloads.
+- [x] 11.2 Single-use opaque action token (32 bytes RNG, server-stored in `MattermostCallbackActionStore`, channel-bound, 12h TTL) minted per button option and consumed on the first callback.
 - [x] 11.3 `/api/mattermost/actions` callback route registered only when the channel is enabled with a `CallbackUrl` configured.
-- [x] 11.4 Signature verified (fail-closed when no signing key) and ACL run on the resolved sender before mutating approval state; responses route by session identity into existing sessions only.
+- [x] 11.4 Action-token consumed atomically (fail-closed on unknown/expired/replayed token); payload `channel_id` must match the token's bound channel; ACL run on the resolved sender before mutating approval state; responses route by session identity into existing sessions only.
 - [x] 11.5 Deterministic A/B/C/D text-reply approval fallback when interactive approvals are not configured.
 
 ## 12. Daemon wiring and configuration
@@ -95,16 +95,16 @@
 ## 14. Unit and integration tests
 
 - [x] 14.1 Unit tests for ACL policy, routing policy, message chunking, attachment URL trust, and reminder target resolution.
-- [x] 14.2 Unit tests for HMAC callback signing/verification and approval response routing (including the passivation-survival case).
+- [x] 14.2 Unit tests for action-token mint/consume, replay rejection, mismatched-channel rejection, non-allowlisted-user rejection, gateway-not-yet-registered 503, and approval response routing (including the passivation-survival case).
 - [x] 14.3 Offline tests for thread-history backfill (root-only bot dedup, deferred-hydration re-arm) via the contract suite.
 - [x] 14.4 Proactive-send and conversation-actor tests covering the gateway hierarchy.
-- [x] 14.5 Testcontainers integration tests added in `Netclaw.Channels.Mattermost.IntegrationTests` (compile-verified; excluded from required CI — they need a live Mattermost container).
+- [x] 14.5 Testcontainers integration tests added in `Netclaw.Channels.Mattermost.IntegrationTests` (compile-verified; gated on `NETCLAW_RUN_MATTERMOST_INTEGRATION_TESTS=1` so the suite self-skips in required CI and only runs on opt-in).
 
 ## 15. Skills, evals, and docs
 
 - [x] 15.1 `netclaw-operations` system skill updated for Mattermost channel config and the `send_mattermost_message` tool; `metadata.version` bumped to 2.5.0.
 - [x] 15.2 Reviewed the need for a dedicated eval case for `send_mattermost_message`; none added — channel proactive-post tools (`send_slack_message`, `send_discord_message`) have no eval cases, and the tool is reached via the standard `search_tools` discovery path already covered by the eval suite.
-- [x] 15.3 Added `docs/integrations/mattermost-channel.md` operator runbook, including the HMAC ephemeral-key lifecycle.
+- [x] 15.3 Added `docs/integrations/mattermost-channel.md` operator runbook, including the callback action-token lifecycle (in-memory, single-use, invalidated on daemon restart).
 
 ## 16. Validation and quality gates
 
@@ -121,4 +121,4 @@
 - [x] 17.2 Wire Mattermost into the unified `ChannelPickerStepViewModel` as a third selectable channel; add the `WizardStepIds.Mattermost` constant.
 - [x] 17.3 Write a `Mattermost` section to `netclaw.json` and the bot token to `secrets.json` via `WizardConfigBuilder` (`MattermostConfigSection`).
 - [x] 17.4 Add `MattermostStepViewModelTests` and channel-picker/config-builder test coverage; `Netclaw.Cli.Tests` pass (724 total).
-- [x] 17.5 Validate via the native TUI smoke harness. The `init-wizard` tape exercises the channel picker with Mattermost present and advances past it cleanly; the tape fails further along only on a pre-existing environmental issue (the External Skills step detecting Claude Code directories on the dev host) unrelated to this change — on a clean CI host the tape passes.
+- [x] 17.5 Validate via the native TUI smoke harness. The `init-wizard` tape exercises the channel picker with Mattermost present and advances past it cleanly. The tape leaves the External Skills step skipped (its `IsApplicable` returns false on a smoke host with no Claude Code etc.), matching pre-PR behavior; an earlier accidental tape edit that assumed the step was always shown has been reverted.

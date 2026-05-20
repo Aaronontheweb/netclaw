@@ -27,7 +27,7 @@ Source PRDs: `PRD-009-input-adapters-and-unified-input.md`,
   messages — Mattermost DMs are addressable channels, so DM reminder targets are
   supported (an improvement over Discord, which rejects them).
 - Add interactive tool-approval UX for Mattermost via a channel-owned,
-  HMAC-verified inbound HTTP callback endpoint (`/api/mattermost/actions`), with
+  token-authenticated inbound HTTP callback endpoint (`/api/mattermost/actions`), with
   a deterministic text-reply fallback. Mattermost — unlike Slack Socket Mode and
   the Discord gateway — delivers interactive button clicks only over inbound
   HTTP, so a new authenticated inbound surface is required.
@@ -39,7 +39,7 @@ replies/outbound), ACL-gated ingress parity, deterministic session identity,
 thread-bound reply delivery, thread-history backfill with root-only bot dedup,
 proactive sends with ack, scheduled-reminder delivery to channels and DMs,
 reminder-spawned interactive sessions, interactive approvals via an
-HMAC-verified callback endpoint with deterministic text fallback, channel
+token-authenticated callback endpoint with deterministic text fallback, channel
 conformance contract suites, and offline + Testcontainers test coverage.
 
 **Out of scope:** Mattermost plugin packaging, slash-command app registration on
@@ -63,10 +63,10 @@ any change to session actor or persistence contracts.
   routing semantics while preserving transport-agnostic actor/session
   boundaries.
 - `tool-approval-gates`: Add Mattermost interactive approval rendering and
-  response handling via a channel-owned HMAC-verified callback endpoint, with a
+  response handling via a channel-owned token-authenticated callback endpoint, with a
   deterministic text-reply fallback that produces equivalent approval outcomes.
 - `netclaw-gateway-security`: Add requirements for a channel-owned,
-  HMAC-verified, ACL-checked inbound HTTP callback endpoint for Mattermost
+  token-authenticated, ACL-checked inbound HTTP callback endpoint for Mattermost
   interactive actions — the first channel to require an inbound HTTP surface.
 - `netclaw-testing`: Add CI-safe offline test requirements for the Mattermost
   adapter (conformance contract suites, fallback behavior) plus optional
@@ -86,7 +86,8 @@ any change to session actor or persistence contracts.
 - **Dependencies:** adds the Mattermost.NET client library and Testcontainers
   (test-only).
 - **Security impact:** introduces the first channel-owned inbound HTTP endpoint.
-  It is HMAC-verified and ACL-checked, fails closed on invalid configuration,
+  It is authenticated by single-use opaque action token (server-stored,
+  channel-bound, 12h TTL) and ACL-checked, fails closed on invalid configuration,
   and is disabled unless the Mattermost channel is enabled with interactive
   approvals configured. Default-deny ACL and fail-closed startup posture are
   preserved for all Mattermost paths.

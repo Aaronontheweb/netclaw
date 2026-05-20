@@ -41,8 +41,9 @@ require a new authenticated inbound endpoint.
    handshake.
 4. Support scheduled-reminder delivery to both channels and direct messages, and
    reminder-spawned interactive sessions.
-5. Support interactive approvals via a channel-owned, HMAC-verified, ACL-checked
-   inbound HTTP callback endpoint, with a deterministic text-reply fallback.
+5. Support interactive approvals via a channel-owned, token-authenticated,
+   ACL-checked inbound HTTP callback endpoint, with a deterministic text-reply
+   fallback.
 6. Preserve transport-agnostic actor boundaries, fail-closed startup, and
    default-deny ACL.
 7. Provide CI-safe offline conformance coverage and optional Testcontainers
@@ -90,26 +91,40 @@ shared conformance contract suites. Session actors stay transport-agnostic.
 **Alternative considered:** flat single-actor design. Rejected — duplicates
 routing logic and cannot satisfy the gateway/binding contract suites.
 
-### D3. Interactive approvals via a channel-owned HMAC-verified callback endpoint
+### D3. Interactive approvals via a channel-owned token-authenticated callback endpoint
 
 **Choice:** Register `/api/mattermost/actions` as a channel-owned ASP.NET route
-alongside the daemon's other channel handlers. Mattermost button payloads are
-HMAC-verified (per-daemon ephemeral signing key embedded in the button's action
-context), ACL-checked, then routed by session identity to the owning session
-actor — mirroring `SlackApprovalHandler`. A deterministic text-reply fallback
-(A/B/C/D) is always available and arrives over the WebSocket like any message.
+alongside the daemon's other channel handlers. Each button option is minted with
+a **single-use opaque action token** (32 bytes RNG, channel-bound, 12h TTL,
+server-stored in `MattermostCallbackActionStore`) that the Mattermost server
+echoes back inside the action's `context` field. On callback the daemon
+consumes the token from the store; consumption is atomic so a replayed click
+returns "no longer valid." The resolved sender is then ACL-checked, the payload
+channel must match the token's channel, and the call is routed by session
+identity to the owning session actor — mirroring the security envelope
+`SlackApprovalHandler` enforces over Socket Mode. A deterministic text-reply
+fallback (A/B/C/D) is always available and arrives over the WebSocket like any
+message.
 
 **Why:** Mattermost delivers button clicks only via inbound HTTP. The existing
 inbound-webhook system cannot host this: it is one-way ingestion that spawns a
 fresh autonomous session per delivery and has no path to route a response into
 an existing session's pending-approval state. A channel-owned endpoint is the
-correct, security-scoped surface.
+correct, security-scoped surface. Opaque single-use tokens (rather than HMAC
+over the payload) give equivalent forge-rejection on this path while keeping
+the secret entirely server-side — the Mattermost server never sees or stores a
+signing key, and a leaked token is single-use and channel-scoped.
 
-**Alternative considered:** reuse the inbound-webhook system. Rejected —
-architecturally one-way; no bidirectional routing into live sessions. Considered
-text-only approvals for MVP; rejected because it would leave Mattermost below
-Slack/Discord parity, though it remains the documented fallback if the inbound
-HTTP surface is later deemed undesirable.
+**Alternative considered:** HMAC-signed payload with a per-daemon ephemeral
+key. Rejected — would require embedding the key (or a key id) in the button
+context that ships through the Mattermost server, with no functional benefit
+over server-side opaque-token storage; opaque tokens also let the daemon
+invalidate outstanding actions per-call at no extra cost (e.g. on requester
+change). Considered reusing the inbound-webhook system. Rejected —
+architecturally one-way; no bidirectional routing into live sessions.
+Considered text-only approvals for MVP; rejected because it would leave
+Mattermost below Slack/Discord parity, though it remains the documented
+fallback if the inbound HTTP surface is later deemed undesirable.
 
 ### D4. Thread-history backfill: root-only bot dedup, cursor as cost optimization
 
@@ -129,10 +144,12 @@ the exact pattern those fixes removed.
 
 ### D5. Scheduled-reminder DM delivery is supported
 
-**Choice:** `MattermostReminderTargetResolver` resolves `dm:<userId>` to the
-direct-message channel ID and accepts it as a valid reminder target. Channel and
-DM targets are both canonicalized before persistence; bare ambiguous IDs are
-rejected.
+**Choice:** `MattermostReminderTargetResolver` accepts `@<userId>` for direct
+messages and `channel:<channelId>` for channel posts, and canonicalizes both
+forms with their prefix preserved (`@<userId>` / `channel:<channelId>`) so the
+downstream reminder prompt is unambiguous — Mattermost user IDs and channel
+IDs are both 26-char alphanumeric strings, so a bare ID downstream would not
+distinguish the two dispatch paths. Bare ambiguous IDs are rejected.
 
 **Why:** Mattermost direct messages are addressable channels with stable IDs, so
 DM delivery is well-defined — unlike Discord, whose resolver rejects DM targets
@@ -201,13 +218,15 @@ maintenance cost for no parity benefit.
 
 ## Risks / Trade-offs
 
-- **New inbound HTTP attack surface** → endpoint is HMAC-verified and
-  ACL-checked, fails closed on invalid config, and is only registered when the
-  Mattermost channel is enabled with interactive approvals configured. Text
-  fallback works with the endpoint disabled.
-- **Callback signing-key lifecycle** → per-daemon ephemeral key generated at
-  startup; button payloads minted with that key are only valid for the daemon
-  lifetime, bounding replay exposure. Documented in the runbook.
+- **New inbound HTTP attack surface** → endpoint authenticates each callback
+  by single-use opaque action token (32 bytes RNG, server-stored, channel-bound,
+  12h TTL) and re-runs the ACL on the resolved sender before any state change.
+  Fails closed on invalid config, and is only registered when the Mattermost
+  channel is enabled with interactive approvals configured. Text fallback works
+  with the endpoint disabled.
+- **Callback token lifecycle** → tokens live only in process memory and are
+  consumed on first hit. A daemon restart invalidates every outstanding action,
+  bounding replay exposure to the daemon lifetime. Documented in the runbook.
 - **Mattermost thread/DM semantics differ from Slack/Discord** → explicit
   entity-key derivation (`{channelId}/{rootPostId}`) and parity tests for
   threaded, non-threaded, and DM cases.

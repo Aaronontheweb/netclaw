@@ -167,24 +167,28 @@ configuration.
 
 The Mattermost channel SHALL provide an `IReminderTargetResolver` that
 canonicalizes Mattermost reminder targets before persistence. Channel targets
-and direct-message targets (`dm:<userId>`) SHALL both be supported, because
-Mattermost direct messages are addressable channels with stable IDs. Ambiguous
-bare identifiers SHALL be rejected. `Channel`-delivery reminders SHALL post via
-the channel's canonical notification path; `CurrentSession`-delivery reminders
-SHALL re-enter the originating session.
+(`channel:<channelId>`) and direct-message targets (`@<userId>`) SHALL both be
+supported, because Mattermost direct messages are addressable channels with
+stable IDs. The canonical form SHALL retain the `channel:` or `@` prefix —
+Mattermost channel IDs and user IDs are both 26-character alphanumeric strings,
+so the prefix is the only signal that lets downstream dispatch distinguish a
+channel post from a DM open. Ambiguous bare identifiers SHALL be rejected.
+`Channel`-delivery reminders SHALL post via the channel's canonical
+notification path; `CurrentSession`-delivery reminders SHALL re-enter the
+originating session.
 
 #### Scenario: Channel reminder target canonicalized and delivered
 
-- **GIVEN** a reminder configured with a Mattermost channel target
+- **GIVEN** a reminder configured with a `channel:<channelId>` Mattermost target
 - **WHEN** the reminder fires in `Channel` delivery mode
-- **THEN** the target is resolved to a canonical channel ID
+- **THEN** the target is resolved to a canonical `channel:<channelId>` form
 - **AND** the reminder message is posted to that channel
 
 #### Scenario: Direct-message reminder target is supported
 
-- **GIVEN** a reminder configured with a `dm:<userId>` Mattermost target
+- **GIVEN** a reminder configured with an `@<userId>` Mattermost target
 - **WHEN** the reminder target is resolved
-- **THEN** it resolves to the direct-message channel ID for that user
+- **THEN** it resolves to the canonical `@<userId>` form
 - **AND** the reminder is accepted as a valid target
 
 #### Scenario: Ambiguous bare identifier rejected
