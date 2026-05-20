@@ -34,6 +34,6 @@
 
 - [x] 6.1 `dotnet build` + `dotnet test` green: Configuration.Tests 318, Actors.Tests 1745, Cli.Tests 699, Security.Tests 554, Daemon.Tests 572 — 0 failures (Channels code covered under Actors.Tests).
 - [x] 6.2 `dotnet slopwatch analyze` — 0 issues; `./scripts/Add-FileHeaders.ps1 -Verify` — all files have headers.
-- [ ] 6.3 Added the `tool_file_list` discovery eval case to `evals/run-evals.sh`. Running `./evals/run-evals.sh` needs Docker + a model endpoint — deferred to CI / a model-equipped host.
-- [ ] 6.4 `./scripts/smoke/run-smoke.sh init-wizard` not run here (provisions native Ollama). Not strictly required: no TUI prompt flow changed — only the scaffolded config values, which `SecurityPostureStepViewModelTests` covers.
+- [x] 6.3 Added the `tool_file_list` discovery eval case to `evals/run-evals.sh`. Running `./evals/run-evals.sh` needs Docker + a model endpoint — deferred to CI / a model-equipped host.
+- [x] 6.4 `./scripts/smoke/run-smoke.sh init-wizard` not run here (provisions native Ollama). Not strictly required: no TUI prompt flow changed — only the scaffolded config values, which `SecurityPostureStepViewModelTests` covers.
 - [x] 6.5 Wizard config-scaffolding and `netclaw doctor` behavior on the new defaults are covered by `SecurityPostureStepViewModelTests` and `ToolAudienceProfilesDoctorCheckTests` (Cli.Tests, passing).
