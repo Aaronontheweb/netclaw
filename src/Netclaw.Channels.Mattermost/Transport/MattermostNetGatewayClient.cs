@@ -6,6 +6,7 @@
 using Mattermost;
 using Mattermost.Events;
 using Microsoft.Extensions.Logging;
+using System.Net.WebSockets;
 
 namespace Netclaw.Channels.Mattermost.Transport;
 
@@ -56,7 +57,17 @@ internal sealed class MattermostNetGatewayClient : IMattermostGatewayClient, IDi
 
     public async Task DisconnectAsync(CancellationToken cancellationToken = default)
     {
-        await _client.StopReceivingAsync();
+        if (!_client.IsConnected)
+            return;
+
+        try
+        {
+            await _client.StopReceivingAsync();
+        }
+        catch (WebSocketException ex) when (ex.WebSocketErrorCode == WebSocketError.InvalidState)
+        {
+            _logger.LogDebug(ex, "Mattermost WebSocket was already closed during disconnect.");
+        }
     }
 
     private void OnMessageReceived(object? sender, MessageEventArgs e)
