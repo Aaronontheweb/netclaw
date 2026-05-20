@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="VeniceDescriptor.cs" company="Petabridge, LLC">
+// <copyright file="VeniceAiDescriptor.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
@@ -9,7 +9,7 @@ using Netclaw.Configuration;
 namespace Netclaw.Providers.VeniceAi;
 
 /// <summary>
-/// Provider descriptor for Venice.ai
+/// Provider descriptor for Venice.ai.
 /// </summary>
 public sealed class VeniceAiDescriptor : IProviderDescriptor
 {
@@ -22,8 +22,11 @@ public sealed class VeniceAiDescriptor : IProviderDescriptor
 
     public string TypeKey => "veniceai";
     public string DisplayName => "Venice.ai";
-    public string DefaultEndpoint => "https://api.venice.ai";
-    public string ModelListingPath => "/v1/models";
+
+    // Venice's OpenAI-compatible API lives under /api/v1 (not /v1).
+    // Pair with ModelListingPath = "/models" so probes target /api/v1/models.
+    public string DefaultEndpoint => "https://api.venice.ai/api/v1";
+    public string ModelListingPath => "/models";
 
     public IProviderAuth Auth { get; } = new ApiKeyAuth
     {
