@@ -4,13 +4,20 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text.Json;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
+using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Channels.Mattermost;
+using Netclaw.Tools;
 
 namespace Netclaw.Daemon.Configuration;
 
 public static class MattermostActionEndpointExtensions
 {
+    internal const int MaxCallbackBodyBytes = 16 * 1024;
+    internal const string CallbackRateLimitPolicy = "mattermost-action-callback";
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
@@ -35,27 +42,27 @@ public static class MattermostActionEndpointExtensions
 
         app.MapPost("/api/mattermost/actions", async (
             HttpContext httpContext,
-            IServiceProvider sp,
-            TimeProvider timeProvider,
+            ISessionPipeline pipeline,
+            MattermostChannelOptions options,
+            MattermostCallbackActionStore actionStore,
             ILogger<MattermostChannel> logger,
             CancellationToken ct) =>
         {
-            var channel = sp.GetService<MattermostChannel>();
-            if (channel is null)
-                return Results.NotFound("Mattermost channel is not configured.");
-
             ActionCallbackPayload? payload;
             try
             {
-                payload = await JsonSerializer.DeserializeAsync<ActionCallbackPayload>(
-                    httpContext.Request.Body,
-                    JsonOptions,
-                    ct);
+                payload = await ReadPayloadAsync(httpContext.Request, ct);
             }
             catch (JsonException)
             {
                 return Results.BadRequest("Invalid JSON payload.");
             }
+
+            if (payload is null)
+                return Results.BadRequest("Invalid JSON payload.");
+
+            if (payload.RawBodyLength > MaxCallbackBodyBytes)
+                return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
 
             if (payload is null
                 || string.IsNullOrEmpty(payload.UserId)
@@ -66,45 +73,22 @@ public static class MattermostActionEndpointExtensions
             }
 
             if (payload.Context is null
-                || !payload.Context.TryGetValue("call_id", out var callId)
-                || !payload.Context.TryGetValue("selected_key", out var selectedKey)
-                || string.IsNullOrEmpty(callId)
-                || string.IsNullOrEmpty(selectedKey))
+                || !payload.Context.TryGetValue("action_token", out var actionToken)
+                || string.IsNullOrWhiteSpace(actionToken))
             {
-                return Results.BadRequest("Missing required context fields: call_id, selected_key.");
+                return Results.BadRequest("Missing required context field: action_token.");
             }
 
-            if (!IsValidApprovalKey(selectedKey))
-                return Results.BadRequest("Invalid selected_key value.");
-
-            payload.Context.TryGetValue("requester_sender_id", out var requesterSenderId);
-            if (string.IsNullOrEmpty(requesterSenderId))
-                requesterSenderId = null;
-
-            payload.Context.TryGetValue("root_post_id", out var rootPostId);
-            if (string.IsNullOrEmpty(rootPostId))
-                return Results.BadRequest("Missing required context field: root_post_id.");
-
-            // Verify the HMAC signature to prove this daemon minted the button.
-            // Fail closed: if no signing key is registered the endpoint does not
-            // accept callbacks at all — signature verification is never skipped.
-            var signingKey = sp.GetService<MattermostCallbackSigningKey>();
-            if (signingKey?.Key is not { } key)
+            if (!actionStore.TryConsume(actionToken, out var storedAction)
+                || storedAction is null)
             {
-                logger.LogWarning(
-                    "Rejected Mattermost action callback: interactive approvals are not configured for this daemon.");
-                return Results.NotFound();
+                logger.LogWarning("Rejected Mattermost action callback with invalid, expired, or replayed action token");
+                return Results.Json(new ActionCallbackResponse
+                {
+                    EphemeralText = "That approval button is no longer valid. Please re-issue the request and try again."
+                }, JsonOptions);
             }
 
-            payload.Context.TryGetValue("signature", out var signature);
-            if (string.IsNullOrEmpty(signature)
-                || !MattermostCallbackSigner.Verify(key, callId, selectedKey, requesterSenderId ?? string.Empty, rootPostId, signature))
-            {
-                logger.LogWarning("Rejected Mattermost action callback with invalid HMAC signature for call {CallId}", callId);
-                return Results.Unauthorized();
-            }
-
-            var options = sp.GetRequiredService<MattermostChannelOptions>();
             if (!MattermostAclPolicy.IsAllowedUser(new MattermostUserId(payload.UserId), options))
             {
                 logger.LogWarning("Rejected Mattermost action callback from non-allowed user {UserId}", payload.UserId);
@@ -114,36 +98,51 @@ public static class MattermostActionEndpointExtensions
                 }, JsonOptions);
             }
 
-            var interaction = new MattermostGatewayInteraction(
-                ChannelId: new MattermostChannelId(payload.ChannelId),
-                RootPostId: new MattermostRootPostId(rootPostId),
-                CallId: callId,
-                SelectedKey: selectedKey,
-                SenderId: new MattermostUserId(payload.UserId),
-                RequesterSenderId: requesterSenderId is not null
-                    ? new MattermostUserId(requesterSenderId)
-                    : null,
-                ReceivedAt: timeProvider.GetUtcNow());
+            if (!string.Equals(payload.ChannelId, storedAction.ChannelId, StringComparison.Ordinal)
+                || !string.Equals(payload.PostId, storedAction.RootPostId, StringComparison.Ordinal))
+            {
+                logger.LogWarning(
+                    "Rejected Mattermost action callback with mismatched routing data channel={ChannelId} post={PostId}",
+                    payload.ChannelId,
+                    payload.PostId);
+                return Results.BadRequest("Callback routing data did not match the issued action.");
+            }
+
+            var response = new ToolInteractionResponse
+            {
+                SessionId = new SessionId($"{storedAction.ChannelId}/{storedAction.RootPostId}"),
+                CallId = new ToolCallId(storedAction.CallId),
+                SelectedKey = new ApprovalOptionKey(storedAction.SelectedKey),
+                SenderId = new SenderId(payload.UserId)
+            };
 
             try
             {
-                await channel.GatewayClient.HandleActionCallbackAsync(interaction);
+                var feedbackResult = await pipeline.SendFeedbackAndWaitAsync(
+                    response,
+                    TimeSpan.FromSeconds(10),
+                    ct);
+
+                return feedbackResult switch
+                {
+                    CommandAck => Results.Json(new ActionCallbackResponse
+                    {
+                        EphemeralText = $"You selected: **{ApprovalOptionKeys.LabelFor(storedAction.SelectedKey)}**"
+                    }, JsonOptions),
+                    CommandNack nack => Results.Json(new ActionCallbackResponse
+                    {
+                        EphemeralText = MapRejectMessage(nack.Reason)
+                    }, JsonOptions),
+                    _ => Results.StatusCode(StatusCodes.Status500InternalServerError)
+                };
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "Failed routing Mattermost action callback for call {CallId}", callId);
+                logger.LogError(ex, "Failed routing Mattermost action callback for call {CallId}", storedAction.CallId);
                 return Results.StatusCode(500);
             }
 
-            var decisionLabel = ApprovalOptionKeys.LabelFor(selectedKey);
-
-            var response = new ActionCallbackResponse
-            {
-                EphemeralText = $"You selected: **{decisionLabel}**"
-            };
-
-            return Results.Json(response, JsonOptions);
-        });
+        }).RequireRateLimiting(CallbackRateLimitPolicy).AllowAnonymous();
     }
 
     private sealed class ActionCallbackPayload
@@ -154,6 +153,7 @@ public static class MattermostActionEndpointExtensions
         public string? PostId { get; set; }
         public string? TriggerId { get; set; }
         public Dictionary<string, string>? Context { get; set; }
+        public int RawBodyLength { get; set; }
     }
 
     private sealed class ActionCallbackResponse
@@ -161,10 +161,58 @@ public static class MattermostActionEndpointExtensions
         public string? EphemeralText { get; set; }
     }
 
-    private static bool IsValidApprovalKey(string key)
-        => key is ApprovalOptionKeys.ApproveOnce
-            or ApprovalOptionKeys.ApproveSession
-            or ApprovalOptionKeys.ApproveAlways
-            or ApprovalOptionKeys.Deny;
-}
+    internal static void AddMattermostActionEndpointRateLimiting(this IServiceCollection services)
+    {
+        services.AddRateLimiter(options =>
+        {
+            options.AddPolicy(CallbackRateLimitPolicy, context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 30,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                    }));
+        });
+    }
 
+    private static async Task<ActionCallbackPayload?> ReadPayloadAsync(HttpRequest request, CancellationToken ct)
+    {
+        if (request.ContentLength is > 0 and var contentLength && contentLength > MaxCallbackBodyBytes)
+        {
+            return new ActionCallbackPayload { RawBodyLength = checked((int)contentLength) };
+        }
+
+        var buffer = new byte[4096];
+        await using var ms = new MemoryStream();
+        while (true)
+        {
+            var read = await request.Body.ReadAsync(buffer.AsMemory(0, buffer.Length), ct);
+            if (read == 0)
+                break;
+
+            await ms.WriteAsync(buffer.AsMemory(0, read), ct);
+            if (ms.Length > MaxCallbackBodyBytes)
+                return new ActionCallbackPayload { RawBodyLength = checked((int)ms.Length) };
+        }
+
+        if (ms.Length == 0)
+            return null;
+
+        var payload = JsonSerializer.Deserialize<ActionCallbackPayload>(ms.ToArray(), JsonOptions);
+        if (payload is not null)
+            payload.RawBodyLength = checked((int)ms.Length);
+        return payload;
+    }
+
+    private static string MapRejectMessage(string reason)
+        => reason switch
+        {
+            "approval_wrong_requester" => "Only the requesting user can approve this tool action.",
+            "approval_prompt_expired" => "That approval prompt has expired. Please re-issue the request and try again.",
+            SessionIngressGate.RestartInProgressMessage => SessionIngressGate.RestartInProgressMessage,
+            _ => "That approval could not be recorded. Please try again."
+        };
+}

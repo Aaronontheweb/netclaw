@@ -300,6 +300,9 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
 
         public Task SendFeedbackAsync(IWithSessionId feedback, CancellationToken ct = default) =>
             Task.CompletedTask;
+
+        public Task<object> SendFeedbackAndWaitAsync(IWithSessionId feedback, TimeSpan timeout, CancellationToken ct = default) =>
+            Task.FromResult<object>(CommandAck.For(feedback.SessionId));
     }
 
     private sealed class ScriptedSessionPipeline(
@@ -329,6 +332,9 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
 
         public Task SendFeedbackAsync(IWithSessionId feedback, CancellationToken ct = default) =>
             Task.CompletedTask;
+
+        public Task<object> SendFeedbackAndWaitAsync(IWithSessionId feedback, TimeSpan timeout, CancellationToken ct = default) =>
+            Task.FromResult<object>(CommandAck.For(feedback.SessionId));
     }
 
     // ── Audience resolution tests ─────────────────────────────────────────────

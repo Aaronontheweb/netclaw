@@ -13,8 +13,9 @@ internal static class MattermostApprovalPromptBuilder
     public static (string Text, IReadOnlyList<MattermostAttachment> Attachments) BuildButtonPrompt(
         ToolInteractionRequest request,
         string callbackUrl,
+        string channelId,
         string rootPostId,
-        byte[]? signingKey = null)
+        MattermostCallbackActionStore? actionStore = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine(":lock: **Tool approval required**");
@@ -23,24 +24,22 @@ internal static class MattermostApprovalPromptBuilder
         sb.Append("You can also reply with `A`, `B`, `C`, or `D` in this thread.");
 
         var requesterSenderId = request.RequesterSenderId?.Value ?? string.Empty;
-        var callId = request.CallId.Value;
         var actions = request.Options
             .Select(option =>
             {
                 var optionKey = option.Key.Value;
-                var context = new Dictionary<string, string>
-                {
-                    ["call_id"] = callId,
-                    ["selected_key"] = optionKey,
-                    ["requester_sender_id"] = requesterSenderId,
-                    ["root_post_id"] = rootPostId
-                };
-
-                if (signingKey is not null)
-                {
-                    context["signature"] = MattermostCallbackSigner.Sign(
-                        signingKey, callId, optionKey, requesterSenderId, rootPostId);
-                }
+                var actionToken = actionStore?.CreateAction(
+                    channelId,
+                    request.CallId.Value,
+                    optionKey,
+                    rootPostId,
+                    string.IsNullOrEmpty(requesterSenderId) ? null : requesterSenderId);
+                var context = actionToken is null
+                    ? new Dictionary<string, string>()
+                    : new Dictionary<string, string>
+                    {
+                        ["action_token"] = actionToken
+                    };
 
                 return new MattermostAttachmentAction(
                     Id: $"tool_approval_{optionKey}",

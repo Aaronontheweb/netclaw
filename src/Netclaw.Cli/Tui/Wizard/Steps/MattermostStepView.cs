@@ -225,7 +225,7 @@ public sealed class MattermostStepView : IWizardStepView
     private ILayoutNode BuildCallbackUrlSubStep(MattermostStepViewModel vm, StepViewCallbacks callbacks)
     {
         _callbackUrlInput = new TextInputNode()
-            .WithPlaceholder("http://netclaw-host:5199/api/mattermost/actions  (leave blank to skip)");
+            .WithPlaceholder("https://netclaw.example.com/api/mattermost/actions  (leave blank to skip)");
 
         if (!string.IsNullOrWhiteSpace(vm.CallbackUrl))
             _callbackUrlInput.Text = vm.CallbackUrl;

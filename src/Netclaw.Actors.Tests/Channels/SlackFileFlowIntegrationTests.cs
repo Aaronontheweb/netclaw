@@ -1483,6 +1483,12 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             Feedback.Add(feedback);
             return Task.CompletedTask;
         }
+
+        public Task<object> SendFeedbackAndWaitAsync(IWithSessionId feedback, TimeSpan timeout, CancellationToken ct = default)
+        {
+            Feedback.Add(feedback);
+            return Task.FromResult<object>(CommandAck.For(feedback.SessionId));
+        }
     }
 
     private sealed class AlwaysHighRiskPromptInjectionDetector : IPromptInjectionDetector

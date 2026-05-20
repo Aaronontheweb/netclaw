@@ -150,7 +150,7 @@ public sealed class MattermostApprovalPromptBuilderTests
         var request = CreateStandardRequest();
 
         var (text, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
-            request, "http://localhost:5199/api/mattermost/actions", "root-post-1");
+            request, "http://localhost:5199/api/mattermost/actions", "ch-1", "root-post-1");
 
         Assert.Contains("Tool approval required", text);
         Assert.Contains("git_push", text);
@@ -166,18 +166,17 @@ public sealed class MattermostApprovalPromptBuilderTests
     public void BuildButtonPrompt_buttons_encode_context_correctly()
     {
         var request = CreateStandardRequest();
+        var actionStore = new MattermostCallbackActionStore(TimeProvider.System);
 
         var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
-            request, "http://callback:5199/api/mattermost/actions", "root-post-1");
+            request, "http://callback:5199/api/mattermost/actions", "ch-1", "root-post-1", actionStore);
 
         var approveOnce = attachments[0].Actions![0];
         Assert.Equal("tool_approval_approve_once", approveOnce.Id);
         Assert.Equal(ApprovalOptionKeys.ApproveOnceLabel, approveOnce.Name);
         Assert.Equal("http://callback:5199/api/mattermost/actions", approveOnce.IntegrationUrl);
-        Assert.Equal("call-btn-1", approveOnce.Context["call_id"]);
-        Assert.Equal(ApprovalOptionKeys.ApproveOnce, approveOnce.Context["selected_key"]);
-        Assert.Equal("requester-1", approveOnce.Context["requester_sender_id"]);
-        Assert.Equal("root-post-1", approveOnce.Context["root_post_id"]);
+        Assert.Contains("action_token", approveOnce.Context.Keys);
+        Assert.NotEmpty(approveOnce.Context["action_token"]);
     }
 
     [Fact]
@@ -186,7 +185,7 @@ public sealed class MattermostApprovalPromptBuilderTests
         var request = CreateStandardRequest();
 
         var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
-            request, "http://localhost/api/mattermost/actions", "root-post-1");
+            request, "http://localhost/api/mattermost/actions", "ch-1", "root-post-1");
 
         var denyButton = attachments[0].Actions!.Single(a => a.Id == "tool_approval_deny");
         Assert.Equal("danger", denyButton.Style);
@@ -198,7 +197,7 @@ public sealed class MattermostApprovalPromptBuilderTests
         var request = CreateStandardRequest();
 
         var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
-            request, "http://localhost/api/mattermost/actions", "root-post-1");
+            request, "http://localhost/api/mattermost/actions", "ch-1", "root-post-1");
 
         var approveOnce = attachments[0].Actions!.Single(a => a.Id == "tool_approval_approve_once");
         Assert.Equal("primary", approveOnce.Style);
@@ -231,97 +230,53 @@ public sealed class MattermostApprovalPromptBuilderTests
     }
 
     [Fact]
-    public void BuildButtonPrompt_with_signing_key_includes_signature()
+    public void BuildButtonPrompt_with_action_store_includes_action_token()
     {
         var request = CreateStandardRequest();
-        var signingKey = MattermostCallbackSigner.GenerateKey();
+        var actionStore = new MattermostCallbackActionStore(TimeProvider.System);
 
         var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
-            request, "http://localhost/api/mattermost/actions", "root-post-1", signingKey);
+            request, "http://localhost/api/mattermost/actions", "ch-1", "root-post-1", actionStore);
 
         foreach (var action in attachments[0].Actions!)
         {
-            Assert.True(action.Context.ContainsKey("signature"), $"Button '{action.Id}' missing signature");
-            Assert.NotEmpty(action.Context["signature"]);
+            Assert.True(action.Context.ContainsKey("action_token"), $"Button '{action.Id}' missing action token");
+            Assert.NotEmpty(action.Context["action_token"]);
         }
     }
 
     [Fact]
-    public void BuildButtonPrompt_without_signing_key_omits_signature()
+    public void BuildButtonPrompt_without_action_store_omits_action_token()
     {
         var request = CreateStandardRequest();
 
         var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
-            request, "http://localhost/api/mattermost/actions", "root-post-1");
+            request, "http://localhost/api/mattermost/actions", "ch-1", "root-post-1");
 
         foreach (var action in attachments[0].Actions!)
         {
-            Assert.False(action.Context.ContainsKey("signature"), $"Button '{action.Id}' should not have signature");
+            Assert.False(action.Context.ContainsKey("action_token"), $"Button '{action.Id}' should not have action token");
         }
     }
 
     [Fact]
-    public void BuildButtonPrompt_signatures_are_verifiable()
+    public void BuildButtonPrompt_action_token_resolves_expected_action_once()
     {
         var request = CreateStandardRequest();
-        var signingKey = MattermostCallbackSigner.GenerateKey();
+        var actionStore = new MattermostCallbackActionStore(TimeProvider.System);
 
         var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
-            request, "http://localhost/api/mattermost/actions", "root-post-1", signingKey);
+            request, "http://localhost/api/mattermost/actions", "ch-1", "root-post-1", actionStore);
 
         var approveOnce = attachments[0].Actions![0];
-        var verified = MattermostCallbackSigner.Verify(
-            signingKey,
-            approveOnce.Context["call_id"],
-            approveOnce.Context["selected_key"],
-            approveOnce.Context["requester_sender_id"],
-            approveOnce.Context["root_post_id"],
-            approveOnce.Context["signature"]);
-
-        Assert.True(verified);
-    }
-
-    [Fact]
-    public void BuildButtonPrompt_signature_rejects_tampered_selected_key()
-    {
-        var request = CreateStandardRequest();
-        var signingKey = MattermostCallbackSigner.GenerateKey();
-
-        var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
-            request, "http://localhost/api/mattermost/actions", "root-post-1", signingKey);
-
-        var approveOnce = attachments[0].Actions![0];
-        var verified = MattermostCallbackSigner.Verify(
-            signingKey,
-            approveOnce.Context["call_id"],
-            "approve_always", // tampered: was approve_once
-            approveOnce.Context["requester_sender_id"],
-            approveOnce.Context["root_post_id"],
-            approveOnce.Context["signature"]);
-
-        Assert.False(verified);
-    }
-
-    [Fact]
-    public void BuildButtonPrompt_signature_rejects_wrong_key()
-    {
-        var request = CreateStandardRequest();
-        var signingKey = MattermostCallbackSigner.GenerateKey();
-        var wrongKey = MattermostCallbackSigner.GenerateKey();
-
-        var (_, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
-            request, "http://localhost/api/mattermost/actions", "root-post-1", signingKey);
-
-        var approveOnce = attachments[0].Actions![0];
-        var verified = MattermostCallbackSigner.Verify(
-            wrongKey,
-            approveOnce.Context["call_id"],
-            approveOnce.Context["selected_key"],
-            approveOnce.Context["requester_sender_id"],
-            approveOnce.Context["root_post_id"],
-            approveOnce.Context["signature"]);
-
-        Assert.False(verified);
+        Assert.True(actionStore.TryConsume(approveOnce.Context["action_token"], out var stored));
+        Assert.NotNull(stored);
+        Assert.Equal("ch-1", stored!.ChannelId);
+        Assert.Equal("call-btn-1", stored.CallId);
+        Assert.Equal(ApprovalOptionKeys.ApproveOnce, stored.SelectedKey);
+        Assert.Equal("root-post-1", stored.RootPostId);
+        Assert.Equal("requester-1", stored.RequesterSenderId);
+        Assert.False(actionStore.TryConsume(approveOnce.Context["action_token"], out _));
     }
 
     private static ToolInteractionRequest CreateStandardRequest()

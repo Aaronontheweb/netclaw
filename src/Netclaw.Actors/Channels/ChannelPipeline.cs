@@ -149,6 +149,12 @@ public interface ISessionPipeline
     /// Sends delivery feedback back to the owning session actor.
     /// </summary>
     Task SendFeedbackAsync(IWithSessionId feedback, CancellationToken ct = default);
+
+    /// <summary>
+    /// Sends feedback to the owning session actor and waits for an explicit
+    /// acknowledgement or rejection.
+    /// </summary>
+    Task<object> SendFeedbackAndWaitAsync(IWithSessionId feedback, TimeSpan timeout, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -295,6 +301,12 @@ public sealed class SessionPipeline : ISessionPipeline
     {
         var sessionManager = await _sessionManagerProvider.GetAsync(ct);
         sessionManager.Tell(feedback, ActorRefs.NoSender);
+    }
+
+    public async Task<object> SendFeedbackAndWaitAsync(IWithSessionId feedback, TimeSpan timeout, CancellationToken ct = default)
+    {
+        var sessionManager = await _sessionManagerProvider.GetAsync(ct);
+        return await sessionManager.Ask<object>(feedback, timeout, ct);
     }
 
     private static SendUserMessage MapToCommand(

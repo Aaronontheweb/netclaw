@@ -150,6 +150,7 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
                 }));
         options.RejectionStatusCode = 429;
     });
+    builder.Services.AddMattermostActionEndpointRateLimiting();
 
     // SignalR for remote clients (CLI thin client, Blazor ops console)
     builder.Services.AddSignalR();

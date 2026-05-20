@@ -32,7 +32,7 @@ public sealed class MattermostChannel : IChannel
     private readonly ToolAudienceProfiles _audienceProfiles;
     private readonly ModelCapabilities _modelCapabilities;
     private readonly NetclawPaths _paths;
-    private readonly byte[]? _callbackSigningKey;
+    private readonly MattermostCallbackActionStore? _callbackActionStore;
 
     // Cancels the background reconnect loop when the channel stops.
     private readonly CancellationTokenSource _lifetimeCts = new();
@@ -66,7 +66,7 @@ public sealed class MattermostChannel : IChannel
         ToolConfig toolConfig,
         ModelCapabilities modelCapabilities,
         NetclawPaths paths,
-        MattermostCallbackSigningKey? callbackSigningKey = null)
+        MattermostCallbackActionStore? callbackActionStore = null)
     {
         _system = system;
         _pipeline = pipeline;
@@ -85,7 +85,7 @@ public sealed class MattermostChannel : IChannel
         _audienceProfiles = toolConfig.AudienceProfiles;
         _modelCapabilities = modelCapabilities;
         _paths = paths;
-        _callbackSigningKey = callbackSigningKey?.Key;
+        _callbackActionStore = callbackActionStore;
     }
 
     public ChannelType ChannelType => ChannelType.Mattermost;
@@ -184,7 +184,7 @@ public sealed class MattermostChannel : IChannel
                 CallbackUrl: _options.CallbackUrl,
                 BotUserId: _gatewayClient.BotUserId,
                 BotUsername: _gatewayClient.BotUsername,
-                CallbackSigningKey: _callbackSigningKey,
+                CallbackActionStore: _callbackActionStore,
                 PromptInjectionDetector: _promptInjectionDetector,
                 ThreadHistoryFetcher: _threadHistoryFetcher,
                 HttpClient: httpClient)),

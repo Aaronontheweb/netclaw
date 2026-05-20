@@ -32,7 +32,7 @@ Put non-secret behavior in `~/.netclaw/config/netclaw.json`:
   "Mattermost": {
     "Enabled": true,
     "ServerUrl": "https://mm.example.com",
-    "CallbackUrl": "http://netclaw-host:5199/api/mattermost/actions",
+    "CallbackUrl": "https://netclaw.example.com/api/mattermost/actions",
     "DefaultChannelId": "abcdefghijklmnopqrstuvwxyz",
     "AllowDirectMessages": false,
     "MentionOnly": true,
@@ -94,10 +94,12 @@ Mattermost delivers interactive button clicks over an inbound HTTP POST, unlike
 Slack Socket Mode or the Discord gateway. When `CallbackUrl` is configured the
 daemon exposes `/api/mattermost/actions`:
 
-- Button callbacks are signed with a per-daemon ephemeral HMAC key — buttons
-  minted by a previous daemon process are rejected after a restart.
-- Every callback is signature-verified and ACL-checked before any approval
-  state changes; the endpoint never creates a new session.
+- Button callbacks carry opaque one-time action tokens. Tokens are consumed once,
+  expire automatically, and buttons minted by a previous daemon process are
+  rejected after a restart.
+- Every callback is token-validated, ACL-checked, and bound to the original
+  Mattermost channel/post before any approval state changes; the endpoint never
+  creates a new session.
 - When `CallbackUrl` is not configured the endpoint is not registered and
   approvals fall back to deterministic A/B/C/D text replies.
 
@@ -148,7 +150,7 @@ Common failure patterns:
   shell history, or commits, rotate it immediately and update `secrets.json`.
 - `/api/mattermost/actions` is the first channel-owned inbound HTTP endpoint in
   Netclaw. It is only registered when the channel is enabled with a
-  `CallbackUrl`, is HMAC-verified and ACL-checked, fails closed on a missing
-  signing key, and routes only into existing sessions. If you do not need
-  interactive approval buttons, leave `CallbackUrl` unset to keep the inbound
-  HTTP surface closed.
+  `CallbackUrl`, is one-time-token-validated and ACL-checked, fails closed on
+  invalid, expired, or replayed tokens, and routes only into existing sessions.
+  If you do not need interactive approval buttons, leave `CallbackUrl` unset to
+  keep the inbound HTTP surface closed.

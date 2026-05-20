@@ -970,7 +970,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         string callbackUrl)
     {
         var (promptText, attachments) = MattermostApprovalPromptBuilder.BuildButtonPrompt(
-            request, callbackUrl, _rootPostId.Value, _dependencies.CallbackSigningKey);
+            request, callbackUrl, _channelId.Value, _rootPostId.Value, _dependencies.CallbackActionStore);
         var startedAt = _dependencies.TimeProvider.GetTimestamp();
         try
         {

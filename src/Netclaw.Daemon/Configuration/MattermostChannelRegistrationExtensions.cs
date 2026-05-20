@@ -40,6 +40,10 @@ public static class MattermostChannelRegistrationExtensions
             : mattermostOptions.ServerUrl;
         var botToken = mattermostOptions.BotToken?.Value ?? string.Empty;
 
+        Uri? parsedServerUri = null;
+        if (Uri.TryCreate(serverUrl.TrimEnd('/'), UriKind.Absolute, out var candidate))
+            parsedServerUri = candidate;
+
         services.AddSingleton(_ => new MattermostClient(serverUrl, botToken));
 
         services.AddHttpClient("mattermost-files", client =>
@@ -50,18 +54,14 @@ public static class MattermostChannelRegistrationExtensions
         });
         services.AddHttpClient("mattermost-api", client =>
         {
-            client.BaseAddress = new Uri(serverUrl.TrimEnd('/'));
+            if (parsedServerUri is not null)
+                client.BaseAddress = parsedServerUri;
             if (!string.IsNullOrEmpty(botToken))
                 client.DefaultRequestHeaders.Authorization =
                     new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", botToken);
         });
-        // Ephemeral signing key for HMAC verification of button callbacks.
-        // Regenerated each daemon start — stale buttons from prior runs are rejected.
         if (!string.IsNullOrEmpty(mattermostOptions.CallbackUrl))
-        {
-            services.AddSingleton(new MattermostCallbackSigningKey(
-                MattermostCallbackSigner.GenerateKey()));
-        }
+            services.AddSingleton(new MattermostCallbackActionStore(TimeProvider.System));
 
         services.AddSingleton<IMattermostGatewayClient, MattermostNetGatewayClient>();
         services.AddSingleton<IMattermostReplyClient>(sp =>

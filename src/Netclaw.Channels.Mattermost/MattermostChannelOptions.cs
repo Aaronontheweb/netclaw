@@ -19,7 +19,7 @@ public sealed class MattermostChannelOptions
     /// URL that Mattermost can reach to deliver interactive button callbacks.
     /// Required for button-based approval prompts. Falls back to text-only
     /// prompts when not configured.
-    /// Example: <c>http://netclaw-host:5199/api/mattermost/actions</c>
+    /// Example: <c>https://netclaw.example.com/api/mattermost/actions</c>
     /// </summary>
     public string? CallbackUrl { get; init; }
 
