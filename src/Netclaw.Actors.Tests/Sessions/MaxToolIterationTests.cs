@@ -145,7 +145,7 @@ public class MaxToolIterationTests : LlmSessionTestBase
 
         var error = await subscriber.ExpectMsgAsync<ErrorOutput>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(ErrorCategory.ProviderFailure, error.Category);
-        Assert.Contains("tool calls", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("tool iterations", error.Message, StringComparison.OrdinalIgnoreCase);
 
         await subscriber.ExpectMsgAsync<TurnCompleted>(TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
 
