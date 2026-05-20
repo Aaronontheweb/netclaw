@@ -35,9 +35,13 @@ public sealed record MattermostGatewayInteraction(
 
 public interface IMattermostGatewayClient
 {
+    // Interactive button callbacks arrive via the channel-owned HTTP endpoint
+    // (MattermostActionEndpointExtensions) which dispatches directly to the
+    // MattermostGatewayActor via the ActorRegistry — there is no
+    // InteractionReceived event on the client because the transport client is
+    // not on the callback path. (Discord differs: its callbacks arrive through
+    // the WebSocket, so its client does expose an InteractionReceived event.)
     event Func<MattermostGatewayMessage, Task>? MessageReceived;
-
-    event Func<MattermostGatewayInteraction, Task>? InteractionReceived;
 
     bool IsConnected { get; }
 
@@ -48,18 +52,11 @@ public interface IMattermostGatewayClient
     Task ConnectAsync(string serverUrl, string botToken, CancellationToken cancellationToken = default);
 
     Task DisconnectAsync(CancellationToken cancellationToken = default);
-
-    Task HandleActionCallbackAsync(MattermostGatewayInteraction interaction);
 }
 
 public interface IMattermostReplyClient
 {
     Task<MattermostPostResult> PostReplyAsync(MattermostPostMessage message, CancellationToken cancellationToken = default);
-
-    Task UpdatePostAsync(
-        MattermostPostId postId,
-        string text,
-        CancellationToken cancellationToken = default);
 
     Task UpdatePostAsync(
         MattermostPostId postId,
@@ -106,12 +103,6 @@ public sealed class UnconfiguredMattermostGatewayClient : IMattermostGatewayClie
         remove { }
     }
 
-    public event Func<MattermostGatewayInteraction, Task>? InteractionReceived
-    {
-        add { }
-        remove { }
-    }
-
     public bool IsConnected => false;
 
     public MattermostUserId? BotUserId => null;
@@ -124,10 +115,6 @@ public sealed class UnconfiguredMattermostGatewayClient : IMattermostGatewayClie
 
     public Task DisconnectAsync(CancellationToken cancellationToken = default)
         => Task.CompletedTask;
-
-    public Task HandleActionCallbackAsync(MattermostGatewayInteraction interaction)
-        => throw new InvalidOperationException(
-            "Mattermost channel is enabled, but no Mattermost gateway client is configured.");
 }
 
 /// <summary>
@@ -138,10 +125,6 @@ public sealed class UnconfiguredMattermostReplyClient : IMattermostReplyClient
     public Task<MattermostPostResult> PostReplyAsync(MattermostPostMessage message, CancellationToken cancellationToken = default)
         => throw new InvalidOperationException(
             "Mattermost channel attempted outbound delivery, but no Mattermost reply client is configured.");
-
-    public Task UpdatePostAsync(MattermostPostId postId, string text, CancellationToken cancellationToken = default)
-        => throw new InvalidOperationException(
-            "Mattermost channel attempted to update a post, but no Mattermost reply client is configured.");
 
     public Task UpdatePostAsync(MattermostPostId postId, string text, IReadOnlyList<MattermostAttachment>? attachments, CancellationToken cancellationToken = default)
         => throw new InvalidOperationException(

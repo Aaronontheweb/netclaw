@@ -25,12 +25,6 @@ internal sealed class RecordingMattermostReplyClient : IMattermostReplyClient
         return Task.FromResult(new MattermostPostResult(PostId: postId));
     }
 
-    public Task UpdatePostAsync(MattermostPostId postId, string text, CancellationToken cancellationToken = default)
-    {
-        Updates.Add((postId, text, null));
-        return Task.CompletedTask;
-    }
-
     public Task UpdatePostAsync(MattermostPostId postId, string text, IReadOnlyList<MattermostAttachment>? attachments, CancellationToken cancellationToken = default)
     {
         Updates.Add((postId, text, attachments));

@@ -10,8 +10,6 @@ namespace Netclaw.Channels.Mattermost;
 /// </summary>
 public readonly record struct MattermostChannelId(string Value)
 {
-    public static explicit operator MattermostChannelId(string value) => new(value);
-
     public override string ToString() => Value;
 }
 
@@ -20,8 +18,6 @@ public readonly record struct MattermostChannelId(string Value)
 /// </summary>
 public readonly record struct MattermostPostId(string Value)
 {
-    public static explicit operator MattermostPostId(string value) => new(value);
-
     public override string ToString() => Value;
 }
 
@@ -31,8 +27,6 @@ public readonly record struct MattermostPostId(string Value)
 /// </summary>
 public readonly record struct MattermostRootPostId(string Value)
 {
-    public static explicit operator MattermostRootPostId(string value) => new(value);
-
     public bool IsEmpty => string.IsNullOrEmpty(Value);
 
     public override string ToString() => Value;
@@ -43,8 +37,6 @@ public readonly record struct MattermostRootPostId(string Value)
 /// </summary>
 public readonly record struct MattermostEventId(string Value)
 {
-    public static explicit operator MattermostEventId(string value) => new(value);
-
     public override string ToString() => Value;
 }
 
@@ -53,7 +45,5 @@ public readonly record struct MattermostEventId(string Value)
 /// </summary>
 public readonly record struct MattermostUserId(string Value)
 {
-    public static explicit operator MattermostUserId(string value) => new(value);
-
     public override string ToString() => Value;
 }

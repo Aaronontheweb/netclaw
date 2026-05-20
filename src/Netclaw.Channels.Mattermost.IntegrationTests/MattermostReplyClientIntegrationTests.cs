@@ -81,7 +81,7 @@ public sealed class MattermostReplyClientIntegrationTests
             Text: "Original message text"), ct);
         Assert.NotNull(result.PostId);
 
-        await replyClient.UpdatePostAsync(result.PostId!.Value, "Updated message text", ct);
+        await replyClient.UpdatePostAsync(result.PostId!.Value, "Updated message text", attachments: null, ct);
 
         var updated = await botClient.GetPostAsync(result.PostId.Value.Value);
         Assert.Contains("Updated message text", updated.Text);

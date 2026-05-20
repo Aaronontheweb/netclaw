@@ -224,6 +224,99 @@ public sealed class MattermostActionEndpointExtensionsTests(ITestOutputHelper ou
     }
 
     [Fact]
+    public async Task Callback_from_user_not_in_allow_list_is_rejected()
+    {
+        // Defense in depth: even if a callback arrives with a valid token, the
+        // ACL on the resolved sender must run before any approval state change.
+        var time = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-20T12:00:00Z"));
+        var actionStore = new MattermostCallbackActionStore(time);
+        var token = actionStore.CreateAction("ch-1", "call-1", ApprovalOptionKeys.ApproveOnce, "root-1", "requester-1");
+        var recorder = new GatewayInteractionRecorder();
+
+        await using var app = await CreateHostAsync(
+            time,
+            actionStore,
+            gatewayResponseFactory: _ => CommandAck.For(new SessionId("ch-1/root-1")),
+            recorder: recorder);
+        var client = app.GetTestClient();
+
+        var response = await client.PostAsJsonAsync("/api/mattermost/actions", new
+        {
+            user_id = "intruder-42",
+            post_id = "prompt-55",
+            channel_id = "ch-1",
+            context = new Dictionary<string, string> { ["action_token"] = token }
+        }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        Assert.Contains("not authorized", payload.GetProperty("ephemeral_text").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.False(recorder.HasPendingInteraction);
+    }
+
+    [Fact]
+    public async Task Callback_with_mismatched_channel_is_rejected()
+    {
+        // The action token is channel-bound: a token minted for ch-1 must not be
+        // accepted on ch-2 even if the requester ID matches, because the
+        // approval prompt was posted in ch-1 and the requester proved presence
+        // there, not elsewhere.
+        var time = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-20T12:00:00Z"));
+        var actionStore = new MattermostCallbackActionStore(time);
+        var token = actionStore.CreateAction("ch-1", "call-1", ApprovalOptionKeys.ApproveOnce, "root-1", "requester-1");
+        var recorder = new GatewayInteractionRecorder();
+
+        await using var app = await CreateHostAsync(
+            time,
+            actionStore,
+            gatewayResponseFactory: _ => CommandAck.For(new SessionId("ch-1/root-1")),
+            recorder: recorder);
+        var client = app.GetTestClient();
+
+        var response = await client.PostAsJsonAsync("/api/mattermost/actions", new
+        {
+            user_id = "requester-1",
+            post_id = "prompt-55",
+            channel_id = "ch-2",
+            context = new Dictionary<string, string> { ["action_token"] = token }
+        }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.False(recorder.HasPendingInteraction);
+    }
+
+    [Fact]
+    public async Task Callback_before_gateway_actor_is_registered_returns_503()
+    {
+        // The endpoint can race the gateway actor at daemon startup (the route
+        // is registered by MapMattermostActionEndpoint before MattermostChannel
+        // finishes registering itself in the ActorRegistry). A pre-registration
+        // callback must surface a 503 rather than silently dropping the user's
+        // click.
+        var time = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-20T12:00:00Z"));
+        var actionStore = new MattermostCallbackActionStore(time);
+        var token = actionStore.CreateAction("ch-1", "call-1", ApprovalOptionKeys.ApproveOnce, "root-1", "requester-1");
+
+        await using var app = await CreateHostAsync(
+            time,
+            actionStore,
+            gatewayResponseFactory: _ => CommandAck.For(new SessionId("ch-1/root-1")),
+            recorder: new GatewayInteractionRecorder(),
+            registerGatewayActor: false);
+        var client = app.GetTestClient();
+
+        var response = await client.PostAsJsonAsync("/api/mattermost/actions", new
+        {
+            user_id = "requester-1",
+            post_id = "prompt-55",
+            channel_id = "ch-1",
+            context = new Dictionary<string, string> { ["action_token"] = token }
+        }, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Callback_accepts_clicked_prompt_post_id_instead_of_thread_root()
     {
         var time = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-20T12:00:00Z"));
@@ -256,10 +349,14 @@ public sealed class MattermostActionEndpointExtensionsTests(ITestOutputHelper ou
         MattermostCallbackActionStore actionStore,
         Func<MattermostGatewayInteraction, object> gatewayResponseFactory,
         GatewayInteractionRecorder recorder,
-        bool useRealRateLimiter = false)
+        bool useRealRateLimiter = false,
+        bool registerGatewayActor = true)
     {
-        var gateway = Sys.ActorOf(Props.Create(() => new GatewayResponderActor(gatewayResponseFactory, recorder)));
-        ActorRegistry.For(Sys).Register<MattermostGatewayActorKey>(gateway);
+        if (registerGatewayActor)
+        {
+            var gateway = Sys.ActorOf(Props.Create(() => new GatewayResponderActor(gatewayResponseFactory, recorder)));
+            ActorRegistry.For(Sys).Register<MattermostGatewayActorKey>(gateway);
+        }
 
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();

@@ -20,8 +20,6 @@ internal sealed class MattermostNetGatewayClient : IMattermostGatewayClient, IDi
 
     public event Func<MattermostGatewayMessage, Task>? MessageReceived;
 
-    public event Func<MattermostGatewayInteraction, Task>? InteractionReceived;
-
     public bool IsConnected => _client.IsConnected;
     public MattermostUserId? BotUserId { get; private set; }
     public string? BotUsername { get; private set; }
@@ -39,6 +37,11 @@ internal sealed class MattermostNetGatewayClient : IMattermostGatewayClient, IDi
     public async Task ConnectAsync(string serverUrl, string botToken, CancellationToken cancellationToken = default)
     {
         _serverUrl = serverUrl.TrimEnd('/');
+        // First layer of bot self-dedup: the SDK refuses to surface our own
+        // posts at all. The second layer (IsBotMessage tagging below at the
+        // MattermostGatewayMessage construction site) defends against a future
+        // SDK option default flip or a server-side replay that bypasses the
+        // SDK filter — Slack does the same double-check.
         _client.Options.IgnoreOwnMessages = true;
 
         _client.OnMessageReceived += OnMessageReceived;
@@ -113,7 +116,13 @@ internal sealed class MattermostNetGatewayClient : IMattermostGatewayClient, IDi
                     PostId: new MattermostPostId(post.Id),
                     RootPostId: rootPostId,
                     SenderId: new MattermostUserId(post.UserId),
-                    IsBotMessage: false, // Mattermost.NET already filters bot's own messages
+                    // Second-layer bot self-dedup. The SDK's IgnoreOwnMessages
+                    // filter is the first layer; this tag lets the conversation
+                    // actor drop anything that slipped through (e.g. SDK option
+                    // regression, server-side replay). Matches Slack's double
+                    // check (BotId field AND UserId == BotUserId).
+                    IsBotMessage: botId is not null
+                        && string.Equals(post.UserId, botId, StringComparison.Ordinal),
                     IsDirectMessage: isDm,
                     ContainsBotMention: containsMention,
                     Text: post.Text ?? string.Empty,
@@ -170,13 +179,6 @@ internal sealed class MattermostNetGatewayClient : IMattermostGatewayClient, IDi
         });
 
         return await Task.WhenAll(tasks);
-    }
-
-    public async Task HandleActionCallbackAsync(MattermostGatewayInteraction interaction)
-    {
-        var handler = InteractionReceived;
-        if (handler is not null)
-            await handler(interaction);
     }
 
     public void Dispose()

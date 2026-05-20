@@ -3,13 +3,15 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Channels.Mattermost;
 using Xunit;
 
 namespace Netclaw.Actors.Tests.Channels;
 
+// IsAllowedUser checks are covered by AclPolicyContractTests via
+// MattermostAclContractTests — only the Mattermost-specific
+// SessionId-parser behavior lives here.
 public sealed class MattermostGatewayActorTests
 {
     [Fact]
@@ -38,26 +40,5 @@ public sealed class MattermostGatewayActorTests
             sessionId, out _, out _);
 
         Assert.False(result);
-    }
-
-    [Fact]
-    public void IsAllowedUser_empty_allowlist_permits_all()
-    {
-        var options = new MattermostChannelOptions { AllowedUserIds = [] };
-        Assert.True(MattermostAclPolicy.IsAllowedUser(new MattermostUserId("any-user"), options));
-    }
-
-    [Fact]
-    public void IsAllowedUser_rejects_unlisted_user()
-    {
-        var options = new MattermostChannelOptions { AllowedUserIds = ["allowed-user"] };
-        Assert.False(MattermostAclPolicy.IsAllowedUser(new MattermostUserId("other-user"), options));
-    }
-
-    [Fact]
-    public void IsAllowedUser_permits_listed_user()
-    {
-        var options = new MattermostChannelOptions { AllowedUserIds = ["allowed-user"] };
-        Assert.True(MattermostAclPolicy.IsAllowedUser(new MattermostUserId("allowed-user"), options));
     }
 }

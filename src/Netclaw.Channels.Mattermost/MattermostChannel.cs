@@ -164,7 +164,6 @@ public sealed class MattermostChannel : IChannel
             return;
 
         _gatewayClient.MessageReceived += HandleMessageReceivedAsync;
-        _gatewayClient.InteractionReceived += HandleInteractionReceivedAsync;
 
         var httpClient = _httpClientFactory.CreateClient("mattermost-files");
 
@@ -328,7 +327,6 @@ public sealed class MattermostChannel : IChannel
         }
 
         _gatewayClient.MessageReceived -= HandleMessageReceivedAsync;
-        _gatewayClient.InteractionReceived -= HandleInteractionReceivedAsync;
 
         if (_gateway is not null)
         {
@@ -353,12 +351,6 @@ public sealed class MattermostChannel : IChannel
     private Task HandleMessageReceivedAsync(MattermostGatewayMessage message)
     {
         _gateway?.Tell(message);
-        return Task.CompletedTask;
-    }
-
-    private Task HandleInteractionReceivedAsync(MattermostGatewayInteraction interaction)
-    {
-        _gateway?.Tell(interaction);
         return Task.CompletedTask;
     }
 }

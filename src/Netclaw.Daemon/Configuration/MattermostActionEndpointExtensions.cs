@@ -30,10 +30,14 @@ public static class MattermostActionEndpointExtensions
     {
         // The interactive callback endpoint is only exposed when the Mattermost
         // channel is enabled AND interactive approvals are configured (a non-empty
-        // CallbackUrl, which provisions the HMAC signing key). When that is not the
-        // case, no inbound HTTP surface is registered for the channel — approvals
-        // use the text-reply fallback instead. See spec netclaw-gateway-security:
-        // "Channel-owned interactive callback endpoint safeguards".
+        // CallbackUrl). When that is not the case, no inbound HTTP surface is
+        // registered for the channel — approvals use the text-reply fallback
+        // instead. Authentication on this endpoint is by single-use opaque
+        // action token (32 bytes RNG, server-stored in MattermostCallbackActionStore,
+        // consumed on first hit, 12h TTL, channel-bound) — see that store for the
+        // mint/consume lifecycle. The spec netclaw-gateway-security:
+        // "Channel-owned interactive callback endpoint safeguards" describes the
+        // forge-rejection property.
         var options = app.Services.GetService<MattermostChannelOptions>();
         if (options is null
             || !options.Enabled
@@ -67,8 +71,7 @@ public static class MattermostActionEndpointExtensions
             if (payload.RawBodyLength > MaxCallbackBodyBytes)
                 return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
 
-            if (payload is null
-                || string.IsNullOrEmpty(payload.UserId)
+            if (string.IsNullOrEmpty(payload.UserId)
                 || string.IsNullOrEmpty(payload.PostId)
                 || string.IsNullOrEmpty(payload.ChannelId))
             {
