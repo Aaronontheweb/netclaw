@@ -12,6 +12,30 @@ namespace Netclaw.Actors.Protocol;
 /// </summary>
 public static class ToolInteractionResponseParser
 {
+    public static bool LooksLikeApprovalResponse(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        var trimmed = text.Trim().ToLowerInvariant();
+
+        if (trimmed.Length == 1)
+        {
+            var ch = trimmed[0];
+            if (ch is >= 'a' and <= 'e')
+                return true;
+        }
+
+        if (int.TryParse(trimmed, out var numericIndex)
+            && numericIndex >= 1
+            && numericIndex <= 5)
+        {
+            return true;
+        }
+
+        return TryParseNamedSelection(trimmed, out _);
+    }
+
     public static bool TryParseApprovalResponse(
         string text,
         IReadOnlyList<ToolInteractionOption> options,

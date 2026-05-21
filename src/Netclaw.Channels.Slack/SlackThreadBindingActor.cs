@@ -1224,7 +1224,10 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
     private async Task<bool> TryHandleTextApprovalResponseAsync(SlackThreadInbound message)
     {
         if (_pendingApprovalRequests.Count == 0)
-            return false;
+        {
+            return !_hasObservedApprovalRequest
+                && await TryHandleColdTextApprovalResponseAsync(message);
+        }
 
         var pendingIndex = _pendingApprovalRequests.FindIndex(request =>
             ApprovalButtonValueCodec.CanApprove(request.Request.RequesterPrincipal, request.Request.RequesterSenderId?.Value, message.SenderId.Value));
@@ -1272,6 +1275,38 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         }
 
         return true;
+    }
+
+    private async Task<bool> TryHandleColdTextApprovalResponseAsync(SlackThreadInbound message)
+    {
+        if (!ToolInteractionResponseParser.LooksLikeApprovalResponse(message.Text ?? string.Empty))
+            return false;
+
+        using var feedbackCts = new CancellationTokenSource(OperationTimeout);
+        try
+        {
+            var reply = await _dependencies.Pipeline.SendFeedbackAndWaitAsync(new ToolInteractionTextResponse
+            {
+                SessionId = _sessionId,
+                Text = message.Text ?? string.Empty,
+                SenderId = message.SenderId
+            }, feedbackCts.Token);
+
+            if (reply is CommandAck)
+            {
+                _log.Info(
+                    "Forwarded cold Slack text approval response from sender={SenderId} without local pending prompt state",
+                    message.SenderId);
+                return true;
+            }
+
+            return reply is CommandNack;
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Failed to route cold Slack text approval response from sender {SenderId}", message.SenderId);
+            return false;
+        }
     }
 
     private async Task HandleApprovalResponseAsync(SlackApprovalResponse message)

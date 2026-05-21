@@ -92,11 +92,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // continue the turn instead of transitioning to Ready. See #424.
     private bool _resumeToolLoopAfterCompaction;
 
-    // A tool-approval response that arrived while the session was Compacting.
+    // A tool-approval feedback command that arrived while the session was
+    // Compacting.
     // Re-driving a tool batch mid-compaction is unsafe — compaction rewrites
     // _state.History — so the response is buffered here and replayed via
     // Self.Tell once compaction finishes and the phase transition has run.
-    private ToolInteractionResponse? _deferredApprovalResponse;
+    private IWithSessionId? _deferredApprovalResponse;
 
     // Per-turn transient counters (tool budget, duplicate detection, empty-response retries)
     private readonly TurnStateTracker _turnState = new();
@@ -420,6 +421,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // live-Processing handler does not apply here — there is no in-flight
         // tool-loop task — so re-drive the parked batch from history.
         CommandAsync<ToolInteractionResponse>(HandleToolInteractionResponseWhenIdle);
+        CommandAsync<ToolInteractionTextResponse>(HandleToolInteractionTextResponseWhenIdle);
 
         Command<SendUserMessage>(HandleIncomingUserMessage);
     }
@@ -558,35 +560,25 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             });
         });
 
-        CommandAsync<ToolInteractionResponse>(async msg =>
+        CommandAsync<ToolInteractionResponse>(HandleProcessingApprovalResponseAsync);
+
+        CommandAsync<ToolInteractionTextResponse>(async msg =>
         {
-            if (!_pendingToolInteractions.TryGetValue(msg.CallId.Value, out var pending))
+            if (_restartDrainRequested)
             {
-                _log.Warning("Ignoring tool interaction response for unknown call {CallId}", msg.CallId);
-                TryReplyNack("approval_prompt_expired");
+                _log.Info("Rejecting text tool interaction response while restart drain is in progress");
+                TryReplyNack(SessionIngressGate.RestartInProgressMessage);
                 return;
             }
 
-            try
+            if (!TryResolveTextApprovalResponse(msg, out var structured, out var nackReason)
+                || structured is null)
             {
-                var authorization = await AuthorizeApprovalResponseAsync(pending, msg);
-                if (authorization.Decision is not { } decision)
-                {
-                    TryReplyNack(authorization.NackReason ?? "approval_wrong_requester");
-                    return;
-                }
+                TryReplyNack(nackReason ?? "approval_prompt_expired");
+                return;
+            }
 
-                PersistApprovalResolved(msg, decision, () =>
-                {
-                    _approvalChannel.Complete(msg.CallId, decision);
-                    TryReplyAck();
-                });
-            }
-            catch (Exception ex)
-            {
-                FailCurrentTurn("I couldn't persist that approval decision. Please try again.", ex, ErrorCategory.ToolFailure);
-                TryReplyNack("approval_persist_failed");
-            }
+            await HandleProcessingApprovalResponseAsync(structured);
         });
 
         Command<LlmCallFailed>(msg =>
@@ -1124,6 +1116,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             TryReplyAck();
         });
 
+        Command<ToolInteractionTextResponse>(msg =>
+        {
+            _log.Info("Buffering text tool interaction response (compaction in progress)");
+            _deferredApprovalResponse = msg;
+            TryReplyAck();
+        });
+
         Command<ProcessingWatchdogExpired>(HandleCompactionWatchdogExpired);
         Command<SpawnChildActorRequest>(msg => Sender.Tell(Context.ActorOf(msg.Props, msg.ActorName)));
         Command<PrepareForDaemonRestart>(_ => RequestRestartDrain());
@@ -1451,6 +1450,21 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             AbortPassivationTimers();
             TransitionTo(SessionPhase.Ready);
             await HandleToolInteractionResponseWhenIdle(msg);
+        });
+
+        CommandAsync<ToolInteractionTextResponse>(async msg =>
+        {
+            if (_restartDrainRequested)
+            {
+                _log.Info("Rejecting text tool interaction response while restart passivation is in progress");
+                TryReplyNack(SessionIngressGate.RestartInProgressMessage);
+                return;
+            }
+
+            _log.Info("Aborting passivation due to text tool interaction response");
+            AbortPassivationTimers();
+            TransitionTo(SessionPhase.Ready);
+            await HandleToolInteractionTextResponseWhenIdle(msg);
         });
 
         // Ignore stale processing/compaction messages
@@ -3031,6 +3045,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             evt.RequesterSenderId?.Value,
             evt.RequesterPrincipal,
             evt.Cwd,
+            evt.RequestedAtMs,
             evt.OptionKeys,
             evt.Candidates.Select(c => new ApprovalCandidate(c.Verb, c.Directory)).ToArray());
         _resolvedToolApprovals.Remove(evt.CallId);
@@ -3219,11 +3234,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _log.Warning(
                 "Ignoring tool interaction response for call {CallId} from sender {SenderId}; expected {ExpectedSenderId}",
                 msg.CallId, msg.SenderId, pending.RequesterSenderId);
-            EmitOutput(new TextOutput(
-                "Approval response ignored: only the requesting user can approve this tool action.")
-            {
-                SessionId = _sessionId
-            }, OutputFilter.Text);
+            EmitWrongRequesterApprovalNotice();
             return (null, "approval_wrong_requester");
         }
 
@@ -3238,11 +3249,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 msg.SelectedKey,
                 msg.CallId,
                 string.Join(", ", pending.OptionKeys));
-            EmitOutput(new TextOutput(
-                "Approval response ignored: that option is not available for this tool action.")
-            {
-                SessionId = _sessionId
-            }, OutputFilter.Text);
+            EmitUnavailableApprovalOptionNotice();
             return (null, "approval_option_unavailable");
         }
 
@@ -3260,6 +3267,124 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         }
 
         return (decision, null);
+    }
+
+    private void EmitWrongRequesterApprovalNotice()
+        => EmitOutput(new TextOutput(
+            "Approval response ignored: only the requesting user can approve this tool action.")
+        {
+            SessionId = _sessionId
+        }, OutputFilter.Text);
+
+    private void EmitUnavailableApprovalOptionNotice()
+        => EmitOutput(new TextOutput(
+            "Approval response ignored: that option is not available for this tool action.")
+        {
+            SessionId = _sessionId
+        }, OutputFilter.Text);
+
+    private bool TryResolveTextApprovalResponse(
+        ToolInteractionTextResponse msg,
+        out ToolInteractionResponse? structured,
+        out string? nackReason)
+    {
+        structured = null;
+        nackReason = null;
+
+        var pending = ResolveLatestPendingApprovalForSender(msg.SenderId);
+        if (pending is null)
+        {
+            if (_pendingToolInteractions.Count == 0)
+            {
+                _log.Warning("Ignoring text tool interaction response with no pending approvals for sender {SenderId}", msg.SenderId);
+                EmitExpiredPromptNotice();
+                nackReason = "approval_prompt_expired";
+            }
+            else
+            {
+                _log.Warning("Ignoring text tool interaction response from unauthorized sender {SenderId}", msg.SenderId);
+                EmitWrongRequesterApprovalNotice();
+                nackReason = "approval_wrong_requester";
+            }
+
+            return false;
+        }
+
+        var optionKeys = pending.OptionKeys.Count > 0
+            ? pending.OptionKeys
+            :
+            [
+                ApprovalOptionKeys.ApproveOnce,
+                ApprovalOptionKeys.ApproveSession,
+                ApprovalOptionKeys.ApproveAlways,
+                ApprovalOptionKeys.Deny
+            ];
+
+        var options = optionKeys
+            .Select(key => new ToolInteractionOption(new ApprovalOptionKey(key), ApprovalOptionKeys.LabelFor(key)))
+            .ToArray();
+
+        if (!ToolInteractionResponseParser.TryParseApprovalResponse(msg.Text, options, out var selectedKey)
+            || selectedKey is null)
+        {
+            _log.Warning(
+                "Ignoring unparseable text tool interaction response '{Text}' for call {CallId}; offered options were [{OptionKeys}]",
+                msg.Text,
+                pending.CallId,
+                string.Join(", ", pending.OptionKeys));
+            EmitUnavailableApprovalOptionNotice();
+            nackReason = "approval_option_unavailable";
+            return false;
+        }
+
+        structured = new ToolInteractionResponse
+        {
+            SessionId = msg.SessionId,
+            CallId = new ToolCallId(pending.CallId),
+            SelectedKey = new ApprovalOptionKey(selectedKey),
+            SenderId = msg.SenderId
+        };
+        return true;
+    }
+
+    private PendingToolInteraction? ResolveLatestPendingApprovalForSender(SenderId senderId)
+        => _pendingToolInteractions.Values
+            .Where(pending => ApprovalButtonValueCodec.CanApprove(
+                pending.RequesterPrincipal,
+                pending.RequesterSenderId,
+                senderId.Value))
+            .OrderBy(pending => pending.RequestedAtMs)
+            .LastOrDefault();
+
+    private async Task HandleProcessingApprovalResponseAsync(ToolInteractionResponse msg)
+    {
+        if (!_pendingToolInteractions.TryGetValue(msg.CallId.Value, out var pending))
+        {
+            _log.Warning("Ignoring tool interaction response for unknown call {CallId}", msg.CallId);
+            TryReplyNack("approval_prompt_expired");
+            return;
+        }
+
+        try
+        {
+            var authorization = await AuthorizeApprovalResponseAsync(pending, msg);
+            if (authorization.Decision is not { } decision)
+            {
+                TryReplyNack(authorization.NackReason ?? "approval_wrong_requester");
+                return;
+            }
+
+            PersistApprovalResolved(msg, decision, () =>
+            {
+                _approvalChannel.Complete(msg.CallId, decision);
+                TryReplyAck();
+            });
+        }
+        catch (Exception ex)
+        {
+            FailCurrentTurn("I couldn't persist that approval decision. Please try again.", ex, ErrorCategory.ToolFailure);
+            TryReplyNack("approval_persist_failed");
+        }
     }
 
     private void PersistApprovalResolved(
@@ -3336,6 +3461,18 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             TryRedriveToolBatchAfterApproval(callId);
             TryReplyAck();
         });
+    }
+
+    private async Task HandleToolInteractionTextResponseWhenIdle(ToolInteractionTextResponse msg)
+    {
+        if (!TryResolveTextApprovalResponse(msg, out var structured, out var nackReason)
+            || structured is null)
+        {
+            TryReplyNack(nackReason ?? "approval_prompt_expired");
+            return;
+        }
+
+        await HandleToolInteractionResponseWhenIdle(structured);
     }
 
     private bool TryRedriveToolBatchAfterApproval(string callId)

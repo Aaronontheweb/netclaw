@@ -24,6 +24,7 @@ internal sealed record PendingToolInteraction(
     string? RequesterSenderId,
     PrincipalClassification? RequesterPrincipal,
     string? Cwd,
+    long RequestedAtMs,
     // Option keys that were actually offered to the user when the prompt was
     // rendered. Persisted so a later response cannot select a pruned scope.
     IReadOnlyList<string> OptionKeys,

@@ -54,6 +54,20 @@ public sealed class ToolInteractionResponseParserTests
     }
 
     [Theory]
+    [InlineData("A")]
+    [InlineData("5")]
+    [InlineData("approve everywhere")]
+    public void LooksLikeApprovalResponse_accepts_common_cold_path_inputs(string input)
+        => Assert.True(ToolInteractionResponseParser.LooksLikeApprovalResponse(input));
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("maybe later")]
+    [InlineData("ship it")]
+    public void LooksLikeApprovalResponse_rejects_normal_chat_text(string input)
+        => Assert.False(ToolInteractionResponseParser.LooksLikeApprovalResponse(input));
+
+    [Theory]
     [InlineData("")]
     [InlineData("   ")]
     [InlineData("maybe")]

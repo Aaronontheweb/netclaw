@@ -699,7 +699,10 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         var (result, pending) = ResolvePendingRequest(message.SenderId, callId: null);
 
         if (result is ApprovalLookupResult.NotFound)
-            return false;
+        {
+            return !_hasObservedApprovalRequest
+                && await TryHandleColdTextApprovalResponseAsync(message);
+        }
 
         if (result is ApprovalLookupResult.WrongRequester)
         {
@@ -728,6 +731,38 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
 
         await TryResolveApprovalPromptAsync(pending!, selectedKey, message.SenderId.Value);
         return true;
+    }
+
+    private async Task<bool> TryHandleColdTextApprovalResponseAsync(MattermostThreadInbound message)
+    {
+        if (!ToolInteractionResponseParser.LooksLikeApprovalResponse(message.Text ?? string.Empty))
+            return false;
+
+        using var feedbackCts = new CancellationTokenSource(OperationTimeout);
+        try
+        {
+            var reply = await _dependencies.Pipeline.SendFeedbackAndWaitAsync(new ToolInteractionTextResponse
+            {
+                SessionId = _sessionId,
+                Text = message.Text ?? string.Empty,
+                SenderId = new SenderId(message.SenderId.Value)
+            }, feedbackCts.Token);
+
+            if (reply is CommandAck)
+            {
+                _log.Info(
+                    "Forwarded cold Mattermost text approval response from sender={SenderId} without local pending prompt state",
+                    message.SenderId);
+                return true;
+            }
+
+            return reply is CommandNack;
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Failed to route cold Mattermost text approval response from sender {SenderId}", message.SenderId);
+            return false;
+        }
     }
 
     private async Task HandleApprovalResponseAsync(MattermostApprovalResponse message)
