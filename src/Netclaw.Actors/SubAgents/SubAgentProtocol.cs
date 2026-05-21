@@ -95,15 +95,9 @@ public sealed record RunSubAgent : INoSerializationVerificationNeeded
     public string? ParentProjectDirectory { get; init; }
 
     /// <summary>
-    /// Parent session's resolved shell working directory at spawn time —
-    /// equivalent to the value
-    /// <c>ToolExecutionContext.ResolveShellCwd(null)</c> returns on the parent.
-    /// The sub-agent's <c>ToolExecutionContext.Cwd</c> is initialized from this
-    /// so approval prompts render the parent's effective directory in the
-    /// header and folder-scoped grants under that directory auto-approve the
-    /// sub-agent's invocations the same way they would the parent's. Null when
-    /// the parent itself has no resolvable cwd; the approval gate then evaluates
-    /// persisted global grants per <c>tool-approval-gates</c>.
+    /// Snapshot of the parent's <c>ToolExecutionContext.ResolveShellCwd(null)</c>
+    /// at spawn time. Seeds the child's <c>InheritedCwd</c>. Null when the
+    /// parent itself had no resolvable cwd.
     /// </summary>
     public string? ParentCwd { get; init; }
 

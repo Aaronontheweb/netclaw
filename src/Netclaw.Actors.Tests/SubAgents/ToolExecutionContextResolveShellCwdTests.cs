@@ -11,10 +11,10 @@ namespace Netclaw.Actors.Tests.SubAgents;
 
 /// <summary>
 /// Locks in the <see cref="ToolExecutionContext.ResolveShellCwd"/> fallback
-/// order, including the inherited-Cwd last-resort branch added so a
-/// sub-agent's parent-cwd snapshot survives <c>ToolAccessPolicy</c>'s
-/// per-call re-resolve when neither <c>ProjectDirectory</c> nor
-/// <c>SessionDirectory</c> is available.
+/// order, including the <see cref="ToolExecutionContext.InheritedCwd"/>
+/// last-resort branch added so a sub-agent's parent-cwd snapshot is visible
+/// to the approval gate when neither <c>ProjectDirectory</c> nor
+/// <c>SessionDirectory</c> is available on the child.
 /// </summary>
 public class ToolExecutionContextResolveShellCwdTests
 {
@@ -25,20 +25,20 @@ public class ToolExecutionContextResolveShellCwdTests
         {
             Audience = TrustAudience.Personal,
             ProjectDirectory = "/home/user/repos/foo",
-            Cwd = "/home/user/repos/inherited",
+            InheritedCwd = "/home/user/repos/inherited",
         };
 
         Assert.Equal("/explicit/arg", context.ResolveShellCwd("/explicit/arg"));
     }
 
     [Fact]
-    public void ProjectDirectory_wins_over_session_directory_and_cwd()
+    public void ProjectDirectory_wins_over_session_directory_and_inherited_cwd()
     {
         var context = new ToolExecutionContext("sess", "/tmp/sess")
         {
             Audience = TrustAudience.Personal,
             ProjectDirectory = "/home/user/repos/foo",
-            Cwd = "/home/user/repos/inherited",
+            InheritedCwd = "/home/user/repos/inherited",
         };
 
         Assert.Equal("/home/user/repos/foo", context.ResolveShellCwd(null));
@@ -50,7 +50,7 @@ public class ToolExecutionContextResolveShellCwdTests
         var context = new ToolExecutionContext("sess", "/tmp/sess")
         {
             Audience = TrustAudience.Personal,
-            Cwd = "/home/user/repos/inherited",
+            InheritedCwd = "/home/user/repos/inherited",
         };
 
         Assert.Equal("/tmp/sess", context.ResolveShellCwd(null));
@@ -59,19 +59,28 @@ public class ToolExecutionContextResolveShellCwdTests
     [Fact]
     public void Inherited_cwd_is_last_resort_fallback_before_null()
     {
-        // Sub-agent path: parent had no ProjectDirectory, no SessionDirectory,
-        // but its resolved cwd at spawn time was captured as ParentCwd and
-        // placed on the child's Cwd. Without the Cwd fallback in
-        // ResolveShellCwd, ToolAccessPolicy's per-call re-resolve would null
-        // out the inherited snapshot and render "(no working directory)" in
-        // approval prompts.
         var context = new ToolExecutionContext("sess", sessionDirectory: null)
         {
             Audience = TrustAudience.Personal,
-            Cwd = "/home/user/repos/inherited",
+            InheritedCwd = "/home/user/repos/inherited",
         };
 
         Assert.Equal("/home/user/repos/inherited", context.ResolveShellCwd(null));
+    }
+
+    [Fact]
+    public void Cwd_output_field_does_not_feed_resolve()
+    {
+        // Cwd is the per-call resolved output the approval gate writes; it
+        // must not feed back into ResolveShellCwd or a stale value could
+        // shadow a later ProjectDirectory/SessionDirectory change.
+        var context = new ToolExecutionContext("sess", sessionDirectory: null)
+        {
+            Audience = TrustAudience.Personal,
+            Cwd = "/stale/cwd",
+        };
+
+        Assert.Null(context.ResolveShellCwd(null));
     }
 
     [Fact]

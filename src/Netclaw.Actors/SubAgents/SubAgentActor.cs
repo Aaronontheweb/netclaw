@@ -130,17 +130,11 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             _toolExecutionContext = new ToolExecutionContext(scopeId, msg.ParentSessionDirectory)
             {
                 Audience = subAgentAudience,
+                InheritedCwd = msg.ParentCwd,
             };
             _toolExecutionContext.Boundary = msg.Boundary;
             _toolExecutionContext.ChannelType = msg.ChannelType;
             _toolExecutionContext.ProjectDirectory = msg.ParentProjectDirectory;
-            // Inherit the parent's resolved cwd snapshot before any tool runs so
-            // the approval gate and prompt rendering see the operator's effective
-            // working directory, not the sub-agent's session-scratch dir.
-            // ResolveShellCwd's explicit-arg → ProjectDirectory → SessionDirectory
-            // fallback still applies when the sub-agent's tool call carries an
-            // explicit WorkingDirectory argument.
-            _toolExecutionContext.Cwd = msg.ParentCwd;
             _toolExecutionContext.SupportsInteractiveApproval = _approvalBridge is not null;
             _executionCts = new CancellationTokenSource();
             var self = Self; // Capture before callback — Self requires active actor context
@@ -567,12 +561,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             RequestedTimeoutSeconds = source.RequestedTimeoutSeconds,
             ChannelType = source.ChannelType,
             ProjectDirectory = source.ProjectDirectory,
-            // Carry the inherited parent-cwd snapshot through every per-tool
-            // context so ToolAccessPolicy's re-resolve and the approval prompt
-            // header can fall back to it when the sub-agent's own
-            // ProjectDirectory/SessionDirectory wouldn't otherwise produce
-            // the operator's effective working directory.
-            Cwd = source.Cwd,
+            InheritedCwd = source.InheritedCwd,
             SupportsInteractiveApproval = source.SupportsInteractiveApproval,
             OnSubAgentActivity = source.OnSubAgentActivity,
             SpawnChildActor = source.SpawnChildActor,

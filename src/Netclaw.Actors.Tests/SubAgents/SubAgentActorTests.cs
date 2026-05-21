@@ -165,11 +165,6 @@ public class SubAgentActorTests : TestKit
     [Fact]
     public async Task Tool_execution_inherits_parent_resolved_cwd_snapshot()
     {
-        // Parent supplies its already-resolved cwd via ParentCwd (e.g., a path
-        // resolved from set_working_directory mid-session). The sub-agent
-        // surfaces that value through ToolExecutionContext.Cwd so the approval
-        // gate and prompt rendering see the parent's effective directory
-        // rather than the sub-agent's session-scratch dir.
         var fakeTool = new FakeNetclawTool("inspect_context", "ok");
         var fakeClient = new FakeChatClient
         {
@@ -192,16 +187,15 @@ public class SubAgentActorTests : TestKit
 
         Assert.True(result.Success);
         Assert.NotNull(fakeTool.LastContext);
-        Assert.Equal("/home/user/repos/foo", fakeTool.LastContext!.Cwd);
+        Assert.Equal("/home/user/repos/foo", fakeTool.LastContext!.InheritedCwd);
+        // ProjectDirectory wins the resolve when set; this asserts that the
+        // inherited snapshot doesn't shadow it.
+        Assert.Equal("/home/user/repos/foo", fakeTool.LastContext.ResolveShellCwd(null));
     }
 
     [Fact]
-    public async Task Tool_execution_with_null_parent_cwd_leaves_context_cwd_null()
+    public async Task Tool_execution_with_null_parent_cwd_resolves_to_session_dir_or_null()
     {
-        // Parent had no resolvable cwd at spawn time (no explicit working
-        // directory, no ProjectDirectory, no SessionDirectory). The sub-agent
-        // surfaces null faithfully so downstream approval prompts render the
-        // documented null-cwd header form.
         var fakeTool = new FakeNetclawTool("inspect_context", "ok");
         var fakeClient = new FakeChatClient
         {
@@ -222,7 +216,41 @@ public class SubAgentActorTests : TestKit
 
         Assert.True(result.Success);
         Assert.NotNull(fakeTool.LastContext);
-        Assert.Null(fakeTool.LastContext!.Cwd);
+        Assert.Null(fakeTool.LastContext!.InheritedCwd);
+        Assert.Null(fakeTool.LastContext.ResolveShellCwd(null));
+    }
+
+    [Fact]
+    public async Task Tool_execution_inherits_parent_cwd_when_child_has_no_project_or_session_dir()
+    {
+        // The original bug shape: a sub-agent whose parent had a resolved cwd
+        // but no ProjectDirectory/SessionDirectory propagating to the child.
+        // InheritedCwd is the only path that surfaces the parent's effective
+        // working directory to the approval gate; without it, the prompt
+        // header reads "(no working directory)".
+        var fakeTool = new FakeNetclawTool("inspect_context", "ok");
+        var fakeClient = new FakeChatClient
+        {
+            ToolCallsOnFirstCall = [new FunctionCallContent("call-inherit-only", "inspect_context")]
+        };
+
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(CreateDefinition([fakeTool]), fakeClient));
+
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent
+            {
+                Task = "Inspect inherited cwd with no other sources.",
+                Timeout = TimeSpan.FromSeconds(5),
+                ParentSessionDirectory = null,
+                ParentProjectDirectory = null,
+                ParentCwd = "/home/user/repos/foo",
+                Audience = TrustAudience.Personal,
+            },
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success);
+        Assert.NotNull(fakeTool.LastContext);
+        Assert.Equal("/home/user/repos/foo", fakeTool.LastContext!.ResolveShellCwd(null));
     }
 
     [Fact]
