@@ -486,12 +486,21 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     when (approvalBridge is not null)
                 {
                     var ctx = approvalEx.ApprovalContext;
+                    var bridgeCandidates = ctx.Candidates is { Count: > 0 } c
+                        ? c.Select(x => new ParentApprovalCandidate(x.Verb, x.Directory)).ToList()
+                        : (IReadOnlyList<ParentApprovalCandidate>)[];
+                    var bridgeOptions = ctx.Options
+                        .Select(o => new ParentApprovalOption(o.Key.Value, o.Label))
+                        .ToList();
                     var decision = await approvalBridge.RequestApprovalAsync(
                         new ToolCallId(tc.CallId),
                         ctx.ToolName,
                         ctx.DisplayText,
                         ctx.Patterns,
                         ctx.CandidateVerbs,
+                        bridgeCandidates,
+                        ctx.Cwd,
+                        bridgeOptions,
                         ctx.IsMessy,
                         ct);
 
