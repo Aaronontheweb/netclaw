@@ -540,6 +540,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 RequesterSenderId = msg.RequesterSenderId,
                 RequesterPrincipal = msg.RequesterPrincipal,
                 Cwd = msg.Cwd,
+                OptionKeys = msg.Options.Select(o => o.Key.Value).ToArray(),
                 Candidates = msg.Candidates
                     .Select(c => new ToolApprovalRequested.ApprovalCandidateRecord
                     {
@@ -568,9 +569,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             try
             {
-                if (await AuthorizeApprovalResponseAsync(pending, msg) is not { } decision)
+                var authorization = await AuthorizeApprovalResponseAsync(pending, msg);
+                if (authorization.Decision is not { } decision)
                 {
-                    TryReplyNack("approval_wrong_requester");
+                    TryReplyNack(authorization.NackReason ?? "approval_wrong_requester");
                     return;
                 }
 
@@ -3029,6 +3031,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             evt.RequesterSenderId?.Value,
             evt.RequesterPrincipal,
             evt.Cwd,
+            evt.OptionKeys,
             evt.Candidates.Select(c => new ApprovalCandidate(c.Verb, c.Directory)).ToArray());
         _resolvedToolApprovals.Remove(evt.CallId);
     }
@@ -3205,7 +3208,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     /// non-null return means authorization succeeded; the caller is
     /// responsible for journaling <see cref="ToolApprovalResolved"/>.
     /// </summary>
-    private async Task<ApprovalDecision?> AuthorizeApprovalResponseAsync(
+    private async Task<(ApprovalDecision? Decision, string? NackReason)> AuthorizeApprovalResponseAsync(
         PendingToolInteraction pending, ToolInteractionResponse msg)
     {
         // Only the user who triggered the request may approve it — verified
@@ -3221,7 +3224,26 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             {
                 SessionId = _sessionId
             }, OutputFilter.Text);
-            return null;
+            return (null, "approval_wrong_requester");
+        }
+
+        // Legacy journal entries created before option persistence landed have
+        // an empty OptionKeys list. Skip this check for that concrete recovery
+        // path only; live prompts always persist their offered option keys.
+        if (pending.OptionKeys.Count > 0
+            && !pending.OptionKeys.Any(key => string.Equals(key, msg.SelectedKey.Value, StringComparison.Ordinal)))
+        {
+            _log.Warning(
+                "Ignoring unavailable approval option {SelectedKey} for call {CallId}; offered options were [{OptionKeys}]",
+                msg.SelectedKey,
+                msg.CallId,
+                string.Join(", ", pending.OptionKeys));
+            EmitOutput(new TextOutput(
+                "Approval response ignored: that option is not available for this tool action.")
+            {
+                SessionId = _sessionId
+            }, OutputFilter.Text);
+            return (null, "approval_option_unavailable");
         }
 
         var decision = MapApprovalDecision(msg.SelectedKey.Value);
@@ -3237,7 +3259,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             await PersistApprovalCandidatesAsync(pending, decision, CancellationToken.None);
         }
 
-        return decision;
+        return (decision, null);
     }
 
     private void PersistApprovalResolved(
@@ -3287,9 +3309,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         ApprovalDecision decision;
         try
         {
-            if (await AuthorizeApprovalResponseAsync(pending, msg) is not { } authorizedDecision)
+            var authorization = await AuthorizeApprovalResponseAsync(pending, msg);
+            if (authorization.Decision is not { } authorizedDecision)
             {
-                TryReplyNack("approval_wrong_requester");
+                TryReplyNack(authorization.NackReason ?? "approval_wrong_requester");
                 return;
             }
             decision = authorizedDecision;

@@ -298,9 +298,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             var currentTs = new SlackEventId(message.EventId.Value).TryGetEventTs();
 
             if (!string.IsNullOrWhiteSpace(message.Text)
-                && ToolInteractionResponseParser.TryParseApprovalResponse(message.Text, out var selectedKey)
-                && selectedKey is not null
-                && await TryHandleApprovalResponseAsync(message, selectedKey))
+                && await TryHandleTextApprovalResponseAsync(message))
             {
                 return;
             }
@@ -1223,7 +1221,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         }
     }
 
-    private async Task<bool> TryHandleApprovalResponseAsync(SlackThreadInbound message, string selectedKey)
+    private async Task<bool> TryHandleTextApprovalResponseAsync(SlackThreadInbound message)
     {
         if (_pendingApprovalRequests.Count == 0)
             return false;
@@ -1238,6 +1236,15 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         }
 
         var pending = _pendingApprovalRequests[pendingIndex];
+
+        if (!ToolInteractionResponseParser.TryParseApprovalResponse(
+                message.Text ?? string.Empty,
+                pending.Request.Options,
+                out var selectedKey)
+            || selectedKey is null)
+        {
+            return false;
+        }
 
         try
         {

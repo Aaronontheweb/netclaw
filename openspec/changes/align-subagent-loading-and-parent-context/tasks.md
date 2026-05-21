@@ -42,12 +42,12 @@
 
 ## 7. Subagent cwd snapshot and approval-gate alignment
 
-- [ ] 7.1 Extend `session-cwd` delta with the "Resolved shell cwd flows to spawned subagents" requirement and scenarios.
-- [ ] 7.2 Add a `tool-approval-gates` delta covering subagent approval evaluation under inherited and null cwd.
-- [ ] 7.3 Add `ParentCwd` to the `RunSubAgent` protocol record.
-- [ ] 7.4 Populate `ParentCwd` from `context.ResolveShellCwd(null)` in `SubAgentSpawner`.
-- [ ] 7.5 Initialize `_toolExecutionContext.Cwd` from `msg.ParentCwd` in `SubAgentActor.Idle`.
-- [ ] 7.6 Add `ShellApprovalMatcherTests` regression case for null-cwd + null-candidateDirectory + null-entry-directory.
-- [ ] 7.7 Add `SubAgentActor` context-init test that asserts `ToolExecutionContext.Cwd` equals `RunSubAgent.ParentCwd`.
-- [ ] 7.8 Add `SubAgentSpawner` propagation test that asserts the dispatched `RunSubAgent` carries the parent's resolved cwd.
-- [ ] 7.9 Run targeted tests and quality gates (slopwatch, file headers).
+- [x] 7.1 Extend `session-cwd` delta with the "Resolved shell cwd flows to spawned subagents" requirement and scenarios.
+- [x] 7.2 Add a `tool-approval-gates` delta covering subagent approval evaluation under inherited and null cwd.
+- [x] 7.3 Add `ParentCwd` to the `RunSubAgent` protocol record.
+- [x] 7.4 Populate `ParentCwd` from `context.ResolveShellCwd(null)` in `SubAgentSpawner`.
+- [x] 7.5 Initialize `_toolExecutionContext.InheritedCwd` from `msg.ParentCwd` in `SubAgentActor.Idle`.
+- [x] 7.6 Add `ShellApprovalMatcherTests` regression case for null-cwd + null-candidateDirectory + null-entry-directory.
+- [x] 7.7 Add `SubAgentActor` context-init test that asserts `ToolExecutionContext.InheritedCwd` equals `RunSubAgent.ParentCwd`.
+- [x] 7.8 Add `SubAgentSpawner` propagation test that asserts the dispatched `RunSubAgent` carries the parent's resolved cwd.
+- [x] 7.9 Run targeted tests and quality gates (slopwatch, file headers).

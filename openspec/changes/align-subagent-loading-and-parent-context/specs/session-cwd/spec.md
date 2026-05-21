@@ -30,21 +30,24 @@ When a session spawns a subagent, the runtime SHALL capture the parent's
 *resolved* shell working directory at spawn time — equivalent to the value
 `ToolExecutionContext.ResolveShellCwd(null)` returns on the parent's tool
 execution context — and populate the child's
-`ToolExecutionContext.Cwd` with that value before any tool authorization
-runs inside the child. The inherited cwd SHALL be read-only from the child:
-subagent execution SHALL NOT mutate the parent session's `WorkingContext.Cwd`
-or `ProjectDirectory`. When the parent has no resolvable cwd at spawn time
-(no explicit working directory, no `ProjectDirectory`, no `SessionDirectory`),
-the child's `Cwd` SHALL be `null`; the approval gate SHALL continue to
-evaluate persisted global grants in that case as defined by the
+`ToolExecutionContext.InheritedCwd` with that value before any tool
+authorization runs inside the child. `ToolExecutionContext.Cwd` remains the
+per-call resolved output written by the approval gate when a concrete tool
+invocation is evaluated. The inherited cwd SHALL be read-only from the child:
+subagent execution SHALL NOT mutate the parent session's
+`WorkingContext.ProjectDirectory` or otherwise rewrite the parent's own cwd
+inputs. When the parent has no resolvable cwd at spawn time (no explicit
+working directory, no `ProjectDirectory`, no `SessionDirectory`), the child's
+`InheritedCwd` SHALL be `null`; the approval gate SHALL continue to evaluate
+persisted global grants in that case as defined by the
 `tool-approval-gates` capability.
 
 #### Scenario: Subagent inherits parent's resolved working directory
 
-- **GIVEN** a session whose parent `ToolExecutionContext.Cwd` resolves to
+- **GIVEN** a session whose parent `ToolExecutionContext.ResolveShellCwd(null)` resolves to
   `/home/user/repos/foo`
 - **WHEN** the session spawns a subagent
-- **THEN** the subagent's `ToolExecutionContext.Cwd` is
+- **THEN** the subagent's `ToolExecutionContext.InheritedCwd` is
   `/home/user/repos/foo` before its first tool invocation
 - **AND** a `shell_execute` call inside the subagent with no
   `WorkingDirectory` argument resolves cwd to `/home/user/repos/foo` for
@@ -65,7 +68,7 @@ evaluate persisted global grants in that case as defined by the
 - **GIVEN** the parent's `ToolExecutionContext.ResolveShellCwd(null)` returns
   `null` (no explicit cwd, no `ProjectDirectory`, no `SessionDirectory`)
 - **WHEN** the session spawns a subagent
-- **THEN** the subagent's `ToolExecutionContext.Cwd` is `null`
+- **THEN** the subagent's `ToolExecutionContext.InheritedCwd` is `null`
 - **AND** the approval gate SHALL still evaluate persisted global grants
   per the `tool-approval-gates` capability
 
@@ -75,6 +78,5 @@ evaluate persisted global grants in that case as defined by the
   `/home/user/repos/foo` and resolved cwd = `/home/user/repos/foo`
 - **WHEN** a spawned subagent runs to completion (succeeds, fails, or times
   out)
-- **THEN** the parent session's `WorkingContext.Cwd` and `ProjectDirectory`
-  are unchanged
+- **THEN** the parent session's `WorkingContext.ProjectDirectory` is unchanged
 - **AND** no subagent action implicitly rewrites the parent working context

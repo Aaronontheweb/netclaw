@@ -151,6 +151,75 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
     }
 
     [Fact]
+    public async Task Pending_approval_rejects_option_that_was_not_offered()
+    {
+        const string callId = "call-shell-invalid-option";
+        _toolExecutor.GatedTools.Add("shell_execute");
+
+        _fakeChatClient.ToolCallsOnFirstCall =
+        [
+            new FunctionCallContent(callId, "shell_execute",
+                new Dictionary<string, object?> { ["command"] = "git status" })
+        ];
+
+        var sessionId = new SessionId("test-channel/invalid-approval-option");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("invalid-option-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Run git status"
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        await subscriber.ExpectMsgAsync<ToolCallOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        var request = await subscriber.ExpectMsgAsync<ToolInteractionRequest>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(callId, request.CallId.Value);
+        Assert.Equal([ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.Deny], request.Options.Select(o => o.Key.Value).ToArray());
+
+        var invalidReply = await sessionManager.Ask<ICommandReply>(new ToolInteractionResponse
+        {
+            SessionId = sessionId,
+            CallId = new Netclaw.Tools.ToolCallId(callId),
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveAlways),
+            SenderId = new SenderId("local-user")
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        var nack = Assert.IsType<CommandNack>(invalidReply);
+        Assert.Equal("approval_option_unavailable", nack.Reason);
+
+        var warning = await subscriber.ExpectMsgAsync<TextOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Contains("not available", warning.Text, StringComparison.OrdinalIgnoreCase);
+
+        var validReply = await sessionManager.Ask<ICommandReply>(new ToolInteractionResponse
+        {
+            SessionId = sessionId,
+            CallId = new Netclaw.Tools.ToolCallId(callId),
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce),
+            SenderId = new SenderId("local-user")
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.IsType<CommandAck>(validReply);
+        await subscriber.ExpectMsgAsync<ToolResultOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<TextOutput>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<TurnCompleted>(
+            TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(1, _toolExecutor.SuccessfulExecutions);
+    }
+
+    [Fact]
     public async Task Recovered_batch_does_not_reexecute_completed_sibling_tool_call()
     {
         const string readCallId = "call-read-1";

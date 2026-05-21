@@ -44,10 +44,11 @@ creates avoidable drift between main-session and subagent behavior.
   routing so both paths use the same live-loaded registry and inherited parent
   context contract.
 - Define inherited shell cwd snapshot for subagent executions so the child's
-  `ToolExecutionContext.Cwd` matches the parent's resolved working directory
-  at spawn time, and pin down approval-gate behavior for subagent invocations
-  under both inherited and null cwd (folder-scoped grants match under the
-  parent's cwd; global grants match regardless of cwd, including null).
+  `ToolExecutionContext.InheritedCwd` captures the parent's resolved working
+  directory at spawn time, and pin down approval-gate behavior for subagent
+  invocations under both inherited and null cwd (folder-scoped grants match
+  under the parent's cwd; global grants match regardless of cwd, including
+  null).
 
 ## Capabilities
 

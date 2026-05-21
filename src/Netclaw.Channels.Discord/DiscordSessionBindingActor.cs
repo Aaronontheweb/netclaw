@@ -297,9 +297,7 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             return;
 
         if (!string.IsNullOrWhiteSpace(message.Text)
-            && ToolInteractionResponseParser.TryParseApprovalResponse(message.Text, out var selectedKey)
-            && selectedKey is not null
-            && await TryHandleTextApprovalResponseAsync(message, selectedKey))
+            && await TryHandleTextApprovalResponseAsync(message))
         {
             return;
         }
@@ -721,7 +719,7 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
         return MergeAdoptedContext(baseInput, classified.Gap, cursor);
     }
 
-    private async Task<bool> TryHandleTextApprovalResponseAsync(DiscordThreadInbound message, string selectedKey)
+    private async Task<bool> TryHandleTextApprovalResponseAsync(DiscordThreadInbound message)
     {
         var (result, pending) = ResolvePendingRequest(message.SenderId, callId: null);
 
@@ -732,6 +730,15 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
         {
             await SafeReplyAsync(WrongRequesterWarning);
             return true;
+        }
+
+        if (!ToolInteractionResponseParser.TryParseApprovalResponse(
+                message.Text ?? string.Empty,
+                pending!.Request.Options,
+                out var selectedKey)
+            || selectedKey is null)
+        {
+            return false;
         }
 
         _pendingApprovalRequests.Remove(pending!);
