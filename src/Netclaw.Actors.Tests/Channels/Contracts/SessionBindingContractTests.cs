@@ -481,6 +481,76 @@ public abstract class SessionBindingContractTests : TestKit
     }
 
     [Fact]
+    public async Task Cold_text_approval_response_forwards_to_session_when_binding_cold_spawned()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var detector = new ConfigurablePromptInjectionDetector(PromptInjectionResult.Safe());
+        var sid = new SessionId("session-cold-text-approve");
+
+        // Empty output stream: the binding never sees the original approval prompt,
+        // so any text reply must be forwarded through the cold-path fallback.
+        var pipeline = new RecordingSessionPipeline(_ => []);
+
+        var actor = CreateBindingActor(sid, pipeline, detector);
+
+        actor.Tell(CreateInboundMessage("A", "user-1"), TestActor);
+
+        await AwaitAssertAsync(() =>
+        {
+            var feedback = pipeline.RecordedFeedback.OfType<ToolInteractionTextResponse>().ToList();
+            Assert.Single(feedback);
+            Assert.Equal(sid, feedback[0].SessionId);
+            Assert.Equal("A", feedback[0].Text);
+            Assert.Equal("user-1", feedback[0].SenderId.Value);
+        }, cancellationToken: ct);
+    }
+
+    [Fact]
+    public async Task Text_approval_response_uses_visible_option_order_when_option_set_is_pruned()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var detector = new ConfigurablePromptInjectionDetector(PromptInjectionResult.Safe());
+        var sid = new SessionId("session-text-approve-pruned");
+        var pipeline = new RecordingSessionPipeline(_ =>
+        [
+            new ToolInteractionRequest
+            {
+                SessionId = sid,
+                Kind = "approval",
+                CallId = new Netclaw.Tools.ToolCallId("call-3b"),
+                ToolName = new Netclaw.Tools.ToolName("shell_execute"),
+                DisplayText = "git push origin main",
+                RequesterSenderId = new SenderId("user-1"),
+                Options =
+                [
+                    new ToolInteractionOption(ApprovalOptionKeys.ApproveOnceKey, ApprovalOptionKeys.ApproveOnceLabel),
+                    new ToolInteractionOption(ApprovalOptionKeys.ApproveSessionKey, ApprovalOptionKeys.ApproveSessionLabel),
+                    new ToolInteractionOption(ApprovalOptionKeys.ApproveEverywhereKey, ApprovalOptionKeys.ApproveEverywhereLabel),
+                    new ToolInteractionOption(ApprovalOptionKeys.DenyKey, ApprovalOptionKeys.DenyLabel)
+                ]
+            }
+        ]);
+
+        var actor = CreateBindingActor(sid, pipeline, detector);
+
+        await AwaitAssertAsync(() =>
+        {
+            var texts = GetPostedTexts();
+            Assert.Contains(texts, t => t.Contains("shell_execute"));
+        }, cancellationToken: ct);
+
+        actor.Tell(CreateInboundMessage("C", "user-1"), TestActor);
+
+        await AwaitAssertAsync(() =>
+        {
+            var feedback = pipeline.RecordedFeedback.OfType<ToolInteractionResponse>().ToList();
+            Assert.Single(feedback);
+            Assert.Equal("call-3b", feedback[0].CallId.Value);
+            Assert.Equal(ApprovalOptionKeys.ApproveEverywhere, feedback[0].SelectedKey.Value);
+        }, cancellationToken: ct);
+    }
+
+    [Fact]
     public async Task Approvals_cleared_on_turn_completed()
     {
         var ct = TestContext.Current.CancellationToken;
