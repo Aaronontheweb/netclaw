@@ -133,6 +133,14 @@ public sealed class SubAgentSpawner
                     ChannelType = context.ChannelType,
                     ParentSessionDirectory = context.SessionDirectory,
                     ParentProjectDirectory = context.ProjectDirectory,
+                    // Captured against the parent's context so the sub-agent
+                    // sees the same effective cwd the parent would for an
+                    // approval-gated shell call. Without this, the child falls
+                    // through ResolveShellCwd's session_dir branch (the
+                    // sub-agent's own scratch dir, which never matches
+                    // operator-authored folder-scoped grants) or to null,
+                    // which renders the "(no working directory)" prompt.
+                    ParentCwd = context.ResolveShellCwd(null),
                     Cancellation = ct,
                     ApprovalBridge = context.ApprovalBridge,
                     // Null for non-streaming callers such as routed skills and

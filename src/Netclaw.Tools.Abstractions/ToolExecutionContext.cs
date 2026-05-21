@@ -184,9 +184,14 @@ public sealed class ToolExecutionContext
     /// <item><see cref="ProjectDirectory"/> — the session's declared project
     /// root, populated from <c>WorkingContext.ProjectDirectory</c>;</item>
     /// <item><see cref="SessionDirectory"/> — the per-session scratch
-    /// directory under <c>~/.netclaw/sessions/&lt;id&gt;/</c>.</item>
+    /// directory under <c>~/.netclaw/sessions/&lt;id&gt;/</c>;</item>
+    /// <item><see cref="Cwd"/> — a pre-populated cwd snapshot, used by
+    /// sub-agent contexts that inherit the parent's resolved cwd at spawn
+    /// time so a child whose own <c>ProjectDirectory</c>/<c>SessionDirectory</c>
+    /// happen to be unset still surfaces the parent's effective working
+    /// directory to the approval gate.</item>
     /// </list>
-    /// Returns <c>null</c> only when none of the three is available, which is
+    /// Returns <c>null</c> only when none of the four is available, which is
     /// the contract for tools that are not directory-anchored. Shell tools
     /// SHALL never inherit the daemon process's cwd — that defeats the
     /// approval policy's safe-space invariant because the daemon's cwd is
@@ -200,6 +205,8 @@ public sealed class ToolExecutionContext
             return ProjectDirectory;
         if (!string.IsNullOrWhiteSpace(SessionDirectory))
             return SessionDirectory;
+        if (!string.IsNullOrWhiteSpace(Cwd))
+            return Cwd;
         return null;
     }
 

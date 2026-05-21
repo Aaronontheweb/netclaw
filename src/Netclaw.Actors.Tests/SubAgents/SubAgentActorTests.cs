@@ -163,6 +163,69 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
+    public async Task Tool_execution_inherits_parent_resolved_cwd_snapshot()
+    {
+        // Parent supplies its already-resolved cwd via ParentCwd (e.g., a path
+        // resolved from set_working_directory mid-session). The sub-agent
+        // surfaces that value through ToolExecutionContext.Cwd so the approval
+        // gate and prompt rendering see the parent's effective directory
+        // rather than the sub-agent's session-scratch dir.
+        var fakeTool = new FakeNetclawTool("inspect_context", "ok");
+        var fakeClient = new FakeChatClient
+        {
+            ToolCallsOnFirstCall = [new FunctionCallContent("call-cwd", "inspect_context")]
+        };
+
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(CreateDefinition([fakeTool]), fakeClient));
+
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent
+            {
+                Task = "Inspect inherited cwd.",
+                Timeout = TimeSpan.FromSeconds(5),
+                ParentSessionDirectory = "/tmp/netclaw/sessions/parent",
+                ParentProjectDirectory = "/home/user/repos/foo",
+                ParentCwd = "/home/user/repos/foo",
+                Audience = TrustAudience.Personal,
+            },
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success);
+        Assert.NotNull(fakeTool.LastContext);
+        Assert.Equal("/home/user/repos/foo", fakeTool.LastContext!.Cwd);
+    }
+
+    [Fact]
+    public async Task Tool_execution_with_null_parent_cwd_leaves_context_cwd_null()
+    {
+        // Parent had no resolvable cwd at spawn time (no explicit working
+        // directory, no ProjectDirectory, no SessionDirectory). The sub-agent
+        // surfaces null faithfully so downstream approval prompts render the
+        // documented null-cwd header form.
+        var fakeTool = new FakeNetclawTool("inspect_context", "ok");
+        var fakeClient = new FakeChatClient
+        {
+            ToolCallsOnFirstCall = [new FunctionCallContent("call-null-cwd", "inspect_context")]
+        };
+
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(CreateDefinition([fakeTool]), fakeClient));
+
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent
+            {
+                Task = "Inspect null cwd.",
+                Timeout = TimeSpan.FromSeconds(5),
+                ParentCwd = null,
+                Audience = TrustAudience.Personal,
+            },
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success);
+        Assert.NotNull(fakeTool.LastContext);
+        Assert.Null(fakeTool.LastContext!.Cwd);
+    }
+
+    [Fact]
     public async Task Each_spawn_snapshots_its_own_parent_project_directory()
     {
         // Mirrors D6: parent project changes between two activations show up
