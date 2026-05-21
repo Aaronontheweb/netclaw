@@ -10,6 +10,7 @@ using Netclaw.Providers.OAuth;
 using Netclaw.Providers.OpenAi;
 using Netclaw.Providers.OpenRouter;
 using Netclaw.Providers.SelfHosted;
+using Netclaw.Providers.VeniceAi;
 
 namespace Netclaw.Providers;
 
@@ -46,6 +47,7 @@ public static class LlmProviderServiceExtensions
         services.AddSingleton<AnthropicProviderPlugin>();
         services.AddSingleton<OpenRouterProviderPlugin>();
         services.AddSingleton<GitHubCopilotProviderPlugin>();
+        services.AddSingleton<VeniceAiProviderPlugin>();
 
         services.AddSingleton<ILlmProviderPlugin>(sp => sp.GetRequiredService<OllamaProviderPlugin>());
         services.AddSingleton<ILlmProviderPlugin>(sp => sp.GetRequiredService<OpenAiCompatibleProviderPlugin>());
@@ -53,6 +55,7 @@ public static class LlmProviderServiceExtensions
         services.AddSingleton<ILlmProviderPlugin>(sp => sp.GetRequiredService<AnthropicProviderPlugin>());
         services.AddSingleton<ILlmProviderPlugin>(sp => sp.GetRequiredService<OpenRouterProviderPlugin>());
         services.AddSingleton<ILlmProviderPlugin>(sp => sp.GetRequiredService<GitHubCopilotProviderPlugin>());
+        services.AddSingleton<ILlmProviderPlugin>(sp => sp.GetRequiredService<VeniceAiProviderPlugin>());
 
         return services;
     }
