@@ -3011,10 +3011,15 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             return false;
 
         var tool = registration.Tool;
-        _discoveredToolCache.Remember(toolName, tool,
+        // Cache and log under the canonical name regardless of which form
+        // the LLM sent (load_tool / search_tools now emit the LLM-facing
+        // alias for MCP, but legacy strings may still arrive). Cache key
+        // consistency makes per-tool lease accounting unambiguous.
+        var canonicalName = tool.Name;
+        _discoveredToolCache.Remember(canonicalName, tool,
             _config.Tuning.DiscoveredToolRetentionTurns,
             _config.Tuning.DiscoveredToolMaxCount);
-        AddAvailableToolIfMissing(toolName, tool.ToAITool());
+        AddAvailableToolIfMissing(canonicalName, tool.ToAITool());
         return true;
     }
 
