@@ -75,7 +75,7 @@ public sealed class ToolRegistry
             return direct;
         return _tools.FirstOrDefault(t =>
             t.Tool is McpToolAdapter mcp
-            && string.Equals(mcp.SanitizedName, name, StringComparison.Ordinal));
+            && string.Equals(mcp.LlmFacingName.Value, name, StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -420,11 +420,17 @@ public sealed class ToolRegistry
             _tool = tool;
             GrantCategory = grantCategory;
             Name = tool is AIFunction f ? f.Name : tool.GetType().Name;
+            // Bare AITool adapters are only used for first-party / test
+            // fakes whose names already satisfy the Anthropic regex —
+            // FromCanonical round-trips them unchanged and asserts that
+            // assumption at construction.
+            LlmFacingName = LlmFacingToolName.FromCanonical(Name);
             Description = tool is AIFunction fn ? (fn.Description ?? "") : "";
             ParameterSchema = default;
         }
 
         public string Name { get; }
+        public LlmFacingToolName LlmFacingName { get; }
         public string Description { get; }
         public string GrantCategory { get; }
         public System.Text.Json.JsonElement ParameterSchema { get; }
