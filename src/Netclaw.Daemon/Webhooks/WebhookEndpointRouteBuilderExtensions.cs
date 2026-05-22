@@ -43,13 +43,16 @@ public static class WebhookEndpointRouteBuilderExtensions
 
             if (!routeCatalog.TryGetRoute(route, out var registeredRoute))
             {
-                WebhookTelemetry.RecordRouteNotFound(route);
                 // Route comes from the URL path and is URL-decoded by ASP.NET routing,
-                // so a caller can inject CR/LF and other control chars. Sanitize before
-                // logging to defeat log forging. (cs/log-forging)
+                // so a caller can inject CR/LF and other control chars — both as a
+                // log-forging vector and as an unbounded metric-tag cardinality vector
+                // against the `route` dimension on WebhookTelemetry counters. Sanitize
+                // once and use the safe value for both surfaces. (cs/log-forging)
+                var safeRoute = SanitizeWebhookId(route);
+                WebhookTelemetry.RecordRouteNotFound(safeRoute);
                 logger.LogWarning(
                     "Webhook rejected route={Route} reason={Reason} remote_ip={RemoteIp} delivery_id={DeliveryId} event_type={EventType}",
-                    SanitizeWebhookId(route), "route_not_found", remoteIp, (string?)null, (string?)null);
+                    safeRoute, "route_not_found", remoteIp, (string?)null, (string?)null);
                 return TypedResults.NotFound();
             }
 

@@ -161,27 +161,55 @@ public sealed class DaemonLifecycleNotifier
 
     private const int MaxReasonChars = 200;
 
+    // Returns true for chars that, if left in a log line or alert summary, can
+    // act as a line terminator for at least one downstream consumer:
+    // - char.IsControl covers Cc (CR/LF/NUL/ESC/etc.)
+    // - U+2028 (LINE SEPARATOR, Zl) and U+2029 (PARAGRAPH SEPARATOR, Zp) are NOT
+    //   in Cc and so are not caught by IsControl, but JSON-line readers, many
+    //   log shippers, and pre-ES2019 JSON parsers still split on them.
+    private static bool IsLogLineBreak(char c)
+        => char.IsControl(c) || c is '\u2028' or '\u2029';
+
     private static string SanitizeReason(string reason)
     {
         if (string.IsNullOrEmpty(reason))
             return string.Empty;
 
-        var hasControl = false;
+        var hasBreak = false;
         foreach (var ch in reason)
         {
-            if (char.IsControl(ch))
+            if (IsLogLineBreak(ch))
             {
-                hasControl = true;
+                hasBreak = true;
                 break;
             }
         }
 
-        if (!hasControl)
-            return Trim(reason, MaxReasonChars);
+        if (!hasBreak)
+            return TrimAtCharBoundary(reason, MaxReasonChars);
 
+        // Strip — don't space-replace. Space would let a CR/LF payload still
+        // pass through as a plausible field separator to key=value structured
+        // log parsers ("reason=ok\nlevel=critical" → "reason=ok level=critical").
         var buf = new StringBuilder(reason.Length);
         foreach (var ch in reason)
-            buf.Append(char.IsControl(ch) ? ' ' : ch);
-        return Trim(buf.ToString(), MaxReasonChars);
+        {
+            if (!IsLogLineBreak(ch))
+                buf.Append(ch);
+        }
+        return TrimAtCharBoundary(buf.ToString(), MaxReasonChars);
+    }
+
+    private static string TrimAtCharBoundary(string value, int maxChars)
+    {
+        if (value.Length <= maxChars)
+            return value;
+
+        // Don't split a surrogate pair at the truncation boundary — a dangling
+        // high surrogate makes downstream UTF-8 encoders emit U+FFFD or throw.
+        var cut = maxChars;
+        if (char.IsHighSurrogate(value[cut - 1]))
+            cut -= 1;
+        return value[..cut];
     }
 }
