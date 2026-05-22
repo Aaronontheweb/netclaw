@@ -68,6 +68,29 @@ public sealed class ToolRegistry
     public ToolRegistration? GetRegistrationByToolName(string name) =>
         FindRegistration(name);
 
+    /// <summary>
+    /// Map a canonical tool name to the LLM-facing alias the registered
+    /// tool exposes. Returns the input unchanged for first-party tools
+    /// (where the canonical form is already LLM-safe) and for names
+    /// that don't resolve to a registered tool. Called at the outbound
+    /// LLM-request boundary to translate canonical names stored in
+    /// conversation history back to what the model expects on the
+    /// wire.
+    /// </summary>
+    public string ToLlmFacingName(string canonicalName) =>
+        FindRegistration(canonicalName)?.Tool.LlmFacingName.Value ?? canonicalName;
+
+    /// <summary>
+    /// Map either a canonical or LLM-facing tool name to the canonical
+    /// form. Returns the input unchanged for names that don't resolve
+    /// to a registered tool. Used at the inbound LLM-response boundary
+    /// to normalize <see cref="Microsoft.Extensions.AI.FunctionCallContent.Name"/>
+    /// so internal consumers (audit, approvals, events) always see the
+    /// operator-facing identifier.
+    /// </summary>
+    public string ToCanonicalName(string name) =>
+        FindRegistration(name)?.Tool.Name ?? name;
+
     private ToolRegistration? FindRegistration(string name)
     {
         var direct = _tools.FirstOrDefault(t => t.Tool.Name == name);
