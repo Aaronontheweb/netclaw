@@ -26,7 +26,11 @@ public sealed class NetclawHeadersHandler : DelegatingHandler
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
-        if (request.Headers.UserAgent.Count == 0)
+        // Contains() looks at the raw header bag, so it catches both the typed
+        // UserAgent collection and untyped values pushed via
+        // TryAddWithoutValidation. UserAgent.Count == 0 would miss the latter
+        // and re-stamp a duplicate header on the wire.
+        if (!request.Headers.Contains("User-Agent"))
             request.Headers.TryAddWithoutValidation("User-Agent", NetclawUserAgent.Value);
 
         if (!request.Headers.Contains(NetclawUserAgent.ComponentHeader))

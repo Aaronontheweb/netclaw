@@ -3,7 +3,6 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Net.Http.Headers;
 using Xunit;
 
 namespace Netclaw.Configuration.Tests;
@@ -11,37 +10,23 @@ namespace Netclaw.Configuration.Tests;
 public sealed class NetclawUserAgentTests
 {
     [Fact]
-    public void Value_starts_with_Netclaw_product_token()
+    public void Value_matches_BuildInfo_reconstruction()
     {
-        Assert.StartsWith("Netclaw/", NetclawUserAgent.Value, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Value_includes_homepage_url()
-    {
-        Assert.Contains("https://netclaw.dev", NetclawUserAgent.Value, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Value_includes_sha_marker()
-    {
-        Assert.Contains("sha=", NetclawUserAgent.Value, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Value_parses_as_RFC7231_user_agent()
-    {
-        // ProductInfoHeaderValue is strict about whitespace, parens, and tokens.
-        // If we generate junk that breaks parsing, every downstream HttpClient will
-        // throw FormatException on header set — assert here instead of in prod.
-        var ua = NetclawUserAgent.Value;
-        var parsed = ProductInfoHeaderValue.TryParse(ua.Split(' ')[0], out _);
-        Assert.True(parsed, $"Product token not parseable: {ua}");
+        // Pin the exact format so a refactor that drops the sha segment,
+        // hardcodes the version, or wires up the wrong assembly fails here
+        // instead of silently shipping a malformed UA. Shape-only assertions
+        // (StartsWith("Netclaw/"), Contains("sha=")) pass even when the
+        // version segment is testhost's "17.x" or "unknown", which is the
+        // exact regression class this test exists to catch.
+        var expected = $"Netclaw/{BuildInfo.Version} (+https://netclaw.dev; sha={BuildInfo.CommitHash})";
+        Assert.Equal(expected, NetclawUserAgent.Value);
     }
 
     [Fact]
     public void Component_header_name_is_X_Netclaw_Component()
     {
+        // Pinned so server-side allowlists / rate-limit rules keyed on the
+        // exact string do not silently break under a rename.
         Assert.Equal("X-Netclaw-Component", NetclawUserAgent.ComponentHeader);
     }
 }

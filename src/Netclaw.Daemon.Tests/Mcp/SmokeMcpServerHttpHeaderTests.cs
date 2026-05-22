@@ -101,8 +101,9 @@ public sealed class SmokeMcpServerHttpHeaderTests
         Assert.NotNull(lastUserAgent);
         var observedUa = await lastUserAgent!.ExecuteAsync(
             new Dictionary<string, object?>(), ToolExecutionContext.Empty, ct);
-        Assert.Contains("Netclaw/", observedUa, StringComparison.Ordinal);
-        Assert.Contains("netclaw.dev", observedUa, StringComparison.Ordinal);
+        // Pin the exact UA we expect on the wire so a regression that ships
+        // "Netclaw/0.0.0 (...; sha=unknown)" against testhost still fails.
+        Assert.Contains(NetclawUserAgent.Value, observedUa, StringComparison.Ordinal);
 
         var lastComponent = registry.GetAllRegistrations()
             .Select(r => r.Tool)
@@ -111,7 +112,10 @@ public sealed class SmokeMcpServerHttpHeaderTests
         Assert.NotNull(lastComponent);
         var observedComponent = await lastComponent!.ExecuteAsync(
             new Dictionary<string, object?>(), ToolExecutionContext.Empty, ct);
+        // Daemon path advertises "mcp" exactly; the CLI probe path uses
+        // "mcp-probe". Substring "mcp" alone would not catch a swap.
         Assert.Contains("mcp", observedComponent, StringComparison.Ordinal);
+        Assert.DoesNotContain("probe", observedComponent, StringComparison.Ordinal);
     }
 
     [Fact]
