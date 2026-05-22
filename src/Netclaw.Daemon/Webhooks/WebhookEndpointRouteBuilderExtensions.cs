@@ -44,9 +44,12 @@ public static class WebhookEndpointRouteBuilderExtensions
             if (!routeCatalog.TryGetRoute(route, out var registeredRoute))
             {
                 WebhookTelemetry.RecordRouteNotFound(route);
+                // Route comes from the URL path and is URL-decoded by ASP.NET routing,
+                // so a caller can inject CR/LF and other control chars. Sanitize before
+                // logging to defeat log forging. (cs/log-forging)
                 logger.LogWarning(
                     "Webhook rejected route={Route} reason={Reason} remote_ip={RemoteIp} delivery_id={DeliveryId} event_type={EventType}",
-                    route, "route_not_found", remoteIp, (string?)null, (string?)null);
+                    SanitizeWebhookId(route), "route_not_found", remoteIp, (string?)null, (string?)null);
                 return TypedResults.NotFound();
             }
 
