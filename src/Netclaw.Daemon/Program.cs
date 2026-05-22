@@ -8,6 +8,7 @@ using Akka.Actor;
 using Akka.Hosting;
 using Akka.Persistence.Hosting;
 using Akka.Persistence.Sql.Hosting;
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Configuration;
@@ -135,6 +136,9 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
     builder.Services.AddNetclawAuthSchemes(daemonConfig);
     builder.Services.AddAuthorization();
 
+    // Add OpenAPI
+    builder.Services.AddOpenApi();
+
     // Rate limiting for the unauthenticated pairing exchange endpoint.
     // 5 attempts per minute per IP — brute-force defense for the 8-char code space.
     builder.Services.AddRateLimiter(options =>
@@ -203,17 +207,43 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
     app.UseAuthorization();
     app.UseRateLimiter();
 
+    // Require authorization for the OpenAPI document so the full API surface is not
+    // exposed to unauthenticated callers when the daemon binds to a non-loopback
+    // address (e.g. ExposureMode.ReverseProxy). Loopback callers are still served:
+    // the AuthSelector routes them to LoopbackAuthenticationHandler, which issues an
+    // authenticated Operator ticket that satisfies the default policy.
+    app.MapOpenApi().RequireAuthorization();
+
     // Gateway surface
     app.MapHub<SessionHub>("/hub/session");
-    app.MapGet("/api/health/ready", () => Results.Ok("healthy"));
-    app.MapGet("/api/health/status", async (DaemonRuntimeStatusService statusService, CancellationToken cancellationToken) =>
-        Results.Ok(await statusService.GetStatusAsync(cancellationToken))).RequireAuthorization();
+    app.MapGet("/api/health/ready", () => TypedResults.Ok("healthy"))
+        .WithName("HealthReady")
+        .WithSummary("Liveness probe reporting the daemon is accepting requests.")
+        .WithTags("Health");
+    app.MapGet("/api/health/status", async ValueTask<Ok<DaemonRuntimeStatus.Response>> (DaemonRuntimeStatusService statusService, CancellationToken cancellationToken) =>
+        TypedResults.Ok(await statusService.GetStatusAsync(cancellationToken)))
+        .WithName("GetHealthStatus")
+        .WithSummary("Get the daemon's runtime status, including connector health.")
+        .WithTags("Health")
+        .RequireAuthorization();
     app.MapGet("/api/sessions", (SessionCatalogService catalog) =>
-        Results.Ok(catalog.ListRecent(limit: 50))).RequireAuthorization();
-    app.MapGet("/api/stats", async (DaemonStatsService statsService, int? days, CancellationToken ct) =>
-        Results.Ok(await statsService.GetStatsAsync(days, ct))).RequireAuthorization();
-    app.MapGet("/api/stats/skills", async (DaemonStatsService statsService, int? days, CancellationToken ct) =>
-        Results.Ok(await statsService.GetSkillUsageStatsAsync(days, ct))).RequireAuthorization();
+        TypedResults.Ok(catalog.ListRecent(limit: 50)))
+        .WithName("ListSessions")
+        .WithSummary("List the most recent sessions.")
+        .WithTags("Sessions")
+        .RequireAuthorization();
+    app.MapGet("/api/stats", async ValueTask<Ok<DaemonStats.Response>> (DaemonStatsService statsService, int? days, CancellationToken ct) =>
+        TypedResults.Ok(await statsService.GetStatsAsync(days, ct)))
+        .WithName("GetStats")
+        .WithSummary("Get daemon usage statistics over the requested window.")
+        .WithTags("Stats")
+        .RequireAuthorization();
+    app.MapGet("/api/stats/skills", async ValueTask<Ok<SkillUsageStats.Response>> (DaemonStatsService statsService, int? days, CancellationToken ct) =>
+        TypedResults.Ok(await statsService.GetSkillUsageStatsAsync(days, ct)))
+        .WithName("GetSkillUsageStats")
+        .WithSummary("Get per-skill usage statistics over the requested window.")
+        .WithTags("Stats")
+        .RequireAuthorization();
     app.MapWebhookEndpoints();
     app.MapMattermostActionEndpoint();
 
