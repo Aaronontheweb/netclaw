@@ -22,11 +22,18 @@ namespace Netclaw.Cli.Tui;
 /// </summary>
 public sealed class ChatPage : ReactivePage<ChatViewModel>
 {
+    private readonly IAnsiTerminal _terminal;
+
     private StreamingTextNode _chatHistory = null!;
     private TextAreaNode _promptInput = null!;
     private SelectionListNode<string>? _approvalList;
     private DynamicLayoutNode? _inputContentNode;
     private readonly CompositeDisposable _inputSubs = [];
+
+    public ChatPage(IAnsiTerminal terminal)
+    {
+        _terminal = terminal;
+    }
 
     private int _nextSegmentId = 1;
 
@@ -90,6 +97,16 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
         ViewModel.Input.OfType<IInputEvent, MouseScrollEvent>()
             .Subscribe(HandleMouseScroll)
             .DisposeWith(Subscriptions);
+
+        // Re-render on terminal resize. The input panel reads _terminal.Width
+        // and Height live inside its DynamicLayoutNode callback to recompute
+        // body width, expanded-body cap, and the panel max — so a UiVersion
+        // bump is enough to make the layout re-read those values. The status
+        // bar CombineLatest also observes UiVersion, so the keys hint
+        // re-shortens for narrow widths.
+        ViewModel.Input.OfType<IInputEvent, ResizeEvent>()
+            .Subscribe(_ => ViewModel.UiVersion.Value++)
+            .DisposeWith(Subscriptions);
     }
 
     public override ILayoutNode BuildLayout()
@@ -103,19 +120,21 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                     .WithBorderColor(Color.Gray)
                     .WithContent(_chatHistory.Fill())
                     .Fill())
-            // Input panel (grows with content). Cap is generous (14 rows) so
-            // an expanded approval prompt — summary + body (≤5 rows) + hint
-            // + 3-option selection list + borders = 12 rows — can render
-            // without clipping the selection list. The TextAreaNode in
-            // non-approval mode is independently capped via WithMaxHeight(8),
-            // so this cap only affects the approval-pending layout.
+            // Input panel (grows with content). The cap is generous — the
+            // actual cap that prevents the chat-history pane from being
+            // squeezed comes from the body-cap math inside BuildInputContent,
+            // which derives an upper bound from _terminal.Height. We give the
+            // panel itself a wide ceiling here so HeightAuto sizes to the
+            // content we deliberately build, not the other way around.
+            // The TextAreaNode in non-approval mode is independently capped
+            // via WithMaxHeight(8).
             .WithChild(
                 new PanelNode()
                     .WithTitle("Input")
                     .WithBorder(BorderStyle.Rounded)
                     .WithBorderColor(Color.Cyan)
                     .WithContent(BuildInputContent())
-                    .HeightAuto(min: 3, max: 14))
+                    .HeightAuto(min: 3, max: Math.Max(8, _terminal.Height - 4)))
             // Status bar
             .WithChild(
                 BuildStatusBar());
@@ -148,28 +167,34 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
 
             _approvalList.OnFocused();
 
-            // Body width budget for the collapsed view. The Input panel
-            // borders + a bit of padding cost ~4 columns; assume an 80-col
-            // minimum terminal so the body fits on one line. Termina has no
-            // measure callback we can hook here.
-            const int collapsedBodyWidth = 76;
+            // Read live terminal dimensions every render so the layout adapts
+            // to resize. Panel content width = terminal width minus the panel
+            // borders (2 cols) and a couple of safety cells.
+            var panelContentWidth = Math.Max(20, _terminal.Width - 4);
+
+            // How many rows can we afford for the body in expanded mode?
+            // Chrome cost per render: summary(1) + hint(1) + N options + borders(2).
+            // Cap the panel at half the terminal height so the chat history
+            // pane stays visible. Floor of 8 keeps the math sane on tiny
+            // terminals (the panel will still render best-effort).
+            var optionCount = Math.Max(1, ViewModel.ApprovalOptions.Count);
+            var panelMaxRows = Math.Max(8, _terminal.Height / 2);
+            var chromeRows = 4 + optionCount;
+            var expandedBodyMaxRows = Math.Max(1, panelMaxRows - chromeRows);
 
             var summary = new TextNode(ViewModel.GetApprovalSummary())
                 .WithForeground(Color.Yellow);
             var hint = new TextNode(ViewModel.GetApprovalHint() ?? string.Empty)
                 .WithForeground(Color.Gray);
 
-            LayoutNode body = new TextNode(ViewModel.GetApprovalBody(collapsedBodyWidth))
+            LayoutNode body = new TextNode(ViewModel.GetApprovalBody(panelContentWidth))
                 .WithForeground(Color.White);
 
-            // Expanded body is allowed to wrap up to 5 rows. With the Input
-            // panel cap at 14, that leaves 1 summary + 1 hint + 3-option list
-            // + 2 borders = 7 rows for chrome, fitting cleanly. Users who
-            // need more than ~5 wrapped lines of body context still see the
-            // full body up in the chat history pane, which always logs the
-            // complete DisplayText on ToolInteractionRequest arrival.
+            // Collapsed body is forced single-line; expanded body wraps up to
+            // the dynamic cap above. The full DisplayText is always available
+            // in the chat history pane regardless.
             body = ViewModel.IsApprovalDetailVisible.Value
-                ? body.HeightAuto(min: 1, max: 5)
+                ? body.HeightAuto(min: 1, max: expandedBodyMaxRows)
                 : body.Height(1);
 
             return Layouts.Vertical()
@@ -194,20 +219,20 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 ViewModel.StatusMessage,
                 ViewModel.UsageDisplay,
                 ViewModel.IsApprovalDetailVisible,
-                (isGenerating, isInputEnabled, status, usage, isApprovalDetailVisible) =>
+                ViewModel.UiVersion,
+                (isGenerating, isInputEnabled, status, usage, isApprovalDetailVisible, _) =>
                 {
-                    var approvalToggleHint = isApprovalDetailVisible
-                        ? "[Ctrl+V] Collapse"
-                        : "[Ctrl+V] View full";
+                    // Read terminal width live so a resize re-shortens the
+                    // keys string. UiVersion is included above to make the
+                    // CombineLatest re-emit on resize (ChatPage.OnBound bumps
+                    // UiVersion when ResizeEvent fires).
+                    var width = Math.Max(40, _terminal.Width);
 
-                    var keys = ViewModel.HasPendingInteraction
-                        ? $"[Up/Down] Select  [Enter] Confirm  {approvalToggleHint}  [Ctrl+Q] Quit"
-                        : isGenerating
-                        ? "[Ctrl+Q] Quit"
-                        : "[Enter] Send  [Ctrl+Enter] Newline  [PgUp/PgDn/Wheel] Scroll  [Ctrl+Q] Quit";
+                    var keys = BuildKeyHints(width, isGenerating, isApprovalDetailVisible);
 
                     var usagePart = usage is not null ? $"  |  {usage}" : "";
-                    var text = $" {keys}  |  {status}  |  {ViewModel.ModelId}{usagePart}";
+                    var modelPart = width >= 80 ? $"  |  {ViewModel.ModelId}" : "";
+                    var text = $" {keys}  |  {status}{modelPart}{usagePart}";
 
                     var barColor = status switch
                     {
@@ -226,6 +251,33 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 })
             .AsLayout()
             .Height(1);
+    }
+
+    /// <summary>
+    /// Builds the status-bar key hints, shortening on narrow terminals so
+    /// the bar stays on one line. The most critical action stays visible at
+    /// every width: Confirm/Cancel-equivalent for approval, Send for idle.
+    /// </summary>
+    private string BuildKeyHints(int width, bool isGenerating, bool isApprovalDetailVisible)
+    {
+        if (ViewModel.HasPendingInteraction)
+        {
+            var toggle = isApprovalDetailVisible ? "Collapse" : "View full";
+            return width >= 100
+                ? $"[Up/Down] Select  [Enter] Confirm  [Ctrl+V] {toggle}  [PgUp/PgDn] Scroll  [Ctrl+Q] Quit"
+                : width >= 70
+                    ? $"[↑↓] Select  [Enter] Confirm  [Ctrl+V] {toggle}  [Ctrl+Q] Quit"
+                    : $"[↑↓] [Enter] OK  [^V] {toggle}  [^Q] Quit";
+        }
+
+        if (isGenerating)
+            return "[Ctrl+Q] Quit";
+
+        return width >= 100
+            ? "[Enter] Send  [Ctrl+Enter] Newline  [PgUp/PgDn/Wheel] Scroll  [Ctrl+Q] Quit"
+            : width >= 70
+                ? "[Enter] Send  [Ctrl+Enter] Newline  [PgUp/PgDn] Scroll  [Ctrl+Q] Quit"
+                : "[Enter] Send  [^Enter] NL  [^Q] Quit";
     }
 
     private void HandleKeyPress(KeyPressed key)

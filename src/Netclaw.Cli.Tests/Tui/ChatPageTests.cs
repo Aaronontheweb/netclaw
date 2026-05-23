@@ -169,6 +169,130 @@ public sealed class ChatPageTests
     }
 
     [Fact]
+    public async Task NarrowTerminal_PreservesCtrlVHint()
+    {
+        // 60-col terminal — narrower than the previous hard-coded 76-col
+        // body budget. The pre-scaling code would wrap the body+hint to a
+        // second line and body.Height(1) would clip the Ctrl+V suffix.
+        // With width-aware sizing the hint must still be visible.
+        var (terminal, app, _) = CreateHeadlessApp(
+            BuildApproval(LongShellBody), out var input, width: 60, height: 30);
+        input.EnqueueKey(ConsoleKey.Q, false, false, true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+
+        var screen = terminal.ToString();
+        var bottom = BottomRows(screen, terminalWidth: 60, rowCount: 14);
+
+        Assert.True(bottom.Contains("Ctrl+V", StringComparison.Ordinal)
+                || bottom.Contains("^V", StringComparison.Ordinal),
+            $"Expected Ctrl+V affordance to be visible on a 60-col terminal. " +
+            $"Bottom rows:\n{bottom}\nFull screen:\n{terminal}");
+
+        // Confirm options are still visible — the original #1132 invariant
+        // must hold at narrow widths too.
+        Assert.True(bottom.Contains("Once", StringComparison.Ordinal),
+            $"Expected 'Once' option visible on narrow terminal. Screen:\n{terminal}");
+        Assert.True(bottom.Contains("Deny", StringComparison.Ordinal),
+            $"Expected 'Deny' option visible on narrow terminal. Screen:\n{terminal}");
+    }
+
+    [Fact]
+    public async Task FiveOptionApproval_AllOptionsVisibleWhenExpanded()
+    {
+        // Production ToolAccessPolicy emits up to 5 options for shell_execute
+        // (ApproveOnce, ApproveSession, ApproveAlways, ApproveEverywhere, Deny).
+        // The previous 14-row hardcoded panel cap could clip the 5th option
+        // when expanded body + chrome consumed the whole cap.
+        var fiveOptions = new[]
+        {
+            new ToolInteractionOption(ApprovalOptionKeys.ApproveOnceKey, ApprovalOptionKeys.ApproveOnceLabel),
+            new ToolInteractionOption(ApprovalOptionKeys.ApproveSessionKey, ApprovalOptionKeys.ApproveSessionLabel),
+            new ToolInteractionOption(ApprovalOptionKeys.ApproveAlwaysKey, ApprovalOptionKeys.ApproveAlwaysLabel),
+            new ToolInteractionOption(ApprovalOptionKeys.ApproveEverywhereKey, ApprovalOptionKeys.ApproveEverywhereLabel),
+            new ToolInteractionOption(ApprovalOptionKeys.DenyKey, ApprovalOptionKeys.DenyLabel)
+        };
+
+        var (terminal, app, _) = CreateHeadlessApp(
+            BuildApproval(LongShellBody), out var input,
+            width: 120, height: 40, options: fiveOptions);
+
+        // Expand first, then quit, so the assertion sees the harder layout.
+        input.EnqueueKey(ConsoleKey.V, false, false, true);
+        input.EnqueueKey(ConsoleKey.Q, false, false, true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+
+        var bottom = BottomRows(terminal.ToString(), terminalWidth: 120, rowCount: 20);
+
+        AssertOptionVisible(bottom, ApprovalOptionKeys.ApproveOnceLabel, terminal);
+        AssertOptionVisible(bottom, ApprovalOptionKeys.ApproveSessionLabel, terminal);
+        AssertOptionVisible(bottom, ApprovalOptionKeys.ApproveAlwaysLabel, terminal);
+        AssertOptionVisible(bottom, ApprovalOptionKeys.ApproveEverywhereLabel, terminal);
+        AssertOptionVisible(bottom, ApprovalOptionKeys.DenyLabel, terminal);
+    }
+
+    [Fact]
+    public async Task SmallTerminal_PanelDoesNotEatChatHistory()
+    {
+        // 16-row terminal: the panel max must scale down so chat history
+        // (which uses .Fill()) still has at least a few visible rows.
+        var (terminal, app, _) = CreateHeadlessApp(
+            BuildApproval(LongShellBody), out var input, width: 100, height: 16);
+        input.EnqueueKey(ConsoleKey.V, false, false, true); // expand to stress
+        input.EnqueueKey(ConsoleKey.Q, false, false, true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+
+        var screen = terminal.ToString();
+        var lines = screen.Split('\n');
+
+        // The chat history panel border must appear (it's the first line of
+        // the rendered frame). If the input panel ate everything, we'd see
+        // the Input panel border on row 0 and no chat panel at all.
+        Assert.True(lines.Length > 4 && lines[0].Contains("Netclaw Chat", StringComparison.Ordinal),
+            $"Expected chat history panel header on row 0 on a 16-row terminal. Screen:\n{terminal}");
+
+        // Also confirm the selection list still renders inside the panel.
+        var bottom = BottomRows(screen, terminalWidth: 100, rowCount: 12);
+        Assert.True(bottom.Contains("Once", StringComparison.Ordinal),
+            $"Expected 'Once' option visible on small terminal. Screen:\n{terminal}");
+        Assert.True(bottom.Contains("Deny", StringComparison.Ordinal),
+            $"Expected 'Deny' option visible on small terminal. Screen:\n{terminal}");
+    }
+
+    [Fact]
+    public async Task Resize_RerendersStatusBarAndBody()
+    {
+        // Initial 120-col terminal renders the full-width key hints. After
+        // resizing to 50 cols and triggering re-render, the shortened keys
+        // string must replace the wide one.
+        var (terminal, app, _) = CreateHeadlessApp(
+            BuildApproval(LongShellBody), out var input, width: 120, height: 30);
+
+        // Resize the underlying VirtualTerminal first so subsequent renders
+        // read the new width; then push a ResizeEvent so the page bumps
+        // UiVersion and the layout re-evaluates.
+        terminal.Resize(50, 30);
+        input.EnqueueResize(50, 30);
+        input.EnqueueKey(ConsoleKey.Q, false, false, true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+
+        var bottom = BottomRows(terminal.ToString(), terminalWidth: 50, rowCount: 12);
+
+        // The narrow status bar should use the short Ctrl-prefix form
+        // (^V) or omit the longer scroll/quit hints.
+        Assert.True(bottom.Contains("^V", StringComparison.Ordinal)
+                || bottom.Contains("[Ctrl+V]", StringComparison.Ordinal),
+            $"Expected resize to re-render with the narrow status bar. Bottom rows:\n{bottom}");
+    }
+
+    [Fact]
     public async Task LongApprovalBody_RenderedFrameSnapshot()
     {
         // Captures both the collapsed and expanded rendered frames for the
@@ -243,11 +367,11 @@ public sealed class ChatPageTests
     }
 
     private static (VirtualTerminal Terminal, TerminaApplication App, TestChatViewModel Vm)
-        CreateHeadlessApp(ToolInteractionRequest? seed, out VirtualInputSource input)
+        CreateHeadlessApp(ToolInteractionRequest? seed, out VirtualInputSource input,
+            int width = 120, int height = 40,
+            IReadOnlyList<ToolInteractionOption>? options = null)
     {
-        // 120x40 matches the existing ApprovalsManagerPageTests harness and
-        // gives the Input panel its full 10-row cap with room to spare.
-        var terminal = new VirtualTerminal(120, 40);
+        var terminal = new VirtualTerminal(width, height);
         var virtualInput = new VirtualInputSource();
         input = virtualInput;
 
@@ -260,10 +384,15 @@ public sealed class ChatPageTests
         {
             builder.RegisterRoute<ChatPage, ChatViewModel>(
                 "/chat",
-                _ => new ChatPage(),
+                sp => new ChatPage(sp.GetRequiredService<IAnsiTerminal>()),
                 _ =>
                 {
-                    capturedVm = new TestChatViewModel(seed);
+                    var effectiveSeed = seed is null
+                        ? null
+                        : options is null
+                            ? seed
+                            : seed with { Options = options };
+                    capturedVm = new TestChatViewModel(effectiveSeed);
                     return capturedVm;
                 });
         });
