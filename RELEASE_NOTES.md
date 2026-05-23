@@ -1,3 +1,25 @@
+#### 0.20.2 2026-05-22 ####
+
+Netclaw v0.20.2 — Outbound HTTP identity headers and MCP approval grant lookup fix
+
+**Features**
+
+* **Outbound HTTP identity headers** — every outbound HTTP request now carries a `User-Agent: Netclaw/{version}` header and an `X-Netclaw-Component` header identifying the subsystem making the call (`mcp`, `webhook`, `skill-sync`, `provider-oauth`, etc.), making Netclaw traffic identifiable to remote services and MCP server operators. `MCP clientInfo` now also reports the correct version instead of the stale `0.1.0` placeholder. ([#1145](https://github.com/netclaw-dev/netclaw/pull/1145))
+
+**Bug Fixes**
+
+* **MCP approval grant lookup by canonical tool name** — approval grants recorded under the canonical tool name (e.g., `notion/notion-create-pages`) were not found when the lookup used the Anthropic-safe sanitized alias (e.g., `notion__notion-create-pages`), causing repeated approval prompts even after the user had approved the session. The lookup now uses the canonical name consistently, resolving the infinite re-approval loop. ([#1147](https://github.com/netclaw-dev/netclaw/pull/1147))
+
+#### 0.20.1 2026-05-21 ####
+
+Netclaw v0.20.1 — Bug fixes for Anthropic MCP tool names, stale approval buttons, and sub-agent working directories
+
+**Bug Fixes**
+
+* **MCP Anthropic tool-name alias** — MCP tools with `/` in their names now use an Anthropic-safe alias, fixing `BadRequest` errors on every LLM call when using Anthropic models with MCP tools. ([#1134](https://github.com/netclaw-dev/netclaw/pull/1134))
+* **Stale approval button forwarding** — Slack, Discord, and Mattermost approval buttons now correctly forward stale approval clicks back to the session instead of becoming dead/unresponsive after a turn completes. ([#1139](https://github.com/netclaw-dev/netclaw/pull/1139))
+* **Sub-agent working directory propagation** — parent's resolved `cwd` is now propagated to spawned sub-agents, fixing shell approvals showing "(no working directory)" and broken folder-scoped grant matching. ([#1130](https://github.com/netclaw-dev/netclaw/pull/1130))
+
 #### 0.20.0 2026-05-21 ####
 
 Netclaw v0.20.0 — GitHub Copilot provider, Mattermost channel, reverse-proxy init mode, and a wave of MCP/Slack/security fixes

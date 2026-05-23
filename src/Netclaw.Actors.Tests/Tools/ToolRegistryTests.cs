@@ -222,6 +222,85 @@ public class ToolRegistryTests
         Assert.DoesNotContain("memorizer", index);
     }
 
+    [Fact]
+    public void GetByName_resolves_McpTool_by_sanitized_alias()
+    {
+        // tool_use responses from Anthropic come back with the sanitized name
+        // (server__tool), but skill text and load_tool results use the
+        // canonical server/tool form. The registry has to accept either.
+        var registry = new ToolRegistry();
+        var adapter = new McpToolAdapter(
+            CreateFakeTool("store"), "memorizer", "store");
+        registry.Register(adapter);
+
+        var byCanonical = registry.GetByName("memorizer/store");
+        var bySanitized = registry.GetByName("memorizer__store");
+
+        Assert.NotNull(byCanonical);
+        Assert.NotNull(bySanitized);
+        Assert.Same(adapter, byCanonical);
+        Assert.Same(adapter, bySanitized);
+    }
+
+    [Fact]
+    public void GetRegistrationByToolName_resolves_McpTool_by_sanitized_alias()
+    {
+        var registry = new ToolRegistry();
+        var adapter = new McpToolAdapter(
+            CreateFakeTool("search_memories"), "memorizer", "search_memories");
+        registry.Register(adapter);
+
+        var byCanonical = registry.GetRegistrationByToolName("memorizer/search_memories");
+        var bySanitized = registry.GetRegistrationByToolName("memorizer__search_memories");
+
+        Assert.NotNull(byCanonical);
+        Assert.NotNull(bySanitized);
+        Assert.Same(byCanonical, bySanitized);
+    }
+
+    [Fact]
+    public void ToCanonicalName_maps_sanitized_alias_to_canonical_for_McpTool()
+    {
+        var registry = new ToolRegistry();
+        registry.Register(new McpToolAdapter(
+            CreateFakeTool("create-pages"), "notion", "create-pages"));
+
+        Assert.Equal("notion/create-pages", registry.ToCanonicalName("notion__create-pages"));
+        // Already canonical → idempotent
+        Assert.Equal("notion/create-pages", registry.ToCanonicalName("notion/create-pages"));
+        // Unknown tool — pass-through, no throw
+        Assert.Equal("unregistered__tool", registry.ToCanonicalName("unregistered__tool"));
+    }
+
+    [Fact]
+    public void ToLlmFacingName_maps_canonical_to_sanitized_alias_for_McpTool()
+    {
+        var registry = new ToolRegistry();
+        registry.Register(new McpToolAdapter(
+            CreateFakeTool("create-pages"), "notion", "create-pages"));
+
+        Assert.Equal("notion__create-pages", registry.ToLlmFacingName("notion/create-pages"));
+        // Already LLM-facing — pass-through (no registered tool by that
+        // exact name; falls through to identity)
+        Assert.Equal("notion__create-pages", registry.ToLlmFacingName("notion__create-pages"));
+    }
+
+    [Fact]
+    public void Canonical_and_LlmFacing_round_trip_for_first_party_tools_is_identity()
+    {
+        // First-party tool names already satisfy the Anthropic regex —
+        // canonical and LLM-facing are the same string. Round-tripping
+        // must not mangle them in either direction.
+        var config = new ToolConfig();
+        var registry = new ToolRegistry();
+        registry.WithFirstPartyTools(config);
+
+        Assert.Equal("shell_execute", registry.ToCanonicalName("shell_execute"));
+        Assert.Equal("shell_execute", registry.ToLlmFacingName("shell_execute"));
+        Assert.Equal("file_read", registry.ToCanonicalName("file_read"));
+        Assert.Equal("file_read", registry.ToLlmFacingName("file_read"));
+    }
+
     private static AIFunction CreateFakeTool(string name)
     {
         return AIFunctionFactory.Create(() => "result", name);

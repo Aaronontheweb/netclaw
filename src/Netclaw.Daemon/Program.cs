@@ -8,6 +8,7 @@ using Akka.Actor;
 using Akka.Hosting;
 using Akka.Persistence.Hosting;
 using Akka.Persistence.Sql.Hosting;
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Configuration;
@@ -25,6 +26,7 @@ using Netclaw.Actors.Skills;
 using Netclaw.Actors.SubAgents;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
+using Netclaw.Configuration.Http;
 using Netclaw.Providers;
 using ShellSyntaxTree;
 using Netclaw.Providers.OAuth;
@@ -134,6 +136,9 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
     builder.Services.AddNetclawAuthSchemes(daemonConfig);
     builder.Services.AddAuthorization();
 
+    // Add OpenAPI
+    builder.Services.AddOpenApi();
+
     // Rate limiting for the unauthenticated pairing exchange endpoint.
     // 5 attempts per minute per IP — brute-force defense for the 8-char code space.
     builder.Services.AddRateLimiter(options =>
@@ -202,17 +207,43 @@ static async Task RunDaemonAsync(string[] args, DaemonRestartSignal restartSigna
     app.UseAuthorization();
     app.UseRateLimiter();
 
+    // Require authorization for the OpenAPI document so the full API surface is not
+    // exposed to unauthenticated callers when the daemon binds to a non-loopback
+    // address (e.g. ExposureMode.ReverseProxy). Loopback callers are still served:
+    // the AuthSelector routes them to LoopbackAuthenticationHandler, which issues an
+    // authenticated Operator ticket that satisfies the default policy.
+    app.MapOpenApi().RequireAuthorization();
+
     // Gateway surface
     app.MapHub<SessionHub>("/hub/session");
-    app.MapGet("/api/health/ready", () => Results.Ok("healthy"));
-    app.MapGet("/api/health/status", async (DaemonRuntimeStatusService statusService, CancellationToken cancellationToken) =>
-        Results.Ok(await statusService.GetStatusAsync(cancellationToken))).RequireAuthorization();
+    app.MapGet("/api/health/ready", () => TypedResults.Ok("healthy"))
+        .WithName("HealthReady")
+        .WithSummary("Liveness probe reporting the daemon is accepting requests.")
+        .WithTags("Health");
+    app.MapGet("/api/health/status", async ValueTask<Ok<DaemonRuntimeStatus.Response>> (DaemonRuntimeStatusService statusService, CancellationToken cancellationToken) =>
+        TypedResults.Ok(await statusService.GetStatusAsync(cancellationToken)))
+        .WithName("GetHealthStatus")
+        .WithSummary("Get the daemon's runtime status, including connector health.")
+        .WithTags("Health")
+        .RequireAuthorization();
     app.MapGet("/api/sessions", (SessionCatalogService catalog) =>
-        Results.Ok(catalog.ListRecent(limit: 50))).RequireAuthorization();
-    app.MapGet("/api/stats", async (DaemonStatsService statsService, int? days, CancellationToken ct) =>
-        Results.Ok(await statsService.GetStatsAsync(days, ct))).RequireAuthorization();
-    app.MapGet("/api/stats/skills", async (DaemonStatsService statsService, int? days, CancellationToken ct) =>
-        Results.Ok(await statsService.GetSkillUsageStatsAsync(days, ct))).RequireAuthorization();
+        TypedResults.Ok(catalog.ListRecent(limit: 50)))
+        .WithName("ListSessions")
+        .WithSummary("List the most recent sessions.")
+        .WithTags("Sessions")
+        .RequireAuthorization();
+    app.MapGet("/api/stats", async ValueTask<Ok<DaemonStats.Response>> (DaemonStatsService statsService, int? days, CancellationToken ct) =>
+        TypedResults.Ok(await statsService.GetStatsAsync(days, ct)))
+        .WithName("GetStats")
+        .WithSummary("Get daemon usage statistics over the requested window.")
+        .WithTags("Stats")
+        .RequireAuthorization();
+    app.MapGet("/api/stats/skills", async ValueTask<Ok<SkillUsageStats.Response>> (DaemonStatsService statsService, int? days, CancellationToken ct) =>
+        TypedResults.Ok(await statsService.GetSkillUsageStatsAsync(days, ct)))
+        .WithName("GetSkillUsageStats")
+        .WithSummary("Get per-skill usage statistics over the requested window.")
+        .WithTags("Stats")
+        .RequireAuthorization();
     app.MapWebhookEndpoints();
     app.MapMattermostActionEndpoint();
 
@@ -622,7 +653,7 @@ static void ConfigureDaemonServices(
 
     if (notificationsConfig.Webhooks.Count > 0)
     {
-        services.AddHttpClient("Notifications");
+        services.AddHttpClient("Notifications").AddNetclawHeaders("webhook");
         services.AddSingleton<WebhookNotificationService>();
         services.AddSingleton<IOperationalNotificationSink>(sp =>
             sp.GetRequiredService<WebhookNotificationService>());
@@ -641,14 +672,14 @@ static void ConfigureDaemonServices(
     var mcpServers = configuration.GetSection("McpServers")
         .Get<Dictionary<string, McpServerEntry>>() ?? [];
     services.AddSingleton(mcpServers);
-    services.AddHttpClient("ProviderOAuth");
+    services.AddHttpClient("ProviderOAuth").AddNetclawHeaders("provider-oauth");
     services.AddSingleton(sp =>
     {
         var httpClient = sp.GetRequiredService<IHttpClientFactory>().CreateClient("ProviderOAuth");
         return new OAuthPkceService(httpClient);
     });
     services.AddSingleton<IProviderOAuthCallbackListener, ProviderOAuthCallbackListener>();
-    services.AddHttpClient(nameof(McpOAuthService));
+    services.AddHttpClient(nameof(McpOAuthService)).AddNetclawHeaders("mcp-oauth");
     services.AddSingleton(sp => new McpOAuthService(
         sp.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(McpOAuthService)),
         paths,
@@ -729,7 +760,7 @@ static void ConfigureDaemonServices(
     if (skillSyncConfig.Enabled)
     {
         services.AddHttpClient<SystemSkillSyncService>(client =>
-            client.Timeout = FeedConstants.FeedHttpTimeout);
+            client.Timeout = FeedConstants.FeedHttpTimeout).AddNetclawHeaders("skill-sync");
         services.AddHostedService<SystemSkillSyncService>();
     }
 
@@ -751,7 +782,7 @@ static void ConfigureDaemonServices(
     // Result is cached in UpdateCheckService for 1 hour; DaemonRuntimeStatusService
     // reads it via the static cache when building the status API response.
     services.AddHttpClient<BinaryUpdateCheckService>(client =>
-        client.Timeout = FeedConstants.BinaryFeedHttpTimeout);
+        client.Timeout = FeedConstants.BinaryFeedHttpTimeout).AddNetclawHeaders("update-check");
     services.AddHostedService<BinaryUpdateCheckService>();
 
     // System prompt (file-based, with first-run seed)
@@ -773,11 +804,11 @@ static void ConfigureDaemonServices(
     // When the main provider is Ollama, query it next — it knows the true context window
     // for locally hosted models that may not be indexed by external oracles.
     services.AddSingleton<OpenAiCodexCapabilityResolver>();
-    services.AddHttpClient<OpenRouterOracleResolver>();
-    services.AddHttpClient<HuggingFaceCapabilityResolver>();
+    services.AddHttpClient<OpenRouterOracleResolver>().AddNetclawHeaders("capability-probe");
+    services.AddHttpClient<HuggingFaceCapabilityResolver>().AddNetclawHeaders("capability-probe");
     if (ollamaEndpoint is not null)
     {
-        services.AddHttpClient(nameof(OllamaCapabilityResolver));
+        services.AddHttpClient(nameof(OllamaCapabilityResolver)).AddNetclawHeaders("capability-probe");
         services.AddSingleton(sp =>
             new OllamaCapabilityResolver(
                 sp.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(OllamaCapabilityResolver)),
@@ -786,7 +817,7 @@ static void ConfigureDaemonServices(
     }
     if (openAiCompatibleEndpoint is not null)
     {
-        services.AddHttpClient(nameof(OpenAiCompatibleCapabilityResolver));
+        services.AddHttpClient(nameof(OpenAiCompatibleCapabilityResolver)).AddNetclawHeaders("capability-probe");
         services.AddSingleton(sp =>
             new OpenAiCompatibleCapabilityResolver(
                 sp.GetRequiredService<IHttpClientFactory>().CreateClient(nameof(OpenAiCompatibleCapabilityResolver)),

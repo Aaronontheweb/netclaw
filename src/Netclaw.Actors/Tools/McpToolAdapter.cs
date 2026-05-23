@@ -44,6 +44,12 @@ public sealed class McpToolAdapter : INetclawTool
         _invoker = invoker;
         ServerName = serverName;
         Name = $"{serverName}/{toolName}";
+        // LLM-facing alias: replaces `/` with `__` to satisfy the
+        // Anthropic tool-name regex (^[a-zA-Z0-9_-]{1,128}$). Surfaced
+        // to the model in tool definitions and echoed back on tool
+        // result messages; everything else (audit log, approvals,
+        // registry keys, CLI) stays canonical via Name.
+        LlmFacingName = LlmFacingToolName.FromCanonical(Name);
         GrantCategory = grantCategory ?? $"mcp:{serverName}";
 
         if (mcpTool is AIFunction func)
@@ -55,7 +61,7 @@ public sealed class McpToolAdapter : INetclawTool
             _rawSchema = func.JsonSchema;
             var sanitized = McpSchemaSanitizer.SanitizeSchema(func.JsonSchema);
             ParameterSchema = McpSchemaSanitizer.InjectMetaProperties(sanitized, Name, logger);
-            _sanitizedTool = new SanitizedAIFunction(func, Name, Description, ParameterSchema);
+            _sanitizedTool = new SanitizedAIFunction(func, LlmFacingName.Value, Description, ParameterSchema);
         }
         else
         {
@@ -87,6 +93,7 @@ public sealed class McpToolAdapter : INetclawTool
     }
 
     public string Name { get; }
+    public LlmFacingToolName LlmFacingName { get; }
     public string Description { get; }
     public string GrantCategory { get; }
     public string ServerName { get; }
