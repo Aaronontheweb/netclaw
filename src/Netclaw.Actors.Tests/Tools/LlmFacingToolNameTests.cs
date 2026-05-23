@@ -48,4 +48,32 @@ public class LlmFacingToolNameTests
         Assert.Throws<ArgumentException>(() => LlmFacingToolName.FromCanonical(tooLong));
     }
 
+    [Theory]
+    [InlineData("notion__create-pages", "notion/create-pages")]
+    [InlineData("memorizer__store", "memorizer/store")]
+    [InlineData("browser_chrome_devtools__navigate_page", "browser_chrome_devtools/navigate_page")]
+    public void TryReverseSanitizedToCanonical_reverses_first_double_underscore(string llm, string canonical)
+    {
+        Assert.Equal(canonical, LlmFacingToolName.TryReverseSanitizedToCanonical(llm));
+    }
+
+    [Theory]
+    [InlineData("shell_execute")]         // first-party — no separator
+    [InlineData("file_read")]             // first-party — single underscores
+    [InlineData("notion/create-pages")]   // already canonical
+    [InlineData("")]                       // empty
+    public void TryReverseSanitizedToCanonical_returns_null_for_non_aliases(string name)
+    {
+        Assert.Null(LlmFacingToolName.TryReverseSanitizedToCanonical(name));
+    }
+
+    [Fact]
+    public void TryReverseSanitizedToCanonical_returns_null_for_leading_or_trailing_separator()
+    {
+        // `__foo` (no server prefix) and `foo__` (no tool suffix) are
+        // malformed; reverse-resolution returns null so callers don't
+        // build invalid canonical names.
+        Assert.Null(LlmFacingToolName.TryReverseSanitizedToCanonical("__foo"));
+        Assert.Null(LlmFacingToolName.TryReverseSanitizedToCanonical("foo__"));
+    }
 }

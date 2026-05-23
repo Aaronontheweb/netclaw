@@ -61,4 +61,36 @@ public readonly record struct LlmFacingToolName
     }
 
     public override string ToString() => Value;
+
+    /// <summary>
+    /// Pure-string reversal of the LLM-facing alias to a canonical
+    /// candidate, used by surfaces that don't have a
+    /// <c>ToolRegistry</c> handy (config loader, doctor checks, CLI
+    /// against the on-disk approval store). Returns the canonical
+    /// candidate if <paramref name="name"/> matches the
+    /// <c>{server}__{tool}</c> shape; returns <c>null</c> if the input
+    /// already looks canonical (contains <c>/</c>) or doesn't contain a
+    /// <c>__</c> separator. First-party tool names use single
+    /// underscores by convention, so a name with <c>__</c> in it is
+    /// reliably an MCP alias.
+    /// </summary>
+    /// <remarks>
+    /// Heuristic, not authoritative: a tool literally named
+    /// <c>foo__bar</c> (no MCP server prefix) would be misread as
+    /// <c>foo/bar</c>. The convention is enforced by code review on
+    /// new first-party tools; if a future tool legitimately needs
+    /// <c>__</c> in its name, this method needs to grow a registry-
+    /// aware overload.
+    /// </remarks>
+    public static string? TryReverseSanitizedToCanonical(string name)
+    {
+        if (string.IsNullOrEmpty(name))
+            return null;
+        if (name.Contains('/', StringComparison.Ordinal))
+            return null;
+        var idx = name.IndexOf("__", StringComparison.Ordinal);
+        if (idx <= 0 || idx + 2 >= name.Length)
+            return null;
+        return string.Concat(name.AsSpan(0, idx), "/", name.AsSpan(idx + 2));
+    }
 }
