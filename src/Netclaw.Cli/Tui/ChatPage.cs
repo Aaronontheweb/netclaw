@@ -103,14 +103,19 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                     .WithBorderColor(Color.Gray)
                     .WithContent(_chatHistory.Fill())
                     .Fill())
-            // Input panel (grows with content, 3–10 rows)
+            // Input panel (grows with content). Cap is generous (14 rows) so
+            // an expanded approval prompt — summary + body (≤5 rows) + hint
+            // + 3-option selection list + borders = 12 rows — can render
+            // without clipping the selection list. The TextAreaNode in
+            // non-approval mode is independently capped via WithMaxHeight(8),
+            // so this cap only affects the approval-pending layout.
             .WithChild(
                 new PanelNode()
                     .WithTitle("Input")
                     .WithBorder(BorderStyle.Rounded)
                     .WithBorderColor(Color.Cyan)
                     .WithContent(BuildInputContent())
-                    .HeightAuto(min: 3, max: 10))
+                    .HeightAuto(min: 3, max: 14))
             // Status bar
             .WithChild(
                 BuildStatusBar());
@@ -143,9 +148,34 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
 
             _approvalList.OnFocused();
 
+            // Body width budget for the collapsed view. The Input panel
+            // borders + a bit of padding cost ~4 columns; assume an 80-col
+            // minimum terminal so the body fits on one line. Termina has no
+            // measure callback we can hook here.
+            const int collapsedBodyWidth = 76;
+
+            var summary = new TextNode(ViewModel.GetApprovalSummary())
+                .WithForeground(Color.Yellow);
+            var hint = new TextNode(ViewModel.GetApprovalHint() ?? string.Empty)
+                .WithForeground(Color.Gray);
+
+            LayoutNode body = new TextNode(ViewModel.GetApprovalBody(collapsedBodyWidth))
+                .WithForeground(Color.White);
+
+            // Expanded body is allowed to wrap up to 5 rows. With the Input
+            // panel cap at 14, that leaves 1 summary + 1 hint + 3-option list
+            // + 2 borders = 7 rows for chrome, fitting cleanly. Users who
+            // need more than ~5 wrapped lines of body context still see the
+            // full body up in the chat history pane, which always logs the
+            // complete DisplayText on ToolInteractionRequest arrival.
+            body = ViewModel.IsApprovalDetailVisible.Value
+                ? body.HeightAuto(min: 1, max: 5)
+                : body.Height(1);
+
             return Layouts.Vertical()
-                .WithChild(new TextNode(ViewModel.GetApprovalPrompt()).WithForeground(Color.Yellow))
-                .WithChild(new TextNode(ViewModel.GetApprovalHint() ?? string.Empty).WithForeground(Color.Gray))
+                .WithChild(summary)
+                .WithChild(body)
+                .WithChild(hint)
                 .WithChild(_approvalList);
         });
 
@@ -163,10 +193,15 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 ViewModel.IsInputEnabled,
                 ViewModel.StatusMessage,
                 ViewModel.UsageDisplay,
-                (isGenerating, isInputEnabled, status, usage) =>
+                ViewModel.IsApprovalDetailVisible,
+                (isGenerating, isInputEnabled, status, usage, isApprovalDetailVisible) =>
                 {
+                    var approvalToggleHint = isApprovalDetailVisible
+                        ? "[Ctrl+V] Collapse"
+                        : "[Ctrl+V] View full";
+
                     var keys = ViewModel.HasPendingInteraction
-                        ? "[Up/Down] Select  [Enter] Confirm  [PgUp/PgDn/Wheel] Scroll  [Ctrl+Q] Quit"
+                        ? $"[Up/Down] Select  [Enter] Confirm  {approvalToggleHint}  [Ctrl+Q] Quit"
                         : isGenerating
                         ? "[Ctrl+Q] Quit"
                         : "[Enter] Send  [Ctrl+Enter] Newline  [PgUp/PgDn/Wheel] Scroll  [Ctrl+Q] Quit";
@@ -216,6 +251,18 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 ViewModel.RequestAppShutdown();
             }
 
+            return;
+        }
+
+        // Ctrl+V toggles full-body view of a pending approval prompt.
+        // Routed BEFORE the selection list so the list's own Ctrl+V (paste-ish)
+        // never overrides it while an approval is pending. When no approval
+        // is pending, Ctrl+V falls through to the text area for normal paste.
+        if (ViewModel.HasPendingInteraction
+            && keyInfo.Key == ConsoleKey.V
+            && keyInfo.Modifiers.HasFlag(ConsoleModifiers.Control))
+        {
+            ViewModel.ToggleApprovalDetail();
             return;
         }
 
