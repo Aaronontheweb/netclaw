@@ -82,4 +82,72 @@ public sealed class AudienceProfilesShellModePreservationTests : IDisposable
         Assert.NotNull(builder.Tools);
         Assert.Equal(ShellExecutionMode.Off, builder.Tools!.ShellMode);
     }
+
+    [Fact]
+    public void CreateEditor_FallsBackToDiskRead_WhenExistingConfigNull()
+    {
+        // Audit second-pass concern: in the dashboard single-step path the
+        // host does NOT populate WizardContext.ExistingConfig. Without a
+        // disk-fallback read, the preservation guarantee would be inactive
+        // in production — the test passing on hand-constructed
+        // ExistingConfig would mislead. CreateEditor SHALL read
+        // netclaw.json directly when ExistingConfig is absent.
+        File.WriteAllText(_paths.NetclawConfigPath, """
+            {
+              "configVersion": 1,
+              "Tools": {
+                "ShellMode": "HostAllowed",
+                "AudienceProfiles": {
+                  "Personal": {
+                    "AllowedTools": ["file_read"],
+                    "AllowedMcpServers": ["playwright"]
+                  }
+                }
+              }
+            }
+            """);
+
+        var editor = new AudienceProfilesSectionEditor();
+        using var wizardContext = new WizardContext
+        {
+            Paths = _paths,
+            Registry = new ProviderDescriptorRegistry([]),
+            RequestRedraw = () => { },
+            ExistingConfig = null,  // simulates dashboard single-step path
+        };
+
+        var step = (AudienceProfilesStepViewModel)editor.CreateEditor(wizardContext);
+
+        Assert.Equal(ShellExecutionMode.HostAllowed, step.ExistingShellMode);
+        Assert.NotNull(step.ExistingProfiles);
+        Assert.Contains("playwright", step.ExistingProfiles!.Personal.AllowedMcpServers);
+    }
+
+    [Fact]
+    public void CreateEditor_CorruptToolsSection_BubblesJsonException()
+    {
+        // Audit second-pass concern (silent-fallback violation): a
+        // present-but-malformed Tools section MUST NOT silently flatten
+        // to defaults. A JsonException at this layer signals real
+        // corruption and SHALL propagate; flattening would destroy
+        // forbidden surfaces (MCP grants, approval policy) on save.
+        File.WriteAllText(_paths.NetclawConfigPath, """
+            {
+              "configVersion": 1,
+              "Tools": "this-is-not-a-tools-section"
+            }
+            """);
+
+        var editor = new AudienceProfilesSectionEditor();
+        using var wizardContext = new WizardContext
+        {
+            Paths = _paths,
+            Registry = new ProviderDescriptorRegistry([]),
+            RequestRedraw = () => { },
+            ExistingConfig = null,
+        };
+
+        Assert.Throws<System.Text.Json.JsonException>(
+            () => editor.CreateEditor(wizardContext));
+    }
 }

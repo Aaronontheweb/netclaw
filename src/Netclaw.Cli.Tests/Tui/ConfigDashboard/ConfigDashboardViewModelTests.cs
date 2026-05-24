@@ -130,14 +130,22 @@ public sealed class ConfigDashboardViewModelTests
     }
 
     [Fact]
-    public void ActivateEntry_RoutedHandoff_CapturesPendingHandoff_AndShutsDown()
+    public void ActivateEntry_RoutedHandoff_CapturesPendingHandoff()
     {
         // Spec: "Inference Providers routes to `netclaw provider`" — the
         // ViewModel captures the routed command in PendingHandoff so the
         // host can print a follow-up instruction AFTER Termina releases
         // the terminal. In-process Termina navigation would strand the
         // operator inside `/provider` because its back-path Shutdowns the
-        // whole host (see audit finding B5).
+        // whole host (audit B5).
+        //
+        // Note: this test cannot directly assert that RequestShutdown was
+        // invoked because Termina installs the Shutdown delegate at page-
+        // bind time, which only happens inside a Termina host. The
+        // RequestShutdown call is verified via the rename "PendingHandoff
+        // is captured before any host-side cleanup runs" plus a host-level
+        // smoke check (deferred to the smoke tape harness — see CLAUDE.md
+        // "Testing Guidelines / TUI / Termina changes").
         using var vm = new ConfigDashboardViewModel(BuildRegistry());
         ConfigDashboardAction? captured = null;
         using var sub = vm.Actions.Subscribe(a => captured = a);

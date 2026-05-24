@@ -750,7 +750,7 @@ static async Task RunAsync(string[] args)
                 Netclaw.Cli.Tui.ConfigDashboard.ConfigDashboardViewModel>("/config");
         });
 
-        var configHost = builder.Build();
+        using var configHost = builder.Build();
         await RunTerminaHostAsync(configHost);
 
         // Surface any pending routed-handoff hint after Termina releases

@@ -3,7 +3,10 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Text.Json;
+using Netclaw.Cli.Config;
 using Netclaw.Cli.Doctor;
+using Netclaw.Cli.Json;
 using Netclaw.Cli.Tui.Wizard;
 using Netclaw.Configuration;
 
@@ -53,61 +56,65 @@ public sealed class AudienceProfilesSectionEditor : ISectionEditor
     public IWizardStepViewModel CreateEditor(WizardContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
+
+        // Spec §11 marks shell mode + MCP grants + approval policy as
+        // forbidden surfaces this editor MUST preserve. We deserialize the
+        // entire Tools section from on-disk state into a typed ToolConfig
+        // so every hidden field round-trips. Source: WizardContext.ExistingConfig
+        // when the host already loaded it (init flow), otherwise read the
+        // file ourselves so the dashboard single-step path also benefits.
+        var existingTools = TryReadToolsSection(context);
+
         return new AudienceProfilesStepViewModel
         {
-            ExistingShellMode = ReadExistingShellMode(context.ExistingConfig),
-            ExistingProfiles = ReadExistingProfiles(context.ExistingConfig),
+            ExistingShellMode = existingTools?.ShellMode ?? ShellExecutionMode.Off,
+            ExistingProfiles = existingTools?.AudienceProfiles,
         };
     }
 
-    private static ShellExecutionMode ReadExistingShellMode(
-        IReadOnlyDictionary<string, object>? existing)
+    /// <summary>
+    /// Resolve the operator's saved <see cref="ToolConfig"/>:
+    /// prefer <paramref name="context"/>'s pre-loaded <c>ExistingConfig</c>,
+    /// fall back to reading <c>netclaw.json</c> directly so the
+    /// preservation guarantee holds in dashboard single-step hosting
+    /// (which does not necessarily populate <c>ExistingConfig</c>).
+    /// Returns null only when no Tools section exists on disk; a
+    /// present-but-malformed Tools section bubbles <see cref="JsonException"/>
+    /// rather than silently flattening to defaults.
+    /// </summary>
+    private static ToolConfig? TryReadToolsSection(WizardContext context)
     {
-        if (existing is null) return ShellExecutionMode.Off;
-        if (!existing.TryGetValue("Tools", out var raw) || raw is null)
-            return ShellExecutionMode.Off;
+        if (context.ExistingConfig is { } loaded
+            && loaded.TryGetValue("Tools", out var fromCtx)
+            && fromCtx is not null)
+        {
+            return DeserializeTools(fromCtx);
+        }
 
-        object? shellRaw = raw switch
+        if (File.Exists(context.Paths.NetclawConfigPath))
         {
-            IReadOnlyDictionary<string, object> ro when ro.TryGetValue("ShellMode", out var v) => v,
-            IDictionary<string, object> rw when rw.TryGetValue("ShellMode", out var v) => v,
-            System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.Object
-                && je.TryGetProperty("ShellMode", out var prop) => prop,
-            _ => null,
-        };
-        var s = shellRaw switch
-        {
-            string str => str,
-            System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.String
-                => je.GetString(),
-            _ => null,
-        };
-        if (string.IsNullOrWhiteSpace(s)) return ShellExecutionMode.Off;
-        return Enum.TryParse<ShellExecutionMode>(s, ignoreCase: true, out var parsed)
-            ? parsed
-            : ShellExecutionMode.Off;
+            var onDisk = ConfigFileHelper.LoadJsonDict(context.Paths.NetclawConfigPath);
+            if (onDisk.TryGetValue("Tools", out var raw) && raw is not null)
+                return DeserializeTools(raw);
+        }
+
+        return null;
     }
 
-    private static ToolAudienceProfiles? ReadExistingProfiles(
-        IReadOnlyDictionary<string, object>? existing)
+    private static ToolConfig? DeserializeTools(object raw)
     {
-        if (existing is null) return null;
-        if (!existing.TryGetValue("Tools", out var raw) || raw is null) return null;
-
-        // The full profile shape is rich enough that round-tripping via
-        // JsonSerializer is more robust than hand-walking the dict —
-        // we serialize the loaded Tools sub-tree back to JSON and
-        // deserialize directly into ToolConfig.
-        try
-        {
-            var json = System.Text.Json.JsonSerializer.Serialize(raw);
-            var tools = System.Text.Json.JsonSerializer.Deserialize<ToolConfig>(json);
-            return tools?.AudienceProfiles;
-        }
-        catch (System.Text.Json.JsonException)
-        {
-            return null;
-        }
+        // Round-trip through JsonSerializer so the rich ToolConfig shape
+        // (nested ToolAudienceProfiles + ApprovalPolicy + McpServerToolGrants)
+        // hydrates correctly regardless of whether the input is a nested
+        // Dictionary<string, object> or a JsonElement tree. Use
+        // JsonDefaults.ConfigRead so enum-as-string values like
+        // ShellMode="HostAllowed" and case-insensitive keys round-trip
+        // exactly the way the config file loader handles them. A
+        // JsonException here is a real corruption signal and SHALL
+        // propagate — falling back to defaults would destroy forbidden
+        // surfaces on save.
+        var json = JsonSerializer.Serialize(raw);
+        return JsonSerializer.Deserialize<ToolConfig>(json, JsonDefaults.ConfigRead);
     }
 }
 
