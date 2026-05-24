@@ -22,7 +22,11 @@
   `Redo identity setup`, `Open configuration editor`,
   `Start over from scratch`, `Cancel`.
 - [x] 3.3 Route `Open configuration editor` to `netclaw config`.
-- [x] 3.4 Route `Redo identity setup` into the init-owned identity flow.
+- [ ] 3.4 Route `Redo identity setup` into the init-owned identity flow.
+  (Currently falls through to the full bootstrap wizard with non-secret
+  prefill instead of a focused identity-only single-step host — requires
+  a `SingleStepPage` Termina renderer that hosts one `IWizardStepViewModel`.
+  Tracked by adversarial-verify finding B2.)
 
 ## 4. Start-over flow
 

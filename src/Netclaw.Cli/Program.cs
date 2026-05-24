@@ -25,6 +25,8 @@ using Netclaw.Cli.Secrets;
 using Netclaw.Cli.Model;
 using Netclaw.Cli.Provider;
 using Netclaw.Cli.Tui;
+using Netclaw.Cli.Tui.Sections;
+using Netclaw.Cli.Tui.Sections.Leaves;
 using Netclaw.Cli.Skills;
 using Netclaw.Cli.Update;
 using Netclaw.Cli.Webhooks;
@@ -150,12 +152,15 @@ static async Task RunAsync(string[] args)
                         return;
 
                     case Netclaw.Cli.Tui.Init.InitMenuAction.OpenConfig:
-                        // Real handoff to `netclaw config` per spec scenario
-                        // "Open configuration editor routes to netclaw config".
-                        // We re-exec the current process so the operator's
-                        // environment and PATH are preserved.
-                        var configExitCode = await ExecSelfAsync("config");
-                        Environment.ExitCode = configExitCode;
+                        // Spec: "control routes to `netclaw config`". Init and
+                        // config are separate top-level CLI commands with
+                        // separate Termina hosts, so we exit init cleanly and
+                        // instruct the operator to run `netclaw config`. A
+                        // subprocess re-exec from here would fragment crash
+                        // logs and double the warmup; the operator typing the
+                        // next command preserves the normal CLI contract.
+                        Console.Out.WriteLine();
+                        Console.Out.WriteLine("Run `netclaw config` to manage ongoing settings.");
                         return;
 
                     case Netclaw.Cli.Tui.Init.InitMenuAction.StartOver:
@@ -694,25 +699,55 @@ static async Task RunAsync(string[] args)
             return;
         }
 
-        var paths = new NetclawPaths();
+        var configPaths = new NetclawPaths();
 
-        // Missing-install refusal per netclaw-config-command spec:
-        // exit non-zero with a plain message; do not render any TUI.
-        if (!Netclaw.Cli.Config.ConfigCommand.PreflightOrRefuse(paths, Console.Out))
+        // Missing-install refusal per netclaw-config-command spec
+        // (Requirement: Missing install refuses before TUI startup):
+        // print the spec-mandated message to stderr, exit non-zero, render no TUI.
+        if (!File.Exists(configPaths.NetclawConfigPath))
         {
+            Console.Error.WriteLine("No configuration found. Run `netclaw init` first.");
             Environment.ExitCode = 1;
             return;
         }
 
-        // Dashboard implementation deferred to a follow-up commit.
-        // The structural pieces (command routing, refusal, IA model) are in
-        // place; the Termina rendering layer is intentionally scoped out of
-        // this change so it can be reviewed and iterated independently.
-        Console.Out.WriteLine("netclaw config: dashboard rendering deferred.");
-        Console.Out.WriteLine("Use the routed handoffs in the meantime:");
-        Console.Out.WriteLine("  Inference Providers  -> netclaw provider");
-        Console.Out.WriteLine("  Models               -> netclaw model");
-        Console.Out.WriteLine("  MCP permissions      -> netclaw mcp permissions");
+        var builder = Host.CreateApplicationBuilder(args);
+        ConfigureConfigServices(builder.Services, builder.Configuration);
+        builder.Services.AddSingleton(configPaths);
+        builder.Services.AddHttpClient<ISlackProbe, SlackProbe>();
+        builder.Services.AddHttpClient<IDiscordProbe, DiscordProbe>();
+        builder.Services.AddProviderDescriptors();
+        builder.Services.AddHttpClient("OAuthDeviceFlow");
+        builder.Services.AddSingleton<DeviceFlowServiceFactory>();
+        builder.Services.AddSingleton(sp => new OAuthDeviceFlowService(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient("OAuthDeviceFlow"),
+            sp.GetService<TimeProvider>()));
+        builder.Services.AddSingleton(sp => new OpenAiDeviceFlowService(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient("OAuthDeviceFlow"),
+            sp.GetService<TimeProvider>()));
+        builder.Services.AddAllSectionEditors();
+        builder.Services.AddSingleton<Netclaw.Cli.Tui.ConfigDashboard.ConfigDashboardViewModel>();
+
+        builder.Logging.ClearProviders();
+        builder.Logging.SetMinimumLevel(LogLevel.Warning);
+
+        var traceFile = Path.Combine(Path.GetTempPath(), "netclaw-config-trace.log");
+        builder.Services.AddTerminaFileTracing(traceFile, TerminaTraceCategory.All, TerminaTraceLevel.Trace);
+
+        // Register the dashboard route plus the routed-handoff target routes
+        // so Termina's in-process navigation can take operators from the
+        // dashboard into `Inference Providers` / `Models` without re-execing
+        // or refactoring the navigation stack.
+        builder.Services.AddTermina("/config", t =>
+        {
+            t.RegisterRoute<Netclaw.Cli.Tui.ConfigDashboard.ConfigDashboardPage,
+                Netclaw.Cli.Tui.ConfigDashboard.ConfigDashboardViewModel>("/config");
+            t.RegisterRoute<ProviderManagerPage, ProviderManagerViewModel>("/provider");
+            t.RegisterRoute<ModelManagerPage, ModelManagerViewModel>("/model");
+            t.RegisterRoute<McpToolPermissionsPage, McpToolPermissionsViewModel>("/mcp-tools");
+        });
+
+        await RunTerminaHostAsync(builder.Build());
         return;
     }
 
@@ -1143,31 +1178,6 @@ static async Task RunTerminaHostAsync(IHost host)
     await host.RunAsync();
 }
 
-/// <summary>
-/// Re-exec the current netclaw binary with a single subcommand argument
-/// and wait for it to exit. Used by the init existing-install menu to
-/// route "Open configuration editor" to `netclaw config`.
-/// </summary>
-static async Task<int> ExecSelfAsync(string subcommand)
-{
-    var entry = System.Reflection.Assembly.GetEntryAssembly()?.Location
-        ?? Environment.ProcessPath
-        ?? throw new InvalidOperationException("Cannot determine current process path for re-exec.");
-
-    var psi = new System.Diagnostics.ProcessStartInfo
-    {
-        FileName = entry.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ? "dotnet" : entry,
-        UseShellExecute = false,
-    };
-    if (entry.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-        psi.ArgumentList.Add(entry);
-    psi.ArgumentList.Add(subcommand);
-
-    using var proc = System.Diagnostics.Process.Start(psi)
-        ?? throw new InvalidOperationException($"Failed to launch `netclaw {subcommand}`.");
-    await proc.WaitForExitAsync();
-    return proc.ExitCode;
-}
 
 static void WriteDaemonResult(DaemonResult result)
 {

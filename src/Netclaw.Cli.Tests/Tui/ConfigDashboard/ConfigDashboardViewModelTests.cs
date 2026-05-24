@@ -9,6 +9,7 @@ using Netclaw.Cli.Tui.Sections;
 using Netclaw.Cli.Tui.Sections.Leaves;
 using Netclaw.Configuration;
 using Netclaw.Providers;
+using R3;
 using Xunit;
 
 namespace Netclaw.Cli.Tests.Tui.ConfigDashboard;
@@ -126,5 +127,68 @@ public sealed class ConfigDashboardViewModelTests
         var doctor = vm.Affordances.Single(a => a.Id == "doctor");
         Assert.Equal(ConfigDashboardAffordanceKind.RunCommand, doctor.Kind);
         Assert.Equal("netclaw doctor", doctor.RouteCommand);
+    }
+
+    [Fact]
+    public void ActivateEntry_RoutedHandoff_DispatchesNavigatedToRouteAction()
+    {
+        // Spec: "Inference Providers routes to `netclaw provider`" — the
+        // ViewModel maps spec-text to Termina paths and emits an Action so
+        // tests + integration probes can verify routing without a Termina
+        // host. Asserts the actual production routing path, not just IA shape.
+        using var vm = new ConfigDashboardViewModel(BuildRegistry());
+        ConfigDashboardAction? captured = null;
+        using var sub = vm.Actions.Subscribe(a => captured = a);
+
+        vm.ActivateEntry(vm.RootEntries.Single(e => e.Id == "inference-providers"));
+
+        Assert.NotNull(captured);
+        Assert.Equal(ConfigDashboardActionKind.NavigatedToRoute, captured!.Kind);
+        Assert.Equal("/provider", captured.Detail);
+    }
+
+    [Fact]
+    public void ActivateEntry_DomainEntry_OpensSubMenu()
+    {
+        using var vm = new ConfigDashboardViewModel(BuildRegistry());
+        ConfigDashboardAction? captured = null;
+        using var sub = vm.Actions.Subscribe(a => captured = a);
+
+        var channels = vm.RootEntries.Single(e => e.Id == "channels");
+        vm.ActivateEntry(channels);
+
+        Assert.NotNull(captured);
+        Assert.Equal(ConfigDashboardActionKind.OpenedDomain, captured!.Kind);
+        Assert.Same(channels, vm.ActiveDomain.Value);
+    }
+
+    [Fact]
+    public void GoBackToRoot_FromSubMenu_ClearsActiveDomain()
+    {
+        using var vm = new ConfigDashboardViewModel(BuildRegistry());
+        vm.ActivateEntry(vm.RootEntries.Single(e => e.Id == "channels"));
+        Assert.NotNull(vm.ActiveDomain.Value);
+
+        vm.GoBackToRoot();
+
+        Assert.Null(vm.ActiveDomain.Value);
+    }
+
+    [Fact]
+    public void MapRouteCommandToTerminaPath_KnownCommands()
+    {
+        Assert.Equal("/provider",
+            ConfigDashboardViewModel.MapRouteCommandToTerminaPath("netclaw provider"));
+        Assert.Equal("/model",
+            ConfigDashboardViewModel.MapRouteCommandToTerminaPath("netclaw model"));
+        Assert.Equal("/mcp-tools",
+            ConfigDashboardViewModel.MapRouteCommandToTerminaPath("netclaw mcp permissions"));
+    }
+
+    [Fact]
+    public void MapRouteCommandToTerminaPath_UnknownCommand_Throws()
+    {
+        Assert.Throws<InvalidOperationException>(() =>
+            ConfigDashboardViewModel.MapRouteCommandToTerminaPath("netclaw nonexistent"));
     }
 }

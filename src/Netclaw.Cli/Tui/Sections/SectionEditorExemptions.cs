@@ -57,15 +57,31 @@ public static class SectionEditorExemptions
 /// </summary>
 public static class SectionIds
 {
-    /// <summary>Identity (agent name, comm style, user name, timezone, workspaces, webhook).</summary>
+    // Bootstrap leaves (init-owned).
     public const string Identity = "identity";
-
-    /// <summary>LLM Provider selection and credentials (init-owned bootstrap leaf).</summary>
     public const string Provider = "provider";
 
-    /// <summary>Security Posture (Personal / Team / Public).</summary>
+    // Security & Access.
     public const string SecurityPosture = "security-posture";
-
-    /// <summary>Enabled Features (deployment-wide runtime enablement).</summary>
     public const string EnabledFeatures = "enabled-features";
+    public const string AudienceProfiles = "audience-profiles";
+    public const string ExposureMode = "exposure-mode";
+
+    // Channels.
+    public const string ChannelSlack = "channel-slack";
+    public const string ChannelDiscord = "channel-discord";
+    public const string ChannelMattermost = "channel-mattermost";
+
+    // Skill Sources.
+    public const string ExternalSkills = "external-skills";
+    public const string SkillFeeds = "skill-feeds";
+
+    // Telemetry & Alerting.
+    public const string Telemetry = "telemetry";
+    public const string OutboundWebhooks = "outbound-webhooks";
+
+    // Standalone.
+    public const string Search = "search";
+    public const string BrowserAutomation = "browser-automation";
+    public const string InboundWebhooks = "inbound-webhooks";
 }

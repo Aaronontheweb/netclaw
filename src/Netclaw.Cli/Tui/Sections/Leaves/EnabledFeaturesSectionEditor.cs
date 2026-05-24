@@ -63,7 +63,63 @@ public sealed class EnabledFeaturesSectionEditor : ISectionEditor
     public IWizardStepViewModel CreateEditor(WizardContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        return new FeatureSelectionStepViewModel();
+        var step = new FeatureSelectionStepViewModel();
+
+        // Init-owned / config-owned re-entry: prefill the toggle row from
+        // existing config so re-opening this leaf doesn't visually reset
+        // every feature to its posture default. Same contract as the
+        // other init-owned leaves (Provider / Identity / SecurityPosture).
+        var existing = context.ExistingConfig;
+        if (existing is null)
+            return step;
+
+        for (var i = 0; i < FeatureKeys.Length; i++)
+        {
+            if (TryReadEnabled(existing, FeatureKeys[i], out var enabled) && enabled
+                && !step.IsFeatureEnabled(i))
+            {
+                step.ToggleFeature(i);
+            }
+            else if (TryReadEnabled(existing, FeatureKeys[i], out var disabled) && !disabled
+                && step.IsFeatureEnabled(i))
+            {
+                step.ToggleFeature(i);
+            }
+        }
+
+        return step;
+    }
+
+    private static bool TryReadEnabled(
+        IReadOnlyDictionary<string, object> existing, string sectionKey, out bool value)
+    {
+        value = false;
+        if (!existing.TryGetValue(sectionKey, out var raw) || raw is null)
+            return false;
+
+        object? enabledRaw = raw switch
+        {
+            IReadOnlyDictionary<string, object> ro when ro.TryGetValue("Enabled", out var v) => v,
+            IDictionary<string, object> rw when rw.TryGetValue("Enabled", out var v) => v,
+            JsonElement je when je.ValueKind == JsonValueKind.Object
+                && je.TryGetProperty("Enabled", out var prop) => prop,
+            _ => null,
+        };
+
+        switch (enabledRaw)
+        {
+            case bool b:
+                value = b;
+                return true;
+            case JsonElement je when je.ValueKind == JsonValueKind.True:
+                value = true;
+                return true;
+            case JsonElement je when je.ValueKind == JsonValueKind.False:
+                value = false;
+                return true;
+            default:
+                return false;
+        }
     }
 
     private static bool IsBool(object? v) =>

@@ -50,7 +50,15 @@ internal static class ConfigFileHelper
     /// and starting fresh. Used by <see cref="Tui.Wizard.WizardConfigBuilder.WriteConfigFile"/>
     /// so init / config saves never throw when the on-disk file is unparseable.
     /// </summary>
-    internal static Dictionary<string, object> LoadJsonDictOrBackup(string path)
+    /// <remarks>
+    /// <paramref name="timeProvider"/> SHOULD be the DI-injected provider in
+    /// production paths; tests can pass <see cref="FakeTimeProvider"/> to
+    /// assert on deterministic backup filenames. Defaults to
+    /// <see cref="TimeProvider.System"/> only as a compatibility shim for
+    /// call sites that don't yet carry a TimeProvider.
+    /// </remarks>
+    internal static Dictionary<string, object> LoadJsonDictOrBackup(
+        string path, TimeProvider? timeProvider = null)
     {
         if (!File.Exists(path))
             return new Dictionary<string, object> { ["configVersion"] = EmbeddedSchemaLoader.CurrentSchemaVersion };
@@ -67,7 +75,8 @@ internal static class ConfigFileHelper
             // Fall through to the backup path.
         }
 
-        var backupPath = $"{path}.corrupt.{DateTimeOffset.UtcNow:yyyyMMddHHmmss}";
+        var clock = timeProvider ?? TimeProvider.System;
+        var backupPath = $"{path}.corrupt.{clock.GetUtcNow():yyyyMMddHHmmss}";
         try
         {
             File.Move(path, backupPath, overwrite: false);

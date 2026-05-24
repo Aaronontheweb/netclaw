@@ -28,6 +28,9 @@
 - [x] 4.1 Route `Inference Providers` to `netclaw provider`.
 - [x] 4.2 Route `Models` to `netclaw model`.
 - [x] 4.3 Add shallow routing coverage for both handoffs.
+  (`ConfigDashboardViewModelTests.ActivateEntry_RoutedHandoff_DispatchesNavigatedToRouteAction`
+  exercises the actual route-dispatch path via the Actions observable;
+  prior coverage only asserted the static IA dictionary.)
 
 ## 5. Channels area
 

@@ -563,7 +563,13 @@ public sealed class WizardSecretsBuilder
     /// an empty object so the wizard can re-establish secrets without
     /// blowing up.
     /// </summary>
-    internal static JsonObject LoadExistingSecretsOrBackup(string path)
+    /// <remarks>
+    /// <paramref name="timeProvider"/> is virtualizable so tests can
+    /// assert deterministic backup filenames. Defaults to
+    /// <see cref="TimeProvider.System"/> only as a compatibility shim.
+    /// </remarks>
+    internal static JsonObject LoadExistingSecretsOrBackup(
+        string path, TimeProvider? timeProvider = null)
     {
         if (!File.Exists(path))
             return new JsonObject();
@@ -580,7 +586,8 @@ public sealed class WizardSecretsBuilder
             // Fall through to backup.
         }
 
-        var backupPath = $"{path}.corrupt.{DateTimeOffset.UtcNow:yyyyMMddHHmmss}";
+        var clock = timeProvider ?? TimeProvider.System;
+        var backupPath = $"{path}.corrupt.{clock.GetUtcNow():yyyyMMddHHmmss}";
         try
         {
             File.Move(path, backupPath, overwrite: false);
