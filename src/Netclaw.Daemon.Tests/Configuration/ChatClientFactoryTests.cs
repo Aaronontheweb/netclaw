@@ -6,12 +6,14 @@
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.AI;
 using Netclaw.Configuration;
+using Netclaw.Configuration.Providers;
 using Netclaw.Daemon.Configuration;
 using Netclaw.Providers;
 using Netclaw.Providers.Anthropic;
 using Netclaw.Providers.OpenAi;
 using Netclaw.Providers.OpenRouter;
 using Netclaw.Providers.SelfHosted;
+using Netclaw.Providers.VeniceAi;
 using Xunit;
 
 namespace Netclaw.Daemon.Tests.Configuration;
@@ -26,6 +28,7 @@ public sealed class ProviderPluginFactoryTests
         new OpenAiProviderPlugin(new OpenAiDescriptor(SharedHttp)),
         new AnthropicProviderPlugin(new AnthropicDescriptor(SharedHttp)),
         new OpenRouterProviderPlugin(new OpenRouterDescriptor(SharedHttp)),
+        new VeniceAiProviderPlugin(new VeniceAiDescriptor(SharedHttp)),
     ];
 
     [Fact]
@@ -228,6 +231,72 @@ public sealed class ProviderPluginFactoryTests
         };
 
         Assert.Null(plugin.CreateVendorOptionsSource(entry));
+    }
+
+    [Fact]
+    public void CreatesVeniceAiClient()
+    {
+        var factory = CreateFactory(("my-venice", new ProviderEntry
+        {
+            Type = "veniceai",
+            AuthMethod = AuthMethod.ApiKey,
+            ApiKey = new SensitiveString("vn-test-fake-key")
+        }));
+
+        var client = factory.Create(new ModelReference
+        {
+            Provider = "my-venice",
+            ModelId = "venice-uncensored"
+        });
+
+        Assert.NotNull(client);
+    }
+
+    [Fact]
+    public void CreatesVeniceAiClient_WhenOperatorIncludesVeniceSystemPrompt()
+    {
+        // Opt-in vendor option: the plugin builds the client without attaching
+        // the override pipeline policy. We can't directly inspect OpenAIClient's
+        // pipeline from here, but at minimum the construction path must not
+        // throw and must return a usable IChatClient.
+        var factory = CreateFactory(("my-venice", new ProviderEntry
+        {
+            Type = "veniceai",
+            AuthMethod = AuthMethod.ApiKey,
+            ApiKey = new SensitiveString("vn-test-fake-key"),
+            VendorOptions = JsonNode.Parse("""
+                {
+                  "IncludeVeniceSystemPrompt": true
+                }
+                """)!.AsObject()
+        }));
+
+        var client = factory.Create(new ModelReference
+        {
+            Provider = "my-venice",
+            ModelId = "venice-uncensored"
+        });
+
+        Assert.NotNull(client);
+    }
+
+    [Fact]
+    public void VeniceAiVendorOptions_DefaultsToSecurePosture()
+    {
+        // The default for IncludeVeniceSystemPrompt is false. Round-trip an
+        // empty VendorOptions bag and confirm the typed view comes back with
+        // the secure default. The plugin relies on this default — a regression
+        // here would silently start including Venice's system prompt.
+        var entry = new ProviderEntry
+        {
+            Type = "veniceai",
+            VendorOptions = JsonNode.Parse("{}")!.AsObject()
+        };
+
+        var options = entry.GetVendorOptions<VeniceAiVendorOptions>()
+            ?? new VeniceAiVendorOptions();
+
+        Assert.False(options.IncludeVeniceSystemPrompt);
     }
 
     private static ProviderPluginFactory CreateFactory(params (string name, ProviderEntry entry)[] providers)

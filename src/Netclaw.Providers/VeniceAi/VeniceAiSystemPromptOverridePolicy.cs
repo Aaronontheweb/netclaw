@@ -3,9 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.ClientModel;
 using System.ClientModel.Primitives;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace Netclaw.Providers.VeniceAi;
@@ -21,9 +19,11 @@ namespace Netclaw.Providers.VeniceAi;
 /// and silently drift behavior any time Venice updates their default prompt.
 /// </para>
 /// <para>
-/// Hardcoded to <c>false</c> with no operator override on purpose — see issue #1136
-/// for the design of a future <c>IVendorOptions</c> surface that would expose this
-/// (and other Venice knobs) to operators who explicitly want them.
+/// Operator opt-out lives one layer up: <see cref="VeniceAiProviderPlugin"/> does not
+/// attach this policy when <see cref="VeniceAiVendorOptions.IncludeVeniceSystemPrompt"/>
+/// is <c>true</c>. When attached, the policy is an unconditional clamp — it forces
+/// <c>false</c> even if upstream code put a different value in
+/// <c>venice_parameters.include_venice_system_prompt</c>.
 /// </para>
 /// </summary>
 internal sealed class VeniceAiSystemPromptOverridePolicy : PipelinePolicy
@@ -31,43 +31,27 @@ internal sealed class VeniceAiSystemPromptOverridePolicy : PipelinePolicy
     public override void Process(
         PipelineMessage message, IReadOnlyList<PipelinePolicy> pipeline, int currentIndex)
     {
-        InjectSystemPromptOverride(message);
+        PipelineRequestBodyEditor.EditJsonBody(message, InjectSystemPromptOverride);
         ProcessNext(message, pipeline, currentIndex);
     }
 
     public override async ValueTask ProcessAsync(
         PipelineMessage message, IReadOnlyList<PipelinePolicy> pipeline, int currentIndex)
     {
-        InjectSystemPromptOverride(message);
+        PipelineRequestBodyEditor.EditJsonBody(message, InjectSystemPromptOverride);
         await ProcessNextAsync(message, pipeline, currentIndex);
     }
 
-    private static void InjectSystemPromptOverride(PipelineMessage message)
+    private static void InjectSystemPromptOverride(JsonObject body)
     {
-        var request = message.Request;
-        if (request.Content is null)
-            return;
-
-        using var stream = new MemoryStream();
-        request.Content.WriteTo(stream, default);
-        var bytes = stream.ToArray();
-
-        var node = JsonNode.Parse(bytes);
-        if (node is not JsonObject obj)
-            return;
-
         // Preserve any existing venice_parameters the caller may have set; only
-        // force include_venice_system_prompt. This keeps the policy compatible
-        // with future per-call vendor options without re-engineering it.
-        if (obj["venice_parameters"] is not JsonObject veniceParams)
+        // clamp include_venice_system_prompt.
+        if (body["venice_parameters"] is not JsonObject veniceParams)
         {
             veniceParams = new JsonObject();
-            obj["venice_parameters"] = veniceParams;
+            body["venice_parameters"] = veniceParams;
         }
 
         veniceParams["include_venice_system_prompt"] = false;
-
-        var modified = JsonSerializer.SerializeToUtf8Bytes(obj);
-        request.Content = BinaryContent.Create(BinaryData.FromBytes(modified));
     }
 }

@@ -7,18 +7,20 @@ using System.ClientModel;
 using System.ClientModel.Primitives;
 using Microsoft.Extensions.AI;
 using Netclaw.Configuration;
+using Netclaw.Configuration.Providers;
 using OpenAI;
 
 namespace Netclaw.Providers.VeniceAi;
 
 /// <summary>
 /// Daemon-side plugin for Venice.ai. Wraps <see cref="VeniceAiDescriptor"/>
-/// and adds SDK client construction with the system-prompt override pipeline policy.
+/// with SDK client construction over the OpenAI-compatible endpoint.
 /// <para>
-/// Venice's OpenAI-compatible API works with the stock <see cref="OpenAIClient"/>
-/// via base-URL swap. The override policy is what makes Venice safe to use as a
-/// drop-in: it strips Venice's default-injected system prompt so Netclaw remains
-/// the sole author of its system context.
+/// By default the plugin attaches <see cref="VeniceAiSystemPromptOverridePolicy"/>
+/// so Venice's default-injected system prompt cannot prepend to Netclaw's
+/// assembled identity context. Operators who explicitly want Venice's prompt
+/// set <see cref="VeniceAiVendorOptions.IncludeVeniceSystemPrompt"/> to
+/// <c>true</c>; the override policy is then not attached.
 /// </para>
 /// </summary>
 public sealed class VeniceAiProviderPlugin : ProviderPluginBase<VeniceAiDescriptor>
@@ -31,9 +33,12 @@ public sealed class VeniceAiProviderPlugin : ProviderPluginBase<VeniceAiDescript
         var endpoint = string.IsNullOrWhiteSpace(entry.Endpoint)
             ? new Uri(DefaultEndpoint)
             : new Uri(entry.Endpoint);
+        var vendorOptions = entry.GetVendorOptions<VeniceAiVendorOptions>() ?? new VeniceAiVendorOptions();
 
         var options = new OpenAIClientOptions { Endpoint = endpoint };
-        options.AddPolicy(new VeniceAiSystemPromptOverridePolicy(), PipelinePosition.PerCall);
+        if (!vendorOptions.IncludeVeniceSystemPrompt)
+            options.AddPolicy(new VeniceAiSystemPromptOverridePolicy(), PipelinePosition.PerCall);
+
         var client = new OpenAIClient(new ApiKeyCredential(apiKey), options);
 
         return client.GetChatClient(model.ModelId).AsIChatClient();
