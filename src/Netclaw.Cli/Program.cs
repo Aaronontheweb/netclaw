@@ -629,6 +629,37 @@ static async Task RunAsync(string[] args)
         }
     }
 
+    // ── Post-install settings dashboard ──
+    if (mode is "config")
+    {
+        if (args.Length > 1 && IsHelpToken(args[1]))
+        {
+            Netclaw.Cli.Config.ConfigCommand.WriteHelp(Console.Out);
+            return;
+        }
+
+        var paths = new NetclawPaths();
+
+        // Missing-install refusal per netclaw-config-command spec:
+        // exit non-zero with a plain message; do not render any TUI.
+        if (!Netclaw.Cli.Config.ConfigCommand.PreflightOrRefuse(paths, Console.Out))
+        {
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        // Dashboard implementation deferred to a follow-up commit.
+        // The structural pieces (command routing, refusal, IA model) are in
+        // place; the Termina rendering layer is intentionally scoped out of
+        // this change so it can be reviewed and iterated independently.
+        Console.Out.WriteLine("netclaw config: dashboard rendering deferred.");
+        Console.Out.WriteLine("Use the routed handoffs in the meantime:");
+        Console.Out.WriteLine("  Inference Providers  -> netclaw provider");
+        Console.Out.WriteLine("  Models               -> netclaw model");
+        Console.Out.WriteLine("  MCP permissions      -> netclaw mcp permissions");
+        return;
+    }
+
     // ── MCP server management (list/auth use daemon for live status/OAuth) ──
     if (mode is "mcp")
     {
@@ -1092,7 +1123,7 @@ static void WriteGeneralHelp()
     Console.WriteLine("  init                     First-run setup wizard");
     Console.WriteLine("  update                   Check for and install updates");
     Console.WriteLine("  version, --version       Show CLI version");
-    Console.WriteLine("  config                   Configuration management (planned)");
+    Console.WriteLine("  config                   Post-install settings dashboard (TUI scaffold)");
     Console.WriteLine();
     Console.WriteLine("Run `netclaw <command> --help` for details on any command.");
     Console.WriteLine();
