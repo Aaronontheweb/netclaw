@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Netclaw.Cli.Json;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Secrets;
@@ -30,6 +31,8 @@ internal static class ConfigFileHelper
 
     /// <summary>
     /// Load a JSON file as a mutable dictionary. Returns a default skeleton if the file doesn't exist.
+    /// Throws on malformed JSON — use <see cref="LoadJsonDictOrBackup"/> for save paths that
+    /// need to recover from corruption.
     /// </summary>
     internal static Dictionary<string, object> LoadJsonDict(string path)
     {
@@ -39,6 +42,43 @@ internal static class ConfigFileHelper
         var text = File.ReadAllText(path);
         return JsonSerializer.Deserialize<Dictionary<string, object>>(text)
             ?? new Dictionary<string, object> { ["configVersion"] = EmbeddedSchemaLoader.CurrentSchemaVersion };
+    }
+
+    /// <summary>
+    /// Save-path variant of <see cref="LoadJsonDict"/> that handles a corrupt
+    /// existing file by renaming it to <c>&lt;path&gt;.corrupt.&lt;timestamp&gt;</c>
+    /// and starting fresh. Used by <see cref="Tui.Wizard.WizardConfigBuilder.WriteConfigFile"/>
+    /// so init / config saves never throw when the on-disk file is unparseable.
+    /// </summary>
+    internal static Dictionary<string, object> LoadJsonDictOrBackup(string path)
+    {
+        if (!File.Exists(path))
+            return new Dictionary<string, object> { ["configVersion"] = EmbeddedSchemaLoader.CurrentSchemaVersion };
+
+        try
+        {
+            var text = File.ReadAllText(path);
+            var parsed = JsonSerializer.Deserialize<Dictionary<string, object>>(text);
+            if (parsed is not null)
+                return parsed;
+        }
+        catch (JsonException)
+        {
+            // Fall through to the backup path.
+        }
+
+        var backupPath = $"{path}.corrupt.{DateTimeOffset.UtcNow:yyyyMMddHHmmss}";
+        try
+        {
+            File.Move(path, backupPath, overwrite: false);
+        }
+        catch (IOException)
+        {
+            // If the backup already exists or move fails, fall back to delete.
+            try { File.Delete(path); } catch { /* best-effort */ }
+        }
+
+        return new Dictionary<string, object> { ["configVersion"] = EmbeddedSchemaLoader.CurrentSchemaVersion };
     }
 
     /// <summary>
@@ -120,5 +160,61 @@ internal static class ConfigFileHelper
 
         var protector = SecretsProtection.CreateProtector(paths);
         return protector.Unprotect(value);
+    }
+
+    /// <summary>
+    /// Probe whether a secret exists at the given dotted path in <c>secrets.json</c>
+    /// WITHOUT decrypting the stored value. Returns <c>true</c> when the path
+    /// resolves to a non-empty string (encrypted or plaintext) or to any
+    /// non-null non-string value. Returns <c>false</c> when the path is
+    /// missing, resolves to a JSON null, or resolves to an empty string.
+    /// </summary>
+    /// <remarks>
+    /// Used by leaf editors to choose between "configured — leave blank to
+    /// keep" and "(not set)" hint text without ever materializing the
+    /// decrypted value in the UI.
+    /// </remarks>
+    public static bool SecretPresent(Configuration.NetclawPaths paths, string dottedPath)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        ArgumentException.ThrowIfNullOrWhiteSpace(dottedPath);
+
+        if (!File.Exists(paths.SecretsPath))
+            return false;
+
+        JsonNode? node;
+        try
+        {
+            var text = File.ReadAllText(paths.SecretsPath);
+            node = JsonNode.Parse(text);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        foreach (var segment in dottedPath.Split('.'))
+        {
+            if (node is JsonObject obj && obj.TryGetPropertyValue(segment, out var child))
+                node = child;
+            else
+                return false;
+        }
+
+        return node switch
+        {
+            null => false,
+            JsonValue val when val.TryGetValue<string>(out var s) => IsPresentString(s),
+            JsonValue => true,
+            _ => true,
+        };
+
+        // ENC: prefix denotes an encrypted value at rest. Return false for
+        // an ENC: prefix with empty ciphertext so the UI distinguishes
+        // "configured" from "corrupt / re-enter required".
+        static bool IsPresentString(string s) =>
+            !string.IsNullOrEmpty(s)
+            && (!ISecretsProtector.IsEncrypted(s)
+                || s.Length > "ENC:".Length);
     }
 }

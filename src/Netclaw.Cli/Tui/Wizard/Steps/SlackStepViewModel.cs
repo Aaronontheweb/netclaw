@@ -194,7 +194,13 @@ public sealed class SlackStepViewModel : IWizardStepViewModel, IChannelAdapterVi
     public void ContributeConfig(WizardConfigBuilder builder)
     {
         if (!SlackEnabled)
+        {
+            // Explicit removal: without this, semantic merge-on-save would
+            // preserve a prior Slack: {Enabled: true, ...} block on re-run,
+            // making it impossible to disable Slack via the wizard.
+            builder.RemoveSection("Slack");
             return;
+        }
 
         var userIds = ParseUserIds(AllowedUserIdsInput);
 

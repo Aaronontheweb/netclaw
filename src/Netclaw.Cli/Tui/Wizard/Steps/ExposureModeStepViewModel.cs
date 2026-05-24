@@ -183,10 +183,23 @@ public sealed class ExposureModeStepViewModel : IWizardStepViewModel
                 TrustedProxies = IsReverseProxy ? TrustedProxies : [],
             };
         }
+        else
+        {
+            // Local mode: explicitly remove any prior Daemon section so a
+            // re-run that transitions ReverseProxy → Local does not leave
+            // stale Host / TrustedProxies behind. Without this the
+            // semantic-merge writer would preserve the previous binding and
+            // the daemon would keep listening on the public interface.
+            builder.RemoveSection("Daemon");
+        }
 
         if (WebhooksEnabled)
         {
             builder.Webhooks = new WebhooksConfigSection { Enabled = true };
+        }
+        else
+        {
+            builder.RemoveSection("Webhooks");
         }
     }
 

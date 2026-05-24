@@ -214,7 +214,13 @@ public sealed class MattermostStepViewModel : IWizardStepViewModel, IChannelAdap
     public void ContributeConfig(WizardConfigBuilder builder)
     {
         if (!MattermostEnabled)
+        {
+            // Explicit removal so re-run with Mattermost unchecked actually
+            // disables the channel instead of preserving prior state via
+            // the semantic-merge writer.
+            builder.RemoveSection("Mattermost");
             return;
+        }
 
         var channelIds = ParseChannelIds(ChannelIdsInput);
         var userIds = ParseUserIds(AllowedUserIdsInput);

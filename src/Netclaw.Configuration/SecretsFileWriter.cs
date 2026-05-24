@@ -28,6 +28,12 @@ public static class SecretsFileWriter
     /// Write JSON content to the secrets file, creating parent directories as needed.
     /// On Linux/macOS, the file is set to owner-only read/write (chmod 600).
     /// </summary>
+    /// <remarks>
+    /// The write is atomic: contents go to a sibling temp file first and
+    /// then replace the target via <see cref="File.Move(string, string, bool)"/>,
+    /// so a process kill or power loss mid-write cannot leave a torn
+    /// <c>secrets.json</c>.
+    /// </remarks>
     public static void Write(string secretsPath, string json, ISecretsProtector? protector = null)
     {
         if (protector is not null)
@@ -37,8 +43,24 @@ public static class SecretsFileWriter
         if (dir is not null)
             Directory.CreateDirectory(dir);
 
-        File.WriteAllText(secretsPath, json);
-        SetOwnerOnlyPermissions(secretsPath);
+        var tempPath = $"{secretsPath}.tmp.{Environment.ProcessId}.{Guid.NewGuid():N}";
+        try
+        {
+            File.WriteAllText(tempPath, json);
+            // Lock down the temp file BEFORE the move so the secret never
+            // exists on disk with broader permissions.
+            SetOwnerOnlyPermissions(tempPath);
+            File.Move(tempPath, secretsPath, overwrite: true);
+            // Move preserves the source's mode on Unix; reapply on the
+            // target in case the platform did not.
+            SetOwnerOnlyPermissions(secretsPath);
+        }
+        catch
+        {
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); }
+            catch { /* swallow cleanup failure */ }
+            throw;
+        }
     }
 
     /// <summary>

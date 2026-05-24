@@ -187,7 +187,13 @@ public sealed class DiscordStepViewModel : IWizardStepViewModel, IChannelAdapter
     public void ContributeConfig(WizardConfigBuilder builder)
     {
         if (!DiscordEnabled)
+        {
+            // Explicit removal so re-run with Discord unchecked actually
+            // disables the channel instead of preserving prior state via
+            // the semantic-merge writer.
+            builder.RemoveSection("Discord");
             return;
+        }
 
         var channelIds = ParseChannelIds(ChannelIdsInput);
         var userIds = ParseUserIds(AllowedUserIdsInput);

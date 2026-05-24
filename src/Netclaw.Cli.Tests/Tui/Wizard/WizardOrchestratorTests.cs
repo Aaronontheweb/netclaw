@@ -383,16 +383,29 @@ public sealed class WizardOrchestratorTests : WizardStepTestBase
     }
 
     [Fact]
-    public void ForSingleStep_WriteConfig_ThrowsUntilSemanticMergeLands()
+    public void ForSingleStep_WriteConfig_PreservesUnrelatedSections()
     {
-        // Section 5 (semantic merge-on-save) has not landed yet. Until it
-        // does, single-step WriteConfig would silently overwrite netclaw.json
-        // with only the lone leaf's contribution. The guard prevents that.
+        // Pre-existing netclaw.json with unrelated sections (Slack, McpServers).
+        // The single-step leaf contributes nothing — semantic merge MUST
+        // preserve those sections instead of overwriting the file.
+        File.WriteAllText(Context.Paths.NetclawConfigPath, """
+            {
+              "configVersion": 1,
+              "Slack": { "Enabled": true, "DefaultChannelId": "C123" },
+              "McpServers": { "playwright": { "Enabled": true } }
+            }
+            """);
+
         var step = new FakeStep("only");
         using var orchestrator = WizardOrchestrator.ForSingleStep(step, Context);
+        orchestrator.WriteConfig();
 
-        var ex = Assert.Throws<InvalidOperationException>(() => orchestrator.WriteConfig());
-        Assert.Contains("semantic merge", ex.Message, StringComparison.OrdinalIgnoreCase);
+        var merged = File.ReadAllText(Context.Paths.NetclawConfigPath);
+        Assert.Contains("\"Slack\"", merged);
+        Assert.Contains("\"DefaultChannelId\"", merged);
+        Assert.Contains("\"C123\"", merged);
+        Assert.Contains("\"McpServers\"", merged);
+        Assert.Contains("\"playwright\"", merged);
     }
 
     [Fact]

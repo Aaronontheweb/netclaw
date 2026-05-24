@@ -35,13 +35,13 @@
 
 ## 5. Semantic merge-on-save plumbing
 
-- [ ] 5.1 Refactor config writes to load existing config, apply
+- [x] 5.1 Refactor config writes to load existing config, apply
   contributions, and preserve unrelated sections semantically.
-- [ ] 5.2 Refactor secret writes to preserve blank submissions, replace on
+- [x] 5.2 Refactor secret writes to preserve blank submissions, replace on
   non-blank, and remove only on explicit delete.
-- [ ] 5.3 Preserve inactive values for exposure-mode and similar editors
+- [x] 5.3 Preserve inactive values for exposure-mode and similar editors
   when they are not the active leaf being changed.
-- [ ] 5.4 Add `ConfigFileHelper.SecretPresent(...)` without decrypting
+- [x] 5.4 Add `ConfigFileHelper.SecretPresent(...)` without decrypting
   stored values.
 
 ## 6. ExistingConfig population

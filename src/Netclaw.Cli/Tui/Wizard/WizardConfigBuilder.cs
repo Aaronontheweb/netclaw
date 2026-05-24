@@ -17,13 +17,39 @@ namespace Netclaw.Cli.Tui.Wizard;
 /// Typed config builder that replaces the manual dictionary assembly in WriteConfig().
 /// Each step contributes its section via <see cref="IWizardStepViewModel.ContributeConfig"/>.
 /// </summary>
+/// <remarks>
+/// <para><b>Merge semantics on save:</b></para>
+/// <list type="bullet">
+///   <item>Unrelated top-level sections are preserved across saves.</item>
+///   <item>Inactive sub-keys within partially-edited sections are preserved.</item>
+///   <item>Steps that need to <b>remove</b> a section (operator unchecked
+///     a feature, posture transitioned to a mode that drops a section)
+///     SHALL call <see cref="RemoveSection"/> instead of omitting their
+///     contribution. Omission alone preserves the existing section per the
+///     semantic-merge contract.</item>
+/// </list>
+/// </remarks>
 public sealed class WizardConfigBuilder
 {
     private readonly NetclawPaths _paths;
+    private readonly HashSet<string> _sectionRemovals = new(StringComparer.Ordinal);
 
     public WizardConfigBuilder(NetclawPaths paths)
     {
         _paths = paths;
+    }
+
+    /// <summary>
+    /// Mark a top-level section for removal on save. Use this when a step
+    /// detects the operator disabled / cleared a section that previously
+    /// existed (e.g., disabling Slack, posture transitioning to Local
+    /// which clears the Daemon section). Blank submission is NOT a remove
+    /// signal — call this explicitly.
+    /// </summary>
+    public void RemoveSection(string key)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        _sectionRemovals.Add(key);
     }
 
     // ── Typed sections populated by steps ──
@@ -47,15 +73,32 @@ public sealed class WizardConfigBuilder
     public FeatureSelectionsConfigSection? FeatureSelections { get; set; }
 
     /// <summary>
-    /// Assemble the typed sections into netclaw.json and write it.
+    /// Assemble the typed sections into a netclaw.json update and write it
+    /// using semantic merge-on-save: existing unrelated sections and inactive
+    /// nested values are preserved even when not present in the current run.
+    /// Sections explicitly marked via <see cref="RemoveSection"/> are deleted
+    /// from the merged output. See <see cref="SemanticConfigMerger"/> for the
+    /// merge rules.
     /// </summary>
+    /// <remarks>
+    /// Writes are atomic: the new content goes to a sibling temp file first
+    /// and then replaces the target via <c>File.Move(overwrite: true)</c>, so
+    /// a process kill mid-write cannot leave a torn netclaw.json.
+    /// </remarks>
     public void WriteConfigFile()
     {
         _paths.EnsureDirectoriesExist();
-        var config = BuildConfigDictionary();
+        var newPartial = BuildConfigDictionary();
 
-        File.WriteAllText(_paths.NetclawConfigPath,
-            JsonSerializer.Serialize(config, JsonDefaults.ConfigFile));
+        var existing = ConfigFileHelper.LoadJsonDictOrBackup(_paths.NetclawConfigPath);
+
+        foreach (var section in _sectionRemovals)
+            existing.Remove(section);
+
+        var merged = SemanticConfigMerger.Merge(existing, newPartial);
+        var json = JsonSerializer.Serialize(merged, JsonDefaults.ConfigFile);
+
+        AtomicFile.WriteAllText(_paths.NetclawConfigPath, json);
     }
 
     /// <summary>
@@ -384,10 +427,27 @@ public sealed class WizardConfigBuilder
 /// <summary>
 /// Typed secrets builder for non-provider secrets (Slack tokens, search API keys, etc.).
 /// </summary>
+/// <remarks>
+/// <para><b>Merge semantics on save:</b></para>
+/// <list type="bullet">
+///   <item>Blank-keep — steps that omit a secret entirely (e.g., the operator
+///     left the field blank with "leave blank to keep" hint text) leave the
+///     existing stored secret untouched.</item>
+///   <item>Replace-on-non-blank — when a step adds a section with non-blank
+///     values, those values overwrite any stored counterparts at the same
+///     dotted path.</item>
+///   <item>Explicit-remove — the only way to delete a stored secret is to
+///     call <see cref="RemoveValue"/> or <see cref="RemoveSectionKey"/>.
+///     Blank submission SHALL NOT delete.</item>
+/// </list>
+/// </remarks>
 public sealed class WizardSecretsBuilder
 {
     private readonly NetclawPaths _paths;
-    private readonly Dictionary<string, object> _secrets = [];
+    private readonly Dictionary<string, object> _secrets = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _topLevelRemovals = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, HashSet<string>> _sectionRemovals =
+        new(StringComparer.Ordinal);
 
     public WizardSecretsBuilder(NetclawPaths paths)
     {
@@ -396,7 +456,11 @@ public sealed class WizardSecretsBuilder
 
     internal NetclawPaths Paths => _paths;
 
-    /// <summary>Add a section to the secrets file.</summary>
+    /// <summary>
+    /// Add or replace a section in the new partial. The merge writer will
+    /// overlay this section on top of the stored secrets, replacing matching
+    /// keys with the non-blank values and leaving blank-omitted keys alone.
+    /// </summary>
     public void AddSection(string key, Dictionary<string, object> section)
     {
         _secrets[key] = section;
@@ -405,32 +469,99 @@ public sealed class WizardSecretsBuilder
     /// <summary>Add a top-level value to the secrets file (e.g., DeviceToken).</summary>
     public void AddValue(string key, object value) => _secrets[key] = value;
 
-    /// <summary>Write secrets.json if any secrets were contributed.</summary>
+    /// <summary>
+    /// Explicitly delete a top-level key from <c>secrets.json</c> on save.
+    /// This is the only way to remove a stored secret — blank input SHALL
+    /// NOT delete.
+    /// </summary>
+    public void RemoveValue(string key)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        _topLevelRemovals.Add(key);
+        _secrets.Remove(key);
+    }
+
+    /// <summary>
+    /// Explicitly delete a key from a named section. Useful when an editor
+    /// wants to remove one credential without affecting siblings.
+    /// </summary>
+    public void RemoveSectionKey(string sectionKey, string fieldKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sectionKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fieldKey);
+
+        if (!_sectionRemovals.TryGetValue(sectionKey, out var set))
+        {
+            set = new HashSet<string>(StringComparer.Ordinal);
+            _sectionRemovals[sectionKey] = set;
+        }
+        set.Add(fieldKey);
+    }
+
+    /// <summary>Write secrets.json with semantic merge against existing on-disk state.</summary>
     public void WriteSecretsFile()
     {
-        if (_secrets.Count == 0)
+        var hasNewSecrets = _secrets.Count > 0;
+        var hasRemovals = _topLevelRemovals.Count > 0 || _sectionRemovals.Count > 0;
+
+        if (!hasNewSecrets && !hasRemovals)
             return;
 
+        JsonObject existing;
         if (File.Exists(_paths.SecretsPath))
         {
             var existingText = File.ReadAllText(_paths.SecretsPath);
-            var existingNode = JsonNode.Parse(existingText)?.AsObject();
-            if (existingNode is not null)
-            {
-                foreach (var (key, value) in _secrets)
-                {
-                    if (!existingNode.ContainsKey(key))
-                        existingNode[key] = JsonSerializer.SerializeToNode(value, JsonDefaults.ConfigFile);
-                }
+            existing = JsonNode.Parse(existingText)?.AsObject() ?? new JsonObject();
+        }
+        else
+        {
+            existing = new JsonObject();
+        }
 
-                SecretsFileWriter.Write(_paths.SecretsPath, existingNode.ToJsonString(JsonDefaults.ConfigFile),
-                    protector: SensitiveStringTypeConverter.Protector);
-                return;
+        // Apply explicit removals first so a same-run RemoveValue+AddValue
+        // ends with the new value (predictable for editors that re-create
+        // a credential).
+        foreach (var key in _topLevelRemovals)
+            existing.Remove(key);
+
+        foreach (var (sectionKey, fieldKeys) in _sectionRemovals)
+        {
+            if (existing.TryGetPropertyValue(sectionKey, out var sectionNode)
+                && sectionNode is JsonObject sectionObj)
+            {
+                foreach (var field in fieldKeys)
+                    sectionObj.Remove(field);
+
+                // Drop empty sections so the file stays tidy.
+                if (sectionObj.Count == 0)
+                    existing.Remove(sectionKey);
             }
         }
 
-        SecretsFileWriter.Write(_paths.SecretsPath, _secrets,
-            options: JsonDefaults.ConfigFile, protector: SensitiveStringTypeConverter.Protector);
+        // Overlay non-blank additions: for each top-level key, merge JSON
+        // objects deep so blank-omitted sub-keys are preserved.
+        foreach (var (key, value) in _secrets)
+        {
+            var newNode = JsonSerializer.SerializeToNode(value, JsonDefaults.ConfigFile);
+            if (newNode is null)
+                continue;
+
+            if (existing.TryGetPropertyValue(key, out var existingNode)
+                && existingNode is JsonObject existingObj
+                && newNode is JsonObject newObj)
+            {
+                existing[key] = SemanticConfigMerger.MergeObjects(existingObj, newObj);
+            }
+            else
+            {
+                existing[key] = newNode;
+            }
+        }
+
+        SecretsFileWriter.Write(
+            _paths.SecretsPath,
+            existing.ToJsonString(JsonDefaults.ConfigFile),
+            protector: SensitiveStringTypeConverter.Protector);
     }
 }
 

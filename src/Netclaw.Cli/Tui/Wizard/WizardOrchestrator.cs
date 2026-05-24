@@ -218,31 +218,14 @@ public sealed class WizardOrchestrator : IDisposable
 
     /// <summary>
     /// Collect config contributions from all active steps and write all config
-    /// files. Init-only side artifacts (identity files, seeded agents,
-    /// provider credentials, bootstrap device) SHALL run only when
-    /// <see cref="Mode"/> is <see cref="WizardHostingMode.Init"/>.
+    /// files using semantic merge-on-save. Init-only side artifacts (identity
+    /// files, seeded agents, provider credentials, bootstrap device) SHALL
+    /// run only when <see cref="Mode"/> is <see cref="WizardHostingMode.Init"/>.
+    /// In <see cref="WizardHostingMode.SingleStep"/> mode the merge layer
+    /// preserves unrelated sections so editing one leaf does not wipe others.
     /// </summary>
-    /// <remarks>
-    /// <para>
-    /// Single-step save support REQUIRES the semantic merge layer (section
-    /// 5 of the section-editor-abstraction change). Until that lands,
-    /// invoking <see cref="WriteConfig"/> in
-    /// <see cref="WizardHostingMode.SingleStep"/> mode throws — the
-    /// existing <see cref="WizardConfigBuilder.WriteConfigFile"/> path
-    /// rewrites <c>netclaw.json</c> from scratch and would silently wipe
-    /// unrelated sections.
-    /// </para>
-    /// </remarks>
     public void WriteConfig()
     {
-        if (_mode == WizardHostingMode.SingleStep)
-        {
-            throw new InvalidOperationException(
-                "Single-step WriteConfig requires the semantic merge writer (section-editor-abstraction § 5). " +
-                "Calling it now would overwrite netclaw.json with only the lone leaf's contribution and " +
-                "discard all unrelated sections. Land § 5 before enabling single-step saves.");
-        }
-
         _context.Paths.EnsureDirectoriesExist();
 
         var configBuilder = new WizardConfigBuilder(_context.Paths);
