@@ -283,10 +283,10 @@ public sealed class ProviderPluginFactoryTests
     [Fact]
     public void VeniceAiVendorOptions_DefaultsToSecurePosture()
     {
-        // The default for IncludeVeniceSystemPrompt is false. Round-trip an
-        // empty VendorOptions bag and confirm the typed view comes back with
-        // the secure default. The plugin relies on this default — a regression
-        // here would silently start including Venice's system prompt.
+        // Round-trip an empty VendorOptions bag and confirm the typed view
+        // comes back with IncludeVeniceSystemPrompt=false. The plugin relies
+        // on this default — a regression here would silently start including
+        // Venice's system prompt for operators who haven't set anything.
         var entry = new ProviderEntry
         {
             Type = "veniceai",
@@ -297,6 +297,43 @@ public sealed class ProviderPluginFactoryTests
             ?? new VeniceAiVendorOptions();
 
         Assert.False(options.IncludeVeniceSystemPrompt);
+    }
+
+    [Fact]
+    public void VeniceAiVendorOptions_BindsExplicitOptIn()
+    {
+        // A regression that renamed the property (or broke case-insensitive
+        // binding) would silently fall back to the default and never honor
+        // the operator's opt-in.
+        var entry = new ProviderEntry
+        {
+            Type = "veniceai",
+            VendorOptions = JsonNode.Parse("""{ "IncludeVeniceSystemPrompt": true }""")!.AsObject()
+        };
+
+        var options = entry.GetVendorOptions<VeniceAiVendorOptions>();
+
+        Assert.NotNull(options);
+        Assert.True(options!.IncludeVeniceSystemPrompt);
+    }
+
+    [Fact]
+    public void ShouldAttachSystemPromptOverride_DefaultsTrue()
+    {
+        // Default IVendorOptions construction (what the plugin falls back to
+        // when no bag is configured) must request the override policy.
+        Assert.True(VeniceAiProviderPlugin.ShouldAttachSystemPromptOverride(
+            new VeniceAiVendorOptions()));
+    }
+
+    [Fact]
+    public void ShouldAttachSystemPromptOverride_FalseOnOperatorOptIn()
+    {
+        // Operator explicitly opted in to Venice's system prompt; the override
+        // policy must NOT be attached. If this flips, the opt-in is dead and
+        // we silently keep clamping include_venice_system_prompt=false.
+        Assert.False(VeniceAiProviderPlugin.ShouldAttachSystemPromptOverride(
+            new VeniceAiVendorOptions { IncludeVeniceSystemPrompt = true }));
     }
 
     private static ProviderPluginFactory CreateFactory(params (string name, ProviderEntry entry)[] providers)

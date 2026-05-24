@@ -49,13 +49,14 @@ public sealed class VeniceAiSystemPromptOverridePolicyTests
     }
 
     [Fact]
-    public void OverwritesCallerSuppliedIncludeVeniceSystemPromptTrue()
+    public void Clamp_OverridesAnyPriorAssignment()
     {
-        // The policy is an unconditional clamp when attached. Operator opt-out
-        // is at the plugin layer (VeniceAiProviderPlugin doesn't attach the
-        // policy when IncludeVeniceSystemPrompt=true). At this layer there is
-        // no escape hatch — even if upstream code somehow set it to true, we
-        // force it back to false.
+        // The policy is an unconditional clamp when attached. Operator opt-in
+        // (IncludeVeniceSystemPrompt=true) is handled by VeniceAiProviderPlugin
+        // not attaching the policy at all. At this layer there is no escape
+        // hatch — even if a future pipeline-ordering bug or upstream code put
+        // include_venice_system_prompt=true on the body before this runs, we
+        // force it back to false. Defense in depth for identity grounding.
         var policy = new VeniceAiSystemPromptOverridePolicy();
         var body = new JsonObject
         {

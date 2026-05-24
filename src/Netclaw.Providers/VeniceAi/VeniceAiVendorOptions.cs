@@ -17,9 +17,9 @@ public sealed class VeniceAiVendorOptions : IVendorOptions
     /// When <c>false</c> (default), Netclaw forces
     /// <c>venice_parameters.include_venice_system_prompt = false</c> on every
     /// outbound request so Venice's default "uncensored" system prompt never
-    /// prepends to <see cref="Netclaw"/>'s assembled identity context.
-    /// Operators who explicitly want Venice's system prompt set this to
-    /// <c>true</c>; the override pipeline policy is then not attached.
+    /// prepends to Netclaw's assembled identity context. Operators who
+    /// explicitly want Venice's system prompt set this to <c>true</c>; the
+    /// override pipeline policy is then not attached.
     /// </summary>
     public bool IncludeVeniceSystemPrompt { get; set; } = false;
 }

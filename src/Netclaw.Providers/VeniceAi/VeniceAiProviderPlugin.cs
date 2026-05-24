@@ -36,11 +36,18 @@ public sealed class VeniceAiProviderPlugin : ProviderPluginBase<VeniceAiDescript
         var vendorOptions = entry.GetVendorOptions<VeniceAiVendorOptions>() ?? new VeniceAiVendorOptions();
 
         var options = new OpenAIClientOptions { Endpoint = endpoint };
-        if (!vendorOptions.IncludeVeniceSystemPrompt)
+        if (ShouldAttachSystemPromptOverride(vendorOptions))
             options.AddPolicy(new VeniceAiSystemPromptOverridePolicy(), PipelinePosition.PerCall);
 
         var client = new OpenAIClient(new ApiKeyCredential(apiKey), options);
 
         return client.GetChatClient(model.ModelId).AsIChatClient();
     }
+
+    // Extracted so the gate logic — the entire point of the IVendorOptions
+    // refactor — has a direct unit test. Inlining loses the only behavioral
+    // assertion: a regression inverting this returns to silently letting
+    // Venice's system prompt prepend to Netclaw's identity context.
+    internal static bool ShouldAttachSystemPromptOverride(VeniceAiVendorOptions vendorOptions)
+        => !vendorOptions.IncludeVeniceSystemPrompt;
 }
