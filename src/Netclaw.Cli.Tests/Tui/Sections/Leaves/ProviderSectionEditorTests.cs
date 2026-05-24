@@ -47,4 +47,43 @@ public sealed class ProviderSectionEditorTests : SectionEditorTestBase<ProviderS
         Assert.Contains(typeof(Netclaw.Cli.Doctor.ContextWindowDoctorCheck), editor.RelevantDoctorChecks);
         Assert.Contains(typeof(Netclaw.Cli.Doctor.SecretsJsonDoctorCheck), editor.RelevantDoctorChecks);
     }
+
+    [Fact]
+    public void CreateEditor_FromExistingConfig_PrefillsNonSecretFieldsButNotCredential()
+    {
+        // netclaw-onboarding spec scenario: "Provider re-entry keeps credential field masked"
+        var editor = CreateEditor();
+        using var wizardContext = BuildWizardContext(existingConfig: new Dictionary<string, object>
+        {
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["openai"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "openai",
+                    ["Endpoint"] = "https://api.example.com",
+                    ["AuthMethod"] = "ApiKey",
+                },
+            },
+            ["Models"] = new Dictionary<string, object>
+            {
+                ["Main"] = new Dictionary<string, object>
+                {
+                    ["Provider"] = "openai",
+                    ["ModelId"] = "gpt-4o",
+                },
+            },
+        });
+
+        var step = (Netclaw.Cli.Tui.Wizard.Steps.ProviderStepViewModel)
+            editor.CreateEditor(wizardContext);
+
+        Assert.Equal("openai", step.SelectedProviderType);
+        Assert.Equal("https://api.example.com", step.EndpointInput);
+        Assert.Equal(Netclaw.Configuration.AuthMethod.ApiKey, step.SelectedAuthMethod);
+        Assert.Equal("gpt-4o", step.SelectedModelId);
+
+        // Credential SHALL NOT be prefilled. The view uses
+        // ConfigFileHelper.SecretPresent for "configured — leave blank" hinting.
+        Assert.Null(step.ApiKeyInput);
+    }
 }

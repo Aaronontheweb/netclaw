@@ -68,4 +68,46 @@ public sealed class IdentitySectionEditorTests : SectionEditorTestBase<IdentityS
         Assert.NotNull(attr);
         Assert.False(string.IsNullOrWhiteSpace(attr.Justification));
     }
+
+    [Fact]
+    public void CreateEditor_FromExistingConfig_PrefillsNonSecretFields()
+    {
+        // netclaw-onboarding spec scenario: "Identity re-entry prefills init-owned fields"
+        var editor = CreateEditor();
+        using var wizardContext = BuildWizardContext(existingConfig: new Dictionary<string, object>
+        {
+            ["Identity"] = new Dictionary<string, object>
+            {
+                ["AgentName"] = "Aria",
+                ["CommunicationStyle"] = "Detailed & formal",
+                ["UserName"] = "Aaron",
+                ["UserTimezone"] = "America/New_York",
+            },
+            ["Workspaces"] = new Dictionary<string, object>
+            {
+                ["Directory"] = "/srv/workspaces",
+            },
+        });
+
+        var step = (Netclaw.Cli.Tui.Wizard.Steps.IdentityStepViewModel)
+            editor.CreateEditor(wizardContext);
+
+        Assert.Equal("Aria", step.AgentName);
+        Assert.Equal("Detailed & formal", step.CommunicationStyle);
+        Assert.Equal("Aaron", step.UserName);
+        Assert.Equal("America/New_York", step.UserTimezone);
+        Assert.Equal("/srv/workspaces", step.WorkspacesDirectory);
+    }
+
+    [Fact]
+    public void CreateEditor_FreshInstall_UsesDefaults()
+    {
+        var editor = CreateEditor();
+        using var wizardContext = BuildWizardContext();
+        var step = (Netclaw.Cli.Tui.Wizard.Steps.IdentityStepViewModel)
+            editor.CreateEditor(wizardContext);
+
+        // Default AgentName is "Netclaw" per the step viewmodel.
+        Assert.Equal("Netclaw", step.AgentName);
+    }
 }
