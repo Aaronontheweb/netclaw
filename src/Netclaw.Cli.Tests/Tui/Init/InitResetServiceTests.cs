@@ -115,4 +115,67 @@ public sealed class InitResetServiceTests : IDisposable
         Assert.Throws<ArgumentNullException>(() => InitResetService.ResetSetupOnly(null!));
         Assert.Throws<ArgumentNullException>(() => InitResetService.FullReset(null!));
     }
+
+    [Fact]
+    public void FullReset_RefusesFilesystemRoot()
+    {
+        // Simulate a misconfigured NETCLAW_HOME by passing a root path.
+        var root = OperatingSystem.IsWindows() ? "C:\\" : "/";
+        var paths = new NetclawPaths(root);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => InitResetService.FullReset(paths));
+        Assert.Contains("protected root", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FullReset_RefusesUserProfileRoot()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (string.IsNullOrEmpty(home) || !Directory.Exists(home))
+            return; // can't run on CI without a home dir
+
+        var paths = new NetclawPaths(home);
+        var ex = Assert.Throws<InvalidOperationException>(() => InitResetService.FullReset(paths));
+        Assert.Contains("protected root", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FullReset_RefusesDirectoryWithoutNetclawMarker()
+    {
+        var fresh = new DisposableTempDir();
+        try
+        {
+            // No netclaw.json and no identity/ subdirectory — the safety
+            // floor SHALL refuse.
+            var paths = new NetclawPaths(fresh.Path);
+            var ex = Assert.Throws<InvalidOperationException>(() => InitResetService.FullReset(paths));
+            Assert.Contains("does not contain a Netclaw marker", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            fresh.Dispose();
+        }
+    }
+
+    [Fact]
+    public void FullReset_AcceptsDirectoryWithIdentityMarker()
+    {
+        // Marker check should also accept identity/ as a valid marker
+        // (covers the case where netclaw.json was removed but identity files
+        // are still on disk).
+        var fresh = new DisposableTempDir();
+        try
+        {
+            var paths = new NetclawPaths(fresh.Path);
+            Directory.CreateDirectory(paths.IdentityDirectory);
+
+            var report = InitResetService.FullReset(paths);
+            Assert.False(Directory.Exists(paths.BasePath));
+            Assert.Contains(paths.BasePath, report.RemovedPaths);
+        }
+        finally
+        {
+            fresh.Dispose();
+        }
+    }
 }

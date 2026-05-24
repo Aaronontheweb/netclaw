@@ -45,9 +45,17 @@ public static class InitResetService
     /// workspaces, sessions, memory, skills, the daemon database, and every
     /// other artifact under <see cref="NetclawPaths.BasePath"/>.
     /// </summary>
+    /// <remarks>
+    /// Refuses to operate on suspicious roots (filesystem root, user-profile
+    /// root, OS-temp root, or anything missing a Netclaw marker file). The
+    /// guard is precautionary — an operator who misconfigures
+    /// <c>NETCLAW_HOME</c> SHOULD see a refusal, not a wiped home directory.
+    /// </remarks>
     public static InitResetReport FullReset(NetclawPaths paths)
     {
         ArgumentNullException.ThrowIfNull(paths);
+
+        AssertSafeFullResetRoot(paths.BasePath);
 
         var removed = new List<string>();
         if (Directory.Exists(paths.BasePath))
@@ -67,6 +75,50 @@ public static class InitResetService
         }
 
         return new InitResetReport(InitStartOverAction.FullReset, removed);
+    }
+
+    private static void AssertSafeFullResetRoot(string basePath)
+    {
+        if (string.IsNullOrWhiteSpace(basePath))
+            throw new InvalidOperationException("Full reset refused: BasePath is empty.");
+
+        var normalized = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(basePath));
+
+        // Refuse filesystem root, user-profile root, temp root.
+        var dangerous = new[]
+        {
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetPathRoot(normalized) ?? "/")),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile))),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath())),
+        };
+
+        foreach (var bad in dangerous)
+        {
+            if (string.Equals(normalized, bad, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Full reset refused: BasePath '{normalized}' matches a protected root ('{bad}'). " +
+                    "Set NETCLAW_HOME to a dedicated subdirectory (e.g., $HOME/.netclaw) before retrying.");
+            }
+        }
+
+        // If the directory exists, require a Netclaw marker (config or
+        // identity directory) before nuking. A directory without either is
+        // probably not a Netclaw install — refuse and ask the operator to
+        // verify.
+        if (Directory.Exists(normalized))
+        {
+            var configMarker = Path.Combine(normalized, "netclaw.json");
+            var identityMarker = Path.Combine(normalized, "identity");
+            if (!File.Exists(configMarker) && !Directory.Exists(identityMarker))
+            {
+                throw new InvalidOperationException(
+                    $"Full reset refused: '{normalized}' does not contain a Netclaw marker " +
+                    "(netclaw.json or identity/). Refusing to recursively delete an unrecognized directory.");
+            }
+        }
     }
 
     private static void TryDeleteFile(string path, List<string> removed)

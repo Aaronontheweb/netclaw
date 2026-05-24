@@ -150,7 +150,12 @@ static async Task RunAsync(string[] args)
                         return;
 
                     case Netclaw.Cli.Tui.Init.InitMenuAction.OpenConfig:
-                        Console.Out.WriteLine("Run `netclaw config` for ongoing settings.");
+                        // Real handoff to `netclaw config` per spec scenario
+                        // "Open configuration editor routes to netclaw config".
+                        // We re-exec the current process so the operator's
+                        // environment and PATH are preserved.
+                        var configExitCode = await ExecSelfAsync("config");
+                        Environment.ExitCode = configExitCode;
                         return;
 
                     case Netclaw.Cli.Tui.Init.InitMenuAction.StartOver:
@@ -1136,6 +1141,32 @@ static async Task RunTerminaHostAsync(IHost host)
     }
 
     await host.RunAsync();
+}
+
+/// <summary>
+/// Re-exec the current netclaw binary with a single subcommand argument
+/// and wait for it to exit. Used by the init existing-install menu to
+/// route "Open configuration editor" to `netclaw config`.
+/// </summary>
+static async Task<int> ExecSelfAsync(string subcommand)
+{
+    var entry = System.Reflection.Assembly.GetEntryAssembly()?.Location
+        ?? Environment.ProcessPath
+        ?? throw new InvalidOperationException("Cannot determine current process path for re-exec.");
+
+    var psi = new System.Diagnostics.ProcessStartInfo
+    {
+        FileName = entry.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ? "dotnet" : entry,
+        UseShellExecute = false,
+    };
+    if (entry.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+        psi.ArgumentList.Add(entry);
+    psi.ArgumentList.Add(subcommand);
+
+    using var proc = System.Diagnostics.Process.Start(psi)
+        ?? throw new InvalidOperationException($"Failed to launch `netclaw {subcommand}`.");
+    await proc.WaitForExitAsync();
+    return proc.ExitCode;
 }
 
 static void WriteDaemonResult(DaemonResult result)
