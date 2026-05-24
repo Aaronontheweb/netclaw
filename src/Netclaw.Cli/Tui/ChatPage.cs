@@ -98,14 +98,20 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
             .Subscribe(HandleMouseScroll)
             .DisposeWith(Subscriptions);
 
-        // Re-render on terminal resize. The input panel reads _terminal.Width
-        // and Height live inside its DynamicLayoutNode callback to recompute
-        // body width, expanded-body cap, and the panel max — so a UiVersion
-        // bump is enough to make the layout re-read those values. The status
-        // bar CombineLatest also observes UiVersion, so the keys hint
-        // re-shortens for narrow widths.
+        // Re-render on terminal resize. The outer Input panel's HeightAuto(max)
+        // constraint is baked into LayoutNode fields at BuildLayout-time and
+        // doesn't update on resize. InvalidateLayout() discards the cached tree
+        // and rebuilds via BuildLayout() with the updated _terminal.Height, so
+        // the panel cap follows the resize. The DynamicLayoutNode inside still
+        // re-evaluates body width and the internal expanded-body cap. The
+        // UiVersion bump is needed so the status bar CombineLatest triggers the
+        // key-hints re-pick for narrow widths.
         ViewModel.Input.OfType<IInputEvent, ResizeEvent>()
-            .Subscribe(_ => ViewModel.UiVersion.Value++)
+            .Subscribe(_ =>
+            {
+                InvalidateLayout();
+                ViewModel.UiVersion.Value++;
+            })
             .DisposeWith(Subscriptions);
     }
 
