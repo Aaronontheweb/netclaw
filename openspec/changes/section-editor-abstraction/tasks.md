@@ -1,29 +1,29 @@
 ## 1. OpenSpec planning artifacts and traceability
 
-- [ ] 1.1 Confirm proposal, design, and spec deltas describe a leaf-editor
+- [x] 1.1 Confirm proposal, design, and spec deltas describe a leaf-editor
   abstraction rather than a flat dashboard contract.
-- [ ] 1.2 Confirm the artifacts reflect the locked split: `init` owns
+- [x] 1.2 Confirm the artifacts reflect the locked split: `init` owns
   bootstrap and Identity; `config` owns post-install editing.
-- [ ] 1.3 Run `openspec validate section-editor-abstraction --type change`
+- [x] 1.3 Run `openspec validate section-editor-abstraction --type change`
   and resolve issues.
 
 ## 2. Core abstraction
 
-- [ ] 2.1 Add `ISectionEditor` with `SectionId`, `DisplayName`,
+- [x] 2.1 Add `ISectionEditor` with `SectionId`, `DisplayName`,
   `Category?`, `ShowInMenu`, `GetStatus`, `Summary`,
   `RelevantDoctorChecks`, and `CreateEditor`.
-- [ ] 2.2 Add `SectionStatus`.
-- [ ] 2.3 Add `SectionContribution` with explicit field and secret
+- [x] 2.2 Add `SectionStatus`.
+- [x] 2.3 Add `SectionContribution` with explicit field and secret
   actions.
-- [ ] 2.4 Add `[NoDoctorChecks]` justification support where truly needed.
+- [x] 2.4 Add `[NoDoctorChecks]` justification support where truly needed.
 
 ## 3. Registry and exemption list
 
-- [ ] 3.1 Add `SectionEditorRegistry` with duplicate-ID fail-fast.
-- [ ] 3.2 Add `AddSectionEditor<TEditor>()` DI registration.
-- [ ] 3.3 Add `SectionEditorExemptions` entries for synthetic/init-owned
+- [x] 3.1 Add `SectionEditorRegistry` with duplicate-ID fail-fast.
+- [x] 3.2 Add `AddSectionEditor<TEditor>()` DI registration.
+- [x] 3.3 Add `SectionEditorExemptions` entries for synthetic/init-owned
   surfaces, including Identity.
-- [ ] 3.4 Document that the registry is a leaf-editor registry and does
+- [x] 3.4 Document that the registry is a leaf-editor registry and does
   not dictate the future dashboard IA.
 
 ## 4. Single-step orchestrator mode
