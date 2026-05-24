@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Netclaw.Configuration.Providers;
 
@@ -12,9 +13,17 @@ namespace Netclaw.Configuration.Providers;
 /// </summary>
 public static class ProviderEntryVendorOptionsExtensions
 {
+    // UnmappedMemberHandling.Disallow makes operator typos throw loudly instead
+    // of silently producing the typed view's defaults. A misspelled key in
+    // VendorOptions previously round-tripped to "default values" with no
+    // signal — which on a security-shaped knob (e.g. Venice's system-prompt
+    // override opt-in) means the operator's intent silently doesn't take
+    // effect. No silent fallbacks: fail at config load and tell the operator
+    // which key they fat-fingered.
     private static readonly JsonSerializerOptions SerializerOptions = new()
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
 
     public static T? GetVendorOptions<T>(this ProviderEntry entry)

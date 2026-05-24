@@ -56,6 +56,29 @@ public sealed class ProviderConfigurationLoaderTests
         Assert.Equal("fast", options.Mode);
     }
 
+    [Fact]
+    public void GetVendorOptions_ThrowsOnUnknownProperty()
+    {
+        // Operator typos must fail loudly. The previous lax behavior silently
+        // returned the typed view's defaults — on a security-shaped knob like
+        // Venice's IncludeVeniceSystemPrompt opt-in, that means the operator's
+        // intent silently doesn't take effect.
+        var entry = new ProviderEntry
+        {
+            Type = "ollama",
+            VendorOptions = new System.Text.Json.Nodes.JsonObject
+            {
+                ["DisableThinkng"] = true // typo: missing 'i'
+            }
+        };
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => entry.GetVendorOptions<TestVendorOptions>());
+
+        Assert.Contains("ollama", ex.Message);
+        Assert.Contains(nameof(TestVendorOptions), ex.Message);
+    }
+
     private sealed class TestVendorOptions : IVendorOptions
     {
         public bool DisableThinking { get; set; }
