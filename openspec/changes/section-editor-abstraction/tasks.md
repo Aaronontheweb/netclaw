@@ -28,10 +28,10 @@
 
 ## 4. Single-step orchestrator mode
 
-- [ ] 4.1 Add single-step hosting to `WizardOrchestrator`.
-- [ ] 4.2 Ensure save exits and cancel exits work without linear step-list
+- [x] 4.1 Add single-step hosting to `WizardOrchestrator`.
+- [x] 4.2 Ensure save exits and cancel exits work without linear step-list
   navigation.
-- [ ] 4.3 Add unit tests for single-step save and cancel.
+- [x] 4.3 Add unit tests for single-step save and cancel.
 
 ## 5. Semantic merge-on-save plumbing
 

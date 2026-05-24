@@ -157,12 +157,15 @@ public sealed class WizardOrchestratorTests : WizardStepTestBase
     }
 
     [Fact]
-    public void GoBack_ReturnsFalse_AtBeginning()
+    public void GoBack_ReturnsFalse_AtBeginning_AndFiresOnLeave()
     {
         var steps = CreateSteps("a", "b");
         using var orchestrator = new WizardOrchestrator(steps, Context);
 
         Assert.False(orchestrator.GoBack()); // already at first step
+        // Cancel-out path is still "leaving" — editors get OnLeave so they
+        // can release reactive subscriptions before the host disposes.
+        Assert.True(((FakeStep)steps[0]).LeftCalled);
     }
 
     [Fact]
@@ -324,6 +327,115 @@ public sealed class WizardOrchestratorTests : WizardStepTestBase
         Context.StatusMessage.Value = "some error";
         orchestrator.GoNext();
         Assert.Equal("", Context.StatusMessage.Value);
+    }
+
+    // ── Single-step hosting ──
+
+    [Fact]
+    public void ForSingleStep_HostsExactlyOneStep_InSingleStepMode()
+    {
+        var step = new FakeStep("only");
+        using var orchestrator = WizardOrchestrator.ForSingleStep(step, Context);
+
+        Assert.True(orchestrator.IsSingleStep);
+        Assert.Equal(WizardHostingMode.SingleStep, orchestrator.Mode);
+        Assert.Equal(1, orchestrator.ActiveStepCount);
+        Assert.Equal("only", orchestrator.CurrentStep!.StepId);
+        Assert.Equal(NavigationDirection.Forward, step.LastEntryDirection);
+    }
+
+    [Fact]
+    public void ForSingleStep_GoNext_AtEnd_SignalsSaveByReturningFalse()
+    {
+        var step = new FakeStep("only");
+        using var orchestrator = WizardOrchestrator.ForSingleStep(step, Context);
+
+        // Single sub-step, single step — GoNext returns false to signal "save and exit".
+        Assert.False(orchestrator.GoNext());
+        Assert.True(step.LeftCalled);
+    }
+
+    [Fact]
+    public void ForSingleStep_GoNext_HandlesInternalSubSteps_BeforeSaveSignal()
+    {
+        var step = new FakeStep("only");
+        step.SetSubStepCount(3);
+        using var orchestrator = WizardOrchestrator.ForSingleStep(step, Context);
+
+        // Internal sub-step advance: returns true.
+        Assert.True(orchestrator.GoNext()); // 0 → 1
+        Assert.True(orchestrator.GoNext()); // 1 → 2
+        Assert.False(orchestrator.GoNext()); // 2 → save signal
+        Assert.True(step.LeftCalled);
+    }
+
+    [Fact]
+    public void ForSingleStep_GoBack_AtBeginning_SignalsCancelAndFiresOnLeave()
+    {
+        var step = new FakeStep("only");
+        using var orchestrator = WizardOrchestrator.ForSingleStep(step, Context);
+
+        // At first sub-step of the lone step — GoBack returns false to
+        // signal "cancel". OnLeave fires so editors can release their
+        // reactive subscriptions before the host re-hosts the leaf.
+        Assert.False(orchestrator.GoBack());
+        Assert.True(step.LeftCalled);
+    }
+
+    [Fact]
+    public void ForSingleStep_WriteConfig_ThrowsUntilSemanticMergeLands()
+    {
+        // Section 5 (semantic merge-on-save) has not landed yet. Until it
+        // does, single-step WriteConfig would silently overwrite netclaw.json
+        // with only the lone leaf's contribution. The guard prevents that.
+        var step = new FakeStep("only");
+        using var orchestrator = WizardOrchestrator.ForSingleStep(step, Context);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => orchestrator.WriteConfig());
+        Assert.Contains("semantic merge", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void InitMode_WriteConfig_RunsInitOnlyArtifacts_OnRealLeafTypes()
+    {
+        // Counterpart to the single-step guard test: in Init mode, the
+        // init-only writers SHOULD fire when the matching step types are
+        // present. We use the real IdentityStepViewModel here so the
+        // OfType<IdentityStepViewModel>() branch in WriteConfig executes
+        // and SeedBuiltInAgents runs against a real path tree.
+        var identity = new Netclaw.Cli.Tui.Wizard.Steps.IdentityStepViewModel();
+        using var orchestrator = new WizardOrchestrator(
+            [identity], Context, WizardHostingMode.Init);
+
+        orchestrator.WriteConfig();
+
+        // Identity files SHALL be written in Init mode.
+        Assert.True(File.Exists(Context.Paths.SoulPath),
+            "Init mode SHALL write SOUL.md.");
+        Assert.True(File.Exists(Context.Paths.ToolingPath),
+            "Init mode SHALL write TOOLING.md.");
+
+        // SeedBuiltInAgents drops files under AgentsDirectory.
+        Assert.True(Directory.Exists(Context.Paths.AgentsDirectory),
+            "Init mode SHALL seed built-in agents.");
+        Assert.NotEmpty(Directory.GetFiles(Context.Paths.AgentsDirectory, "*.md"));
+    }
+
+    [Fact]
+    public void ForSingleStep_NullStep_Throws()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            WizardOrchestrator.ForSingleStep(null!, Context));
+    }
+
+    [Fact]
+    public void DefaultConstructor_RunsInInitMode()
+    {
+        var steps = CreateSteps("a");
+        using var orchestrator = new WizardOrchestrator(steps, Context);
+
+        Assert.False(orchestrator.IsSingleStep);
+        Assert.Equal(WizardHostingMode.Init, orchestrator.Mode);
     }
 
     // ── Helpers ──
