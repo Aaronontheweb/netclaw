@@ -57,14 +57,26 @@ public sealed class WizardContext : IDisposable
     public required Action RequestRedraw { get; init; }
 
     /// <summary>
-    /// Null for fresh init. When populated, steps should pre-populate their
-    /// fields from the existing config. (Deferred — not implemented yet.)
-    ///
-    /// Re-edit UX intent: when existing config is detected, the wizard should
-    /// offer "Start fresh" vs "Modify existing". "Start fresh" does NOT wipe
-    /// existing files until the health check/validate stage completes successfully.
+    /// Null for a fresh install. When populated, init-owned editors that
+    /// implement <see cref="Sections.ISectionEditor"/> SHALL prefill their
+    /// non-secret fields from this snapshot so re-running init does not
+    /// force operators to retype values they already configured.
     /// </summary>
-    public Dictionary<string, object>? ExistingConfig { get; init; }
+    /// <remarks>
+    /// <para><b>What this enables:</b> init-owned re-entry against an existing
+    /// install — for example, re-running <c>netclaw init</c> on an already
+    /// configured host prefills the Identity step's agent name / timezone
+    /// and the SecurityPosture step's current posture.</para>
+    /// <para><b>What this does NOT enable:</b> turning <c>netclaw init</c>
+    /// into the long-term editor for ongoing settings. The locked product
+    /// split keeps ongoing edits in <c>netclaw config</c>; this field
+    /// supports re-running bootstrap-shaped flows only.</para>
+    /// <para><b>Secret handling:</b> stored secrets SHALL NOT appear here.
+    /// The dictionary is loaded from <c>netclaw.json</c> exclusively; the
+    /// only references to secret values are presence-only probes via
+    /// <see cref="Netclaw.Cli.Config.ConfigFileHelper.SecretPresent"/>.</para>
+    /// </remarks>
+    public IReadOnlyDictionary<string, object>? ExistingConfig { get; init; }
 
     public void Dispose()
     {

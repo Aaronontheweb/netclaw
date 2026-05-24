@@ -80,12 +80,32 @@ public partial class InitWizardViewModel : ReactiveViewModel
         DaemonApi? daemonApi = null,
         IClipboardService? clipboardService = null)
     {
-        // Create shared context
+        // Load existing config (if any) so init-owned editors can prefill
+        // their non-secret fields on re-run. Secrets are deliberately NOT
+        // pulled into the context — leaves probe presence via
+        // ConfigFileHelper.SecretPresent and never see decrypted values.
+        IReadOnlyDictionary<string, object>? existingConfig = null;
+        if (File.Exists(paths.NetclawConfigPath))
+        {
+            try
+            {
+                existingConfig = Config.ConfigFileHelper.LoadJsonDict(paths.NetclawConfigPath);
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                // Corrupt existing config; treat as fresh install so the wizard
+                // does not crash on entry. WizardConfigBuilder.WriteConfigFile
+                // will back the file up at save time.
+                existingConfig = null;
+            }
+        }
+
         _context = new WizardContext
         {
             Paths = paths,
             Registry = registry,
-            RequestRedraw = RequestRedraw
+            RequestRedraw = RequestRedraw,
+            ExistingConfig = existingConfig,
         };
 
         // Create step VMs in the canonical order:

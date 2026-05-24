@@ -46,10 +46,10 @@
 
 ## 6. ExistingConfig population
 
-- [ ] 6.1 Populate `WizardContext.ExistingConfig` from on-disk config when
+- [x] 6.1 Populate `WizardContext.ExistingConfig` from on-disk config when
   init enters an editor flow that needs existing state.
-- [ ] 6.2 Keep secrets out of the context entirely.
-- [ ] 6.3 Document that this supports init-owned re-entry, not init as the
+- [x] 6.2 Keep secrets out of the context entirely.
+- [x] 6.3 Document that this supports init-owned re-entry, not init as the
   main post-install editor.
 
 ## 7. Refactor bootstrap leaves
