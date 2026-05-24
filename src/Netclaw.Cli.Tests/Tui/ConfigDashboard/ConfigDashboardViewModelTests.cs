@@ -130,12 +130,14 @@ public sealed class ConfigDashboardViewModelTests
     }
 
     [Fact]
-    public void ActivateEntry_RoutedHandoff_DispatchesNavigatedToRouteAction()
+    public void ActivateEntry_RoutedHandoff_CapturesPendingHandoff_AndShutsDown()
     {
         // Spec: "Inference Providers routes to `netclaw provider`" — the
-        // ViewModel maps spec-text to Termina paths and emits an Action so
-        // tests + integration probes can verify routing without a Termina
-        // host. Asserts the actual production routing path, not just IA shape.
+        // ViewModel captures the routed command in PendingHandoff so the
+        // host can print a follow-up instruction AFTER Termina releases
+        // the terminal. In-process Termina navigation would strand the
+        // operator inside `/provider` because its back-path Shutdowns the
+        // whole host (see audit finding B5).
         using var vm = new ConfigDashboardViewModel(BuildRegistry());
         ConfigDashboardAction? captured = null;
         using var sub = vm.Actions.Subscribe(a => captured = a);
@@ -143,8 +145,9 @@ public sealed class ConfigDashboardViewModelTests
         vm.ActivateEntry(vm.RootEntries.Single(e => e.Id == "inference-providers"));
 
         Assert.NotNull(captured);
-        Assert.Equal(ConfigDashboardActionKind.NavigatedToRoute, captured!.Kind);
-        Assert.Equal("/provider", captured.Detail);
+        Assert.Equal(ConfigDashboardActionKind.RoutedHandoffRequested, captured!.Kind);
+        Assert.Equal("netclaw provider", captured.Detail);
+        Assert.Equal("netclaw provider", vm.PendingHandoff);
     }
 
     [Fact]
@@ -160,6 +163,7 @@ public sealed class ConfigDashboardViewModelTests
         Assert.NotNull(captured);
         Assert.Equal(ConfigDashboardActionKind.OpenedDomain, captured!.Kind);
         Assert.Same(channels, vm.ActiveDomain.Value);
+        Assert.Null(vm.PendingHandoff);
     }
 
     [Fact]
@@ -172,23 +176,5 @@ public sealed class ConfigDashboardViewModelTests
         vm.GoBackToRoot();
 
         Assert.Null(vm.ActiveDomain.Value);
-    }
-
-    [Fact]
-    public void MapRouteCommandToTerminaPath_KnownCommands()
-    {
-        Assert.Equal("/provider",
-            ConfigDashboardViewModel.MapRouteCommandToTerminaPath("netclaw provider"));
-        Assert.Equal("/model",
-            ConfigDashboardViewModel.MapRouteCommandToTerminaPath("netclaw model"));
-        Assert.Equal("/mcp-tools",
-            ConfigDashboardViewModel.MapRouteCommandToTerminaPath("netclaw mcp permissions"));
-    }
-
-    [Fact]
-    public void MapRouteCommandToTerminaPath_UnknownCommand_Throws()
-    {
-        Assert.Throws<InvalidOperationException>(() =>
-            ConfigDashboardViewModel.MapRouteCommandToTerminaPath("netclaw nonexistent"));
     }
 }

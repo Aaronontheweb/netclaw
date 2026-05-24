@@ -734,20 +734,34 @@ static async Task RunAsync(string[] args)
         var traceFile = Path.Combine(Path.GetTempPath(), "netclaw-config-trace.log");
         builder.Services.AddTerminaFileTracing(traceFile, TerminaTraceCategory.All, TerminaTraceLevel.Trace);
 
-        // Register the dashboard route plus the routed-handoff target routes
-        // so Termina's in-process navigation can take operators from the
-        // dashboard into `Inference Providers` / `Models` without re-execing
-        // or refactoring the navigation stack.
+        // Register ONLY the dashboard route. The routed-handoff target
+        // commands (`netclaw provider`, `netclaw model`,
+        // `netclaw mcp permissions`) are NOT registered here because their
+        // existing pages call `Shutdown()` on their own back-paths — which
+        // would kill the entire Termina host and strand the operator
+        // outside `netclaw config` with no way back. Instead the dashboard
+        // captures a `PendingHandoff` on selection, shuts down cleanly, and
+        // we print the follow-up command after Termina exits so the
+        // operator can run it themselves. This honors the spec's "without a
+        // navigation-stack refactor" clause.
         builder.Services.AddTermina("/config", t =>
         {
             t.RegisterRoute<Netclaw.Cli.Tui.ConfigDashboard.ConfigDashboardPage,
                 Netclaw.Cli.Tui.ConfigDashboard.ConfigDashboardViewModel>("/config");
-            t.RegisterRoute<ProviderManagerPage, ProviderManagerViewModel>("/provider");
-            t.RegisterRoute<ModelManagerPage, ModelManagerViewModel>("/model");
-            t.RegisterRoute<McpToolPermissionsPage, McpToolPermissionsViewModel>("/mcp-tools");
         });
 
-        await RunTerminaHostAsync(builder.Build());
+        var configHost = builder.Build();
+        await RunTerminaHostAsync(configHost);
+
+        // Surface any pending routed-handoff hint after Termina releases
+        // the terminal. The hint reaches the operator's normal shell stream.
+        var dashboardVm = configHost.Services
+            .GetService<Netclaw.Cli.Tui.ConfigDashboard.ConfigDashboardViewModel>();
+        if (dashboardVm?.PendingHandoff is { } handoff)
+        {
+            Console.Out.WriteLine();
+            Console.Out.WriteLine($"Run `{handoff}` to continue.");
+        }
         return;
     }
 

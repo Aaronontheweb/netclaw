@@ -100,10 +100,16 @@ public sealed class InboundWebhooksSectionEditor : ISectionEditor
     public IWizardStepViewModel CreateEditor(WizardContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        // No dedicated inbound-webhooks editor today — operators manage
-        // routes via `netclaw webhooks`. The single-step host uses the
-        // ExposureMode step for the deployment-wide enable/disable toggle
-        // since Webhooks lives in the same Daemon-adjacent config space.
-        return new ExposureModeStepViewModel();
+        // No dedicated inbound-webhooks editor today. Returning the
+        // ExposureMode step would silently mutate Daemon.ExposureMode on
+        // save, which has nothing to do with inbound webhooks. Operators
+        // manage routes via `netclaw webhooks`; enable/disable is wired in
+        // the init wizard's ExposureMode step. Fail loud rather than
+        // corrupt unrelated config.
+        throw new NotImplementedException(
+            "Inbound Webhooks editor is not yet wired. " +
+            "Manage routes with `netclaw webhooks`; the deployment-wide " +
+            "Webhooks.Enabled toggle is set during `netclaw init`. " +
+            "Track in netclaw-config-command tasks §5.");
     }
 }

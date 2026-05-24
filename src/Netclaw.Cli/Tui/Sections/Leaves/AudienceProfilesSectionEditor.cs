@@ -53,7 +53,61 @@ public sealed class AudienceProfilesSectionEditor : ISectionEditor
     public IWizardStepViewModel CreateEditor(WizardContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        return new AudienceProfilesStepViewModel();
+        return new AudienceProfilesStepViewModel
+        {
+            ExistingShellMode = ReadExistingShellMode(context.ExistingConfig),
+            ExistingProfiles = ReadExistingProfiles(context.ExistingConfig),
+        };
+    }
+
+    private static ShellExecutionMode ReadExistingShellMode(
+        IReadOnlyDictionary<string, object>? existing)
+    {
+        if (existing is null) return ShellExecutionMode.Off;
+        if (!existing.TryGetValue("Tools", out var raw) || raw is null)
+            return ShellExecutionMode.Off;
+
+        object? shellRaw = raw switch
+        {
+            IReadOnlyDictionary<string, object> ro when ro.TryGetValue("ShellMode", out var v) => v,
+            IDictionary<string, object> rw when rw.TryGetValue("ShellMode", out var v) => v,
+            System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.Object
+                && je.TryGetProperty("ShellMode", out var prop) => prop,
+            _ => null,
+        };
+        var s = shellRaw switch
+        {
+            string str => str,
+            System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.String
+                => je.GetString(),
+            _ => null,
+        };
+        if (string.IsNullOrWhiteSpace(s)) return ShellExecutionMode.Off;
+        return Enum.TryParse<ShellExecutionMode>(s, ignoreCase: true, out var parsed)
+            ? parsed
+            : ShellExecutionMode.Off;
+    }
+
+    private static ToolAudienceProfiles? ReadExistingProfiles(
+        IReadOnlyDictionary<string, object>? existing)
+    {
+        if (existing is null) return null;
+        if (!existing.TryGetValue("Tools", out var raw) || raw is null) return null;
+
+        // The full profile shape is rich enough that round-tripping via
+        // JsonSerializer is more robust than hand-walking the dict —
+        // we serialize the loaded Tools sub-tree back to JSON and
+        // deserialize directly into ToolConfig.
+        try
+        {
+            var json = System.Text.Json.JsonSerializer.Serialize(raw);
+            var tools = System.Text.Json.JsonSerializer.Deserialize<ToolConfig>(json);
+            return tools?.AudienceProfiles;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
     }
 }
 
@@ -87,6 +141,22 @@ public sealed class AudienceProfilesStepViewModel : IWizardStepViewModel
     /// <summary>True when the operator chose Reset to posture default for the audience.</summary>
     public bool ResetToPostureDefault { get; set; }
 
+    /// <summary>
+    /// Existing shell-mode from on-disk Tools section, captured at editor
+    /// construction. Required so <see cref="ContributeConfig"/> does NOT
+    /// silently clobber the operator's prior ShellMode to <c>Off</c> on
+    /// save — per spec §11, shell mode is a forbidden surface for this
+    /// editor and SHALL be preserved.
+    /// </summary>
+    public ShellExecutionMode ExistingShellMode { get; init; } = ShellExecutionMode.Off;
+
+    /// <summary>
+    /// Existing AudienceProfiles tree from disk. Null when no Tools section
+    /// is configured yet. Used as the starting state so prior MCP grants /
+    /// approval policy / per-audience hidden fields survive a curated edit.
+    /// </summary>
+    public ToolAudienceProfiles? ExistingProfiles { get; init; }
+
     public bool IsApplicable(WizardContext context) => true;
     public int CurrentSubStep => 0;
     public int SubStepCount => 1;
@@ -100,13 +170,14 @@ public sealed class AudienceProfilesStepViewModel : IWizardStepViewModel
 
     public void ContributeConfig(WizardConfigBuilder builder)
     {
-        // ContributeConfig writes via WizardConfigBuilder.Tools when set —
-        // for the curated editor, we rebuild only the visible slice of the
-        // chosen audience profile, plus a posture-reset path for the full
-        // profile. The full mutation logic is centralized in
-        // AudienceProfilesPolicy.Apply so it can be unit-tested without a
-        // builder.
-        var profiles = builder.Tools?.AudienceProfiles ?? ToolAudienceProfileDefaults.CreateProfiles();
+        // Start from the operator's existing profiles (if any) so hidden
+        // MCP / approval / shell-mode fields the curated editor SHALL NOT
+        // touch survive the save. Falling back to posture defaults only
+        // when there is genuinely nothing on disk avoids clobbering.
+        var profiles = builder.Tools?.AudienceProfiles
+            ?? ExistingProfiles
+            ?? ToolAudienceProfileDefaults.CreateProfiles();
+
         AudienceProfilesPolicy.Apply(
             profiles,
             Audience,
@@ -116,9 +187,14 @@ public sealed class AudienceProfilesStepViewModel : IWizardStepViewModel
             ChannelAttachments,
             ResetToPostureDefault);
 
+        // Preserve the existing shell mode from disk when the builder
+        // doesn't already have one. Without this, a config-mode single
+        // step that runs Audience Profiles in isolation would silently
+        // reset ShellMode to Off.
+        var shellMode = builder.Tools?.ShellMode ?? ExistingShellMode;
         builder.Tools = new ToolConfig
         {
-            ShellMode = builder.Tools?.ShellMode ?? ShellExecutionMode.Off,
+            ShellMode = shellMode,
             AudienceProfiles = profiles,
         };
     }

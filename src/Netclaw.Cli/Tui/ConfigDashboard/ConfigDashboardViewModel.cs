@@ -63,8 +63,12 @@ public sealed class ConfigDashboardViewModel : ReactiveViewModel
 
     /// <summary>
     /// Operator activated an entry on the root menu. Routed entries
-    /// navigate via Termina's in-process router; Domain entries open
-    /// their sub-menu by setting <see cref="ActiveDomain"/>.
+    /// capture a <see cref="PendingHandoff"/> message and shut down the
+    /// dashboard cleanly so the operator can run the target command —
+    /// Termina's in-process Navigate would strand them inside the target
+    /// page on back-press (the destination pages call <c>Shutdown</c> on
+    /// their own back path, which kills the whole host). Domain entries
+    /// open their sub-menu by setting <see cref="ActiveDomain"/>.
     /// </summary>
     public void ActivateEntry(ConfigDashboardEntry entry)
     {
@@ -72,10 +76,10 @@ public sealed class ConfigDashboardViewModel : ReactiveViewModel
         switch (entry.Kind)
         {
             case ConfigDashboardEntryKind.Routed when !string.IsNullOrWhiteSpace(entry.RouteCommand):
-                var route = MapRouteCommandToTerminaPath(entry.RouteCommand);
-                Navigate(route);
+                PendingHandoff = entry.RouteCommand;
                 _actions.OnNext(new ConfigDashboardAction(
-                    ConfigDashboardActionKind.NavigatedToRoute, entry, route));
+                    ConfigDashboardActionKind.RoutedHandoffRequested, entry, entry.RouteCommand));
+                RequestShutdown();
                 return;
 
             case ConfigDashboardEntryKind.Domain:
@@ -89,6 +93,15 @@ public sealed class ConfigDashboardViewModel : ReactiveViewModel
                     $"Unknown entry kind {entry.Kind} for id '{entry.Id}'.");
         }
     }
+
+    /// <summary>
+    /// When the dashboard shuts down because the operator selected a routed
+    /// handoff, this carries the target CLI command (e.g.,
+    /// <c>"netclaw provider"</c>) so the host process can print a follow-up
+    /// instruction after Termina exits. Null when the shutdown was a plain
+    /// Quit.
+    /// </summary>
+    public string? PendingHandoff { get; private set; }
 
     /// <summary>
     /// Operator activated a root-level affordance (Quit, Run Full Doctor).
@@ -197,25 +210,6 @@ public sealed class ConfigDashboardViewModel : ReactiveViewModel
             ]),
     };
 
-    /// <summary>
-    /// Translate spec-text route commands (e.g., <c>"netclaw provider"</c>)
-    /// to in-process Termina route paths (e.g., <c>"/provider"</c>). MCP
-    /// permissions land at <c>/mcp-tools</c> per the existing route
-    /// registration in <c>Program.cs</c>.
-    /// </summary>
-    internal static string MapRouteCommandToTerminaPath(string routeCommand)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(routeCommand);
-        return routeCommand switch
-        {
-            "netclaw provider" => "/provider",
-            "netclaw model" => "/model",
-            "netclaw mcp permissions" => "/mcp-tools",
-            _ => throw new InvalidOperationException(
-                $"No Termina route is registered for routed command '{routeCommand}'. " +
-                "Update Program.cs `AddTermina(...)` and this mapping in lockstep."),
-        };
-    }
 }
 
 /// <summary>
@@ -295,7 +289,13 @@ public sealed record ConfigDashboardAction(
 
 public enum ConfigDashboardActionKind
 {
-    NavigatedToRoute,
+    /// <summary>
+    /// Operator selected a routed handoff entry. Host SHALL shut down the
+    /// dashboard and surface <see cref="ConfigDashboardViewModel.PendingHandoff"/>
+    /// as a follow-up instruction once Termina releases the terminal.
+    /// </summary>
+    RoutedHandoffRequested,
+
     OpenedDomain,
     ReturnedToRoot,
     Exited,

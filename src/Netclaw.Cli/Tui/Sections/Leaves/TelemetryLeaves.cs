@@ -42,11 +42,13 @@ public sealed class TelemetrySectionEditor : ISectionEditor
     public IWizardStepViewModel CreateEditor(WizardContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        // Telemetry currently has no dedicated step viewmodel — for MVP we
-        // re-host the external-skills viewmodel as a placeholder so the
-        // dashboard contract is satisfiable. A dedicated TelemetryStep
-        // would slot in here once the underlying editor lands.
-        return new ExternalSkillsStepViewModel();
+        // No dedicated TelemetryStepViewModel exists yet. Returning any
+        // other step would silently mutate UNRELATED config sections when
+        // single-step hosting calls ContributeConfig — that's worse than
+        // failing loud. The dashboard surfaces this state as
+        // "editor not yet wired" until the dedicated step lands.
+        throw new NotImplementedException(
+            "Telemetry editor is not yet wired. Track in netclaw-config-command tasks §7.");
     }
 }
 
@@ -74,10 +76,12 @@ public sealed class OutboundWebhooksSectionEditor : ISectionEditor
     public IWizardStepViewModel CreateEditor(WizardContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        // Outbound webhooks live under Notifications.Webhooks today and are
-        // contributed by the Identity step. Until a dedicated outbound
-        // editor lands, the Identity step viewmodel handles the field —
-        // single-step hosting will scope the contribution correctly.
-        return new IdentityStepViewModel();
+        // No dedicated OutboundWebhooksStepViewModel exists yet. The init
+        // wizard collects the webhook URL inside the Identity step but
+        // returning IdentityStepViewModel here would have single-step
+        // hosting clobber agent name / timezone / workspaces on save —
+        // failing loud is correct until a focused editor lands.
+        throw new NotImplementedException(
+            "Outbound Webhooks editor is not yet wired. Track in netclaw-config-command tasks §7.");
     }
 }

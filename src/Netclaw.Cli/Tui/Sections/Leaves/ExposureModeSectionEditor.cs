@@ -33,10 +33,12 @@ public sealed class ExposureModeSectionEditor : ISectionEditor
 
     public SectionStatus GetStatus(SectionEditorContext context)
     {
-        // Local mode is implicit when no Daemon section exists.
-        return SectionConfigLookup.SectionExists(context, "Daemon")
-            ? SectionStatus.Configured
-            : SectionStatus.Configured; // Local is also "configured" — there's always an effective mode.
+        // There is ALWAYS an effective ExposureMode (Local is the implicit
+        // default when no Daemon section exists). The leaf is therefore
+        // always "Configured" — the operator never reaches a state where
+        // exposure mode is missing, only states where it differs from
+        // what they want.
+        return SectionStatus.Configured;
     }
 
     public string Summary(SectionEditorContext context)

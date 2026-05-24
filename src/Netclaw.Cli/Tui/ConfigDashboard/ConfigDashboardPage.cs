@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Netclaw.Cli.Tui.Sections;
+using Netclaw.Configuration;
 using R3;
 using Termina.Extensions;
 using Termina.Input;
@@ -17,14 +18,22 @@ namespace Netclaw.Cli.Tui.ConfigDashboard;
 /// <summary>
 /// Termina page for the post-install <c>netclaw config</c> dashboard.
 /// Renders the root domain-oriented menu from <see cref="ConfigDashboardViewModel"/>
-/// and dispatches selections back to the ViewModel, which in turn drives
-/// Termina's in-process router for the routed handoffs.
+/// and dispatches selections back to the ViewModel. Routed handoffs shut
+/// down cleanly and Program.cs surfaces the follow-up command.
 /// </summary>
 public sealed class ConfigDashboardPage : ReactivePage<ConfigDashboardViewModel>
 {
     private DynamicLayoutNode? _contentNode;
     private SelectionListNode<string>? _selectionList;
     private readonly CompositeDisposable _stepSubs = [];
+    private readonly NetclawPaths _paths;
+    private readonly ReactiveProperty<string> _leafSelectionHint = new(string.Empty);
+
+    public ConfigDashboardPage(NetclawPaths paths)
+    {
+        ArgumentNullException.ThrowIfNull(paths);
+        _paths = paths;
+    }
 
     protected override void OnBound()
     {
@@ -36,6 +45,16 @@ public sealed class ConfigDashboardPage : ReactivePage<ConfigDashboardViewModel>
 
         // Re-render whenever the operator enters or leaves a Domain sub-menu.
         ViewModel.ActiveDomain
+            .Subscribe(_ =>
+            {
+                _leafSelectionHint.Value = string.Empty;
+                _contentNode?.Invalidate();
+            })
+            .DisposeWith(Subscriptions);
+
+        // Re-render whenever the leaf-selection hint changes so the
+        // operator sees the "editor not yet wired" message immediately.
+        _leafSelectionHint
             .Subscribe(_ => _contentNode?.Invalidate())
             .DisposeWith(Subscriptions);
     }
@@ -118,14 +137,18 @@ public sealed class ConfigDashboardPage : ReactivePage<ConfigDashboardViewModel>
         var context = BuildReadOnlyContext();
 
         var leafLabels = new List<string>();
+        var leafIdByLabel = new Dictionary<string, string>();
         foreach (var leafId in domain.LeafIds)
         {
             var leaf = ViewModel.Registry.Find(leafId);
-            leafLabels.Add(leaf is null
+            var label = leaf is null
                 ? $"  {leafId}  (not registered in this build)"
-                : $"  {leaf.DisplayName}  —  {leaf.Summary(context)}");
+                : $"  {leaf.DisplayName}  —  {leaf.Summary(context)}";
+            leafLabels.Add(label);
+            leafIdByLabel[label] = leafId;
         }
-        leafLabels.Add("  ← Back to root");
+        const string BackLabel = "  ← Back to root";
+        leafLabels.Add(BackLabel);
 
         _selectionList = Layouts.SelectionList(leafLabels)
             .WithMode(SelectionMode.Single)
@@ -136,15 +159,21 @@ public sealed class ConfigDashboardPage : ReactivePage<ConfigDashboardViewModel>
             .Subscribe(selected =>
             {
                 if (selected.Count == 0) return;
-                if (selected[0].Contains("Back to root", StringComparison.Ordinal))
+                if (selected[0] == BackLabel)
                 {
                     ViewModel.GoBackToRoot();
+                    return;
                 }
-                // Leaf-level editing is dispatched through a single-step
-                // host in a follow-up commit; selecting a leaf here is a
-                // no-op for now beyond highlighting it. The selection
-                // remains visible so the operator can see the leaf's
-                // current state via its Summary line.
+                // Leaf-level editing requires a Termina SingleStepPage that
+                // hosts one IWizardStepViewModel. Until that lands, show
+                // the operator an explicit "not yet wired" message rather
+                // than silently swallowing Enter. Fail loud over silent.
+                if (leafIdByLabel.TryGetValue(selected[0], out var leafId))
+                {
+                    _leafSelectionHint.Value =
+                        $"  Leaf editor for '{leafId}' is not yet wired. " +
+                        $"Use `netclaw init` or the related per-domain CLI command for now.";
+                }
             })
             .DisposeWith(_stepSubs);
 
@@ -152,7 +181,9 @@ public sealed class ConfigDashboardPage : ReactivePage<ConfigDashboardViewModel>
             .WithChild(new TextNode($"  {domain.DisplayName}").WithForeground(Color.White).Bold())
             .WithChild(new TextNode($"  {domain.Description}").WithForeground(Color.Gray))
             .WithChild(Layouts.Empty().Height(1))
-            .WithChild(_selectionList);
+            .WithChild(_selectionList)
+            .WithChild(Layouts.Empty().Height(1))
+            .WithChild(new TextNode(_leafSelectionHint.Value).WithForeground(Color.Yellow));
     }
 
     private ILayoutNode BuildKeyBindings()
@@ -175,21 +206,23 @@ public sealed class ConfigDashboardPage : ReactivePage<ConfigDashboardViewModel>
 
     private SectionEditorContext BuildReadOnlyContext()
     {
-        // The dashboard renders summaries from on-disk config without
-        // touching secrets — leaves report presence via the probe.
-        var paths = new Configuration.NetclawPaths();
-        var dict = File.Exists(paths.NetclawConfigPath)
-            ? Netclaw.Cli.Config.ConfigFileHelper.LoadJsonDict(paths.NetclawConfigPath)
+        // Use the DI-injected NetclawPaths so the dashboard honors
+        // NETCLAW_HOME — a `new NetclawPaths()` would silently fall back
+        // to the default and render wrong summaries for any operator who
+        // configured a custom install path. CLAUDE.md "no silent fallbacks."
+        var dict = File.Exists(_paths.NetclawConfigPath)
+            ? Netclaw.Cli.Config.ConfigFileHelper.LoadJsonDict(_paths.NetclawConfigPath)
             : new Dictionary<string, object>();
         return new SectionEditorContext(
-            paths: paths,
+            paths: _paths,
             config: dict,
-            secretPresent: p => Netclaw.Cli.Config.ConfigFileHelper.SecretPresent(paths, p));
+            secretPresent: p => Netclaw.Cli.Config.ConfigFileHelper.SecretPresent(_paths, p));
     }
 
     public override void Dispose()
     {
         _stepSubs.Dispose();
+        _leafSelectionHint.Dispose();
         base.Dispose();
     }
 }
