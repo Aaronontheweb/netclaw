@@ -158,4 +158,29 @@ public sealed class WizardSecretsBuilderTests : IDisposable
         var obj = JsonNode.Parse(File.ReadAllText(_paths.SecretsPath))!.AsObject();
         Assert.Contains("new-value", obj["DeviceToken"]!.GetValue<string>());
     }
+
+    [Fact]
+    public void Write_RecoversFromCorruptExistingSecretsFile()
+    {
+        // Parallel to the netclaw.json corrupt-recovery path. If secrets.json
+        // is corrupt at save time, the builder SHALL rename it to
+        // .corrupt.<timestamp> and proceed with a fresh object so the save
+        // does not bubble JsonException out of init / config flows.
+        File.WriteAllText(_paths.SecretsPath, "{ broken");
+
+        var builder = new WizardSecretsBuilder(_paths);
+        builder.AddSection("Slack", new Dictionary<string, object>
+        {
+            ["BotToken"] = "fresh",
+        });
+        builder.WriteSecretsFile(); // SHALL NOT throw
+
+        var obj = JsonNode.Parse(File.ReadAllText(_paths.SecretsPath))!.AsObject();
+        Assert.Equal("fresh", obj["Slack"]!["BotToken"]!.GetValue<string>());
+
+        var dir = Path.GetDirectoryName(_paths.SecretsPath)!;
+        var backups = Directory.GetFiles(dir,
+            Path.GetFileName(_paths.SecretsPath) + ".corrupt.*");
+        Assert.NotEmpty(backups);
+    }
 }

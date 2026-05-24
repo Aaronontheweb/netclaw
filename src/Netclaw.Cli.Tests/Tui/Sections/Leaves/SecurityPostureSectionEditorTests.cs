@@ -45,4 +45,35 @@ public sealed class SecurityPostureSectionEditorTests
         Assert.Contains(typeof(Netclaw.Cli.Doctor.SecurityPolicyDoctorCheck), editor.RelevantDoctorChecks);
         Assert.Contains(typeof(Netclaw.Cli.Doctor.ToolAudienceProfilesDoctorCheck), editor.RelevantDoctorChecks);
     }
+
+    [Fact]
+    public void CreateEditor_FromExistingConfig_PreselectsCurrentPosture()
+    {
+        // section-editor-abstraction spec scenario: "Existing non-secret values prefill"
+        // — an init-owned flow that enters the Security Posture editor with
+        // an existing posture configured SHALL preselect that posture.
+        var editor = CreateEditor();
+        using var wizardContext = BuildWizardContext(existingConfig: new Dictionary<string, object>
+        {
+            ["Security"] = new Dictionary<string, object>
+            {
+                ["DeploymentPosture"] = "Public",
+            },
+        });
+
+        var step = (Netclaw.Cli.Tui.Wizard.Steps.SecurityPostureStepViewModel)
+            editor.CreateEditor(wizardContext);
+
+        Assert.Equal(Netclaw.Configuration.DeploymentPosture.Public, step.SelectedPosture);
+    }
+
+    [Fact]
+    public void CreateEditor_FreshInstall_LeavesPostureUnselected()
+    {
+        var editor = CreateEditor();
+        using var wizardContext = BuildWizardContext();
+        var step = (Netclaw.Cli.Tui.Wizard.Steps.SecurityPostureStepViewModel)
+            editor.CreateEditor(wizardContext);
+        Assert.Null(step.SelectedPosture);
+    }
 }

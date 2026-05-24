@@ -507,16 +507,7 @@ public sealed class WizardSecretsBuilder
         if (!hasNewSecrets && !hasRemovals)
             return;
 
-        JsonObject existing;
-        if (File.Exists(_paths.SecretsPath))
-        {
-            var existingText = File.ReadAllText(_paths.SecretsPath);
-            existing = JsonNode.Parse(existingText)?.AsObject() ?? new JsonObject();
-        }
-        else
-        {
-            existing = new JsonObject();
-        }
+        JsonObject existing = LoadExistingSecretsOrBackup(_paths.SecretsPath);
 
         // Apply explicit removals first so a same-run RemoveValue+AddValue
         // ends with the new value (predictable for editors that re-create
@@ -562,6 +553,43 @@ public sealed class WizardSecretsBuilder
             _paths.SecretsPath,
             existing.ToJsonString(JsonDefaults.ConfigFile),
             protector: SensitiveStringTypeConverter.Protector);
+    }
+
+    /// <summary>
+    /// Save-path load helper for <c>secrets.json</c>. Mirrors
+    /// <see cref="ConfigFileHelper.LoadJsonDictOrBackup"/>: on parse failure
+    /// the corrupt file is renamed to <c>secrets.json.corrupt.&lt;timestamp&gt;</c>
+    /// (with restrictive permissions preserved) and the save proceeds with
+    /// an empty object so the wizard can re-establish secrets without
+    /// blowing up.
+    /// </summary>
+    internal static JsonObject LoadExistingSecretsOrBackup(string path)
+    {
+        if (!File.Exists(path))
+            return new JsonObject();
+
+        try
+        {
+            var text = File.ReadAllText(path);
+            var parsed = JsonNode.Parse(text)?.AsObject();
+            if (parsed is not null)
+                return parsed;
+        }
+        catch (JsonException)
+        {
+            // Fall through to backup.
+        }
+
+        var backupPath = $"{path}.corrupt.{DateTimeOffset.UtcNow:yyyyMMddHHmmss}";
+        try
+        {
+            File.Move(path, backupPath, overwrite: false);
+        }
+        catch (IOException)
+        {
+            try { File.Delete(path); } catch { /* best-effort */ }
+        }
+        return new JsonObject();
     }
 }
 

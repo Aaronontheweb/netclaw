@@ -50,14 +50,32 @@ public sealed class MenuRegistryAuditTests
         foreach (var editor in registry.All)
         {
             var expectedName = editor.GetType().Name + "Tests";
-            var found = testAssembly.GetTypes()
-                .Any(t => t.Name == expectedName && IsRoundTripBase(t));
-            if (!found)
-                missing.Add($"{editor.SectionId} → expected {expectedName}");
+            var testClass = testAssembly.GetTypes()
+                .FirstOrDefault(t => t.Name == expectedName && IsRoundTripBase(t));
+
+            if (testClass is null)
+            {
+                missing.Add($"{editor.SectionId} → expected class {expectedName} inheriting SectionEditorTestBase<>");
+                continue;
+            }
+
+            // The base contract Facts run even on an empty subclass — they
+            // assert nothing leaf-specific. Require the subclass to declare
+            // at least one DeclaredOnly [Fact] beyond the inherited contract
+            // so reviewers can see meaningful leaf coverage.
+            var declaredFacts = testClass
+                .GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                .Count(m => m.GetCustomAttribute<FactAttribute>() is not null
+                            || m.GetCustomAttribute<TheoryAttribute>() is not null);
+
+            if (declaredFacts == 0)
+            {
+                missing.Add($"{editor.SectionId} → {expectedName} has no declared [Fact]/[Theory] beyond inherited contract");
+            }
         }
 
         Assert.True(missing.Count == 0,
-            $"Registered leaf editors missing round-trip test classes: {string.Join(", ", missing)}");
+            $"Registered leaf editors missing leaf-specific round-trip coverage: {string.Join(", ", missing)}");
     }
 
     [Fact]

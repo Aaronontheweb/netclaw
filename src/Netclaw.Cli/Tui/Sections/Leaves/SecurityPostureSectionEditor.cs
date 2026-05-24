@@ -48,7 +48,47 @@ public sealed class SecurityPostureSectionEditor : ISectionEditor
     public IWizardStepViewModel CreateEditor(WizardContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        return new SecurityPostureStepViewModel();
+        var step = new SecurityPostureStepViewModel();
+
+        // Init-owned re-entry: prefill the selected posture from existing
+        // config so the operator sees their current posture preselected per
+        // the section-editor-abstraction spec scenario "Existing non-secret
+        // values prefill".
+        if (context.ExistingConfig is not null
+            && TryGetPostureString(context.ExistingConfig, out var postureStr)
+            && Enum.TryParse<Netclaw.Configuration.DeploymentPosture>(
+                postureStr, ignoreCase: true, out var posture))
+        {
+            step.SelectedPosture = posture;
+        }
+
+        return step;
+    }
+
+    private static bool TryGetPostureString(
+        IReadOnlyDictionary<string, object> dict, out string value)
+    {
+        value = string.Empty;
+        if (!dict.TryGetValue("Security", out var sec)) return false;
+
+        object? rawPosture = sec switch
+        {
+            IReadOnlyDictionary<string, object> ro when ro.TryGetValue("DeploymentPosture", out var v) => v,
+            IDictionary<string, object> rw when rw.TryGetValue("DeploymentPosture", out var v) => v,
+            JsonElement je when je.ValueKind == JsonValueKind.Object
+                && je.TryGetProperty("DeploymentPosture", out var prop) => prop,
+            _ => null,
+        };
+
+        var s = rawPosture switch
+        {
+            string str => str,
+            JsonElement je when je.ValueKind == JsonValueKind.String => je.GetString(),
+            _ => null,
+        };
+        if (string.IsNullOrWhiteSpace(s)) return false;
+        value = s!;
+        return true;
     }
 
     private static bool IsNonEmpty(object? v) =>

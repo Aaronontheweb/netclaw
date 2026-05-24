@@ -110,15 +110,26 @@ public partial class InitWizardViewModel : ReactiveViewModel
 
         // Create step VMs in the canonical order:
         // provider -> security-posture -> feature-selection -> channel-picker -> channels -> search -> browser-automation -> identity -> external-skills -> exposure-mode -> health-check
-        ProviderStep = new ProviderStepViewModel(registry, probe, oauthFactory);
-        var securityPostureStep = new SecurityPostureStepViewModel();
-        var featureSelectionStep = new FeatureSelectionStepViewModel();
+        //
+        // For the four bootstrap leaves that have been refactored to
+        // ISectionEditor (Provider, Identity, SecurityPosture, EnabledFeatures),
+        // resolve via the leaf editors' CreateEditor so that re-running init
+        // against an existing install prefills non-secret fields from
+        // WizardContext.ExistingConfig per the netclaw-onboarding spec.
+        ProviderStep = (ProviderStepViewModel)new Sections.Leaves.ProviderSectionEditor(
+            registry, probe, oauthFactory).CreateEditor(_context);
+        var securityPostureStep = (SecurityPostureStepViewModel)
+            new Sections.Leaves.SecurityPostureSectionEditor().CreateEditor(_context);
+        var featureSelectionStep = (FeatureSelectionStepViewModel)
+            new Sections.Leaves.EnabledFeaturesSectionEditor().CreateEditor(_context);
+        var identityStep = (IdentityStepViewModel)
+            new Sections.Leaves.IdentitySectionEditor().CreateEditor(_context);
+
         var exposureModeStep = new ExposureModeStepViewModel();
         var channelPickerStep = new ChannelPickerStepViewModel(slackProbe, discordProbe);
         var channelsStep = new ChannelsStepViewModel();
         var searchStep = new SearchStepViewModel();
         var browserStep = new BrowserAutomationStepViewModel();
-        var identityStep = new IdentityStepViewModel();
         var externalSkillsStep = new ExternalSkillsStepViewModel();
         var skillFeedsStep = new SkillFeedsStepViewModel();
         _healthCheckStep = new HealthCheckStepViewModel(daemonManager, daemonApi, navigationState);
