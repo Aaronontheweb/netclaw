@@ -133,6 +133,57 @@ static async Task RunAsync(string[] args)
 
         if (mode is "init")
         {
+            // Existing-install menu per simplify-netclaw-init §3: if an
+            // installation is already configured, present the four locked
+            // options before booting Termina. Skipping straight into the
+            // bootstrap wizard is reserved for fresh installs.
+            var initPathsForMenu = new NetclawPaths();
+            if (Netclaw.Cli.Tui.Init.InitExistingInstallMenu.IsExistingInstall(initPathsForMenu))
+            {
+                var menuAction = Netclaw.Cli.Tui.Init.InitConsoleMenuPrompt
+                    .PromptExistingInstallMenu(Console.In, Console.Out);
+
+                switch (menuAction)
+                {
+                    case Netclaw.Cli.Tui.Init.InitMenuAction.Cancel:
+                        Console.Out.WriteLine("Cancelled. No changes made.");
+                        return;
+
+                    case Netclaw.Cli.Tui.Init.InitMenuAction.OpenConfig:
+                        Console.Out.WriteLine("Run `netclaw config` for ongoing settings.");
+                        return;
+
+                    case Netclaw.Cli.Tui.Init.InitMenuAction.StartOver:
+                        var startOver = Netclaw.Cli.Tui.Init.InitConsoleMenuPrompt
+                            .PromptStartOverDialog(Console.In, Console.Out);
+                        if (startOver == Netclaw.Cli.Tui.Init.InitStartOverAction.Cancel)
+                        {
+                            Console.Out.WriteLine("Cancelled. No changes made.");
+                            return;
+                        }
+                        if (!Netclaw.Cli.Tui.Init.InitConsoleMenuPrompt
+                            .ConfirmDestructiveAction(startOver, Console.In, Console.Out))
+                        {
+                            return;
+                        }
+                        var report = startOver == Netclaw.Cli.Tui.Init.InitStartOverAction.FullReset
+                            ? Netclaw.Cli.Tui.Init.InitResetService.FullReset(initPathsForMenu)
+                            : Netclaw.Cli.Tui.Init.InitResetService.ResetSetupOnly(initPathsForMenu);
+
+                        Console.Out.WriteLine();
+                        Console.Out.WriteLine($"{report.Action} complete. Removed {report.RemovedPaths.Count} path(s).");
+                        Console.Out.WriteLine("Re-run `netclaw init` to start fresh.");
+                        return;
+
+                    case Netclaw.Cli.Tui.Init.InitMenuAction.RedoIdentity:
+                        // Falls through to the existing Termina bootstrap. The
+                        // ExistingConfig population means IdentitySectionEditor
+                        // prefills non-secret fields on re-run.
+                        Console.Out.WriteLine("Re-running identity setup (other settings preserved via merge-on-save).");
+                        break;
+                }
+            }
+
             // Enable Termina trace logging for debugging TUI input/rendering issues
             var traceFile = Path.Combine(Path.GetTempPath(), "netclaw-init-trace.log");
             builder.Services.AddTerminaFileTracing(traceFile, TerminaTraceCategory.All, TerminaTraceLevel.Trace);

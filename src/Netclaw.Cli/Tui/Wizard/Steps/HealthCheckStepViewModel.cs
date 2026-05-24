@@ -197,12 +197,19 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
         allPassed = runner.AllPassed;
         if (allPassed && _context is not null)
         {
-            _context.StatusMessage.Value = "Setup complete! Launching chat...";
+            // Bootstrap-vs-config split (simplify-netclaw-init §6): direct
+            // operators to `netclaw chat` to start using the agent and to
+            // `netclaw config` for ongoing settings. We launch chat
+            // immediately on success but keep the message specific.
+            _context.StatusMessage.Value =
+                "Setup complete. Launching `netclaw chat`. Run `netclaw config` for ongoing settings.";
             Navigate?.Invoke("/chat");
         }
         else if (_context is not null)
         {
-            _context.StatusMessage.Value = "Setup complete with warnings. Run `netclaw daemon start` to begin.";
+            _context.StatusMessage.Value =
+                "Setup complete with warnings. Run `netclaw daemon start` to begin, " +
+                "`netclaw chat` to talk to the agent, and `netclaw config` for ongoing settings.";
         }
     }
 
