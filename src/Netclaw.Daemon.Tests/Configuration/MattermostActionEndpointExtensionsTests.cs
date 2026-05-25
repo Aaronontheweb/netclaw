@@ -117,7 +117,7 @@ public sealed class MattermostActionEndpointExtensionsTests(ITestOutputHelper ou
         await using var app = await CreateHostAsync(
             time,
             actionStore,
-            gatewayResponseFactory: _ => CommandNack.For(new SessionId("ch-1/root-1"), "approval_wrong_requester"),
+            gatewayResponseFactory: _ => CommandNack.For(new SessionId("ch-1/root-1"), ApprovalNackReasons.WrongRequester),
             recorder: new GatewayInteractionRecorder());
         var client = app.GetTestClient();
 
@@ -144,7 +144,7 @@ public sealed class MattermostActionEndpointExtensionsTests(ITestOutputHelper ou
         await using var app = await CreateHostAsync(
             time,
             actionStore,
-            gatewayResponseFactory: _ => CommandNack.For(new SessionId("ch-1/root-1"), "approval_prompt_expired"),
+            gatewayResponseFactory: _ => CommandNack.For(new SessionId("ch-1/root-1"), ApprovalNackReasons.PromptExpired),
             recorder: new GatewayInteractionRecorder());
         var client = app.GetTestClient();
 
@@ -171,7 +171,7 @@ public sealed class MattermostActionEndpointExtensionsTests(ITestOutputHelper ou
         await using var app = await CreateHostAsync(
             time,
             actionStore,
-            gatewayResponseFactory: _ => CommandNack.For(new SessionId("ch-1/root-1"), "approval_option_unavailable"),
+            gatewayResponseFactory: _ => CommandNack.For(new SessionId("ch-1/root-1"), ApprovalNackReasons.OptionUnavailable),
             recorder: new GatewayInteractionRecorder());
         var client = app.GetTestClient();
 

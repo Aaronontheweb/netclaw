@@ -576,7 +576,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             if (!TryResolveTextApprovalResponse(msg, out var structured, out var nackReason)
                 || structured is null)
             {
-                TryReplyNack(nackReason ?? "approval_prompt_expired");
+                TryReplyNack(nackReason ?? ApprovalNackReasons.PromptExpired);
                 return;
             }
 
@@ -3262,6 +3262,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _ => ApprovalDecision.Denied
     };
 
+    private bool HasApprovalHistory
+        => _resolvedToolApprovals.Count > 0
+        || ParkedToolBatchHistory.FindRedrivableAssistantMessage(_state.History, null) is not null;
+
     /// <summary>
     /// Emits the channel-visible "approval prompt expired" notice. Used when a
     /// tool interaction response cannot be honored — fail loud instead of
@@ -3317,7 +3321,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 "Ignoring tool interaction response for call {CallId} from sender {SenderId}; expected {ExpectedSenderId}",
                 msg.CallId, msg.SenderId, pending.RequesterSenderId);
             EmitWrongRequesterApprovalNotice();
-            return (null, "approval_wrong_requester");
+            return (null, ApprovalNackReasons.WrongRequester);
         }
 
         // Legacy journal entries created before option persistence landed have
@@ -3332,7 +3336,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 msg.CallId,
                 string.Join(", ", pending.OptionKeys));
             EmitUnavailableApprovalOptionNotice();
-            return (null, "approval_option_unavailable");
+            return (null, ApprovalNackReasons.OptionUnavailable);
         }
 
         var decision = MapApprovalDecision(msg.SelectedKey.Value);
@@ -3378,15 +3382,27 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             if (_pendingToolInteractions.Count == 0)
             {
-                _log.Warning("Ignoring text tool interaction response with no pending approvals for sender {SenderId}", msg.SenderId);
-                EmitExpiredPromptNotice();
-                nackReason = "approval_prompt_expired";
+                if (HasApprovalHistory)
+                {
+                    _log.Warning("Ignoring text tool interaction response with no pending approvals for sender {SenderId}", msg.SenderId);
+                    EmitExpiredPromptNotice();
+                    nackReason = ApprovalNackReasons.PromptExpired;
+                }
+                else
+                {
+                    // Session has never had an approval request. The channel cold path
+                    // matched the text as approval-like, but this is almost certainly
+                    // ordinary conversation (e.g., "yes", "a", "1"). Don't emit a
+                    // user-visible notice and don't consume — the channel should
+                    // fall through to normal LLM ingress. See #1164.
+                    nackReason = ApprovalNackReasons.NoHistory;
+                }
             }
             else
             {
                 _log.Warning("Ignoring text tool interaction response from unauthorized sender {SenderId}", msg.SenderId);
                 EmitWrongRequesterApprovalNotice();
-                nackReason = "approval_wrong_requester";
+                nackReason = ApprovalNackReasons.WrongRequester;
             }
 
             return false;
@@ -3415,7 +3431,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 pending.CallId,
                 string.Join(", ", pending.OptionKeys));
             EmitUnavailableApprovalOptionNotice();
-            nackReason = "approval_option_unavailable";
+            nackReason = ApprovalNackReasons.OptionUnavailable;
             return false;
         }
 
@@ -3443,7 +3459,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (!_pendingToolInteractions.TryGetValue(msg.CallId.Value, out var pending))
         {
             _log.Warning("Ignoring tool interaction response for unknown call {CallId}", msg.CallId);
-            TryReplyNack("approval_prompt_expired");
+            TryReplyNack(ApprovalNackReasons.PromptExpired);
             return;
         }
 
@@ -3452,7 +3468,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             var authorization = await AuthorizeApprovalResponseAsync(pending, msg);
             if (authorization.Decision is not { } decision)
             {
-                TryReplyNack(authorization.NackReason ?? "approval_wrong_requester");
+                TryReplyNack(authorization.NackReason ?? ApprovalNackReasons.WrongRequester);
                 return;
             }
 
@@ -3465,7 +3481,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         catch (Exception ex)
         {
             FailCurrentTurn("I couldn't persist that approval decision. Please try again.", ex, ErrorCategory.ToolFailure);
-            TryReplyNack("approval_persist_failed");
+            TryReplyNack(ApprovalNackReasons.PersistFailed);
         }
     }
 
@@ -3520,7 +3536,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 "Tool interaction response for unknown/expired call {CallId} ({Classification}); pending={PendingCount} resolved={ResolvedCount}",
                 msg.CallId, classification, _pendingToolInteractions.Count, _resolvedToolApprovals.Count);
             EmitExpiredPromptNotice();
-            TryReplyNack("approval_prompt_expired");
+            TryReplyNack(ApprovalNackReasons.PromptExpired);
             return;
         }
 
@@ -3530,7 +3546,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             var authorization = await AuthorizeApprovalResponseAsync(pending, msg);
             if (authorization.Decision is not { } authorizedDecision)
             {
-                TryReplyNack(authorization.NackReason ?? "approval_wrong_requester");
+                TryReplyNack(authorization.NackReason ?? ApprovalNackReasons.WrongRequester);
                 return;
             }
             decision = authorizedDecision;
@@ -3545,7 +3561,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 CorrelationId = Guid.NewGuid(),
                 Cause = ex
             });
-            TryReplyNack("approval_persist_failed");
+            TryReplyNack(ApprovalNackReasons.PersistFailed);
             return;
         }
 
@@ -3561,7 +3577,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (!TryResolveTextApprovalResponse(msg, out var structured, out var nackReason)
             || structured is null)
         {
-            TryReplyNack(nackReason ?? "approval_prompt_expired");
+            TryReplyNack(nackReason ?? ApprovalNackReasons.PromptExpired);
             return;
         }
 
