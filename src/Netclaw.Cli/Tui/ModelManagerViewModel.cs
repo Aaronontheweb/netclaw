@@ -39,6 +39,8 @@ public sealed class ModelManagerViewModel : ReactiveViewModel
     private readonly ProviderDescriptorRegistry? _registry;
     private CancellationTokenSource? _probeCts;
 
+    internal Action<string>? RouteRequested { get; set; }
+
     public ReactiveProperty<ModelManagerState> CurrentState { get; } = new(ModelManagerState.RoleOverview);
     public ReactiveProperty<string> StatusMessage { get; } = new("");
     public ReactiveProperty<bool> IsProbing { get; } = new(false);
@@ -252,10 +254,13 @@ public sealed class ModelManagerViewModel : ReactiveViewModel
                     ClearAssignmentState();
                     CurrentState.Value = ModelManagerState.RoleOverview;
                     NotifyStateChanged();
-                }
+            }
                 break;
             default:
-                Shutdown();
+                RouteRequested?.Invoke("/config");
+                Navigate?.Invoke("/config");
+                if (RouteRequested is null)
+                    Shutdown();
                 break;
         }
     }
