@@ -499,7 +499,7 @@ public abstract class SessionBindingContractTests : TestKit
             ResponseFactory = (feedback, _) =>
             {
                 return feedback is ToolInteractionTextResponse
-                    ? Task.FromResult<ICommandReply>(CommandNack.For(sid, "approval_no_history"))
+                    ? Task.FromResult<ICommandReply>(CommandNack.For(sid, ApprovalNackReasons.NoHistory))
                     : Task.FromResult<ICommandReply>(CommandAck.For(feedback.SessionId));
             }
         };
@@ -868,7 +868,7 @@ public abstract class SessionBindingContractTests : TestKit
 
         var nack = await probe.ExpectMsgAsync<CommandNack>(cancellationToken: ct);
         Assert.Equal(sid, nack.SessionId);
-        Assert.Equal("approval_wrong_requester", nack.Reason);
+        Assert.Equal(ApprovalNackReasons.WrongRequester, nack.Reason);
     }
 
     [Fact]

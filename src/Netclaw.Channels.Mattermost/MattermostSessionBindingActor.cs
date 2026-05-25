@@ -763,7 +763,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             // approval_no_history means the session has never had an approval request.
             // The message was a false-positive from LooksLikeApprovalResponse.
             // Don't consume — let it fall through to normal LLM ingress. See #1164.
-            if (reply is CommandNack { Reason: "approval_no_history" })
+            if (reply is CommandNack { Reason: ApprovalNackReasons.NoHistory })
                 return false;
 
             return reply is CommandNack;
@@ -783,7 +783,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         if (result is ApprovalLookupResult.WrongRequester)
         {
             await SafeReplyAsync(WrongRequesterWarning);
-            ReplyIfExpected(replyTo, CommandNack.For(_sessionId, "approval_wrong_requester"));
+            ReplyIfExpected(replyTo, CommandNack.For(_sessionId, ApprovalNackReasons.WrongRequester));
             return;
         }
 
@@ -802,7 +802,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         catch (Exception ex)
         {
             _log.Error(ex, "Failed to route Mattermost approval response for call {CallId}", message.CallId);
-            ReplyIfExpected(replyTo, CommandNack.For(_sessionId, "approval_persist_failed"));
+            ReplyIfExpected(replyTo, CommandNack.For(_sessionId, ApprovalNackReasons.PersistFailed));
             return;
         }
 
@@ -810,7 +810,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         switch (feedbackResult)
         {
             case CommandNack nack:
-                if (string.Equals(nack.Reason, "approval_wrong_requester", StringComparison.Ordinal))
+                if (string.Equals(nack.Reason, ApprovalNackReasons.WrongRequester, StringComparison.Ordinal))
                     await SafeReplyAsync(WrongRequesterWarning);
                 ReplyIfExpected(replyTo, nack);
                 return;
@@ -828,7 +828,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                     "Mattermost approval response for call {CallId} returned unexpected feedback result {ResultType}",
                     message.CallId,
                     feedbackResult.GetType().Name);
-                ReplyIfExpected(replyTo, CommandNack.For(_sessionId, "approval_persist_failed"));
+                ReplyIfExpected(replyTo, CommandNack.For(_sessionId, ApprovalNackReasons.PersistFailed));
                 return;
         }
 

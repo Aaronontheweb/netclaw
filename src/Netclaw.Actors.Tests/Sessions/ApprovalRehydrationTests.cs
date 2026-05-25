@@ -195,7 +195,7 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
         }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         var nack = Assert.IsType<CommandNack>(invalidReply);
-        Assert.Equal("approval_option_unavailable", nack.Reason);
+        Assert.Equal(ApprovalNackReasons.OptionUnavailable, nack.Reason);
 
         var warning = await subscriber.ExpectMsgAsync<TextOutput>(
             TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);

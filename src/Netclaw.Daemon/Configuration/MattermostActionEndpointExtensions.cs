@@ -238,9 +238,9 @@ public static class MattermostActionEndpointExtensions
     private static string MapRejectMessage(string reason)
         => reason switch
         {
-            "approval_wrong_requester" => "Only the requesting user can approve this tool action.",
-            "approval_prompt_expired" => "That approval prompt has expired. Please re-issue the request and try again.",
-            "approval_option_unavailable" => "That approval option is not available for this tool action. Please use one of the options shown on the prompt.",
+            ApprovalNackReasons.WrongRequester => "Only the requesting user can approve this tool action.",
+            ApprovalNackReasons.PromptExpired => "That approval prompt has expired. Please re-issue the request and try again.",
+            ApprovalNackReasons.OptionUnavailable => "That approval option is not available for this tool action. Please use one of the options shown on the prompt.",
             SessionIngressGate.RestartInProgressMessage => SessionIngressGate.RestartInProgressMessage,
             _ => "That approval could not be recorded. Please try again."
         };

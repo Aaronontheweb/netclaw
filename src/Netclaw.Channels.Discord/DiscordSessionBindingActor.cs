@@ -788,7 +788,7 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             // approval_no_history means the session has never had an approval request.
             // The message was a false-positive from LooksLikeApprovalResponse.
             // Don't consume — let it fall through to normal LLM ingress. See #1164.
-            if (reply is CommandNack { Reason: "approval_no_history" })
+            if (reply is CommandNack { Reason: ApprovalNackReasons.NoHistory })
                 return false;
 
             return reply is CommandNack;
