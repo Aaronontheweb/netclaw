@@ -3262,6 +3262,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _ => ApprovalDecision.Denied
     };
 
+    private bool HasApprovalHistory
+        => _resolvedToolApprovals.Count > 0
+        || ParkedToolBatchHistory.FindRedrivableAssistantMessage(_state.History, null) is not null;
+
     /// <summary>
     /// Emits the channel-visible "approval prompt expired" notice. Used when a
     /// tool interaction response cannot be honored — fail loud instead of
@@ -3378,9 +3382,21 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             if (_pendingToolInteractions.Count == 0)
             {
-                _log.Warning("Ignoring text tool interaction response with no pending approvals for sender {SenderId}", msg.SenderId);
-                EmitExpiredPromptNotice();
-                nackReason = "approval_prompt_expired";
+                if (HasApprovalHistory)
+                {
+                    _log.Warning("Ignoring text tool interaction response with no pending approvals for sender {SenderId}", msg.SenderId);
+                    EmitExpiredPromptNotice();
+                    nackReason = "approval_prompt_expired";
+                }
+                else
+                {
+                    // Session has never had an approval request. The channel cold path
+                    // matched the text as approval-like, but this is almost certainly
+                    // ordinary conversation (e.g., "yes", "a", "1"). Don't emit a
+                    // user-visible notice and don't consume — the channel should
+                    // fall through to normal LLM ingress. See #1164.
+                    nackReason = "approval_no_history";
+                }
             }
             else
             {

@@ -46,6 +46,7 @@ public sealed class RecordingSessionPipeline : ISessionPipeline
     public SessionPipelineOptions? CapturedOptions { get; private set; }
     public List<IWithSessionId> RecordedFeedback { get; } = [];
     public ConcurrentQueue<ChannelInput> CapturedInputs { get; } = new();
+    public Func<IWithSessionId, CancellationToken, Task<ICommandReply>>? ResponseFactory { get; set; }
 
     public Task<MaterializedSession> CreateAsync(
         SessionId sessionId,
@@ -125,6 +126,8 @@ public sealed class RecordingSessionPipeline : ISessionPipeline
     public Task<ICommandReply> SendFeedbackAndWaitAsync(IWithSessionId feedback, CancellationToken ct = default)
     {
         RecordedFeedback.Add(feedback);
-        return Task.FromResult<ICommandReply>(CommandAck.For(feedback.SessionId));
+        var response = ResponseFactory?.Invoke(feedback, ct)
+            ?? Task.FromResult<ICommandReply>(CommandAck.For(feedback.SessionId));
+        return response;
     }
 }

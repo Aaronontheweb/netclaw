@@ -480,6 +480,51 @@ public abstract class SessionBindingContractTests : TestKit
         }, cancellationToken: ct);
     }
 
+    // Regression for #1164: when no approval has ever been requested in the session,
+    // a short message like "yes", "a", or "1" should NOT be consumed by the cold
+    // approval path. The message must fall through to normal LLM ingress.
+    [Fact]
+    public async Task Normal_chat_text_that_looks_like_approval_is_not_consumed_when_no_approval_history()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var detector = new ConfigurablePromptInjectionDetector(PromptInjectionResult.Safe());
+        var sid = new SessionId("session-cold-text-false-positive");
+
+        // Empty output stream: the binding never observed an approval prompt,
+        // so _hasObservedApprovalRequest stays false and the cold path is active.
+        // The ResponseFactory simulates the session rejecting the cold-path
+        // response with approval_no_history (meaning: no approval ever existed).
+        var pipeline = new RecordingSessionPipeline(_ => [])
+        {
+            ResponseFactory = (feedback, _) =>
+            {
+                return feedback is ToolInteractionTextResponse
+                    ? Task.FromResult<ICommandReply>(CommandNack.For(sid, "approval_no_history"))
+                    : Task.FromResult<ICommandReply>(CommandAck.For(feedback.SessionId));
+            }
+        };
+
+        var actor = CreateBindingActorWithPipeline(sid, pipeline, detector);
+
+        // Send a message that LooksLikeApprovalResponse matches ("yes" -> ApproveOnce)
+        // but is ordinary conversation. With the fix, the message falls through
+        // to normal ChannelInput ingestion.
+        actor.Tell(CreateInboundMessage("yes", "user-1"), TestActor);
+
+        await AwaitAssertAsync(() =>
+        {
+            // The cold path should have forwarded the message to the session
+            Assert.Single(pipeline.RecordedFeedback.OfType<ToolInteractionTextResponse>());
+
+            // The message should NOT be consumed — it must fall through to normal input
+            Assert.NotEmpty(pipeline.CapturedInputs);
+            Assert.True(
+                pipeline.CapturedInputs.Any(ci =>
+                    ci.Contents.Any(c => c is TextContent tc && tc.Text == "yes")),
+                "The original message text should appear in ChannelInput");
+        }, cancellationToken: ct);
+    }
+
     // Regression for the silent-drop class of bugs: the binding observes a
     // ToolInteractionRequest then a TurnCompleted (which clears its local
     // _pendingApprovalRequests). A button click arriving afterwards must still

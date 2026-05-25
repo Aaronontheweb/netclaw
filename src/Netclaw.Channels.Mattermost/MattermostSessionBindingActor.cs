@@ -760,6 +760,12 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                 return true;
             }
 
+            // approval_no_history means the session has never had an approval request.
+            // The message was a false-positive from LooksLikeApprovalResponse.
+            // Don't consume — let it fall through to normal LLM ingress. See #1164.
+            if (reply is CommandNack { Reason: "approval_no_history" })
+                return false;
+
             return reply is CommandNack;
         }
         catch (Exception ex)
