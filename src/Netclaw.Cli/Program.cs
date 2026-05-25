@@ -102,7 +102,10 @@ static async Task RunAsync(string[] args)
     {
         if (args.Length > 1 && IsHelpToken(args[1]))
         {
-            WriteDoctorHelp();
+            if (mode is "init")
+                WriteInitHelp();
+            else
+                WriteDoctorHelp();
             return;
         }
 
@@ -215,7 +218,7 @@ static async Task RunAsync(string[] args)
                 termina.RegisterRoute<ChatPage, ChatViewModel>("/chat");
             });
 
-            var initApp = builder.Build();
+            using var initApp = builder.Build();
             await RunTerminaHostAsync(initApp);
             return;
         }
@@ -446,7 +449,7 @@ static async Task RunAsync(string[] args)
                 termina.RegisterRoute<StatsPage, StatsViewModel>("/stats");
             });
 
-            var statsApp = builder.Build();
+            using var statsApp = builder.Build();
             await RunTerminaHostAsync(statsApp);
             return;
         }
@@ -656,7 +659,8 @@ static async Task RunAsync(string[] args)
             builder.Services.AddTermina("/mcp-tools", t =>
                 t.RegisterRoute<McpToolPermissionsPage, McpToolPermissionsViewModel>("/mcp-tools"));
 
-            await RunTerminaHostAsync(builder.Build());
+            using var mcpToolsHost = builder.Build();
+            await RunTerminaHostAsync(mcpToolsHost);
             return;
         }
 
@@ -714,7 +718,8 @@ static async Task RunAsync(string[] args)
             builder.Services.AddTermina("/provider", t =>
                 t.RegisterRoute<ProviderManagerPage, ProviderManagerViewModel>("/provider"));
 
-            await RunTerminaHostAsync(builder.Build());
+            using var providerHost = builder.Build();
+            await RunTerminaHostAsync(providerHost);
             return;
         }
 
@@ -743,7 +748,8 @@ static async Task RunAsync(string[] args)
             builder.Services.AddTermina("/model", t =>
                 t.RegisterRoute<ModelManagerPage, ModelManagerViewModel>("/model"));
 
-            await RunTerminaHostAsync(builder.Build());
+            using var modelHost = builder.Build();
+            await RunTerminaHostAsync(modelHost);
             return;
         }
 
@@ -772,7 +778,8 @@ static async Task RunAsync(string[] args)
             builder.Services.AddTermina("/approvals", t =>
                 t.RegisterRoute<ApprovalsManagerPage, ApprovalsManagerViewModel>("/approvals"));
 
-            await RunTerminaHostAsync(builder.Build());
+            using var approvalsHost = builder.Build();
+            await RunTerminaHostAsync(approvalsHost);
             return;
         }
 
@@ -796,7 +803,8 @@ static async Task RunAsync(string[] args)
             builder.Services.AddTermina("/reminder", t =>
                 t.RegisterRoute<ReminderCreatePage, ReminderCreateViewModel>("/reminder"));
 
-            await RunTerminaHostAsync(builder.Build());
+            using var reminderHost = builder.Build();
+            await RunTerminaHostAsync(reminderHost);
             return;
         }
 
@@ -889,9 +897,9 @@ static async Task RunAsync(string[] args)
         });
 
         using var host = builder.Build();
+        var navigationState = host.Services.GetRequiredService<ConfigDashboardNavigationState>();
         await RunTerminaHostAsync(host);
 
-        var navigationState = host.Services.GetRequiredService<ConfigDashboardNavigationState>();
         if (navigationState.PendingAction == ConfigDashboardAction.RunDoctor)
         {
             var doctorArgs = new[] { "doctor" };
@@ -1096,7 +1104,7 @@ static async Task RunAsync(string[] args)
             return;
     }
 
-    var app = webBuilder.Build();
+    using var app = webBuilder.Build();
     await RunTerminaHostAsync(app);
 }
 
@@ -1215,6 +1223,14 @@ static void WriteDaemonDevicesHelp()
     Console.WriteLine("  revoke <name>       Revoke a device token by device name");
     Console.WriteLine();
     Console.WriteLine("After revoking, the device will receive 401 on next connection attempt.");
+}
+
+static void WriteInitHelp()
+{
+    Console.WriteLine("Usage: netclaw init");
+    Console.WriteLine();
+    Console.WriteLine("Run the first-run setup wizard for bootstrap configuration.");
+    Console.WriteLine("Use `netclaw config` for ongoing post-install settings changes.");
 }
 
 static void WriteDoctorHelp()
