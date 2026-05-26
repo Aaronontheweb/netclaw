@@ -55,14 +55,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
 
     public override ILayoutNode BuildLayout()
     {
-        return Layouts.Vertical()
-            .WithChild(
-                new PanelNode()
-                    .WithTitle("Provider Manager")
-                    .WithBorder(BorderStyle.Rounded)
-                    .WithBorderColor(Color.Cyan)
-                    .WithContent(BuildInnerLayout())
-                    .Fill());
+        return NetclawTuiChrome.BuildPageFrame("Provider Manager", BuildInnerLayout());
     }
 
     private ILayoutNode BuildInnerLayout()
@@ -121,11 +114,9 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
         // validation feedback immediately.
         return ViewModel.ErrorMessage
             .CombineLatest(ViewModel.StatusMessage, (err, status) => (err, status))
-            .Select(t => (ILayoutNode)(!string.IsNullOrWhiteSpace(t.err)
-                ? new TextNode($"  {t.err}").WithForeground(Color.Red)
-                : !string.IsNullOrWhiteSpace(t.status)
-                    ? new TextNode($"  {t.status}").WithForeground(Color.Green)
-                    : Layouts.Empty()))
+            .Select(t => !string.IsNullOrWhiteSpace(t.err)
+                ? NetclawTuiChrome.BuildStatusLine(t.err, Color.Red)
+                : NetclawTuiChrome.BuildStatusLine(t.status, Color.Green))
             .AsLayout()
             .Height(1);
     }
@@ -158,7 +149,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                     _ =>
                         " [\u2191/\u2193] Navigate  [Enter] Next  [Esc] Back  [Ctrl+Q] Quit"
                 };
-                return (ILayoutNode)new TextNode(text).WithForeground(Color.BrightBlack);
+                return (ILayoutNode)NetclawTuiChrome.BuildKeyHintLine(text);
             })
             .AsLayout()
             .Height(1);
@@ -320,12 +311,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
             })
             .DisposeWith(_stepSubs);
 
-        children.WithChild(new PanelNode()
-            .WithTitle("Name")
-            .WithBorder(BorderStyle.Rounded)
-            .WithBorderColor(Color.Gray)
-            .WithContent(_nameInput)
-            .Height(3));
+        children.WithChild(NetclawTuiChrome.BuildTextInputPanel(_nameInput, "Name"));
 
         children.WithChild(new TextNode("").Height(1));
         children.WithChild(new TextNode("  This is how the provider appears in `netclaw provider list`")
@@ -393,12 +379,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                 })
                 .DisposeWith(_stepSubs);
 
-            children.WithChild(new PanelNode()
-                .WithTitle("API Key")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_apiKeyInput)
-                .Height(3));
+            children.WithChild(NetclawTuiChrome.BuildTextInputPanel(_apiKeyInput, "API Key"));
 
             if (descriptor.Auth.GetApiKeyGuidanceUrl() is { } guidanceUrl)
             {
@@ -426,12 +407,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                 })
                 .DisposeWith(_stepSubs);
 
-            children.WithChild(new PanelNode()
-                .WithTitle("Endpoint")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_endpointInput)
-                .Height(3));
+            children.WithChild(NetclawTuiChrome.BuildTextInputPanel(_endpointInput, "Endpoint"));
 
             children.WithChild(new TextNode("").Height(1));
             children.WithChild(new TextNode($"  {descriptor.DisplayName} runs locally. No authentication required.")
@@ -656,12 +632,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
             .Subscribe(text => ViewModel.ConfirmRename(text))
             .DisposeWith(_stepSubs);
 
-        children.WithChild(new PanelNode()
-            .WithTitle("New name")
-            .WithBorder(BorderStyle.Rounded)
-            .WithBorderColor(Color.Gray)
-            .WithContent(_renameInput)
-            .Height(3));
+        children.WithChild(NetclawTuiChrome.BuildTextInputPanel(_renameInput, "New name"));
 
         children.WithChild(new TextNode("").Height(1));
         children.WithChild(new TextNode("  Renames the provider and cascades the change to any model")
@@ -737,12 +708,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                 })
                 .DisposeWith(_stepSubs);
 
-            children.WithChild(new PanelNode()
-                .WithTitle("Endpoint")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_endpointInput)
-                .Height(3));
+            children.WithChild(NetclawTuiChrome.BuildTextInputPanel(_endpointInput, "Endpoint"));
         }
         else
         {
@@ -764,12 +730,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                 })
                 .DisposeWith(_stepSubs);
 
-            children.WithChild(new PanelNode()
-                .WithTitle("API Key")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_apiKeyInput)
-                .Height(3));
+            children.WithChild(NetclawTuiChrome.BuildTextInputPanel(_apiKeyInput, "API Key"));
 
             if (descriptor.Auth.GetApiKeyGuidanceUrl() is { } guidanceUrl)
             {
