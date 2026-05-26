@@ -128,25 +128,23 @@ internal sealed class ExposureModeValidationService : IHostedService
 
             hasRemoteAuthenticationPath = hasAlternativeRemoteAuthScheme || deviceCount > 0;
 
+            var hasDeviceTokenScheme = _remoteAuthSchemes.Any(s => string.Equals(
+                s.SchemeName,
+                DeviceTokenAuthenticationHandler.SchemeName,
+                StringComparison.Ordinal));
+
             // Wiring-integrity check for tunnel modes.
             //
             // Once LoopbackAuthenticationHandler is gated on RequiresRemoteAuthentication()
-            // (audit finding #24), the device-bearer scheme is the ONLY path a remote
-            // tunnel client can use to authenticate. ReverseProxy has its own auth
-            // topology (forwarded headers + non-loopback bind + TrustedProxies) so it
-            // is excluded from this assertion. For the three tunnel modes
-            // (TailscaleServe, TailscaleFunnel, CloudflareTunnel), if neither an
-            // alternative scheme nor the device-bearer scheme is registered, the daemon
-            // would start cleanly but be unreachable to any legitimate remote caller —
-            // fail loudly at startup with an actionable wiring error rather than
-            // silently serving an unauthenticatable surface.
-            if (_config.ExposureMode.RequiresRemoteAuthentication()
-                && _config.ExposureMode != ExposureMode.ReverseProxy
+            // (audit finding 24), the device-bearer scheme is the ONLY path a remote
+            // tunnel client can use to authenticate. If neither an alternative scheme nor
+            // the device-bearer scheme is registered, the daemon would start cleanly but
+            // be unreachable to any legitimate remote caller — fail loudly at startup
+            // with an actionable wiring error rather than silently serving an
+            // unauthenticatable surface.
+            if (_config.ExposureMode.IsTunnelMode()
                 && !hasAlternativeRemoteAuthScheme
-                && !_remoteAuthSchemes.Any(s => string.Equals(
-                    s.SchemeName,
-                    DeviceTokenAuthenticationHandler.SchemeName,
-                    StringComparison.Ordinal)))
+                && !hasDeviceTokenScheme)
             {
                 const string msg = "Tunnel exposure mode requires the device-bearer authentication scheme to be registered.";
                 const string remediation = "This is an internal wiring error — the DeviceToken authentication scheme must be registered in DI for tunnel exposure modes (tailscale-serve, tailscale-funnel, cloudflare-tunnel).";
