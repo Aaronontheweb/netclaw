@@ -59,9 +59,11 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     // for actor stop, so the bridge wait is being torn down anyway.
     private CancellationTokenSource? _externalCts;
 
-    // Mailbox-thread only. Incremented when ExecuteToolsAsync enters an approval
-    // wait, decremented when it exits. While > 0, SubAgentTimeout re-arms
-    // instead of cancelling: waiting for human approval is legitimate work.
+    // Mailbox-thread only. Tracks tool batches that can enter parent approval
+    // waits and the concrete number of waits currently in-flight. Waiting for
+    // human approval is legitimate work, so the watchdog re-arms instead of
+    // cancelling while this state says a wait is active.
+    private ToolExecutionWatchdogState _toolExecutionWatchdogState = ToolExecutionWatchdogState.None;
     private int _pendingApprovalWaits;
 
     private IParentApprovalBridge? _approvalBridge;
@@ -227,6 +229,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         Receive<ToolExecutionCompleted>(msg =>
         {
+            _toolExecutionWatchdogState = ToolExecutionWatchdogState.None;
             RecordProgress("processing tool results");
 
             // Append tool results as MEAI messages and log each result
@@ -257,6 +260,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         Receive<ToolExecutionFailed>(msg =>
         {
+            _toolExecutionWatchdogState = ToolExecutionWatchdogState.None;
             _log.Error(msg.Cause, "SubAgent [{AgentName}] tool execution failed", _definition.Name);
             Complete(false, $"Tool execution failed: {msg.Cause.Message}");
         });
@@ -277,14 +281,21 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         Receive<SubAgentTimeout>(_ =>
         {
-            // While the sub-agent is blocked on a human approval, "no activity"
-            // is the expected state — re-arm the watchdog so it can still
-            // govern *post-approval* inactivity (e.g. the LLM call after the
-            // tool retry stalls), but never let it cancel the approval wait
-            // itself. The approval await is on _externalCts so even an
-            // accidental _executionCts cancel here would not abort it.
-            if (_pendingApprovalWaits > 0)
+            if (_toolExecutionWatchdogState == ToolExecutionWatchdogState.WaitingForParentApproval)
             {
+                _log.Debug(
+                    "SubAgent [{AgentName}] watchdog tick suppressed while waiting on parent approval ({WaitCount} pending)",
+                    _definition.Name,
+                    _pendingApprovalWaits);
+                return;
+            }
+
+            if (_toolExecutionWatchdogState == ToolExecutionWatchdogState.RunningApprovalCapableTools)
+            {
+                _log.Debug(
+                    "SubAgent [{AgentName}] watchdog tick granted one-cycle grace while tool execution resolves whether parent approval is needed",
+                    _definition.Name);
+                _toolExecutionWatchdogState = ToolExecutionWatchdogState.None;
                 ArmInactivityTimer();
                 return;
             }
@@ -296,22 +307,22 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             Complete(false, $"Subagent timed out: no activity for {_inactivityBudget.TotalSeconds:F0}s.");
         });
 
-        Receive<ApprovalWaitStarted>(_ =>
+        Receive<SubAgentApprovalWaitStarted>(_ =>
         {
             // Cancel the inactivity timer outright on first wait — re-armed
-            // by ApprovalWaitCompleted when the last wait clears. The
-            // SubAgentTimeout handler's `_pendingApprovalWaits > 0` check is
+            // by SubAgentApprovalWaitCompleted when the last wait clears. The
+            // SubAgentTimeout handler's WaitingForParentApproval state check is
             // belt-and-braces for a stale timer fire that arrived ahead of
             // this message in the mailbox.
             if (_pendingApprovalWaits == 0)
-            {
                 Timers.Cancel(TimeoutTimerKey);
-            }
+
+            _toolExecutionWatchdogState = ToolExecutionWatchdogState.WaitingForParentApproval;
             _pendingApprovalWaits++;
             EmitActivity("awaiting human approval");
         });
 
-        Receive<ApprovalWaitCompleted>(_ =>
+        Receive<SubAgentApprovalWaitCompleted>(_ =>
         {
             // Started/Completed are sent as a try/finally pair from
             // ExecuteToolsAsync; FIFO mailbox delivery from a single sender
@@ -328,13 +339,15 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             }
 
             _pendingApprovalWaits--;
+            _toolExecutionWatchdogState = _pendingApprovalWaits == 0
+                ? ToolExecutionWatchdogState.RunningApprovalCapableTools
+                : ToolExecutionWatchdogState.WaitingForParentApproval;
+
             // Re-baseline only when the last approval clears, so concurrent
             // approval waits don't each rearm the same single-key timer
             // (Akka's StartSingleTimer cancels-and-reschedules each call).
             if (_pendingApprovalWaits == 0)
-            {
-                ArmInactivityTimer();
-            }
+                RecordProgress("approval resolved");
         });
 
         // Throttled liveness ping from a streaming LLM call — progress, even
@@ -354,6 +367,9 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         var self = Self;
         var executor = new DispatchingToolExecutor(_toolRegistry, _toolAccessPolicy, _approvalService);
+        _toolExecutionWatchdogState = _approvalBridge is null
+            ? ToolExecutionWatchdogState.None
+            : ToolExecutionWatchdogState.RunningApprovalCapableTools;
 
         _ = ExecuteToolsAsync(
             executor,
@@ -397,6 +413,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         if (_completed) return;
         _completed = true;
 
+        _toolExecutionWatchdogState = ToolExecutionWatchdogState.None;
+        _pendingApprovalWaits = 0;
         _executionCts?.Cancel();
         _externalCts?.Cancel();
         Timers.Cancel(TimeoutTimerKey);
@@ -600,7 +618,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     // external cancellation (parent passivation, daemon
                     // restart, user cancel) aborts the wait; the internal
                     // watchdog cannot.
-                    self.Tell(ApprovalWaitStarted.Instance);
+                    self.Tell(SubAgentApprovalWaitStarted.Instance);
+
                     ParentApprovalDecision decision;
                     try
                     {
@@ -618,7 +637,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     }
                     finally
                     {
-                        self.Tell(ApprovalWaitCompleted.Instance);
+                        self.Tell(SubAgentApprovalWaitCompleted.Instance);
                     }
 
                     if (decision is ParentApprovalDecision.ApprovedOnce
@@ -726,16 +745,23 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         private SubAgentCancelled() { }
     }
 
+    private enum ToolExecutionWatchdogState
+    {
+        None,
+        RunningApprovalCapableTools,
+        WaitingForParentApproval
+    }
+
     /// <summary>
     /// Sent by <see cref="ExecuteToolsAsync"/> immediately before awaiting the
     /// parent approval bridge. Increments the in-flight approval-wait counter
-    /// so <see cref="SubAgentTimeout"/> re-arms instead of cancelling the run
+    /// so <see cref="SubAgentTimeout"/> ignores stale timer ticks
     /// while a human is deciding.
     /// </summary>
-    private sealed class ApprovalWaitStarted
+    private sealed class SubAgentApprovalWaitStarted
     {
-        public static readonly ApprovalWaitStarted Instance = new();
-        private ApprovalWaitStarted() { }
+        public static readonly SubAgentApprovalWaitStarted Instance = new();
+        private SubAgentApprovalWaitStarted() { }
     }
 
     /// <summary>
@@ -744,10 +770,10 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     /// re-baselines the inactivity watchdog so post-approval inactivity is
     /// still governed.
     /// </summary>
-    private sealed class ApprovalWaitCompleted
+    private sealed class SubAgentApprovalWaitCompleted
     {
-        public static readonly ApprovalWaitCompleted Instance = new();
-        private ApprovalWaitCompleted() { }
+        public static readonly SubAgentApprovalWaitCompleted Instance = new();
+        private SubAgentApprovalWaitCompleted() { }
     }
 
     /// <summary>Throttled self-message: the streaming LLM call is still producing output.</summary>
