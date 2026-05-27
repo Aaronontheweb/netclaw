@@ -648,6 +648,10 @@ internal static class NetclawProtoMapper
         if (evt.RequesterPrincipal is not null)
             proto.RequesterPrincipal = (int)evt.RequesterPrincipal.Value;
         proto.OptionKeys.AddRange(evt.OptionKeys);
+        if (evt.ToolName is not null)
+            proto.ToolName = evt.ToolName;
+        if (evt.DisplayText is not null)
+            proto.DisplayText = evt.DisplayText;
         return proto;
     }
 
@@ -659,7 +663,9 @@ internal static class NetclawProtoMapper
             ? (Configuration.PrincipalClassification)proto.RequesterPrincipal
             : null,
         OptionKeys = proto.OptionKeys.ToArray(),
-        PromptId = proto.PromptId
+        PromptId = proto.PromptId,
+        ToolName = proto.HasToolName ? proto.ToolName : null,
+        DisplayText = proto.HasDisplayText ? proto.DisplayText : null
     };
 
     internal static Proto.PendingApprovalPromptClearedProto ToProto(PendingApprovalPromptCleared evt) => new()

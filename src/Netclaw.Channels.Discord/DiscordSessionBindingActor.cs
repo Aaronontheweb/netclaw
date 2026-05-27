@@ -800,7 +800,9 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             pending!.Request,
             pending!.CallId,
             selectedKey,
-            message.SenderId.Value);
+            message.SenderId.Value,
+            persistedToolName: pending.ToolName,
+            persistedDisplayText: pending.DisplayText);
         return true;
     }
 
@@ -913,11 +915,15 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
                 pending.Request,
                 pending.CallId,
                 message.SelectedKey,
-                message.SenderId.Value);
+                message.SenderId.Value,
+                persistedToolName: pending.ToolName,
+                persistedDisplayText: pending.DisplayText);
         }
         else if (message.PromptMessageId is { } payloadPromptMessageId)
         {
-            // Cold-spawn redraw — session has accepted; redraw via payload ID.
+            // Cold-spawn redraw — no local pending entry. The journal either has no
+            // PendingApprovalPromptTracked for this call, or one from before tool name
+            // + display text were persisted. Render the generic banner so buttons clear.
             await TryResolveApprovalPromptAsync(
                 payloadPromptMessageId,
                 request: null,
@@ -945,16 +951,26 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
         ToolInteractionRequest? request,
         Netclaw.Tools.ToolCallId callId,
         string selectedKey,
-        string senderId)
+        string senderId,
+        string? persistedToolName = null,
+        string? persistedDisplayText = null)
     {
         if (promptMessageId is not { } messageId)
             return;
 
         try
         {
+            // Hot path uses the in-memory request. Cold-spawn path uses the persisted
+            // tool name + display text when present (PendingApprovalPromptTracked
+            // carried them); legacy journals without the fields fall back to the
+            // generic banner.
             var resolvedText = request is not null
                 ? DiscordApprovalPromptBuilder.BuildResolvedPromptText(request, selectedKey, senderId)
-                : DiscordApprovalPromptBuilder.BuildResolvedPromptTextWithoutRequest(selectedKey, senderId);
+                : DiscordApprovalPromptBuilder.BuildResolvedPromptTextWithoutRequest(
+                    selectedKey,
+                    senderId,
+                    toolName: persistedToolName,
+                    displayText: persistedDisplayText);
 
             using var cts = new CancellationTokenSource(OperationTimeout);
             await _dependencies.ReplyClient.UpdateMessageAsync(
@@ -1097,7 +1113,11 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
                         RequesterSenderId = pendingApproval.RequesterSenderId,
                         RequesterPrincipal = pendingApproval.RequesterPrincipal,
                         OptionKeys = pendingApproval.OptionKeys,
-                        PromptId = promptMessageId.Value.Value
+                        PromptId = promptMessageId.Value.Value,
+                        ToolName = pendingApproval.ToolName,
+                        DisplayText = ApprovalDisplayTextFormatter.Truncate(
+                            pendingApproval.DisplayText,
+                            PendingApprovalPromptTracked.MaxPersistedDisplayTextChars)
                     }, ApplyPendingApprovalPromptTracked);
                 }
                 else
@@ -1626,7 +1646,9 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             tracked.RequesterSenderId,
             tracked.RequesterPrincipal,
             tracked.OptionKeys,
-            new DiscordMessageId(tracked.PromptId)));
+            new DiscordMessageId(tracked.PromptId),
+            toolName: tracked.ToolName,
+            displayText: tracked.DisplayText));
     }
 
     private void ApplyPendingApprovalPromptCleared(PendingApprovalPromptCleared cleared)
