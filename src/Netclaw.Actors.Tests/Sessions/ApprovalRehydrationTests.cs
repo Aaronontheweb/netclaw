@@ -865,7 +865,10 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
         // Drain through the redriven shell_execute result, the LLM continuation
         // call that produces the read_file batch, and the read_file result.
         // TurnCompleted comes last when the model returns a plain text reply.
-        var completed = await ExpectTurnCompletedAsync(subscriberB, TimeSpan.FromSeconds(10));
+        var completed = await subscriberB.FishForMessageAsync<TurnCompleted>(
+            _ => true,
+            TimeSpan.FromSeconds(10),
+            cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(TurnOutcome.Completed, completed.Outcome);
 
         // Both tool calls executed: the redriven shell_execute AND the
@@ -882,29 +885,6 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
         Assert.Equal(TrustBoundary.Team, _toolExecutor.LastExecutionBoundary);
         Assert.Equal(ChannelType.Slack.ToWireValue(), _toolExecutor.LastExecutionChannelType);
         Assert.True(_toolExecutor.LastSupportsInteractiveApproval);
-    }
-
-    private static async Task<TurnCompleted> ExpectTurnCompletedAsync(
-        Akka.TestKit.TestProbe probe,
-        TimeSpan timeout)
-    {
-        // The recovered turn emits a sequence of ToolResultOutput / TextOutput /
-        // ToolCallOutput messages in addition to the final TurnCompleted; drain
-        // anything that isn't TurnCompleted within the same overall budget.
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            var remaining = deadline - DateTime.UtcNow;
-            if (remaining <= TimeSpan.Zero)
-                break;
-
-            var next = await probe.ReceiveOneAsync(remaining, TestContext.Current.CancellationToken);
-            if (next is TurnCompleted completed)
-                return completed;
-        }
-
-        throw new TimeoutException(
-            $"TurnCompleted was not received within {timeout}.");
     }
 
     [Fact]
