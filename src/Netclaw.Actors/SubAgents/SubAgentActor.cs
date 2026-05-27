@@ -50,6 +50,18 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private int _toolIterationCount;
     private IActorRef _replyTo = ActorRefs.Nobody;
     private CancellationTokenSource? _executionCts;
+
+    // Cancelled only by explicit external triggers (parent-passed cancellation
+    // or SubAgentCancelled), never by the internal inactivity watchdog. Threaded
+    // into approval-bridge waits so a slow human approver does not let the
+    // watchdog cancel a legitimate await on user input.
+    private CancellationTokenSource? _externalCts;
+
+    // Mailbox-thread only. Incremented when ExecuteToolsAsync enters an approval
+    // wait, decremented when it exits. While > 0, SubAgentTimeout re-arms
+    // instead of cancelling: waiting for human approval is legitimate work.
+    private int _pendingApprovalWaits;
+
     private IParentApprovalBridge? _approvalBridge;
     private ChannelWriter<ToolActivityUpdate>? _activitySink;
     private TimeSpan _inactivityBudget;
@@ -98,6 +110,23 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         return Props.Create(() => new SubAgentActor(definition, chatClient, toolAccessPolicy, approvalService));
     }
 
+    /// <summary>
+    /// Final cleanup if the actor is stopped externally (parent supervision,
+    /// <c>PoisonPill</c>) without going through <see cref="Complete"/>. Cancels
+    /// and disposes both CTSes so any in-flight approval wait running on the
+    /// thread pool unblocks promptly. <see cref="Complete"/> already nulls the
+    /// CTSes, so the null-conditional access is intentional.
+    /// </summary>
+    protected override void PostStop()
+    {
+        _executionCts?.Cancel();
+        _externalCts?.Cancel();
+        _executionCts?.Dispose();
+        _externalCts?.Dispose();
+        _externalCancellationRegistration.Dispose();
+        base.PostStop();
+    }
+
     private void Idle()
     {
         Receive<RunSubAgent>(msg =>
@@ -137,6 +166,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             _toolExecutionContext.ProjectDirectory = msg.ParentProjectDirectory;
             _toolExecutionContext.SupportsInteractiveApproval = _approvalBridge is not null;
             _executionCts = new CancellationTokenSource();
+            _externalCts = new CancellationTokenSource();
             var self = Self; // Capture before callback — Self requires active actor context
             _externalCancellationRegistration = msg.Cancellation.Register(() => self.Tell(SubAgentCancelled.Instance));
 
@@ -238,17 +268,45 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         Receive<SubAgentCancelled>(_ =>
         {
             _executionCts?.Cancel();
+            _externalCts?.Cancel();
             _log.Warning("SubAgent [{AgentName}] cancelled by parent", _definition.Name);
             Complete(false, "Subagent cancelled by parent");
         });
 
         Receive<SubAgentTimeout>(_ =>
         {
+            // While the sub-agent is blocked on a human approval, "no activity"
+            // is the expected state — re-arm the watchdog so it can still
+            // govern *post-approval* inactivity (e.g. the LLM call after the
+            // tool retry stalls), but never let it cancel the approval wait
+            // itself. The approval await is on _externalCts so even an
+            // accidental _executionCts cancel here would not abort it.
+            if (_pendingApprovalWaits > 0)
+            {
+                ArmInactivityTimer();
+                return;
+            }
+
             _executionCts?.Cancel();
             _log.Warning(
                 "SubAgent [{AgentName}] timed out: no activity for {Budget}s after {Iterations} tool iterations",
                 _definition.Name, _inactivityBudget.TotalSeconds, _toolIterationCount);
             Complete(false, $"Subagent timed out: no activity for {_inactivityBudget.TotalSeconds:F0}s.");
+        });
+
+        Receive<ApprovalWaitStarted>(_ =>
+        {
+            _pendingApprovalWaits++;
+            EmitActivity("awaiting human approval");
+        });
+
+        Receive<ApprovalWaitCompleted>(_ =>
+        {
+            _pendingApprovalWaits = Math.Max(0, _pendingApprovalWaits - 1);
+            // Re-baseline the watchdog so it does not fire immediately on the
+            // post-approval retry just because no progress event landed during
+            // the human wait.
+            ArmInactivityTimer();
         });
 
         // Throttled liveness ping from a streaming LLM call — progress, even
@@ -274,6 +332,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             toolCalls,
             _toolExecutionContext,
             _executionCts?.Token ?? CancellationToken.None,
+            _externalCts?.Token ?? CancellationToken.None,
             self,
             _approvalBridge);
     }
@@ -301,10 +360,14 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private void Complete(bool success, string output)
     {
         _executionCts?.Cancel();
+        _externalCts?.Cancel();
         Timers.Cancel(TimeoutTimerKey);
         _externalCancellationRegistration.Dispose();
         _executionCts?.Dispose();
+        _externalCts?.Dispose();
         _executionCts = null;
+        _externalCts = null;
+        _pendingApprovalWaits = 0;
 
         _log.Info("SubAgent [{AgentName}] completed (success={Success}, output={OutputLength} chars, iterations={Iterations})",
             _definition.Name, success, output.Length, _toolIterationCount);
@@ -463,6 +526,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         List<FunctionCallContent> toolCalls,
         ToolExecutionContext executionContext,
         CancellationToken ct,
+        CancellationToken externalCt,
         IActorRef self,
         IParentApprovalBridge? approvalBridge = null)
     {
@@ -492,17 +556,32 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     var bridgeOptions = ctx.Options
                         .Select(o => new ParentApprovalOption(o.Key.Value, o.Label))
                         .ToList();
-                    var decision = await approvalBridge.RequestApprovalAsync(
-                        new ToolCallId(tc.CallId),
-                        ctx.ToolName,
-                        ctx.DisplayText,
-                        ctx.Patterns,
-                        ctx.CandidateVerbs,
-                        bridgeCandidates,
-                        ctx.Cwd,
-                        bridgeOptions,
-                        ctx.IsMessy,
-                        ct);
+                    // Signal the actor that an approval wait is starting BEFORE
+                    // the await so the inactivity watchdog cannot cancel the
+                    // wait. The bridge call uses externalCt — only explicit
+                    // external cancellation (parent passivation, daemon
+                    // restart, user cancel) aborts the wait; the internal
+                    // watchdog cannot.
+                    self.Tell(ApprovalWaitStarted.Instance);
+                    ParentApprovalDecision decision;
+                    try
+                    {
+                        decision = await approvalBridge.RequestApprovalAsync(
+                            new ToolCallId(tc.CallId),
+                            ctx.ToolName,
+                            ctx.DisplayText,
+                            ctx.Patterns,
+                            ctx.CandidateVerbs,
+                            bridgeCandidates,
+                            ctx.Cwd,
+                            bridgeOptions,
+                            ctx.IsMessy,
+                            externalCt);
+                    }
+                    finally
+                    {
+                        self.Tell(ApprovalWaitCompleted.Instance);
+                    }
 
                     if (decision is ParentApprovalDecision.ApprovedOnce
                         or ParentApprovalDecision.ApprovedSession
@@ -596,6 +675,30 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     {
         public static readonly SubAgentCancelled Instance = new();
         private SubAgentCancelled() { }
+    }
+
+    /// <summary>
+    /// Sent by <see cref="ExecuteToolsAsync"/> immediately before awaiting the
+    /// parent approval bridge. Increments the in-flight approval-wait counter
+    /// so <see cref="SubAgentTimeout"/> re-arms instead of cancelling the run
+    /// while a human is deciding.
+    /// </summary>
+    private sealed class ApprovalWaitStarted
+    {
+        public static readonly ApprovalWaitStarted Instance = new();
+        private ApprovalWaitStarted() { }
+    }
+
+    /// <summary>
+    /// Sent by <see cref="ExecuteToolsAsync"/> in a <c>finally</c> after the
+    /// approval bridge call returns or throws. Decrements the counter and
+    /// re-baselines the inactivity watchdog so post-approval inactivity is
+    /// still governed.
+    /// </summary>
+    private sealed class ApprovalWaitCompleted
+    {
+        public static readonly ApprovalWaitCompleted Instance = new();
+        private ApprovalWaitCompleted() { }
     }
 
     /// <summary>Throttled self-message: the streaming LLM call is still producing output.</summary>
