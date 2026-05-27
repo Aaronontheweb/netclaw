@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.7.3"
+  version: "2.8.0"
 ---
 
 # Netclaw Operations
@@ -641,6 +641,7 @@ and a `type` (well-known identifier). Manage them with `netclaw provider`:
 | `anthropic` | API key | `sk-ant-...` |
 | `openrouter` | API key | `sk-or-...` |
 | `github-copilot` | OAuth device flow only | Requires active Copilot subscription on the GitHub account |
+| `veniceai` | API key | OpenAI-compatible at `https://api.venice.ai/api/v1`. Suppresses Venice's prepended system prompt by default; opt in via `VendorOptions.IncludeVeniceSystemPrompt = true` |
 
 Provider-specific behavior toggles belong under
 `Providers.<name>.VendorOptions`. Netclaw keeps that bag opaque at the core
