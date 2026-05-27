@@ -895,10 +895,13 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         }
         else if (message.PromptPostId is { } payloadPromptPostId)
         {
-            // Cold-spawn path with no local pending entry — either no journal record
-            // for this call, or one from before tool name + display text were
-            // persisted. The Mattermost action callback always carries the prompt's
-            // post_id; render the generic banner so buttons clear. See issue #939.
+            // Cold-spawn path with no local pending entry for this CallId (no
+            // journal record replayed, or the entry was already cleared). The
+            // Mattermost action callback always carries the prompt's post_id;
+            // render the generic banner so the buttons clear. Pre-0.21 journals
+            // that DO replay take the upper `pending is not null` branch — they
+            // render generically via the !IsNullOrEmpty fallback inside the
+            // builder, not here. See issue #939.
             await TryResolveApprovalPromptAsync(
                 payloadPromptPostId,
                 request: null,
@@ -1093,9 +1096,14 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                         OptionKeys = pendingApproval.OptionKeys,
                         PromptId = promptPostId.Value.Value,
                         ToolName = pendingApproval.ToolName,
-                        DisplayText = ApprovalDisplayTextFormatter.Truncate(
-                            pendingApproval.DisplayText,
-                            PendingApprovalPromptTracked.MaxPersistedDisplayTextChars)
+                        // Preserve null-vs-set semantics on the wire: Truncate
+                        // returns string.Empty for null input, which would round-
+                        // trip as DisplayText="" with HasDisplayText=true.
+                        DisplayText = string.IsNullOrEmpty(pendingApproval.DisplayText)
+                            ? null
+                            : ApprovalDisplayTextFormatter.Truncate(
+                                pendingApproval.DisplayText,
+                                PendingApprovalPromptTracked.MaxPersistedDisplayTextChars)
                     }, ApplyPendingApprovalPromptTracked);
                 }
                 else

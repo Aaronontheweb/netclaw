@@ -194,6 +194,13 @@ internal static class SlackApprovalBlockBuilder
         string? toolName = null,
         string? displayText = null)
     {
+        // Match the hot-path text variant (BuildResolvedApprovalText) formatting
+        // so the same approval renders identically pre-passivation and post-
+        // recovery: no escape on the tool/request code-fenced fields, no bold or
+        // escape on the resolution line. Block-Kit variants escape because they
+        // render inside markdown SectionBlocks; the text variant is the
+        // notification body which Slack already treats as code-fence-safe inside
+        // the backticks.
         var statusPrefix = selectedKey == ApprovalOptionKeys.Deny
             ? ":no_entry:"
             : ":white_check_mark:";
@@ -206,10 +213,10 @@ internal static class SlackApprovalBlockBuilder
         if (!string.IsNullOrEmpty(toolName) && !string.IsNullOrEmpty(displayText))
         {
             lines.Add(
-                $"> `{EscapeMarkdown(toolName)}`: `{EscapeMarkdown(ApprovalDisplayTextFormatter.Truncate(displayText, MaxDisplayTextChars))}`");
+                $"> `{toolName}`: `{ApprovalDisplayTextFormatter.Truncate(displayText, MaxDisplayTextChars)}`");
         }
 
-        lines.Add($"*{EscapeMarkdown(BuildGenericResolutionLine(selectedKey))}*");
+        lines.Add(BuildGenericResolutionLine(selectedKey));
 
         return string.Join("\n", lines);
     }

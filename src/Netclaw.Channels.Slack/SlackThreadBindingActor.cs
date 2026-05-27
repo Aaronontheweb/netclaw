@@ -1203,9 +1203,14 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
                         OptionKeys = pendingApproval.OptionKeys,
                         PromptId = promptMessageTs.Value.Value,
                         ToolName = pendingApproval.ToolName,
-                        DisplayText = ApprovalDisplayTextFormatter.Truncate(
-                            pendingApproval.DisplayText,
-                            PendingApprovalPromptTracked.MaxPersistedDisplayTextChars)
+                        // Preserve null-vs-set semantics on the wire: Truncate
+                        // returns string.Empty for null input, which would round-
+                        // trip as DisplayText="" with HasDisplayText=true.
+                        DisplayText = string.IsNullOrEmpty(pendingApproval.DisplayText)
+                            ? null
+                            : ApprovalDisplayTextFormatter.Truncate(
+                                pendingApproval.DisplayText,
+                                PendingApprovalPromptTracked.MaxPersistedDisplayTextChars)
                     }, ApplyPendingApprovalPromptTracked);
                 }
                 else
@@ -1504,11 +1509,16 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         }
         else if (message.PromptMessageTs is { } payloadPromptTs)
         {
-            // Cold-spawn redraw — the binding has no local pending entry at all (no
-            // journal record found, or the journal preceded the tool-name/display-text
-            // fields). The click payload still carries the prompt's message TS and the
-            // session has now accepted the response; render the generic banner so
-            // buttons clear.
+            // Cold-spawn redraw — no local pending entry exists for this CallId
+            // (the journal didn't replay a PendingApprovalPromptTracked event for
+            // it, typically because the binding was re-created without recovery
+            // or the entry was cleared before the click landed). The click
+            // payload still carries the prompt's message TS and the session has
+            // accepted the response; render the generic banner so the buttons
+            // clear. NOTE: pre-0.21 journals that DO replay (with no tool name /
+            // display text) take the upper `pending is not null` branch instead
+            // — they render the generic banner via the !IsNullOrEmpty fallback
+            // inside the builder, not via this branch.
             await TryResolveApprovalPromptAsync(
                 payloadPromptTs,
                 request: null,

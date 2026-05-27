@@ -921,9 +921,13 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
         }
         else if (message.PromptMessageId is { } payloadPromptMessageId)
         {
-            // Cold-spawn redraw — no local pending entry. The journal either has no
-            // PendingApprovalPromptTracked for this call, or one from before tool name
-            // + display text were persisted. Render the generic banner so buttons clear.
+            // Cold-spawn redraw — no local pending entry for this CallId (no
+            // PendingApprovalPromptTracked replayed, or the entry was already
+            // cleared). The click payload still carries the prompt's message id
+            // and the session has accepted the response; render the generic
+            // banner so the buttons clear. Pre-0.21 journals that DO replay take
+            // the upper `pending is not null` branch — they render generically
+            // via the !IsNullOrEmpty fallback inside the builder, not here.
             await TryResolveApprovalPromptAsync(
                 payloadPromptMessageId,
                 request: null,
@@ -1115,9 +1119,14 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
                         OptionKeys = pendingApproval.OptionKeys,
                         PromptId = promptMessageId.Value.Value,
                         ToolName = pendingApproval.ToolName,
-                        DisplayText = ApprovalDisplayTextFormatter.Truncate(
-                            pendingApproval.DisplayText,
-                            PendingApprovalPromptTracked.MaxPersistedDisplayTextChars)
+                        // Preserve null-vs-set semantics on the wire: Truncate
+                        // returns string.Empty for null input, which would round-
+                        // trip as DisplayText="" with HasDisplayText=true.
+                        DisplayText = string.IsNullOrEmpty(pendingApproval.DisplayText)
+                            ? null
+                            : ApprovalDisplayTextFormatter.Truncate(
+                                pendingApproval.DisplayText,
+                                PendingApprovalPromptTracked.MaxPersistedDisplayTextChars)
                     }, ApplyPendingApprovalPromptTracked);
                 }
                 else
