@@ -489,6 +489,67 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
+    public async Task Waiting_for_parent_approval_does_not_trip_inactivity_timeout()
+    {
+        var fakeTool = new FakeNetclawTool("shell_execute", "ok");
+        var toolConfig = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
+        toolConfig.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
+        {
+            ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
+            {
+                ["shell_execute"] = ToolApprovalMode.Approval
+            }
+        };
+        var policy = new ToolAccessPolicy(
+            toolConfig,
+            new EffectivePolicyDefaults(
+                DeploymentPosture.Personal,
+                TrustAudience.Personal,
+                ShellExecutionMode.HostAllowed,
+                UsedStrictFallback: false),
+            new ShellCommandPolicy());
+        var fakeClient = new FakeChatClient
+        {
+            ToolCallsOnFirstCall =
+            [
+                new FunctionCallContent("call-blocked-approval", "shell_execute",
+                    new Dictionary<string, object?> { ["Command"] = "git push origin main" })
+            ]
+        };
+        var approvalBridge = new BlockingParentApprovalBridge();
+        var definition = CreateDefinition([fakeTool]);
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient, policy, approvalService: null));
+        var replyProbe = CreateTestProbe("approval-wait-probe");
+
+        agent.Tell(new RunSubAgent
+        {
+            Task = "Run the shell tool after approval",
+            Timeout = TimeSpan.FromMilliseconds(200),
+            ApprovalBridge = approvalBridge,
+            Audience = TrustAudience.Personal,
+        }, replyProbe.Ref);
+
+        await approvalBridge.RequestStarted.Task.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+
+        await replyProbe.ExpectNoMsgAsync(
+            TimeSpan.FromMilliseconds(500),
+            TestContext.Current.CancellationToken);
+
+        approvalBridge.Complete(ParentApprovalDecision.ApprovedOnce);
+
+        var result = await replyProbe.ExpectMsgAsync<SubAgentResult>(
+            TimeSpan.FromSeconds(5),
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, approvalBridge.RequestCount);
+        Assert.True(fakeTool.WasCalled);
+        Assert.Contains("Response #2", result.Output);
+    }
+
+    [Fact]
     public async Task Max_iterations_forces_text_response()
     {
         var fakeTool = new FakeNetclawTool("looper", "loop result");
@@ -868,6 +929,37 @@ internal sealed class RecordingParentApprovalBridge(ParentApprovalDecision decis
         RequestedOptions = options;
         return Task.FromResult(decisionToReturn);
     }
+}
+
+internal sealed class BlockingParentApprovalBridge : IParentApprovalBridge
+{
+    private readonly TaskCompletionSource<ParentApprovalDecision> _decision =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public int RequestCount { get; private set; }
+
+    public TaskCompletionSource<object?> RequestStarted { get; } =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public async Task<ParentApprovalDecision> RequestApprovalAsync(
+        ToolCallId callId,
+        string toolName,
+        string displayText,
+        IReadOnlyList<string> patterns,
+        IReadOnlyList<string> candidateVerbs,
+        IReadOnlyList<ParentApprovalCandidate> candidates,
+        string? cwd,
+        IReadOnlyList<ParentApprovalOption> options,
+        bool isMessy,
+        CancellationToken ct)
+    {
+        RequestCount++;
+        RequestStarted.TrySetResult(null);
+        return await _decision.Task.WaitAsync(ct);
+    }
+
+    public void Complete(ParentApprovalDecision decision)
+        => _decision.TrySetResult(decision);
 }
 
 internal sealed class SequencedToolCallChatClient(IReadOnlyList<FunctionCallContent> toolCalls) : IChatClient

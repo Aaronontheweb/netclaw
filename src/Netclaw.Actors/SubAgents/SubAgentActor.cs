@@ -53,6 +53,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private IParentApprovalBridge? _approvalBridge;
     private ChannelWriter<ToolActivityUpdate>? _activitySink;
     private TimeSpan _inactivityBudget;
+    private bool _awaitingPotentialApproval;
+    private int _pendingApprovalWaits;
 
     public ITimerScheduler Timers { get; set; } = null!;
     private CancellationTokenRegistration _externalCancellationRegistration;
@@ -195,6 +197,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         Receive<ToolExecutionCompleted>(msg =>
         {
+            _awaitingPotentialApproval = false;
             RecordProgress("processing tool results");
 
             // Append tool results as MEAI messages and log each result
@@ -225,6 +228,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         Receive<ToolExecutionFailed>(msg =>
         {
+            _awaitingPotentialApproval = false;
             _log.Error(msg.Cause, "SubAgent [{AgentName}] tool execution failed", _definition.Name);
             Complete(false, $"Tool execution failed: {msg.Cause.Message}");
         });
@@ -244,11 +248,47 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         Receive<SubAgentTimeout>(_ =>
         {
+            if (_pendingApprovalWaits > 0)
+            {
+                _log.Debug(
+                    "SubAgent [{AgentName}] watchdog tick suppressed while waiting on parent approval ({WaitCount} pending)",
+                    _definition.Name,
+                    _pendingApprovalWaits);
+                ArmInactivityTimer();
+                return;
+            }
+
+            if (_awaitingPotentialApproval)
+            {
+                _log.Debug(
+                    "SubAgent [{AgentName}] watchdog tick granted one-cycle grace while tool execution resolves whether parent approval is needed",
+                    _definition.Name);
+                _awaitingPotentialApproval = false;
+                ArmInactivityTimer();
+                return;
+            }
+
             _executionCts?.Cancel();
             _log.Warning(
                 "SubAgent [{AgentName}] timed out: no activity for {Budget}s after {Iterations} tool iterations",
                 _definition.Name, _inactivityBudget.TotalSeconds, _toolIterationCount);
             Complete(false, $"Subagent timed out: no activity for {_inactivityBudget.TotalSeconds:F0}s.");
+        });
+
+        Receive<SubAgentApprovalWaitStarted>(_ =>
+        {
+            _awaitingPotentialApproval = false;
+            _pendingApprovalWaits++;
+        });
+
+        Receive<SubAgentApprovalWaitCompleted>(_ =>
+        {
+            _awaitingPotentialApproval = false;
+            if (_pendingApprovalWaits == 0)
+                return;
+
+            _pendingApprovalWaits--;
+            RecordProgress("approval resolved");
         });
 
         // Throttled liveness ping from a streaming LLM call — progress, even
@@ -268,6 +308,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         var self = Self;
         var executor = new DispatchingToolExecutor(_toolRegistry, _toolAccessPolicy, _approvalService);
+        _awaitingPotentialApproval = _approvalBridge is not null;
 
         _ = ExecuteToolsAsync(
             executor,
@@ -300,6 +341,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     private void Complete(bool success, string output)
     {
+        _awaitingPotentialApproval = false;
+        _pendingApprovalWaits = 0;
         _executionCts?.Cancel();
         Timers.Cancel(TimeoutTimerKey);
         _externalCancellationRegistration.Dispose();
@@ -492,17 +535,27 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     var bridgeOptions = ctx.Options
                         .Select(o => new ParentApprovalOption(o.Key.Value, o.Label))
                         .ToList();
-                    var decision = await approvalBridge.RequestApprovalAsync(
-                        new ToolCallId(tc.CallId),
-                        ctx.ToolName,
-                        ctx.DisplayText,
-                        ctx.Patterns,
-                        ctx.CandidateVerbs,
-                        bridgeCandidates,
-                        ctx.Cwd,
-                        bridgeOptions,
-                        ctx.IsMessy,
-                        ct);
+                    self.Tell(SubAgentApprovalWaitStarted.Instance);
+
+                    ParentApprovalDecision decision;
+                    try
+                    {
+                        decision = await approvalBridge.RequestApprovalAsync(
+                            new ToolCallId(tc.CallId),
+                            ctx.ToolName,
+                            ctx.DisplayText,
+                            ctx.Patterns,
+                            ctx.CandidateVerbs,
+                            bridgeCandidates,
+                            ctx.Cwd,
+                            bridgeOptions,
+                            ctx.IsMessy,
+                            ct);
+                    }
+                    finally
+                    {
+                        self.Tell(SubAgentApprovalWaitCompleted.Instance);
+                    }
 
                     if (decision is ParentApprovalDecision.ApprovedOnce
                         or ParentApprovalDecision.ApprovedSession
@@ -596,6 +649,18 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     {
         public static readonly SubAgentCancelled Instance = new();
         private SubAgentCancelled() { }
+    }
+
+    private sealed class SubAgentApprovalWaitStarted
+    {
+        public static readonly SubAgentApprovalWaitStarted Instance = new();
+        private SubAgentApprovalWaitStarted() { }
+    }
+
+    private sealed class SubAgentApprovalWaitCompleted
+    {
+        public static readonly SubAgentApprovalWaitCompleted Instance = new();
+        private SubAgentApprovalWaitCompleted() { }
     }
 
     /// <summary>Throttled self-message: the streaming LLM call is still producing output.</summary>
