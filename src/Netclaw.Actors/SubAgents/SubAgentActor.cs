@@ -53,7 +53,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private IParentApprovalBridge? _approvalBridge;
     private ChannelWriter<ToolActivityUpdate>? _activitySink;
     private TimeSpan _inactivityBudget;
-    private bool _awaitingPotentialApproval;
+    private ToolExecutionWatchdogState _toolExecutionWatchdogState = ToolExecutionWatchdogState.None;
     private int _pendingApprovalWaits;
 
     public ITimerScheduler Timers { get; set; } = null!;
@@ -197,7 +197,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         Receive<ToolExecutionCompleted>(msg =>
         {
-            _awaitingPotentialApproval = false;
+            _toolExecutionWatchdogState = ToolExecutionWatchdogState.None;
             RecordProgress("processing tool results");
 
             // Append tool results as MEAI messages and log each result
@@ -228,7 +228,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         Receive<ToolExecutionFailed>(msg =>
         {
-            _awaitingPotentialApproval = false;
+            _toolExecutionWatchdogState = ToolExecutionWatchdogState.None;
             _log.Error(msg.Cause, "SubAgent [{AgentName}] tool execution failed", _definition.Name);
             Complete(false, $"Tool execution failed: {msg.Cause.Message}");
         });
@@ -248,7 +248,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         Receive<SubAgentTimeout>(_ =>
         {
-            if (_pendingApprovalWaits > 0)
+            if (_toolExecutionWatchdogState == ToolExecutionWatchdogState.WaitingForParentApproval)
             {
                 _log.Debug(
                     "SubAgent [{AgentName}] watchdog tick suppressed while waiting on parent approval ({WaitCount} pending)",
@@ -258,12 +258,12 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 return;
             }
 
-            if (_awaitingPotentialApproval)
+            if (_toolExecutionWatchdogState == ToolExecutionWatchdogState.RunningApprovalCapableTools)
             {
                 _log.Debug(
                     "SubAgent [{AgentName}] watchdog tick granted one-cycle grace while tool execution resolves whether parent approval is needed",
                     _definition.Name);
-                _awaitingPotentialApproval = false;
+                _toolExecutionWatchdogState = ToolExecutionWatchdogState.None;
                 ArmInactivityTimer();
                 return;
             }
@@ -277,17 +277,19 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         Receive<SubAgentApprovalWaitStarted>(_ =>
         {
-            _awaitingPotentialApproval = false;
+            _toolExecutionWatchdogState = ToolExecutionWatchdogState.WaitingForParentApproval;
             _pendingApprovalWaits++;
         });
 
         Receive<SubAgentApprovalWaitCompleted>(_ =>
         {
-            _awaitingPotentialApproval = false;
             if (_pendingApprovalWaits == 0)
                 return;
 
             _pendingApprovalWaits--;
+            _toolExecutionWatchdogState = _pendingApprovalWaits == 0
+                ? ToolExecutionWatchdogState.RunningApprovalCapableTools
+                : ToolExecutionWatchdogState.WaitingForParentApproval;
             RecordProgress("approval resolved");
         });
 
@@ -308,7 +310,9 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         var self = Self;
         var executor = new DispatchingToolExecutor(_toolRegistry, _toolAccessPolicy, _approvalService);
-        _awaitingPotentialApproval = _approvalBridge is not null;
+        _toolExecutionWatchdogState = _approvalBridge is null
+            ? ToolExecutionWatchdogState.None
+            : ToolExecutionWatchdogState.RunningApprovalCapableTools;
 
         _ = ExecuteToolsAsync(
             executor,
@@ -341,7 +345,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     private void Complete(bool success, string output)
     {
-        _awaitingPotentialApproval = false;
+        _toolExecutionWatchdogState = ToolExecutionWatchdogState.None;
         _pendingApprovalWaits = 0;
         _executionCts?.Cancel();
         Timers.Cancel(TimeoutTimerKey);
@@ -649,6 +653,13 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     {
         public static readonly SubAgentCancelled Instance = new();
         private SubAgentCancelled() { }
+    }
+
+    private enum ToolExecutionWatchdogState
+    {
+        None,
+        RunningApprovalCapableTools,
+        WaitingForParentApproval
     }
 
     private sealed class SubAgentApprovalWaitStarted

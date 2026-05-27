@@ -3835,13 +3835,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     /// <see cref="PendingToolInteraction"/>'s persisted trust fields. Used only
     /// during cold-recovery re-drive to rehydrate <see cref="_currentTurnSource"/>
     /// so subsequent tool dispatches in the recovered turn read the correct
-     /// audience/boundary/channel-type. The stable adopted-context provenance
-     /// needed by downstream safety checks also survives here, but the runtime-only
-     /// fields on
-     /// <see cref="MessageSource"/> (AckTarget, ReminderId, BackgroundJobId,
-     /// adopted-context window/projection entries, MessageId, TurnId) are left at their defaults —
-     /// they belong to the original live transport invocation and cannot be
-     /// reconstructed from journal state. Returns null when the pending record
+    /// audience/boundary/channel-type. The stable adopted-context provenance
+    /// needed by downstream safety checks also survives here, but the runtime-only
+    /// fields on <see cref="MessageSource"/> (AckTarget, ReminderId,
+    /// BackgroundJobId, adopted-context window/projection entries, MessageId,
+    /// TurnId) are left at their defaults — they belong to the original live
+    /// transport invocation and cannot be reconstructed from journal state.
+    /// Returns null when the pending record
     /// lacks enough state to construct a usable source (no channel type, no
     /// requester sender id); the caller surfaces a warning per the
     /// no-silent-fallbacks rule.
