@@ -283,6 +283,8 @@ message PendingApprovalPromptTrackedProto {
   optional int32 requester_principal = 3;
   repeated string option_keys = 4;
   string prompt_id = 5;
+  optional string tool_name = 6;
+  optional string display_text = 7;
 }
 
 message PendingApprovalPromptClearedProto {
