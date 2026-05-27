@@ -524,7 +524,13 @@ public class SubAgentActorTests : TestKit
             },
             TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
-        // Hold approval well past the inactivity budget, then approve.
+        // Deterministic sync: wait until the sub-agent has actually entered
+        // the approval wait, then hold the wait well past the 250ms budget
+        // (4x) to prove the watchdog stays suppressed. Task.Delay is required
+        // here because the property under test IS that real time elapses
+        // without the watchdog firing — there is no observable condition to
+        // poll on.
+        await approvalBridge.EnteredApprovalWait.WaitAsync(TestContext.Current.CancellationToken);
         await Task.Delay(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
         releaseSignal.SetResult(ParentApprovalDecision.ApprovedOnce);
 
@@ -570,13 +576,20 @@ public class SubAgentActorTests : TestKit
             },
             TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
-        // Give the sub-agent a moment to enter the approval wait, then cancel.
-        await Task.Delay(TimeSpan.FromMilliseconds(200), TestContext.Current.CancellationToken);
+        // Deterministic: wait until the sub-agent is actually inside the
+        // approval wait before cancelling. Without this signal the cancel can
+        // race the bridge call entry and the test asserts on a window that
+        // doesn't yet exist.
+        await approvalBridge.EnteredApprovalWait.WaitAsync(TestContext.Current.CancellationToken);
         externalCts.Cancel();
 
         var result = await runTask;
         Assert.False(result.Success);
-        Assert.Contains("cancelled", result.Output, StringComparison.OrdinalIgnoreCase);
+        // Match the canonical 'cancel' prefix rather than a specific spelling —
+        // 'cancelled' (UK, from "Subagent cancelled by parent") vs 'canceled'
+        // (US, from OperationCanceledException.Message) both flow through
+        // depending on which mailbox path wins.
+        Assert.Contains("cancel", result.Output, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -612,8 +625,10 @@ public class SubAgentActorTests : TestKit
             },
             TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
-        // Hold approval ~3x the budget, then approve. After release the
-        // sub-agent must run the tool retry, get a result, and complete.
+        // Wait for entry, then hold ~3x the budget (real time required —
+        // verifying the watchdog stays suppressed for that span — there is
+        // no observable to poll on).
+        await approvalBridge.EnteredApprovalWait.WaitAsync(TestContext.Current.CancellationToken);
         await Task.Delay(TimeSpan.FromMilliseconds(900), TestContext.Current.CancellationToken);
         releaseSignal.SetResult(ParentApprovalDecision.ApprovedOnce);
 
@@ -1041,19 +1056,21 @@ internal sealed class RecordingMcpToolInvoker(string result) : IMcpToolInvoker
 
 /// <summary>
 /// Test bridge that holds the approval decision until an external signal
-/// completes. Constructor accepts either a single shared <see cref="Task"/> (all
-/// calls await the same task) or a factory that returns a fresh task per call
-/// (for parallel-approval tests where each call needs an independent wait).
+/// completes. The factory variant returns a fresh task per call (for
+/// parallel-approval tests where each call needs an independent wait).
+/// <see cref="EnteredApprovalWait"/> signals every time the sub-agent reaches
+/// the awaited bridge call, so tests can replace `await Task.Delay(...)` race
+/// windows with a deterministic synchronization point.
 /// </summary>
 internal sealed class DelayingParentApprovalBridge : IParentApprovalBridge
 {
-    private readonly Task<ParentApprovalDecision>? _sharedTask;
-    private readonly Func<Task<ParentApprovalDecision>>? _decisionFactory;
+    private readonly Func<Task<ParentApprovalDecision>> _decisionFactory;
+    private readonly TaskCompletionSource<bool> _enteredSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _requestCount;
 
     public DelayingParentApprovalBridge(Task<ParentApprovalDecision> sharedTask)
+        : this(() => sharedTask)
     {
-        _sharedTask = sharedTask;
     }
 
     public DelayingParentApprovalBridge(Func<Task<ParentApprovalDecision>> decisionFactory)
@@ -1062,6 +1079,14 @@ internal sealed class DelayingParentApprovalBridge : IParentApprovalBridge
     }
 
     public int RequestCount => Volatile.Read(ref _requestCount);
+
+    /// <summary>
+    /// Completes the first time <see cref="RequestApprovalAsync"/> is entered.
+    /// Tests should `await EnteredApprovalWait` before cancelling or releasing
+    /// the approval, so the synchronization window is deterministic rather
+    /// than a real-time sleep.
+    /// </summary>
+    public Task EnteredApprovalWait => _enteredSignal.Task;
 
     public Task<ParentApprovalDecision> RequestApprovalAsync(
         ToolCallId callId,
@@ -1076,23 +1101,11 @@ internal sealed class DelayingParentApprovalBridge : IParentApprovalBridge
         CancellationToken ct)
     {
         Interlocked.Increment(ref _requestCount);
-        var pending = _sharedTask ?? _decisionFactory!();
-        return AwaitWithCancellation(pending, ct);
-    }
-
-    private static async Task<ParentApprovalDecision> AwaitWithCancellation(
-        Task<ParentApprovalDecision> pending,
-        CancellationToken ct)
-    {
-        if (!ct.CanBeCanceled)
-            return await pending.ConfigureAwait(false);
-
-        var cancelTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var reg = ct.Register(() => cancelTcs.TrySetResult(true));
-        var completed = await Task.WhenAny(pending, cancelTcs.Task).ConfigureAwait(false);
-        if (completed == cancelTcs.Task)
-            throw new OperationCanceledException(ct);
-        return await pending.ConfigureAwait(false);
+        _enteredSignal.TrySetResult(true);
+        // Task.WaitAsync(CancellationToken) throws OperationCanceledException on
+        // cancel and observes faults on the underlying task — replaces a
+        // hand-rolled WhenAny+Register+TCS dance.
+        return _decisionFactory().WaitAsync(ct);
     }
 }
 

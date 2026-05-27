@@ -51,10 +51,12 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private IActorRef _replyTo = ActorRefs.Nobody;
     private CancellationTokenSource? _executionCts;
 
-    // Cancelled only by explicit external triggers (parent-passed cancellation
-    // or SubAgentCancelled), never by the internal inactivity watchdog. Threaded
-    // into approval-bridge waits so a slow human approver does not let the
-    // watchdog cancel a legitimate await on user input.
+    // Threaded into approval-bridge waits so a slow human approver does not
+    // let the internal inactivity watchdog cancel a legitimate await on user
+    // input. The watchdog itself never touches this CTS — it only cancels
+    // _executionCts. Other terminal paths (Complete, PostStop, SubAgentCancelled)
+    // cancel both for symmetric cleanup, but those paths are already heading
+    // for actor stop, so the bridge wait is being torn down anyway.
     private CancellationTokenSource? _externalCts;
 
     // Mailbox-thread only. Incremented when ExecuteToolsAsync enters an approval
@@ -296,17 +298,43 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         Receive<ApprovalWaitStarted>(_ =>
         {
+            // Cancel the inactivity timer outright on first wait — re-armed
+            // by ApprovalWaitCompleted when the last wait clears. The
+            // SubAgentTimeout handler's `_pendingApprovalWaits > 0` check is
+            // belt-and-braces for a stale timer fire that arrived ahead of
+            // this message in the mailbox.
+            if (_pendingApprovalWaits == 0)
+            {
+                Timers.Cancel(TimeoutTimerKey);
+            }
             _pendingApprovalWaits++;
             EmitActivity("awaiting human approval");
         });
 
         Receive<ApprovalWaitCompleted>(_ =>
         {
-            _pendingApprovalWaits = Math.Max(0, _pendingApprovalWaits - 1);
-            // Re-baseline the watchdog so it does not fire immediately on the
-            // post-approval retry just because no progress event landed during
-            // the human wait.
-            ArmInactivityTimer();
+            // Started/Completed are sent as a try/finally pair from
+            // ExecuteToolsAsync; FIFO mailbox delivery from a single sender
+            // guarantees Started lands first. An underflow means the pairing
+            // invariant is broken (orphan Tell, double Completed) — log loudly
+            // rather than silently clamping, since hiding the imbalance would
+            // re-introduce the watchdog-vs-approval bug this PR fixes.
+            if (_pendingApprovalWaits <= 0)
+            {
+                _log.Warning(
+                    "SubAgent [{AgentName}] received ApprovalWaitCompleted with no pending wait (counter={Counter}); ignoring",
+                    _definition.Name, _pendingApprovalWaits);
+                return;
+            }
+
+            _pendingApprovalWaits--;
+            // Re-baseline only when the last approval clears, so concurrent
+            // approval waits don't each rearm the same single-key timer
+            // (Akka's StartSingleTimer cancels-and-reschedules each call).
+            if (_pendingApprovalWaits == 0)
+            {
+                ArmInactivityTimer();
+            }
         });
 
         // Throttled liveness ping from a streaming LLM call — progress, even
@@ -357,8 +385,18 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         _ = InvokeLlmAsync(client, messages, options, sessionId, self, _executionCts?.Token ?? CancellationToken.None);
     }
 
+    private bool _completed;
+
     private void Complete(bool success, string output)
     {
+        // Idempotent guard: a stale SubAgentTimeout or other handler can land
+        // after Complete has already run (Tell from a thread-pool finally races
+        // mailbox-thread Stop). The second call would send a duplicate
+        // SubAgentResult and log a misleading "completed" line. The first
+        // caller wins; subsequent calls are no-ops.
+        if (_completed) return;
+        _completed = true;
+
         _executionCts?.Cancel();
         _externalCts?.Cancel();
         Timers.Cancel(TimeoutTimerKey);
@@ -616,6 +654,17 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         ToolCallId = new ToolCallId(tc.CallId),
                         Name = tc.Name
                     };
+                }
+                catch (OperationCanceledException) when (externalCt.IsCancellationRequested)
+                {
+                    // External cancellation is not a tool error — let it propagate
+                    // so the outer try routes it via ToolExecutionFailed instead of
+                    // synthesising a fake tool result that the LLM would see as
+                    // success-with-error and continue from. SubAgentCancelled is
+                    // also enqueued via msg.Cancellation.Register, so Complete
+                    // typically wins the race; this guard covers the case where
+                    // it doesn't.
+                    throw;
                 }
                 catch (Exception ex)
                 {
