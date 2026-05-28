@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.8.4"
+  version: "2.8.5"
 ---
 
 # Netclaw Operations
@@ -811,6 +811,12 @@ Exposure diagnostics are fail-closed:
   `cloudflare-tunnel`) require their local tunnel process by default.
   `Daemon.SkipTunnelProcessCheck=true` is an explicit opt-in only for sidecar or
   host-managed tunnel topologies; all other exposure requirements still apply.
+- The `netclaw config` Exposure Mode editor preserves dormant reverse-proxy
+  values in `~/.netclaw/config/editor-state.json` when switching to `local` or a
+  tunnel mode. Runtime-active `Daemon.Host` and `Daemon.TrustedProxies` are
+  removed from `netclaw.json` while inactive so local startup validation remains
+  loopback-only. Treat `editor-state.json` as passive editor state, not daemon
+  configuration.
 
 The `netclaw init` wizard's Network Exposure step offers all five modes —
 `local`, `reverse-proxy`, `tailscale-serve`, `tailscale-funnel`,
@@ -826,7 +832,9 @@ is known.
 Config files: `~/.netclaw/config/netclaw.json` (daemon-owned base config,
 including `Daemon.Host`, `Daemon.Port`, `Daemon.ExposureMode`),
 `~/.netclaw/client/config.json` (local CLI endpoint state),
-`~/.netclaw/config/secrets.json` (credentials — never display API keys).
+`~/.netclaw/config/secrets.json` (credentials — never display API keys), and
+`~/.netclaw/config/editor-state.json` (passive config-editor state for dormant
+mode-specific values).
 
 ## Feature Kill Switches
 
