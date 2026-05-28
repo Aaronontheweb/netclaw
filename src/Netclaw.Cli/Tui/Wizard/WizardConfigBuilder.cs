@@ -6,12 +6,10 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Netclaw.Cli.Config;
-using Netclaw.Cli.Json;
 using Netclaw.Cli.Mcp;
 using Netclaw.Cli.Secrets;
 using Netclaw.Cli.Tui.Sections;
 using Netclaw.Configuration;
-using Netclaw.Configuration.Secrets;
 
 namespace Netclaw.Cli.Tui.Wizard;
 
@@ -412,20 +410,7 @@ public sealed class WizardConfigBuilder
     }
 
     private static void ApplyContribution(Dictionary<string, object> config, SectionContribution contribution)
-    {
-        foreach (var action in contribution.FieldActionsOrEmpty)
-        {
-            switch (action.Action)
-            {
-                case SectionFieldActionKind.Set:
-                    ConfigFileHelper.SetPathValue(config, action.Path, action.Value);
-                    break;
-                case SectionFieldActionKind.Delete:
-                    ConfigFileHelper.RemovePath(config, action.Path);
-                    break;
-            }
-        }
-    }
+        => ConfigEditorSession.ApplyFieldActions(config, contribution);
 
     private void ApplySectionContributions(Dictionary<string, object> config)
     {
@@ -434,11 +419,7 @@ public sealed class WizardConfigBuilder
     }
 
     private void ApplyEditorStateContributions()
-    {
-        var stateStore = new ConfigEditorStateStore(_paths);
-        foreach (var contribution in _sectionContributions)
-            stateStore.Apply(contribution.StateActionsOrEmpty);
-    }
+        => ConfigEditorSession.ApplyEditorStateActions(_paths, _sectionContributions);
 }
 
 /// <summary>
@@ -449,10 +430,13 @@ public sealed class WizardSecretsBuilder
     private readonly NetclawPaths _paths;
     private readonly Dictionary<string, object> _secrets = [];
     private readonly Dictionary<string, object> _existingSecrets;
+    private readonly List<SectionContribution> _sectionContributions = [];
+    private readonly bool _secretsFileExists;
 
     public WizardSecretsBuilder(NetclawPaths paths)
     {
         _paths = paths;
+        _secretsFileExists = File.Exists(paths.SecretsPath);
         _existingSecrets = ConfigFileHelper.LoadJsonDict(paths.SecretsPath);
     }
 
@@ -470,10 +454,22 @@ public sealed class WizardSecretsBuilder
     /// <summary>Write secrets.json if any secrets were contributed.</summary>
     public void WriteSecretsFile()
     {
-        if (_secrets.Count == 0)
+        var hasDirectSecrets = _secrets.Count > 0;
+        if (!hasDirectSecrets && _sectionContributions.Count == 0)
             return;
 
-        var existingNode = JsonSerializer.SerializeToNode(_existingSecrets, JsonDefaults.ConfigFile)?.AsObject()
+        var merged = _existingSecrets.Count == 0
+            ? new Dictionary<string, object>()
+            : new Dictionary<string, object>(_existingSecrets, StringComparer.Ordinal);
+
+        var contributionChanged = false;
+        foreach (var contribution in _sectionContributions)
+            contributionChanged |= ConfigEditorSession.ApplySecretActions(merged, contribution);
+
+        if (!hasDirectSecrets && !contributionChanged)
+            return;
+
+        var existingNode = JsonSerializer.SerializeToNode(merged, JsonDefaults.ConfigFile)?.AsObject()
                            ?? [];
 
         foreach (var (key, value) in _secrets)
@@ -486,28 +482,18 @@ public sealed class WizardSecretsBuilder
                 SecretsJsonUpdater.UpsertNode(existingNode, segments, node);
         }
 
-        SecretsFileWriter.Write(_paths.SecretsPath, existingNode.ToJsonString(JsonDefaults.ConfigFile),
-            protector: SensitiveStringTypeConverter.Protector);
+        if (hasDirectSecrets || contributionChanged && (_secretsFileExists || HasUserSecretData(merged)))
+        {
+            SecretsFileWriter.Write(_paths.SecretsPath, existingNode.ToJsonString(JsonDefaults.ConfigFile),
+                protector: SensitiveStringTypeConverter.Protector);
+        }
     }
 
     internal void ApplyContribution(SectionContribution contribution)
-    {
-        foreach (var action in contribution.SecretActionsOrEmpty)
-        {
-            switch (action.Action)
-            {
-                case SectionSecretActionKind.Preserve:
-                    break;
-                case SectionSecretActionKind.Set:
-                    ConfigFileHelper.SetPathValue(_secrets, action.Path, action.Value);
-                    break;
-                case SectionSecretActionKind.Delete:
-                    ConfigFileHelper.RemovePath(_secrets, action.Path);
-                    ConfigFileHelper.RemovePath(_existingSecrets, action.Path);
-                    break;
-            }
-        }
-    }
+        => _sectionContributions.Add(contribution);
+
+    private static bool HasUserSecretData(Dictionary<string, object> secrets)
+        => secrets.Keys.Any(static key => !string.Equals(key, "configVersion", StringComparison.Ordinal));
 }
 
 // ── Typed config section records ──
