@@ -228,6 +228,13 @@ Spawned subagents inherit the parent session's `session_dir` and current
 same session directory snapshot, and project-scoped instructions are loaded from
 the inherited project root for future runs.
 
+If a subagent hits an approval-gated tool, the prompt is routed through the
+parent session's approval channel and requester context. Human approval time does
+not count as subagent inactivity or parent `spawn_agent` tool inactivity; both
+watchdogs resume after the approval wait settles. If no parent approval bridge or
+requester authority context is available, the gated tool fails closed as a failed
+subagent run and is not executed.
+
 ## Built-in agents
 
 Three agents are seeded during `netclaw init`. They are regular file-based

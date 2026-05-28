@@ -9,6 +9,7 @@ using Akka.Hosting.TestKit;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using System.Threading.Channels;
 using Netclaw.Actors.SubAgents;
 using Netclaw.Actors.Tools;
 using Netclaw.Actors.Tests.Memory;
@@ -335,25 +336,10 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
-    public async Task Approval_gated_tool_is_denied_inside_subagent()
+    public async Task Approval_gated_tool_without_bridge_fails_subagent_without_executing_tool()
     {
         var fakeTool = new FakeNetclawTool("shell_execute", "should not run");
-        var toolConfig = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
-        toolConfig.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
-        {
-            ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
-            {
-                ["shell_execute"] = ToolApprovalMode.Approval
-            }
-        };
-        var policy = new ToolAccessPolicy(
-            toolConfig,
-            new EffectivePolicyDefaults(
-                DeploymentPosture.Personal,
-                TrustAudience.Personal,
-                ShellExecutionMode.HostAllowed,
-                UsedStrictFallback: false),
-            new ShellCommandPolicy());
+        var policy = CreateApprovalRequiredPolicy();
         var fakeClient = new FakeChatClient
         {
             ToolCallsOnFirstCall =
@@ -370,9 +356,9 @@ public class SubAgentActorTests : TestKit
             new RunSubAgent { Task = "Try the shell tool", Timeout = TimeSpan.FromSeconds(5) , Audience = TrustAudience.Personal },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
-        Assert.True(result.Success);
+        Assert.False(result.Success);
         Assert.False(fakeTool.WasCalled);
-        Assert.Contains("Response #2", result.Output);
+        Assert.Contains("approval bridge", result.Output, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -384,22 +370,7 @@ public class SubAgentActorTests : TestKit
         // the Always-anywhere button regardless of what the sub-agent's
         // resolved cwd was.
         var fakeTool = new FakeNetclawTool("shell_execute", "ok");
-        var toolConfig = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
-        toolConfig.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
-        {
-            ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
-            {
-                ["shell_execute"] = ToolApprovalMode.Approval
-            }
-        };
-        var policy = new ToolAccessPolicy(
-            toolConfig,
-            new EffectivePolicyDefaults(
-                DeploymentPosture.Personal,
-                TrustAudience.Personal,
-                ShellExecutionMode.HostAllowed,
-                UsedStrictFallback: false),
-            new ShellCommandPolicy());
+        var policy = CreateApprovalRequiredPolicy();
 
         var fakeClient = new FakeChatClient
         {
@@ -441,22 +412,7 @@ public class SubAgentActorTests : TestKit
     public async Task Approve_once_does_not_leak_between_subagent_tool_calls()
     {
         var fakeTool = new FakeNetclawTool("shell_execute", "ok");
-        var toolConfig = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
-        toolConfig.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
-        {
-            ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
-            {
-                ["shell_execute"] = ToolApprovalMode.Approval
-            }
-        };
-        var policy = new ToolAccessPolicy(
-            toolConfig,
-            new EffectivePolicyDefaults(
-                DeploymentPosture.Personal,
-                TrustAudience.Personal,
-                ShellExecutionMode.HostAllowed,
-                UsedStrictFallback: false),
-            new ShellCommandPolicy());
+        var policy = CreateApprovalRequiredPolicy();
         var fakeClient = new SequencedToolCallChatClient(
             [
                 new FunctionCallContent(
@@ -494,7 +450,7 @@ public class SubAgentActorTests : TestKit
         // Regression: the sub-agent's inactivity watchdog must not abort a
         // legitimate approval wait. A slow human approver (here, ~1s for a
         // budget of 250ms) should still see the approval delivered and the
-        // sub-agent complete successfully.
+        // sub-agent complete successfully and run the approved tool retry.
         var fakeTool = new FakeNetclawTool("shell_execute", "ok");
         var policy = CreateApprovalRequiredPolicy();
         var fakeClient = new FakeChatClient
@@ -525,18 +481,66 @@ public class SubAgentActorTests : TestKit
             TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         // Deterministic sync: wait until the sub-agent has actually entered
-        // the approval wait, then hold the wait well past the 250ms budget
-        // (4x) to prove the watchdog stays suppressed. Task.Delay is required
-        // here because the property under test IS that real time elapses
-        // without the watchdog firing — there is no observable condition to
-        // poll on.
+        // the approval wait, then prove the run stays incomplete well past the
+        // 250ms budget before releasing the human decision.
         await approvalBridge.EnteredApprovalWait.WaitAsync(TestContext.Current.CancellationToken);
-        await Task.Delay(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
+        await AssertNotCompletedWithinAsync(runTask, TimeSpan.FromSeconds(1));
         releaseSignal.SetResult(ParentApprovalDecision.ApprovedOnce);
 
         var result = await runTask;
         Assert.True(result.Success, $"Expected success but got: {result.Output}");
+        Assert.True(fakeTool.WasCalled, "Tool retry after approval did not run");
         Assert.Equal(1, approvalBridge.RequestCount);
+    }
+
+    [Fact]
+    public async Task SubAgent_approval_wait_activity_suspends_parent_tool_watchdog()
+    {
+        var fakeTool = new FakeNetclawTool("shell_execute", "ok");
+        var policy = CreateApprovalRequiredPolicy();
+        var fakeClient = new FakeChatClient
+        {
+            ToolCallsOnFirstCall =
+            [
+                new FunctionCallContent("call-activity-approval", "shell_execute",
+                    new Dictionary<string, object?> { ["Command"] = "git push origin main" })
+            ]
+        };
+
+        var releaseSignal = new TaskCompletionSource<ParentApprovalDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var approvalBridge = new DelayingParentApprovalBridge(releaseSignal.Task);
+        var activityChannel = Channel.CreateUnbounded<ToolActivityUpdate>();
+
+        var definition = CreateDefinition([fakeTool]);
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient, policy));
+
+        var runTask = agent.Ask<SubAgentResult>(
+            new RunSubAgent
+            {
+                Task = "Push to origin",
+                Timeout = TimeSpan.FromSeconds(5),
+                Audience = TrustAudience.Personal,
+                ApprovalBridge = approvalBridge,
+                ActivitySink = activityChannel.Writer
+            },
+            TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        await approvalBridge.EnteredApprovalWait.WaitAsync(TestContext.Current.CancellationToken);
+        var waitingActivity = await ReadActivityAsync(
+            activityChannel.Reader,
+            "awaiting human approval",
+            TestContext.Current.CancellationToken);
+        Assert.True(waitingActivity.SuspendsInactivityWatchdog);
+
+        releaseSignal.SetResult(ParentApprovalDecision.ApprovedOnce);
+        var resolvedActivity = await ReadActivityAsync(
+            activityChannel.Reader,
+            "approval resolved",
+            TestContext.Current.CancellationToken);
+        Assert.False(resolvedActivity.SuspendsInactivityWatchdog);
+
+        var result = await runTask;
+        Assert.True(result.Success, $"Expected success but got: {result.Output}");
     }
 
     [Fact]
@@ -593,51 +597,6 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
-    public async Task SubAgent_completes_normally_after_long_approval_wait()
-    {
-        // After the approval clears, the post-approval retry must execute and
-        // the watchdog must resume — i.e. the counter must decrement back to
-        // zero so a subsequent stall would still be caught.
-        var fakeTool = new FakeNetclawTool("shell_execute", "ok");
-        var policy = CreateApprovalRequiredPolicy();
-        var fakeClient = new FakeChatClient
-        {
-            ToolCallsOnFirstCall =
-            [
-                new FunctionCallContent("call-long-wait", "shell_execute",
-                    new Dictionary<string, object?> { ["Command"] = "git push origin main" })
-            ]
-        };
-
-        var releaseSignal = new TaskCompletionSource<ParentApprovalDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var approvalBridge = new DelayingParentApprovalBridge(releaseSignal.Task);
-
-        var definition = CreateDefinition([fakeTool]);
-        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient, policy));
-
-        var runTask = agent.Ask<SubAgentResult>(
-            new RunSubAgent
-            {
-                Task = "Push to origin",
-                Timeout = TimeSpan.FromMilliseconds(300),
-                Audience = TrustAudience.Personal,
-                ApprovalBridge = approvalBridge
-            },
-            TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
-
-        // Wait for entry, then hold ~3x the budget (real time required —
-        // verifying the watchdog stays suppressed for that span — there is
-        // no observable to poll on).
-        await approvalBridge.EnteredApprovalWait.WaitAsync(TestContext.Current.CancellationToken);
-        await Task.Delay(TimeSpan.FromMilliseconds(900), TestContext.Current.CancellationToken);
-        releaseSignal.SetResult(ParentApprovalDecision.ApprovedOnce);
-
-        var result = await runTask;
-        Assert.True(result.Success, $"Expected success but got: {result.Output}");
-        Assert.True(fakeTool.WasCalled, "Tool retry after approval did not run");
-    }
-
-    [Fact]
     public async Task SubAgent_parallel_tool_calls_each_awaiting_approval()
     {
         // Two parallel approvals in one assistant batch. The counter must hit
@@ -656,11 +615,53 @@ public class SubAgentActorTests : TestKit
             ]
         };
 
-        // Auto-approves but with a small per-call delay so the two waits
-        // overlap in time. The previous fix would fail this case if a single
-        // wait could exhaust the budget before the second completed.
-        var approvalBridge = new DelayingParentApprovalBridge(
-            decisionFactory: () => Task.Delay(TimeSpan.FromMilliseconds(400)).ContinueWith(_ => ParentApprovalDecision.ApprovedOnce));
+        var releaseSignal = new TaskCompletionSource<ParentApprovalDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var approvalBridge = new DelayingParentApprovalBridge(releaseSignal.Task);
+
+        var definition = CreateDefinition([fakeTool]);
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient, policy));
+
+        var runTask = agent.Ask<SubAgentResult>(
+            new RunSubAgent
+            {
+                Task = "Push to origin twice",
+                // 200ms budget — shorter than the assertion window below, so
+                // a non-paused watchdog would abort before release.
+                Timeout = TimeSpan.FromMilliseconds(200),
+                Audience = TrustAudience.Personal,
+                ApprovalBridge = approvalBridge
+            },
+            TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        await AwaitAssertAsync(
+            () => Assert.Equal(2, approvalBridge.RequestCount),
+            cancellationToken: TestContext.Current.CancellationToken);
+        await AssertNotCompletedWithinAsync(runTask, TimeSpan.FromMilliseconds(500));
+        releaseSignal.SetResult(ParentApprovalDecision.ApprovedOnce);
+
+        var result = await runTask;
+        Assert.True(result.Success, $"Expected success but got: {result.Output}");
+        Assert.Equal(2, approvalBridge.RequestCount);
+    }
+
+    [Theory]
+    [InlineData(ParentApprovalDecision.Denied, "Tool access denied: approval_denied_by_user")]
+    [InlineData(ParentApprovalDecision.TimedOut, "Tool access denied: approval_timed_out")]
+    public async Task Rejected_approval_returns_tool_result_without_executing_tool(
+        ParentApprovalDecision decision,
+        string expectedToolResult)
+    {
+        var fakeTool = new FakeNetclawTool("shell_execute", "should not run");
+        var policy = CreateApprovalRequiredPolicy();
+        var fakeClient = new FakeChatClient
+        {
+            ToolCallsOnFirstCall =
+            [
+                new FunctionCallContent("call-rejected", "shell_execute",
+                    new Dictionary<string, object?> { ["Command"] = "git push origin main" })
+            ]
+        };
+        var approvalBridge = new RecordingParentApprovalBridge(decision);
 
         var definition = CreateDefinition([fakeTool]);
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient, policy));
@@ -668,17 +669,54 @@ public class SubAgentActorTests : TestKit
         var result = await agent.Ask<SubAgentResult>(
             new RunSubAgent
             {
-                Task = "Push to origin twice",
-                // 200ms budget — strictly shorter than each approval delay,
-                // so a non-paused watchdog would abort.
-                Timeout = TimeSpan.FromMilliseconds(200),
+                Task = "Push to origin",
+                Timeout = TimeSpan.FromSeconds(5),
+                Audience = TrustAudience.Personal,
+                ApprovalBridge = approvalBridge
+            },
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success);
+        Assert.False(fakeTool.WasCalled);
+        Assert.Equal(expectedToolResult, GetLastToolResult(fakeClient, "call-rejected"));
+    }
+
+    [Fact]
+    public async Task External_stop_during_approval_wait_replies_once_and_cancels_wait()
+    {
+        var fakeTool = new FakeNetclawTool("shell_execute", "should not run");
+        var policy = CreateApprovalRequiredPolicy();
+        var fakeClient = new FakeChatClient
+        {
+            ToolCallsOnFirstCall =
+            [
+                new FunctionCallContent("call-stop", "shell_execute",
+                    new Dictionary<string, object?> { ["Command"] = "git push origin main" })
+            ]
+        };
+        var neverReleased = new TaskCompletionSource<ParentApprovalDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var approvalBridge = new DelayingParentApprovalBridge(neverReleased.Task);
+
+        var definition = CreateDefinition([fakeTool]);
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient, policy));
+
+        var runTask = agent.Ask<SubAgentResult>(
+            new RunSubAgent
+            {
+                Task = "Push to origin",
+                Timeout = TimeSpan.FromSeconds(10),
                 Audience = TrustAudience.Personal,
                 ApprovalBridge = approvalBridge
             },
             TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
-        Assert.True(result.Success, $"Expected success but got: {result.Output}");
-        Assert.Equal(2, approvalBridge.RequestCount);
+        await approvalBridge.EnteredApprovalWait.WaitAsync(TestContext.Current.CancellationToken);
+        agent.Tell(PoisonPill.Instance);
+
+        var result = await runTask;
+        Assert.False(result.Success);
+        Assert.Contains("stopped", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.False(fakeTool.WasCalled);
     }
 
     private static ToolAccessPolicy CreateApprovalRequiredPolicy()
@@ -699,6 +737,46 @@ public class SubAgentActorTests : TestKit
                 ShellExecutionMode.HostAllowed,
                 UsedStrictFallback: false),
             new ShellCommandPolicy());
+    }
+
+    private static string? GetLastToolResult(FakeChatClient fakeClient, string callId)
+    {
+        Assert.NotNull(fakeClient.LastReceivedMessages);
+        return fakeClient.LastReceivedMessages!
+            .SelectMany(m => m.Contents.OfType<FunctionResultContent>())
+            .Single(r => r.CallId == callId)
+            .Result?.ToString();
+    }
+
+    private static async Task<ToolActivityUpdate> ReadActivityAsync(
+        ChannelReader<ToolActivityUpdate> reader,
+        string phase,
+        CancellationToken ct)
+    {
+        while (await reader.WaitToReadAsync(ct))
+        {
+            while (reader.TryRead(out var activity))
+            {
+                if (string.Equals(activity.Phase, phase, StringComparison.Ordinal))
+                    return activity;
+            }
+        }
+
+        throw new Xunit.Sdk.XunitException($"Expected activity phase '{phase}'.");
+    }
+
+    private static async Task AssertNotCompletedWithinAsync(Task<SubAgentResult> task, TimeSpan duration)
+    {
+        try
+        {
+            var result = await task.WaitAsync(duration, TestContext.Current.CancellationToken);
+            throw new Xunit.Sdk.XunitException(
+                $"Expected sub-agent run to remain pending for {duration}, but it completed: {result.Output}");
+        }
+        catch (TimeoutException)
+        {
+            return;
+        }
     }
 
     [Fact]

@@ -27,6 +27,7 @@ internal sealed record PendingToolInteraction(
     IReadOnlyList<string> AdoptedSpeakerIds,
     string? Cwd,
     long RequestedAtMs,
+    bool PersistApprovalState,
     // Option keys that were actually offered to the user when the prompt was
     // rendered. Persisted so a later response cannot select a pruned scope.
     IReadOnlyList<string> OptionKeys,
@@ -34,6 +35,13 @@ internal sealed record PendingToolInteraction(
     // round trip so persistent approvals can write folder-scoped grants from the
     // path arguments the agent originally passed, rather than collapsing to cwd.
     IReadOnlyList<ApprovalCandidate> Candidates) : INoSerializationVerificationNeeded;
+
+// Internal actor message for approval prompts. The request is the public output
+// shape; PersistApprovalState is session routing policy that decides whether the
+// prompt becomes durable parent-session approval state.
+internal sealed record ToolInteractionRequestDispatch(
+    Protocol.ToolInteractionRequest Request,
+    bool PersistApprovalState) : INoSerializationVerificationNeeded;
 
 internal sealed record ApprovalRedrivePlan(
     IReadOnlyDictionary<string, IReadOnlyList<string>>? OneTimeApprovalPreSeed,

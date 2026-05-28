@@ -131,6 +131,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // HTTP layer so timed-out connections are released.
     private CancellationTokenSource? _activeLlmCts;
 
+    // Actor-owned CTS for active tool execution. Cancels direct approval waits
+    // and tool calls when the session stops, restarts, or fails the turn.
+    private CancellationTokenSource? _activeToolExecutionCts;
+
     // Correlation ID for the active LLM call. Incremented in FireLlmCall.
     // Stale LlmResponseReceived/LlmCallFailed/LlmResponseDeltaReceived messages
     // from cancelled calls are ignored when their CallId doesn't match.
@@ -512,6 +516,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         Command<ToolExecutionBatchCompleted>(_ =>
         {
             _watchdog.Stop(Timers);
+            CancelAndDisposeToolExecutionCts();
             _activeToolBatch.MarkExecutionTaskCompleted();
             TryCompleteStreamedToolBatch();
         });
@@ -521,6 +526,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         Command<ToolExecutionFailed>(msg =>
         {
             _watchdog.Stop(Timers);
+            CancelAndDisposeToolExecutionCts();
             TurnLog().Error(msg.Cause, "turn_tool_execution_failed");
 
             const string errorMessage = "I encountered an error executing a tool. Please try again.";
@@ -528,41 +534,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             FailCurrentTurn(errorMessage, msg.Cause, category);
         });
 
-        Command<ToolInteractionRequest>(msg =>
-        {
-            var evt = new ToolApprovalRequested
-            {
-                SessionId = _sessionId,
-                CallId = msg.CallId.Value,
-                ToolName = msg.ToolName.Value,
-                Patterns = msg.Patterns,
-                CandidateVerbs = msg.CandidateVerbs,
-                Audience = CurrentTurnAudience(),
-                Boundary = _currentTurnSource?.Boundary,
-                ChannelType = _currentTurnSource?.ChannelType.ToWireValue(),
-                SupportsInteractiveApproval = _currentTurnSource?.ChannelType.SupportsInteractiveApproval(),
-                RequesterSenderId = msg.RequesterSenderId,
-                RequesterPrincipal = msg.RequesterPrincipal,
-                HasThirdPartyAdoptedContext = msg.HasThirdPartyAdoptedContext,
-                AdoptedSpeakerIds = msg.AdoptedSpeakerIds,
-                Cwd = msg.Cwd,
-                OptionKeys = msg.Options.Select(o => o.Key.Value).ToArray(),
-                Candidates = msg.Candidates
-                    .Select(c => new ToolApprovalRequested.ApprovalCandidateRecord
-                    {
-                        Verb = c.Verb,
-                        Directory = c.Directory
-                    })
-                    .ToArray(),
-                RequestedAtMs = NowMs()
-            };
-
-            Persist(evt, e =>
-            {
-                ApplyToolApprovalRequested(e);
-                EmitOutput(msg);
-            });
-        });
+        Command<ToolInteractionRequest>(msg => HandleToolInteractionRequestDispatch(
+            new ToolInteractionRequestDispatch(msg, PersistApprovalState: true)));
+        Command<ToolInteractionRequestDispatch>(HandleToolInteractionRequestDispatch);
 
         CommandAsync<ToolInteractionResponse>(HandleProcessingApprovalResponseAsync);
 
@@ -811,6 +785,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private void HandleToolExecutionCompleted(ToolExecutionCompleted msg)
     {
         _watchdog.Stop(Timers);
+        CancelAndDisposeToolExecutionCts();
 
         var emittedRunIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var finding in msg.AcceptedSubAgentFindings)
@@ -1889,6 +1864,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // (Public, audience profiles that explicitly drop it).
         var setWorkingDirectoryAvailable = IsSetWorkingDirectoryAvailable();
 
+        CancelAndDisposeToolExecutionCts();
+        _activeToolExecutionCts = new CancellationTokenSource();
+        var toolExecutionCt = _activeToolExecutionCts.Token;
+
         _ = SessionToolExecutionPipeline.ExecuteToolsAsync(executor, toolCalls, sessionId, _currentTurnSource, auditLogger, tp, sessionDir, maxInlineToolResultChars, toolExecutionTimeout, self, emitSubAgentOutput, spawnChildActor,
             approvalChannel: _approvalChannel,
             emitApprovalRequest: request => self.Tell(request),
@@ -1906,7 +1885,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             supportsInteractiveApprovalOverride: supportsInteractiveApprovalOverride,
             requesterSenderIdOverride: requesterSenderIdOverride,
             requesterPrincipalOverride: requesterPrincipalOverride,
-            decisionOverride: decisionOverride);
+            decisionOverride: decisionOverride,
+            ct: toolExecutionCt);
     }
 
     private void HandleTextResponse(
@@ -2403,6 +2383,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         }
         _buffer.Clear();
         CancelAndDisposeLlmCts();
+        CancelAndDisposeToolExecutionCts();
 
         base.PreRestart(reason, message);
     }
@@ -2410,6 +2391,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     protected override void PostStop()
     {
         CancelAndDisposeLlmCts();
+        CancelAndDisposeToolExecutionCts();
 
         // Safety net for non-graceful stop paths (shutdown timeout, OOM, etc.).
         if (!_passivationCompleted)
@@ -2423,6 +2405,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _activeLlmCts?.Cancel();
         _activeLlmCts?.Dispose();
         _activeLlmCts = null;
+    }
+
+    private void CancelAndDisposeToolExecutionCts()
+    {
+        _activeToolExecutionCts?.Cancel();
+        _activeToolExecutionCts?.Dispose();
+        _activeToolExecutionCts = null;
     }
 
     // ── Helpers ──
@@ -3154,7 +3143,57 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _state = _state with { History = _state.History.Add(evt.ToolResult) };
     }
 
+    private void HandleToolInteractionRequestDispatch(ToolInteractionRequestDispatch dispatch)
+    {
+        var msg = dispatch.Request;
+        var evt = new ToolApprovalRequested
+        {
+            SessionId = _sessionId,
+            CallId = msg.CallId.Value,
+            ToolName = msg.ToolName.Value,
+            Patterns = msg.Patterns,
+            CandidateVerbs = msg.CandidateVerbs,
+            Audience = CurrentTurnAudience(),
+            Boundary = _currentTurnSource?.Boundary,
+            ChannelType = _currentTurnSource?.ChannelType.ToWireValue(),
+            SupportsInteractiveApproval = _currentTurnSource?.ChannelType.SupportsInteractiveApproval(),
+            RequesterSenderId = msg.RequesterSenderId,
+            RequesterPrincipal = msg.RequesterPrincipal,
+            HasThirdPartyAdoptedContext = msg.HasThirdPartyAdoptedContext,
+            AdoptedSpeakerIds = msg.AdoptedSpeakerIds,
+            Cwd = msg.Cwd,
+            OptionKeys = msg.Options.Select(o => o.Key.Value).ToArray(),
+            Candidates = msg.Candidates
+                .Select(c => new ToolApprovalRequested.ApprovalCandidateRecord
+                {
+                    Verb = c.Verb,
+                    Directory = c.Directory
+                })
+                .ToArray(),
+            RequestedAtMs = NowMs()
+        };
+
+        if (!dispatch.PersistApprovalState)
+        {
+            // Live sub-agent approvals need the prompt in the in-memory pending
+            // map so responses can be authorized, but there is no durable child
+            // actor/tool batch to redrive after restart.
+            ApplyToolApprovalRequested(evt, persistApprovalState: false);
+            EmitOutput(msg);
+            return;
+        }
+
+        Persist(evt, e =>
+        {
+            ApplyToolApprovalRequested(e);
+            EmitOutput(msg);
+        });
+    }
+
     private void ApplyToolApprovalRequested(ToolApprovalRequested evt)
+        => ApplyToolApprovalRequested(evt, persistApprovalState: true);
+
+    private void ApplyToolApprovalRequested(ToolApprovalRequested evt, bool persistApprovalState)
     {
         _pendingToolInteractions[evt.CallId] = new PendingToolInteraction(
             evt.CallId,
@@ -3171,6 +3210,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             evt.AdoptedSpeakerIds,
             evt.Cwd,
             evt.RequestedAtMs,
+            persistApprovalState,
             evt.OptionKeys,
             evt.Candidates.Select(c => new ApprovalCandidate(c.Verb, c.Directory)).ToArray());
         _resolvedToolApprovals.Remove(evt.CallId);
@@ -3374,7 +3414,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     /// responsible for journaling <see cref="ToolApprovalResolved"/>.
     /// </summary>
     private async Task<(ApprovalDecision? Decision, string? NackReason)> AuthorizeApprovalResponseAsync(
-        PendingToolInteraction pending, ToolInteractionResponse msg)
+        PendingToolInteraction pending,
+        ToolInteractionResponse msg,
+        bool persistApprovalGrant)
     {
         // Only the user who triggered the request may approve it — verified
         // automation requests can be approved by any channel member.
@@ -3406,6 +3448,17 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         var decision = MapApprovalDecision(msg.SelectedKey.Value);
         _log.Info("Approval response for {CallId}: {Decision}", msg.CallId, decision);
 
+        if (persistApprovalGrant)
+            await PersistApprovalGrantIfNeededAsync(pending, decision, CancellationToken.None);
+
+        return (decision, null);
+    }
+
+    private async Task PersistApprovalGrantIfNeededAsync(
+        PendingToolInteraction pending,
+        ApprovalDecision decision,
+        CancellationToken ct)
+    {
         // Persistent scopes write a durable grant so future invocations — and
         // the re-driven call itself — pass the gate without another prompt.
         if (decision is ApprovalDecision.ApprovedSession
@@ -3413,10 +3466,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 or ApprovalDecision.ApprovedEverywhere
             && _approvalService is not null)
         {
-            await PersistApprovalCandidatesAsync(pending, decision, CancellationToken.None);
+            await PersistApprovalCandidatesAsync(pending, decision, ct);
         }
-
-        return (decision, null);
     }
 
     private void EmitWrongRequesterApprovalNotice()
@@ -3527,23 +3578,57 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             return;
         }
 
+        ClaimedApprovalWait? claimedWait = null;
         try
         {
-            var authorization = await AuthorizeApprovalResponseAsync(pending, msg);
+            var authorization = await AuthorizeApprovalResponseAsync(
+                pending,
+                msg,
+                persistApprovalGrant: false);
             if (authorization.Decision is not { } decision)
             {
                 TryReplyNack(authorization.NackReason ?? ApprovalNackReasons.WrongRequester);
                 return;
             }
 
+            // Claim the live wait before writing any broader grant. A response
+            // can be authorized and still be stale; only a claimed wait proves
+            // the prompt still corresponds to a blocked tool call.
+            if (!_approvalChannel.TryClaim(msg.CallId, out var approvalWait))
+            {
+                _log.Warning(
+                    "Ignoring tool interaction response for call {CallId}: prompt no longer has a live approval wait",
+                    msg.CallId);
+                EmitExpiredPromptNotice();
+                TryReplyNack(ApprovalNackReasons.PromptExpired);
+                return;
+            }
+            claimedWait = approvalWait;
+
+            if (!pending.PersistApprovalState)
+                _pendingToolInteractions.Remove(msg.CallId.Value);
+
+            await PersistApprovalGrantIfNeededAsync(pending, decision, CancellationToken.None);
+
+            if (!pending.PersistApprovalState)
+            {
+                // Live-only prompts should release the blocked child task, not
+                // journal ToolApprovalResolved. After restart the child actor is
+                // gone, so a durable redrive would be misleading.
+                approvalWait.Complete(decision);
+                TryReplyAck();
+                return;
+            }
+
             PersistApprovalResolved(msg, decision, () =>
             {
-                _approvalChannel.Complete(msg.CallId, decision);
+                approvalWait.Complete(decision);
                 TryReplyAck();
             });
         }
         catch (Exception ex)
         {
+            claimedWait?.Complete(ApprovalDecision.Denied);
             FailCurrentTurn("I couldn't persist that approval decision. Please try again.", ex, ErrorCategory.ToolFailure);
             TryReplyNack(ApprovalNackReasons.PersistFailed);
         }
@@ -3607,7 +3692,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         ApprovalDecision decision;
         try
         {
-            var authorization = await AuthorizeApprovalResponseAsync(pending, msg);
+            var authorization = await AuthorizeApprovalResponseAsync(
+                pending,
+                msg,
+                persistApprovalGrant: true);
             if (authorization.Decision is not { } authorizedDecision)
             {
                 TryReplyNack(authorization.NackReason ?? ApprovalNackReasons.WrongRequester);
@@ -3922,6 +4010,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     {
         CompleteReminderInFlight(_currentTurnSource?.ReminderId);
         CompleteBackgroundJobInFlight(_currentTurnSource?.BackgroundJobId);
+        CancelAndDisposeToolExecutionCts();
         _deliveryRetry.Clear();
         _pendingToolInteractions.Clear();
         _resolvedToolApprovals.Clear();

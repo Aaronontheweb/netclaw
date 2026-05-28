@@ -117,14 +117,26 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     /// <summary>
     /// Final cleanup if the actor is stopped externally (parent supervision,
     /// <c>PoisonPill</c>) without going through <see cref="Complete"/>. Cancels
-    /// and disposes both CTSes so any in-flight approval wait running on the
-    /// thread pool unblocks promptly. <see cref="Complete"/> already nulls the
-    /// CTSes, so the null-conditional access is intentional.
+    /// both CTSes so any in-flight approval wait running on the thread pool
+    /// unblocks promptly, then replies once to any outstanding ask. <see cref="Complete"/>
+    /// already nulls the CTSes, so the null-conditional access is intentional.
     /// </summary>
     protected override void PostStop()
     {
         _executionCts?.Cancel();
         _externalCts?.Cancel();
+        if (!_completed)
+        {
+            _completed = true;
+            _replyTo.Tell(new SubAgentResult
+            {
+                Success = false,
+                Output = "Subagent stopped before completion.",
+                AgentName = _definition.Name,
+                Findings = [],
+                FindingsCount = 0
+            });
+        }
         _executionCts?.Dispose();
         _externalCts?.Dispose();
         _externalCancellationRegistration.Dispose();
@@ -319,7 +331,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
             _toolExecutionWatchdogState = ToolExecutionWatchdogState.WaitingForParentApproval;
             _pendingApprovalWaits++;
-            EmitActivity("awaiting human approval");
+            EmitActivity("awaiting human approval", suspendsInactivityWatchdog: true);
         });
 
         Receive<SubAgentApprovalWaitCompleted>(_ =>
@@ -449,8 +461,11 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         => Timers.StartSingleTimer(TimeoutTimerKey, SubAgentTimeout.Instance, _inactivityBudget);
 
     /// <summary>Emit a liveness/progress item to the spawning tool's stream, if any.</summary>
-    private void EmitActivity(string phase)
-        => _activitySink?.TryWrite(new ToolActivityUpdate(phase));
+    private void EmitActivity(string phase, bool suspendsInactivityWatchdog = false)
+        => _activitySink?.TryWrite(new ToolActivityUpdate(phase)
+        {
+            SuspendsInactivityWatchdog = suspendsInactivityWatchdog
+        });
 
     /// <summary>Record forward progress: re-arm the inactivity watchdog and emit activity.</summary>
     private void RecordProgress(string phase)
@@ -673,6 +688,17 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         ToolCallId = new ToolCallId(tc.CallId),
                         Name = tc.Name
                     };
+                }
+                catch (ToolApprovalRequiredException)
+                {
+                    // Missing bridge wiring is a security/configuration failure,
+                    // not a recoverable tool error for the model to continue past.
+                    throw new ParentApprovalUnavailableException(
+                        $"Tool '{tc.Name}' requires interactive approval, but no parent approval bridge is available.");
+                }
+                catch (ParentApprovalUnavailableException)
+                {
+                    throw;
                 }
                 catch (OperationCanceledException) when (externalCt.IsCancellationRequested)
                 {
