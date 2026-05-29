@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Net.Http.Headers;
+using System.Text.Json;
 using Netclaw.Configuration;
 
 namespace Netclaw.Providers.SelfHosted;
@@ -42,7 +43,22 @@ public sealed class OpenAiCompatibleDescriptor : IProviderDescriptor
                 if (!string.IsNullOrWhiteSpace(apiKey))
                     request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
             },
-            ProbeHelpers.ParseOpenAiStyleModels,
+            ParseModels,
             ct);
+    }
+
+    internal static ProviderProbeResult ParseModels(string json)
+        => ProbeHelpers.ParseOpenAiStyleModels(json, TryReadContextWindow);
+
+    private static int? TryReadContextWindow(JsonElement model)
+    {
+        var contextWindow = ProbeHelpers.TryReadInt32(model, "max_model_len"); // vLLM
+        if (contextWindow is not null)
+            return contextWindow;
+
+        return model.TryGetProperty("meta", out var meta)
+            ? ProbeHelpers.TryReadInt32(meta, "n_ctx") ??
+              ProbeHelpers.TryReadInt32(meta, "n_ctx_train")
+            : null;
     }
 }

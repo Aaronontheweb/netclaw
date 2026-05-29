@@ -17,8 +17,8 @@ public sealed class LlamaCppBackendStrategyTests
       "object": "list",
       "data": [
         {
-          "id": "Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf",
-          "meta": { "n_ctx_train": 262144 }
+          "id": "Qwen3.6-27B-MTP-UD-Q4_K_XL.gguf",
+          "meta": { "n_ctx": 131072, "n_ctx_train": 262144 }
         }
       ]
     }
@@ -34,25 +34,21 @@ public sealed class LlamaCppBackendStrategyTests
     }
 
     [Fact]
-    public void Matches_MetaNCtxTrain_PresentEvenWithoutProps()
+    public void Matches_MetaContext_PresentEvenWithoutProps()
     {
         using var models = JsonDocument.Parse(ModelsJsonWithMetaCtx);
-        var probe = new BackendProbe("Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf", models.RootElement, PropsRoot: null);
+        var probe = new BackendProbe("Qwen3.6-27B-MTP-UD-Q4_K_XL.gguf", models.RootElement, PropsRoot: null);
         Assert.True(new LlamaCppBackendStrategy().Matches(probe));
     }
 
-    [Fact]
-    public void Parse_PrefersPropsNCtxOverMetaNCtxTrain()
+    [Theory]
+    [InlineData("{\"default_generation_settings\":{\"n_ctx\":65536},\"modalities\":{\"vision\":true}}")]
+    [InlineData("{\"default_generation_settings\":{\"params\":{\"n_ctx\":65536}},\"modalities\":{\"vision\":true}}")]
+    public void Parse_PrefersPropsNCtxOverMeta(string propsJson)
     {
-        const string propsJson = """
-        {
-          "default_generation_settings": { "params": { "n_ctx": 65536 } },
-          "modalities": { "vision": true }
-        }
-        """;
         using var models = JsonDocument.Parse(ModelsJsonWithMetaCtx);
         using var props = JsonDocument.Parse(propsJson);
-        var probe = new BackendProbe("Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf", models.RootElement, props.RootElement);
+        var probe = new BackendProbe("Qwen3.6-27B-MTP-UD-Q4_K_XL.gguf", models.RootElement, props.RootElement);
 
         var result = new LlamaCppBackendStrategy().Parse(probe);
 
@@ -63,15 +59,15 @@ public sealed class LlamaCppBackendStrategyTests
     }
 
     [Fact]
-    public void Parse_FallsBackToMetaNCtxTrain_WhenPropsAbsent()
+    public void Parse_UsesMetaNCtx_WhenPropsAbsent()
     {
         using var models = JsonDocument.Parse(ModelsJsonWithMetaCtx);
-        var probe = new BackendProbe("Qwen3.5-35B-A3B-UD-Q4_K_XL.gguf", models.RootElement, PropsRoot: null);
+        var probe = new BackendProbe("Qwen3.6-27B-MTP-UD-Q4_K_XL.gguf", models.RootElement, PropsRoot: null);
 
         var result = new LlamaCppBackendStrategy().Parse(probe);
 
         Assert.NotNull(result);
-        Assert.Equal(262_144, result.ContextWindowTokens);
+        Assert.Equal(131_072, result.ContextWindowTokens);
         Assert.Equal(ModelModality.Text, result.InputModalities);
     }
 
