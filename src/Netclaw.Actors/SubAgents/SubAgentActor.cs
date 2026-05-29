@@ -48,6 +48,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     // Conversation state (not persisted — ephemeral)
     private readonly List<AiChatMessage> _history = [];
     private int _toolIterationCount;
+    private long _llmCallId;
     private IActorRef _replyTo = ActorRefs.Nobody;
     private CancellationTokenSource? _executionCts;
 
@@ -214,8 +215,20 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             ArmInactivityTimer();
             var response = msg.Response;
             var lastMessage = response.Messages[^1];
+            var analysis = LlmResponseClassifier.Analyze(lastMessage);
 
-            var toolCalls = lastMessage.Contents.OfType<FunctionCallContent>().ToList();
+            _log.Info(
+                $"SubAgent [{_definition.Name}] LLM response callId={msg.CallId} kind={analysis.Kind} "
+                + $"text={analysis.TextChars}ch thinking={analysis.ThinkingChars}ch "
+                + $"toolCalls={analysis.ToolCalls.Count} finishReason={response.FinishReason?.ToString() ?? "null"} "
+                + $"streamUpdates={msg.StreamUpdateCount} emptyUpdates={msg.EmptyStreamUpdateCount} "
+                + $"streamText={msg.StreamTextDeltaCount}/{msg.StreamTextChars}ch "
+                + $"streamThinking={msg.StreamThinkingDeltaCount}/{msg.StreamThinkingChars}ch "
+                + $"streamToolCalls={msg.StreamToolCallDeltaCount} "
+                + $"textPreview={PreviewText(ExtractText(lastMessage), 300)} "
+                + $"toolCallPreview={FormatToolCallPreview(analysis.ToolCalls)}");
+
+            var toolCalls = analysis.ToolCalls;
             if (toolCalls.Count > 0)
             {
                 HandleToolCalls(lastMessage, toolCalls);
@@ -279,7 +292,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         Receive<LlmCallFailed>(msg =>
         {
-            _log.Error(msg.Cause, "SubAgent [{AgentName}] LLM call failed", _definition.Name);
+            _log.Error(msg.Cause, "SubAgent [{AgentName}] LLM call failed callId={CallId}", _definition.Name, msg.CallId);
             Complete(false, $"LLM call failed: {msg.Cause.Message}");
         });
 
@@ -364,7 +377,16 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         // Throttled liveness ping from a streaming LLM call — progress, even
         // before the full response message arrives.
-        Receive<SubAgentStreamPing>(_ => RecordProgress("the model is responding"));
+        Receive<SubAgentStreamPing>(msg =>
+        {
+            _log.Debug(
+                $"SubAgent [{_definition.Name}] LLM stream progress callId={msg.CallId} "
+                + $"updates={msg.UpdateCount} emptyUpdates={msg.EmptyUpdateCount} "
+                + $"text={msg.TextDeltaCount}/{msg.TextChars}ch "
+                + $"thinking={msg.ThinkingDeltaCount}/{msg.ThinkingChars}ch "
+                + $"toolCalls={msg.ToolCallDeltaCount} finishReason={msg.FinishReason ?? "null"}");
+            RecordProgress("the model is responding");
+        });
     }
 
     private void HandleToolCalls(AiChatMessage assistantMessage, List<FunctionCallContent> toolCalls)
@@ -399,6 +421,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         var self = Self;
         var client = _chatClient;
         var messages = new List<AiChatMessage>(_history);
+        var callId = ++_llmCallId;
 
         ChatOptions? options = null;
         if (!forceNoTools && _aiTools.Count > 0)
@@ -410,7 +433,15 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         }
 
         var sessionId = _toolExecutionContext.SessionId is null ? (SessionId?)null : new SessionId(_toolExecutionContext.SessionId);
-        _ = InvokeLlmAsync(client, messages, options, sessionId, self, _executionCts?.Token ?? CancellationToken.None);
+        _log.Info(
+            "SubAgent [{AgentName}] LLM call start callId={CallId} iteration={Iteration} messages={MessageCount} toolsEnabled={ToolsEnabled} forceNoTools={ForceNoTools}",
+            _definition.Name,
+            callId,
+            _toolIterationCount,
+            messages.Count,
+            options?.Tools?.Count > 0,
+            forceNoTools);
+        _ = InvokeLlmAsync(client, messages, options, sessionId, self, callId, _executionCts?.Token ?? CancellationToken.None);
     }
 
     private bool _completed;
@@ -548,8 +579,23 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     // ── Static async helpers (same pattern as LlmSessionActor) ──
 
+    internal static Task InvokeLlmAsync(
+        IChatClient client,
+        List<AiChatMessage> messages,
+        ChatOptions? options,
+        SessionId? sessionId,
+        IActorRef self,
+        CancellationToken ct)
+        => InvokeLlmAsync(client, messages, options, sessionId, self, callId: 0, ct);
+
     internal static async Task InvokeLlmAsync(
-        IChatClient client, List<AiChatMessage> messages, ChatOptions? options, SessionId? sessionId, IActorRef self, CancellationToken ct)
+        IChatClient client,
+        List<AiChatMessage> messages,
+        ChatOptions? options,
+        SessionId? sessionId,
+        IActorRef self,
+        long callId,
+        CancellationToken ct)
     {
         try
         {
@@ -565,16 +611,56 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             // TextContent and causing the subagent to report empty "(no response)".
             var updates = new List<ChatResponseUpdate>();
             var pingThrottle = Stopwatch.StartNew();
+            int updateCount = 0;
+            int emptyUpdateCount = 0;
+            int textDeltaCount = 0;
+            int textChars = 0;
+            int thinkingDeltaCount = 0;
+            int thinkingChars = 0;
+            int toolCallDeltaCount = 0;
+            string? finishReason = null;
             await foreach (var update in client.GetStreamingResponseAsync(messages, options, ct))
             {
                 updates.Add(update);
+                updateCount++;
+                if (update.Contents.Count == 0 && update.FinishReason is null)
+                    emptyUpdateCount++;
+                if (update.FinishReason is not null)
+                    finishReason = update.FinishReason.ToString();
+
+                foreach (var content in update.Contents)
+                {
+                    switch (content)
+                    {
+                        case TextContent text:
+                            textDeltaCount++;
+                            textChars += text.Text?.Length ?? 0;
+                            break;
+                        case TextReasoningContent reasoning:
+                            thinkingDeltaCount++;
+                            thinkingChars += reasoning.Text?.Length ?? 0;
+                            break;
+                        case FunctionCallContent:
+                            toolCallDeltaCount++;
+                            break;
+                    }
+                }
 
                 // Throttled liveness ping so the actor re-arms its inactivity
                 // watchdog and surfaces activity during a long streaming call.
                 if (pingThrottle.Elapsed >= StreamPingInterval)
                 {
                     pingThrottle.Restart();
-                    self.Tell(SubAgentStreamPing.Instance);
+                    self.Tell(new SubAgentStreamPing(
+                        callId,
+                        updateCount,
+                        emptyUpdateCount,
+                        textDeltaCount,
+                        textChars,
+                        thinkingDeltaCount,
+                        thinkingChars,
+                        toolCallDeltaCount,
+                        finishReason));
                 }
             }
 
@@ -584,12 +670,49 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 response = new ChatResponse(new AiChatMessage(Microsoft.Extensions.AI.ChatRole.Assistant, []));
             }
 
-            self.Tell(new LlmResponseReceived { Response = response });
+            self.Tell(new LlmResponseReceived
+            {
+                Response = response,
+                CallId = callId,
+                StreamUpdateCount = updateCount,
+                EmptyStreamUpdateCount = emptyUpdateCount,
+                StreamTextDeltaCount = textDeltaCount,
+                StreamTextChars = textChars,
+                StreamThinkingDeltaCount = thinkingDeltaCount,
+                StreamThinkingChars = thinkingChars,
+                StreamToolCallDeltaCount = toolCallDeltaCount
+            });
         }
         catch (Exception ex)
         {
-            self.Tell(new LlmCallFailed(ex));
+            self.Tell(new LlmCallFailed(ex) { CallId = callId });
         }
+    }
+
+    private static string FormatToolCallPreview(IEnumerable<FunctionCallContent> toolCalls)
+    {
+        var summaries = toolCalls.Select(tc =>
+            $"{tc.Name}#{tc.CallId}({PreviewArguments(tc.Arguments)})");
+        return string.Join("; ", summaries);
+    }
+
+    private static string PreviewArguments(IDictionary<string, object?>? arguments)
+    {
+        if (arguments is null || arguments.Count == 0)
+            return "no-args";
+
+        var rendered = string.Join(", ", arguments.Select(kvp =>
+            $"{kvp.Key}={PreviewText(kvp.Value?.ToString() ?? "null", 160)}"));
+        return PreviewText(rendered, 500);
+    }
+
+    private static string PreviewText(string? text, int maxChars)
+    {
+        if (string.IsNullOrEmpty(text))
+            return "";
+
+        var normalized = text.ReplaceLineEndings("\\n");
+        return normalized.Length <= maxChars ? normalized : normalized[..maxChars] + "...";
     }
 
     private static async Task ExecuteToolsAsync(
@@ -803,11 +926,16 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     }
 
     /// <summary>Throttled self-message: the streaming LLM call is still producing output.</summary>
-    private sealed class SubAgentStreamPing
-    {
-        public static readonly SubAgentStreamPing Instance = new();
-        private SubAgentStreamPing() { }
-    }
+    private sealed record SubAgentStreamPing(
+        long CallId,
+        int UpdateCount,
+        int EmptyUpdateCount,
+        int TextDeltaCount,
+        int TextChars,
+        int ThinkingDeltaCount,
+        int ThinkingChars,
+        int ToolCallDeltaCount,
+        string? FinishReason);
 
     // ── Reuse LlmSessionActor's internal message types ──
     // These are internal to Netclaw.Actors so accessible here.
