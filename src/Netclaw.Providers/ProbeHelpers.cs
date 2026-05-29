@@ -21,6 +21,10 @@ internal static class ProbeHelpers
     /// Expects: { "data": [ { "id": "model-id" }, ... ] }
     /// </summary>
     public static ProviderProbeResult ParseOpenAiStyleModels(string json)
+        => ParseOpenAiStyleModels(json, _ => null);
+
+    internal static ProviderProbeResult ParseOpenAiStyleModels(
+        string json, Func<JsonElement, int?> readContextWindow)
     {
         using var doc = JsonDocument.Parse(json);
         var models = new List<DiscoveredModel>();
@@ -31,12 +35,26 @@ internal static class ProbeHelpers
             {
                 if (model.TryGetProperty("id", out var id))
                 {
-                    models.Add(new DiscoveredModel { ModelId = new(id.GetString()!) });
+                    models.Add(new DiscoveredModel
+                    {
+                        ModelId = new(id.GetString()!),
+                        ContextWindowTokens = readContextWindow(model)
+                    });
                 }
             }
         }
 
         return new ProviderProbeResult(true, null, models);
+    }
+
+    internal static int? TryReadInt32(JsonElement element, string propertyName)
+    {
+        return element.ValueKind == JsonValueKind.Object &&
+               element.TryGetProperty(propertyName, out var property) &&
+               property.ValueKind == JsonValueKind.Number &&
+               property.TryGetInt32(out var value)
+            ? value
+            : null;
     }
 
     /// <summary>
