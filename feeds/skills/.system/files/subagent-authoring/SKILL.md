@@ -3,7 +3,7 @@ name: subagent-authoring
 description: "How to create and troubleshoot file-defined subagents in ~/.netclaw/agents. Load when the user asks to add, edit, or debug subagent definitions, or when a skill routes via metadata.subagent."
 metadata:
   author: netclaw
-  version: "1.2.2"
+  version: "1.2.3"
 ---
 
 # Subagent Authoring
@@ -109,6 +109,25 @@ Summarize the latest planning notes and highlight next actions.
 This agent inherits the parent session's runtime tool policy. User-facing
 subagents then apply the static subagent denylist, which blocks recursive
 delegation through `spawn_agent` even when `tools` is omitted.
+
+## Runtime contract
+
+Subagents run as headless workers on behalf of the parent session:
+- do the delegated work as far as possible with the task, context, and tools
+  available
+- do not ask the user clarifying questions or wait for conversational replies
+- make reasonable assumptions when safe, and state them in the final output
+- if blocked, return a final result describing what was found, what remains,
+  and what decision the parent session needs
+
+Parent-mediated tool approval is still allowed for concrete tool calls when the
+parent channel supports it. Treat approval as a security gate, not as a dialogue
+channel.
+
+Subagents share the same tool-loop budget strategy as parent sessions: budget
+nudges, duplicate-call nudges, and force-no-tools wrap-up. The current
+subagent budget is 30 tool iterations per run, where one LLM response with any
+number of parallel tool calls counts as one iteration.
 
 ## Fail-loud loader behavior
 

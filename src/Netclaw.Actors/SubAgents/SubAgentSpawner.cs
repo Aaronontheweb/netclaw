@@ -22,6 +22,8 @@ namespace Netclaw.Actors.SubAgents;
 /// </summary>
 public sealed class SubAgentSpawner
 {
+    private const int SubAgentMaxToolIterations = 30;
+
     private readonly IChatClientProvider _chatClientProvider;
     private readonly ToolRegistry _toolRegistry;
     private readonly ToolAccessPolicy _toolAccessPolicy;
@@ -114,7 +116,12 @@ public sealed class SubAgentSpawner
             : $"subagent/{definition.Name}/{runId}";
 
         // Spawn as child of the session actor via the context factory
-        var props = SubAgentActor.CreateProps(definition, chatClient, _toolAccessPolicy, _approvalService);
+        var props = SubAgentActor.CreateProps(
+            definition,
+            chatClient,
+            _toolAccessPolicy,
+            _approvalService,
+            SubAgentMaxToolIterations);
         var actorName = $"subagent-{definition.Name}-{runId}";
         var subAgent = (IActorRef)await context.SpawnChildActor(props, actorName, ct);
 

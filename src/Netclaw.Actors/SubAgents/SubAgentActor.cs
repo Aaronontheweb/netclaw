@@ -5,12 +5,14 @@
 // -----------------------------------------------------------------------
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Channels;
 using Akka.Actor;
 using Akka.Event;
 using Microsoft.Extensions.AI;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Sessions;
+using Netclaw.Actors.Sessions.Handlers;
 using Netclaw.Actors.Tools;
 using Netclaw.Actors.Memory;
 using Netclaw.Configuration;
@@ -31,23 +33,34 @@ namespace Netclaw.Actors.SubAgents;
 /// </summary>
 public sealed class SubAgentActor : ReceiveActor, IWithTimers
 {
-    private const int MaxToolIterations = 10;
+    internal const int DefaultMaxToolIterations = 30;
     private const string EmptyResponseMarker = "(no response)";
     private const string TimeoutTimerKey = "subagent-timeout";
+    private const string HeadlessExecutionContract = """
+        [Subagent Execution Contract]
+        You are a headless, non-interactive worker running on behalf of a parent Netclaw session.
+        Do not ask the user clarifying questions, request conversational input, or wait for a reply.
+        Do the best work you can with the task, context, and tools available.
+        If the task is ambiguous, make reasonable assumptions and state them in your final output.
+        If you are blocked, return a final result that explains what you found, what remains, and what decision the parent session needs.
+        Parent-mediated tool approval may occur only for concrete tool calls; it is a security gate, not a dialogue channel.
+        Always end by emitting a final output for the parent session.
+        """;
     private static readonly TimeSpan StreamPingInterval = TimeSpan.FromSeconds(2);
 
     private readonly SubAgentDefinition _definition;
     private readonly IChatClient _chatClient;
     private readonly ToolAccessPolicy _toolAccessPolicy;
     private readonly IToolApprovalService? _approvalService;
+    private readonly int _maxToolIterations;
     private readonly ToolRegistry _toolRegistry;
     private readonly IReadOnlyList<AITool> _aiTools;
     private readonly ILoggingAdapter _log;
     private readonly MemoryPolicyEvaluator _policyEvaluator = new();
+    private readonly TurnStateTracker _turnState = new();
 
     // Conversation state (not persisted — ephemeral)
     private readonly List<AiChatMessage> _history = [];
-    private int _toolIterationCount;
     private long _llmCallId;
     private IActorRef _replyTo = ActorRefs.Nobody;
     private CancellationTokenSource? _executionCts;
@@ -79,8 +92,13 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         SubAgentDefinition definition,
         IChatClient chatClient,
         ToolAccessPolicy? toolAccessPolicy = null,
-        IToolApprovalService? approvalService = null)
+        IToolApprovalService? approvalService = null,
+        int maxToolIterations = DefaultMaxToolIterations)
     {
+        if (maxToolIterations <= 0)
+            throw new ArgumentOutOfRangeException(nameof(maxToolIterations), maxToolIterations,
+                "Sub-agent tool iteration budget must be greater than zero.");
+
         _definition = definition;
         _chatClient = chatClient;
         _toolAccessPolicy = toolAccessPolicy ?? new ToolAccessPolicy(
@@ -92,6 +110,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 UsedStrictFallback: false),
             new ShellCommandPolicy());
         _approvalService = approvalService;
+        _maxToolIterations = maxToolIterations;
         _log = Context.GetLogger();
 
         // Build a private ToolRegistry for this subagent's tool subset
@@ -110,9 +129,15 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         SubAgentDefinition definition,
         IChatClient chatClient,
         ToolAccessPolicy? toolAccessPolicy = null,
-        IToolApprovalService? approvalService = null)
+        IToolApprovalService? approvalService = null,
+        int maxToolIterations = DefaultMaxToolIterations)
     {
-        return Props.Create(() => new SubAgentActor(definition, chatClient, toolAccessPolicy, approvalService));
+        return Props.Create(() => new SubAgentActor(
+            definition,
+            chatClient,
+            toolAccessPolicy,
+            approvalService,
+            maxToolIterations));
     }
 
     /// <summary>
@@ -217,6 +242,18 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             var lastMessage = response.Messages[^1];
             var analysis = LlmResponseClassifier.Analyze(lastMessage);
 
+            if (analysis.Kind == LlmResponseKind.ToolCalls && _turnState.ForceNoToolsActive)
+            {
+                _log.Warning(
+                    "SubAgent [{AgentName}] requested {ToolCallCount} tool(s) after tool execution was disabled (budgetUsed={BudgetUsed}, max={Max})",
+                    _definition.Name,
+                    analysis.ToolCalls.Count,
+                    _turnState.ToolCallCount,
+                    _maxToolIterations);
+                Complete(false, "Subagent exceeded its tool iteration budget and continued requesting tools after tools were disabled.");
+                return;
+            }
+
             _log.Info(
                 $"SubAgent [{_definition.Name}] LLM response callId={msg.CallId} kind={analysis.Kind} "
                 + $"text={analysis.TextChars}ch thinking={analysis.ThinkingChars}ch "
@@ -235,7 +272,30 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 return;
             }
 
-            // Final text response — we're done
+            if (analysis.Kind is LlmResponseKind.ThinkingOnly or LlmResponseKind.Empty)
+            {
+                switch (_turnState.EvaluateEmptyResponse(analysis.Kind))
+                {
+                    case EmptyResponseAction.Retry retry:
+                        _log.Warning(
+                            "SubAgent [{AgentName}] produced {Kind} response ({ThinkingChars} reasoning chars) — retrying with nudge",
+                            _definition.Name,
+                            analysis.Kind,
+                            analysis.ThinkingChars);
+                        AddSystemNudge(retry.NudgeText);
+                        FireLlmCall();
+                        return;
+                    case EmptyResponseAction.Fail fail:
+                        _log.Warning(
+                            "SubAgent [{AgentName}] produced repeated {Kind} responses — reporting failure",
+                            _definition.Name,
+                            analysis.Kind);
+                        Complete(false, fail.ErrorMessage);
+                        return;
+                }
+            }
+
+            // Final text response — we're done.
             var text = ExtractText(lastMessage);
             if (string.IsNullOrWhiteSpace(text) || text == EmptyResponseMarker)
             {
@@ -243,10 +303,9 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 // so the parent session sees a real error instead of fabricating
                 // "subagent still working" from an empty tool result.
                 _log.Warning(
-                    "SubAgent [{AgentName}] LLM returned empty response (no text content, no tool calls) — reporting as failure",
+                    "SubAgent [{AgentName}] LLM returned empty text after non-empty analysis — reporting as failure",
                     _definition.Name);
-                Complete(false, "Subagent returned an empty response (no text content and no tool calls). "
-                    + "The provider may have dropped reasoning content or the model produced no output.");
+                Complete(false, "Subagent returned an empty final response.");
                 return;
             }
             Complete(true, text);
@@ -268,18 +327,40 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     _definition.Name, result.Name ?? "unknown", preview);
             }
 
-            _toolIterationCount++;
-
-            if (_toolIterationCount >= MaxToolIterations)
+            var budgetStatus = _turnState.RecordToolCompletion(msg.ToolResults.Count, _maxToolIterations);
+            var dupNudge = _turnState.CheckForDuplicates();
+            if (dupNudge is not null)
             {
-                _log.Warning("SubAgent [{AgentName}] hit tool iteration limit ({Count}), forcing text response",
-                    _definition.Name, _toolIterationCount);
-                FireLlmCall(forceNoTools: true);
-                return;
+                _log.Warning(
+                    "SubAgent [{AgentName}] duplicate tool detected tool={ToolName} count={Count} iteration={Iteration}",
+                    _definition.Name,
+                    dupNudge.ToolName,
+                    dupNudge.Count,
+                    _turnState.ToolIterationCount);
+                AddSystemNudge(dupNudge.NudgeText);
+            }
+
+            switch (budgetStatus)
+            {
+                case ToolBudgetStatus.Exhausted exhausted:
+                    _log.Warning("SubAgent [{AgentName}] hit tool iteration limit ({Count}), forcing text response",
+                        _definition.Name, _turnState.ToolIterationCount);
+                    AddSystemNudge(exhausted.NudgeText);
+                    FireLlmCall(forceNoTools: true);
+                    return;
+                case ToolBudgetStatus.NudgeNeeded nudge:
+                    _log.Info(
+                        "SubAgent [{AgentName}] nearing tool iteration limit ({Used}/{Max}, remaining={Remaining})",
+                        _definition.Name,
+                        _turnState.ToolIterationCount,
+                        _maxToolIterations,
+                        nudge.Remaining);
+                    AddSystemNudge(nudge.NudgeText);
+                    break;
             }
 
             _log.Debug("SubAgent [{AgentName}] tool iteration {Count}, continuing",
-                _definition.Name, _toolIterationCount);
+                _definition.Name, _turnState.ToolIterationCount);
             FireLlmCall();
         });
 
@@ -328,7 +409,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             _executionCts?.Cancel();
             _log.Warning(
                 "SubAgent [{AgentName}] timed out: no activity for {Budget}s after {Iterations} tool iterations",
-                _definition.Name, _inactivityBudget.TotalSeconds, _toolIterationCount);
+                _definition.Name, _inactivityBudget.TotalSeconds, _turnState.ToolIterationCount);
             Complete(false, $"Subagent timed out: no activity for {_inactivityBudget.TotalSeconds:F0}s.");
         });
 
@@ -391,8 +472,18 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     private void HandleToolCalls(AiChatMessage assistantMessage, List<FunctionCallContent> toolCalls)
     {
+        _turnState.ResetEmptyResponseGuards();
+
         // Add assistant message (with tool calls) to history
         _history.Add(assistantMessage);
+
+        foreach (var toolCall in toolCalls)
+        {
+            var argsJson = toolCall.Arguments is not null
+                ? JsonSerializer.Serialize(toolCall.Arguments)
+                : null;
+            _turnState.TrackToolCall(toolCall.Name, argsJson);
+        }
 
         var toolNames = string.Join(", ", toolCalls.Select(tc => tc.Name));
         RecordProgress($"running tools: {toolNames}");
@@ -417,6 +508,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     private void FireLlmCall(bool forceNoTools = false)
     {
+        _turnState.ForceNoToolsActive = forceNoTools;
         RecordProgress("calling the model");
         var self = Self;
         var client = _chatClient;
@@ -437,7 +529,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             "SubAgent [{AgentName}] LLM call start callId={CallId} iteration={Iteration} messages={MessageCount} toolsEnabled={ToolsEnabled} forceNoTools={ForceNoTools}",
             _definition.Name,
             callId,
-            _toolIterationCount,
+            _turnState.ToolIterationCount,
             messages.Count,
             options?.Tools?.Count > 0,
             forceNoTools);
@@ -469,7 +561,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         _pendingApprovalWaits = 0;
 
         _log.Info("SubAgent [{AgentName}] completed (success={Success}, output={OutputLength} chars, iterations={Iterations})",
-            _definition.Name, success, output.Length, _toolIterationCount);
+            _definition.Name, success, output.Length, _turnState.ToolIterationCount);
 
         var findings = success && _definition.EmitStructuredFindings
             ? BuildFindings(output, _toolExecutionContext.SessionId)
@@ -545,6 +637,11 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 Evidence = []
             }
         ];
+    }
+
+    private void AddSystemNudge(string nudge)
+    {
+        _history.Add(new AiChatMessage(Microsoft.Extensions.AI.ChatRole.User, $"[system: {nudge}]"));
     }
 
     /// <summary>
@@ -875,10 +972,11 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     private static string BuildSystemPrompt(SubAgentDefinition definition)
     {
-        if (string.IsNullOrWhiteSpace(definition.ProjectInstructions))
-            return definition.SystemPrompt;
+        var basePrompt = string.IsNullOrWhiteSpace(definition.ProjectInstructions)
+            ? definition.SystemPrompt
+            : SystemPromptAssembler.Assemble(agents: definition.SystemPrompt, projectInstructions: definition.ProjectInstructions);
 
-        return SystemPromptAssembler.Assemble(agents: definition.SystemPrompt, projectInstructions: definition.ProjectInstructions);
+        return string.Concat(basePrompt.TrimEnd(), "\n\n", HeadlessExecutionContract);
     }
 
     /// <summary>Singleton inactivity-watchdog marker message.</summary>

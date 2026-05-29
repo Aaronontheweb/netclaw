@@ -251,7 +251,9 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
 
         var subagentCall = Assert.Single(_clientProvider.Compaction.ReceivedMessages);
         Assert.Contains(subagentCall, m =>
-            m.Role == Microsoft.Extensions.AI.ChatRole.System && string.Equals(m.Text, "You are a summarizer.", StringComparison.Ordinal));
+            m.Role == Microsoft.Extensions.AI.ChatRole.System
+            && m.Text.Contains("You are a summarizer.", StringComparison.Ordinal)
+            && m.Text.Contains("headless, non-interactive worker", StringComparison.Ordinal));
         Assert.Contains(subagentCall, m =>
             m.Role == Microsoft.Extensions.AI.ChatRole.User && string.Equals(m.Text, "Summarize src/README.md", StringComparison.Ordinal));
         Assert.DoesNotContain(subagentCall, m =>

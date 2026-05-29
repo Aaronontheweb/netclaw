@@ -59,6 +59,25 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
+    public async Task System_prompt_includes_headless_subagent_contract()
+    {
+        var fakeClient = new FakeChatClient();
+        var definition = CreateDefinition();
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
+
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent { Task = "Say hello", Timeout = TimeSpan.FromSeconds(5), Audience = TrustAudience.Personal },
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success);
+        Assert.NotNull(fakeClient.LastReceivedMessages);
+        Assert.Equal(ChatRole.System, fakeClient.LastReceivedMessages[0].Role);
+        Assert.Contains("headless, non-interactive worker", fakeClient.LastReceivedMessages[0].Text);
+        Assert.Contains("Do not ask the user clarifying questions", fakeClient.LastReceivedMessages[0].Text);
+        Assert.Contains("Parent-mediated tool approval", fakeClient.LastReceivedMessages[0].Text);
+    }
+
+    [Fact]
     public async Task Spawn_without_audience_fails_fast_with_unsuccessful_result()
     {
         var fakeClient = new FakeChatClient();
@@ -332,7 +351,8 @@ public class SubAgentActorTests : TestKit
         Assert.True(result.Success);
         Assert.NotNull(fakeClient.LastReceivedMessages);
         var systemMessage = fakeClient.LastReceivedMessages!.Single(m => m.Role == ChatRole.System);
-        Assert.Equal("You are a test agent.", systemMessage.Text);
+        Assert.Contains("You are a test agent.", systemMessage.Text);
+        Assert.DoesNotContain("Project rules:", systemMessage.Text);
     }
 
     [Fact]
@@ -793,16 +813,25 @@ public class SubAgentActorTests : TestKit
         };
 
         var definition = CreateDefinition([fakeTool]);
-        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(
+            definition,
+            fakeClient,
+            maxToolIterations: 3));
 
         var result = await agent.Ask<SubAgentResult>(
             new RunSubAgent { Task = "Loop forever", Timeout = TimeSpan.FromSeconds(10) , Audience = TrustAudience.Personal },
             TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
-        // After 10 tool iterations, forces a no-tools call which returns text
+        // After the configured tool budget, force a no-tools call which returns text.
         Assert.True(result.Success);
-        // Should have made multiple calls: 10 tool calls + 1 initial + 1 forced text
-        Assert.True(fakeClient.CallCount >= 11);
+        Assert.Equal(4, fakeClient.CallCount);
+        Assert.NotNull(fakeClient.LastReceivedMessages);
+        Assert.Contains(fakeClient.LastReceivedMessages,
+            message => message.Role == ChatRole.User
+                       && message.Text.Contains("Start wrapping up your tool usage", StringComparison.Ordinal));
+        Assert.Contains(fakeClient.LastReceivedMessages,
+            message => message.Role == ChatRole.User
+                       && message.Text.Contains("Do NOT request any more tools", StringComparison.Ordinal));
     }
 
     [Fact]
