@@ -826,6 +826,17 @@ stdout_not_contains() {
     ! grep -qi "$1" "$STDOUT_FILE" 2>/dev/null
 }
 
+stdout_response_contains() {
+    grep -v '^\[tool:call\]' "$STDOUT_FILE" 2>/dev/null | grep -qi "$1"
+}
+
+stdout_response_not_contains() {
+    if grep -v '^\[tool:call\]' "$STDOUT_FILE" 2>/dev/null | grep -qi "$1"; then
+        return 1
+    fi
+    return 0
+}
+
 daemon_log_tail() {
     if [[ -f "$DAEMON_LOG" ]]; then
         tail -n +"$((DAEMON_LOG_LINES_BEFORE + 1))" "$DAEMON_LOG" 2>/dev/null
@@ -1022,11 +1033,11 @@ assert_autonomy_web_fetch() {
 assert_subagent_headless_ambiguous_task() {
     stdout_tool_called 'spawn_agent' && \
         daemon_log_contains 'SubAgent \[headless-analyst\] completed \(success=True' && \
-        stdout_contains 'assumption' && \
-        stdout_not_contains 'which.*include' && \
-        stdout_not_contains 'what.*include' && \
-        stdout_not_contains 'please.*clarify' && \
-        stdout_not_contains 'need.*more.*information'
+        stdout_response_contains 'assumption' && \
+        stdout_response_not_contains 'which.*include' && \
+        stdout_response_not_contains 'what.*include' && \
+        stdout_response_not_contains 'please.*clarify' && \
+        stdout_response_not_contains 'need.*more.*information'
 }
 
 # Category 7: Complex Task Execution

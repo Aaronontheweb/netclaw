@@ -54,7 +54,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private readonly IToolApprovalService? _approvalService;
     private readonly int _maxToolIterations;
     private readonly ToolRegistry _toolRegistry;
-    private readonly IReadOnlyList<AITool> _aiTools;
+    private IReadOnlyList<AITool> _aiTools = [];
     private readonly ILoggingAdapter _log;
     private readonly MemoryPolicyEvaluator _policyEvaluator = new();
     private readonly TurnStateTracker _turnState = new();
@@ -117,10 +117,11 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         _toolRegistry = new ToolRegistry();
         foreach (var tool in definition.Tools)
         {
+            if (!SubAgentToolPolicy.IsAllowedForSubAgent(tool.Name))
+                continue;
+
             _toolRegistry.Register(tool);
         }
-
-        _aiTools = _toolRegistry.GetAllTools();
 
         Become(Idle);
     }
@@ -207,6 +208,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             _toolExecutionContext.ChannelType = msg.ChannelType;
             _toolExecutionContext.ProjectDirectory = msg.ParentProjectDirectory;
             _toolExecutionContext.SupportsInteractiveApproval = _approvalBridge is not null;
+            _aiTools = ResolveExposedAiTools();
             _executionCts = new CancellationTokenSource();
             _externalCts = new CancellationTokenSource();
             var self = Self; // Capture before callback — Self requires active actor context
@@ -534,6 +536,15 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             options?.Tools?.Count > 0,
             forceNoTools);
         _ = InvokeLlmAsync(client, messages, options, sessionId, self, callId, _executionCts?.Token ?? CancellationToken.None);
+    }
+
+    private IReadOnlyList<AITool> ResolveExposedAiTools()
+    {
+        var tools = _toolRegistry.GetAllRegistrations().Select(r => r.Tool);
+        return _toolAccessPolicy
+            .FilterDiscoverableTools(tools, _toolExecutionContext)
+            .Select(tool => tool.ToAITool())
+            .ToList();
     }
 
     private bool _completed;

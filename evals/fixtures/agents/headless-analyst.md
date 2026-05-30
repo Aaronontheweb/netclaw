@@ -1,7 +1,6 @@
 ---
 name: headless-analyst
 description: Eval fixture subagent that resolves ambiguous release-note style tasks without interactive follow-up.
-tools: []
 timeoutSeconds: 60
 ---
 
