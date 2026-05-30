@@ -901,6 +901,7 @@ static async Task RunAsync(string[] args)
             t.RegisterRoute<ConfigDashboardPage, ConfigDashboardViewModel>("/config");
             t.RegisterRoute<ProviderManagerPage, ProviderManagerViewModel>("/provider");
             t.RegisterRoute<ModelManagerPage, ModelManagerViewModel>("/model");
+            t.RegisterRoute<ChannelsConfigPage, ChannelsConfigViewModel>("/channels");
             t.RegisterRoute<SearchConfigEditorPage, SearchConfigEditorViewModel>("/search", Termina.Pages.NavigationBehavior.PreserveState);
             t.RegisterRoute<SecurityAccessPage, SecurityAccessViewModel>("/security");
             t.RegisterRoute<ExposureModeConfigPage, ExposureModeConfigViewModel>("/exposure-mode");
