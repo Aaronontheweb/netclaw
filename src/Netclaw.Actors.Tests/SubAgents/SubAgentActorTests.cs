@@ -41,6 +41,15 @@ public class SubAgentActorTests : TestKit
         };
     }
 
+    private static string MalformedToolCallMarkup() => """
+        <function=shell_execute>
+        <parameter=Command>
+        gh pr list --repo example/repo --state open
+        </parameter>
+        </function>
+        </tool_call>
+        """;
+
     [Fact]
     public async Task Text_response_returns_success_result()
     {
@@ -56,6 +65,58 @@ public class SubAgentActorTests : TestKit
         Assert.Contains("Response #1", result.Output);
         Assert.Equal("test-agent", result.AgentName.Value);
         Assert.Empty(result.Findings);
+    }
+
+    [Fact]
+    public async Task Malformed_final_tool_markup_gets_one_repair_turn()
+    {
+        var fakeClient = new FakeChatClient
+        {
+            ResponseTextsByCall =
+            [
+                MalformedToolCallMarkup(),
+                "Final report based on executed results."
+            ]
+        };
+        var definition = CreateDefinition();
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
+
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent { Task = "Analyze repos", Timeout = TimeSpan.FromSeconds(5), Audience = TrustAudience.Personal },
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success);
+        Assert.Equal("Final report based on executed results.", result.Output);
+        Assert.Equal(2, fakeClient.CallCount);
+        Assert.NotNull(fakeClient.LastReceivedMessages);
+        Assert.Contains(fakeClient.LastReceivedMessages,
+            message => message.Role == ChatRole.User
+                       && message.Text.Contains("unexecuted tool-call markup", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Repeated_malformed_final_tool_markup_fails_without_timeout_error()
+    {
+        var fakeClient = new FakeChatClient
+        {
+            ResponseTextsByCall =
+            [
+                MalformedToolCallMarkup(),
+                MalformedToolCallMarkup()
+            ]
+        };
+        var definition = CreateDefinition();
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
+
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent { Task = "Analyze repos", Timeout = TimeSpan.FromSeconds(5), Audience = TrustAudience.Personal },
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Equal(2, fakeClient.CallCount);
+        Assert.Contains("malformed final output", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("not a timeout", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("timed out", result.Output, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -854,6 +915,30 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
+    public void Keepalive_only_streaming_updates_are_not_substantive_progress()
+    {
+        Assert.False(SubAgentActor.IsSubstantiveStreamingUpdate(new ChatResponseUpdate
+        {
+            Role = ChatRole.Assistant
+        }));
+        Assert.False(SubAgentActor.IsSubstantiveStreamingUpdate(new ChatResponseUpdate
+        {
+            Role = ChatRole.Assistant,
+            Contents = [new UsageContent(new UsageDetails())]
+        }));
+        Assert.True(SubAgentActor.IsSubstantiveStreamingUpdate(new ChatResponseUpdate
+        {
+            Role = ChatRole.Assistant,
+            Contents = [new TextContent("working")]
+        }));
+        Assert.True(SubAgentActor.IsSubstantiveStreamingUpdate(new ChatResponseUpdate
+        {
+            Role = ChatRole.Assistant,
+            Contents = [new FunctionCallContent("call-1", "inspect_context")]
+        }));
+    }
+
+    [Fact]
     public async Task LLM_failure_returns_failure()
     {
         var throwingClient = new ThrowingChatClient();
@@ -1084,6 +1169,8 @@ internal sealed class FakeChatClient : IChatClient
 
     public string? ResponseText { get; set; }
 
+    public IReadOnlyList<string>? ResponseTextsByCall { get; set; }
+
     public async Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
@@ -1110,9 +1197,13 @@ internal sealed class FakeChatClient : IChatClient
             }
         }
 
+        var responseText = ResponseTextsByCall is { Count: > 0 } responses && _callCount <= responses.Count
+            ? responses[_callCount - 1]
+            : ResponseText ?? $"[fake] Response #{_callCount}";
+
         var responseMessage = new ChatMessage(
             ChatRole.Assistant,
-            [new TextContent(ResponseText ?? $"[fake] Response #{_callCount}")]);
+            [new TextContent(responseText)]);
         return new ChatResponse(responseMessage);
     }
 

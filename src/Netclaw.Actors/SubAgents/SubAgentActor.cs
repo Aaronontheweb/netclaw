@@ -36,6 +36,13 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     internal const int DefaultMaxToolIterations = 30;
     private const string EmptyResponseMarker = "(no response)";
     private const string TimeoutTimerKey = "subagent-timeout";
+    private const string MalformedFinalOutputMessage = "Subagent produced malformed final output: it emitted unexecuted tool calls as text. This was not a timeout.";
+    private const string MalformedFinalOutputNudge =
+        "The previous response emitted unexecuted tool-call markup as plain text. "
+        + "That text was not executed and cannot be returned as a successful final output. "
+        + "If tools are available and you still need those operations, call the tools using structured tool calls now. "
+        + "Otherwise provide a final answer based only on executed tool results. "
+        + "Do not include <function=...>, <parameter=...>, or </tool_call> markup in final text.";
     private const string HeadlessExecutionContract = """
         [Subagent Execution Contract]
         You are a headless, non-interactive worker running on behalf of a parent Netclaw session.
@@ -87,6 +94,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     public ITimerScheduler Timers { get; set; } = null!;
     private CancellationTokenRegistration _externalCancellationRegistration;
     private ToolExecutionContext _toolExecutionContext = ToolExecutionContext.Empty;
+    private bool _malformedFinalOutputRepairAttempted;
 
     public SubAgentActor(
         SubAgentDefinition definition,
@@ -310,6 +318,27 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 Complete(false, "Subagent returned an empty final response.");
                 return;
             }
+
+            if (ContainsUnexecutedToolCallMarkup(text))
+            {
+                if (!_malformedFinalOutputRepairAttempted)
+                {
+                    _malformedFinalOutputRepairAttempted = true;
+                    _log.Warning(
+                        "SubAgent [{AgentName}] emitted unexecuted tool-call markup as final text; retrying with repair nudge",
+                        _definition.Name);
+                    AddSystemNudge(MalformedFinalOutputNudge);
+                    FireLlmCall(forceNoTools: _turnState.ForceNoToolsActive);
+                    return;
+                }
+
+                _log.Warning(
+                    "SubAgent [{AgentName}] repeatedly emitted unexecuted tool-call markup as final text; reporting failure",
+                    _definition.Name);
+                Complete(false, MalformedFinalOutputMessage);
+                return;
+            }
+
             Complete(true, text);
         });
 
@@ -754,9 +783,11 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     }
                 }
 
-                // Throttled liveness ping so the actor re-arms its inactivity
-                // watchdog and surfaces activity during a long streaming call.
-                if (pingThrottle.Elapsed >= StreamPingInterval)
+                // Content-free keepalives only prove the socket is alive; they
+                // do not prove the model is making progress. Re-arm the
+                // watchdog only for substantive deltas so provider heartbeat
+                // loops cannot keep a sub-agent alive forever.
+                if (IsSubstantiveStreamingUpdate(update) && pingThrottle.Elapsed >= StreamPingInterval)
                 {
                     pingThrottle.Restart();
                     self.Tell(new SubAgentStreamPing(
@@ -821,6 +852,45 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         var normalized = text.ReplaceLineEndings("\\n");
         return normalized.Length <= maxChars ? normalized : normalized[..maxChars] + "...";
+    }
+
+    internal static bool IsSubstantiveStreamingUpdate(ChatResponseUpdate update)
+    {
+        if (update.FinishReason is not null)
+            return true;
+
+        foreach (var content in update.Contents)
+        {
+            switch (content)
+            {
+                case TextContent text when !string.IsNullOrEmpty(text.Text):
+                case TextReasoningContent reasoning when !string.IsNullOrEmpty(reasoning.Text):
+                case FunctionCallContent:
+                    return true;
+                case UsageContent:
+                    break;
+                default:
+                    return true;
+            }
+        }
+
+        return false;
+    }
+
+    internal static bool ContainsUnexecutedToolCallMarkup(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        if (text.Contains("</tool_call>", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("<tool_call", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return text.Contains("<function=", StringComparison.OrdinalIgnoreCase)
+            && (text.Contains("<parameter=", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("</function>", StringComparison.OrdinalIgnoreCase));
     }
 
     private static async Task ExecuteToolsAsync(
