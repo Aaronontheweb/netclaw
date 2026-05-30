@@ -96,7 +96,7 @@ jobs:
         fetch-depth: 0
 
     - name: Install .NET SDK
-      uses: actions/setup-dotnet@v5.2.0
+      uses: actions/setup-dotnet@v5
       with:
         global-json-file: "./global.json"
 
@@ -163,7 +163,7 @@ jobs:
         done
 
     - name: Upload archives to GitHub Release
-      uses: AButler/upload-release-assets@v3.0
+      uses: AButler/upload-release-assets@v4.0
       with:
         repo-token: ${{ github.token }}
         release-tag: ${{ github.ref_name }}
@@ -234,7 +234,7 @@ jobs:
         fetch-depth: 0
 
     - name: Set up QEMU
-      uses: docker/setup-qemu-action@v3
+      uses: docker/setup-qemu-action@v4
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v4
