@@ -300,6 +300,19 @@ public sealed class McpToolPermissionsPageTests : IDisposable
         Assert.NotEqual(wasBefore, vm.IsServerAllowedForSelectedAudience());
     }
 
+    [Fact]
+    public async Task Loading_Escape_QuitsInsteadOfStalling()
+    {
+        var (_, app, vm) = CreateHeadlessApp(out var input);
+
+        input.EnqueueKey(ConsoleKey.Escape);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+
+        Assert.Equal(ToolPermissionsState.Loading, vm.CurrentState.Value);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private (VirtualTerminal Terminal, TerminaApplication App, McpToolPermissionsViewModel Vm)
