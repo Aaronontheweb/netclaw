@@ -120,6 +120,50 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
+    public async Task Fenced_tool_markup_example_is_accepted_as_final_output()
+    {
+        const string finalOutput = """
+            The failed model output looked like this:
+
+            ```xml
+            <function=shell_execute>
+            <parameter=Command>
+            gh pr list --repo example/repo --state open
+            </parameter>
+            </function>
+            </tool_call>
+            ```
+
+            No tool call was executed from that quoted example.
+            """;
+        var fakeClient = new FakeChatClient
+        {
+            ResponseTextsByCall = [finalOutput]
+        };
+        var definition = CreateDefinition();
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
+
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent { Task = "Explain malformed output", Timeout = TimeSpan.FromSeconds(5), Audience = TrustAudience.Personal },
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success);
+        Assert.Equal(finalOutput, result.Output);
+        Assert.Equal(1, fakeClient.CallCount);
+    }
+
+    [Theory]
+    [InlineData("<function=shell_execute>\n<parameter=Command>\nls\n</parameter>\n</function>", true)]
+    [InlineData("<tool_call>\n<function=shell_execute>\n</function>\n</tool_call>", true)]
+    [InlineData("> <function=shell_execute>\n> <parameter=Command>\n> ls\n> </parameter>\n> </function>", false)]
+    [InlineData("```xml\n<function=shell_execute>\n<parameter=Command>\nls\n</parameter>\n</function>\n```", false)]
+    [InlineData("The literal token <function=shell_execute> appeared in the transcript.", false)]
+    public void Tool_call_markup_detection_ignores_quoted_examples(string text, bool expected)
+    {
+        Assert.Equal(expected, SubAgentActor.ContainsUnexecutedToolCallMarkup(text));
+    }
+
+    [Fact]
     public async Task System_prompt_includes_headless_subagent_contract()
     {
         var fakeClient = new FakeChatClient();

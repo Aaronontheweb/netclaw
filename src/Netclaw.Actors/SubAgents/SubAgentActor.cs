@@ -272,7 +272,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 + $"streamText={msg.StreamTextDeltaCount}/{msg.StreamTextChars}ch "
                 + $"streamThinking={msg.StreamThinkingDeltaCount}/{msg.StreamThinkingChars}ch "
                 + $"streamToolCalls={msg.StreamToolCallDeltaCount} "
-                + $"textPreview={PreviewText(ExtractText(lastMessage), 300)} "
+                + $"textPreview={PreviewForLog(ExtractText(lastMessage), 300)} "
                 + $"toolCallPreview={FormatToolCallPreview(analysis.ToolCalls)}");
 
             var toolCalls = analysis.ToolCalls;
@@ -355,7 +355,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     ? result.Content[..200] + "..."
                     : result.Content ?? "(null)";
                 _log.Info("SubAgent [{AgentName}] tool [{ToolName}] result: {Result}",
-                    _definition.Name, result.Name ?? "unknown", preview);
+                    _definition.Name, result.Name ?? "unknown", SecretOutputRedactor.Redact(preview));
             }
 
             var budgetStatus = _turnState.RecordToolCompletion(msg.ToolResults.Count, _maxToolIterations);
@@ -841,9 +841,12 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             return "no-args";
 
         var rendered = string.Join(", ", arguments.Select(kvp =>
-            $"{kvp.Key}={PreviewText(kvp.Value?.ToString() ?? "null", 160)}"));
-        return PreviewText(rendered, 500);
+            $"{kvp.Key}={PreviewForLog(kvp.Value?.ToString() ?? "null", 160)}"));
+        return PreviewForLog(rendered, 500);
     }
+
+    private static string PreviewForLog(string? text, int maxChars)
+        => SecretOutputRedactor.Redact(PreviewText(text, maxChars));
 
     private static string PreviewText(string? text, int maxChars)
     {
@@ -882,15 +885,52 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         if (string.IsNullOrWhiteSpace(text))
             return false;
 
-        if (text.Contains("</tool_call>", StringComparison.OrdinalIgnoreCase)
-            || text.Contains("<tool_call", StringComparison.OrdinalIgnoreCase))
+        var outsideQuotedExamples = StripFencedAndQuotedBlocks(text);
+        var lines = outsideQuotedExamples
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        foreach (var line in lines)
         {
-            return true;
+            if (line.StartsWith("<tool_call", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("</tool_call>", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (line.StartsWith("<function=", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("<parameter=", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("</function>", StringComparison.OrdinalIgnoreCase)
+                || line.StartsWith("</parameter>", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
         }
 
-        return text.Contains("<function=", StringComparison.OrdinalIgnoreCase)
-            && (text.Contains("<parameter=", StringComparison.OrdinalIgnoreCase)
-                || text.Contains("</function>", StringComparison.OrdinalIgnoreCase));
+        return false;
+    }
+
+    private static string StripFencedAndQuotedBlocks(string text)
+    {
+        var builder = new StringBuilder(text.Length);
+        var inFence = false;
+
+        foreach (var rawLine in text.ReplaceLineEndings("\n").Split('\n'))
+        {
+            var trimmed = rawLine.TrimStart();
+            if (trimmed.StartsWith("```", StringComparison.Ordinal)
+                || trimmed.StartsWith("~~~", StringComparison.Ordinal))
+            {
+                inFence = !inFence;
+                continue;
+            }
+
+            if (inFence || trimmed.StartsWith('>'))
+                continue;
+
+            builder.AppendLine(rawLine);
+        }
+
+        return builder.ToString();
     }
 
     private static async Task ExecuteToolsAsync(
