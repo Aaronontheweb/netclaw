@@ -232,7 +232,10 @@ parent session's approval channel and requester context. Human approval time doe
 not count as subagent inactivity or parent `spawn_agent` tool inactivity; both
 watchdogs resume after the approval wait settles. If no parent approval bridge or
 requester authority context is available, the gated tool fails closed as a failed
-subagent run and is not executed.
+subagent run and is not executed. Subagent approval waits are live-only: if the
+daemon or parent session restarts before the user responds, the stale prompt is
+expired and the interrupted parent `spawn_agent` call is closed before the next
+turn continues.
 
 ## Built-in agents
 

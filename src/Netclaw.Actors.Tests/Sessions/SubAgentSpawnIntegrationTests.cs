@@ -425,6 +425,23 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
         var notice = await subscriberB.ExpectMsgAsync<TextOutput>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
         Assert.Contains("expired", notice.Text, StringComparison.OrdinalIgnoreCase);
         Assert.False(_recordingShellTool.WasCalled);
+
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Never mind, just say hello",
+            Source = source
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        await subscriberB.ExpectMsgAsync<TextOutput>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+        await subscriberB.ExpectMsgAsync<TurnCompleted>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        var resumedCall = _clientProvider.Main.ReceivedMessages[^1];
+        Assert.Contains(resumedCall, message =>
+            message.Role == Microsoft.Extensions.AI.ChatRole.Tool
+            && message.Contents.OfType<FunctionResultContent>().Any(result =>
+                result.CallId == "call-spawn-shell-expire"
+                && result.Result?.ToString()?.Contains("session restarted", StringComparison.OrdinalIgnoreCase) == true));
     }
 
     [Fact]
