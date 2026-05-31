@@ -13,11 +13,16 @@ public readonly record struct MimeType
 {
     public const string DefaultValue = "application/octet-stream";
 
-    public string Value { get; }
+    private readonly string? _value;
+
+    // Computed getter so default(MimeType) — which bypasses the constructor —
+    // still yields the canonical default instead of a null that would throw
+    // inside the catalog's FrozenDictionary lookups.
+    public string Value => _value ?? DefaultValue;
 
     public MimeType(string? mimeType)
     {
-        Value = MimeTypeCatalog.Normalize(mimeType);
+        _value = MimeTypeCatalog.Normalize(mimeType);
     }
 
     public MimeType() : this(DefaultValue)
@@ -34,11 +39,13 @@ public readonly record struct MimeType
 /// </summary>
 public readonly record struct DeclaredMimeType
 {
-    public string Value { get; }
+    private readonly string? _value;
+
+    public string Value => _value ?? MimeType.DefaultValue;
 
     public DeclaredMimeType(string? mimeType)
     {
-        Value = new MimeType(mimeType).Value;
+        _value = new MimeType(mimeType).Value;
     }
 
     public DeclaredMimeType() : this(MimeType.DefaultValue)
@@ -71,11 +78,13 @@ public readonly record struct VerifiedMimeType
 
 public readonly record struct FileExtension
 {
-    public string Value { get; }
+    private readonly string? _value;
+
+    public string Value => _value ?? string.Empty;
 
     public FileExtension(string? extension)
     {
-        Value = Normalize(extension);
+        _value = Normalize(extension);
     }
 
     public static FileExtension FromPath(string path) => new(Path.GetExtension(path));

@@ -9,6 +9,21 @@ namespace Netclaw.Media.Tests;
 
 public sealed class MimeTypeCatalogTests
 {
+    [Fact]
+    public void Default_value_objects_are_null_safe()
+    {
+        // default(struct) bypasses the constructor; .Value must not be null,
+        // and catalog lookups on a default value must not throw.
+        Assert.Equal(MimeType.DefaultValue, default(MimeType).Value);
+        Assert.Equal(MimeType.DefaultValue, default(DeclaredMimeType).Value);
+        Assert.Equal(MimeType.DefaultValue, default(VerifiedMimeType).Value);
+        Assert.Equal(string.Empty, default(FileExtension).Value);
+        Assert.True(default(FileExtension).IsEmpty);
+
+        // No throw — this is the footgun being guarded against.
+        Assert.Equal(AttachmentCategory.Other, MimeTypeCatalog.GetCategory(default(MimeType)));
+    }
+
     [Theory]
     [InlineData("image/jpg", MimeTypeCatalog.ImageJpeg)]
     [InlineData("IMAGE/JPG; charset=binary", MimeTypeCatalog.ImageJpeg)]
