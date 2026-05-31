@@ -29,6 +29,7 @@ public sealed class SubAgentSpawner
     private readonly ToolAccessPolicy _toolAccessPolicy;
     private readonly IToolApprovalService? _approvalService;
     private readonly ISystemPromptProvider _promptProvider;
+    private readonly SubAgentConfig _subAgentConfig;
     private readonly ILogger<SubAgentSpawner> _logger;
 
     public SubAgentSpawner(
@@ -37,13 +38,15 @@ public sealed class SubAgentSpawner
         ToolAccessPolicy toolAccessPolicy,
         IToolApprovalService? approvalService,
         ISystemPromptProvider promptProvider,
-        ILogger<SubAgentSpawner> logger)
+        ILogger<SubAgentSpawner> logger,
+        SubAgentConfig? subAgentConfig = null)
     {
         _chatClientProvider = chatClientProvider;
         _toolRegistry = toolRegistry;
         _toolAccessPolicy = toolAccessPolicy;
         _approvalService = approvalService;
         _promptProvider = promptProvider;
+        _subAgentConfig = subAgentConfig ?? new SubAgentConfig();
         _logger = logger;
     }
 
@@ -113,6 +116,8 @@ public sealed class SubAgentSpawner
 
         var chatClient = _chatClientProvider.GetClient(definition.ModelRole);
         var subAgentTimeout = TimeSpan.FromSeconds(profile.TimeoutSeconds);
+        var prefillTimeout = TimeSpan.FromSeconds(
+            profile.PrefillTimeoutSeconds ?? _subAgentConfig.PrefillTimeoutSeconds);
         var subAgentScopeId = !string.IsNullOrWhiteSpace(context.SessionId)
             ? $"{context.SessionId}/subagent/{definition.Name}/{runId}"
             : $"subagent/{definition.Name}/{runId}";
@@ -136,6 +141,7 @@ public sealed class SubAgentSpawner
                     Task = task,
                     RuntimeContext = runtimeContext,
                     Timeout = subAgentTimeout,
+                    PrefillTimeout = prefillTimeout,
                     SessionScopeId = subAgentScopeId,
                     Audience = context.Audience,
                     Boundary = context.Boundary,

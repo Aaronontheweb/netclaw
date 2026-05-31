@@ -1,7 +1,7 @@
 {
   "version": 1,
   "createdAt": "2026-05-12T17:20:55.7365203+00:00",
-  "updatedAt": "2026-05-12T17:20:55.74213+00:00",
+  "updatedAt": "2026-05-31T00:07:06.9516552+00:00",
   "description": "Initial baseline created by 'slopwatch init' on 2026-05-12 17:20:55 UTC",
   "entries": [
     {
@@ -146,7 +146,7 @@
       "lineNumber": 30,
       "codeSnippet": "Fact(SkipUnless = nameof(IsPosix), Skip = \"POSIX-only — matcher routes through BashParser on POSIX\")",
       "message": "Test method 'ExtractPatterns_multiline_command_splits_one_unit_per_statement' is disabled: POSIX-only — matcher routes through BashParser on POSIX",
-      "baselinedAt": "2026-05-16T00:00:00.0000000+00:00"
+      "baselinedAt": "2026-05-16T00:00:00+00:00"
     },
     {
       "hash": "a016290b3480868d",
@@ -155,7 +155,16 @@
       "lineNumber": 68,
       "codeSnippet": "Fact(SkipUnless = nameof(IsPosix), Skip = \"POSIX-only path semantics\")",
       "message": "Test method 'ExtractCandidates_multiline_surfaces_each_verb' is disabled: POSIX-only path semantics",
-      "baselinedAt": "2026-05-16T00:00:00.0000000+00:00"
+      "baselinedAt": "2026-05-16T00:00:00+00:00"
+    },
+    {
+      "hash": "5f69818e888a0c1a",
+      "ruleId": "SW004",
+      "filePath": "src/Netclaw.Actors.Tests/SubAgents/SubAgentActorTests.cs",
+      "lineNumber": 1412,
+      "codeSnippet": "Task.Delay(delay, cancellationToken)",
+      "message": "Test uses Task.Delay(delay) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-05-31T00:07:06.9516307+00:00"
     }
   ]
 }

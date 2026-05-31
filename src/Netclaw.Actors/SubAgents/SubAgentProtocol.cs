@@ -58,8 +58,22 @@ public sealed record RunSubAgent : INoSerializationVerificationNeeded
     /// </summary>
     public string? RuntimeContext { get; init; }
 
-    /// <summary>Wall-clock timeout set by the caller.</summary>
+    /// <summary>
+    /// Inter-delta inactivity budget: the maximum gap between streaming deltas
+    /// once the model has started responding, and the general inactivity budget
+    /// for the tool loop. The watchdog promotes to this budget on the first
+    /// substantive delta.
+    /// </summary>
     public required TimeSpan Timeout { get; init; }
+
+    /// <summary>
+    /// Generous wait-for-first-delta budget covering queue wait and cold prefill.
+    /// The watchdog starts on this budget and content-free keepalives refresh it,
+    /// so a healthy-but-slow self-hosted prefill is not killed. When unset
+    /// (<see cref="TimeSpan.Zero"/>), the sub-agent falls back to <see cref="Timeout"/>,
+    /// preserving the legacy single-budget behavior.
+    /// </summary>
+    public TimeSpan PrefillTimeout { get; init; }
 
     /// <summary>
     /// Cancellation token from the calling tool execution. Used to stop the

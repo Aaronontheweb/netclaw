@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using System.Threading.Channels;
 using Netclaw.Actors.SubAgents;
+using Netclaw.Actors.Sessions.Pipelines;
 using Netclaw.Actors.Tools;
 using Netclaw.Actors.Tests.Memory;
 using ApprovalOptionKeys = Netclaw.Actors.Protocol.ApprovalOptionKeys;
@@ -1001,27 +1002,138 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
-    public void Keepalive_only_streaming_updates_are_not_substantive_progress()
+    public async Task Slow_prefill_governed_by_generous_prefill_budget_succeeds()
     {
-        Assert.False(SubAgentActor.IsSubstantiveStreamingUpdate(new ChatResponseUpdate
-        {
-            Role = ChatRole.Assistant
-        }));
-        Assert.False(SubAgentActor.IsSubstantiveStreamingUpdate(new ChatResponseUpdate
-        {
-            Role = ChatRole.Assistant,
-            Contents = [new UsageContent(new UsageDetails())]
-        }));
-        Assert.True(SubAgentActor.IsSubstantiveStreamingUpdate(new ChatResponseUpdate
-        {
-            Role = ChatRole.Assistant,
-            Contents = [new TextContent("working")]
-        }));
-        Assert.True(SubAgentActor.IsSubstantiveStreamingUpdate(new ChatResponseUpdate
-        {
-            Role = ChatRole.Assistant,
-            Contents = [new FunctionCallContent("call-1", "inspect_context")]
-        }));
+        // Keepalives arrive for ~1.2s before the first real token, with a tight
+        // 200ms inter-delta budget but a generous 5s prefill budget. The run
+        // succeeds because the prefill budget — not the inter-delta budget —
+        // governs the wait for the first substantive token. Under the old
+        // single-budget model the 200ms budget would have expired mid-prefill.
+        var fakeClient = new ScriptedStreamingChatClient(
+            (TimeSpan.FromMilliseconds(300), Keepalive()),
+            (TimeSpan.FromMilliseconds(300), Keepalive()),
+            (TimeSpan.FromMilliseconds(300), Keepalive()),
+            (TimeSpan.FromMilliseconds(300), TextWithFinish("All done")));
+
+        var definition = CreateDefinition();
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
+
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent
+            {
+                Task = "Slow prefill",
+                Timeout = TimeSpan.FromMilliseconds(200),   // inter-delta budget
+                PrefillTimeout = TimeSpan.FromSeconds(5),   // generous first-token budget
+                Audience = TrustAudience.Personal
+            },
+            TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success, $"Expected success but got: {result.Output}");
+        Assert.Contains("All done", result.Output);
+    }
+
+    [Fact]
+    public async Task Silent_prefill_times_out_at_the_prefill_ceiling()
+    {
+        // No updates at all (not even keepalives) for far longer than the prefill
+        // budget. The prefill ceiling bounds a wedged call even though the
+        // inter-delta budget is large — preserving the anti-hang guarantee.
+        var fakeClient = new ScriptedStreamingChatClient(
+            (TimeSpan.FromSeconds(30), null));
+
+        var definition = CreateDefinition();
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
+
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent
+            {
+                Task = "Silent prefill",
+                Timeout = TimeSpan.FromSeconds(10),         // inter-delta — not the governing budget here
+                PrefillTimeout = TimeSpan.FromMilliseconds(300),
+                Audience = TrustAudience.Personal
+            },
+            TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Contains("timed out", result.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task First_substantive_delta_promotes_to_the_tighter_inter_delta_budget()
+    {
+        // One real token arrives quickly (promoting off the generous prefill
+        // budget), then the stream stalls. The call must time out at the short
+        // inter-delta budget, far below the 10s prefill budget — proving promotion
+        // happened. Without promotion the 3s stall would fall within prefill and
+        // the run would instead succeed with "partial".
+        var fakeClient = new ScriptedStreamingChatClient(
+            (TimeSpan.FromMilliseconds(50), TextOnly("partial")),
+            (TimeSpan.FromSeconds(3), null));
+
+        var definition = CreateDefinition();
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
+
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent
+            {
+                Task = "Stall after first token",
+                Timeout = TimeSpan.FromMilliseconds(250),   // inter-delta budget
+                PrefillTimeout = TimeSpan.FromSeconds(10),  // generous; must NOT govern after promotion
+                Audience = TrustAudience.Personal
+            },
+            TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Contains("timed out", result.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static ChatResponseUpdate Keepalive()
+        => new() { Role = ChatRole.Assistant };
+
+    private static ChatResponseUpdate TextOnly(string text)
+        => new() { Role = ChatRole.Assistant, Contents = [new TextContent(text)] };
+
+    private static ChatResponseUpdate TextWithFinish(string text)
+        => new() { Role = ChatRole.Assistant, Contents = [new TextContent(text)], FinishReason = ChatFinishReason.Stop };
+
+    [Fact]
+    public void Content_free_and_usage_only_updates_classify_as_keepalive()
+    {
+        // Content-free heartbeat (e.g. prompt_progress) — keepalive, not substantive.
+        var empty = StreamingResponseReader.Classify(
+            new ChatResponseUpdate { Role = ChatRole.Assistant },
+            anySubstantiveSeen: false);
+        Assert.True(empty.IsKeepalive);
+        Assert.False(empty.HasSubstantiveContent);
+        Assert.False(empty.IsFirstSubstantive);
+
+        // Usage-only chunk — still a keepalive (stats, no model output).
+        var usageOnly = StreamingResponseReader.Classify(
+            new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [new UsageContent(new UsageDetails())] },
+            anySubstantiveSeen: false);
+        Assert.True(usageOnly.IsKeepalive);
+        Assert.False(usageOnly.HasSubstantiveContent);
+
+        // First real text delta — substantive and first.
+        var text = StreamingResponseReader.Classify(
+            new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [new TextContent("working")] },
+            anySubstantiveSeen: false);
+        Assert.True(text.HasSubstantiveContent);
+        Assert.True(text.IsFirstSubstantive);
+        Assert.False(text.IsKeepalive);
+
+        // Tool-call content is substantive.
+        var toolCall = StreamingResponseReader.Classify(
+            new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [new FunctionCallContent("call-1", "inspect_context")] },
+            anySubstantiveSeen: false);
+        Assert.True(toolCall.HasSubstantiveContent);
+
+        // Substantive content after we've already seen output is not "first".
+        var laterText = StreamingResponseReader.Classify(
+            new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [new TextContent("more")] },
+            anySubstantiveSeen: true);
+        Assert.True(laterText.HasSubstantiveContent);
+        Assert.False(laterText.IsFirstSubstantive);
     }
 
     [Fact]
@@ -1315,6 +1427,39 @@ internal sealed class FakeChatClient : IChatClient
         {
             cancellationToken.ThrowIfCancellationRequested();
             yield return update;
+        }
+    }
+
+    public object? GetService(Type serviceType, object? serviceKey = null) => null;
+    public void Dispose() { }
+}
+
+/// <summary>
+/// Streaming-only fake that yields a scripted sequence of updates, each preceded
+/// by a delay. A null update is a pure delay (no yield) — used to model a silent
+/// prefill or a stall. <c>Task.Delay</c> here is acceptable: it simulates provider
+/// latency inside the fake, not test-orchestration timing.
+/// </summary>
+internal sealed class ScriptedStreamingChatClient(
+    params (TimeSpan Delay, ChatResponseUpdate? Update)[] steps) : IChatClient
+{
+    public Task<ChatResponse> GetResponseAsync(
+        IEnumerable<ChatMessage> messages,
+        ChatOptions? options = null,
+        CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("ScriptedStreamingChatClient is streaming-only.");
+
+    public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+        IEnumerable<ChatMessage> messages,
+        ChatOptions? options = null,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        foreach (var (delay, update) in steps)
+        {
+            if (delay > TimeSpan.Zero)
+                await Task.Delay(delay, cancellationToken);
+            if (update is not null)
+                yield return update;
         }
     }
 
