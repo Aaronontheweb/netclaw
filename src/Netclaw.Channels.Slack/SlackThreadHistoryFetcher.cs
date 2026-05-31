@@ -319,14 +319,19 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
         }
 
         if (HistoricalAttachmentInbox.TryGetExistingFile(inboxDir, filename, sourceKey, out var existingPath, out var existingSize))
-            return await AttachmentIngressFormatting.BuildAcceptedContentsAsync(
-                existingPath,
-                filename,
-                declaredMimeType.Value,
-                category,
-                inlineImages,
-                existingSize,
-                cancellationToken);
+        {
+            // Re-scan the cached file so a cache hit goes through the same
+            // verified-MIME/verified-category gate as a fresh download — never
+            // serve the unverified declared MIME.
+            var cached = await HistoricalAttachmentIngress.ScanAndVerifyAsync(
+                _contentScanner, existingPath, filename, declaredMimeType,
+                audience, policy, ContentScanTimeout, _logger, "Slack", cancellationToken);
+            return cached is HistoricalAttachmentIngress.ScanOutcome.Verified cachedOk
+                ? await AttachmentIngressFormatting.BuildAcceptedContentsAsync(
+                    existingPath, filename, cachedOk.MimeType.Value, cachedOk.Category,
+                    inlineImages, existingSize, cancellationToken)
+                : [((HistoricalAttachmentIngress.ScanOutcome.Rejected)cached).Note];
+        }
 
         AttachmentDownloadResult downloadResult;
         try
@@ -373,60 +378,18 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
                 $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" downloaded as zero bytes")];
         }
 
-        ContentScanResult scanResult;
-        try
+        var scanOutcome = await HistoricalAttachmentIngress.ScanAndVerifyAsync(
+            _contentScanner, downloadResult.FilePath, filename, declaredMimeType,
+            audience, policy, ContentScanTimeout, _logger, "Slack", cancellationToken);
+        if (scanOutcome is HistoricalAttachmentIngress.ScanOutcome.Rejected rejected)
         {
-            using var scanCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            scanCts.CancelAfter(ContentScanTimeout);
-            scanResult = await _contentScanner.ScanFileAsync(
-                downloadResult.FilePath,
-                filename,
-                declaredMimeType.Value,
-                scanCts.Token);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Historical Slack attachment scan threw for {Name}", filename);
             AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
-            return [BuildHistoricalAttachmentRejected(
-                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" could not be scanned")];
+            return [rejected.Note];
         }
 
-        if (!scanResult.IsAllowed)
-        {
-            _logger.LogWarning(
-                "Historical Slack attachment {Name} rejected by scanner: {Error} {Message}",
-                filename,
-                scanResult.Error?.ToString(),
-                scanResult.Message ?? string.Empty);
-            AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
-            return [BuildHistoricalAttachmentRejected(
-                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" was rejected by content scanning: {AttachmentIngressFormatting.EscapeQuoted(scanResult.Message ?? scanResult.Error?.ToString() ?? "unknown error")}")];
-        }
-
-        if (scanResult.VerifiedMimeType is not { } verifiedMimeType)
-        {
-            _logger.LogWarning(
-                "Historical Slack attachment {Name} rejected: scanner did not return verified MIME",
-                filename);
-            AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
-            return [BuildHistoricalAttachmentRejected(
-                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" could not be verified by content scanning")];
-        }
-
-        var verifiedMime = verifiedMimeType.MimeType;
-        var verifiedCategory = MimeTypeCatalog.GetCategory(verifiedMime);
-        if (!policy.Allows(verifiedCategory))
-        {
-            _logger.LogWarning(
-                "Historical Slack attachment {Name} rejected: verified category {Category} not allowed for {Audience}",
-                filename,
-                verifiedCategory,
-                audience);
-            AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
-            return [BuildHistoricalAttachmentRejected(
-                $"historical attachment ({verifiedMime.Value}) category not allowed in {audience}")];
-        }
+        var verified = (HistoricalAttachmentIngress.ScanOutcome.Verified)scanOutcome;
+        var verifiedMime = verified.MimeType;
+        var verifiedCategory = verified.Category;
 
         string inboxPath;
         try
@@ -479,7 +442,7 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
         string? Error);
 
     private static TextContent BuildHistoricalAttachmentRejected(string detail)
-        => new($"[attachment rejected: {detail}]");
+        => HistoricalAttachmentIngress.BuildRejected(detail);
 
     private static string BuildHistoricalAttachmentSourceKey(SlackNet.File file, string downloadUrl)
         => !string.IsNullOrWhiteSpace(file.Id)

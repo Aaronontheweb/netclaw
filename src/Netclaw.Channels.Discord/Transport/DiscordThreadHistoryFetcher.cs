@@ -279,14 +279,19 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         }
 
         if (HistoricalAttachmentInbox.TryGetExistingFile(inboxDir, file.Name, sourceKey, out var existingPath, out var existingSize))
-            return await AttachmentIngressFormatting.BuildAcceptedContentsAsync(
-                existingPath,
-                file.Name,
-                declaredMimeType.Value,
-                category,
-                inlineImages,
-                existingSize,
-                cancellationToken);
+        {
+            // Re-scan the cached file so a cache hit goes through the same
+            // verified-MIME/verified-category gate as a fresh download — never
+            // serve the unverified declared MIME.
+            var cached = await HistoricalAttachmentIngress.ScanAndVerifyAsync(
+                _contentScanner, existingPath, file.Name, declaredMimeType,
+                audience, policy, ContentScanTimeout, _logger, "Discord", cancellationToken);
+            return cached is HistoricalAttachmentIngress.ScanOutcome.Verified cachedOk
+                ? await AttachmentIngressFormatting.BuildAcceptedContentsAsync(
+                    existingPath, file.Name, cachedOk.MimeType.Value, cachedOk.Category,
+                    inlineImages, existingSize, cancellationToken)
+                : [((HistoricalAttachmentIngress.ScanOutcome.Rejected)cached).Note];
+        }
 
         if (!DiscordAttachmentUrlTrust.IsAllowedAttachmentDomain(file.Url))
         {
@@ -342,60 +347,18 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
                 $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(file.Name)}\" downloaded as zero bytes")];
         }
 
-        ContentScanResult scanResult;
-        try
+        var scanOutcome = await HistoricalAttachmentIngress.ScanAndVerifyAsync(
+            _contentScanner, downloadResult.FilePath, file.Name, declaredMimeType,
+            audience, policy, ContentScanTimeout, _logger, "Discord", cancellationToken);
+        if (scanOutcome is HistoricalAttachmentIngress.ScanOutcome.Rejected rejected)
         {
-            using var scanCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            scanCts.CancelAfter(ContentScanTimeout);
-            scanResult = await _contentScanner.ScanFileAsync(
-                downloadResult.FilePath,
-                file.Name,
-                declaredMimeType.Value,
-                scanCts.Token);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Historical Discord attachment scan threw for {Name}", file.Name);
             AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
-            return [BuildHistoricalAttachmentRejected(
-                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(file.Name)}\" could not be scanned")];
+            return [rejected.Note];
         }
 
-        if (!scanResult.IsAllowed)
-        {
-            _logger.LogWarning(
-                "Historical Discord attachment {Name} rejected by scanner: {Error} {Message}",
-                file.Name,
-                scanResult.Error?.ToString(),
-                scanResult.Message ?? string.Empty);
-            AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
-            return [BuildHistoricalAttachmentRejected(
-                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(file.Name)}\" was rejected by content scanning: {AttachmentIngressFormatting.EscapeQuoted(scanResult.Message ?? scanResult.Error?.ToString() ?? "unknown error")}")];
-        }
-
-        if (scanResult.VerifiedMimeType is not { } verifiedMimeType)
-        {
-            _logger.LogWarning(
-                "Historical Discord attachment {Name} rejected: scanner did not return verified MIME",
-                file.Name);
-            AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
-            return [BuildHistoricalAttachmentRejected(
-                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(file.Name)}\" could not be verified by content scanning")];
-        }
-
-        var verifiedMime = verifiedMimeType.MimeType;
-        var verifiedCategory = MimeTypeCatalog.GetCategory(verifiedMime);
-        if (!policy.Allows(verifiedCategory))
-        {
-            _logger.LogWarning(
-                "Historical Discord attachment {Name} rejected: verified category {Category} not allowed for {Audience}",
-                file.Name,
-                verifiedCategory,
-                audience);
-            AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
-            return [BuildHistoricalAttachmentRejected(
-                $"historical attachment ({verifiedMime.Value}) category not allowed in {audience}")];
-        }
+        var verified = (HistoricalAttachmentIngress.ScanOutcome.Verified)scanOutcome;
+        var verifiedMime = verified.MimeType;
+        var verifiedCategory = verified.Category;
 
         string inboxPath;
         try
@@ -525,7 +488,7 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         => !string.IsNullOrWhiteSpace(message.Content) || message.Attachments.Count > 0;
 
     private static TextContent BuildHistoricalAttachmentRejected(string detail)
-        => new($"[attachment rejected: {detail}]");
+        => HistoricalAttachmentIngress.BuildRejected(detail);
 
     private static string BuildHistoricalAttachmentSourceKey(string messageId, DiscordFileReference file)
         => $"discord:{messageId}:{file.Url}";
