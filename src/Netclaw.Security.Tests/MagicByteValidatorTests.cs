@@ -363,6 +363,18 @@ public sealed class MagicByteValidatorTests
     }
 
     [Fact]
+    public void SignatureMatchers_StayAlignedWithCatalogNativeValidationSet()
+    {
+        // The validator owns byte-matchers; the catalog owns the MIME/extension
+        // table. A matcher without a catalog entry (or vice versa) would let a
+        // type slip past the extension gate or be silently unscannable.
+        var catalogSet = MimeTypeCatalog.GetNativeSignatureValidatedMimeTypes()
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        Assert.True(catalogSet.SetEquals(MagicByteValidator.SupportedMimeTypes));
+    }
+
+    [Fact]
     public void Validate_DeclaredMimeMismatch_MagicBytesMatchExtension_Allowed()
     {
         // PNG bytes declared as JPEG with .png extension — magic bytes confirm

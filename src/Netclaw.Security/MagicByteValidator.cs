@@ -40,15 +40,6 @@ public static class MagicByteValidator
     private delegate bool SignatureMatcher(ReadOnlySpan<byte> content);
 
     /// <summary>
-    /// Signature rule for a declared MIME type. Extensions are the set of
-    /// filename extensions permitted to carry this MIME; <see cref="Matches"/>
-    /// returns <c>true</c> when the raw bytes satisfy the signature family.
-    /// </summary>
-    private sealed record SignatureRule(
-        FrozenSet<string> Extensions,
-        SignatureMatcher Matches);
-
-    /// <summary>
     /// Matcher that unconditionally accepts any content. Used for text-like
     /// MIMEs that have no signature at offset 0; the executable pre-check
     /// still runs first, so an <c>MZ</c>- or <c>#!</c>-prefixed "text" file
@@ -56,8 +47,21 @@ public static class MagicByteValidator
     /// </summary>
     private static readonly SignatureMatcher AnyContent = static _ => true;
 
-    private static readonly FrozenDictionary<string, SignatureRule> RulesByMime =
-        BuildRules().ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// MIME → byte-signature matcher. The matcher is the only piece the security
+    /// layer owns; the set of filename extensions permitted for each MIME comes
+    /// from <see cref="MimeTypeCatalog"/> (via <see cref="MimeTypeCatalog.ExtensionMatches"/>),
+    /// so the extension table is defined once in the catalog and cannot drift
+    /// against the validator.
+    /// </summary>
+    private static readonly FrozenDictionary<string, SignatureMatcher> SignatureMatchers =
+        BuildMatchers().ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// MIME types for which the scanner has a native byte-signature matcher.
+    /// Kept aligned with <see cref="MimeTypeCatalog.GetNativeSignatureValidatedMimeTypes"/>.
+    /// </summary>
+    public static IReadOnlyCollection<string> SupportedMimeTypes => SignatureMatchers.Keys;
 
     /// <summary>
     /// Validates a file using only its header bytes and total size. Used by
@@ -111,7 +115,7 @@ public static class MagicByteValidator
 
         var effectiveMimeType = MimeTypeCatalog.NormalizeDeclaredForExtension(declaredMimeType, extension);
 
-        if (!RulesByMime.TryGetValue(effectiveMimeType.Value, out var rule))
+        if (!SignatureMatchers.TryGetValue(effectiveMimeType.Value, out var matcher))
         {
             return ContentScanResult.Rejected(
                 ContentScanError.UnrecognizedFileType,
@@ -125,13 +129,13 @@ public static class MagicByteValidator
                 $"MIME type '{effectiveMimeType}' is not allowed by policy");
         }
 
-        if (!rule.Extensions.Contains(extension))
+        if (!MimeTypeCatalog.ExtensionMatches(effectiveMimeType, extension))
         {
             var detected = DetectMimeType(header);
             var detectedMimeType = detected is not null ? new MimeType(detected) : (MimeType?)null;
             if (detectedMimeType is not null
-                && RulesByMime.TryGetValue(detectedMimeType.Value.Value, out var detectedRule)
-                && detectedRule.Extensions.Contains(extension)
+                && SignatureMatchers.ContainsKey(detectedMimeType.Value.Value)
+                && MimeTypeCatalog.ExtensionMatches(detectedMimeType.Value, extension)
                 && effectivePolicy.AllowedMimeTypes.Contains(detectedMimeType.Value.Value))
             {
                 return ContentScanResult.Allowed(detectedMimeType.Value);
@@ -143,7 +147,7 @@ public static class MagicByteValidator
                 detectedMimeType);
         }
 
-        if (!rule.Matches(header))
+        if (!matcher(header))
         {
             var detectedMimeType = DetectMimeType(header);
             return ContentScanResult.Rejected(
@@ -211,78 +215,70 @@ public static class MagicByteValidator
         return false;
     }
 
-    // ── Rule table ────────────────────────────────────────────────────────
+    // ── Matcher table ─────────────────────────────────────────────────────
+    // MIME → byte-signature matcher only. Permitted extensions live in
+    // MimeTypeCatalog; this table must stay aligned with the catalog's
+    // native-signature-validated set (enforced by a test).
 
-    private static Dictionary<string, SignatureRule> BuildRules()
+    private static Dictionary<string, SignatureMatcher> BuildMatchers() => new(StringComparer.OrdinalIgnoreCase)
     {
-        var rules = new Dictionary<string, SignatureRule>(StringComparer.OrdinalIgnoreCase)
-        {
-            // Images
-            ["image/png"] = new(Exts(".png"), IsPng),
-            ["image/jpeg"] = new(Exts(".jpg", ".jpeg"), IsJpeg),
-            ["image/gif"] = new(Exts(".gif"), IsGif),
-            ["image/webp"] = new(Exts(".webp"), IsWebp),
+        // Images
+        ["image/png"] = IsPng,
+        ["image/jpeg"] = IsJpeg,
+        ["image/gif"] = IsGif,
+        ["image/webp"] = IsWebp,
 
-            // PDF
-            ["application/pdf"] = new(Exts(".pdf"), IsPdf),
+        // PDF
+        ["application/pdf"] = IsPdf,
 
-            // OOXML (ZIP-based) — docx/xlsx/pptx
-            ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"] =
-            new(Exts(".docx"), IsZip),
-            ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"] =
-            new(Exts(".xlsx"), IsZip),
-            ["application/vnd.openxmlformats-officedocument.presentationml.presentation"] =
-            new(Exts(".pptx"), IsZip),
+        // OOXML (ZIP-based) — docx/xlsx/pptx
+        ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"] = IsZip,
+        ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"] = IsZip,
+        ["application/vnd.openxmlformats-officedocument.presentationml.presentation"] = IsZip,
 
-            // OpenDocument (also ZIP-based)
-            ["application/vnd.oasis.opendocument.text"] = new(Exts(".odt"), IsZip),
-            ["application/vnd.oasis.opendocument.spreadsheet"] = new(Exts(".ods"), IsZip),
-            ["application/vnd.oasis.opendocument.presentation"] = new(Exts(".odp"), IsZip),
+        // OpenDocument (also ZIP-based)
+        ["application/vnd.oasis.opendocument.text"] = IsZip,
+        ["application/vnd.oasis.opendocument.spreadsheet"] = IsZip,
+        ["application/vnd.oasis.opendocument.presentation"] = IsZip,
 
-            // Legacy OLE Compound Document Office formats
-            ["application/msword"] = new(Exts(".doc"), IsOle),
-            ["application/vnd.ms-excel"] = new(Exts(".xls"), IsOle),
-            ["application/vnd.ms-powerpoint"] = new(Exts(".ppt"), IsOle),
+        // Legacy OLE Compound Document Office formats
+        ["application/msword"] = IsOle,
+        ["application/vnd.ms-excel"] = IsOle,
+        ["application/vnd.ms-powerpoint"] = IsOle,
 
-            // Plain/structured text — no signature, but executable pre-check
-            // still blocks MZ / ELF / shebang payloads.
-            ["text/plain"] = new(Exts(".txt", ".log"), AnyContent),
-            ["text/markdown"] = new(Exts(".md", ".markdown"), AnyContent),
-            ["text/csv"] = new(Exts(".csv"), AnyContent),
-            ["text/html"] = new(Exts(".html", ".htm"), AnyContent),
-            ["application/json"] = new(Exts(".json"), AnyContent),
-            ["application/xml"] = new(Exts(".xml"), AnyContent),
-            ["application/yaml"] = new(Exts(".yml", ".yaml"), AnyContent),
+        // Plain/structured text — no signature, but executable pre-check
+        // still blocks MZ / ELF / shebang payloads.
+        ["text/plain"] = AnyContent,
+        ["text/markdown"] = AnyContent,
+        ["text/csv"] = AnyContent,
+        ["text/html"] = AnyContent,
+        ["application/json"] = AnyContent,
+        ["application/xml"] = AnyContent,
+        ["application/yaml"] = AnyContent,
 
-            // Rich text
-            ["application/rtf"] = new(Exts(".rtf"), IsRtf),
+        // Rich text
+        ["application/rtf"] = IsRtf,
 
-            // Archives
-            ["application/zip"] = new(Exts(".zip"), IsZip),
-            ["application/x-7z-compressed"] = new(Exts(".7z"), Is7z),
-            ["application/gzip"] = new(Exts(".gz", ".tgz"), IsGzip),
-            ["application/x-bzip2"] = new(Exts(".bz2"), IsBzip2),
-            ["application/x-xz"] = new(Exts(".xz"), IsXz),
+        // Archives
+        ["application/zip"] = IsZip,
+        ["application/x-7z-compressed"] = Is7z,
+        ["application/gzip"] = IsGzip,
+        ["application/x-bzip2"] = IsBzip2,
+        ["application/x-xz"] = IsXz,
 
-            // Audio
-            ["audio/mpeg"] = new(Exts(".mp3"), IsMp3FrameOrId3),
-            ["audio/mp4"] = new(Exts(".m4a", ".mp4"), IsFtyp),
-            ["audio/wav"] = new(Exts(".wav"), IsWav),
-            ["audio/ogg"] = new(Exts(".ogg", ".oga"), IsOgg),
+        // Audio
+        ["audio/mpeg"] = IsMp3FrameOrId3,
+        ["audio/mp4"] = IsFtyp,
+        ["audio/wav"] = IsWav,
+        ["audio/ogg"] = IsOgg,
 
-            // Video
-            ["video/mp4"] = new(Exts(".mp4", ".m4v"), IsFtyp),
-            ["video/quicktime"] = new(Exts(".mov"), IsFtyp),
-            ["video/webm"] = new(Exts(".webm"), IsEbml),
-            ["video/x-matroska"] = new(Exts(".mkv"), IsEbml),
-            ["video/x-msvideo"] = new(Exts(".avi"), IsAvi)
-        };
-
-        return rules;
-    }
-
-    private static FrozenSet<string> Exts(params string[] extensions) =>
-        extensions.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+        // Video
+        ["video/mp4"] = IsFtyp,
+        ["video/quicktime"] = IsFtyp,
+        ["video/webm"] = IsEbml,
+        ["video/x-matroska"] = IsEbml,
+        ["video/x-msvideo"] = IsAvi
+    };
 
     // ── Signature matchers ────────────────────────────────────────────────
     // Each matcher validates more than the minimum prefix where a cheap
