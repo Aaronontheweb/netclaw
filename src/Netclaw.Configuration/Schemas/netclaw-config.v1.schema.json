@@ -522,6 +522,13 @@
           "default": 1800,
           "description": "Generous wait-for-first-delta budget (seconds) covering queue wait and cold prefill for sub-agent LLM calls, mirroring Session.PrefillTimeoutSeconds. Content-free prompt_progress keepalives refresh it; after the first substantive delta the per-agent inter-delta budget applies. A per-agent definition may override via prefillTimeoutSeconds frontmatter."
         },
+        "MaxLlmCallSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400,
+          "default": 3600,
+          "description": "Absolute wall-clock ceiling (seconds) for a single sub-agent LLM call, independent of the inactivity watchdog. Bounds a wedged backend that streams keepalives forever without finishing. 0 disables the cap. Generous by default (1 hour) so it only catches pathological hangs."
+        },
         "StoreMemoryTimeoutSeconds": {
           "type": "integer",
           "minimum": 5,

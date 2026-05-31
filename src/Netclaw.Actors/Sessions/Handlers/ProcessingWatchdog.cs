@@ -61,6 +61,32 @@ internal sealed class ProcessingWatchdog
     public void Refresh(TimeSpan timeout, ITimerScheduler timers)
         => RestartLlmTimer(timeout, timers);
 
+    /// <summary>
+    /// Apply a streaming progress signal under the two-phase budget shared by the
+    /// session and sub-agent paths. On the first substantive delta, promote from the
+    /// generous prefill budget to the tighter inter-delta budget; otherwise refresh
+    /// whichever budget is currently in force — the prefill budget until the first
+    /// substantive delta (so a content-free keepalive cannot shrink the
+    /// wait-for-first-token window), the inter-delta budget after. Returns the
+    /// updated "already promoted" flag for the caller to thread back in.
+    /// </summary>
+    public bool OnStreamProgress(
+        bool isSubstantive,
+        bool alreadyPromoted,
+        TimeSpan prefillTimeout,
+        TimeSpan interDeltaTimeout,
+        ITimerScheduler timers)
+    {
+        if (isSubstantive && !alreadyPromoted)
+        {
+            Promote(interDeltaTimeout, timers);
+            return true;
+        }
+
+        Refresh(alreadyPromoted ? interDeltaTimeout : prefillTimeout, timers);
+        return alreadyPromoted;
+    }
+
     private void RestartLlmTimer(TimeSpan timeout, ITimerScheduler timers)
     {
         if (_operationName is not LlmCall)

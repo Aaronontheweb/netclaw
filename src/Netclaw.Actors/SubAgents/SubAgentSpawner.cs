@@ -118,6 +118,9 @@ public sealed class SubAgentSpawner
         var subAgentTimeout = TimeSpan.FromSeconds(profile.TimeoutSeconds);
         var prefillTimeout = TimeSpan.FromSeconds(
             profile.PrefillTimeoutSeconds ?? _subAgentConfig.PrefillTimeoutSeconds);
+        var maxLlmCall = _subAgentConfig.MaxLlmCallSeconds > 0
+            ? TimeSpan.FromSeconds(_subAgentConfig.MaxLlmCallSeconds)
+            : TimeSpan.Zero;
         var subAgentScopeId = !string.IsNullOrWhiteSpace(context.SessionId)
             ? $"{context.SessionId}/subagent/{definition.Name}/{runId}"
             : $"subagent/{definition.Name}/{runId}";
@@ -142,6 +145,7 @@ public sealed class SubAgentSpawner
                     RuntimeContext = runtimeContext,
                     Timeout = subAgentTimeout,
                     PrefillTimeout = prefillTimeout,
+                    MaxLlmCall = maxLlmCall,
                     SessionScopeId = subAgentScopeId,
                     Audience = context.Audience,
                     Boundary = context.Boundary,

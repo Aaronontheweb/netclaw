@@ -1002,13 +1002,13 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
-    public async Task Slow_prefill_governed_by_generous_prefill_budget_succeeds()
+    public async Task Generous_prefill_budget_allows_a_slow_first_token()
     {
-        // Keepalives arrive for ~1.2s before the first real token, with a tight
-        // 200ms inter-delta budget but a generous 5s prefill budget. The run
-        // succeeds because the prefill budget — not the inter-delta budget —
-        // governs the wait for the first substantive token. Under the old
-        // single-budget model the 200ms budget would have expired mid-prefill.
+        // The first real token arrives at ~1.2s with a tight 200ms inter-delta budget
+        // but a generous 5s prefill budget. The run succeeds because the prefill budget
+        // — not the inter-delta budget — governs the wait for the first substantive
+        // token. Under the old single-budget model the 200ms budget would have expired
+        // mid-prefill.
         var fakeClient = new ScriptedStreamingChatClient(
             (TimeSpan.FromMilliseconds(300), Keepalive()),
             (TimeSpan.FromMilliseconds(300), Keepalive()),
@@ -1030,6 +1030,71 @@ public class SubAgentActorTests : TestKit
 
         Assert.True(result.Success, $"Expected success but got: {result.Output}");
         Assert.Contains("All done", result.Output);
+    }
+
+    [Fact]
+    public async Task Keepalives_refresh_the_prefill_budget()
+    {
+        // Keepalives arrive every ~1s for ~6s — longer than the 5s prefill budget —
+        // before the first token. The streaming ping throttle is 2s, so keepalive
+        // pings reach the actor at ~2s/~4s/~6s and each refreshes the prefill budget.
+        // Without keepalive-driven refresh the prefill timer (armed once at 5s) would
+        // expire at ~5s, before the token at ~6.2s, and the run would time out. Success
+        // therefore proves keepalives refresh the prefill budget.
+        var fakeClient = new ScriptedStreamingChatClient(
+            (TimeSpan.FromMilliseconds(1000), Keepalive()),
+            (TimeSpan.FromMilliseconds(1000), Keepalive()),
+            (TimeSpan.FromMilliseconds(1000), Keepalive()),
+            (TimeSpan.FromMilliseconds(1000), Keepalive()),
+            (TimeSpan.FromMilliseconds(1000), Keepalive()),
+            (TimeSpan.FromMilliseconds(1000), Keepalive()),
+            (TimeSpan.FromMilliseconds(200), TextWithFinish("All done")));
+
+        var definition = CreateDefinition();
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
+
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent
+            {
+                Task = "Heartbeating prefill",
+                Timeout = TimeSpan.FromSeconds(10),         // inter-delta — irrelevant here
+                PrefillTimeout = TimeSpan.FromSeconds(5),   // shorter than the keepalive phase
+                Audience = TrustAudience.Personal
+            },
+            TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success, $"Expected success but got: {result.Output}");
+        Assert.Contains("All done", result.Output);
+    }
+
+    [Fact]
+    public async Task Llm_call_exceeding_the_wall_clock_cap_times_out()
+    {
+        // A backend that streams keepalives forever (here, every 100ms with no token)
+        // would refresh the inactivity watchdog indefinitely. The absolute per-call cap
+        // is never refreshed by keepalives, so it bounds the call regardless.
+        var keepaliveStorm = Enumerable
+            .Range(0, 60)
+            .Select(_ => (TimeSpan.FromMilliseconds(100), (ChatResponseUpdate?)Keepalive()))
+            .ToArray();
+        var fakeClient = new ScriptedStreamingChatClient(keepaliveStorm);
+
+        var definition = CreateDefinition();
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
+
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent
+            {
+                Task = "Wedged but chatty backend",
+                Timeout = TimeSpan.FromSeconds(30),         // inter-delta — huge
+                PrefillTimeout = TimeSpan.FromSeconds(30),  // prefill — also huge; keepalives would refresh it
+                MaxLlmCall = TimeSpan.FromMilliseconds(800), // the cap that actually bounds the call
+                Audience = TrustAudience.Personal
+            },
+            TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Contains("maximum duration", result.Output, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1097,13 +1162,12 @@ public class SubAgentActorTests : TestKit
         => new() { Role = ChatRole.Assistant, Contents = [new TextContent(text)], FinishReason = ChatFinishReason.Stop };
 
     [Fact]
-    public void Content_free_and_usage_only_updates_classify_as_keepalive()
+    public void Classify_distinguishes_keepalives_from_substantive_progress()
     {
-        // Content-free heartbeat (e.g. prompt_progress) — keepalive, not substantive.
+        // Content-free heartbeat (e.g. prompt_progress) — a keepalive, not substantive.
         var empty = StreamingResponseReader.Classify(
             new ChatResponseUpdate { Role = ChatRole.Assistant },
             anySubstantiveSeen: false);
-        Assert.True(empty.IsKeepalive);
         Assert.False(empty.HasSubstantiveContent);
         Assert.False(empty.IsFirstSubstantive);
 
@@ -1111,7 +1175,6 @@ public class SubAgentActorTests : TestKit
         var usageOnly = StreamingResponseReader.Classify(
             new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [new UsageContent(new UsageDetails())] },
             anySubstantiveSeen: false);
-        Assert.True(usageOnly.IsKeepalive);
         Assert.False(usageOnly.HasSubstantiveContent);
 
         // First real text delta — substantive and first.
@@ -1120,13 +1183,30 @@ public class SubAgentActorTests : TestKit
             anySubstantiveSeen: false);
         Assert.True(text.HasSubstantiveContent);
         Assert.True(text.IsFirstSubstantive);
-        Assert.False(text.IsKeepalive);
 
         // Tool-call content is substantive.
         var toolCall = StreamingResponseReader.Classify(
             new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [new FunctionCallContent("call-1", "inspect_context")] },
             anySubstantiveSeen: false);
         Assert.True(toolCall.HasSubstantiveContent);
+
+        // A finish-reason-only update ends the call — substantive, not a keepalive.
+        var finishOnly = StreamingResponseReader.Classify(
+            new ChatResponseUpdate { Role = ChatRole.Assistant, FinishReason = ChatFinishReason.Stop },
+            anySubstantiveSeen: false);
+        Assert.True(finishOnly.HasSubstantiveContent);
+
+        // A non-text content type (e.g. data/image, or a provider error/refusal) is
+        // real output, not a heartbeat — must remain substantive so it promotes the
+        // watchdog off the prefill budget.
+        var nonText = StreamingResponseReader.Classify(
+            new ChatResponseUpdate
+            {
+                Role = ChatRole.Assistant,
+                Contents = [new DataContent(new byte[] { 1, 2, 3 }, "application/octet-stream")]
+            },
+            anySubstantiveSeen: false);
+        Assert.True(nonText.HasSubstantiveContent);
 
         // Substantive content after we've already seen output is not "first".
         var laterText = StreamingResponseReader.Classify(

@@ -3,7 +3,6 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Text;
 using Microsoft.Extensions.AI;
 using AiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
@@ -29,16 +28,15 @@ internal readonly record struct StreamDiagnostics(
 /// <para>
 /// A content-free keepalive (e.g. llama-server's <c>prompt_progress</c> heartbeat,
 /// or a usage-only chunk) proves the socket and server are alive but carries no
-/// model output. Distinguishing it from substantive deltas lets a two-phase
-/// watchdog refresh the generous prefill budget on keepalives yet only promote
-/// to the tighter inter-delta budget once real tokens arrive.
+/// model output: <see cref="HasSubstantiveContent"/> is false. Distinguishing it
+/// from substantive deltas lets a two-phase watchdog refresh the generous prefill
+/// budget on keepalives yet only promote to the tighter inter-delta budget once
+/// real tokens arrive (<see cref="IsFirstSubstantive"/>).
 /// </para>
 /// </summary>
 internal readonly record struct StreamUpdateClassification(
     bool HasSubstantiveContent,
-    bool IsFirstSubstantive,
-    bool IsKeepalive,
-    bool HasFinish);
+    bool IsFirstSubstantive);
 
 /// <summary>
 /// The fully consumed streaming response plus its accumulated diagnostics.
@@ -66,9 +64,6 @@ internal static class StreamingResponseReader
         CancellationToken ct)
     {
         var updates = new List<ChatResponseUpdate>();
-        var textBuilder = new StringBuilder();
-        var thinkingBuilder = new StringBuilder();
-        var toolCalls = new List<AIContent>();
 
         var updateCount = 0;
         var emptyUpdateCount = 0;
@@ -95,16 +90,13 @@ internal static class StreamingResponseReader
                     case TextContent text when !string.IsNullOrEmpty(text.Text):
                         textDeltaCount++;
                         textChars += text.Text!.Length;
-                        textBuilder.Append(text.Text);
                         break;
                     case TextReasoningContent reasoning when !string.IsNullOrEmpty(reasoning.Text):
                         thinkingDeltaCount++;
                         thinkingChars += reasoning.Text!.Length;
-                        thinkingBuilder.Append(reasoning.Text);
                         break;
                     case FunctionCallContent:
                         toolCallDeltaCount++;
-                        toolCalls.Add(content);
                         break;
                 }
             }
@@ -130,12 +122,13 @@ internal static class StreamingResponseReader
                     finishReason));
         }
 
-        var response = updates.Count > 0
-            ? updates.ToChatResponse()
-            : new ChatResponse(BuildFallbackMessage(textBuilder, thinkingBuilder, toolCalls));
-
+        // The full response is reassembled from the retained updates. The fallback
+        // only fires when the stream yielded nothing (or no coalescable message),
+        // in which case an empty assistant message is the correct degenerate result —
+        // ExtractText then surfaces it as the empty-response marker for the caller.
+        var response = updates.ToChatResponse();
         if (response.Messages.Count == 0)
-            response.Messages.Add(BuildFallbackMessage(textBuilder, thinkingBuilder, toolCalls));
+            response.Messages.Add(new AiChatMessage(ChatRole.Assistant, []));
 
         return new StreamReadResult(
             response,
@@ -151,16 +144,31 @@ internal static class StreamingResponseReader
     }
 
     /// <summary>
-    /// The single classification rule. A keepalive is a content-free update (or one
-    /// carrying only usage stats) with no finish reason — the socket is alive but the
-    /// model produced nothing. Non-empty text/thinking and tool calls are substantive;
-    /// a finish reason ends the call. <paramref name="anySubstantiveSeen"/> is the
-    /// caller's running "have we seen real output yet?" flag, used to mark the first
-    /// substantive delta so a two-phase watchdog knows when to promote.
+    /// Marks the first substantive update so a two-phase watchdog knows when to
+    /// promote. <paramref name="anySubstantiveSeen"/> is the caller's running
+    /// "have we seen real output yet?" flag.
     /// </summary>
     internal static StreamUpdateClassification Classify(ChatResponseUpdate update, bool anySubstantiveSeen)
     {
-        var hasSubstantive = false;
+        var hasSubstantive = IsSubstantiveUpdate(update);
+        return new StreamUpdateClassification(
+            HasSubstantiveContent: hasSubstantive,
+            IsFirstSubstantive: hasSubstantive && !anySubstantiveSeen);
+    }
+
+    /// <summary>
+    /// True when an update represents real model progress. A finish reason, non-empty
+    /// text/thinking, a tool call, or any non-usage content all count. Only a
+    /// content-free heartbeat or a usage-only chunk (with no finish reason) is treated
+    /// as a non-substantive keepalive. This mirrors the pre-extraction predicate so a
+    /// provider that streams an error/refusal or other non-text content before the
+    /// first token is still recognized as progress, not silently treated as a hang.
+    /// </summary>
+    internal static bool IsSubstantiveUpdate(ChatResponseUpdate update)
+    {
+        if (update.FinishReason is not null)
+            return true;
+
         foreach (var content in update.Contents)
         {
             switch (content)
@@ -168,34 +176,14 @@ internal static class StreamingResponseReader
                 case TextContent text when !string.IsNullOrEmpty(text.Text):
                 case TextReasoningContent reasoning when !string.IsNullOrEmpty(reasoning.Text):
                 case FunctionCallContent:
-                    hasSubstantive = true;
+                    return true;
+                case UsageContent:
                     break;
+                default:
+                    return true;
             }
-
-            if (hasSubstantive)
-                break;
         }
 
-        return new StreamUpdateClassification(
-            HasSubstantiveContent: hasSubstantive,
-            IsFirstSubstantive: hasSubstantive && !anySubstantiveSeen,
-            IsKeepalive: !hasSubstantive && update.FinishReason is null,
-            HasFinish: update.FinishReason is not null);
-    }
-
-    private static AiChatMessage BuildFallbackMessage(
-        StringBuilder text,
-        StringBuilder thinking,
-        List<AIContent> toolCalls)
-    {
-        // Mirrors the order both callers historically used when reconstructing a
-        // response from accumulated content: tool calls, then thinking, then text.
-        var contents = new List<AIContent>(toolCalls);
-        if (thinking.Length > 0)
-            contents.Add(new TextReasoningContent(thinking.ToString()));
-        if (text.Length > 0)
-            contents.Add(new TextContent(text.ToString()));
-
-        return new AiChatMessage(ChatRole.Assistant, contents);
+        return false;
     }
 }

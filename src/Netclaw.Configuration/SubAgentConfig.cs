@@ -36,6 +36,16 @@ public sealed class SubAgentConfig
     public int PrefillTimeoutSeconds { get; set; } = 1800;
 
     /// <summary>
+    /// Absolute wall-clock ceiling for a single sub-agent LLM call (prefill +
+    /// generation), independent of the inactivity watchdog. Keepalives refresh the
+    /// inactivity budget, so a backend that streams <c>prompt_progress</c> heartbeats
+    /// forever but never finishes would otherwise hang the call indefinitely; this cap
+    /// bounds that pathological case without affecting healthy calls. Set to <c>0</c>
+    /// to disable. Generous by default (1 hour) so it only ever catches a wedged backend.
+    /// </summary>
+    public int MaxLlmCallSeconds { get; set; } = 3600;
+
+    /// <summary>
     /// Timeout for the <c>store_memory</c> curation subagent.
     /// </summary>
     public int StoreMemoryTimeoutSeconds { get; set; } = 180;

@@ -760,15 +760,17 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (msg.CallId != _activeCallId)
             return;
 
-        if (!_anyContentStreamed)
-        {
-            _anyContentStreamed = true;
-            _watchdog.Promote(_config.FirstTokenTimeout, Timers);
-        }
-        else
-        {
-            _watchdog.Refresh(_config.FirstTokenTimeout, Timers);
-        }
+        // Two-phase watchdog (shared with the sub-agent path): keep the generous
+        // prefill budget until the first substantive delta, then promote to the
+        // tighter inter-delta budget. Content-free keepalives refresh but never
+        // promote, so a slow cold prefill emitting prompt_progress heartbeats is
+        // not killed early.
+        _anyContentStreamed = _watchdog.OnStreamProgress(
+            msg.Substantive,
+            _anyContentStreamed,
+            _config.PrefillTimeout,
+            _config.FirstTokenTimeout,
+            Timers);
 
         switch (msg.Content)
         {

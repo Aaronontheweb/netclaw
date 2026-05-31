@@ -48,10 +48,15 @@ internal sealed record LlmResponseReceived : INoSerializationVerificationNeeded
 
 /// <summary>
 /// Incremental streaming delta emitted while an LLM response is in-flight.
+/// <see cref="Substantive"/> is false for content-free keepalives (e.g.
+/// <c>prompt_progress</c> heartbeats) so the watchdog refreshes the prefill budget
+/// on them but only promotes to the tighter inter-delta budget on real output.
 /// </summary>
 internal sealed record LlmResponseDeltaReceived(AIContent Content) : INoSerializationVerificationNeeded
 {
     public long CallId { get; init; }
+
+    public bool Substantive { get; init; }
 }
 
 /// <summary>

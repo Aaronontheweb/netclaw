@@ -55,6 +55,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         Always end by emitting a final output for the parent session.
         """;
     private static readonly TimeSpan StreamPingInterval = TimeSpan.FromSeconds(2);
+    private const string CallCapTimerKey = "subagent-call-cap";
 
     private readonly SubAgentDefinition _definition;
     private readonly IChatClient _chatClient;
@@ -101,6 +102,11 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private TimeSpan _interDeltaBudget;
     private TimeSpan _prefillBudget;
     private bool _anyContentStreamed;
+
+    // Absolute per-LLM-call wall-clock ceiling, armed independently of the inactivity
+    // watchdog and never refreshed by keepalives, so a backend that heartbeats forever
+    // without finishing is still bounded. TimeSpan.Zero disables it.
+    private TimeSpan _maxLlmCall;
 
     public ITimerScheduler Timers { get; set; } = null!;
     private CancellationTokenRegistration _externalCancellationRegistration;
@@ -242,6 +248,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             _activitySink = msg.ActivitySink;
             _interDeltaBudget = msg.Timeout;
             _prefillBudget = msg.PrefillTimeout > TimeSpan.Zero ? msg.PrefillTimeout : msg.Timeout;
+            _maxLlmCall = msg.MaxLlmCall;
 
             // Build initial conversation: system prompt (from file, verbatim) + task as user message.
             // If the caller supplied runtime context, prefix it onto the user message so the
@@ -261,8 +268,10 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     {
         Receive<LlmResponseReceived>(msg =>
         {
-            // The streaming call finished; re-baseline to the inter-delta budget
-            // for the synchronous processing that follows (tool dispatch or completion).
+            // The streaming call finished; cancel the per-call cap and re-baseline to
+            // the inter-delta budget for the synchronous processing that follows
+            // (tool dispatch or completion).
+            Timers.Cancel(CallCapTimerKey);
             RestartWatchdog(_interDeltaBudget);
             var response = msg.Response;
             var lastMessage = response.Messages[^1];
@@ -472,6 +481,20 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             Complete(false, $"Subagent timed out: no activity for {activeBudget.TotalSeconds:F0}s.");
         });
 
+        // Absolute per-call wall-clock ceiling. Unlike the inactivity watchdog this is
+        // never refreshed by keepalives, so it bounds a backend that heartbeats forever
+        // without ever finishing the call.
+        Receive<SubAgentCallCapExpired>(_ =>
+        {
+            _executionCts?.Cancel();
+            _watchdog.Stop(Timers);
+            Timers.Cancel(CallCapTimerKey);
+            _log.Warning(
+                "SubAgent [{AgentName}] LLM call exceeded its maximum duration of {Cap}s after {Iterations} tool iterations",
+                _definition.Name, _maxLlmCall.TotalSeconds, _turnState.ToolIterationCount);
+            Complete(false, $"Subagent LLM call exceeded its maximum duration of {_maxLlmCall.TotalSeconds:F0}s.");
+        });
+
         Receive<SubAgentApprovalWaitStarted>(_ =>
         {
             // Stop the watchdog outright on first wait — re-armed by
@@ -528,17 +551,16 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 + $"text={msg.TextDeltaCount}/{msg.TextChars}ch "
                 + $"thinking={msg.ThinkingDeltaCount}/{msg.ThinkingChars}ch "
                 + $"toolCalls={msg.ToolCallDeltaCount} finishReason={msg.FinishReason ?? "null"} "
-                + $"substantive={msg.IsSubstantive} firstSubstantive={msg.IsFirstSubstantive}");
+                + $"substantive={msg.IsSubstantive}");
 
-            if (msg.IsFirstSubstantive && !_anyContentStreamed)
-            {
-                _anyContentStreamed = true;
-                _watchdog.Promote(_interDeltaBudget, Timers);
-            }
-            else
-            {
-                _watchdog.Refresh(_anyContentStreamed ? _interDeltaBudget : _prefillBudget, Timers);
-            }
+            // Same two-phase policy as the main session: keepalives refresh the
+            // current budget, the first substantive delta promotes off prefill.
+            _anyContentStreamed = _watchdog.OnStreamProgress(
+                msg.IsSubstantive,
+                _anyContentStreamed,
+                _prefillBudget,
+                _interDeltaBudget,
+                Timers);
 
             EmitActivity("the model is responding");
         });
@@ -584,9 +606,12 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     {
         _turnState.ForceNoToolsActive = forceNoTools;
         // Each LLM call starts fresh on the generous prefill budget; the watchdog
-        // promotes to the inter-delta budget on the first substantive delta.
+        // promotes to the inter-delta budget on the first substantive delta. The
+        // absolute call cap is armed in parallel and is NOT refreshed by keepalives.
         _anyContentStreamed = false;
         RestartWatchdog(_prefillBudget);
+        if (_maxLlmCall > TimeSpan.Zero)
+            Timers.StartSingleTimer(CallCapTimerKey, SubAgentCallCapExpired.Instance, _maxLlmCall);
         EmitActivity("calling the model");
         var self = Self;
         var client = _chatClient;
@@ -640,6 +665,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         _executionCts?.Cancel();
         _externalCts?.Cancel();
         _watchdog.Stop(Timers);
+        Timers.Cancel(CallCapTimerKey);
         _externalCancellationRegistration.Dispose();
         _executionCts?.Dispose();
         _externalCts?.Dispose();
@@ -842,8 +868,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                             diag.ThinkingChars,
                             diag.ToolCallDeltaCount,
                             diag.FinishReason,
-                            IsSubstantive: !cls.IsKeepalive,
-                            IsFirstSubstantive: cls.IsFirstSubstantive));
+                            IsSubstantive: cls.HasSubstantiveContent));
                     }
                 },
                 ct);
@@ -1147,6 +1172,13 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         private SubAgentCancelled() { }
     }
 
+    /// <summary>Fired when a single LLM call exceeds the absolute wall-clock cap.</summary>
+    private sealed class SubAgentCallCapExpired
+    {
+        public static readonly SubAgentCallCapExpired Instance = new();
+        private SubAgentCallCapExpired() { }
+    }
+
     private enum ToolExecutionWatchdogState
     {
         None,
@@ -1180,9 +1212,9 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     /// <summary>
     /// Throttled self-message: the streaming LLM call is still alive.
-    /// <see cref="IsSubstantive"/> is false for content-free keepalives;
-    /// <see cref="IsFirstSubstantive"/> marks the first real delta of the call so
-    /// the watchdog promotes from the prefill budget to the inter-delta budget.
+    /// <see cref="IsSubstantive"/> is false for content-free keepalives, so the
+    /// watchdog refreshes the current budget on them but only promotes off the
+    /// prefill budget on real output.
     /// </summary>
     private sealed record SubAgentStreamPing(
         long CallId,
@@ -1194,8 +1226,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         int ThinkingChars,
         int ToolCallDeltaCount,
         string? FinishReason,
-        bool IsSubstantive,
-        bool IsFirstSubstantive);
+        bool IsSubstantive);
 
     // ── Reuse LlmSessionActor's internal message types ──
     // These are internal to Netclaw.Actors so accessible here.

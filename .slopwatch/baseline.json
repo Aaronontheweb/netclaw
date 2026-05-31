@@ -1,7 +1,7 @@
 {
   "version": 1,
   "createdAt": "2026-05-12T17:20:55.7365203+00:00",
-  "updatedAt": "2026-05-31T00:07:06.9516552+00:00",
+  "updatedAt": "2026-05-31T14:26:56.782543+00:00",
   "description": "Initial baseline created by 'slopwatch init' on 2026-05-12 17:20:55 UTC",
   "entries": [
     {
@@ -165,6 +165,24 @@
       "codeSnippet": "Task.Delay(delay, cancellationToken)",
       "message": "Test uses Task.Delay(delay) which may indicate a timing-dependent test",
       "baselinedAt": "2026-05-31T00:07:06.9516307+00:00"
+    },
+    {
+      "hash": "edd75ac424089be4",
+      "ruleId": "SW004",
+      "filePath": "src/Netclaw.Actors.Tests/Sessions/LlmSessionPrefillKeepaliveTests.cs",
+      "lineNumber": 102,
+      "codeSnippet": "Task.Delay(TimeSpan.FromMilliseconds(1300), cancellationToken)",
+      "message": "Test uses Task.Delay(TimeSpan.FromMilliseconds(1300)) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-05-31T14:26:56.7824693+00:00"
+    },
+    {
+      "hash": "abcaf93aee4a6584",
+      "ruleId": "SW004",
+      "filePath": "src/Netclaw.Actors.Tests/Sessions/LlmSessionPrefillKeepaliveTests.cs",
+      "lineNumber": 108,
+      "codeSnippet": "Task.Delay(TimeSpan.FromMilliseconds(200), cancellationToken)",
+      "message": "Test uses Task.Delay(TimeSpan.FromMilliseconds(200)) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-05-31T14:26:56.7825426+00:00"
     }
   ]
 }
