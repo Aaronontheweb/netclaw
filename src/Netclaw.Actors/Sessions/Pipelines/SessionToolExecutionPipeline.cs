@@ -13,6 +13,7 @@ using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
+using Netclaw.Security;
 using Netclaw.Tools;
 
 namespace Netclaw.Actors.Sessions.Pipelines;
@@ -23,9 +24,38 @@ namespace Netclaw.Actors.Sessions.Pipelines;
 /// </summary>
 internal sealed record ToolCallResult(
     SerializableChatMessage Message,
+    IReadOnlyList<SerializableMediaReference> ModelInputMediaReferences,
     IReadOnlyList<FileAttachmentInfo> FileAttachments,
     IReadOnlyList<CompletedSubAgentRun> CompletedSubAgentRuns,
     IReadOnlyList<AcceptedSubAgentFinding> AcceptedSubAgentFindings);
+
+internal sealed record ModelInputMaterializationResult(
+    IReadOnlyList<SerializableMediaReference> MediaReferences,
+    int RequestedCount);
+
+internal sealed class ModelInputBatchBudget(long maxBytes)
+{
+    private readonly object _sync = new();
+    private long _reservedBytes;
+
+    public bool TryReserve(long sizeBytes)
+    {
+        lock (_sync)
+        {
+            if (_reservedBytes + sizeBytes > maxBytes)
+                return false;
+
+            _reservedBytes += sizeBytes;
+            return true;
+        }
+    }
+
+    public void Release(long sizeBytes)
+    {
+        lock (_sync)
+            _reservedBytes = Math.Max(0, _reservedBytes - sizeBytes);
+    }
+}
 
 /// <summary>
 /// Async pipeline for parallel tool execution. Runs on the thread pool and
@@ -33,6 +63,9 @@ internal sealed record ToolCallResult(
 /// </summary>
 internal static class SessionToolExecutionPipeline
 {
+    private const long MaxModelInputFileBytes = ChannelAttachmentPolicy.DefaultMaxFileBytes;
+    private const long MaxModelInputBatchBytes = ChannelAttachmentPolicy.DefaultMaxFileBytes;
+
     public static async Task ExecuteToolsAsync(
         IToolExecutor executor,
         List<FunctionCallContent> toolCalls,
@@ -56,6 +89,7 @@ internal static class SessionToolExecutionPipeline
         string? projectDirectory = null,
         bool setWorkingDirectoryAvailable = false,
         bool streamToolResults = false,
+        ModelModality modelInputModalities = ModelModality.Text,
         IReadOnlyDictionary<string, IReadOnlyList<string>>? oneTimeApprovalPreSeed = null,
         IReadOnlyDictionary<string, ApprovalDecision>? decisionOverride = null,
         TurnContext? turnContext = null,
@@ -67,6 +101,7 @@ internal static class SessionToolExecutionPipeline
             // independent -- e.g. two file_edit calls on the same file -- so
             // file-mutating tools serialize their read-modify-write per target
             // path via FileMutationGate to avoid lost-update races here.
+            var modelInputBudget = new ModelInputBatchBudget(MaxModelInputBatchBytes);
             var tasks = toolCalls.Select(async tc =>
             {
                 var result = await ExecuteSingleToolAsync(
@@ -91,6 +126,7 @@ internal static class SessionToolExecutionPipeline
                     backgroundJobManager,
                     projectDirectory,
                     setWorkingDirectoryAvailable,
+                    modelInputModalities,
                     oneTimeApprovalPreSeed is not null
                     && oneTimeApprovalPreSeed.TryGetValue(tc.CallId, out var preSeedPatterns)
                         ? preSeedPatterns
@@ -98,7 +134,8 @@ internal static class SessionToolExecutionPipeline
                     decisionOverride is not null && decisionOverride.TryGetValue(tc.CallId, out var overrideDecision)
                         ? overrideDecision
                         : null,
-                    turnContext);
+                    turnContext,
+                    modelInputBudget);
                 if (streamToolResults)
                     self.Tell(new ToolExecutionSingleCompleted(result));
                 return result;
@@ -112,9 +149,11 @@ internal static class SessionToolExecutionPipeline
             }
 
             var fileAttachments = results.SelectMany(r => r.FileAttachments).ToList();
+            var modelInputMediaReferences = results.SelectMany(r => r.ModelInputMediaReferences).ToList();
             self.Tell(new ToolExecutionCompleted
             {
                 ToolResults = [.. results.Select(r => r.Message)],
+                ModelInputMediaReferences = modelInputMediaReferences,
                 FileAttachments = fileAttachments,
                 CompletedSubAgentRuns = [.. results.SelectMany(r => r.CompletedSubAgentRuns)],
                 AcceptedSubAgentFindings = [.. results.SelectMany(r => r.AcceptedSubAgentFindings)]
@@ -161,9 +200,11 @@ internal static class SessionToolExecutionPipeline
         IActorRef? backgroundJobManager = null,
         string? projectDirectory = null,
         bool setWorkingDirectoryAvailable = false,
+        ModelModality modelInputModalities = ModelModality.Text,
         IReadOnlyList<string>? oneTimeApprovalPreSeed = null,
         ApprovalDecision? decisionOverride = null,
-        TurnContext? turnContext = null)
+        TurnContext? turnContext = null,
+        ModelInputBatchBudget? modelInputBudget = null)
     {
         var (meta, cleanedTc) = ToolCallMetaExtractor.Extract(tc);
         tc = cleanedTc;
@@ -182,7 +223,8 @@ internal static class SessionToolExecutionPipeline
             sessionDir,
             spawnChildActor,
             projectDirectory,
-            turnContext);
+            turnContext,
+            modelInputModalities);
         context.RequestedTimeoutSeconds = (int)timeout.TotalSeconds;
 
         // Re-drive of an ApprovedOnce approval: the user already clicked
@@ -305,7 +347,7 @@ internal static class SessionToolExecutionPipeline
                     Name = tc.Name
                 };
 
-                return new ToolCallResult(deniedMessage, [], [], []);
+                return new ToolCallResult(deniedMessage, [], [], [], []);
             }
 
             if (meta is { Background: true })
@@ -369,7 +411,7 @@ internal static class SessionToolExecutionPipeline
                     Content = ClampToolResult(resultText, maxInlineToolResultChars),
                     ToolCallId = new ToolCallId(tc.CallId),
                     Name = tc.Name
-                }, context.FileAttachments, completedRuns, acceptedFindings);
+                }, [], context.FileAttachments, completedRuns, acceptedFindings);
             }
 
             // Mid-turn approval pause: emit request to channel, block on TCS
@@ -518,18 +560,26 @@ internal static class SessionToolExecutionPipeline
             });
         }
 
+        modelInputBudget ??= new ModelInputBatchBudget(MaxModelInputBatchBytes);
+        var modelInputMaterialization = MaterializeModelInputFiles(context, sessionDir, logger, modelInputBudget);
         resultText = ClampToolResult(resultText, maxInlineToolResultChars);
+        if (modelInputMaterialization.RequestedCount > modelInputMaterialization.MediaReferences.Count)
+            resultText = AppendModelInputHandoffWarning(
+                resultText,
+                modelInputMaterialization.RequestedCount - modelInputMaterialization.MediaReferences.Count);
 
         var message = new SerializableChatMessage
         {
             Role = Protocol.ChatRole.Tool,
             Content = resultText,
             ToolCallId = new ToolCallId(tc.CallId),
-            Name = tc.Name
+            Name = tc.Name,
+            MediaReferences = modelInputMaterialization.MediaReferences
         };
 
         return new ToolCallResult(
             message,
+            modelInputMaterialization.MediaReferences,
             context.FileAttachments,
             completedRuns,
             acceptedFindings);
@@ -667,7 +717,7 @@ internal static class SessionToolExecutionPipeline
                 ToolCallId = new ToolCallId(tc.CallId),
                 Name = tc.Name
             };
-            return new ToolCallResult(message, [], [], []);
+            return new ToolCallResult(message, [], [], [], []);
         }
 
         // A background job inherits the submitting turn's authority context.
@@ -719,7 +769,7 @@ internal static class SessionToolExecutionPipeline
                 ToolCallId = new ToolCallId(tc.CallId),
                 Name = tc.Name
             };
-            return new ToolCallResult(resultMessage, [], [], []);
+            return new ToolCallResult(resultMessage, [], [], [], []);
         }
         catch (Exception ex)
         {
@@ -740,8 +790,134 @@ internal static class SessionToolExecutionPipeline
                 ToolCallId = new ToolCallId(tc.CallId),
                 Name = tc.Name
             };
-            return new ToolCallResult(errorMessage, [], [], []);
+            return new ToolCallResult(errorMessage, [], [], [], []);
         }
+    }
+
+    internal static ModelInputMaterializationResult MaterializeModelInputFiles(
+        ToolExecutionContext context,
+        string sessionDir,
+        ILogger? logger,
+        ModelInputBatchBudget? batchBudget = null)
+    {
+        if (context.ModelInputFiles.Count == 0)
+            return new ModelInputMaterializationResult([], 0);
+
+        try
+        {
+            SessionMediaStore.GetOrCreateMediaDirectory(sessionDir);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            var mediaDir = Path.Combine(sessionDir, SessionDirectoryHelper.MediaSubdirectory);
+            logger?.LogWarning(ex, "Failed to create model input media directory: {Path}", mediaDir);
+            return new ModelInputMaterializationResult([], context.ModelInputFiles.Count);
+        }
+
+        var refs = new List<SerializableMediaReference>(context.ModelInputFiles.Count);
+        batchBudget ??= new ModelInputBatchBudget(MaxModelInputBatchBytes);
+        foreach (var file in context.ModelInputFiles)
+        {
+            var reservedBytes = 0L;
+            try
+            {
+                // Treat tool-registered model input as a request, not proof it
+                // is safe. This is the provider-boundary guardrail that keeps
+                // future tools from smuggling arbitrary local bytes into the
+                // next LLM call by setting a convincing MIME string.
+                var mimeType = MimeTypeCatalog.Normalize(file.MimeType);
+                if (!MediaMimeClassifier.TryGetSupportedModelInput(mimeType, out var mediaModality, out var requiredModelModality))
+                {
+                    logger?.LogWarning("Model input file MIME type is not supported, skipping: {MimeType}", mimeType);
+                    continue;
+                }
+
+                if (!context.ModelInputModalities.HasFlag(requiredModelModality))
+                {
+                    logger?.LogWarning(
+                        "Model input file requires unavailable modality {Modality}, skipping: {Path}",
+                        requiredModelModality,
+                        file.FilePath);
+                    continue;
+                }
+
+                if (!File.Exists(file.FilePath))
+                {
+                    logger?.LogWarning("Model input file not found, skipping: {Path}", file.FilePath);
+                    continue;
+                }
+
+                var info = new FileInfo(file.FilePath);
+                if (info.Length <= 0)
+                {
+                    logger?.LogWarning("Model input file is empty, skipping: {Path}", file.FilePath);
+                    continue;
+                }
+
+                if (info.Length > MaxModelInputFileBytes)
+                {
+                    logger?.LogWarning("Model input file exceeds size limit, skipping: {Path}", file.FilePath);
+                    continue;
+                }
+
+                if (!batchBudget.TryReserve(info.Length))
+                {
+                    logger?.LogWarning("Model input file would exceed batch size limit, skipping: {Path}", file.FilePath);
+                    continue;
+                }
+
+                reservedBytes = info.Length;
+
+                if (!IsFileMagicCompatible(file.FilePath, mimeType))
+                {
+                    logger?.LogWarning(
+                        "Model input file MIME type does not match detected bytes, skipping: {Path}",
+                        file.FilePath);
+                    batchBudget.Release(reservedBytes);
+                    reservedBytes = 0;
+                    continue;
+                }
+
+                refs.Add(SessionMediaStore.CopyFile(
+                    file.FilePath,
+                    sessionDir,
+                    mimeType,
+                    mediaModality,
+                    info.Length));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (reservedBytes > 0)
+                    batchBudget.Release(reservedBytes);
+                logger?.LogWarning(ex, "Failed to materialize model input file: {Path}", file.FilePath);
+            }
+        }
+
+        return new ModelInputMaterializationResult(refs, context.ModelInputFiles.Count);
+    }
+
+    internal static string AppendModelInputHandoffWarning(string resultText, int failedCount)
+    {
+        var itemText = failedCount == 1 ? "file" : "files";
+        return resultText +
+               $"\n[model input media handoff warning: {failedCount} registered media {itemText} could not be attached to the next LLM call]";
+    }
+
+    private static bool IsFileMagicCompatible(string path, string mimeType)
+    {
+        Span<byte> header = stackalloc byte[64];
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var totalRead = 0;
+        while (totalRead < header.Length)
+        {
+            var read = stream.Read(header[totalRead..]);
+            if (read == 0)
+                break;
+            totalRead += read;
+        }
+
+        var detected = MagicByteValidator.DetectMimeType(header[..totalRead]);
+        return string.Equals(detected, mimeType, StringComparison.OrdinalIgnoreCase);
     }
 
     private static ToolExecutionContext BuildToolExecutionContext(
@@ -750,7 +926,8 @@ internal static class SessionToolExecutionPipeline
         string sessionDir,
         Func<object, string, CancellationToken, Task<object>> spawnChildActor,
         string? projectDirectory,
-        TurnContext? turnContext)
+        TurnContext? turnContext,
+        ModelModality modelInputModalities)
     {
         // A turn with no authority context carries no trust context — fall closed
         // to the most-restrictive audience. The default is resolved once, here,
@@ -763,7 +940,8 @@ internal static class SessionToolExecutionPipeline
         context.ChannelType = turnContext?.ChannelType?.ToWireValue()
                               ?? (source is null ? null : source.ChannelType.ToWireValue());
         context.SupportsInteractiveApproval = turnContext?.SupportsInteractiveApproval
-                                              ?? source?.ChannelType.SupportsInteractiveApproval();
+                                               ?? source?.ChannelType.SupportsInteractiveApproval();
+        context.ModelInputModalities = modelInputModalities;
         context.SpawnChildActor = spawnChildActor;
         context.ProjectDirectory = projectDirectory;
         return context;

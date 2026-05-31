@@ -78,6 +78,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // Live-only coordination for the currently executing streamed tool batch.
     // Durable recovery derives unanswered calls from _state.History.
     private readonly ActiveToolBatchTracker _activeToolBatch = new();
+    private readonly List<SerializableMediaReference> _pendingModelInputMediaReferences = [];
     private MessageSource? _currentTurnSource;
     private TurnContext? _currentTurnContext;
     private ApprovalTurnState _approvalTurnState = ApprovalTurnState.None;
@@ -531,6 +532,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             _watchdog.Stop(Timers);
             CancelAndDisposeToolExecutionCts();
+            _pendingModelInputMediaReferences.Clear();
             TurnLog().Error(msg.Cause, "turn_tool_execution_failed");
 
             const string errorMessage = "I encountered an error executing a tool. Please try again.";
@@ -918,6 +920,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 MimeType = new Netclaw.Security.MimeType(file.MimeType)
             }, OutputFilter.Files);
         }
+
+        AddModelInputMediaNudge(msg.ModelInputMediaReferences);
 
         var budgetStatus = _turnState.RecordToolCompletion(msg.ToolResults.Count, _config.MaxToolIterationsPerTurn);
         var dupNudge = _turnState.CheckForDuplicates();
@@ -1875,6 +1879,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             projectDirectory: _state.WorkingContext.ProjectDirectory,
             setWorkingDirectoryAvailable: setWorkingDirectoryAvailable,
             streamToolResults: true,
+            modelInputModalities: _model.InputModalities,
             oneTimeApprovalPreSeed: oneTimeApprovalPreSeed,
             decisionOverride: decisionOverride,
             turnContext: _currentTurnContext,
@@ -3168,15 +3173,27 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void ApplyToolCallRecorded(ToolCallRecorded evt)
     {
+        var alreadyRecorded = false;
         if (evt.ToolResult.ToolCallId is { } toolCallId)
         {
             _activeToolBatch.RecordCompleted(toolCallId.Value);
 
             if (ParkedToolBatchHistory.HasToolResult(_state.History, toolCallId.Value))
-                return;
+                alreadyRecorded = true;
         }
 
-        _state = _state with { History = _state.History.Add(evt.ToolResult) };
+        if (!alreadyRecorded)
+        {
+            _state = _state with { History = _state.History.Add(evt.ToolResult) };
+            if (evt.ToolResult.MediaReferences.Count > 0)
+                _pendingModelInputMediaReferences.AddRange(evt.ToolResult.MediaReferences);
+
+            if (_activeToolBatch.HasAllResults)
+            {
+                AddModelInputMediaNudge(_pendingModelInputMediaReferences);
+                _pendingModelInputMediaReferences.Clear();
+            }
+        }
     }
 
     private void HandleToolInteractionRequestDispatch(ToolInteractionRequestDispatch dispatch)
@@ -3330,6 +3347,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private void ClearActiveToolBatchTracking()
     {
         _activeToolBatch.Clear();
+        _pendingModelInputMediaReferences.Clear();
     }
 
     private void MaybeSnapshot()
@@ -4349,6 +4367,21 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 MimeType = new Netclaw.Security.MimeType(file.MimeType)
             }, OutputFilter.Files);
         }
+
+        // Streaming tool results persist media references on ToolCallRecorded;
+        // ApplyToolCallRecorded recreates the nudge during journal replay.
+    }
+
+    private void AddModelInputMediaNudge(IReadOnlyList<SerializableMediaReference> mediaReferences)
+    {
+        if (mediaReferences.Count == 0)
+            return;
+
+        var itemText = mediaReferences.Count == 1 ? "file" : "files";
+        _state = _state.AddSystemNudge(
+            $"A tool loaded {mediaReferences.Count} media {itemText} for model-visible inspection. " +
+            "Use the attached media along with the tool result to answer the user.",
+            mediaReferences);
     }
 
     private void TryCompleteStreamedToolBatch()
@@ -4361,6 +4394,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void CompleteToolBatch(int resultCount)
     {
+        AddModelInputMediaNudge(_pendingModelInputMediaReferences);
+        _pendingModelInputMediaReferences.Clear();
+
         var budgetStatus = _turnState.RecordToolCompletion(resultCount, _config.MaxToolIterationsPerTurn);
 
         var dupNudge = _turnState.CheckForDuplicates();

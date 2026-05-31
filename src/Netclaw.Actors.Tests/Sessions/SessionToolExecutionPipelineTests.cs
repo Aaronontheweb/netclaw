@@ -16,6 +16,7 @@ using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Sessions.Pipelines;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
+using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
 using Xunit;
 
@@ -350,6 +351,210 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
         Assert.Contains("no activity", slow.Content);
     }
 
+    [Fact]
+    public async Task Tool_model_input_file_is_materialized_as_session_media_reference()
+    {
+        using var dir = new DisposableTempDir();
+        var imagePath = Path.Combine(dir.Path, "diagram.png");
+        await File.WriteAllBytesAsync(imagePath, FakePngBytes, TestContext.Current.CancellationToken);
+        var executor = new ModelInputFileExecutor(imagePath);
+        var probe = CreateTestProbe("model-input-file-probe");
+
+        var pipelineTask = SessionToolExecutionPipeline.ExecuteToolsAsync(
+            executor,
+            [new FunctionCallContent("call-image", FileReadTool.ToolName, new Dictionary<string, object?>())],
+            new SessionId("D1/model-input-file-test"),
+            source: null,
+            auditLogger: null,
+            timeProvider: TimeProvider.System,
+            sessionDir: dir.Path,
+            maxInlineToolResultChars: 4096,
+            timeout: TimeSpan.FromSeconds(3),
+            self: probe.Ref,
+            emitSubAgentOutput: _ => { },
+            spawnChildActor: static (_, _, _) => Task.FromResult<object>(new object()),
+            modelInputModalities: ModelModality.Text | ModelModality.Image,
+            ct: TestContext.Current.CancellationToken);
+
+        var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
+            TimeSpan.FromSeconds(3),
+            cancellationToken: TestContext.Current.CancellationToken);
+        await pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+
+        var mediaRef = Assert.Single(completed.ModelInputMediaReferences);
+        Assert.Equal("image/png", mediaRef.MimeType.Value);
+        Assert.Equal((int)MediaModality.Image, mediaRef.Modality);
+        Assert.True(File.Exists(Path.Combine(dir.Path, SessionDirectoryHelper.MediaSubdirectory, mediaRef.RelativePath)));
+    }
+
+    [Fact]
+    public async Task Streaming_tool_result_persists_model_input_media_references_on_tool_message()
+    {
+        using var dir = new DisposableTempDir();
+        var imagePath = Path.Combine(dir.Path, "diagram.png");
+        await File.WriteAllBytesAsync(imagePath, FakePngBytes, TestContext.Current.CancellationToken);
+        var executor = new ModelInputFileExecutor(imagePath);
+        var probe = CreateTestProbe("streaming-model-input-probe");
+
+        var pipelineTask = SessionToolExecutionPipeline.ExecuteToolsAsync(
+            executor,
+            [new FunctionCallContent("call-image", FileReadTool.ToolName, new Dictionary<string, object?>())],
+            new SessionId("D1/streaming-model-input-file-test"),
+            source: null,
+            auditLogger: null,
+            timeProvider: TimeProvider.System,
+            sessionDir: dir.Path,
+            maxInlineToolResultChars: 4096,
+            timeout: TimeSpan.FromSeconds(3),
+            self: probe.Ref,
+            emitSubAgentOutput: _ => { },
+            spawnChildActor: static (_, _, _) => Task.FromResult<object>(new object()),
+            streamToolResults: true,
+            modelInputModalities: ModelModality.Text | ModelModality.Image,
+            ct: TestContext.Current.CancellationToken);
+
+        var single = await probe.ExpectMsgAsync<ToolExecutionSingleCompleted>(
+            TimeSpan.FromSeconds(3),
+            cancellationToken: TestContext.Current.CancellationToken);
+        await probe.ExpectMsgAsync<ToolExecutionBatchCompleted>(
+            TimeSpan.FromSeconds(3),
+            cancellationToken: TestContext.Current.CancellationToken);
+        await pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+
+        var mediaRef = Assert.Single(single.Result.ModelInputMediaReferences);
+        var persistedMediaRef = Assert.Single(single.Result.Message.MediaReferences);
+        Assert.Equal(mediaRef.RelativePath, persistedMediaRef.RelativePath);
+        Assert.Equal("image/png", persistedMediaRef.MimeType.Value);
+    }
+
+    [Fact]
+    public async Task Tool_model_input_batch_limit_is_enforced_across_registered_files()
+    {
+        using var dir = new DisposableTempDir();
+        var firstImagePath = Path.Combine(dir.Path, "first.png");
+        var secondImagePath = Path.Combine(dir.Path, "second.png");
+        await File.WriteAllBytesAsync(firstImagePath, FakePngBytes, TestContext.Current.CancellationToken);
+        await File.WriteAllBytesAsync(secondImagePath, FakePngBytes, TestContext.Current.CancellationToken);
+        var context = new ToolExecutionContext("D1/model-input-budget-test", dir.Path)
+        {
+            Audience = TrustAudience.Personal,
+            ModelInputModalities = ModelModality.Text | ModelModality.Image
+        };
+        context.AddModelInputFile(firstImagePath, "first.png", "image/png");
+        context.AddModelInputFile(secondImagePath, "second.png", "image/png");
+        var budget = new ModelInputBatchBudget(FakePngBytes.Length);
+
+        var result = SessionToolExecutionPipeline.MaterializeModelInputFiles(
+            context,
+            dir.Path,
+            logger: null,
+            batchBudget: budget);
+
+        Assert.Equal(2, result.RequestedCount);
+        Assert.Single(result.MediaReferences);
+    }
+
+    [Fact]
+    public async Task Tool_model_input_file_without_matching_modality_is_skipped()
+    {
+        using var dir = new DisposableTempDir();
+        var imagePath = Path.Combine(dir.Path, "diagram.png");
+        await File.WriteAllBytesAsync(imagePath, FakePngBytes, TestContext.Current.CancellationToken);
+        var executor = new ModelInputFileExecutor(imagePath);
+        var probe = CreateTestProbe("model-input-modality-probe");
+
+        var pipelineTask = SessionToolExecutionPipeline.ExecuteToolsAsync(
+            executor,
+            [new FunctionCallContent("call-image", FileReadTool.ToolName, new Dictionary<string, object?>())],
+            new SessionId("D1/model-input-modality-test"),
+            source: null,
+            auditLogger: null,
+            timeProvider: TimeProvider.System,
+            sessionDir: dir.Path,
+            maxInlineToolResultChars: 4096,
+            timeout: TimeSpan.FromSeconds(3),
+            self: probe.Ref,
+            emitSubAgentOutput: _ => { },
+            spawnChildActor: static (_, _, _) => Task.FromResult<object>(new object()),
+            ct: TestContext.Current.CancellationToken);
+
+        var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
+            TimeSpan.FromSeconds(3),
+            cancellationToken: TestContext.Current.CancellationToken);
+        await pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+
+        Assert.Empty(completed.ModelInputMediaReferences);
+    }
+
+    [Fact]
+    public async Task Tool_model_input_file_with_mismatched_magic_is_skipped()
+    {
+        using var dir = new DisposableTempDir();
+        var imagePath = Path.Combine(dir.Path, "diagram.png");
+        await File.WriteAllBytesAsync(imagePath, FakePdfBytes, TestContext.Current.CancellationToken);
+        var executor = new ModelInputFileExecutor(imagePath);
+        var probe = CreateTestProbe("model-input-magic-probe");
+
+        var pipelineTask = SessionToolExecutionPipeline.ExecuteToolsAsync(
+            executor,
+            [new FunctionCallContent("call-image", FileReadTool.ToolName, new Dictionary<string, object?>())],
+            new SessionId("D1/model-input-magic-test"),
+            source: null,
+            auditLogger: null,
+            timeProvider: TimeProvider.System,
+            sessionDir: dir.Path,
+            maxInlineToolResultChars: 4096,
+            timeout: TimeSpan.FromSeconds(3),
+            self: probe.Ref,
+            emitSubAgentOutput: _ => { },
+            spawnChildActor: static (_, _, _) => Task.FromResult<object>(new object()),
+            modelInputModalities: ModelModality.Text | ModelModality.Image,
+            ct: TestContext.Current.CancellationToken);
+
+        var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
+            TimeSpan.FromSeconds(3),
+            cancellationToken: TestContext.Current.CancellationToken);
+        await pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+
+        Assert.Empty(completed.ModelInputMediaReferences);
+    }
+
+    [Fact]
+    public async Task Tool_model_input_file_over_size_limit_is_skipped()
+    {
+        using var dir = new DisposableTempDir();
+        var imagePath = Path.Combine(dir.Path, "large.png");
+        await using (var stream = File.Create(imagePath))
+        {
+            stream.SetLength(ChannelAttachmentPolicy.DefaultMaxFileBytes + 1);
+        }
+        var executor = new ModelInputFileExecutor(imagePath);
+        var probe = CreateTestProbe("model-input-size-probe");
+
+        var pipelineTask = SessionToolExecutionPipeline.ExecuteToolsAsync(
+            executor,
+            [new FunctionCallContent("call-image", FileReadTool.ToolName, new Dictionary<string, object?>())],
+            new SessionId("D1/model-input-size-test"),
+            source: null,
+            auditLogger: null,
+            timeProvider: TimeProvider.System,
+            sessionDir: dir.Path,
+            maxInlineToolResultChars: 4096,
+            timeout: TimeSpan.FromSeconds(3),
+            self: probe.Ref,
+            emitSubAgentOutput: _ => { },
+            spawnChildActor: static (_, _, _) => Task.FromResult<object>(new object()),
+            modelInputModalities: ModelModality.Text | ModelModality.Image,
+            ct: TestContext.Current.CancellationToken);
+
+        var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
+            TimeSpan.FromSeconds(3),
+            cancellationToken: TestContext.Current.CancellationToken);
+        await pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+
+        Assert.Empty(completed.ModelInputMediaReferences);
+    }
+
     /// <summary>
     /// Streaming executor: <c>slow_tool</c> never produces an item (its per-call
     /// watchdog must time it out); every other tool completes immediately.
@@ -377,6 +582,26 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
             yield return new ToolCompletedUpdate($"{toolCall.Name}-ok");
         }
     }
+
+    private sealed class ModelInputFileExecutor(string imagePath, string mimeType = "image/png") : IToolExecutor
+    {
+        public Task AuthorizeAsync(FunctionCallContent toolCall, ToolExecutionContext? context = null, CancellationToken ct = default)
+            => Task.CompletedTask;
+
+        public Task<string> ExecuteAsync(FunctionCallContent toolCall, ToolExecutionContext? context = null, CancellationToken ct = default)
+        {
+            context?.AddModelInputFile(imagePath, "diagram.png", mimeType);
+            return Task.FromResult("image loaded");
+        }
+    }
+
+    private static readonly byte[] FakePngBytes =
+    [
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52
+    ];
+
+    private static readonly byte[] FakePdfBytes = "%PDF-1.7\nfake body\n%%EOF"u8.ToArray();
 
     private sealed class ApprovalThenSuccessExecutor : IToolExecutor
     {
