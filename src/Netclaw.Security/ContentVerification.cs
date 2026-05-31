@@ -5,16 +5,16 @@
 // -----------------------------------------------------------------------
 using Netclaw.Configuration;
 using Netclaw.Media;
-using Netclaw.Security;
 
-namespace Netclaw.Channels;
+namespace Netclaw.Security;
 
 /// <summary>
 /// The single content-verification decision shared by every attachment ingress
-/// path — live (<see cref="AttachmentIngressPipeline"/>) and historical
-/// (<see cref="HistoricalAttachmentIngress"/>), across all channels. Scans the
-/// downloaded/cached bytes, requires a scanner-verified MIME, and re-gates the
-/// verified category against audience policy.
+/// path — live and historical, across all channels. Scans the downloaded/cached
+/// bytes, requires a scanner-verified MIME, and re-gates the verified category
+/// against audience policy. Lives in the security layer (alongside
+/// <see cref="IContentScanner"/> and <see cref="ContentPolicy"/>) so any ingress
+/// surface can reuse the gate without depending on the channel layer.
 ///
 /// It makes the decision only — it does not log, format user-facing copy, or
 /// touch the staging file. Each caller projects the structured
