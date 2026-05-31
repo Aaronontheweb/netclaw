@@ -292,31 +292,10 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
         var downloadUrl = file.UrlPrivateDownload ?? file.UrlPrivate!;
         var filename = file.Name ?? "attachment";
         var declaredMimeType = new DeclaredMimeType(file.Mimetype);
-        var provisionalMimeType = MimeTypeCatalog.NormalizeDeclaredForExtension(declaredMimeType.Value, Path.GetExtension(filename));
-        var category = MimeTypeCatalog.GetCategory(provisionalMimeType);
         var sourceKey = BuildHistoricalAttachmentSourceKey(file, downloadUrl);
 
-        if (!policy.Allows(category))
-        {
-            _logger.LogWarning(
-                "Historical attachment {Name} rejected: category {Category} not allowed for {Audience}",
-                filename,
-                category,
-                audience);
-            return [BuildHistoricalAttachmentRejected(
-                $"historical attachment ({declaredMimeType.Value}) category not allowed in {audience}")];
-        }
-
-        if (file.Size > policy.MaxFileBytes)
-        {
-            _logger.LogWarning(
-                "Historical attachment {Name} rejected: size {Size} exceeds {Limit}",
-                filename,
-                file.Size,
-                policy.MaxFileBytes);
-            return [BuildHistoricalAttachmentRejected(
-                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" exceeds the {AttachmentIngressFormatting.FormatBytes(policy.MaxFileBytes)} per-file limit")];
-        }
+        if (HistoricalAttachmentIngress.CheckPreDownload(filename, declaredMimeType, file.Size, audience, policy, _logger) is { } preReject)
+            return [preReject];
 
         if (HistoricalAttachmentInbox.TryGetExistingFile(inboxDir, filename, sourceKey, out var existingPath, out var existingSize))
         {

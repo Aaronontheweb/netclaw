@@ -38,6 +38,45 @@ public static class HistoricalAttachmentIngress
     }
 
     /// <summary>
+    /// Provisional pre-download gate shared by all three historical fetchers:
+    /// classifies the declared MIME (corrected by extension) and rejects on
+    /// disallowed category or oversize before spending bandwidth. Returns the
+    /// rejection note to emit, or <c>null</c> to proceed to download/scan. The
+    /// authoritative category gate still runs on the scanner-verified MIME.
+    /// </summary>
+    public static TextContent? CheckPreDownload(
+        string filename,
+        DeclaredMimeType declaredMimeType,
+        long size,
+        TrustAudience audience,
+        ChannelAttachmentPolicy policy,
+        ILogger logger)
+    {
+        var provisionalMimeType = MimeTypeCatalog.NormalizeDeclaredForExtension(
+            declaredMimeType.Value, Path.GetExtension(filename));
+        var category = MimeTypeCatalog.GetCategory(provisionalMimeType);
+
+        if (!policy.Allows(category))
+        {
+            logger.LogWarning(
+                "Historical attachment {Name} rejected: category {Category} not allowed for {Audience}",
+                filename, category, audience);
+            return BuildRejected($"historical attachment ({declaredMimeType.Value}) category not allowed in {audience}");
+        }
+
+        if (size > policy.MaxFileBytes)
+        {
+            logger.LogWarning(
+                "Historical attachment {Name} rejected: size {Size} exceeds {Limit}",
+                filename, size, policy.MaxFileBytes);
+            return BuildRejected(
+                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" exceeds the {AttachmentIngressFormatting.FormatBytes(policy.MaxFileBytes)} per-file limit");
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Scans a file already on disk (freshly downloaded staging file or a
     /// previously-cached inbox file) and enforces the verified-MIME and
     /// verified-category gates. Does NOT delete the file — the caller owns the

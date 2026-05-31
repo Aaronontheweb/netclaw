@@ -262,31 +262,10 @@ public sealed class MattermostThreadHistoryFetcher : IThreadHistoryFetcher
         CancellationToken cancellationToken)
     {
         var declaredMimeType = new DeclaredMimeType(file.MimeType);
-        var provisionalMimeType = MimeTypeCatalog.NormalizeDeclaredForExtension(declaredMimeType.Value, Path.GetExtension(file.Name));
-        var category = MimeTypeCatalog.GetCategory(provisionalMimeType);
         var sourceKey = BuildHistoricalAttachmentSourceKey(messageId, file);
 
-        if (!policy.Allows(category))
-        {
-            _logger.LogWarning(
-                "Historical attachment {Name} rejected: category {Category} not allowed for {Audience}",
-                file.Name,
-                category,
-                audience);
-            return [BuildHistoricalAttachmentRejected(
-                $"historical attachment ({declaredMimeType.Value}) category not allowed in {audience}")];
-        }
-
-        if (file.Size > policy.MaxFileBytes)
-        {
-            _logger.LogWarning(
-                "Historical attachment {Name} rejected: size {Size} exceeds {Limit}",
-                file.Name,
-                file.Size,
-                policy.MaxFileBytes);
-            return [BuildHistoricalAttachmentRejected(
-                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(file.Name)}\" exceeds the {AttachmentIngressFormatting.FormatBytes(policy.MaxFileBytes)} per-file limit")];
-        }
+        if (HistoricalAttachmentIngress.CheckPreDownload(file.Name, declaredMimeType, file.Size, audience, policy, _logger) is { } preReject)
+            return [preReject];
 
         if (HistoricalAttachmentInbox.TryGetExistingFile(inboxDir, file.Name, sourceKey, out var existingPath, out var existingSize))
         {
