@@ -647,9 +647,17 @@ public class WebFetchToolTests : IDisposable
     [InlineData("application/pdf", true)]
     [InlineData("application/zip", true)]
     [InlineData("application/octet-stream", true)]
+    // Media-family subtypes absent from the catalog must still be treated as
+    // binary so their bytes are not corrupted by UTF-8 text decoding.
+    [InlineData("image/avif", true)]
+    [InlineData("image/heic", true)]
+    [InlineData("image/svg+xml", true)]
+    [InlineData("video/x-flv", true)]
+    [InlineData("audio/aac", true)]
     [InlineData("text/html", false)]
     [InlineData("text/plain", false)]
     [InlineData("application/json", false)]
+    [InlineData("application/x-unknown-custom", false)]
     [InlineData("", false)]
     public void IsBinaryContentType_classifies_correctly(string contentType, bool expected)
     {

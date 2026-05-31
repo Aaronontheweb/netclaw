@@ -164,8 +164,16 @@ public sealed partial class WebFetchTool : NetclawTool<WebFetchTool.Params>
             return false;
 
         var mimeType = new MimeType(contentType);
-        return MimeTypeCatalog.GetContentKind(mimeType) == MediaContentKind.Binary
-               || mimeType.Value == MimeTypeCatalog.ApplicationOctetStream;
+        if (MimeTypeCatalog.GetContentKind(mimeType) == MediaContentKind.Binary
+            || mimeType.Value == MimeTypeCatalog.ApplicationOctetStream)
+            return true;
+
+        // Media families are inherently binary even when the exact subtype is
+        // not in the catalog (e.g. image/avif, image/heic, video/x-flv); never
+        // UTF-8-decode those as text. mimeType.Value is already normalized.
+        return mimeType.Value.StartsWith("image/", StringComparison.Ordinal)
+            || mimeType.Value.StartsWith("audio/", StringComparison.Ordinal)
+            || mimeType.Value.StartsWith("video/", StringComparison.Ordinal);
     }
 
     /// <summary>

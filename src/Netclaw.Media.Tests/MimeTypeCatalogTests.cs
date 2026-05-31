@@ -72,4 +72,16 @@ public sealed class MimeTypeCatalogTests
 
         Assert.Equal(new MimeType(MimeTypeCatalog.ImagePng), normalized);
     }
+
+    [Theory]
+    [InlineData(".html", MimeTypeCatalog.TextHtml)]
+    [InlineData(".htm", MimeTypeCatalog.TextHtml)]
+    [InlineData(".md", MimeTypeCatalog.TextMarkdown)]
+    [InlineData(".json", MimeTypeCatalog.ApplicationJson)]
+    public void NormalizeDeclaredForExtension_promotes_text_plain_by_extension(string extension, string expected)
+    {
+        var normalized = MimeTypeCatalog.NormalizeDeclaredForExtension("text/plain", extension);
+
+        Assert.Equal(new MimeType(expected), normalized);
+    }
 }

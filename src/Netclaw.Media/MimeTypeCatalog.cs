@@ -275,7 +275,9 @@ public static class MimeTypeCatalog
         [(".yaml", TextPlain)] = ApplicationYaml,
         [(".yml", TextPlain)] = ApplicationYaml,
         [(".csv", TextPlain)] = TextCsv,
-        [(".xml", TextPlain)] = ApplicationXml
+        [(".xml", TextPlain)] = ApplicationXml,
+        [(".html", TextPlain)] = TextHtml,
+        [(".htm", TextPlain)] = TextHtml
     };
 
     private sealed class ExtensionMimePairComparer : IEqualityComparer<(string Extension, string DeclaredMime)>
