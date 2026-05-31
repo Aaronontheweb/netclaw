@@ -76,13 +76,6 @@ public sealed record RunSubAgent : INoSerializationVerificationNeeded
     public TimeSpan PrefillTimeout { get; init; }
 
     /// <summary>
-    /// Absolute wall-clock ceiling for a single LLM call, independent of the
-    /// inactivity watchdog. Bounds a backend that streams keepalives forever without
-    /// finishing. <see cref="TimeSpan.Zero"/> disables the cap.
-    /// </summary>
-    public TimeSpan MaxLlmCall { get; init; }
-
-    /// <summary>
     /// Cancellation token from the calling tool execution. Used to stop the
     /// subagent promptly when the parent turn is cancelled or times out.
     /// </summary>

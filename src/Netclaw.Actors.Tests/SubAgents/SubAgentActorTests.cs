@@ -1005,8 +1005,8 @@ public class SubAgentActorTests : TestKit
     // The two-phase promote/refresh policy (keepalives refresh the prefill budget;
     // the first substantive delta promotes to the inter-delta budget) is proven
     // deterministically in ProcessingWatchdogTests — no wall-clock, no Task.Delay.
-    // The two actor-level tests below only verify that when a watchdog timer fires
-    // the sub-agent completes with the right failure; they park the stream so the
+    // The actor-level test below only verifies that when the watchdog timer fires
+    // the sub-agent completes with the right failure; it parks the stream so the
     // real watchdog timer is the only thing that can end the call (nothing races it).
 
     [Fact]
@@ -1028,28 +1028,6 @@ public class SubAgentActorTests : TestKit
 
         Assert.False(result.Success);
         Assert.Contains("timed out", result.Output, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task Llm_call_exceeding_the_wall_clock_cap_times_out()
-    {
-        // The absolute per-call cap fires below the (large) prefill and inter-delta
-        // budgets and is never refreshed, bounding a call that would otherwise hang.
-        var agent = Sys.ActorOf(SubAgentActor.CreateProps(CreateDefinition(), new ParkingChatClient()));
-
-        var result = await agent.Ask<SubAgentResult>(
-            new RunSubAgent
-            {
-                Task = "Wedged backend",
-                Timeout = TimeSpan.FromSeconds(60),         // inter-delta — huge
-                PrefillTimeout = TimeSpan.FromSeconds(60),  // prefill — also huge
-                MaxLlmCall = TimeSpan.FromSeconds(2),       // the cap that actually bounds the call
-                Audience = TrustAudience.Personal
-            },
-            TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
-
-        Assert.False(result.Success);
-        Assert.Contains("maximum duration", result.Output, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
