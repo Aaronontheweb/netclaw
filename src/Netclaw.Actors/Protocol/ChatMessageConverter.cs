@@ -184,15 +184,6 @@ public static class ChatMessageConverter
         };
     }
 
-    internal static string MimeToExtension(string mimeType) => MimeTypeCatalog.ExtensionFor(mimeType);
-
-    internal static MediaModality MimeToModality(string mimeType)
-    {
-        if (SessionMediaStore.TryGetMediaModality(new MimeType(mimeType), out var modality))
-            return modality;
-
-        throw new ArgumentException($"Unsupported media MIME type: {mimeType}", nameof(mimeType));
-    }
 
     internal static (ToolCallMeta? Meta, IDictionary<string, object?>? CleanArgs) ExtractMeta(
         IDictionary<string, object?>? arguments) => ToolCallMeta.ExtractFrom(arguments);

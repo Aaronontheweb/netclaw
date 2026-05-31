@@ -17,8 +17,6 @@ public sealed record ContentScanResult(
     string? Message = null,
     VerifiedMimeType? VerifiedMimeType = null)
 {
-    public static ContentScanResult Allowed() => new(true);
-
     public static ContentScanResult Allowed(MimeType detectedMimeType)
     {
         var verifiedMimeType = new VerifiedMimeType(detectedMimeType);

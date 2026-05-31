@@ -151,7 +151,7 @@ public sealed class AttachmentCategoriesTests
     [InlineData("wibble/wobble", AttachmentCategory.Other)]
     public void FromMime_classifies_known_types(string mime, AttachmentCategory expected)
     {
-        Assert.Equal(expected, AttachmentCategories.FromMime(mime));
+        Assert.Equal(expected, MimeTypeCatalog.GetCategory(mime));
     }
 
     [Theory]
@@ -160,6 +160,6 @@ public sealed class AttachmentCategoriesTests
     [InlineData(" ")]
     public void FromMime_returns_other_for_missing_input(string? mime)
     {
-        Assert.Equal(AttachmentCategory.Other, AttachmentCategories.FromMime(mime));
+        Assert.Equal(AttachmentCategory.Other, MimeTypeCatalog.GetCategory(mime));
     }
 }

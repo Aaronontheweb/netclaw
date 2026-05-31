@@ -17,10 +17,3 @@ public enum AttachmentCategory
     Media,
     Other
 }
-
-public static class AttachmentCategories
-{
-    public static AttachmentCategory FromMime(string? mimeType) => MimeTypeCatalog.GetCategory(mimeType);
-
-    public static AttachmentCategory FromMime(MimeType mimeType) => MimeTypeCatalog.GetCategory(mimeType);
-}

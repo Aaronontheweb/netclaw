@@ -26,10 +26,6 @@ public readonly record struct MimeType
 
     public static MimeType Default => new(DefaultValue);
 
-    public bool IsImage => MimeTypeCatalog.GetMediaKind(this) == MediaKind.Image;
-
-    public bool IsText => MimeTypeCatalog.IsText(this);
-
     public override string ToString() => Value;
 }
 
@@ -48,8 +44,6 @@ public readonly record struct DeclaredMimeType
     public DeclaredMimeType() : this(MimeType.DefaultValue)
     {
     }
-
-    public MimeType Canonical => new(Value);
 
     public override string ToString() => Value;
 }
