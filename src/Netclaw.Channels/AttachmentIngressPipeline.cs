@@ -53,7 +53,6 @@ public delegate Task<AttachmentDownloadResult> AttachmentStagingDownload(
 public static class AttachmentIngressPipeline
 {
     public static async Task<AttachmentIngestOutcome> IngestAsync(
-        string channelName,
         AttachmentIngressRequest request,
         TrustAudience audience,
         ChannelAttachmentPolicy policy,
@@ -81,7 +80,7 @@ public static class AttachmentIngressPipeline
         if (!policy.Allows(category))
         {
             log.Warning(
-                channelName + "_attachment_rejected name={Name} mime={Mime} audience={Audience} category={Category} reason=category-not-allowed",
+                "attachment_rejected name={Name} mime={Mime} audience={Audience} category={Category} reason=category-not-allowed",
                 name, declaredMimeType.Value, audience, category);
             return NotAllowed(name, category, audience);
         }
@@ -89,7 +88,7 @@ public static class AttachmentIngressPipeline
         if (request.Size > policy.MaxFileBytes)
         {
             log.Warning(
-                channelName + "_attachment_rejected name={Name} mime={Mime} audience={Audience} size={Size} limit={Limit} reason=too-large",
+                "attachment_rejected name={Name} mime={Mime} audience={Audience} size={Size} limit={Limit} reason=too-large",
                 name, declaredMimeType.Value, audience, request.Size, policy.MaxFileBytes);
             return Reject($"`{name}` ({FormatBytes(request.Size)}) exceeds the {FormatBytes(policy.MaxFileBytes)} per-file limit.");
         }
@@ -109,21 +108,21 @@ public static class AttachmentIngressPipeline
         catch (AttachmentTooLargeException ex)
         {
             log.Warning(
-                channelName + "_attachment_rejected name={Name} mime={Mime} audience={Audience} size={Size} limit={Limit} reason=too-large-during-download",
+                "attachment_rejected name={Name} mime={Mime} audience={Audience} size={Size} limit={Limit} reason=too-large-during-download",
                 name, declaredMimeType.Value, audience, ex.BytesReceived, ex.MaxBytes);
             return Reject($"`{name}` ({FormatBytes(ex.BytesReceived)}) exceeds the {FormatBytes(ex.MaxBytes)} per-file limit.");
         }
         catch (OperationCanceledException ex)
         {
             log.Warning(ex,
-                channelName + "_attachment_rejected name={Name} mime={Mime} reason=download-timeout",
+                "attachment_rejected name={Name} mime={Mime} reason=download-timeout",
                 name, declaredMimeType.Value);
             return Reject($"Timed out downloading `{name}`. Please try again.");
         }
         catch (Exception ex)
         {
             log.Warning(ex,
-                channelName + "_attachment_rejected name={Name} mime={Mime} reason=download-failed",
+                "attachment_rejected name={Name} mime={Mime} reason=download-failed",
                 name, declaredMimeType.Value);
             return Reject($"Couldn't download `{name}` — please try again later.");
         }
@@ -131,7 +130,7 @@ public static class AttachmentIngressPipeline
         if (downloadResult.BytesWritten == 0)
         {
             log.Warning(
-                channelName + "_attachment_rejected name={Name} mime={Mime} reason=empty-download",
+                "attachment_rejected name={Name} mime={Mime} reason=empty-download",
                 name, declaredMimeType.Value);
             TryDeleteTemp(log, downloadResult.FilePath);
             return Reject($"`{name}` downloaded as zero bytes.");
@@ -147,13 +146,13 @@ public static class AttachmentIngressPipeline
             {
                 case ContentVerificationResult.ScanThrew st:
                     log.Warning(st.Exception,
-                        channelName + "_attachment_rejected name={Name} mime={Mime} reason=scan-exception",
+                        "attachment_rejected name={Name} mime={Mime} reason=scan-exception",
                         name, declaredMimeType.Value);
                     return Reject($"Couldn't scan `{name}` — please try again later.");
 
                 case ContentVerificationResult.ScanBlocked sb:
                     log.Warning(
-                        channelName + "_attachment_rejected name={Name} mime={Mime} reason=scan-blocked error={ScanError} message={ScanMessage}",
+                        "attachment_rejected name={Name} mime={Mime} reason=scan-blocked error={ScanError} message={ScanMessage}",
                         name, declaredMimeType.Value, sb.Error?.ToString(), sb.Message ?? sb.Error?.ToString());
                     return sb.Error == ContentScanError.ScanFailure
                         ? Reject($"Couldn't scan `{name}` — please try again later.")
@@ -161,14 +160,14 @@ public static class AttachmentIngressPipeline
 
                 case ContentVerificationResult.MissingVerifiedMime:
                     log.Warning(
-                        channelName + "_attachment_rejected name={Name} declaredMime={DeclaredMime} reason=missing-verified-mime",
+                        "attachment_rejected name={Name} declaredMime={DeclaredMime} reason=missing-verified-mime",
                         name, declaredMimeType.Value);
                     return Reject($"Content scanner did not verify `{name}`. Please try again later.");
 
                 default:
                     var notAllowed = (ContentVerificationResult.CategoryNotAllowed)verification;
                     log.Warning(
-                        channelName + "_attachment_rejected name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} audience={Audience} category={Category} reason=verified-category-not-allowed",
+                        "attachment_rejected name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} audience={Audience} category={Category} reason=verified-category-not-allowed",
                         name, declaredMimeType.Value, notAllowed.MimeType.Value, audience, notAllowed.Category);
                     return NotAllowed(name, notAllowed.Category, audience);
             }
@@ -185,7 +184,7 @@ public static class AttachmentIngressPipeline
         catch (InboxWriter.CollisionExhaustedException ex)
         {
             log.Warning(ex,
-                channelName + "_attachment_rejected name={Name} reason=collision-exhausted",
+                "attachment_rejected name={Name} reason=collision-exhausted",
                 name);
             TryDeleteTemp(log, downloadResult.FilePath);
             return Reject($"Too many attachments named `{name}` in this session — please rename and try again.");
@@ -193,7 +192,7 @@ public static class AttachmentIngressPipeline
         catch (Exception ex)
         {
             log.Error(ex,
-                channelName + "_attachment_rejected name={Name} reason=inbox-write-failed",
+                "attachment_rejected name={Name} reason=inbox-write-failed",
                 name);
             TryDeleteTemp(log, downloadResult.FilePath);
             return Reject($"Couldn't save `{name}` — please try again later.");
@@ -209,7 +208,7 @@ public static class AttachmentIngressPipeline
             cancellationToken);
 
         log.Info(
-            channelName + "_attachment_accepted name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} size={Size} category={Category} inlined={Inlined}",
+            "attachment_accepted name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} size={Size} category={Category} inlined={Inlined}",
             name, declaredMimeType.Value, verifiedMime.Value, downloadResult.BytesWritten, verifiedCategory, projection.Inlined);
 
         return new AttachmentIngestOutcome.Accepted(projection.Line, projection.InlineContent);

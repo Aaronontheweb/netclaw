@@ -1392,7 +1392,6 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         string stagingDir,
         CancellationToken cancellationToken)
         => AttachmentIngressPipeline.IngestAsync(
-            "mattermost",
             new AttachmentIngressRequest(file.Name, file.MimeType, file.Size),
             audience,
             policy,
@@ -1413,7 +1412,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                 if (string.IsNullOrEmpty(_dependencies.ServerUrl))
                 {
                     _log.Warning(
-                        "mattermost_attachment_rejected name={Name} reason=no-server-url-configured",
+                        "attachment_rejected name={Name} reason=no-server-url-configured",
                         file.Name);
                     return $"`{file.Name}` was rejected because no Mattermost server URL is configured for URL trust validation.";
                 }
@@ -1421,7 +1420,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                 if (!MattermostAttachmentUrlTrust.IsAllowedAttachmentUrl(file.Url, _dependencies.ServerUrl))
                 {
                     _log.Warning(
-                        "mattermost_attachment_rejected name={Name} url={Url} reason=untrusted-url",
+                        "attachment_rejected name={Name} url={Url} reason=untrusted-url",
                         file.Name, file.Url);
                     return $"`{file.Name}` has an untrusted URL and was skipped.";
                 }

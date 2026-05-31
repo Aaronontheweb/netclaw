@@ -1409,7 +1409,6 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
         string stagingDir,
         CancellationToken cancellationToken)
         => AttachmentIngressPipeline.IngestAsync(
-            "discord",
             new AttachmentIngressRequest(file.Name, file.MimeType, file.Size),
             audience,
             policy,
@@ -1429,7 +1428,7 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
                 if (DiscordAttachmentUrlTrust.IsAllowedAttachmentDomain(file.Url))
                     return null;
                 _log.Warning(
-                    "discord_attachment_rejected name={Name} url={Url} reason=untrusted-domain",
+                    "attachment_rejected name={Name} url={Url} reason=untrusted-domain",
                     file.Name, file.Url);
                 return $"`{file.Name}` has an untrusted URL domain and was skipped.";
             });

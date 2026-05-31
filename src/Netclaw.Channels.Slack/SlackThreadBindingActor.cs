@@ -540,7 +540,6 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         string stagingDir,
         CancellationToken cancellationToken)
         => AttachmentIngressPipeline.IngestAsync(
-            "slack",
             new AttachmentIngressRequest(file.Name, file.MimeType, file.Size),
             audience,
             policy,
