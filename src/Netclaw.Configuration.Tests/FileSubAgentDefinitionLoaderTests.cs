@@ -326,6 +326,16 @@ public class FileSubAgentDefinitionLoaderTests : IDisposable
             body
             """);
 
+        WriteAgent("huge-timeout.md", """
+            ---
+            name: huge-timeout
+            description: Inter-delta budget beyond the 600s ceiling
+            timeoutSeconds: 999
+            ---
+
+            body
+            """);
+
         WriteAgent("huge-prefill.md", """
             ---
             name: huge-prefill
@@ -360,6 +370,9 @@ public class FileSubAgentDefinitionLoaderTests : IDisposable
             && w.Contains("timeoutSeconds", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(_logger.Warnings, w =>
             w.Contains("negative-timeout.md", StringComparison.Ordinal)
+            && w.Contains("timeoutSeconds", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(_logger.Warnings, w =>
+            w.Contains("huge-timeout.md", StringComparison.Ordinal)
             && w.Contains("timeoutSeconds", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(_logger.Warnings, w =>
             w.Contains("huge-prefill.md", StringComparison.Ordinal)

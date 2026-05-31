@@ -3,7 +3,7 @@ name: subagent-authoring
 description: "How to create and troubleshoot file-defined subagents in ~/.netclaw/agents. Load when the user asks to add, edit, or debug subagent definitions, or when a skill routes via metadata.subagent."
 metadata:
   author: netclaw
-  version: "1.3.0"
+  version: "1.3.1"
 ---
 
 # Subagent Authoring
@@ -83,6 +83,13 @@ The markdown body below the closing `---` must also be non-empty.
 | `emitStructuredFindings` | `false` | When true, successful output is emitted as findings for parent-session review. |
 
 Unknown fields are ignored.
+
+Beyond these per-agent budgets, every sub-agent LLM call is also bounded by a
+config-level **no-progress ceiling** (`SubAgents.NoProgressTimeoutSeconds` in
+`netclaw.json`, default `1200` = 20 min). Unlike `prefillTimeoutSeconds` and
+`timeoutSeconds`, content-free keepalives never refresh it — only real tokens do —
+so a backend that heartbeats forever without producing output is killed once it
+elapses. It is not a per-agent frontmatter field; tune it in `netclaw.json`.
 
 ## Example: valid subagent definition
 

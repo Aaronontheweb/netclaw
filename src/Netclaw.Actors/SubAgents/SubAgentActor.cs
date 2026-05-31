@@ -91,15 +91,25 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private IParentApprovalBridge? _approvalBridge;
     private ChannelWriter<ToolActivityUpdate>? _activitySink;
 
+    // Default wait-for-first-delta budget when the spawn message carries none
+    // (direct/test callers). Mirrors SessionConfig.PrefillTimeout so an unset
+    // prefill never collapses to the tighter inter-delta budget — that collapse
+    // would silently reintroduce the cold-prefill timeout this watchdog exists
+    // to prevent.
+    private static readonly TimeSpan DefaultPrefillBudget = TimeSpan.FromSeconds(1800);
+
     // Two-phase inactivity watchdog, shared with the main session path
     // (LlmSessionActor). The watchdog starts each LLM call on the generous
     // _prefillBudget (content-free keepalives refresh it so a slow cold prefill
     // is not mistaken for a hang) and promotes to the tighter _interDeltaBudget
     // on the first substantive delta. _anyContentStreamed tracks whether the
-    // current call has produced real output yet.
+    // current call has produced real output yet. _noProgressBudget is the
+    // keepalive-immune ceiling reset only by real tokens — it bounds a backend
+    // that heartbeats forever without producing output (null = unbounded).
     private readonly ProcessingWatchdog _watchdog = new();
     private TimeSpan _interDeltaBudget;
     private TimeSpan _prefillBudget;
+    private TimeSpan? _noProgressBudget;
     private bool _anyContentStreamed;
 
     public ITimerScheduler Timers { get; set; } = null!;
@@ -236,12 +246,16 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
             // The run is bounded by a two-phase inactivity watchdog re-armed on
             // every progress event (LLM response, tool batch, streaming delta,
-            // keepalive), so a sub-agent making progress is never killed and a
-            // stalled one is. FireLlmCall arms it on the prefill budget; the
-            // PrefillTimeout==Zero fallback preserves legacy single-budget callers.
+            // keepalive) plus a keepalive-immune no-progress deadline. A sub-agent
+            // making real progress is never killed; a stalled one (no bytes) or a
+            // wedged one (keepalives but no tokens) is. FireLlmCall arms both. An
+            // unset prefill defaults to the session budget rather than collapsing
+            // to the inter-delta budget; an unset no-progress deadline is
+            // unbounded (only direct/test callers leave it unset).
             _activitySink = msg.ActivitySink;
             _interDeltaBudget = msg.Timeout;
-            _prefillBudget = msg.PrefillTimeout > TimeSpan.Zero ? msg.PrefillTimeout : msg.Timeout;
+            _prefillBudget = msg.PrefillTimeout > TimeSpan.Zero ? msg.PrefillTimeout : DefaultPrefillBudget;
+            _noProgressBudget = msg.NoProgressTimeout > TimeSpan.Zero ? msg.NoProgressTimeout : null;
 
             // Build initial conversation: system prompt (from file, verbatim) + task as user message.
             // If the caller supplied runtime context, prefix it onto the user message so the
@@ -249,8 +263,9 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             _history.Add(new AiChatMessage(Microsoft.Extensions.AI.ChatRole.System, BuildSystemPrompt(_definition)));
             _history.Add(new AiChatMessage(Microsoft.Extensions.AI.ChatRole.User, BuildUserMessage(msg.RuntimeContext, msg.Task)));
 
-            _log.Info("SubAgent [{AgentName}] starting (tools={ToolCount}, prefill={Prefill}, interDelta={InterDelta})",
-                _definition.Name, _aiTools.Count, _prefillBudget, _interDeltaBudget);
+            _log.Info("SubAgent [{AgentName}] starting (tools={ToolCount}, prefill={Prefill}, interDelta={InterDelta}, noProgress={NoProgress})",
+                _definition.Name, _aiTools.Count, _prefillBudget, _interDeltaBudget,
+                _noProgressBudget?.ToString() ?? "unbounded");
 
             FireLlmCall();
             Become(Processing);
@@ -437,9 +452,28 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         Receive<ProcessingWatchdogExpired>(msg =>
         {
             // Ignore a stale expiry from a watchdog operation that has since been
-            // re-armed (each Start/Promote/Refresh bumps the operation id).
+            // re-armed. Only Start bumps the operation id; a keepalive/promote
+            // reschedules the same id, and Stop clears the operation name.
             if (!_watchdog.IsCurrent(msg))
                 return;
+
+            if (msg.NoProgress)
+            {
+                // The keepalive-immune deadline fired: the backend streamed
+                // heartbeats (or nothing) for the full no-progress budget without a
+                // single substantive token. Unlike a liveness tick this gets no
+                // approval suppression or grace — it is only armed during an active
+                // LLM stream and is never refreshed by keepalives, so reaching it
+                // means a genuine wedge.
+                var noProgress = _noProgressBudget?.TotalSeconds ?? 0;
+                _executionCts?.Cancel();
+                _watchdog.Stop(Timers);
+                _log.Warning(
+                    "SubAgent [{AgentName}] timed out: no substantive output for {Budget:F0}s after {Iterations} tool iterations",
+                    _definition.Name, noProgress, _turnState.ToolIterationCount);
+                Complete(false, $"Subagent timed out: no substantive output for {noProgress:F0}s.");
+                return;
+            }
 
             if (_toolExecutionWatchdogState == ToolExecutionWatchdogState.WaitingForParentApproval)
             {
@@ -583,9 +617,10 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     {
         _turnState.ForceNoToolsActive = forceNoTools;
         // Each LLM call starts fresh on the generous prefill budget; the watchdog
-        // promotes to the inter-delta budget on the first substantive delta.
+        // promotes to the inter-delta budget on the first substantive delta. The
+        // no-progress deadline is armed alongside it and only real tokens reset it.
         _anyContentStreamed = false;
-        RestartWatchdog(_prefillBudget);
+        StartLlmCallWatchdog();
         EmitActivity("calling the model");
         var self = Self;
         var client = _chatClient;
@@ -626,9 +661,9 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     private void Complete(bool success, string output)
     {
-        // Idempotent guard: a stale SubAgentTimeout or other handler can land
-        // after Complete has already run (Tell from a thread-pool finally races
-        // mailbox-thread Stop). The second call would send a duplicate
+        // Idempotent guard: a stale ProcessingWatchdogExpired or other handler can
+        // land after Complete has already run (Tell from a thread-pool finally
+        // races mailbox-thread Stop). The second call would send a duplicate
         // SubAgentResult and log a misleading "completed" line. The first
         // caller wins; subsequent calls are no-ops.
         if (_completed) return;
@@ -665,7 +700,19 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         Context.Stop(Self);
     }
 
-    /// <summary>(Re)start the shared watchdog for the current LLM call on the given budget.</summary>
+    /// <summary>
+    /// Arm the watchdog for a fresh LLM streaming call: the generous prefill
+    /// liveness budget plus the keepalive-immune no-progress deadline that bounds
+    /// a backend streaming heartbeats without producing real tokens.
+    /// </summary>
+    private void StartLlmCallWatchdog()
+        => _watchdog.Start(ProcessingWatchdog.LlmCall, _prefillBudget, Timers, _noProgressBudget);
+
+    /// <summary>
+    /// (Re)start the liveness watchdog on the given budget without a no-progress
+    /// deadline — used to re-baseline between streaming calls (tool dispatch,
+    /// post-approval). Clears any stale no-progress deadline from the prior call.
+    /// </summary>
     private void RestartWatchdog(TimeSpan budget)
         => _watchdog.Start(ProcessingWatchdog.LlmCall, budget, Timers);
 

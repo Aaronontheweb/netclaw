@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Akka.Actor;
+using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Sessions.Handlers;
 using Xunit;
 
@@ -19,6 +20,7 @@ public sealed class ProcessingWatchdogTests
 {
     private static readonly TimeSpan Prefill = TimeSpan.FromSeconds(1800);
     private static readonly TimeSpan InterDelta = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan NoProgress = TimeSpan.FromSeconds(1200);
 
     [Fact]
     public void Keepalive_before_first_token_refreshes_the_prefill_budget()
@@ -72,6 +74,58 @@ public sealed class ProcessingWatchdogTests
         Assert.Equal(InterDelta, timers.LastSingleTimerTimeout);
     }
 
+    [Fact]
+    public void Start_with_a_deadline_arms_both_the_liveness_and_no_progress_timers()
+    {
+        var watchdog = new ProcessingWatchdog();
+        var timers = new RecordingTimerScheduler();
+
+        watchdog.Start(ProcessingWatchdog.LlmCall, Prefill, timers, NoProgress);
+
+        Assert.Equal(Prefill, timers.LastLivenessTimeout);
+        Assert.Equal(NoProgress, timers.LastNoProgressTimeout);
+    }
+
+    [Fact]
+    public void Start_without_a_deadline_leaves_the_no_progress_timer_unarmed()
+    {
+        var watchdog = new ProcessingWatchdog();
+        var timers = new RecordingTimerScheduler();
+
+        watchdog.Start(ProcessingWatchdog.LlmCall, Prefill, timers);
+
+        Assert.Equal(Prefill, timers.LastLivenessTimeout);
+        Assert.Null(timers.LastNoProgressTimeout);
+    }
+
+    [Fact]
+    public void Keepalive_does_not_reset_the_no_progress_deadline()
+    {
+        var (watchdog, timers) = StartedCallWithDeadline();
+
+        // Keepalives refresh liveness but must NOT touch the no-progress deadline —
+        // that is exactly what lets the deadline catch a heartbeat-only wedge that
+        // refreshes the liveness timer forever.
+        watchdog.OnStreamProgress(
+            isSubstantive: false, alreadyPromoted: false, Prefill, InterDelta, timers);
+
+        Assert.Equal(Prefill, timers.LastLivenessTimeout);
+        Assert.Null(timers.LastNoProgressTimeout);
+    }
+
+    [Fact]
+    public void Substantive_delta_resets_the_no_progress_deadline()
+    {
+        var (watchdog, timers) = StartedCallWithDeadline();
+
+        // Real output is the only signal that resets the deadline.
+        watchdog.OnStreamProgress(
+            isSubstantive: true, alreadyPromoted: true, Prefill, InterDelta, timers);
+
+        Assert.Equal(InterDelta, timers.LastLivenessTimeout);
+        Assert.Equal(NoProgress, timers.LastNoProgressTimeout);
+    }
+
     private static (ProcessingWatchdog, RecordingTimerScheduler) StartedCall()
     {
         var watchdog = new ProcessingWatchdog();
@@ -82,21 +136,46 @@ public sealed class ProcessingWatchdogTests
         return (watchdog, timers);
     }
 
+    private static (ProcessingWatchdog, RecordingTimerScheduler) StartedCallWithDeadline()
+    {
+        var watchdog = new ProcessingWatchdog();
+        var timers = new RecordingTimerScheduler();
+        watchdog.Start(ProcessingWatchdog.LlmCall, Prefill, timers, NoProgress);
+        timers.Reset();
+        return (watchdog, timers);
+    }
+
     /// <summary>
     /// Minimal <see cref="ITimerScheduler"/> that records the timeout of the most
-    /// recent <c>StartSingleTimer</c> call. All other members are no-ops.
+    /// recent <c>StartSingleTimer</c> call, split by whether the scheduled message
+    /// is the liveness timer or the keepalive-immune no-progress deadline
+    /// (distinguished by <see cref="ProcessingWatchdogExpired.NoProgress"/>). All
+    /// other members are no-ops.
     /// </summary>
     private sealed class RecordingTimerScheduler : ITimerScheduler
     {
         public TimeSpan? LastSingleTimerTimeout { get; private set; }
+        public TimeSpan? LastLivenessTimeout { get; private set; }
+        public TimeSpan? LastNoProgressTimeout { get; private set; }
 
-        public void Reset() => LastSingleTimerTimeout = null;
+        public void Reset()
+        {
+            LastSingleTimerTimeout = null;
+            LastLivenessTimeout = null;
+            LastNoProgressTimeout = null;
+        }
 
         public void StartSingleTimer(object key, object msg, TimeSpan timeout)
-            => LastSingleTimerTimeout = timeout;
+        {
+            LastSingleTimerTimeout = timeout;
+            if (msg is ProcessingWatchdogExpired { NoProgress: true })
+                LastNoProgressTimeout = timeout;
+            else if (msg is ProcessingWatchdogExpired)
+                LastLivenessTimeout = timeout;
+        }
 
         public void StartSingleTimer(object key, object msg, TimeSpan timeout, IActorRef sender)
-            => LastSingleTimerTimeout = timeout;
+            => StartSingleTimer(key, msg, timeout);
 
         public void StartPeriodicTimer(object key, object msg, TimeSpan interval) { }
         public void StartPeriodicTimer(object key, object msg, TimeSpan interval, IActorRef sender) { }

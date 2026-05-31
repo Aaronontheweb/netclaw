@@ -129,9 +129,13 @@ internal sealed record ToolExecutionFailed : INoSerializationVerificationNeeded
 
 /// <summary>
 /// Internal watchdog timeout used to force stuck Processing operations to fail
-/// and return the session actor to Ready state.
+/// and return the session actor to Ready state. <see cref="NoProgress"/> is true
+/// when the keepalive-immune no-progress deadline fired (the call produced no
+/// substantive output for the whole budget) rather than the liveness timer —
+/// the handler treats that as a hard kill with no grace, since keepalives never
+/// refresh it.
 /// </summary>
-internal sealed record ProcessingWatchdogExpired(long OperationId, string OperationName)
+internal sealed record ProcessingWatchdogExpired(long OperationId, string OperationName, bool NoProgress = false)
     : INoSerializationVerificationNeeded;
 
 /// <summary>

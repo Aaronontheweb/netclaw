@@ -653,20 +653,35 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             if (!_watchdog.IsCurrent(msg))
                 return;
 
-            var timeout = msg.OperationName switch
+            TimeoutException timeoutCause;
+            if (msg.NoProgress)
             {
-                ProcessingWatchdog.LlmCall => _config.FirstTokenTimeout,
-                _ => _config.TurnLlmTimeout
-            };
-
-            var timeoutCause = new TimeoutException(
-                $"Session processing operation '{msg.OperationName}' exceeded watchdog timeout of {timeout.TotalSeconds:F0}s");
+                // Keepalive-immune deadline: the stream produced no substantive
+                // output for the whole budget. Never refreshed by keepalives, so
+                // reaching it means a wedge, not a slow-but-healthy prefill.
+                timeoutCause = new TimeoutException(
+                    $"Session LLM call produced no substantive output within {_config.NoProgressTimeout.TotalSeconds:F0}s");
+            }
+            else
+            {
+                // Report the budget actually in force: the generous prefill budget
+                // while still waiting for the first token, the tighter inter-delta
+                // budget once promoted. (Reporting FirstTokenTimeout during prefill
+                // would under-state the wait by ~3x.)
+                var timeout = msg.OperationName switch
+                {
+                    ProcessingWatchdog.LlmCall => _anyContentStreamed ? _config.FirstTokenTimeout : _config.PrefillTimeout,
+                    _ => _config.TurnLlmTimeout
+                };
+                timeoutCause = new TimeoutException(
+                    $"Session processing operation '{msg.OperationName}' exceeded watchdog timeout of {timeout.TotalSeconds:F0}s");
+            }
 
             _watchdog.Stop(Timers);
             CancelAndDisposeLlmCts();
 
-            _log.Error("Processing watchdog expired for operation {OperationName} (opId={OperationId})",
-                msg.OperationName, msg.OperationId);
+            _log.Error("Processing watchdog expired for operation {OperationName} (opId={OperationId}, noProgress={NoProgress})",
+                msg.OperationName, msg.OperationId, msg.NoProgress);
             var errorMessage = ExtractLlmErrorMessage(timeoutCause);
             FailCurrentTurn(errorMessage, timeoutCause, ErrorCategory.Timeout);
         });
@@ -2666,7 +2681,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             };
         }
 
-        _watchdog.Start(ProcessingWatchdog.LlmCall, _config.PrefillTimeout, Timers);
+        _watchdog.Start(ProcessingWatchdog.LlmCall, _config.PrefillTimeout, Timers, _config.NoProgressTimeout);
 
         TurnLog().Info("turn_llm_call_start messages={MessageCount} toolsEnabled={ToolsEnabled} forceNoTools={ForceNoTools} callId={CallId}",
             messages.Count,

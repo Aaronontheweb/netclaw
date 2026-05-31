@@ -70,10 +70,20 @@ public sealed record RunSubAgent : INoSerializationVerificationNeeded
     /// Generous wait-for-first-delta budget covering queue wait and cold prefill.
     /// The watchdog starts on this budget and content-free keepalives refresh it,
     /// so a healthy-but-slow self-hosted prefill is not killed. When unset
-    /// (<see cref="TimeSpan.Zero"/>), the sub-agent falls back to <see cref="Timeout"/>,
-    /// preserving the legacy single-budget behavior.
+    /// (<see cref="TimeSpan.Zero"/>), the sub-agent defaults to the same 1800s
+    /// budget as the main session path rather than collapsing to <see cref="Timeout"/>.
     /// </summary>
     public TimeSpan PrefillTimeout { get; init; }
+
+    /// <summary>
+    /// Hard ceiling on time without substantive output. Reset only by real
+    /// streaming tokens — content-free keepalives never extend it — so a backend
+    /// that heartbeats forever without producing a token is killed once this
+    /// elapses. <see cref="TimeSpan.Zero"/> (unset) leaves the call bounded only by
+    /// the liveness watchdog; the spawner always populates it from
+    /// <see cref="Configuration.SubAgentConfig.NoProgressTimeoutSeconds"/>.
+    /// </summary>
+    public TimeSpan NoProgressTimeout { get; init; }
 
     /// <summary>
     /// Cancellation token from the calling tool execution. Used to stop the

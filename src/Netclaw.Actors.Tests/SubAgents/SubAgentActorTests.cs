@@ -994,7 +994,17 @@ public class SubAgentActorTests : TestKit
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
 
         var result = await agent.Ask<SubAgentResult>(
-            new RunSubAgent { Task = "Slow task", Timeout = TimeSpan.FromMilliseconds(500) , Audience = TrustAudience.Personal },
+            // No first token ever arrives, so the prefill liveness budget governs;
+            // set it small so the stalled call fails fast. (An unset prefill now
+            // defaults to the generous 1800s session budget rather than collapsing
+            // to Timeout, so Timeout alone no longer bounds the wait-for-first-token.)
+            new RunSubAgent
+            {
+                Task = "Slow task",
+                Timeout = TimeSpan.FromMilliseconds(500),
+                PrefillTimeout = TimeSpan.FromMilliseconds(500),
+                Audience = TrustAudience.Personal
+            },
             TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
         Assert.False(result.Success);
@@ -1028,6 +1038,31 @@ public class SubAgentActorTests : TestKit
 
         Assert.False(result.Success);
         Assert.Contains("timed out", result.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task No_progress_deadline_kills_a_call_that_never_produces_a_token()
+    {
+        // The keepalive-immune deadline is the governing bound here: the liveness
+        // prefill budget is generous, but the stream never produces a substantive
+        // token, so the no-progress deadline fires first and reports the
+        // no-substantive-output reason. (That keepalives refresh the liveness timer
+        // yet never reset this deadline is proven in ProcessingWatchdogTests.)
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(CreateDefinition(), new ParkingChatClient()));
+
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent
+            {
+                Task = "Wedged",
+                Timeout = TimeSpan.FromSeconds(30),           // inter-delta — not governing
+                PrefillTimeout = TimeSpan.FromSeconds(30),    // liveness — generous, not governing
+                NoProgressTimeout = TimeSpan.FromSeconds(2),  // the budget under test
+                Audience = TrustAudience.Personal
+            },
+            TimeSpan.FromSeconds(20), TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Contains("no substantive output", result.Output, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1386,8 +1421,8 @@ internal sealed class FakeChatClient : IChatClient
 /// <summary>
 /// Streaming-only fake that emits no updates and parks until the consumer cancels
 /// (i.e. the sub-agent's watchdog fires). No <c>Task.Delay</c>: the only timing is
-/// the real watchdog timer, which nothing races, so the timeout/cap behavior under
-/// test is deterministic.
+/// the real watchdog timer, which nothing races, so the watchdog behavior under
+/// test (prefill liveness ceiling, no-progress deadline) is deterministic.
 /// </summary>
 internal sealed class ParkingChatClient : IChatClient
 {
