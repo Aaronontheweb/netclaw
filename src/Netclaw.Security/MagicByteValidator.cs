@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Collections.Frozen;
+using Netclaw.Media;
 
 namespace Netclaw.Security;
 
@@ -59,16 +60,6 @@ public static class MagicByteValidator
         BuildRules().ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Normalization rules for known MIME type mismatches. Some providers
-    /// (notably Slack) report incorrect MIME types for certain file
-    /// extensions — e.g., <c>.md</c> as <c>text/plain</c> instead of
-    /// <c>text/markdown</c>. This table maps (extension, incorrect-MIME)
-    /// pairs to the canonical MIME type.
-    /// </summary>
-    private static readonly FrozenDictionary<(string Extension, string DeclaredMime), string> MimeNormalizationRules =
-        BuildMimeNormalizationRules().ToFrozenDictionary(new ExtensionMimePairComparer());
-
-    /// <summary>
     /// Validates a file using only its header bytes and total size. Used by
     /// the streaming download path where the full file is on disk and only
     /// the first N bytes are read into memory for signature checking.
@@ -118,16 +109,16 @@ public static class MagicByteValidator
                 "File has no extension");
         }
 
-        var effectiveMimeType = NormalizeMimeType(declaredMimeType, extension);
+        var effectiveMimeType = MimeTypeCatalog.NormalizeDeclaredForExtension(declaredMimeType, extension);
 
-        if (!RulesByMime.TryGetValue(effectiveMimeType, out var rule))
+        if (!RulesByMime.TryGetValue(effectiveMimeType.Value, out var rule))
         {
             return ContentScanResult.Rejected(
                 ContentScanError.UnrecognizedFileType,
                 $"MIME type '{effectiveMimeType}' is not supported by the content scanner");
         }
 
-        if (!effectivePolicy.AllowedMimeTypes.Contains(effectiveMimeType))
+        if (!effectivePolicy.AllowedMimeTypes.Contains(effectiveMimeType.Value))
         {
             return ContentScanResult.Rejected(
                 ContentScanError.UnrecognizedFileType,
@@ -137,18 +128,19 @@ public static class MagicByteValidator
         if (!rule.Extensions.Contains(extension))
         {
             var detected = DetectMimeType(header);
-            if (detected is not null
-                && RulesByMime.TryGetValue(detected, out var detectedRule)
+            var detectedMimeType = detected is not null ? new MimeType(detected) : (MimeType?)null;
+            if (detectedMimeType is not null
+                && RulesByMime.TryGetValue(detectedMimeType.Value.Value, out var detectedRule)
                 && detectedRule.Extensions.Contains(extension)
-                && effectivePolicy.AllowedMimeTypes.Contains(detected))
+                && effectivePolicy.AllowedMimeTypes.Contains(detectedMimeType.Value.Value))
             {
-                return ContentScanResult.Allowed(new MimeType(detected));
+                return ContentScanResult.Allowed(detectedMimeType.Value);
             }
 
             return ContentScanResult.Rejected(
                 ContentScanError.MimeTypeMismatch,
                 $"Extension '{extension}' does not match declared type '{effectiveMimeType}'",
-                detected is not null ? new MimeType(detected) : null);
+                detectedMimeType);
         }
 
         if (!rule.Matches(header))
@@ -160,7 +152,7 @@ public static class MagicByteValidator
                 detectedMimeType is not null ? new MimeType(detectedMimeType) : null);
         }
 
-        return ContentScanResult.Allowed(new MimeType(effectiveMimeType));
+        return ContentScanResult.Allowed(effectiveMimeType);
     }
 
     /// <summary>
@@ -257,31 +249,25 @@ public static class MagicByteValidator
             ["text/plain"] = new(Exts(".txt", ".log"), AnyContent),
             ["text/markdown"] = new(Exts(".md", ".markdown"), AnyContent),
             ["text/csv"] = new(Exts(".csv"), AnyContent),
-            ["text/xml"] = new(Exts(".xml"), AnyContent),
+            ["text/html"] = new(Exts(".html", ".htm"), AnyContent),
             ["application/json"] = new(Exts(".json"), AnyContent),
             ["application/xml"] = new(Exts(".xml"), AnyContent),
             ["application/yaml"] = new(Exts(".yml", ".yaml"), AnyContent),
-            ["application/x-yaml"] = new(Exts(".yml", ".yaml"), AnyContent),
 
             // Rich text
             ["application/rtf"] = new(Exts(".rtf"), IsRtf),
-            ["text/rtf"] = new(Exts(".rtf"), IsRtf),
 
             // Archives
             ["application/zip"] = new(Exts(".zip"), IsZip),
-            ["application/x-zip-compressed"] = new(Exts(".zip"), IsZip),
             ["application/x-7z-compressed"] = new(Exts(".7z"), Is7z),
             ["application/gzip"] = new(Exts(".gz", ".tgz"), IsGzip),
-            ["application/x-gzip"] = new(Exts(".gz", ".tgz"), IsGzip),
             ["application/x-bzip2"] = new(Exts(".bz2"), IsBzip2),
             ["application/x-xz"] = new(Exts(".xz"), IsXz),
 
             // Audio
             ["audio/mpeg"] = new(Exts(".mp3"), IsMp3FrameOrId3),
             ["audio/mp4"] = new(Exts(".m4a", ".mp4"), IsFtyp),
-            ["audio/x-m4a"] = new(Exts(".m4a"), IsFtyp),
             ["audio/wav"] = new(Exts(".wav"), IsWav),
-            ["audio/x-wav"] = new(Exts(".wav"), IsWav),
             ["audio/ogg"] = new(Exts(".ogg", ".oga"), IsOgg),
 
             // Video
@@ -297,51 +283,6 @@ public static class MagicByteValidator
 
     private static FrozenSet<string> Exts(params string[] extensions) =>
         extensions.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
-
-    private static Dictionary<(string Extension, string DeclaredMime), string> BuildMimeNormalizationRules()
-    {
-        var rules = new Dictionary<(string, string), string>(new ExtensionMimePairComparer())
-        {
-            // Slack reports .md files as text/plain instead of text/markdown
-            [(".md", "text/plain")] = "text/markdown",
-            [(".markdown", "text/plain")] = "text/markdown",
-
-            // JSON/YAML/CSV/XML sometimes reported as text/plain by various providers
-            [(".json", "text/plain")] = "application/json",
-            [(".yaml", "text/plain")] = "application/yaml",
-            [(".yml", "text/plain")] = "application/yaml",
-            [(".csv", "text/plain")] = "text/csv",
-            [(".xml", "text/plain")] = "text/xml"
-        };
-
-        return rules;
-    }
-
-    private static string NormalizeMimeType(string declaredMimeType, string extension)
-    {
-        if (MimeNormalizationRules.TryGetValue((extension, declaredMimeType), out var correctedMime))
-            return correctedMime;
-        return declaredMimeType;
-    }
-
-    private sealed class ExtensionMimePairComparer : IEqualityComparer<(string, string)>
-    {
-        public bool Equals((string, string) x, (string, string) y) =>
-            StringComparer.OrdinalIgnoreCase.Equals(x.Item1, y.Item1) &&
-            StringComparer.OrdinalIgnoreCase.Equals(x.Item2, y.Item2);
-
-        public int GetHashCode((string, string) obj) =>
-            HashCode.Combine(
-                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Item1),
-                StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Item2));
-    }
-
-    /// <summary>
-    /// Internal helper exposed for <see cref="ContentPolicy"/> to seed its
-    /// default allowlist from the set of MIME types the validator knows how
-    /// to verify, so the two layers stay in sync.
-    /// </summary>
-    internal static IEnumerable<string> GetSupportedMimeTypes() => RulesByMime.Keys;
 
     // ── Signature matchers ────────────────────────────────────────────────
     // Each matcher validates more than the minimum prefix where a cheap

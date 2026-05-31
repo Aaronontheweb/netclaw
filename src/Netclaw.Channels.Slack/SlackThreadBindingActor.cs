@@ -16,6 +16,7 @@ using Netclaw.Actors.Reminders;
 using Netclaw.Channels;
 using Netclaw.Channels.Telemetry;
 using Netclaw.Configuration;
+using Netclaw.Media;
 using Netclaw.Security;
 using Netclaw.Tools;
 using SlackNet.Blocks;
@@ -539,7 +540,9 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         string stagingDir,
         CancellationToken cancellationToken)
     {
-        var category = AttachmentCategories.FromMime(file.MimeType);
+        var declaredMimeType = new DeclaredMimeType(file.MimeType);
+        var provisionalMimeType = MimeTypeCatalog.NormalizeDeclaredForExtension(declaredMimeType.Value, Path.GetExtension(file.Name));
+        var category = MimeTypeCatalog.GetCategory(provisionalMimeType);
 
         // Pre-download policy gates — these all operate on Slack-reported
         // metadata and avoid burning bandwidth on files that can't be accepted.
@@ -611,7 +614,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             using var scanCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             scanCts.CancelAfter(OperationTimeout);
             scanResult = await _dependencies.ContentScanner.ScanFileAsync(
-                downloadResult.FilePath, file.Name, file.MimeType, scanCts.Token);
+                downloadResult.FilePath, file.Name, declaredMimeType.Value, scanCts.Token);
         }
         catch (Exception ex)
         {
@@ -641,6 +644,29 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
                 $"Content scanner rejected `{file.Name}`: {scanResult.Message ?? scanResult.Error?.ToString()}.");
         }
 
+        if (scanResult.VerifiedMimeType is not { } verifiedMimeType)
+        {
+            _log.Warning(
+                "slack_attachment_rejected name={Name} declaredMime={DeclaredMime} reason=missing-verified-mime",
+                file.Name, declaredMimeType.Value);
+            TryDeleteTemp(downloadResult.FilePath);
+            return new AttachmentIngestResult.Rejected(
+                $"Content scanner did not verify `{file.Name}`. Please try again later.");
+        }
+
+        var verifiedMime = verifiedMimeType.MimeType;
+        var verifiedCategory = MimeTypeCatalog.GetCategory(verifiedMime);
+        if (!policy.Allows(verifiedCategory))
+        {
+            _log.Warning(
+                "slack_attachment_rejected name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} audience={Audience} category={Category} reason=verified-category-not-allowed",
+                file.Name, declaredMimeType.Value, verifiedMime.Value, audience, verifiedCategory);
+            TryDeleteTemp(downloadResult.FilePath);
+            return new AttachmentIngestResult.Rejected(
+                $"`{file.Name}` ({verifiedCategory}) isn't allowed in {audience} channels. " +
+                "Please DM me if you want to share this class of file.");
+        }
+
         // Move temp file to final inbox path with collision suffixing.
         string inboxPath;
         try
@@ -667,25 +693,20 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
                 $"Couldn't save `{file.Name}` — please try again later.");
         }
 
-        // Decide inlining based on model modalities and category.
-        var (inlined, note) = AttachmentIngressFormatting.ResolveInlineDecision(category, inlineImages);
-
-        var relativePath = $"{SessionDirectoryHelper.InboxSubdirectory}/{Path.GetFileName(inboxPath)}";
-        var line = AttachmentIngressFormatting.BuildAttachmentLine(
-            file.Name, file.MimeType, downloadResult.BytesWritten, relativePath, inlined, note);
-
-        DataContent? inlineContent = null;
-        if (inlined)
-        {
-            var inlineBytes = await File.ReadAllBytesAsync(inboxPath, cancellationToken);
-            inlineContent = new DataContent(inlineBytes, file.MimeType);
-        }
+        var projection = await AttachmentIngressFormatting.BuildAcceptedProjectionAsync(
+            inboxPath,
+            file.Name,
+            verifiedMime.Value,
+            verifiedCategory,
+            inlineImages,
+            downloadResult.BytesWritten,
+            cancellationToken);
 
         _log.Info(
-            "slack_attachment_accepted name={Name} mime={Mime} size={Size} audience={Audience} category={Category} inlined={Inlined}",
-            file.Name, file.MimeType, downloadResult.BytesWritten, audience, category, inlined);
+            "slack_attachment_accepted name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} size={Size} category={Category} inlined={Inlined}",
+            file.Name, declaredMimeType.Value, verifiedMime.Value, downloadResult.BytesWritten, verifiedCategory, projection.Inlined);
 
-        return new AttachmentIngestResult.Accepted(line, inlineContent);
+        return new AttachmentIngestResult.Accepted(projection.Line, projection.InlineContent);
     }
 
     /// <summary>

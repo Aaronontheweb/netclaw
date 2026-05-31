@@ -319,7 +319,7 @@ public class ChatMessageConverterTests
                 new SerializableMediaReference
                 {
                     RelativePath = "test.jpg",
-                    MimeType = new Netclaw.Security.MimeType("image/jpeg"),
+                    MimeType = new Netclaw.Media.MimeType("image/jpeg"),
                     Modality = (int)MediaModality.Image
                 }
             ]
@@ -374,7 +374,7 @@ public class ChatMessageConverterTests
                 new SerializableMediaReference
                 {
                     RelativePath = "nonexistent.png",
-                    MimeType = new Netclaw.Security.MimeType("image/png"),
+                    MimeType = new Netclaw.Media.MimeType("image/png"),
                     Modality = (int)MediaModality.Image
                 }
             ]

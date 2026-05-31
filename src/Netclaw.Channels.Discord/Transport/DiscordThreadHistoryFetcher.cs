@@ -12,8 +12,8 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Channels;
 using Netclaw.Configuration;
+using Netclaw.Media;
 using Netclaw.Security;
-using IOFile = System.IO.File;
 
 namespace Netclaw.Channels.Discord.Transport;
 
@@ -251,7 +251,9 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         string stagingDir,
         CancellationToken cancellationToken)
     {
-        var category = AttachmentCategories.FromMime(file.MimeType);
+        var declaredMimeType = new DeclaredMimeType(file.MimeType);
+        var provisionalMimeType = MimeTypeCatalog.NormalizeDeclaredForExtension(declaredMimeType.Value, Path.GetExtension(file.Name));
+        var category = MimeTypeCatalog.GetCategory(provisionalMimeType);
         var sourceKey = BuildHistoricalAttachmentSourceKey(messageId, file);
 
         if (!policy.Allows(category))
@@ -262,7 +264,7 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
                 category,
                 audience);
             return [BuildHistoricalAttachmentRejected(
-                $"historical attachment ({file.MimeType}) category not allowed in {audience}")];
+                $"historical attachment ({declaredMimeType.Value}) category not allowed in {audience}")];
         }
 
         if (file.Size > policy.MaxFileBytes)
@@ -277,10 +279,10 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         }
 
         if (HistoricalAttachmentInbox.TryGetExistingFile(inboxDir, file.Name, sourceKey, out var existingPath, out var existingSize))
-            return await BuildAcceptedAttachmentContentsAsync(
+            return await AttachmentIngressFormatting.BuildAcceptedContentsAsync(
                 existingPath,
                 file.Name,
-                file.MimeType,
+                declaredMimeType.Value,
                 category,
                 inlineImages,
                 existingSize,
@@ -348,7 +350,7 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
             scanResult = await _contentScanner.ScanFileAsync(
                 downloadResult.FilePath,
                 file.Name,
-                file.MimeType,
+                declaredMimeType.Value,
                 scanCts.Token);
         }
         catch (Exception ex)
@@ -371,6 +373,30 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
                 $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(file.Name)}\" was rejected by content scanning: {AttachmentIngressFormatting.EscapeQuoted(scanResult.Message ?? scanResult.Error?.ToString() ?? "unknown error")}")];
         }
 
+        if (scanResult.VerifiedMimeType is not { } verifiedMimeType)
+        {
+            _logger.LogWarning(
+                "Historical Discord attachment {Name} rejected: scanner did not return verified MIME",
+                file.Name);
+            AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
+            return [BuildHistoricalAttachmentRejected(
+                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(file.Name)}\" could not be verified by content scanning")];
+        }
+
+        var verifiedMime = verifiedMimeType.MimeType;
+        var verifiedCategory = MimeTypeCatalog.GetCategory(verifiedMime);
+        if (!policy.Allows(verifiedCategory))
+        {
+            _logger.LogWarning(
+                "Historical Discord attachment {Name} rejected: verified category {Category} not allowed for {Audience}",
+                file.Name,
+                verifiedCategory,
+                audience);
+            AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
+            return [BuildHistoricalAttachmentRejected(
+                $"historical attachment ({verifiedMime.Value}) category not allowed in {audience}")];
+        }
+
         string inboxPath;
         try
         {
@@ -388,42 +414,14 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
                 $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(file.Name)}\" could not be saved to the session inbox")];
         }
 
-        return await BuildAcceptedAttachmentContentsAsync(
+        return await AttachmentIngressFormatting.BuildAcceptedContentsAsync(
             inboxPath,
             file.Name,
-            file.MimeType,
-            category,
+            verifiedMime.Value,
+            verifiedCategory,
             inlineImages,
             downloadResult.BytesWritten,
             cancellationToken);
-    }
-
-    private async Task<IReadOnlyList<AIContent>> BuildAcceptedAttachmentContentsAsync(
-        string inboxPath,
-        string filename,
-        string mimeType,
-        AttachmentCategory category,
-        bool inlineImages,
-        long size,
-        CancellationToken cancellationToken)
-    {
-        var relativePath = $"{SessionDirectoryHelper.InboxSubdirectory}/{Path.GetFileName(inboxPath)}";
-        var (inlined, note) = AttachmentIngressFormatting.ResolveInlineDecision(category, inlineImages);
-        var line = new TextContent(AttachmentIngressFormatting.BuildAttachmentLine(
-            filename,
-            mimeType,
-            size,
-            relativePath,
-            inlined,
-            note));
-
-        if (!inlined)
-        {
-            return [line];
-        }
-
-        var bytes = await IOFile.ReadAllBytesAsync(inboxPath, cancellationToken);
-        return [line, new DataContent(bytes, mimeType)];
     }
 
     private HistoricalTrustResult ResolveHistoricalTrust(

@@ -9,10 +9,10 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Channels;
 using Netclaw.Configuration;
+using Netclaw.Media;
 using Netclaw.Security;
 using SlackNet;
 using SlackNet.WebApi;
-using IOFile = System.IO.File;
 
 namespace Netclaw.Channels.Slack;
 
@@ -291,8 +291,9 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
     {
         var downloadUrl = file.UrlPrivateDownload ?? file.UrlPrivate!;
         var filename = file.Name ?? "attachment";
-        var mimeType = file.Mimetype ?? "application/octet-stream";
-        var category = AttachmentCategories.FromMime(mimeType);
+        var declaredMimeType = new DeclaredMimeType(file.Mimetype);
+        var provisionalMimeType = MimeTypeCatalog.NormalizeDeclaredForExtension(declaredMimeType.Value, Path.GetExtension(filename));
+        var category = MimeTypeCatalog.GetCategory(provisionalMimeType);
         var sourceKey = BuildHistoricalAttachmentSourceKey(file, downloadUrl);
 
         if (!policy.Allows(category))
@@ -303,7 +304,7 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
                 category,
                 audience);
             return [BuildHistoricalAttachmentRejected(
-                $"historical attachment ({mimeType}) category not allowed in {audience}")];
+                $"historical attachment ({declaredMimeType.Value}) category not allowed in {audience}")];
         }
 
         if (file.Size > policy.MaxFileBytes)
@@ -318,10 +319,10 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
         }
 
         if (HistoricalAttachmentInbox.TryGetExistingFile(inboxDir, filename, sourceKey, out var existingPath, out var existingSize))
-            return await BuildAcceptedAttachmentContentsAsync(
+            return await AttachmentIngressFormatting.BuildAcceptedContentsAsync(
                 existingPath,
                 filename,
-                mimeType,
+                declaredMimeType.Value,
                 category,
                 inlineImages,
                 existingSize,
@@ -380,7 +381,7 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
             scanResult = await _contentScanner.ScanFileAsync(
                 downloadResult.FilePath,
                 filename,
-                mimeType,
+                declaredMimeType.Value,
                 scanCts.Token);
         }
         catch (Exception ex)
@@ -403,6 +404,30 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
                 $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" was rejected by content scanning: {AttachmentIngressFormatting.EscapeQuoted(scanResult.Message ?? scanResult.Error?.ToString() ?? "unknown error")}")];
         }
 
+        if (scanResult.VerifiedMimeType is not { } verifiedMimeType)
+        {
+            _logger.LogWarning(
+                "Historical Slack attachment {Name} rejected: scanner did not return verified MIME",
+                filename);
+            AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
+            return [BuildHistoricalAttachmentRejected(
+                $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" could not be verified by content scanning")];
+        }
+
+        var verifiedMime = verifiedMimeType.MimeType;
+        var verifiedCategory = MimeTypeCatalog.GetCategory(verifiedMime);
+        if (!policy.Allows(verifiedCategory))
+        {
+            _logger.LogWarning(
+                "Historical Slack attachment {Name} rejected: verified category {Category} not allowed for {Audience}",
+                filename,
+                verifiedCategory,
+                audience);
+            AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
+            return [BuildHistoricalAttachmentRejected(
+                $"historical attachment ({verifiedMime.Value}) category not allowed in {audience}")];
+        }
+
         string inboxPath;
         try
         {
@@ -420,42 +445,14 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
                 $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" could not be saved to the session inbox")];
         }
 
-        return await BuildAcceptedAttachmentContentsAsync(
+        return await AttachmentIngressFormatting.BuildAcceptedContentsAsync(
             inboxPath,
             filename,
-            mimeType,
-            category,
+            verifiedMime.Value,
+            verifiedCategory,
             inlineImages,
             downloadResult.BytesWritten,
             cancellationToken);
-    }
-
-    private async Task<IReadOnlyList<AIContent>> BuildAcceptedAttachmentContentsAsync(
-        string inboxPath,
-        string filename,
-        string mimeType,
-        AttachmentCategory category,
-        bool inlineImages,
-        long size,
-        CancellationToken cancellationToken)
-    {
-        var relativePath = $"{SessionDirectoryHelper.InboxSubdirectory}/{Path.GetFileName(inboxPath)}";
-        var (inlined, note) = AttachmentIngressFormatting.ResolveInlineDecision(category, inlineImages);
-        var line = new TextContent(AttachmentIngressFormatting.BuildAttachmentLine(
-            filename,
-            mimeType,
-            size,
-            relativePath,
-            inlined,
-            note));
-
-        if (!inlined)
-        {
-            return [line];
-        }
-
-        var bytes = await IOFile.ReadAllBytesAsync(inboxPath, cancellationToken);
-        return [line, new DataContent(bytes, mimeType)];
     }
 
     private HistoricalTrustResult ResolveHistoricalTrust(SlackChannelId channelId, string senderId)

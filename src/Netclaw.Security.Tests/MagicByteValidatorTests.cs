@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Collections.Frozen;
+using Netclaw.Media;
 using Xunit;
 
 namespace Netclaw.Security.Tests;
@@ -331,6 +332,34 @@ public sealed class MagicByteValidatorTests
 
         Assert.False(result.IsAllowed);
         Assert.Equal(ContentScanError.UnrecognizedFileType, result.Error);
+    }
+
+    [Fact]
+    public void Validate_OctetStreamPngWithPngExtension_AllowedAndVerifiedAsPng()
+    {
+        var result = MagicByteValidator.Validate(PngHeader, "application/octet-stream", "photo.png");
+
+        Assert.True(result.IsAllowed);
+        Assert.Equal("image/png", result.VerifiedMimeType!.Value.Value);
+        Assert.Equal("image/png", result.DetectedMimeType!.Value.Value);
+    }
+
+    [Fact]
+    public void Validate_AllowedFile_ExposesVerifiedMimeType()
+    {
+        var result = MagicByteValidator.Validate(PdfHeader, "application/pdf", "report.pdf");
+
+        Assert.True(result.IsAllowed);
+        Assert.Equal("application/pdf", result.VerifiedMimeType!.Value.Value);
+    }
+
+    [Fact]
+    public void ContentPolicy_DefaultAllowlist_ComesFromMediaCatalogNativeValidationSet()
+    {
+        var catalogSet = MimeTypeCatalog.GetNativeSignatureValidatedMimeTypes()
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        Assert.True(catalogSet.SetEquals(ContentPolicy.DefaultAllowedMimeTypes));
     }
 
     [Fact]

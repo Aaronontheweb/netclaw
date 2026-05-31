@@ -15,6 +15,7 @@ using Netclaw.Actors.Reminders;
 using Netclaw.Channels;
 using Netclaw.Channels.Telemetry;
 using Netclaw.Configuration;
+using Netclaw.Media;
 using Netclaw.Security;
 using Netclaw.Tools;
 using IOPath = System.IO.Path;
@@ -1391,7 +1392,9 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         string stagingDir,
         CancellationToken cancellationToken)
     {
-        var category = AttachmentCategories.FromMime(file.MimeType);
+        var declaredMimeType = new DeclaredMimeType(file.MimeType);
+        var provisionalMimeType = MimeTypeCatalog.NormalizeDeclaredForExtension(declaredMimeType.Value, IOPath.GetExtension(file.Name));
+        var category = MimeTypeCatalog.GetCategory(provisionalMimeType);
 
         if (!policy.Allows(category))
         {
@@ -1482,7 +1485,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             using var scanCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             scanCts.CancelAfter(OperationTimeout);
             scanResult = await _dependencies.ContentScanner.ScanFileAsync(
-                downloadResult.FilePath, file.Name, file.MimeType, scanCts.Token);
+                downloadResult.FilePath, file.Name, declaredMimeType.Value, scanCts.Token);
         }
         catch (Exception ex)
         {
@@ -1512,6 +1515,29 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                 $"Content scanner rejected `{file.Name}`: {scanResult.Message ?? scanResult.Error?.ToString()}.");
         }
 
+        if (scanResult.VerifiedMimeType is not { } verifiedMimeType)
+        {
+            _log.Warning(
+                "mattermost_attachment_rejected name={Name} declaredMime={DeclaredMime} reason=missing-verified-mime",
+                file.Name, declaredMimeType.Value);
+            TryDeleteTemp(downloadResult.FilePath);
+            return new AttachmentIngestResult.Rejected(
+                $"Content scanner did not verify `{file.Name}`. Please try again later.");
+        }
+
+        var verifiedMime = verifiedMimeType.MimeType;
+        var verifiedCategory = MimeTypeCatalog.GetCategory(verifiedMime);
+        if (!policy.Allows(verifiedCategory))
+        {
+            _log.Warning(
+                "mattermost_attachment_rejected name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} audience={Audience} category={Category} reason=verified-category-not-allowed",
+                file.Name, declaredMimeType.Value, verifiedMime.Value, audience, verifiedCategory);
+            TryDeleteTemp(downloadResult.FilePath);
+            return new AttachmentIngestResult.Rejected(
+                $"`{file.Name}` ({verifiedCategory}) isn't allowed in {audience} channels. " +
+                "Please DM me if you want to share this class of file.");
+        }
+
         string inboxPath;
         try
         {
@@ -1537,24 +1563,20 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                 $"Couldn't save `{file.Name}` -- please try again later.");
         }
 
-        var (inlined, note) = AttachmentIngressFormatting.ResolveInlineDecision(category, inlineImages);
-
-        var relativePath = $"{SessionDirectoryHelper.InboxSubdirectory}/{IOPath.GetFileName(inboxPath)}";
-        var line = AttachmentIngressFormatting.BuildAttachmentLine(
-            file.Name, file.MimeType, downloadResult.BytesWritten, relativePath, inlined, note);
-
-        DataContent? inlineContent = null;
-        if (inlined)
-        {
-            var inlineBytes = await File.ReadAllBytesAsync(inboxPath, cancellationToken);
-            inlineContent = new DataContent(inlineBytes, file.MimeType);
-        }
+        var projection = await AttachmentIngressFormatting.BuildAcceptedProjectionAsync(
+            inboxPath,
+            file.Name,
+            verifiedMime.Value,
+            verifiedCategory,
+            inlineImages,
+            downloadResult.BytesWritten,
+            cancellationToken);
 
         _log.Info(
-            "mattermost_attachment_accepted name={Name} mime={Mime} size={Size} audience={Audience} category={Category} inlined={Inlined}",
-            file.Name, file.MimeType, downloadResult.BytesWritten, audience, category, inlined);
+            "mattermost_attachment_accepted name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} size={Size} category={Category} inlined={Inlined}",
+            file.Name, declaredMimeType.Value, verifiedMime.Value, downloadResult.BytesWritten, verifiedCategory, projection.Inlined);
 
-        return new AttachmentIngestResult.Accepted(line, inlineContent);
+        return new AttachmentIngestResult.Accepted(projection.Line, projection.InlineContent);
     }
 
     private void TryDeleteTemp(string tempPath)

@@ -3,7 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using Netclaw.Configuration;
+using Netclaw.Media;
 
 namespace Netclaw.Actors.Channels;
 

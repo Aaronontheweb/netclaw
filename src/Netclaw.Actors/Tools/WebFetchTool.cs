@@ -8,6 +8,7 @@ using System.Net;
 using System.Text;
 using HtmlAgilityPack;
 using Netclaw.Configuration;
+using Netclaw.Media;
 using Netclaw.Tools;
 
 namespace Netclaw.Actors.Tools;
@@ -158,11 +159,14 @@ public sealed partial class WebFetchTool : NetclawTool<WebFetchTool.Params>
     }
 
     internal static bool IsBinaryContentType(string contentType)
-        => contentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)
-        || contentType.StartsWith("audio/", StringComparison.OrdinalIgnoreCase)
-        || contentType.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
-        || contentType is "application/pdf" or "application/zip"
-            or "application/gzip" or "application/octet-stream";
+    {
+        if (string.IsNullOrWhiteSpace(contentType))
+            return false;
+
+        var mimeType = new MimeType(contentType);
+        return MimeTypeCatalog.GetContentKind(mimeType) == MediaContentKind.Binary
+               || mimeType.Value == MimeTypeCatalog.ApplicationOctetStream;
+    }
 
     /// <summary>
     /// Extract file extension from the URL path (e.g., /photo.png → .png).
@@ -186,15 +190,13 @@ public sealed partial class WebFetchTool : NetclawTool<WebFetchTool.Params>
     /// Fallback extension when the URL has no file extension.
     /// Covers common Content-Types; defaults to .bin (binary) or .txt (text).
     /// </summary>
-    internal static string GetFallbackExtension(string contentType, bool isBinary) => contentType switch
+    internal static string GetFallbackExtension(string contentType, bool isBinary)
     {
-        "application/pdf" => ".pdf",
-        "application/json" => ".json",
-        "text/csv" => ".csv",
-        "text/html" => ".html",
-        "text/markdown" => ".md",
-        _ => isBinary ? ".bin" : ".txt"
-    };
+        var extension = MimeTypeCatalog.ExtensionFor(contentType);
+        return extension != ".bin"
+            ? extension
+            : isBinary ? ".bin" : ".txt";
+    }
 
     private static async Task<string> ReadTextWithLimitAsync(HttpResponseMessage response, CancellationToken ct)
         => Encoding.UTF8.GetString(await ReadBytesWithLimitAsync(response, ct));
