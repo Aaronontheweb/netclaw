@@ -137,56 +137,45 @@ public static class AttachmentIngressPipeline
             return Reject($"`{name}` downloaded as zero bytes.");
         }
 
-        ContentScanResult scanResult;
-        try
+        var verification = await ContentVerification.ResolveAsync(
+            scanner, downloadResult.FilePath, name, declaredMimeType, policy, operationTimeout, cancellationToken);
+
+        if (verification is not ContentVerificationResult.Verified verified)
         {
-            using var scanCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            scanCts.CancelAfter(operationTimeout);
-            scanResult = await scanner.ScanFileAsync(
-                downloadResult.FilePath, name, declaredMimeType.Value, scanCts.Token);
-        }
-        catch (Exception ex)
-        {
-            log.Warning(ex,
-                channelName + "_attachment_rejected name={Name} mime={Mime} reason=scan-exception",
-                name, declaredMimeType.Value);
             TryDeleteTemp(log, downloadResult.FilePath);
-            return Reject($"Couldn't scan `{name}` — please try again later.");
+            switch (verification)
+            {
+                case ContentVerificationResult.ScanThrew st:
+                    log.Warning(st.Exception,
+                        channelName + "_attachment_rejected name={Name} mime={Mime} reason=scan-exception",
+                        name, declaredMimeType.Value);
+                    return Reject($"Couldn't scan `{name}` — please try again later.");
+
+                case ContentVerificationResult.ScanBlocked sb:
+                    log.Warning(
+                        channelName + "_attachment_rejected name={Name} mime={Mime} reason=scan-blocked error={ScanError} message={ScanMessage}",
+                        name, declaredMimeType.Value, sb.Error?.ToString(), sb.Message ?? sb.Error?.ToString());
+                    return sb.Error == ContentScanError.ScanFailure
+                        ? Reject($"Couldn't scan `{name}` — please try again later.")
+                        : Reject($"Content scanner rejected `{name}`: {sb.Message ?? sb.Error?.ToString()}.");
+
+                case ContentVerificationResult.MissingVerifiedMime:
+                    log.Warning(
+                        channelName + "_attachment_rejected name={Name} declaredMime={DeclaredMime} reason=missing-verified-mime",
+                        name, declaredMimeType.Value);
+                    return Reject($"Content scanner did not verify `{name}`. Please try again later.");
+
+                default:
+                    var notAllowed = (ContentVerificationResult.CategoryNotAllowed)verification;
+                    log.Warning(
+                        channelName + "_attachment_rejected name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} audience={Audience} category={Category} reason=verified-category-not-allowed",
+                        name, declaredMimeType.Value, notAllowed.MimeType.Value, audience, notAllowed.Category);
+                    return NotAllowed(name, notAllowed.Category, audience);
+            }
         }
 
-        if (!scanResult.IsAllowed)
-        {
-            log.Warning(
-                channelName + "_attachment_rejected name={Name} mime={Mime} reason=scan-blocked error={ScanError} message={ScanMessage}",
-                name, declaredMimeType.Value, scanResult.Error?.ToString(), scanResult.Message ?? scanResult.Error?.ToString());
-
-            TryDeleteTemp(log, downloadResult.FilePath);
-
-            if (scanResult.Error == ContentScanError.ScanFailure)
-                return Reject($"Couldn't scan `{name}` — please try again later.");
-
-            return Reject($"Content scanner rejected `{name}`: {scanResult.Message ?? scanResult.Error?.ToString()}.");
-        }
-
-        if (scanResult.VerifiedMimeType is not { } verifiedMimeType)
-        {
-            log.Warning(
-                channelName + "_attachment_rejected name={Name} declaredMime={DeclaredMime} reason=missing-verified-mime",
-                name, declaredMimeType.Value);
-            TryDeleteTemp(log, downloadResult.FilePath);
-            return Reject($"Content scanner did not verify `{name}`. Please try again later.");
-        }
-
-        var verifiedMime = verifiedMimeType.MimeType;
-        var verifiedCategory = MimeTypeCatalog.GetCategory(verifiedMime);
-        if (!policy.Allows(verifiedCategory))
-        {
-            log.Warning(
-                channelName + "_attachment_rejected name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} audience={Audience} category={Category} reason=verified-category-not-allowed",
-                name, declaredMimeType.Value, verifiedMime.Value, audience, verifiedCategory);
-            TryDeleteTemp(log, downloadResult.FilePath);
-            return NotAllowed(name, verifiedCategory, audience);
-        }
+        var verifiedMime = verified.MimeType;
+        var verifiedCategory = verified.Category;
 
         string inboxPath;
         try
