@@ -55,7 +55,6 @@ public sealed class HistoricalAttachmentIngressTests
                 ImagePolicy,
                 TimeSpan.FromSeconds(5),
                 NullLogger.Instance,
-                "Slack",
                 TestContext.Current.CancellationToken);
 
             var verified = Assert.IsType<HistoricalAttachmentIngress.ScanOutcome.Verified>(outcome);
@@ -85,7 +84,6 @@ public sealed class HistoricalAttachmentIngressTests
                 ImagePolicy,
                 TimeSpan.FromSeconds(5),
                 NullLogger.Instance,
-                "Slack",
                 TestContext.Current.CancellationToken);
 
             var rejected = Assert.IsType<HistoricalAttachmentIngress.ScanOutcome.Rejected>(outcome);
@@ -120,7 +118,6 @@ public sealed class HistoricalAttachmentIngressTests
                 pdfOnlyPolicy,
                 TimeSpan.FromSeconds(5),
                 NullLogger.Instance,
-                "Discord",
                 TestContext.Current.CancellationToken);
 
             var rejected = Assert.IsType<HistoricalAttachmentIngress.ScanOutcome.Rejected>(outcome);

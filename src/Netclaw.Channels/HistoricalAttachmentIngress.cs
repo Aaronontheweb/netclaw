@@ -52,7 +52,6 @@ public static class HistoricalAttachmentIngress
         ChannelAttachmentPolicy policy,
         TimeSpan scanTimeout,
         ILogger logger,
-        string channelLabel,
         CancellationToken cancellationToken)
     {
         var verification = await ContentVerification.ResolveAsync(
@@ -64,29 +63,29 @@ public static class HistoricalAttachmentIngress
                 return new ScanOutcome.Verified(verified.MimeType, verified.Category);
 
             case ContentVerificationResult.ScanThrew st:
-                logger.LogWarning(st.Exception, "Historical {Channel} attachment scan threw for {Name}", channelLabel, filename);
+                logger.LogWarning(st.Exception, "Historical attachment scan threw for {Name}", filename);
                 return new ScanOutcome.Rejected(BuildRejected(
                     $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" could not be scanned"));
 
             case ContentVerificationResult.ScanBlocked sb:
                 logger.LogWarning(
-                    "Historical {Channel} attachment {Name} rejected by scanner: {Error} {Message}",
-                    channelLabel, filename, sb.Error?.ToString(), sb.Message ?? string.Empty);
+                    "Historical attachment {Name} rejected by scanner: {Error} {Message}",
+                    filename, sb.Error?.ToString(), sb.Message ?? string.Empty);
                 return new ScanOutcome.Rejected(BuildRejected(
                     $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" was rejected by content scanning: {AttachmentIngressFormatting.EscapeQuoted(sb.Message ?? sb.Error?.ToString() ?? "unknown error")}"));
 
             case ContentVerificationResult.MissingVerifiedMime:
                 logger.LogWarning(
-                    "Historical {Channel} attachment {Name} rejected: scanner did not return verified MIME",
-                    channelLabel, filename);
+                    "Historical attachment {Name} rejected: scanner did not return verified MIME",
+                    filename);
                 return new ScanOutcome.Rejected(BuildRejected(
                     $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" could not be verified by content scanning"));
 
             default:
                 var notAllowed = (ContentVerificationResult.CategoryNotAllowed)verification;
                 logger.LogWarning(
-                    "Historical {Channel} attachment {Name} rejected: verified category {Category} not allowed for {Audience}",
-                    channelLabel, filename, notAllowed.Category, audience);
+                    "Historical attachment {Name} rejected: verified category {Category} not allowed for {Audience}",
+                    filename, notAllowed.Category, audience);
                 return new ScanOutcome.Rejected(BuildRejected(
                     $"historical attachment ({notAllowed.MimeType.Value}) category not allowed in {audience}"));
         }

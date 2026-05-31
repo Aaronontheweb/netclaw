@@ -192,7 +192,7 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
             if (message.Attachments.Count > attachmentPolicy.MaxFilesPerMessage)
             {
                 _logger.LogWarning(
-                    "Skipping {Count} historical Discord attachments on thread {ThreadId}; limit is {Limit} for audience {Audience}",
+                    "Skipping {Count} historical attachments on thread {ThreadId}; limit is {Limit} for audience {Audience}",
                     message.Attachments.Count,
                     threadChannelId,
                     attachmentPolicy.MaxFilesPerMessage,
@@ -259,7 +259,7 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         if (!policy.Allows(category))
         {
             _logger.LogWarning(
-                "Historical Discord attachment {Name} rejected: category {Category} not allowed for {Audience}",
+                "Historical attachment {Name} rejected: category {Category} not allowed for {Audience}",
                 file.Name,
                 category,
                 audience);
@@ -270,7 +270,7 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         if (file.Size > policy.MaxFileBytes)
         {
             _logger.LogWarning(
-                "Historical Discord attachment {Name} rejected: size {Size} exceeds {Limit}",
+                "Historical attachment {Name} rejected: size {Size} exceeds {Limit}",
                 file.Name,
                 file.Size,
                 policy.MaxFileBytes);
@@ -285,7 +285,7 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
             // serve the unverified declared MIME.
             var cached = await HistoricalAttachmentIngress.ScanAndVerifyAsync(
                 _contentScanner, existingPath, file.Name, declaredMimeType,
-                audience, policy, ContentScanTimeout, _logger, "Discord", cancellationToken);
+                audience, policy, ContentScanTimeout, _logger, cancellationToken);
             return cached is HistoricalAttachmentIngress.ScanOutcome.Verified cachedOk
                 ? await AttachmentIngressFormatting.BuildAcceptedContentsAsync(
                     existingPath, file.Name, cachedOk.MimeType.Value, cachedOk.Category,
@@ -296,7 +296,7 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         if (!DiscordAttachmentUrlTrust.IsAllowedAttachmentDomain(file.Url))
         {
             _logger.LogWarning(
-                "Historical Discord attachment {Name} rejected: untrusted domain {Url}",
+                "Historical attachment {Name} rejected: untrusted domain {Url}",
                 file.Name,
                 file.Url);
             return [BuildHistoricalAttachmentRejected(
@@ -320,7 +320,7 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         catch (AttachmentTooLargeException ex)
         {
             _logger.LogWarning(
-                "Historical Discord attachment {Name} rejected during download: {Size} exceeds {Limit}",
+                "Historical attachment {Name} rejected during download: {Size} exceeds {Limit}",
                 file.Name,
                 ex.BytesReceived,
                 ex.MaxBytes);
@@ -329,13 +329,13 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         }
         catch (OperationCanceledException)
         {
-            _logger.LogWarning("Timed out downloading historical Discord attachment {Name}", file.Name);
+            _logger.LogWarning("Timed out downloading historical attachment {Name}", file.Name);
             return [BuildHistoricalAttachmentRejected(
                 $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(file.Name)}\" timed out during download")];
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed downloading historical Discord attachment {Name}", file.Name);
+            _logger.LogWarning(ex, "Failed downloading historical attachment {Name}", file.Name);
             return [BuildHistoricalAttachmentRejected(
                 $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(file.Name)}\" could not be downloaded")];
         }
@@ -349,7 +349,7 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
 
         var scanOutcome = await HistoricalAttachmentIngress.ScanAndVerifyAsync(
             _contentScanner, downloadResult.FilePath, file.Name, declaredMimeType,
-            audience, policy, ContentScanTimeout, _logger, "Discord", cancellationToken);
+            audience, policy, ContentScanTimeout, _logger, cancellationToken);
         if (scanOutcome is HistoricalAttachmentIngress.ScanOutcome.Rejected rejected)
         {
             AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
@@ -371,7 +371,7 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to promote historical Discord attachment {Name} into inbox", file.Name);
+            _logger.LogWarning(ex, "Failed to promote historical attachment {Name} into inbox", file.Name);
             AttachmentStagingCleanup.TryDelete(downloadResult.FilePath, _logger);
             return [BuildHistoricalAttachmentRejected(
                 $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(file.Name)}\" could not be saved to the session inbox")];
