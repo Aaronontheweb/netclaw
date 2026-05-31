@@ -504,13 +504,13 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
 
             switch (attachmentResult)
             {
-                case AttachmentIngestResult.Accepted accepted:
+                case AttachmentIngestOutcome.Accepted accepted:
                     acceptedLines.Add(accepted.Line);
                     if (accepted.Inline is { } inline)
                         dataContents.Add(inline);
                     break;
 
-                case AttachmentIngestResult.Rejected rejected:
+                case AttachmentIngestOutcome.Rejected rejected:
                     rejections.Add(rejected.UserFacingReason);
                     break;
             }
@@ -531,7 +531,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         }
     }
 
-    private async Task<AttachmentIngestResult> TryIngestSingleAttachmentAsync(
+    private Task<AttachmentIngestOutcome> TryIngestSingleAttachmentAsync(
         SlackFileReference file,
         TrustAudience audience,
         ChannelAttachmentPolicy policy,
@@ -539,201 +539,19 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         string inboxDir,
         string stagingDir,
         CancellationToken cancellationToken)
-    {
-        var declaredMimeType = new DeclaredMimeType(file.MimeType);
-        var provisionalMimeType = MimeTypeCatalog.NormalizeDeclaredForExtension(declaredMimeType.Value, Path.GetExtension(file.Name));
-        var category = MimeTypeCatalog.GetCategory(provisionalMimeType);
-
-        // Pre-download policy gates — these all operate on Slack-reported
-        // metadata and avoid burning bandwidth on files that can't be accepted.
-        if (!policy.Allows(category))
-        {
-            _log.Warning(
-                "slack_attachment_rejected name={Name} mime={Mime} audience={Audience} category={Category} reason=category-not-allowed",
-                file.Name, file.MimeType, audience, category);
-            return new AttachmentIngestResult.Rejected(
-                $"`{file.Name}` ({category}) isn't allowed in {audience} channels. " +
-                "Please DM me if you want to share this class of file.");
-        }
-
-        if (file.Size > policy.MaxFileBytes)
-        {
-            _log.Warning(
-                "slack_attachment_rejected name={Name} mime={Mime} audience={Audience} size={Size} limit={Limit} reason=too-large",
-                file.Name, file.MimeType, audience, file.Size, policy.MaxFileBytes);
-            return new AttachmentIngestResult.Rejected(
-                $"`{file.Name}` ({FormatBytes(file.Size)}) exceeds the {FormatBytes(policy.MaxFileBytes)} per-file limit.");
-        }
-
-        AttachmentDownloadResult downloadResult;
-        try
-        {
-            using var downloadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            downloadCts.CancelAfter(OperationTimeout);
-            downloadResult = await DownloadSlackFileToDirectoryAsync(
-                file, stagingDir, policy.MaxFileBytes, downloadCts.Token);
-        }
-        catch (AttachmentTooLargeException ex)
-        {
-            _log.Warning(
-                "slack_attachment_rejected name={Name} mime={Mime} audience={Audience} size={Size} limit={Limit} reason=too-large-during-download",
-                file.Name, file.MimeType, audience, ex.BytesReceived, ex.MaxBytes);
-            return new AttachmentIngestResult.Rejected(
-                $"`{file.Name}` ({FormatBytes(ex.BytesReceived)}) exceeds the {FormatBytes(ex.MaxBytes)} per-file limit.");
-        }
-        catch (OperationCanceledException ex)
-        {
-            _log.Warning(ex,
-                "slack_attachment_rejected name={Name} mime={Mime} reason=download-timeout",
-                file.Name, file.MimeType);
-            return new AttachmentIngestResult.Rejected(
-                $"Timed out downloading `{file.Name}`. Please try again.");
-        }
-        catch (Exception ex)
-        {
-            _log.Warning(ex,
-                "slack_attachment_rejected name={Name} mime={Mime} reason=download-failed",
-                file.Name, file.MimeType);
-            return new AttachmentIngestResult.Rejected(
-                $"Couldn't download `{file.Name}` — please try again later.");
-        }
-
-        if (downloadResult.BytesWritten == 0)
-        {
-            _log.Warning(
-                "slack_attachment_rejected name={Name} mime={Mime} reason=empty-download",
-                file.Name, file.MimeType);
-            TryDeleteTemp(downloadResult.FilePath);
-            return new AttachmentIngestResult.Rejected(
-                $"`{file.Name}` downloaded as zero bytes.");
-        }
-
-        ContentScanResult scanResult;
-        try
-        {
-            using var scanCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            scanCts.CancelAfter(OperationTimeout);
-            scanResult = await _dependencies.ContentScanner.ScanFileAsync(
-                downloadResult.FilePath, file.Name, declaredMimeType.Value, scanCts.Token);
-        }
-        catch (Exception ex)
-        {
-            _log.Warning(ex,
-                "slack_attachment_rejected name={Name} mime={Mime} reason=scan-exception",
-                file.Name, file.MimeType);
-            TryDeleteTemp(downloadResult.FilePath);
-            return new AttachmentIngestResult.Rejected(
-                $"Couldn't scan `{file.Name}` — please try again later.");
-        }
-
-        if (!scanResult.IsAllowed)
-        {
-            _log.Warning(
-                "slack_attachment_rejected name={Name} mime={Mime} reason=scan-blocked error={ScanError} message={ScanMessage}",
-                file.Name, file.MimeType, scanResult.Error?.ToString(), scanResult.Message ?? scanResult.Error?.ToString());
-
-            TryDeleteTemp(downloadResult.FilePath);
-
-            if (scanResult.Error == ContentScanError.ScanFailure)
-            {
-                return new AttachmentIngestResult.Rejected(
-                    $"Couldn't scan `{file.Name}` — please try again later.");
-            }
-
-            return new AttachmentIngestResult.Rejected(
-                $"Content scanner rejected `{file.Name}`: {scanResult.Message ?? scanResult.Error?.ToString()}.");
-        }
-
-        if (scanResult.VerifiedMimeType is not { } verifiedMimeType)
-        {
-            _log.Warning(
-                "slack_attachment_rejected name={Name} declaredMime={DeclaredMime} reason=missing-verified-mime",
-                file.Name, declaredMimeType.Value);
-            TryDeleteTemp(downloadResult.FilePath);
-            return new AttachmentIngestResult.Rejected(
-                $"Content scanner did not verify `{file.Name}`. Please try again later.");
-        }
-
-        var verifiedMime = verifiedMimeType.MimeType;
-        var verifiedCategory = MimeTypeCatalog.GetCategory(verifiedMime);
-        if (!policy.Allows(verifiedCategory))
-        {
-            _log.Warning(
-                "slack_attachment_rejected name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} audience={Audience} category={Category} reason=verified-category-not-allowed",
-                file.Name, declaredMimeType.Value, verifiedMime.Value, audience, verifiedCategory);
-            TryDeleteTemp(downloadResult.FilePath);
-            return new AttachmentIngestResult.Rejected(
-                $"`{file.Name}` ({verifiedCategory}) isn't allowed in {audience} channels. " +
-                "Please DM me if you want to share this class of file.");
-        }
-
-        // Move temp file to final inbox path with collision suffixing.
-        string inboxPath;
-        try
-        {
-            inboxPath = InboxWriter.SanitizeReserveAndMove(
-                inboxDir, file.Name, downloadResult.FilePath);
-        }
-        catch (InboxWriter.CollisionExhaustedException ex)
-        {
-            _log.Warning(ex,
-                "slack_attachment_rejected name={Name} reason=collision-exhausted",
-                file.Name);
-            TryDeleteTemp(downloadResult.FilePath);
-            return new AttachmentIngestResult.Rejected(
-                $"Too many attachments named `{file.Name}` in this session — please rename and try again.");
-        }
-        catch (Exception ex)
-        {
-            _log.Error(ex,
-                "slack_attachment_rejected name={Name} reason=inbox-write-failed",
-                file.Name);
-            TryDeleteTemp(downloadResult.FilePath);
-            return new AttachmentIngestResult.Rejected(
-                $"Couldn't save `{file.Name}` — please try again later.");
-        }
-
-        var projection = await AttachmentIngressFormatting.BuildAcceptedProjectionAsync(
-            inboxPath,
-            file.Name,
-            verifiedMime.Value,
-            verifiedCategory,
+        => AttachmentIngressPipeline.IngestAsync(
+            "slack",
+            new AttachmentIngressRequest(file.Name, file.MimeType, file.Size),
+            audience,
+            policy,
             inlineImages,
-            downloadResult.BytesWritten,
+            inboxDir,
+            stagingDir,
+            OperationTimeout,
+            _dependencies.ContentScanner,
+            _log,
+            (staging, maxBytes, ct) => DownloadSlackFileToDirectoryAsync(file, staging, maxBytes, ct),
             cancellationToken);
-
-        _log.Info(
-            "slack_attachment_accepted name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} size={Size} category={Category} inlined={Inlined}",
-            file.Name, declaredMimeType.Value, verifiedMime.Value, downloadResult.BytesWritten, verifiedCategory, projection.Inlined);
-
-        return new AttachmentIngestResult.Accepted(projection.Line, projection.InlineContent);
-    }
-
-    /// <summary>
-    /// Formats a single <c>[attachment]</c> announcement line in the
-    /// canonical cross-channel shape defined in netclaw-input-adapters.
-    /// </summary>
-    private void TryDeleteTemp(string tempPath)
-    {
-        try
-        {
-            if (File.Exists(tempPath))
-                File.Delete(tempPath);
-        }
-        catch (Exception ex)
-        {
-            _log.Error(ex, "Failed to clean up staged attachment file {Path}", tempPath);
-        }
-    }
-
-    private static string FormatBytes(long size) => AttachmentIngressFormatting.FormatBytes(size);
-
-    private abstract record AttachmentIngestResult
-    {
-        public sealed record Accepted(string Line, DataContent? Inline) : AttachmentIngestResult;
-
-        public sealed record Rejected(string UserFacingReason) : AttachmentIngestResult;
-    }
 
     private SessionPipelineOptions BuildOptions() => new()
     {

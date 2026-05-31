@@ -1,0 +1,250 @@
+// -----------------------------------------------------------------------
+// <copyright file="AttachmentIngressPipeline.cs" company="Petabridge, LLC">
+//      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
+// </copyright>
+// -----------------------------------------------------------------------
+using Akka.Event;
+using Microsoft.Extensions.AI;
+using Netclaw.Actors.Protocol;
+using Netclaw.Configuration;
+using Netclaw.Media;
+using Netclaw.Security;
+
+namespace Netclaw.Channels;
+
+/// <summary>
+/// Outcome of attempting to ingest a single inbound attachment. Shared across
+/// Slack, Discord, and Mattermost so the accept/reject contract — and the
+/// user-facing copy — stays identical regardless of source channel.
+/// </summary>
+public abstract record AttachmentIngestOutcome
+{
+    public sealed record Accepted(string Line, DataContent? Inline) : AttachmentIngestOutcome;
+
+    public sealed record Rejected(string UserFacingReason) : AttachmentIngestOutcome;
+}
+
+/// <summary>
+/// Channel-reported facts about one inbound attachment, before any download or
+/// scan. <see cref="DeclaredMimeType"/> is transport metadata and is treated as
+/// untrusted — the canonical category used for the accept gate comes from the
+/// content scanner's verified MIME, not this value.
+/// </summary>
+public readonly record struct AttachmentIngressRequest(string Name, string DeclaredMimeType, long Size);
+
+/// <summary>
+/// Downloads the attachment bytes into <paramref name="stagingDir"/>, honoring
+/// the per-policy byte ceiling <paramref name="maxBytes"/>. Channel-specific:
+/// each platform supplies its own URL/auth handling. May throw
+/// <see cref="AttachmentTooLargeException"/> when the stream exceeds the limit.
+/// </summary>
+public delegate Task<AttachmentDownloadResult> AttachmentStagingDownload(
+    string stagingDir, long maxBytes, CancellationToken cancellationToken);
+
+/// <summary>
+/// Shared inbound-attachment ingress pipeline for chat channels. Owns the
+/// security-sensitive orchestration that is identical across platforms:
+/// provisional audience gate, size gate, download error handling, content
+/// scan, verified-MIME requirement, verified-category re-gate, inbox write,
+/// and capability-gated inlining. Platform code supplies only the parts that
+/// genuinely differ — URL/auth trust (via <c>preDownloadGate</c>) and the
+/// download mechanism (via <see cref="AttachmentStagingDownload"/>).
+/// </summary>
+public static class AttachmentIngressPipeline
+{
+    public static async Task<AttachmentIngestOutcome> IngestAsync(
+        string channelName,
+        AttachmentIngressRequest request,
+        TrustAudience audience,
+        ChannelAttachmentPolicy policy,
+        bool inlineImages,
+        string inboxDir,
+        string stagingDir,
+        TimeSpan operationTimeout,
+        IContentScanner scanner,
+        ILoggingAdapter log,
+        AttachmentStagingDownload download,
+        CancellationToken cancellationToken,
+        Func<string?>? preDownloadGate = null)
+    {
+        var name = request.Name;
+        var declaredMimeType = new DeclaredMimeType(request.DeclaredMimeType);
+
+        // Provisional pre-download gate: declared MIME is corrected by extension
+        // only to avoid burning bandwidth on files that obviously can't be
+        // accepted. The authoritative gate runs on the scanner's verified MIME
+        // after download.
+        var provisionalMimeType = MimeTypeCatalog.NormalizeDeclaredForExtension(
+            declaredMimeType.Value, Path.GetExtension(name));
+        var category = MimeTypeCatalog.GetCategory(provisionalMimeType);
+
+        if (!policy.Allows(category))
+        {
+            log.Warning(
+                channelName + "_attachment_rejected name={Name} mime={Mime} audience={Audience} category={Category} reason=category-not-allowed",
+                name, declaredMimeType.Value, audience, category);
+            return NotAllowed(name, category, audience);
+        }
+
+        if (request.Size > policy.MaxFileBytes)
+        {
+            log.Warning(
+                channelName + "_attachment_rejected name={Name} mime={Mime} audience={Audience} size={Size} limit={Limit} reason=too-large",
+                name, declaredMimeType.Value, audience, request.Size, policy.MaxFileBytes);
+            return Reject($"`{name}` ({FormatBytes(request.Size)}) exceeds the {FormatBytes(policy.MaxFileBytes)} per-file limit.");
+        }
+
+        // Platform-specific URL/auth trust. The gate logs its own structured
+        // warning and returns the user-facing rejection copy.
+        if (preDownloadGate?.Invoke() is { } gateRejection)
+            return Reject(gateRejection);
+
+        AttachmentDownloadResult downloadResult;
+        try
+        {
+            using var downloadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            downloadCts.CancelAfter(operationTimeout);
+            downloadResult = await download(stagingDir, policy.MaxFileBytes, downloadCts.Token);
+        }
+        catch (AttachmentTooLargeException ex)
+        {
+            log.Warning(
+                channelName + "_attachment_rejected name={Name} mime={Mime} audience={Audience} size={Size} limit={Limit} reason=too-large-during-download",
+                name, declaredMimeType.Value, audience, ex.BytesReceived, ex.MaxBytes);
+            return Reject($"`{name}` ({FormatBytes(ex.BytesReceived)}) exceeds the {FormatBytes(ex.MaxBytes)} per-file limit.");
+        }
+        catch (OperationCanceledException ex)
+        {
+            log.Warning(ex,
+                channelName + "_attachment_rejected name={Name} mime={Mime} reason=download-timeout",
+                name, declaredMimeType.Value);
+            return Reject($"Timed out downloading `{name}`. Please try again.");
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex,
+                channelName + "_attachment_rejected name={Name} mime={Mime} reason=download-failed",
+                name, declaredMimeType.Value);
+            return Reject($"Couldn't download `{name}` — please try again later.");
+        }
+
+        if (downloadResult.BytesWritten == 0)
+        {
+            log.Warning(
+                channelName + "_attachment_rejected name={Name} mime={Mime} reason=empty-download",
+                name, declaredMimeType.Value);
+            TryDeleteTemp(log, downloadResult.FilePath);
+            return Reject($"`{name}` downloaded as zero bytes.");
+        }
+
+        ContentScanResult scanResult;
+        try
+        {
+            using var scanCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            scanCts.CancelAfter(operationTimeout);
+            scanResult = await scanner.ScanFileAsync(
+                downloadResult.FilePath, name, declaredMimeType.Value, scanCts.Token);
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex,
+                channelName + "_attachment_rejected name={Name} mime={Mime} reason=scan-exception",
+                name, declaredMimeType.Value);
+            TryDeleteTemp(log, downloadResult.FilePath);
+            return Reject($"Couldn't scan `{name}` — please try again later.");
+        }
+
+        if (!scanResult.IsAllowed)
+        {
+            log.Warning(
+                channelName + "_attachment_rejected name={Name} mime={Mime} reason=scan-blocked error={ScanError} message={ScanMessage}",
+                name, declaredMimeType.Value, scanResult.Error?.ToString(), scanResult.Message ?? scanResult.Error?.ToString());
+
+            TryDeleteTemp(log, downloadResult.FilePath);
+
+            if (scanResult.Error == ContentScanError.ScanFailure)
+                return Reject($"Couldn't scan `{name}` — please try again later.");
+
+            return Reject($"Content scanner rejected `{name}`: {scanResult.Message ?? scanResult.Error?.ToString()}.");
+        }
+
+        if (scanResult.VerifiedMimeType is not { } verifiedMimeType)
+        {
+            log.Warning(
+                channelName + "_attachment_rejected name={Name} declaredMime={DeclaredMime} reason=missing-verified-mime",
+                name, declaredMimeType.Value);
+            TryDeleteTemp(log, downloadResult.FilePath);
+            return Reject($"Content scanner did not verify `{name}`. Please try again later.");
+        }
+
+        var verifiedMime = verifiedMimeType.MimeType;
+        var verifiedCategory = MimeTypeCatalog.GetCategory(verifiedMime);
+        if (!policy.Allows(verifiedCategory))
+        {
+            log.Warning(
+                channelName + "_attachment_rejected name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} audience={Audience} category={Category} reason=verified-category-not-allowed",
+                name, declaredMimeType.Value, verifiedMime.Value, audience, verifiedCategory);
+            TryDeleteTemp(log, downloadResult.FilePath);
+            return NotAllowed(name, verifiedCategory, audience);
+        }
+
+        string inboxPath;
+        try
+        {
+            inboxPath = InboxWriter.SanitizeReserveAndMove(inboxDir, name, downloadResult.FilePath);
+        }
+        catch (InboxWriter.CollisionExhaustedException ex)
+        {
+            log.Warning(ex,
+                channelName + "_attachment_rejected name={Name} reason=collision-exhausted",
+                name);
+            TryDeleteTemp(log, downloadResult.FilePath);
+            return Reject($"Too many attachments named `{name}` in this session — please rename and try again.");
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex,
+                channelName + "_attachment_rejected name={Name} reason=inbox-write-failed",
+                name);
+            TryDeleteTemp(log, downloadResult.FilePath);
+            return Reject($"Couldn't save `{name}` — please try again later.");
+        }
+
+        var projection = await AttachmentIngressFormatting.BuildAcceptedProjectionAsync(
+            inboxPath,
+            name,
+            verifiedMime.Value,
+            verifiedCategory,
+            inlineImages,
+            downloadResult.BytesWritten,
+            cancellationToken);
+
+        log.Info(
+            channelName + "_attachment_accepted name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} size={Size} category={Category} inlined={Inlined}",
+            name, declaredMimeType.Value, verifiedMime.Value, downloadResult.BytesWritten, verifiedCategory, projection.Inlined);
+
+        return new AttachmentIngestOutcome.Accepted(projection.Line, projection.InlineContent);
+    }
+
+    private static AttachmentIngestOutcome.Rejected Reject(string reason) => new(reason);
+
+    private static AttachmentIngestOutcome.Rejected NotAllowed(
+        string name, AttachmentCategory category, TrustAudience audience) =>
+        new($"`{name}` ({category}) isn't allowed in {audience} channels. " +
+            "Please DM me if you want to share this class of file.");
+
+    private static string FormatBytes(long size) => AttachmentIngressFormatting.FormatBytes(size);
+
+    private static void TryDeleteTemp(ILoggingAdapter log, string tempPath)
+    {
+        try
+        {
+            if (File.Exists(tempPath))
+                File.Delete(tempPath);
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, "Failed to clean up staged attachment file {Path}", tempPath);
+        }
+    }
+}

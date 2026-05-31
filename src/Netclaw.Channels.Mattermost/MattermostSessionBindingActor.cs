@@ -1356,13 +1356,13 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
 
             switch (attachmentResult)
             {
-                case AttachmentIngestResult.Accepted accepted:
+                case AttachmentIngestOutcome.Accepted accepted:
                     acceptedLines.Add(accepted.Line);
                     if (accepted.Inline is { } inline)
                         dataContents.Add(inline);
                     break;
 
-                case AttachmentIngestResult.Rejected rejected:
+                case AttachmentIngestOutcome.Rejected rejected:
                     rejections.Add(rejected.UserFacingReason);
                     break;
             }
@@ -1383,7 +1383,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         }
     }
 
-    private async Task<AttachmentIngestResult> TryIngestSingleAttachmentAsync(
+    private Task<AttachmentIngestOutcome> TryIngestSingleAttachmentAsync(
         MattermostFileReference file,
         TrustAudience audience,
         ChannelAttachmentPolicy policy,
@@ -1391,214 +1391,43 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         string inboxDir,
         string stagingDir,
         CancellationToken cancellationToken)
-    {
-        var declaredMimeType = new DeclaredMimeType(file.MimeType);
-        var provisionalMimeType = MimeTypeCatalog.NormalizeDeclaredForExtension(declaredMimeType.Value, IOPath.GetExtension(file.Name));
-        var category = MimeTypeCatalog.GetCategory(provisionalMimeType);
-
-        if (!policy.Allows(category))
-        {
-            _log.Warning(
-                "mattermost_attachment_rejected name={Name} mime={Mime} audience={Audience} category={Category} reason=category-not-allowed",
-                file.Name, file.MimeType, audience, category);
-            return new AttachmentIngestResult.Rejected(
-                $"`{file.Name}` ({category}) isn't allowed in {audience} channels. " +
-                "Please DM me if you want to share this class of file.");
-        }
-
-        if (file.Size > policy.MaxFileBytes)
-        {
-            _log.Warning(
-                "mattermost_attachment_rejected name={Name} mime={Mime} audience={Audience} size={Size} limit={Limit} reason=too-large",
-                file.Name, file.MimeType, audience, file.Size, policy.MaxFileBytes);
-            return new AttachmentIngestResult.Rejected(
-                $"`{file.Name}` ({FormatBytes(file.Size)}) exceeds the {FormatBytes(policy.MaxFileBytes)} per-file limit.");
-        }
-
-        // Mattermost attachment URLs must originate from the configured server.
-        if (string.IsNullOrEmpty(_dependencies.ServerUrl))
-        {
-            _log.Warning(
-                "mattermost_attachment_rejected name={Name} reason=no-server-url-configured",
-                file.Name);
-            return new AttachmentIngestResult.Rejected(
-                $"`{file.Name}` was rejected because no Mattermost server URL is configured for URL trust validation.");
-        }
-
-        if (!MattermostAttachmentUrlTrust.IsAllowedAttachmentUrl(file.Url, _dependencies.ServerUrl))
-        {
-            _log.Warning(
-                "mattermost_attachment_rejected name={Name} url={Url} reason=untrusted-url",
-                file.Name, file.Url);
-            return new AttachmentIngestResult.Rejected(
-                $"`{file.Name}` has an untrusted URL and was skipped.");
-        }
-
-        AttachmentDownloadResult downloadResult;
-        try
-        {
-            using var downloadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            downloadCts.CancelAfter(OperationTimeout);
-            downloadResult = await StreamingAttachmentDownloader.DownloadToFileAsync(
-                _dependencies.HttpClient!, file.Url, configureRequest: null,
-                stagingDir, policy.MaxFileBytes, downloadCts.Token,
-                (ex, path) => _log.Error(ex, "Failed to clean up staged download file {0}", path));
-        }
-        catch (AttachmentTooLargeException ex)
-        {
-            _log.Warning(
-                "mattermost_attachment_rejected name={Name} mime={Mime} audience={Audience} size={Size} limit={Limit} reason=too-large-during-download",
-                file.Name, file.MimeType, audience, ex.BytesReceived, ex.MaxBytes);
-            return new AttachmentIngestResult.Rejected(
-                $"`{file.Name}` ({FormatBytes(ex.BytesReceived)}) exceeds the {FormatBytes(ex.MaxBytes)} per-file limit.");
-        }
-        catch (OperationCanceledException ex)
-        {
-            _log.Warning(ex,
-                "mattermost_attachment_rejected name={Name} mime={Mime} reason=download-timeout",
-                file.Name, file.MimeType);
-            return new AttachmentIngestResult.Rejected(
-                $"Timed out downloading `{file.Name}`. Please try again.");
-        }
-        catch (Exception ex)
-        {
-            _log.Warning(ex,
-                "mattermost_attachment_rejected name={Name} mime={Mime} reason=download-failed",
-                file.Name, file.MimeType);
-            return new AttachmentIngestResult.Rejected(
-                $"Couldn't download `{file.Name}` -- please try again later.");
-        }
-
-        if (downloadResult.BytesWritten == 0)
-        {
-            _log.Warning(
-                "mattermost_attachment_rejected name={Name} mime={Mime} reason=empty-download",
-                file.Name, file.MimeType);
-            TryDeleteTemp(downloadResult.FilePath);
-            return new AttachmentIngestResult.Rejected(
-                $"`{file.Name}` downloaded as zero bytes.");
-        }
-
-        ContentScanResult scanResult;
-        try
-        {
-            using var scanCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            scanCts.CancelAfter(OperationTimeout);
-            scanResult = await _dependencies.ContentScanner.ScanFileAsync(
-                downloadResult.FilePath, file.Name, declaredMimeType.Value, scanCts.Token);
-        }
-        catch (Exception ex)
-        {
-            _log.Warning(ex,
-                "mattermost_attachment_rejected name={Name} mime={Mime} reason=scan-exception",
-                file.Name, file.MimeType);
-            TryDeleteTemp(downloadResult.FilePath);
-            return new AttachmentIngestResult.Rejected(
-                $"Couldn't scan `{file.Name}` -- please try again later.");
-        }
-
-        if (!scanResult.IsAllowed)
-        {
-            _log.Warning(
-                "mattermost_attachment_rejected name={Name} mime={Mime} reason=scan-blocked error={ScanError} message={ScanMessage}",
-                file.Name, file.MimeType, scanResult.Error?.ToString(), scanResult.Message ?? scanResult.Error?.ToString());
-
-            TryDeleteTemp(downloadResult.FilePath);
-
-            if (scanResult.Error == ContentScanError.ScanFailure)
-            {
-                return new AttachmentIngestResult.Rejected(
-                    $"Couldn't scan `{file.Name}` -- please try again later.");
-            }
-
-            return new AttachmentIngestResult.Rejected(
-                $"Content scanner rejected `{file.Name}`: {scanResult.Message ?? scanResult.Error?.ToString()}.");
-        }
-
-        if (scanResult.VerifiedMimeType is not { } verifiedMimeType)
-        {
-            _log.Warning(
-                "mattermost_attachment_rejected name={Name} declaredMime={DeclaredMime} reason=missing-verified-mime",
-                file.Name, declaredMimeType.Value);
-            TryDeleteTemp(downloadResult.FilePath);
-            return new AttachmentIngestResult.Rejected(
-                $"Content scanner did not verify `{file.Name}`. Please try again later.");
-        }
-
-        var verifiedMime = verifiedMimeType.MimeType;
-        var verifiedCategory = MimeTypeCatalog.GetCategory(verifiedMime);
-        if (!policy.Allows(verifiedCategory))
-        {
-            _log.Warning(
-                "mattermost_attachment_rejected name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} audience={Audience} category={Category} reason=verified-category-not-allowed",
-                file.Name, declaredMimeType.Value, verifiedMime.Value, audience, verifiedCategory);
-            TryDeleteTemp(downloadResult.FilePath);
-            return new AttachmentIngestResult.Rejected(
-                $"`{file.Name}` ({verifiedCategory}) isn't allowed in {audience} channels. " +
-                "Please DM me if you want to share this class of file.");
-        }
-
-        string inboxPath;
-        try
-        {
-            inboxPath = InboxWriter.SanitizeReserveAndMove(
-                inboxDir, file.Name, downloadResult.FilePath);
-        }
-        catch (InboxWriter.CollisionExhaustedException ex)
-        {
-            _log.Warning(ex,
-                "mattermost_attachment_rejected name={Name} reason=collision-exhausted",
-                file.Name);
-            TryDeleteTemp(downloadResult.FilePath);
-            return new AttachmentIngestResult.Rejected(
-                $"Too many attachments named `{file.Name}` in this session -- please rename and try again.");
-        }
-        catch (Exception ex)
-        {
-            _log.Error(ex,
-                "mattermost_attachment_rejected name={Name} reason=inbox-write-failed",
-                file.Name);
-            TryDeleteTemp(downloadResult.FilePath);
-            return new AttachmentIngestResult.Rejected(
-                $"Couldn't save `{file.Name}` -- please try again later.");
-        }
-
-        var projection = await AttachmentIngressFormatting.BuildAcceptedProjectionAsync(
-            inboxPath,
-            file.Name,
-            verifiedMime.Value,
-            verifiedCategory,
+        => AttachmentIngressPipeline.IngestAsync(
+            "mattermost",
+            new AttachmentIngressRequest(file.Name, file.MimeType, file.Size),
+            audience,
+            policy,
             inlineImages,
-            downloadResult.BytesWritten,
-            cancellationToken);
+            inboxDir,
+            stagingDir,
+            OperationTimeout,
+            _dependencies.ContentScanner,
+            _log,
+            (staging, maxBytes, ct) => StreamingAttachmentDownloader.DownloadToFileAsync(
+                _dependencies.HttpClient!, file.Url, configureRequest: null,
+                staging, maxBytes, ct,
+                (ex, path) => _log.Error(ex, "Failed to clean up staged download file {0}", path)),
+            cancellationToken,
+            // Mattermost attachment URLs must originate from the configured server.
+            preDownloadGate: () =>
+            {
+                if (string.IsNullOrEmpty(_dependencies.ServerUrl))
+                {
+                    _log.Warning(
+                        "mattermost_attachment_rejected name={Name} reason=no-server-url-configured",
+                        file.Name);
+                    return $"`{file.Name}` was rejected because no Mattermost server URL is configured for URL trust validation.";
+                }
 
-        _log.Info(
-            "mattermost_attachment_accepted name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} size={Size} category={Category} inlined={Inlined}",
-            file.Name, declaredMimeType.Value, verifiedMime.Value, downloadResult.BytesWritten, verifiedCategory, projection.Inlined);
+                if (!MattermostAttachmentUrlTrust.IsAllowedAttachmentUrl(file.Url, _dependencies.ServerUrl))
+                {
+                    _log.Warning(
+                        "mattermost_attachment_rejected name={Name} url={Url} reason=untrusted-url",
+                        file.Name, file.Url);
+                    return $"`{file.Name}` has an untrusted URL and was skipped.";
+                }
 
-        return new AttachmentIngestResult.Accepted(projection.Line, projection.InlineContent);
-    }
-
-    private void TryDeleteTemp(string tempPath)
-    {
-        try
-        {
-            File.Delete(tempPath);
-        }
-        catch (Exception ex)
-        {
-            _log.Error(ex, "Failed to clean up staged attachment file {Path}", tempPath);
-        }
-    }
-
-    private static string FormatBytes(long size) => AttachmentIngressFormatting.FormatBytes(size);
-
-    private abstract record AttachmentIngestResult
-    {
-        public sealed record Accepted(string Line, DataContent? Inline) : AttachmentIngestResult;
-
-        public sealed record Rejected(string UserFacingReason) : AttachmentIngestResult;
-    }
+                return null;
+            });
 
     internal static List<string> ChunkMessage(string text)
     {
