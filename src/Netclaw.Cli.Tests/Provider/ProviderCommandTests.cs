@@ -292,6 +292,7 @@ public sealed class ProviderCommandTests : IDisposable
                 ["my-openai"] = new Dictionary<string, object>
                 {
                     ["OAuthAccessToken"] = protector.Protect("oauth-access-token"),
+                    ["OAuthAccountId"] = protector.Protect("account-123"),
                     ["OAuthTokenExpiry"] = protector.Protect(expiry)
                 }
             }
@@ -300,6 +301,7 @@ public sealed class ProviderCommandTests : IDisposable
         var providers = ProviderCommand.LoadProviders(_paths);
 
         Assert.True(providers.ContainsKey("my-openai"));
+        Assert.Equal("account-123", providers["my-openai"].OAuthAccountId?.Value);
         Assert.NotNull(providers["my-openai"].OAuthTokenExpiry);
         Assert.Equal(DateTimeOffset.Parse(expiry), providers["my-openai"].OAuthTokenExpiry!.Value);
     }

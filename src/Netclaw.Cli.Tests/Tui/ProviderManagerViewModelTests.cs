@@ -650,7 +650,8 @@ public sealed class ProviderManagerViewModelTests : IDisposable
         vm.OAuth.Result = new OAuthDeviceFlowResult(
             new SensitiveString("oauth-access-token"),
             new SensitiveString("oauth-refresh-token"),
-            DateTimeOffset.UtcNow.AddHours(1));
+            DateTimeOffset.UtcNow.AddHours(1),
+            new SensitiveString("account-123"));
 
         Assert.False(File.Exists(_paths.SecretsPath));
 
@@ -666,6 +667,7 @@ public sealed class ProviderManagerViewModelTests : IDisposable
 
         Assert.StartsWith("ENC:", provider.GetProperty("OAuthAccessToken").GetString());
         Assert.StartsWith("ENC:", provider.GetProperty("OAuthRefreshToken").GetString());
+        Assert.StartsWith("ENC:", provider.GetProperty("OAuthAccountId").GetString());
     }
 
     [Fact]

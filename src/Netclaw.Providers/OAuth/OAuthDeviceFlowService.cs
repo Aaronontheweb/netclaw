@@ -66,7 +66,8 @@ public sealed record DeviceAuthorizationResponse(
 public sealed record OAuthDeviceFlowResult(
     SensitiveString AccessToken,
     SensitiveString? RefreshToken,
-    DateTimeOffset? ExpiresAt);
+    DateTimeOffset? ExpiresAt,
+    SensitiveString? AccountId = null);
 
 /// <summary>
 /// Observable state of the device flow polling loop.
@@ -159,7 +160,7 @@ public sealed class OAuthDeviceFlowService : IDeviceFlowService
 
             if (response.IsSuccessStatusCode && !hasError)
             {
-                var result = ParseTokenResponse(root);
+                var result = OAuthTokenResponseParser.Parse(root, _timeProvider);
                 onStateChanged?.Invoke(DeviceFlowState.Succeeded);
                 return result;
             }
@@ -230,7 +231,7 @@ public sealed class OAuthDeviceFlowService : IDeviceFlowService
 
         var json = await response.Content.ReadAsStringAsync(ct);
         using var doc = JsonDocument.Parse(json);
-        return ParseTokenResponse(doc.RootElement);
+        return OAuthTokenResponseParser.Parse(doc.RootElement, _timeProvider);
     }
 
     public Task<OAuthDeviceFlowResult?> RefreshTokenAsync(
@@ -239,24 +240,6 @@ public sealed class OAuthDeviceFlowService : IDeviceFlowService
         string refreshToken,
         CancellationToken ct = default) =>
         RefreshTokenAsync(tokenEndpoint, clientId, new SensitiveString(refreshToken), ct);
-
-    private OAuthDeviceFlowResult ParseTokenResponse(JsonElement root)
-    {
-        var accessToken = root.GetProperty("access_token").GetString()
-            ?? throw new InvalidOperationException("Missing access_token in response.");
-
-        string? refreshToken = root.TryGetProperty("refresh_token", out var refreshProp)
-            ? refreshProp.GetString() : null;
-
-        DateTimeOffset? expiresAt = root.TryGetProperty("expires_in", out var expiresProp)
-            ? _timeProvider.GetUtcNow().AddSeconds(expiresProp.GetInt32())
-            : null;
-
-        return new OAuthDeviceFlowResult(
-            new SensitiveString(accessToken),
-            refreshToken is not null ? new SensitiveString(refreshToken) : null,
-            expiresAt);
-    }
 
     // GitHub's OAuth endpoints return application/x-www-form-urlencoded by default
     // and only switch to JSON when the request explicitly asks for it. Other providers

@@ -46,6 +46,11 @@ public static class OAuthTokenPersistence
         if (result.RefreshToken is not null)
             providerNode["OAuthRefreshToken"] = result.RefreshToken.Value;
 
+        if (result.AccountId is not null)
+            providerNode["OAuthAccountId"] = result.AccountId.Value;
+        else
+            providerNode.Remove("OAuthAccountId");
+
         // OAuthTokenExpiry is NOT a secret and must NOT go in secrets.json.
         // SecretsFileWriter encrypts the entire file, and encrypted DateTimeOffset
         // values break IConfiguration binding (silently drops the provider entry).
@@ -107,6 +112,14 @@ public static class OAuthTokenPersistence
                 refreshTokenStr = protector.Unprotect(refreshTokenStr);
         }
 
+        string? accountIdStr = null;
+        if (provider.TryGetProperty("OAuthAccountId", out var accountIdProp))
+        {
+            accountIdStr = accountIdProp.GetString();
+            if (protector is not null && accountIdStr is not null && ISecretsProtector.IsEncrypted(accountIdStr))
+                accountIdStr = protector.Unprotect(accountIdStr);
+        }
+
         DateTimeOffset? expiresAt = null;
         if (provider.TryGetProperty("OAuthTokenExpiry", out var expiryProp))
         {
@@ -121,6 +134,7 @@ public static class OAuthTokenPersistence
         return new OAuthDeviceFlowResult(
             new SensitiveString(accessTokenStr),
             refreshTokenStr is not null ? new SensitiveString(refreshTokenStr) : null,
-            expiresAt);
+            expiresAt,
+            accountIdStr is not null ? new SensitiveString(accountIdStr) : null);
     }
 }

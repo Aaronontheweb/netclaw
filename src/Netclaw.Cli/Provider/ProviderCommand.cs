@@ -409,6 +409,12 @@ internal static class ProviderCommand
                     entry.OAuthRefreshToken = new SensitiveString(decrypted);
                 }
 
+                if (prop.Value.TryGetProperty("OAuthAccountId", out var accountId))
+                {
+                    var decrypted = ConfigFileHelper.DecryptIfEncrypted(paths, accountId.GetString());
+                    entry.OAuthAccountId = new SensitiveString(decrypted);
+                }
+
                 if (prop.Value.TryGetProperty("OAuthTokenExpiry", out var tokenExpiry))
                 {
                     var expiryStr = ConfigFileHelper.DecryptIfEncrypted(paths, tokenExpiry.GetString());

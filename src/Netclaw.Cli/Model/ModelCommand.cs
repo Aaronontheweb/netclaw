@@ -181,11 +181,7 @@ internal static class ModelCommand
 
         writer.WriteLine($"Discovering models from '{providerName}' ({entry.Type})...");
 
-        var result = await probe.ProbeAsync(
-            entry.Type,
-            string.IsNullOrWhiteSpace(entry.Endpoint) ? null : entry.Endpoint,
-            entry.ApiKey?.Value ?? entry.OAuthAccessToken?.Value,
-            CancellationToken.None);
+        var result = await probe.ProbeAsync(entry, CancellationToken.None);
 
         if (!result.Success)
         {

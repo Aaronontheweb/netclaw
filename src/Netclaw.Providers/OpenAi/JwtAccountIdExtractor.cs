@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System.Text;
 using System.Text.Json;
+using Netclaw.Providers.OAuth;
 
 namespace Netclaw.Providers.OpenAi;
 
@@ -20,6 +21,9 @@ internal static class JwtAccountIdExtractor
     /// </summary>
     public static string? Extract(string accessToken)
     {
+        if (OAuthTokenResponseParser.ExtractChatGptAccountId(accessToken) is { } chatGptAccountId)
+            return chatGptAccountId;
+
         // JWT format: header.payload.signature
         var parts = accessToken.Split('.');
         if (parts.Length < 2)

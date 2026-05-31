@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Time.Testing;
 using Netclaw.Providers.OAuth;
@@ -21,6 +22,23 @@ public class OpenAiDeviceFlowServiceTests
         ClientId: "test-client-id",
         Scope: "openid profile email offline_access model.request api.model.read",
         PkceExchangeEndpoint: "https://auth.openai.com/oauth/token");
+
+    private static string MakeJwt(object payload)
+    {
+        var json = JsonSerializer.Serialize(payload);
+        var header = Base64UrlEncode("{}");
+        var body = Base64UrlEncode(json);
+        return $"{header}.{body}.fakesig";
+    }
+
+    private static string Base64UrlEncode(string value)
+    {
+        var bytes = Encoding.UTF8.GetBytes(value);
+        return Convert.ToBase64String(bytes)
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+    }
 
     [Fact]
     public async Task StartDeviceAuthorization_PostsJsonWithClientId_ReturnsUserCode()
@@ -57,6 +75,23 @@ public class OpenAiDeviceFlowServiceTests
         Assert.Equal("ABCD-1234", result.UserCode);
         Assert.Equal("https://auth.openai.com/codex/device", result.VerificationUri);
         Assert.Equal(1200, result.ExpiresIn);
+        Assert.Equal(5, result.Interval);
+    }
+
+    [Fact]
+    public async Task StartDeviceAuthorization_AcceptsStringInterval()
+    {
+        var handler = new FakeHttpMessageHandler(_ =>
+            JsonResponse(new
+            {
+                device_auth_id = "daid-123",
+                user_code = "ABCD-1234",
+                interval = "5"
+            }));
+
+        var service = new OpenAiDeviceFlowService(new HttpClient(handler));
+        var result = await service.StartDeviceAuthorizationAsync(TestConfig, TestContext.Current.CancellationToken);
+
         Assert.Equal(5, result.Interval);
     }
 
@@ -240,10 +275,37 @@ public class OpenAiDeviceFlowServiceTests
     }
 
     [Fact]
-    public async Task PollForToken_404_FailsFastWithConfigurationGuidance()
+    public async Task PollForToken_404Pending_ThenSuccess_ExchangesForToken()
     {
-        var handler = new FakeHttpMessageHandler(_ =>
-            new HttpResponseMessage(HttpStatusCode.NotFound));
+        var callCount = 0;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            callCount++;
+            var url = request.RequestUri!.ToString();
+
+            if (url.Contains("deviceauth/token") && callCount == 1)
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+
+            if (url.Contains("deviceauth/token"))
+            {
+                return JsonResponse(new
+                {
+                    authorization_code = "auth-code-123",
+                    code_verifier = "verifier-xyz"
+                });
+            }
+
+            if (url.Contains("oauth/token"))
+            {
+                return JsonResponse(new
+                {
+                    access_token = "at-secret",
+                    expires_in = 3600
+                });
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+        });
 
         var timeProvider = new FakeTimeProvider();
         var service = new OpenAiDeviceFlowService(new HttpClient(handler), timeProvider);
@@ -252,10 +314,12 @@ public class OpenAiDeviceFlowServiceTests
 
         var pollTask = service.PollForTokenAsync(TestConfig, deviceAuth, ct: TestContext.Current.CancellationToken);
         timeProvider.Advance(TimeSpan.FromSeconds(1));
+        timeProvider.Advance(TimeSpan.FromSeconds(1));
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => pollTask);
-        Assert.Contains("endpoint", ex.Message);
-        Assert.Contains("404", ex.Message);
+        var result = await pollTask;
+
+        Assert.Equal("at-secret", result.AccessToken.Value);
+        Assert.Equal(3, callCount);
     }
 
     [Fact]
@@ -340,6 +404,58 @@ public class OpenAiDeviceFlowServiceTests
         Assert.Equal("new-at", result!.AccessToken.Value);
         Assert.NotNull(result.RefreshToken);
         Assert.Equal("new-rt", result.RefreshToken!.Value);
+    }
+
+    [Fact]
+    public async Task RefreshToken_ResponseWithoutRefreshToken_PreservesExistingRefreshToken()
+    {
+        var handler = new FakeHttpMessageHandler(_ =>
+            JsonResponse(new
+            {
+                access_token = "new-at",
+                expires_in = 3600
+            }));
+
+        var service = new OpenAiDeviceFlowService(new HttpClient(handler));
+
+        var result = await service.RefreshTokenAsync(
+            "https://auth.openai.com/oauth/token",
+            "client-id",
+            new SensitiveString("old-refresh-token"), TestContext.Current.CancellationToken);
+
+        Assert.NotNull(result);
+        Assert.Equal("old-refresh-token", result!.RefreshToken!.Value);
+    }
+
+    [Fact]
+    public async Task RefreshToken_ExtractsAccountIdFromIdToken()
+    {
+        var idToken = MakeJwt(new Dictionary<string, object>
+        {
+            ["https://api.openai.com/auth"] = new Dictionary<string, object>
+            {
+                ["chatgpt_account_id"] = "account-123"
+            }
+        });
+
+        var handler = new FakeHttpMessageHandler(_ =>
+            JsonResponse(new
+            {
+                access_token = "new-at",
+                refresh_token = "new-rt",
+                id_token = idToken,
+                expires_in = "3600"
+            }));
+
+        var service = new OpenAiDeviceFlowService(new HttpClient(handler));
+
+        var result = await service.RefreshTokenAsync(
+            "https://auth.openai.com/oauth/token",
+            "client-id",
+            new SensitiveString("old-refresh-token"), TestContext.Current.CancellationToken);
+
+        Assert.NotNull(result);
+        Assert.Equal("account-123", result!.AccountId!.Value);
     }
 
     [Fact]

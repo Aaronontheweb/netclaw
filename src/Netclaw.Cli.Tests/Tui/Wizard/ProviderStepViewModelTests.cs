@@ -205,7 +205,11 @@ public sealed class ProviderStepViewModelTests : IDisposable
 
         public Task<ProviderProbeResult> ProbeAsync(
             ProviderEntry entry, CancellationToken ct = default)
-            => Task.FromResult(NextResult);
+        {
+            LastProviderType = entry.Type;
+            LastApiKey = entry.ApiKey?.Value ?? entry.OAuthAccessToken?.Value;
+            return Task.FromResult(NextResult);
+        }
 
         public Task<ProviderProbeResult> ProbeAsync(
             string providerType, string? endpoint, string? credential,

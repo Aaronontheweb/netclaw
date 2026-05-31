@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.8.4"
+  version: "2.8.5"
 ---
 
 # Netclaw Operations
@@ -695,6 +695,13 @@ Provider-specific behavior toggles belong under
 `Providers.<name>.VendorOptions`. Netclaw keeps that bag opaque at the core
 config layer; each provider plugin deserializes and validates its own typed
 options instead of adding provider-specific properties to `ProviderEntry`.
+
+For OpenAI ChatGPT subscription auth, Netclaw persists the OAuth access token,
+refresh token, and ChatGPT account ID returned by the OpenAI ID token. The
+account ID is required by the Codex backend. If OpenAI OAuth validation reports
+that the account ID is missing, re-authenticate the provider with `netclaw
+provider fix <name>` or remove and add it again. API-key OpenAI auth does not
+use the Codex backend or this account-ID metadata.
 
 ### Adding GitHub Copilot
 

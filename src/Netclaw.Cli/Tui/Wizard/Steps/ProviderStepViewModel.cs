@@ -167,13 +167,7 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
         _probeCts = new CancellationTokenSource();
         var ct = _probeCts.Token;
         var providerType = SelectedProviderType ?? "unknown";
-        var credential = ApiKeyInput;
-        if (string.IsNullOrWhiteSpace(credential)
-            && SelectedAuthMethod is AuthMethod.OAuthDevice or AuthMethod.OAuthPkce
-            && OAuth.Result is not null)
-        {
-            credential = OAuth.Result.AccessToken.Value;
-        }
+        var probeEntry = BuildProbeEntry(providerType);
 
         IsProbing.Value = true;
         ProbeResult.Value = null;
@@ -184,12 +178,7 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
         var result = new ProviderProbeResult(false, "Validation failed before probe completed.", []);
         try
         {
-            result = await _probe.ProbeAsync(
-                    providerType,
-                    EndpointInput,
-                    credential,
-                    SelectedAuthMethod,
-                    ct)
+            result = await _probe.ProbeAsync(probeEntry, ct)
                 .WaitAsync(ProbeHardTimeout, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -231,6 +220,37 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
             if (tickCount % 8 == 0)
                 ProbeElapsedSeconds.Value++;
         }
+    }
+
+    private ProviderEntry BuildProbeEntry(string providerType)
+    {
+        var entry = new ProviderEntry
+        {
+            Type = providerType,
+            Endpoint = EndpointInput ?? "",
+            AuthMethod = SelectedAuthMethod
+        };
+
+        if (SelectedAuthMethod is AuthMethod.OAuthDevice or AuthMethod.OAuthPkce)
+        {
+            var result = OAuth.Result;
+            var credential = ApiKeyInput;
+            if (string.IsNullOrWhiteSpace(credential))
+                credential = result?.AccessToken.Value;
+
+            entry.OAuthAccessToken = !string.IsNullOrWhiteSpace(credential)
+                ? new SensitiveString(credential)
+                : null;
+            entry.OAuthRefreshToken = result?.RefreshToken;
+            entry.OAuthTokenExpiry = result?.ExpiresAt;
+            entry.OAuthAccountId = result?.AccountId;
+        }
+        else if (!string.IsNullOrWhiteSpace(ApiKeyInput))
+        {
+            entry.ApiKey = new SensitiveString(ApiKeyInput);
+        }
+
+        return entry;
     }
 
     // ── OAuth ──

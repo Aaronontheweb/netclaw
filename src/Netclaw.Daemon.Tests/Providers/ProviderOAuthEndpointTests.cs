@@ -83,6 +83,7 @@ public sealed class ProviderOAuthEndpointTests
         Assert.True(statusPayload.GetProperty("hasToken").GetBoolean());
         Assert.Equal("access-token", statusPayload.GetProperty("accessToken").GetString());
         Assert.Equal("refresh-token", statusPayload.GetProperty("refreshToken").GetString());
+        Assert.Equal("account-id", statusPayload.GetProperty("accountId").GetString());
     }
 
     [Fact]
@@ -104,6 +105,7 @@ public sealed class ProviderOAuthEndpointTests
         Assert.True(statusPayload.GetProperty("hasToken").GetBoolean());
         Assert.Equal(JsonValueKind.Null, statusPayload.GetProperty("accessToken").ValueKind);
         Assert.Equal(JsonValueKind.Null, statusPayload.GetProperty("refreshToken").ValueKind);
+        Assert.Equal(JsonValueKind.Null, statusPayload.GetProperty("accountId").ValueKind);
     }
 
     [Fact]
@@ -163,8 +165,32 @@ public sealed class ProviderOAuthEndpointTests
         {
             access_token = "access-token",
             refresh_token = "refresh-token",
+            id_token = MakeJwt(new Dictionary<string, object>
+            {
+                ["https://api.openai.com/auth"] = new Dictionary<string, object>
+                {
+                    ["chatgpt_account_id"] = "account-id"
+                }
+            }),
             expires_in = 3600
         });
+    }
+
+    private static string MakeJwt(object payload)
+    {
+        var json = JsonSerializer.Serialize(payload);
+        var header = Base64UrlEncode("{}");
+        var body = Base64UrlEncode(json);
+        return $"{header}.{body}.fakesig";
+    }
+
+    private static string Base64UrlEncode(string value)
+    {
+        var bytes = Encoding.UTF8.GetBytes(value);
+        return Convert.ToBase64String(bytes)
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
     }
 
     private static HttpResponseMessage JsonResponse(object body, HttpStatusCode status = HttpStatusCode.OK)
