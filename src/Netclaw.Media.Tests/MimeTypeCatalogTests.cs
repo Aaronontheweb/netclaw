@@ -37,6 +37,8 @@ public sealed class MimeTypeCatalogTests
 
     [Theory]
     [InlineData("image/png", AttachmentCategory.Image)]
+    [InlineData("image/bmp", AttachmentCategory.Image)]
+    [InlineData("image/tiff", AttachmentCategory.Image)]
     [InlineData("image/x-unknown", AttachmentCategory.Other)]
     [InlineData("video/mp4", AttachmentCategory.Media)]
     [InlineData("video/x-unknown", AttachmentCategory.Other)]
@@ -73,6 +75,8 @@ public sealed class MimeTypeCatalogTests
     [Theory]
     [InlineData("image/png", true)]
     [InlineData("image/jpeg", true)]
+    [InlineData("image/bmp", false)]
+    [InlineData("image/tiff", false)]
     [InlineData("audio/mpeg", false)]
     [InlineData("application/pdf", false)]
     public void IsModelInputSupported_only_allows_explicit_images(string mimeType, bool expected)

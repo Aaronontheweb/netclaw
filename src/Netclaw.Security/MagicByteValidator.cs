@@ -184,6 +184,8 @@ public static class MagicByteValidator
         if (IsJpeg(content)) return "image/jpeg";
         if (IsGif(content)) return "image/gif";
         if (IsWebp(content)) return "image/webp";
+        if (IsBmp(content)) return "image/bmp";
+        if (IsTiff(content)) return "image/tiff";
         if (IsPdf(content)) return "application/pdf";
         if (IsOle(content)) return "application/x-ole-compound-document";
         if (IsRtf(content)) return "application/rtf";
@@ -227,6 +229,8 @@ public static class MagicByteValidator
         ["image/jpeg"] = IsJpeg,
         ["image/gif"] = IsGif,
         ["image/webp"] = IsWebp,
+        ["image/bmp"] = IsBmp,
+        ["image/tiff"] = IsTiff,
 
         // PDF
         ["application/pdf"] = IsPdf,
@@ -326,6 +330,30 @@ public static class MagicByteValidator
     private static bool IsWebp(ReadOnlySpan<byte> c) =>
         IsRiff(c) && c.Length >= 12 &&
         c[8] == 0x57 && c[9] == 0x45 && c[10] == 0x42 && c[11] == 0x50;
+
+    /// <summary>
+    /// BMP: <c>BM</c> magic, then the DIB header size (LE uint32 at offset 14)
+    /// must be one of the known header sizes. Validating the DIB size rejects
+    /// arbitrary "BM"-prefixed payloads.
+    /// </summary>
+    private static bool IsBmp(ReadOnlySpan<byte> c)
+    {
+        if (c.Length < 18) return false;
+        if (c[0] != 0x42 || c[1] != 0x4D) return false; // "BM"
+        uint dibHeaderSize = (uint)(c[14] | (c[15] << 8) | (c[16] << 16) | (c[17] << 24));
+        return dibHeaderSize is 12 or 40 or 52 or 56 or 64 or 108 or 124;
+    }
+
+    /// <summary>
+    /// TIFF: little-endian (<c>II</c> + <c>0x2A 0x00</c>) or big-endian
+    /// (<c>MM</c> + <c>0x00 0x2A</c>) byte-order mark plus the 42 magic.
+    /// </summary>
+    private static bool IsTiff(ReadOnlySpan<byte> c)
+    {
+        if (c.Length < 4) return false;
+        return (c[0] == 0x49 && c[1] == 0x49 && c[2] == 0x2A && c[3] == 0x00)
+            || (c[0] == 0x4D && c[1] == 0x4D && c[2] == 0x00 && c[3] == 0x2A);
+    }
 
     private static bool IsWav(ReadOnlySpan<byte> c) =>
         IsRiff(c) && c.Length >= 12 &&

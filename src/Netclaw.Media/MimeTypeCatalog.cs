@@ -25,6 +25,8 @@ public static class MimeTypeCatalog
     public const string ImageJpeg = "image/jpeg";
     public const string ImageGif = "image/gif";
     public const string ImageWebp = "image/webp";
+    public const string ImageBmp = "image/bmp";
+    public const string ImageTiff = "image/tiff";
     public const string AudioMpeg = "audio/mpeg";
     public const string AudioMp4 = "audio/mp4";
     public const string AudioWav = "audio/wav";
@@ -199,6 +201,10 @@ public static class MimeTypeCatalog
         Binary(ImageJpeg, AttachmentCategory.Image, MediaKind.Image, true, true, ".jpg", ".jpg", ".jpeg"),
         Binary(ImageGif, AttachmentCategory.Image, MediaKind.Image, true, true, ".gif", ".gif"),
         Binary(ImageWebp, AttachmentCategory.Image, MediaKind.Image, true, true, ".webp", ".webp"),
+        // bmp/tiff are accepted as images but not model-input-eligible: providers
+        // ingest png/jpeg/gif/webp, so these stay path-only (see AttachmentInlineDecision).
+        Binary(ImageBmp, AttachmentCategory.Image, MediaKind.Image, true, false, ".bmp", ".bmp"),
+        Binary(ImageTiff, AttachmentCategory.Image, MediaKind.Image, true, false, ".tiff", ".tif", ".tiff"),
 
         Binary(ApplicationPdf, AttachmentCategory.Pdf, MediaKind.Pdf, true, false, ".pdf", ".pdf"),
 

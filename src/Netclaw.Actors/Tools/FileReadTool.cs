@@ -191,7 +191,7 @@ public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
         ToolExecutionContext context)
     {
         var inlineImages = context.ModelInputModalities.HasFlag(ModelModality.Image);
-        var (inlined, note) = AttachmentInlineDecision.Resolve(inspection.Category, inlineImages);
+        var (inlined, note) = AttachmentInlineDecision.Resolve(inspection.MimeType, inspection.Category, inlineImages);
 
         if (inspection.Category == AttachmentCategory.Image && inlined)
         {

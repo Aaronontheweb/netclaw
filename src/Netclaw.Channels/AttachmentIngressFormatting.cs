@@ -66,9 +66,10 @@ public static class AttachmentIngressFormatting
     }
 
     public static (bool Inlined, string? Note) ResolveInlineDecision(
+        MimeType mimeType,
         AttachmentCategory category,
         bool inlineImages)
-        => AttachmentInlineDecision.Resolve(category, inlineImages);
+        => AttachmentInlineDecision.Resolve(mimeType, category, inlineImages);
 
     public static async Task<AttachmentIngressProjection> BuildAcceptedProjectionAsync(
         string inboxPath,
@@ -80,7 +81,7 @@ public static class AttachmentIngressFormatting
         CancellationToken cancellationToken)
     {
         var relativePath = $"{SessionDirectoryHelper.InboxSubdirectory}/{Path.GetFileName(inboxPath)}";
-        var (inlined, note) = ResolveInlineDecision(category, inlineImages);
+        var (inlined, note) = ResolveInlineDecision(new MimeType(mimeType), category, inlineImages);
         var line = BuildAttachmentLine(filename, mimeType, size, relativePath, inlined, note);
 
         if (!inlined)
