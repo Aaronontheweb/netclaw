@@ -81,13 +81,16 @@ public static class HistoricalAttachmentIngress
                 return new ScanOutcome.Rejected(BuildRejected(
                     $"historical attachment \"{AttachmentIngressFormatting.EscapeQuoted(filename)}\" could not be verified by content scanning"));
 
-            default:
-                var notAllowed = (ContentVerificationResult.CategoryNotAllowed)verification;
+            case ContentVerificationResult.CategoryNotAllowed notAllowed:
                 logger.LogWarning(
                     "Historical attachment {Name} rejected: verified category {Category} not allowed for {Audience}",
                     filename, notAllowed.Category, audience);
                 return new ScanOutcome.Rejected(BuildRejected(
                     $"historical attachment ({notAllowed.MimeType.Value}) category not allowed in {audience}"));
+
+            default:
+                throw new InvalidOperationException(
+                    $"Unhandled content verification result: {verification.GetType().Name}");
         }
     }
 }

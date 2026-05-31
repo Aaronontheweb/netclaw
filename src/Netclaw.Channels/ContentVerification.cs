@@ -43,6 +43,13 @@ public static class ContentVerification
             scanResult = await scanner.ScanFileAsync(
                 filePath, filename, declaredMimeType.Value, scanCts.Token);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Outer cancellation (host/session shutdown) — propagate it instead
+            // of masking it as a scan failure. A scan timeout fired by the linked
+            // CTS (outer token NOT cancelled) still falls through to ScanThrew.
+            throw;
+        }
         catch (Exception ex)
         {
             return new ContentVerificationResult.ScanThrew(ex);

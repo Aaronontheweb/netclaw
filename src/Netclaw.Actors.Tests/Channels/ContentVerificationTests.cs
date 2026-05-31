@@ -102,6 +102,42 @@ public sealed class ContentVerificationTests
         Assert.IsType<ContentVerificationResult.MissingVerifiedMime>(result);
     }
 
+    [Fact]
+    public async Task Propagates_outer_cancellation_instead_of_reporting_a_scan_failure()
+    {
+        // Host/session shutdown cancels the outer token; that must propagate as
+        // cancellation, not be masked as a ScanThrew rejection.
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            ContentVerification.ResolveAsync(
+                new CancellationThrowingScanner(),
+                "ignored",
+                "x.png",
+                new DeclaredMimeType("image/png"),
+                Policy(AttachmentCategory.Image),
+                TimeSpan.FromSeconds(5),
+                cts.Token));
+    }
+
+    [Fact]
+    public async Task Scan_cancellation_without_outer_cancel_is_treated_as_scan_failure()
+    {
+        // An OCE that is NOT from the outer token (e.g. the scan's own timeout)
+        // must be reported as ScanThrew, not propagated as cancellation.
+        var result = await ContentVerification.ResolveAsync(
+            new CancellationThrowingScanner(),
+            "ignored",
+            "x.png",
+            new DeclaredMimeType("image/png"),
+            Policy(AttachmentCategory.Image),
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        Assert.IsType<ContentVerificationResult.ScanThrew>(result);
+    }
+
     private sealed class ThrowingScanner : IContentScanner
     {
         public Task<ContentScanResult> ScanAsync(ReadOnlyMemory<byte> content, string filename, string declaredMimeType, CancellationToken cancellationToken = default)
@@ -120,5 +156,14 @@ public sealed class ContentVerificationTests
 
         public Task<ContentScanResult> ScanFileAsync(string filePath, string filename, string declaredMimeType, CancellationToken cancellationToken = default)
             => Task.FromResult(new ContentScanResult(true));
+    }
+
+    private sealed class CancellationThrowingScanner : IContentScanner
+    {
+        public Task<ContentScanResult> ScanAsync(ReadOnlyMemory<byte> content, string filename, string declaredMimeType, CancellationToken cancellationToken = default)
+            => throw new OperationCanceledException();
+
+        public Task<ContentScanResult> ScanFileAsync(string filePath, string filename, string declaredMimeType, CancellationToken cancellationToken = default)
+            => throw new OperationCanceledException();
     }
 }

@@ -156,7 +156,7 @@ public static class AttachmentIngressPipeline
                         name, declaredMimeType.Value, sb.Error?.ToString(), sb.Message ?? sb.Error?.ToString());
                     return sb.Error == ContentScanError.ScanFailure
                         ? Reject($"Couldn't scan `{name}` — please try again later.")
-                        : Reject($"Content scanner rejected `{name}`: {sb.Message ?? sb.Error?.ToString()}.");
+                        : Reject($"Content scanner rejected `{name}`: {sb.Message ?? sb.Error?.ToString() ?? "unknown error"}.");
 
                 case ContentVerificationResult.MissingVerifiedMime:
                     log.Warning(
@@ -164,12 +164,15 @@ public static class AttachmentIngressPipeline
                         name, declaredMimeType.Value);
                     return Reject($"Content scanner did not verify `{name}`. Please try again later.");
 
-                default:
-                    var notAllowed = (ContentVerificationResult.CategoryNotAllowed)verification;
+                case ContentVerificationResult.CategoryNotAllowed notAllowed:
                     log.Warning(
                         "attachment_rejected name={Name} declaredMime={DeclaredMime} verifiedMime={VerifiedMime} audience={Audience} category={Category} reason=verified-category-not-allowed",
                         name, declaredMimeType.Value, notAllowed.MimeType.Value, audience, notAllowed.Category);
                     return NotAllowed(name, notAllowed.Category, audience);
+
+                default:
+                    throw new InvalidOperationException(
+                        $"Unhandled content verification result: {verification.GetType().Name}");
             }
         }
 
