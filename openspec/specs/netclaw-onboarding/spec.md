@@ -283,4 +283,3 @@ back-navigation.
 - **WHEN** the operator enters connection details
 - **THEN** the wizard validates connectivity with a SpinnerNode
 - **AND** displays success or failure before allowing progression
-

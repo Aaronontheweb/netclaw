@@ -137,8 +137,7 @@ the target skill name after normalization.
 
 ### Requirement: skill_manage rescan issue visibility
 
-After a mutating `skill_manage` operation rebuilds the skill registry, the tool
-SHALL surface any scan issues discovered during that rebuild instead of silently
+After a mutating `skill_manage` operation rebuilds the skill registry, the tool SHALL surface any scan issues discovered during that rebuild instead of silently
 refreshing the index from a partial set.
 
 #### Scenario: Create reports unrelated degraded inventory

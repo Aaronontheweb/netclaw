@@ -205,4 +205,3 @@ instead take `ModelCapabilities` as a dependency.
 - **WHEN** the service is constructed
 - **THEN** it takes `ModelCapabilities` as a dependency (not `SessionConfig`)
 - **AND** reads `ModelId`, `InputModalities`, and `OutputModalities` from it
-

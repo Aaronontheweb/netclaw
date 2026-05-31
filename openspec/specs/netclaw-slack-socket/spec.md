@@ -109,8 +109,7 @@ SHALL apply uniformly to Socket Mode replays and any out-of-order delivery.
 
 ### Requirement: Thread hydration on first inbound per runtime
 
-When `SlackThreadBindingActor` is freshly initialized (including after
-daemon restart), the first non-stale inbound event SHALL trigger a single
+When `SlackThreadBindingActor` is freshly initialized (including after daemon restart), the first non-stale inbound event SHALL trigger a single
 thread hydration pass. The actor SHALL call
 `IThreadHistoryFetcher.FetchThreadHistoryAsync`, compute the gap of messages
 strictly after the cursor and strictly before the triggering event's `ts`,

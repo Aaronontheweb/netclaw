@@ -46,6 +46,15 @@ onboarding wizard. The wizard SHALL collect owner identity, write initial
 refine personality through conversation using `file_write` on identity files,
 guided by the `netclaw-identity` skill.
 
+#### Scenario: Init wizard bootstraps personality
+
+- **GIVEN** a fresh install with no identity files
+- **WHEN** the operator runs the `netclaw init` onboarding wizard and provides
+  owner identity
+- **THEN** the wizard writes an initial `SOUL.md` under the standard identity
+  directory
+- **AND** the agent can later refine that personality through conversation
+
 ### Requirement: Self-configuration through conversation
 
 The system SHALL allow the agent to modify identity files (`SOUL.md`,

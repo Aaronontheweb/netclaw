@@ -732,8 +732,8 @@ drain-on-shutdown follow-up.
 
 ### Requirement: Recurring reminder expiration
 
-Recurring reminders (interval and cron) support an optional `ExpiresAt`
-timestamp. When a reminder expires, it is soft-disabled — the definition
+Recurring reminders (interval and cron) SHALL support an optional `ExpiresAt`
+timestamp. When a reminder expires, it SHALL be soft-disabled — the definition
 and history are preserved on disk, but no further executions occur.
 
 Backwards compatibility: `ExpiresAt` is stored as a nullable
@@ -789,7 +789,7 @@ current behavior.
 
 ### Requirement: LLM self-cancellation of fulfilled reminders
 
-Recurring reminders include prompt guidance telling the executing LLM to
+Recurring reminders SHALL include prompt guidance telling the executing LLM to
 call `cancel_reminder` when the reminder's purpose is permanently
 fulfilled. This reuses the existing `cancel_reminder` tool (hard-delete)
 rather than introducing a separate completion tool — fewer tools means
@@ -812,8 +812,7 @@ less confusion for smaller models.
 
 ### Requirement: Delivery observation timeout alignment
 
-The `DeliveryObservedTimeout` for Mode B (current_session) delivery must
-be aligned with the execution timeout. A delivery observation window
+The `DeliveryObservedTimeout` for Mode B (current_session) delivery MUST be aligned with the execution timeout. A delivery observation window
 shorter than the execution window causes false failures when LLM turns
 take longer than the observation timeout but complete before the execution
 timeout.

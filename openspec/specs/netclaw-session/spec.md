@@ -629,8 +629,7 @@ complexity without proportional value.
 
 ### Requirement: Persist adopted-context audit records
 
-When an authorized threaded turn adopts unsynced prior thread messages, the
-session system SHALL durably persist or reuse an adopted-context record for
+When an authorized threaded turn adopts unsynced prior thread messages, the session system SHALL durably persist or reuse an adopted-context record for
 audit before execution continues for that authorized turn.
 
 The persisted record SHALL include at minimum:
@@ -697,7 +696,6 @@ recovery can reuse rather than proof that the turn ran.
 - **THEN** the existing adopted-context record is reused
 - **AND** the execution linkage is updated without persisting a duplicate
 
-
 ### Requirement: Adopted context is non-executable quoted context
 
 The session SHALL treat adopted-context material as quoted context rather than
@@ -727,11 +725,9 @@ Adopted or pending unauthorized content SHALL NOT directly:
 - **THEN** only the current authorized message is treated as executable
 - **AND** the adopted context remains quoted supporting material
 
-
 ### Requirement: Canonical projection is derived from persisted record
 
-The threaded adapter MAY construct the model-visible multi-speaker projection
-before session handoff. When adopted context exists, the session SHALL persist
+The threaded adapter MAY construct the model-visible multi-speaker projection before session handoff. When adopted context exists, the session SHALL persist
 that exact projection together with the adopted-message metadata before
 execution continues.
 
@@ -749,5 +745,3 @@ adopted-context projection.
 - **WHEN** an operator reviews that turn later
 - **THEN** the stored canonical projection matches the attribution framing that
   was shown to the model
-
-
