@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Net.Sockets;
 using Microsoft.Extensions.AI;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Providers;
@@ -47,7 +48,46 @@ public abstract class ProviderPluginBase<TDescriptor> : ILlmProviderPlugin
     /// </summary>
     protected static HttpClient CreateLlmHttpClient(Uri? baseAddress = null)
     {
-        return new HttpClient(new SessionAffinityHandler())
+        var socketHandler = new SocketsHttpHandler
+        {
+            ConnectTimeout = TimeSpan.FromSeconds(10),
+            PooledConnectionIdleTimeout = TimeSpan.FromSeconds(60),
+
+            // HTTP/2 PING for cloud providers that negotiate h2 over TLS.
+            // No-op for HTTP/1.1 connections (self-hosted backends).
+            KeepAlivePingPolicy = HttpKeepAlivePingPolicy.Always,
+            KeepAlivePingDelay = TimeSpan.FromSeconds(15),
+            KeepAlivePingTimeout = TimeSpan.FromSeconds(5),
+
+            // TCP keepalive detects dead/half-open peers at the OS level.
+            // Probes peer liveness independently of data flow — a slow-but-alive
+            // prefill answers probes; a dead/restarted backend does not.
+            ConnectCallback = async (context, ct) =>
+            {
+                var socket = new Socket(SocketType.Stream, ProtocolType.Tcp)
+                {
+                    NoDelay = true
+                };
+
+                socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+                socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 10);
+                socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 5);
+                socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 3);
+
+                try
+                {
+                    await socket.ConnectAsync(context.DnsEndPoint, ct);
+                    return new NetworkStream(socket, ownsSocket: true);
+                }
+                catch
+                {
+                    socket.Dispose();
+                    throw;
+                }
+            }
+        };
+
+        return new HttpClient(new SessionAffinityHandler(socketHandler))
         {
             BaseAddress = baseAddress,
             Timeout = TimeSpan.FromHours(1)
