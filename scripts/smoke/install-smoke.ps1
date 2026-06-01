@@ -132,6 +132,22 @@ try {
             Fail "install: $name.exe missing or empty"
         }
     }
+
+    # 7. Verify PATH instruction uses User scope correctly (issue #1072)
+    # The printed instruction must NOT use $env:PATH (which merges Machine+User
+    # and corrupts the User PATH when written back). It must read User scope.
+    Write-Host ""
+    Write-Host "=== PATH instruction check ==="
+    if ($installOut -match '\$env:PATH') {
+        Fail "PATH instruction: uses `$env:PATH (corrupts User PATH by merging Machine entries)"
+    } else {
+        Pass "PATH instruction: does not use `$env:PATH"
+    }
+    if ($installOut -match "GetEnvironmentVariable\('PATH',\s*'User'\)") {
+        Pass "PATH instruction: reads from User scope"
+    } else {
+        Fail "PATH instruction: should read from User scope with GetEnvironmentVariable('PATH', 'User')"
+    }
 }
 finally {
     if ($ServerProc -and -not $ServerProc.HasExited) { $ServerProc.Kill() }
