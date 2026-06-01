@@ -14,7 +14,7 @@ namespace Netclaw.Configuration.Tests.Providers.OAuth;
 public sealed class OAuthTokenPersistenceTests
 {
     [Fact]
-    public void PersistTokens_RemovesStaleOptionalOAuthFieldsWhenResultOmitsThem()
+    public void PersistTokens_PreservesExistingRefreshTokenAndAccountIdWhenResultOmitsThem()
     {
         using var dir = new DisposableTempDir();
         var paths = new NetclawPaths(dir.Path);
@@ -29,6 +29,8 @@ public sealed class OAuthTokenPersistenceTests
                 DateTimeOffset.Parse("2026-06-01T00:00:00+00:00"),
                 new SensitiveString("account-1")));
 
+        // A partial refresh that returns only a new access token must NOT wipe the
+        // previously-stored refresh token or ChatGPT account id (Codex needs them).
         OAuthTokenPersistence.PersistTokens(
             paths,
             "openai",
@@ -43,14 +45,51 @@ public sealed class OAuthTokenPersistenceTests
             .GetProperty("openai");
 
         Assert.Equal("access-2", provider.GetProperty("OAuthAccessToken").GetString());
-        Assert.False(provider.TryGetProperty("OAuthRefreshToken", out _));
-        Assert.False(provider.TryGetProperty("OAuthAccountId", out _));
+        Assert.Equal("refresh-1", provider.GetProperty("OAuthRefreshToken").GetString());
+        Assert.Equal("account-1", provider.GetProperty("OAuthAccountId").GetString());
 
+        // Expiry, by contrast, IS cleared when omitted — a stale expiry would make the
+        // fresh token look already-expired.
         using var configDoc = JsonDocument.Parse(File.ReadAllText(paths.NetclawConfigPath));
         var configProvider = configDoc.RootElement
             .GetProperty("Providers")
             .GetProperty("openai");
 
         Assert.False(configProvider.TryGetProperty("OAuthTokenExpiry", out _));
+    }
+
+    [Fact]
+    public void PersistTokens_OverwritesExistingFieldsWhenResultProvidesThem()
+    {
+        using var dir = new DisposableTempDir();
+        var paths = new NetclawPaths(dir.Path);
+        paths.EnsureDirectoriesExist();
+
+        OAuthTokenPersistence.PersistTokens(
+            paths,
+            "openai",
+            new OAuthDeviceFlowResult(
+                new SensitiveString("access-1"),
+                new SensitiveString("refresh-1"),
+                null,
+                new SensitiveString("account-1")));
+
+        OAuthTokenPersistence.PersistTokens(
+            paths,
+            "openai",
+            new OAuthDeviceFlowResult(
+                new SensitiveString("access-2"),
+                new SensitiveString("refresh-2"),
+                null,
+                new SensitiveString("account-2")));
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(paths.SecretsPath));
+        var provider = doc.RootElement
+            .GetProperty("Providers")
+            .GetProperty("openai");
+
+        Assert.Equal("access-2", provider.GetProperty("OAuthAccessToken").GetString());
+        Assert.Equal("refresh-2", provider.GetProperty("OAuthRefreshToken").GetString());
+        Assert.Equal("account-2", provider.GetProperty("OAuthAccountId").GetString());
     }
 }

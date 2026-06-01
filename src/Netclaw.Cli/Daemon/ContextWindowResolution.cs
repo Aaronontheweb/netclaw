@@ -15,17 +15,14 @@ internal static class ContextWindowResolution
 {
     public static async Task<ModelRuntimeResolution> ResolveRuntimeAsync(ModelReference configuredMain, DaemonApi daemon)
     {
-        DaemonRuntimeStatus.Response? status = null;
+        DaemonRuntimeStatus.Response? status;
         try
         {
             status = await GetStatusAsync(daemon);
         }
         catch (DaemonUnavailableException) when (configuredMain.ContextWindow is > 0)
         {
-            return new ModelRuntimeResolution(
-                configuredMain.ModelId,
-                configuredMain.Provider,
-                configuredMain.ContextWindow.Value);
+            return Configured(configuredMain);
         }
 
         if (status?.Model is { ContextWindow: > 0 } daemonModel)
@@ -36,45 +33,29 @@ internal static class ContextWindowResolution
                 daemonModel.ContextWindow);
         }
 
+        // The daemon was reachable but gave us no usable context window — either an
+        // empty status body (status is null) or a model without one. Fall back to the
+        // configured value when set, exactly as the daemon-unavailable path above
+        // does; otherwise the empty-status case would crash a user who pinned a window.
         if (configuredMain.ContextWindow is > 0)
-        {
-            return new ModelRuntimeResolution(
-                configuredMain.ModelId,
-                configuredMain.Provider,
-                configuredMain.ContextWindow.Value);
-        }
+            return Configured(configuredMain);
 
         throw new InvalidOperationException(
-            $"Daemon reported no context window for model '{configuredMain.ModelId}'. " +
-            "Set Models.Main.ContextWindow in netclaw.json.");
+            status is null
+                ? "Daemon returned empty status. Cannot resolve effective context window. " +
+                  "Set Models.Main.ContextWindow in netclaw.json or ensure the daemon is healthy."
+                : $"Daemon reported no context window for model '{configuredMain.ModelId}'. " +
+                  "Set Models.Main.ContextWindow in netclaw.json.");
     }
 
-    /// <summary>
-    /// Returns the explicit config value when set; otherwise queries the daemon
-    /// status endpoint for the auto-detected context window.
-    /// </summary>
-    public static async Task<int> ResolveAsync(int? configuredContextWindow, DaemonApi daemon, string modelId)
-    {
-        if (configuredContextWindow is > 0)
-            return configuredContextWindow.Value;
+    private static ModelRuntimeResolution Configured(ModelReference configuredMain)
+        => new(configuredMain.ModelId, configuredMain.Provider, configuredMain.ContextWindow!.Value);
 
-        var status = await GetStatusAsync(daemon);
-
-        return status.Model?.ContextWindow is > 0 and var daemonCw
-            ? daemonCw
-            : throw new InvalidOperationException(
-                $"Daemon reported no context window for model '{modelId}'. " +
-                "Set Models.Main.ContextWindow in netclaw.json.");
-    }
-
-    private static async Task<DaemonRuntimeStatus.Response> GetStatusAsync(DaemonApi daemon)
+    private static async Task<DaemonRuntimeStatus.Response?> GetStatusAsync(DaemonApi daemon)
     {
         try
         {
-            return await daemon.GetStatusAsync()
-                ?? throw new InvalidOperationException(
-                    "Daemon returned empty status. Cannot resolve effective context window. " +
-                    "Set Models.Main.ContextWindow in netclaw.json or ensure the daemon is healthy.");
+            return await daemon.GetStatusAsync();
         }
         catch (HttpRequestException ex)
         {

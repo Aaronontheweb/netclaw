@@ -109,20 +109,13 @@ public sealed class OpenAiDescriptor : IProviderDescriptor
             return Task.FromResult(new ProviderProbeResult(false,
                 $"OAuth token expired {expiry:g}. Re-authenticate with 'netclaw provider fix <name>'.", []));
 
-        if (ResolveAccountId(entry) is null)
+        if (JwtAccountIdExtractor.ResolveAccountId(entry) is null)
             return Task.FromResult(new ProviderProbeResult(false,
                 "OpenAI OAuth login did not return a ChatGPT account ID. Re-authenticate with 'netclaw provider fix <name>'.", []));
 
         // Codex tokens can't probe — return curated models
         return Task.FromResult(new ProviderProbeResult(true, null, CuratedModels));
     }
-
-    private static string? ResolveAccountId(ProviderEntry entry)
-        => !entry.OAuthAccountId.IsNullOrEmpty()
-            ? entry.OAuthAccountId.Value
-            : entry.OAuthAccessToken is { } token
-                ? JwtAccountIdExtractor.Extract(token.Value)
-                : null;
 
     private Task<ProviderProbeResult> ProbeApiKeyAsync(ProviderEntry entry, CancellationToken ct)
     {

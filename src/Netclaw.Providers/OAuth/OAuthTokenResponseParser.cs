@@ -16,7 +16,7 @@ internal static class OAuthTokenResponseParser
         var accessToken = GetRequiredString(root, "access_token");
         var refreshToken = GetOptionalString(root, "refresh_token");
         DateTimeOffset? expiresAt = ReadOptionalSeconds(root, "expires_in") is { } seconds
-            ? timeProvider.GetUtcNow().AddSeconds(seconds)
+            ? AddSecondsClamped(timeProvider.GetUtcNow(), seconds)
             : null;
         var accountId = ExtractAccountId(root);
 
@@ -76,9 +76,6 @@ internal static class OAuthTokenResponseParser
         if (TryGetString(root, "chatgpt_account_id", out accountId))
             return true;
 
-        if (TryGetString(root, "https://api.openai.com/auth.chatgpt_account_id", out accountId))
-            return true;
-
         if (root.TryGetProperty("https://api.openai.com/auth", out var auth)
             && auth.ValueKind == JsonValueKind.Object
             && TryGetString(auth, "chatgpt_account_id", out accountId))
@@ -107,9 +104,32 @@ internal static class OAuthTokenResponseParser
         return true;
     }
 
+    // A token endpoint can return an absurd or non-finite expires_in; DateTimeOffset
+    // .AddSeconds throws ArgumentOutOfRangeException on overflow and on NaN. Clamp to
+    // the representable range so a bad value degrades to "effectively never expires"
+    // instead of aborting the whole auth/refresh flow with a non-actionable error.
+    private static DateTimeOffset AddSecondsClamped(DateTimeOffset now, double seconds)
+    {
+        if (double.IsNaN(seconds))
+            return now;
+
+        if (seconds >= (DateTimeOffset.MaxValue - now).TotalSeconds)
+            return DateTimeOffset.MaxValue;
+
+        if (seconds <= (DateTimeOffset.MinValue - now).TotalSeconds)
+            return DateTimeOffset.MinValue;
+
+        return now.AddSeconds(seconds);
+    }
+
     private static double? ReadOptionalSeconds(JsonElement root, string propertyName)
     {
         if (!root.TryGetProperty(propertyName, out var property))
+            return null;
+
+        // An explicit JSON null is treated the same as an absent property (no expiry)
+        // rather than a hard parse failure.
+        if (property.ValueKind == JsonValueKind.Null)
             return null;
 
         if (property.ValueKind == JsonValueKind.Number && property.TryGetDouble(out var numericValue))
