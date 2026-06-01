@@ -1,3 +1,19 @@
+#### 0.22.1 2026-06-01 ####
+
+Netclaw v0.22.1 — Quick bug-fix release on the heels of 0.22.0
+
+**Bug Fixes**
+
+* **GitHub Copilot provider additions now persist** — the TUI provider manager was losing newly added Copilot providers between sessions. Additions now stick correctly. ([#1271](https://github.com/netclaw-dev/netclaw/pull/1271))
+
+* **OpenAI Codex models discovered live** — Netclaw can now probe the OpenAI API to discover Codex models at runtime, auto-populating context windows and modalities. No more waiting for a software update to access the latest Codex features. ([#1268](https://github.com/netclaw-dev/netclaw/pull/1268))
+
+* **ChatGPT OAuth account ID resolution restored** — the OAuth flow for ChatGPT providers was returning the wrong account identifier, breaking authentication. Fixed. ([#1263](https://github.com/netclaw-dev/netclaw/pull/1263))
+
+* **Vision model images no longer dropped between turns** — when using vision-capable models, images attached via tool calls were being lost when crossing turn boundaries. Images now survive turn transitions properly. ([#1265](https://github.com/netclaw-dev/netclaw/pull/1265))
+
+* **CLI no longer crashes when daemon is offline** — attempting to chat while the Netclaw daemon was unreachable would crash the CLI. It now handles this gracefully and provides useful feedback. ([#1258](https://github.com/netclaw-dev/netclaw/pull/1258))
+
 #### 0.22.0 2026-05-31 ####
 
 Netclaw v0.22.0 — Subagents that actually stick around, sessions that remember their place, and a few long-standing gremlines squashed
