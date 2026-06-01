@@ -3,6 +3,8 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Net;
+using Microsoft.Extensions.Configuration;
 using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Tui;
 using Netclaw.Cli.Tui.Wizard;
@@ -131,5 +133,72 @@ public sealed class HealthCheckStepViewModelTests : IDisposable
         // Second run should execute (not blocked by stale IsComplete)
         await step.RunWithOrchestrator(orchestrator);
         Assert.True(step.IsComplete.Value);
+    }
+
+    [Fact]
+    public async Task RunWithOrchestrator_Supervised_WritesConfig_TriggersRestart_AndReportsReady()
+    {
+        // Under a container supervisor the wizard must NOT stop or spawn the daemon;
+        // it writes config and asks the running daemon to restart in-process (#1279).
+        var handler = new StubHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        var daemonApi = new DaemonApi(
+            new StubHttpClientFactory(handler),
+            new ConfigurationBuilder().Build(),
+            _paths);
+
+        // daemonManager is null on purpose: the supervised path never touches it,
+        // so reaching "Daemon ready" proves the restart-endpoint branch executed.
+        using var step = new HealthCheckStepViewModel(
+            daemonManager: null,
+            daemonApi: daemonApi,
+            navigationState: new ChatNavigationState(),
+            timeProvider: TimeProvider.System,
+            supervisor: new FakeContainerSupervisor(isExternallySupervised: true));
+        using var exposureStep = new ExposureModeStepViewModel
+        {
+            SelectedMode = ExposureMode.Local
+        };
+
+        using var context = new WizardContext
+        {
+            Paths = _paths,
+            Registry = new ProviderDescriptorRegistry([]),
+            RequestRedraw = () => { }
+        };
+
+        step.OnEnter(context, NavigationDirection.Forward);
+        exposureStep.OnEnter(context, NavigationDirection.Forward);
+
+        using var orchestrator = new WizardOrchestrator([exposureStep, step], context);
+
+        await step.RunWithOrchestrator(orchestrator);
+
+        Assert.True(File.Exists(_paths.NetclawConfigPath));
+        Assert.Contains("POST /api/lifecycle/restart", handler.Requests);
+        Assert.Contains(step.Results, r => r.Label == "Daemon ready" && r.Passed == true);
+        // Supervised mode must never stop the supervised daemon.
+        Assert.DoesNotContain(step.Results, r => r.Label.Contains("Stopping daemon", StringComparison.Ordinal));
+    }
+
+    private sealed class FakeContainerSupervisor(bool isExternallySupervised) : IContainerSupervisor
+    {
+        public bool IsExternallySupervised => isExternallySupervised;
+    }
+
+    private sealed class StubHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
+    }
+
+    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> responder)
+        : HttpMessageHandler
+    {
+        public List<string> Requests { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests.Add($"{request.Method} {request.RequestUri!.AbsolutePath}");
+            return Task.FromResult(responder(request));
+        }
     }
 }

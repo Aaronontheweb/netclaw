@@ -157,6 +157,7 @@ static async Task RunAsync(string[] args)
             var initPaths = new NetclawPaths();
             builder.Services.AddSingleton(initPaths);
             builder.Services.AddSingleton(TimeProvider.System);
+            builder.Services.AddSingleton<IContainerSupervisor, ContainerSupervisor>();
             builder.Services.AddSingleton<DaemonManager>();
             builder.Services.AddSingleton<IBrowserAutomationBootstrapper, BrowserAutomationBootstrapper>();
 
@@ -1785,6 +1786,9 @@ static NetclawPaths ConfigureConfigServices(IServiceCollection services, IConfig
     // Shared daemon HTTP API client — single endpoint resolution for all commands
     services.AddHttpClient();
     services.AddSingleton<DaemonApi>();
+
+    // Whether an external supervisor (e.g. the Docker entrypoint) owns the daemon lifecycle.
+    services.AddSingleton<IContainerSupervisor, ContainerSupervisor>();
 
     return paths;
 }

@@ -15,24 +15,33 @@ namespace Netclaw.Cli.Tui.Wizard.Steps;
 public sealed class HealthCheckStepViewModel : IWizardStepViewModel
 {
     private static readonly TimeSpan OverallHealthCheckTimeout = TimeSpan.FromMinutes(5);
+
+    // Generous enough to absorb a supervisor restart gap, including the
+    // entrypoint's crash-loop backoff (caps at 60s) when the daemon was down
+    // and the supervisor must (re)start it from the freshly-written config.
+    private static readonly TimeSpan SupervisedReadyTimeout = TimeSpan.FromSeconds(90);
+
     private const string NotReadyMessage = "Daemon did not become ready (personality setup skipped)";
 
     private readonly DaemonManager? _daemonManager;
     private readonly DaemonApi? _daemonApi;
     private readonly ChatNavigationState? _navigationState;
     private readonly TimeProvider _timeProvider;
+    private readonly IContainerSupervisor _supervisor;
     private WizardContext? _context;
 
     public HealthCheckStepViewModel(
         DaemonManager? daemonManager = null,
         DaemonApi? daemonApi = null,
         ChatNavigationState? navigationState = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IContainerSupervisor? supervisor = null)
     {
         _daemonManager = daemonManager;
         _daemonApi = daemonApi;
         _navigationState = navigationState;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _supervisor = supervisor ?? new ContainerSupervisor();
     }
 
     public string StepId => WizardStepIds.HealthCheck;
@@ -144,8 +153,11 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
         // Run health checks from all steps
         await orchestrator.RunHealthChecksAsync(runner, ct);
 
-        // Stop daemon before writing config
-        if (_daemonManager is not null)
+        // Stop daemon before writing config. Under a container supervisor we must
+        // NOT stop the daemon: stopping it would make the supervisor (re)start it
+        // — possibly with a backoff and before config is written. Instead we leave
+        // it running and trigger an in-process restart after the write (#1279).
+        if (_daemonManager is not null && !_supervisor.IsExternallySupervised)
         {
             var status = _daemonManager.GetStatus();
             if (status.IsRunning)
@@ -174,12 +186,17 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
             runner.UpdateLast(new HealthCheckItem($"Configuration write failed: {ex.Message}", false));
         }
 
-        // Start daemon if all passed
+        // Apply config if all passed. On host installs the CLI (re)starts a detached
+        // daemon; under a container supervisor we instead ask the running daemon to
+        // restart in-process so we never spawn a second netclawd (#1279).
         var allPassed = runner.AllPassed;
         if (allPassed)
         {
-            runner.Add(new HealthCheckItem("Starting daemon", null));
-            var daemonOk = await StartAndPollDaemonAsync(ct);
+            var supervised = _supervisor.IsExternallySupervised;
+            runner.Add(new HealthCheckItem(supervised ? "Applying configuration" : "Starting daemon", null));
+            var daemonOk = supervised
+                ? await RestartAndPollSupervisedAsync(ct)
+                : await StartAndPollDaemonAsync(ct);
             if (daemonOk)
             {
                 runner.UpdateLast(new HealthCheckItem("Daemon ready", true));
@@ -261,6 +278,65 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
         {
             Results[^1] = new HealthCheckItem(failureMessage, false);
             NotifyChanged();
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Container-supervised finalization: asks the running daemon to restart
+    /// in-process (best-effort) so it re-reads the freshly-written config, then
+    /// polls readiness. Never spawns a daemon — the supervisor owns startup. If
+    /// the daemon is unreachable (e.g. crash-looping on first boot before config
+    /// existed) the supervisor restarts it from the on-disk config and the poll
+    /// still observes it become ready.
+    /// </summary>
+    private async Task<bool> RestartAndPollSupervisedAsync(CancellationToken ct)
+    {
+        if (_daemonApi is null) return false;
+
+        try
+        {
+            await _daemonApi.RestartAsync(ct);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+        {
+            // Daemon not reachable (e.g. crash-looping on first boot before config
+            // existed). The restart request is best-effort: the supervisor will
+            // start it from the on-disk config. Surface that we're waiting on it.
+            Results[^1] = new HealthCheckItem("Applying configuration (waiting for supervisor)", null);
+            NotifyChanged();
+        }
+
+        // Poll readiness across the restart gap. Unlike the host path we never
+        // break early on "not running": the daemon goes down then comes back as the
+        // supervisor's child, and the supervisor may apply a restart backoff first.
+        var deadline = _timeProvider.GetUtcNow() + SupervisedReadyTimeout;
+        var elapsedSeconds = 0;
+        while (_timeProvider.GetUtcNow() < deadline)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            bool ready;
+            try
+            {
+                ready = await _daemonApi.IsHealthyAsync(ct);
+            }
+            catch (HttpRequestException)
+            {
+                ready = false; // daemon mid-restart / not yet listening — keep waiting
+            }
+            catch (TaskCanceledException) when (!ct.IsCancellationRequested)
+            {
+                ready = false; // per-request timeout, not overall cancellation — keep waiting
+            }
+
+            if (ready)
+                return true;
+
+            Results[^1] = new HealthCheckItem($"Applying configuration ({++elapsedSeconds}s)", null);
+            NotifyChanged();
+            await Task.Delay(TimeSpan.FromSeconds(1), _timeProvider, ct);
         }
 
         return false;

@@ -95,6 +95,45 @@ public sealed class DaemonManagerSingletonGuardTests : IDisposable
         Assert.Contains("already running", result.Message);
     }
 
+    [Fact]
+    public void Start_DoesNotSpawn_AndReportsManaged_WhenSupervised_AndDaemonRunning()
+    {
+        // A supervised daemon holds the lock; the CLI must defer to the supervisor
+        // and report success rather than spawning a second netclawd (#1279).
+        using var holder = new FileStream(
+            _paths.LockFilePath,
+            FileMode.OpenOrCreate,
+            FileAccess.ReadWrite,
+            FileShare.None);
+
+        var supervised = new DaemonManager(_paths, TimeProvider.System, new FakeSupervisor(true));
+
+        var result = supervised.Start();
+
+        Assert.True(result.Success);
+        Assert.Contains("managed by container supervisor", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Start_ReportsSupervisorOwnsStartup_WhenSupervised_AndNotRunning()
+    {
+        // No lock held, no real netclawd binary: the non-supervised path would try
+        // to find/spawn the binary. The supervised path must instead defer to the
+        // supervisor and never reach the spawn logic.
+        var supervised = new DaemonManager(_paths, TimeProvider.System, new FakeSupervisor(true));
+
+        var result = supervised.Start();
+
+        Assert.False(result.Success);
+        Assert.Contains("container supervisor", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Cannot find netclawd", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed class FakeSupervisor(bool supervised) : IContainerSupervisor
+    {
+        public bool IsExternallySupervised => supervised;
+    }
+
     public void Dispose()
     {
         try { _dir.Dispose(); }

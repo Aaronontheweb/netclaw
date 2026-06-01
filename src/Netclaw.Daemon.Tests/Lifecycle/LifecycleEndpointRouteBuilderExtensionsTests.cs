@@ -28,6 +28,7 @@ namespace Netclaw.Daemon.Tests.Lifecycle;
 public sealed class LifecycleEndpointRouteBuilderExtensionsTests : IAsyncDisposable
 {
     private readonly TrackingNotificationSink _sink = new();
+    private readonly RecordingRestartCoordinator _restartCoordinator = new();
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
@@ -44,6 +45,7 @@ public sealed class LifecycleEndpointRouteBuilderExtensionsTests : IAsyncDisposa
         builder.Services.AddSingleton<IOperationalNotificationSink>(_sink);
         builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
         builder.Services.AddSingleton<DaemonLifecycleNotifier>();
+        builder.Services.AddSingleton<IDaemonRestartCoordinator>(_restartCoordinator);
 
         var app = builder.Build();
 
@@ -118,6 +120,39 @@ public sealed class LifecycleEndpointRouteBuilderExtensionsTests : IAsyncDisposa
         Assert.Equal(shutdownReason, alert.Context["reason"]);
     }
 
+    // ─── POST /api/lifecycle/restart ──────────────────────────────────────────
+
+    [Fact]
+    public async Task Restart_returns_401_for_unauthenticated_request()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var app = await CreateAppAsync(spoofLoopback: false);
+        var client = app.GetTestClient();
+
+        var response = await client.PostAsync("/api/lifecycle/restart", null, ct);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(0, _restartCoordinator.CallCount);
+    }
+
+    [Fact]
+    public async Task Restart_returns_200_and_invokes_restart_coordinator()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var app = await CreateAppAsync(spoofLoopback: true);
+        var client = app.GetTestClient();
+
+        var response = await client.PostAsync("/api/lifecycle/restart", null, ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
+        Assert.Equal("config-reload", body.GetProperty("reason").GetString());
+        Assert.True(body.TryGetProperty("pid", out _));
+
+        Assert.Equal(1, _restartCoordinator.CallCount);
+    }
+
     // ─── Notification sink ────────────────────────────────────────────────────
 
     /// <summary>
@@ -130,5 +165,21 @@ public sealed class LifecycleEndpointRouteBuilderExtensionsTests : IAsyncDisposa
         public IReadOnlyList<OperationalAlert> Emitted => _emitted;
 
         public void Emit(OperationalAlert alert) => _emitted.Add(alert);
+    }
+
+    /// <summary>
+    /// Records restart requests so tests can assert the endpoint delegates to
+    /// <see cref="IDaemonRestartCoordinator.RequestConfigRestartAsync"/> without
+    /// actually shutting the host down.
+    /// </summary>
+    private sealed class RecordingRestartCoordinator : IDaemonRestartCoordinator
+    {
+        public int CallCount { get; private set; }
+
+        public Task RequestConfigRestartAsync(CancellationToken cancellationToken)
+        {
+            CallCount++;
+            return Task.CompletedTask;
+        }
     }
 }

@@ -303,6 +303,35 @@ public sealed class DaemonApi
         return response.IsSuccessStatusCode;
     }
 
+    // ── Lifecycle ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Requests a graceful in-process daemon restart so the running daemon
+    /// re-reads config (including the Daemon/bind section the config watcher
+    /// refuses to hot-reload). Used by the init wizard under a container
+    /// supervisor instead of spawning a detached daemon (#1279). Returns
+    /// <c>true</c> if the daemon accepted the request.
+    /// </summary>
+    /// <remarks>
+    /// Auth: the restart is authenticated against the daemon's <em>current</em>
+    /// (pre-config-write) exposure mode — at first init that is still
+    /// <c>Local</c>, so the tokenless loopback path authorizes it; when a device
+    /// token already exists it is attached by <see cref="CreateHttpClient"/>.
+    /// The wizard then confirms readiness via the anonymous
+    /// <c>/api/health/ready</c> endpoint, which needs no token regardless of the
+    /// post-restart mode. Do not "fix" this to re-resolve the token after the
+    /// config write — that would break the first-init Local→non-Local case.
+    /// Uses the long timeout because the daemon drains active sessions (up to
+    /// ~20s) before restarting.
+    /// </remarks>
+    public async Task<bool> RestartAsync(CancellationToken ct = default)
+    {
+        using var cts = CreateTimeoutCts(LongTimeout, ct);
+        var client = CreateHttpClient();
+        using var response = await client.PostAsync($"{_endpoint}/api/lifecycle/restart", content: null, cts.Token);
+        return response.IsSuccessStatusCode;
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────
 
     private static CancellationTokenSource CreateTimeoutCts(TimeSpan timeout, CancellationToken ct)
