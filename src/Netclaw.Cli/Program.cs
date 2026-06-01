@@ -188,15 +188,14 @@ static async Task RunAsync(string[] args)
                 var models = initConfig.GetSection("Models")
                     .Get<ModelSelection>() ?? new ModelSelection();
 
-                var contextWindow = ContextWindowResolution.ResolveAsync(
-                    models.Main.ContextWindow,
-                    sp.GetRequiredService<DaemonApi>(),
-                    models.Main.ModelId).GetAwaiter().GetResult();
+                var runtime = ContextWindowResolution.ResolveRuntimeAsync(
+                    models.Main,
+                    sp.GetRequiredService<DaemonApi>()).GetAwaiter().GetResult();
 
                 return new ModelCapabilities
                 {
-                    ModelId = models.Main.ModelId,
-                    ContextWindowTokens = contextWindow,
+                    ModelId = runtime.ModelId,
+                    ContextWindowTokens = runtime.ContextWindowTokens,
                     CompactionModelId = models.Compaction?.ModelId,
                 };
             });
@@ -1817,15 +1816,14 @@ static void ConfigureCliChatServices(IServiceCollection services, IConfiguration
     services.AddSingleton(sessionConfig);
     services.AddSingleton(sp =>
     {
-        var contextWindow = ContextWindowResolution.ResolveAsync(
-            models.Main.ContextWindow,
-            sp.GetRequiredService<DaemonApi>(),
-            models.Main.ModelId).GetAwaiter().GetResult();
+        var runtime = ContextWindowResolution.ResolveRuntimeAsync(
+            models.Main,
+            sp.GetRequiredService<DaemonApi>()).GetAwaiter().GetResult();
 
         return new ModelCapabilities
         {
-            ModelId = models.Main.ModelId,
-            ContextWindowTokens = contextWindow,
+            ModelId = runtime.ModelId,
+            ContextWindowTokens = runtime.ContextWindowTokens,
             CompactionModelId = models.Compaction?.ModelId,
         };
     });

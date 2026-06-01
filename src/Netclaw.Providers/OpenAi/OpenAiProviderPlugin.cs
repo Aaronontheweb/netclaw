@@ -28,7 +28,9 @@ public sealed class OpenAiProviderPlugin : ProviderPluginBase<OpenAiDescriptor>
             var token = entry.OAuthAccessToken.RequireValid(
                 "OpenAI OAuth access token (run 'netclaw provider fix <name>')");
 
-            var accountId = JwtAccountIdExtractor.Extract(token.Value);
+            var accountId = JwtAccountIdExtractor.ResolveAccountId(entry)
+                ?? throw new InvalidOperationException(
+                    "OpenAI OAuth credential is missing ChatGPT account ID. Re-authenticate with 'netclaw provider fix <name>'.");
             var options = new OpenAIClientOptions
             {
                 Endpoint = new Uri("https://chatgpt.com/backend-api/codex")

@@ -5,6 +5,8 @@
 // -----------------------------------------------------------------------
 using System.Text;
 using System.Text.Json;
+using System.ClientModel;
+using System.ClientModel.Primitives;
 using Microsoft.Extensions.Time.Testing;
 using Netclaw.Configuration;
 using Netclaw.Providers;
@@ -109,6 +111,64 @@ public sealed class OpenAiCodexTests
 
             Assert.Null(result);
         }
+
+        [Fact]
+        public void Extract_ReturnsNestedChatGptAccountClaim()
+        {
+            var jwt = MakeJwt(new Dictionary<string, object>
+            {
+                ["https://api.openai.com/auth"] = new Dictionary<string, object>
+                {
+                    ["chatgpt_account_id"] = "account-from-id-token"
+                }
+            });
+
+            var result = JwtAccountIdExtractor.Extract(jwt);
+
+            Assert.Equal("account-from-id-token", result);
+        }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  OpenAiCodexRequestPolicy
+    // ────────────────────────────────────────────────────────────────────
+
+    public sealed class OpenAiCodexRequestPolicyTests
+    {
+        [Fact]
+        public void Process_AddsChatGptAccountIdHeader()
+        {
+            var policy = new OpenAiCodexRequestPolicy("account-123");
+            var pipeline = ClientPipeline.Create(new ClientPipelineOptions());
+            using var message = pipeline.CreateMessage();
+            message.Request.Method = "POST";
+            message.Request.Uri = new Uri("https://chatgpt.com/backend-api/codex/responses");
+
+            var terminal = new TerminalPolicy();
+            policy.Process(message, [policy, terminal], 0);
+
+            Assert.True(terminal.WasCalled);
+            message.Request.Headers.TryGetValue("ChatGPT-Account-Id", out var accountId);
+            Assert.Equal("account-123", accountId);
+        }
+
+        private sealed class TerminalPolicy : PipelinePolicy
+        {
+            public bool WasCalled { get; private set; }
+
+            public override void Process(
+                PipelineMessage message, IReadOnlyList<PipelinePolicy> pipeline, int currentIndex)
+            {
+                WasCalled = true;
+            }
+
+            public override ValueTask ProcessAsync(
+                PipelineMessage message, IReadOnlyList<PipelinePolicy> pipeline, int currentIndex)
+            {
+                WasCalled = true;
+                return ValueTask.CompletedTask;
+            }
+        }
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -135,6 +195,7 @@ public sealed class OpenAiCodexTests
         public void SupportedAuthMethods_ContainsBothOAuthAndApiKey()
         {
             Assert.Contains(AuthMethod.OAuthPkce, _descriptor.Auth.SupportedAuthMethods);
+            Assert.Contains(AuthMethod.OAuthDevice, _descriptor.Auth.SupportedAuthMethods);
             Assert.Contains(AuthMethod.ApiKey, _descriptor.Auth.SupportedAuthMethods);
         }
 
@@ -172,6 +233,7 @@ public sealed class OpenAiCodexTests
                 Type = "openai",
                 AuthMethod = AuthMethod.OAuthPkce,
                 OAuthAccessToken = new SensitiveString("fake-oauth-token"),
+                OAuthAccountId = new SensitiveString("account-1"),
             };
 
             var result = await _descriptor.ProbeAsync(entry, TestContext.Current.CancellationToken);
@@ -194,6 +256,38 @@ public sealed class OpenAiCodexTests
                     $"{m.ModelId} should accept text input");
                 Assert.Equal(ModelModality.Text, m.OutputModalities);
             });
+        }
+
+        [Fact]
+        public async Task ProbeAsync_WithLegacyJwtOAuthToken_ReturnsCuratedModels()
+        {
+            var entry = new ProviderEntry
+            {
+                Type = "openai",
+                AuthMethod = AuthMethod.OAuthPkce,
+                OAuthAccessToken = new SensitiveString(MakeJwt(new { oid = "legacy-account" })),
+            };
+
+            var result = await _descriptor.ProbeAsync(entry, TestContext.Current.CancellationToken);
+
+            Assert.True(result.Success);
+            Assert.NotEmpty(result.Models);
+        }
+
+        [Fact]
+        public async Task ProbeAsync_WithOpaqueOAuthTokenMissingAccountId_ReturnsFailure()
+        {
+            var entry = new ProviderEntry
+            {
+                Type = "openai",
+                AuthMethod = AuthMethod.OAuthPkce,
+                OAuthAccessToken = new SensitiveString("opaque-oauth-token"),
+            };
+
+            var result = await _descriptor.ProbeAsync(entry, TestContext.Current.CancellationToken);
+
+            Assert.False(result.Success);
+            Assert.Contains("account ID", result.ErrorMessage);
         }
 
         [Fact]
@@ -225,6 +319,7 @@ public sealed class OpenAiCodexTests
                 AuthMethod = AuthMethod.OAuthPkce,
                 OAuthAccessToken = new SensitiveString("fake-oauth-token"),
                 OAuthTokenExpiry = now.AddHours(-1),
+                OAuthAccountId = new SensitiveString("account-1"),
             };
 
             var result = await descriptor.ProbeAsync(entry, TestContext.Current.CancellationToken);
@@ -248,6 +343,7 @@ public sealed class OpenAiCodexTests
                 AuthMethod = AuthMethod.OAuthPkce,
                 OAuthAccessToken = new SensitiveString("fake-oauth-token"),
                 OAuthTokenExpiry = now.AddHours(1),
+                OAuthAccountId = new SensitiveString("account-1"),
             };
 
             var result = await descriptor.ProbeAsync(entry, TestContext.Current.CancellationToken);

@@ -43,11 +43,11 @@ public sealed class OpenAiDescriptor : IProviderDescriptor
 
     public IProviderAuth Auth { get; } = new MultiAuth
     {
-        SupportedAuthMethods = [AuthMethod.OAuthPkce, AuthMethod.ApiKey],
+        SupportedAuthMethods = [AuthMethod.OAuthDevice, AuthMethod.OAuthPkce, AuthMethod.ApiKey],
         GuidanceUrl = new Uri("https://platform.openai.com/api-keys"),
         OAuth = new OAuthAuth
         {
-            SupportedAuthMethods = [AuthMethod.OAuthPkce],
+            SupportedAuthMethods = [AuthMethod.OAuthDevice, AuthMethod.OAuthPkce],
             TokenEndpoint = new Uri("https://auth.openai.com/oauth/token"),
             ClientId = "app_EMoamEEZ73f0CkXaXp7hrann",
             DeviceEndpoint = new Uri("https://auth.openai.com/api/accounts/deviceauth/usercode"),
@@ -60,7 +60,8 @@ public sealed class OpenAiDescriptor : IProviderDescriptor
         },
         AuthMethodLabels = new Dictionary<AuthMethod, string>
         {
-            [AuthMethod.OAuthPkce] = "ChatGPT Subscription (recommended)",
+            [AuthMethod.OAuthDevice] = "ChatGPT Subscription (recommended)",
+            [AuthMethod.OAuthPkce] = "ChatGPT Subscription (browser)",
             [AuthMethod.ApiKey] = "API Key (platform.openai.com)",
         },
     };
@@ -107,6 +108,10 @@ public sealed class OpenAiDescriptor : IProviderDescriptor
         if (entry.OAuthTokenExpiry is { } expiry && expiry < _timeProvider.GetUtcNow())
             return Task.FromResult(new ProviderProbeResult(false,
                 $"OAuth token expired {expiry:g}. Re-authenticate with 'netclaw provider fix <name>'.", []));
+
+        if (JwtAccountIdExtractor.ResolveAccountId(entry) is null)
+            return Task.FromResult(new ProviderProbeResult(false,
+                "OpenAI OAuth login did not return a ChatGPT account ID. Re-authenticate with 'netclaw provider fix <name>'.", []));
 
         // Codex tokens can't probe — return curated models
         return Task.FromResult(new ProviderProbeResult(true, null, CuratedModels));

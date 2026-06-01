@@ -874,6 +874,7 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         _probeCts = new CancellationTokenSource();
         var ct = _probeCts.Token;
         var providerType = NewProviderType ?? "unknown";
+        var probeEntry = BuildNewProviderProbeEntry(providerType);
         var probeId = IdGen.ShortId();
         var stopwatch = Stopwatch.StartNew();
         Exception? probeException = null;
@@ -896,12 +897,7 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         var result = new ProviderProbeResult(false, "Validation failed before probe completed.", []);
         try
         {
-            result = await _probe.ProbeAsync(
-                    providerType,
-                    NewEndpoint,
-                    NewApiKey,
-                    NewAuthMethod,
-                    ct)
+            result = await _probe.ProbeAsync(probeEntry, ct)
                 .WaitAsync(ProbeHardTimeout, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -971,6 +967,37 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
 
             RequestRedraw();
         }
+    }
+
+    private ProviderEntry BuildNewProviderProbeEntry(string providerType)
+    {
+        var entry = new ProviderEntry
+        {
+            Type = providerType,
+            Endpoint = NewEndpoint ?? "",
+            AuthMethod = NewAuthMethod
+        };
+
+        if (NewAuthMethod is AuthMethod.OAuthDevice or AuthMethod.OAuthPkce)
+        {
+            var result = OAuth.Result;
+            var credential = NewApiKey;
+            if (string.IsNullOrWhiteSpace(credential))
+                credential = result?.AccessToken.Value;
+
+            entry.OAuthAccessToken = !string.IsNullOrWhiteSpace(credential)
+                ? new SensitiveString(credential)
+                : null;
+            entry.OAuthRefreshToken = result?.RefreshToken;
+            entry.OAuthTokenExpiry = result?.ExpiresAt;
+            entry.OAuthAccountId = result?.AccountId;
+        }
+        else if (!string.IsNullOrWhiteSpace(NewApiKey))
+        {
+            entry.ApiKey = new SensitiveString(NewApiKey);
+        }
+
+        return entry;
     }
 
 
