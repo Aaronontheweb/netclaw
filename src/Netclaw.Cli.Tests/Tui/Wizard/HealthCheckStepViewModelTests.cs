@@ -135,30 +135,38 @@ public sealed class HealthCheckStepViewModelTests : IDisposable
         Assert.True(step.IsComplete.Value);
     }
 
+    // Restart-generation timestamps written to the PID file. The wizard treats a
+    // newer value as proof the daemon actually restarted onto the new config.
+    private static readonly DateTimeOffset OldGeneration = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset NewGeneration = new(2026, 1, 1, 0, 5, 0, TimeSpan.Zero);
+
     [Fact]
-    public async Task RunWithOrchestrator_Supervised_WritesConfig_TriggersRestart_AndReportsReady()
+    public async Task RunWithOrchestrator_Supervised_RestartsInProcess_AndReportsReadyOnNewGeneration()
     {
         // Under a container supervisor the wizard must NOT stop or spawn the daemon;
         // it writes config and asks the running daemon to restart in-process (#1279).
-        var handler = new StubHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK));
-        var daemonApi = new DaemonApi(
-            new StubHttpClientFactory(handler),
-            new ConfigurationBuilder().Build(),
-            _paths);
+        // Readiness must require a NEW restart generation, not just a healthy probe —
+        // the draining pre-restart daemon also answers /health/ready.
+        WritePidFile(pid: 4321, startedAt: OldGeneration);
+        var daemonManager = new DaemonManager(_paths, TimeProvider.System);
 
-        // daemonManager is null on purpose: the supervised path never touches it,
-        // so reaching "Daemon ready" proves the restart-endpoint branch executed.
+        // The fake daemon advances its PID-file generation when it receives the restart,
+        // mirroring PidFileService rewriting StartedAt on each in-process restart.
+        var handler = new StubHttpMessageHandler(req =>
+        {
+            if (req.Method == HttpMethod.Post && req.RequestUri!.AbsolutePath == "/api/lifecycle/restart")
+                WritePidFile(pid: 4321, startedAt: NewGeneration);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+        var daemonApi = new DaemonApi(new StubHttpClientFactory(handler), new ConfigurationBuilder().Build(), _paths);
+
         using var step = new HealthCheckStepViewModel(
-            daemonManager: null,
-            daemonApi: daemonApi,
+            daemonManager,
+            daemonApi,
             navigationState: new ChatNavigationState(),
             timeProvider: TimeProvider.System,
             supervisor: new FakeContainerSupervisor(isExternallySupervised: true));
-        using var exposureStep = new ExposureModeStepViewModel
-        {
-            SelectedMode = ExposureMode.Local
-        };
-
+        using var exposureStep = new ExposureModeStepViewModel { SelectedMode = ExposureMode.Local };
         using var context = new WizardContext
         {
             Paths = _paths,
@@ -168,7 +176,6 @@ public sealed class HealthCheckStepViewModelTests : IDisposable
 
         step.OnEnter(context, NavigationDirection.Forward);
         exposureStep.OnEnter(context, NavigationDirection.Forward);
-
         using var orchestrator = new WizardOrchestrator([exposureStep, step], context);
 
         await step.RunWithOrchestrator(orchestrator);
@@ -179,6 +186,67 @@ public sealed class HealthCheckStepViewModelTests : IDisposable
         // Supervised mode must never stop the supervised daemon.
         Assert.DoesNotContain(step.Results, r => r.Label.Contains("Stopping daemon", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void IsRestartedGeneration_BlocksStale_AllowsNewerOrDownDaemon()
+    {
+        // The generation gate is what prevents the readiness race: a healthy probe
+        // against the still-draining pre-restart daemon must NOT count as ready (#1279).
+        WritePidFile(pid: 4321, startedAt: OldGeneration); // current recorded generation
+        var daemonManager = new DaemonManager(_paths, TimeProvider.System);
+        using var step = new HealthCheckStepViewModel(
+            daemonManager,
+            supervisor: new FakeContainerSupervisor(isExternallySupervised: true));
+
+        // Same generation as before the restart → daemon hasn't restarted → not ready.
+        Assert.False(step.IsRestartedGeneration(OldGeneration));
+        // Recorded generation is newer than the pre-restart value → restarted → ready.
+        Assert.True(step.IsRestartedGeneration(OldGeneration.AddMinutes(-1)));
+        // Daemon was down before (no pre-restart generation) → any live instance counts.
+        Assert.True(step.IsRestartedGeneration(null));
+    }
+
+    [Fact]
+    public async Task RunWithOrchestrator_Supervised_SurfacesRejectedRestart_InsteadOfFalseReady()
+    {
+        // A reachable daemon that rejects the restart (e.g. 401) leaves the old config
+        // running; the wizard must report the failure rather than polling the still-up
+        // daemon and claiming success (#1279 review).
+        WritePidFile(pid: 4321, startedAt: OldGeneration);
+        var daemonManager = new DaemonManager(_paths, TimeProvider.System);
+
+        var handler = new StubHttpMessageHandler(req =>
+            req.RequestUri!.AbsolutePath == "/api/lifecycle/restart"
+                ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                : new HttpResponseMessage(HttpStatusCode.OK));
+        var daemonApi = new DaemonApi(new StubHttpClientFactory(handler), new ConfigurationBuilder().Build(), _paths);
+
+        using var step = new HealthCheckStepViewModel(
+            daemonManager,
+            daemonApi,
+            navigationState: new ChatNavigationState(),
+            timeProvider: TimeProvider.System,
+            supervisor: new FakeContainerSupervisor(isExternallySupervised: true));
+        using var exposureStep = new ExposureModeStepViewModel { SelectedMode = ExposureMode.Local };
+        using var context = new WizardContext
+        {
+            Paths = _paths,
+            Registry = new ProviderDescriptorRegistry([]),
+            RequestRedraw = () => { }
+        };
+
+        step.OnEnter(context, NavigationDirection.Forward);
+        exposureStep.OnEnter(context, NavigationDirection.Forward);
+        using var orchestrator = new WizardOrchestrator([exposureStep, step], context);
+
+        await step.RunWithOrchestrator(orchestrator);
+
+        Assert.Contains(step.Results, r => r.Passed == false && r.Label.Contains("rejected", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(step.Results, r => r.Label == "Daemon ready");
+    }
+
+    private void WritePidFile(int pid, DateTimeOffset startedAt) =>
+        File.WriteAllText(_paths.PidFilePath, $"{pid}\n{startedAt:O}");
 
     private sealed class FakeContainerSupervisor(bool isExternallySupervised) : IContainerSupervisor
     {

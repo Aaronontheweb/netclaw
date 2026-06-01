@@ -295,22 +295,45 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
     {
         if (_daemonApi is null) return false;
 
+        // Capture the daemon's restart generation (PID-file start time, which the
+        // daemon advances on every in-process restart) BEFORE requesting the restart.
+        // Both the draining pre-restart daemon and the restarted one answer the
+        // anonymous /health/ready, so "healthy" alone is not proof the new config is
+        // live — we must also see a newer generation.
+        var beforeStartedAt = _daemonManager?.TryGetRecordedStartTime();
+
+        // Window for crash-log diagnostics if the restart never becomes ready.
+        var restartRequestedAt = _timeProvider.GetUtcNow();
+
+        var daemonReachable = true;
+        var restartAccepted = false;
         try
         {
-            await _daemonApi.RestartAsync(ct);
+            restartAccepted = await _daemonApi.RestartAsync(ct);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
         {
             // Daemon not reachable (e.g. crash-looping on first boot before config
-            // existed). The restart request is best-effort: the supervisor will
-            // start it from the on-disk config. Surface that we're waiting on it.
+            // existed). The supervisor will start it from the on-disk config; poll below.
+            daemonReachable = false;
             Results[^1] = new HealthCheckItem("Applying configuration (waiting for supervisor)", null);
             NotifyChanged();
         }
 
-        // Poll readiness across the restart gap. Unlike the host path we never
-        // break early on "not running": the daemon goes down then comes back as the
-        // supervisor's child, and the supervisor may apply a restart backoff first.
+        // A reachable daemon that REJECTED the restart (e.g. 401, or the coordinator
+        // declined) will keep running the old config. Surface it instead of polling
+        // the still-running old daemon and falsely reporting success.
+        if (daemonReachable && !restartAccepted)
+        {
+            Results[^1] = new HealthCheckItem(
+                "Daemon rejected the restart request — configuration not applied.", false);
+            NotifyChanged();
+            return false;
+        }
+
+        // Poll until a NEWER daemon generation is healthy. Unlike the host path we
+        // never break early on "not running": the daemon goes down then comes back as
+        // the supervisor's child, possibly after a restart backoff.
         var deadline = _timeProvider.GetUtcNow() + SupervisedReadyTimeout;
         var elapsedSeconds = 0;
         while (_timeProvider.GetUtcNow() < deadline)
@@ -331,7 +354,7 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
                 ready = false; // per-request timeout, not overall cancellation — keep waiting
             }
 
-            if (ready)
+            if (ready && IsRestartedGeneration(beforeStartedAt))
                 return true;
 
             Results[^1] = new HealthCheckItem($"Applying configuration ({++elapsedSeconds}s)", null);
@@ -339,7 +362,41 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
             await Task.Delay(TimeSpan.FromSeconds(1), _timeProvider, ct);
         }
 
+        // Timed out: surface the same startup-abort diagnostic the host path does, so a
+        // first-boot bad-config crash-loop isn't reported as a generic "not ready".
+        if (_daemonManager is not null)
+        {
+            var crashFailure = _daemonManager.TryReadStartupFailureFromCrashLog(restartRequestedAt, out var crashLogPath);
+            var failureMessage = (crashFailure, crashLogPath) switch
+            {
+                (not null, _) => $"{crashFailure} See crash log: {crashLogPath}",
+                (null, not null) => $"{NotReadyMessage}. See crash log: {crashLogPath}",
+                _ => null
+            };
+            if (failureMessage is not null)
+            {
+                Results[^1] = new HealthCheckItem(failureMessage, false);
+                NotifyChanged();
+            }
+        }
+
         return false;
+    }
+
+    /// <summary>
+    /// Whether the daemon now reports a newer restart generation than
+    /// <paramref name="before"/> (the PID-file start time advances on each in-process
+    /// restart). A missing pre-restart value (daemon was down) means any live instance
+    /// qualifies; a missing current value means the restarted daemon hasn't written its
+    /// PID file yet, so it does not yet qualify. Without a daemon manager there is no
+    /// generation source, so we fall back to healthy-only.
+    /// </summary>
+    internal bool IsRestartedGeneration(DateTimeOffset? before)
+    {
+        if (_daemonManager is null) return true;
+        var current = _daemonManager.TryGetRecordedStartTime();
+        if (current is null) return false;
+        return before is null || current > before;
     }
 
     private void NotifyChanged()
