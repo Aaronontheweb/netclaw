@@ -345,13 +345,9 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
             {
                 ready = await _daemonApi.IsHealthyAsync(ct);
             }
-            catch (HttpRequestException)
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
             {
-                ready = false; // daemon mid-restart / not yet listening — keep waiting
-            }
-            catch (TaskCanceledException) when (!ct.IsCancellationRequested)
-            {
-                ready = false; // per-request timeout, not overall cancellation — keep waiting
+                ready = false; // daemon mid-restart / per-request timeout — keep waiting
             }
 
             if (ready && IsRestartedGeneration(beforeStartedAt))
