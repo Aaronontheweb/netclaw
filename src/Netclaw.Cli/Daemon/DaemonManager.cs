@@ -117,9 +117,11 @@ public sealed partial class DaemonManager
         // Symmetric with Start(): when an external supervisor owns the lifecycle, the
         // CLI must not stop the daemon. A SIGTERM here would be undone — the supervisor
         // (entrypoint.sh, PID 1) just restarts it — so report that plainly rather than
-        // pretending the stop took effect (#1279).
+        // pretending the stop took effect (#1279). This is a successful no-op (exit 0):
+        // declining because the supervisor owns the lifecycle is expected behavior, not
+        // an error, and the message tells the operator the daemon is NOT being stopped.
         if (_supervisor.IsExternallySupervised)
-            return new DaemonResult(false,
+            return new DaemonResult(true,
                 "Daemon lifecycle is managed by the container supervisor; this command will not stop it "
                 + "(the supervisor would immediately restart it). Stop the container instead (e.g. `docker stop`).");
 

@@ -138,8 +138,11 @@ public sealed class DaemonManagerSingletonGuardTests : IDisposable
 
         var result = await supervised.StopAsync("cli-stop");
 
-        Assert.False(result.Success);
+        // Successful no-op (exit 0): declining because the supervisor owns the lifecycle
+        // is expected, and the message makes clear the daemon is NOT being stopped.
+        Assert.True(result.Success);
         Assert.Contains("container supervisor", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("will not stop it", result.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("docker stop", result.Message, StringComparison.OrdinalIgnoreCase);
     }
 

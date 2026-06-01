@@ -38,8 +38,10 @@ daemon_count() { docker exec "$CONTAINER" sh -c 'pgrep -x netclawd | wc -l' | tr
 # PID of the (first) netclawd, empty if none.
 daemon_pid()   { docker exec "$CONTAINER" sh -c 'pgrep -x netclawd | head -n1' | tr -d '[:space:]'; }
 # Parent PID of the (first) netclawd — must be 1 (entrypoint.sh), proving it is
-# the supervisor's child and not an orphaned/exec-session process.
-daemon_ppid()  { docker exec "$CONTAINER" sh -c 'ps -o ppid= -p "$(pgrep -x netclawd | head -n1)"' | tr -d '[:space:]'; }
+# the supervisor's child and not an orphaned/exec-session process. Emits empty when
+# no daemon is running (rather than letting `ps -p ""` error and trip `set -e` at the
+# capture site, which would abort before the descriptive `fail` + log dump).
+daemon_ppid()  { docker exec "$CONTAINER" sh -c 'pid=$(pgrep -x netclawd | head -n1); [ -n "$pid" ] && ps -o ppid= -p "$pid" || true' | tr -d '[:space:]'; }
 
 wait_healthy() {
     for _ in $(seq 1 "$1"); do

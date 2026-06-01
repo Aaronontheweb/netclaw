@@ -385,11 +385,12 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
     /// restart). A missing pre-restart value (daemon was down) means any live instance
     /// qualifies; a missing current value means the restarted daemon hasn't written its
     /// PID file yet, so it does not yet qualify. Without a daemon manager there is no
-    /// generation source, so we fall back to healthy-only.
+    /// generation source to confirm a restart, so we fail safe (treat as not-yet-restarted)
+    /// rather than risk reporting the still-draining old daemon as ready.
     /// </summary>
     internal bool IsRestartedGeneration(DateTimeOffset? before)
     {
-        if (_daemonManager is null) return true;
+        if (_daemonManager is null) return false;
         var current = _daemonManager.TryGetRecordedStartTime();
         if (current is null) return false;
         return before is null || current > before;
