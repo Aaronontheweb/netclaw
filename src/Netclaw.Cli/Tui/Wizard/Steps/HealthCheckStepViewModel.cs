@@ -16,10 +16,10 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
 {
     private static readonly TimeSpan OverallHealthCheckTimeout = TimeSpan.FromMinutes(5);
 
-    // Generous enough to absorb a supervisor restart gap, including the
-    // entrypoint's crash-loop backoff (caps at 60s) when the daemon was down
-    // and the supervisor must (re)start it from the freshly-written config.
-    private static readonly TimeSpan SupervisedReadyTimeout = TimeSpan.FromSeconds(90);
+    // Generous enough to absorb the daemon's in-process config-reload restart (the
+    // config watcher debounces ~500ms, then drains sessions before restarting) and,
+    // when the daemon was down, a container supervisor's crash-loop backoff (caps at 60s).
+    private static readonly TimeSpan ReloadReadyTimeout = TimeSpan.FromSeconds(90);
 
     private const string NotReadyMessage = "Daemon did not become ready (personality setup skipped)";
 
@@ -27,21 +27,18 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
     private readonly DaemonApi? _daemonApi;
     private readonly ChatNavigationState? _navigationState;
     private readonly TimeProvider _timeProvider;
-    private readonly IContainerSupervisor _supervisor;
     private WizardContext? _context;
 
     public HealthCheckStepViewModel(
         DaemonManager? daemonManager = null,
         DaemonApi? daemonApi = null,
         ChatNavigationState? navigationState = null,
-        TimeProvider? timeProvider = null,
-        IContainerSupervisor? supervisor = null)
+        TimeProvider? timeProvider = null)
     {
         _daemonManager = daemonManager;
         _daemonApi = daemonApi;
         _navigationState = navigationState;
         _timeProvider = timeProvider ?? TimeProvider.System;
-        _supervisor = supervisor ?? new ContainerSupervisor();
     }
 
     public string StepId => WizardStepIds.HealthCheck;
@@ -153,22 +150,14 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
         // Run health checks from all steps
         await orchestrator.RunHealthChecksAsync(runner, ct);
 
-        // Stop daemon before writing config. Under a container supervisor we must
-        // NOT stop the daemon: stopping it would make the supervisor (re)start it
-        // — possibly with a backoff and before config is written. Instead we leave
-        // it running and trigger an in-process restart after the write (#1279).
-        if (_daemonManager is not null && !_supervisor.IsExternallySupervised)
-        {
-            var status = _daemonManager.GetStatus();
-            if (status.IsRunning)
-            {
-                runner.Add(new HealthCheckItem("Stopping daemon for config update", null));
-                var stopResult = await _daemonManager.StopAsync("config-update");
-                runner.UpdateLast(stopResult.Success
-                    ? new HealthCheckItem("Daemon stopped", true)
-                    : new HealthCheckItem($"Daemon stop failed: {stopResult.Message}", false));
-            }
-        }
+        // We never stop the daemon: writing the config below is the single restart
+        // trigger. A running daemon's ConfigWatcherService performs a coordinated
+        // in-process restart to apply it (#1279). Capture its pre-write state first so
+        // we can confirm the reload actually happened — the PID-file generation
+        // advances on each restart, distinguishing the reloaded daemon from the
+        // still-draining old one (both answer the anonymous /health/ready).
+        var wasRunning = _daemonManager?.GetStatus().IsRunning ?? false;
+        var generationBefore = _daemonManager?.TryGetRecordedStartTime();
 
         // Write config
         runner.Add(new HealthCheckItem("Writing configuration", null));
@@ -186,17 +175,15 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
             runner.UpdateLast(new HealthCheckItem($"Configuration write failed: {ex.Message}", false));
         }
 
-        // Apply config if all passed. On host installs the CLI (re)starts a detached
-        // daemon; under a container supervisor we instead ask the running daemon to
-        // restart in-process so we never spawn a second netclawd (#1279).
+        // Apply config if all passed. Writing config already triggered a running
+        // daemon's in-process reload restart; if it wasn't running we start it
+        // (guarded — under a container supervisor Start defers and the supervisor
+        // starts it). Either way we wait for a freshly-restarted, healthy daemon.
         var allPassed = runner.AllPassed;
         if (allPassed)
         {
-            var supervised = _supervisor.IsExternallySupervised;
-            runner.Add(new HealthCheckItem(supervised ? "Applying configuration" : "Starting daemon", null));
-            var daemonOk = supervised
-                ? await RestartAndPollSupervisedAsync(ct)
-                : await StartAndPollDaemonAsync(ct);
+            runner.Add(new HealthCheckItem(wasRunning ? "Applying configuration" : "Starting daemon", null));
+            var daemonOk = await StartIfNeededAndPollAsync(wasRunning, generationBefore, ct);
             if (daemonOk)
             {
                 runner.UpdateLast(new HealthCheckItem("Daemon ready", true));
@@ -223,54 +210,79 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
         }
     }
 
-    private async Task<bool> StartAndPollDaemonAsync(CancellationToken ct)
+    /// <summary>
+    /// Applies the freshly-written config and waits for the daemon to be ready on it.
+    /// Writing config is the single restart trigger: a running daemon's
+    /// <c>ConfigWatcherService</c> performs a coordinated in-process restart, so we
+    /// never stop or directly restart it here. If it was NOT running we start it (on a
+    /// host this spawns; under a container supervisor <see cref="DaemonManager.Start"/>
+    /// defers and the supervisor starts it). Readiness requires both a healthy probe AND
+    /// a newer restart generation than <paramref name="generationBefore"/>, so the
+    /// still-draining pre-restart daemon is not mistaken for the reloaded one.
+    /// </summary>
+    private async Task<bool> StartIfNeededAndPollAsync(bool wasRunning, DateTimeOffset? generationBefore, CancellationToken ct)
     {
         if (_daemonManager is null) return false;
 
-        // DaemonManager.Start only consults the crash log on its 1.5s WaitForExit
-        // branch — anything that crashes after Start returns is invisible to it.
+        // Window for crash-log diagnostics if the daemon never becomes ready.
         var startedAt = _timeProvider.GetUtcNow();
+        var verb = wasRunning ? "Applying configuration" : "Starting daemon";
 
-        var result = _daemonManager.Start();
-        if (!result.Success && !result.Message.Contains("already running", StringComparison.OrdinalIgnoreCase))
+        if (!wasRunning)
         {
-            var failureText = result.CrashLogPath is null
-                ? result.Message
-                : $"{result.Message} See crash log: {result.CrashLogPath}";
-            Results[^1] = new HealthCheckItem(failureText, false);
-            NotifyChanged();
-            return false;
+            // Nothing is running to reload the config, so start it. Guarded: under a
+            // container supervisor Start defers (no spawn) and the supervisor starts it,
+            // which we treat as success here and confirm via the readiness poll below.
+            var result = _daemonManager.Start();
+            if (!result.Success
+                && !result.Message.Contains("already running", StringComparison.OrdinalIgnoreCase)
+                && !result.Message.Contains("container supervisor", StringComparison.OrdinalIgnoreCase))
+            {
+                Results[^1] = new HealthCheckItem(
+                    result.CrashLogPath is null
+                        ? result.Message
+                        : $"{result.Message} See crash log: {result.CrashLogPath}",
+                    false);
+                NotifyChanged();
+                return false;
+            }
         }
 
-        for (var i = 0; i < 30; i++)
+        // Poll until a newer generation is healthy. We never break early on "not
+        // running": the daemon goes down then comes back (in-process reload restart, or
+        // a supervisor restart), possibly after a backoff. With no API client we can't
+        // probe readiness, so the loop is skipped and we fall through to the diagnostic.
+        var api = _daemonApi;
+        var deadline = _timeProvider.GetUtcNow() + ReloadReadyTimeout;
+        var elapsedSeconds = 0;
+        while (api is not null && _timeProvider.GetUtcNow() < deadline)
         {
             ct.ThrowIfCancellationRequested();
+
+            bool ready;
             try
             {
-                if (_daemonApi is not null && await _daemonApi.IsHealthyAsync(ct))
-                    return true;
+                ready = await api.IsHealthyAsync(ct);
             }
-            catch (HttpRequestException)
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
             {
-                Results[^1] = new HealthCheckItem($"Starting daemon ({i + 1}s)", null);
-                NotifyChanged();
-            }
-            catch (TaskCanceledException) when (!ct.IsCancellationRequested)
-            {
-                Results[^1] = new HealthCheckItem($"Starting daemon ({i + 1}s)", null);
-                NotifyChanged();
+                ready = false; // daemon mid-restart / per-request timeout — keep waiting
             }
 
-            if (!_daemonManager.GetStatus().IsRunning)
-                break;
+            if (ready && IsRestartedGeneration(generationBefore))
+                return true;
 
-            await Task.Delay(1000, ct);
+            Results[^1] = new HealthCheckItem($"{verb} ({++elapsedSeconds}s)", null);
+            NotifyChanged();
+            await Task.Delay(TimeSpan.FromSeconds(1), _timeProvider, ct);
         }
 
+        // Timed out: surface the startup-abort crash-log diagnostic if present, so a
+        // bad-config crash-loop isn't reported as a generic "not ready".
         var crashFailure = _daemonManager.TryReadStartupFailureFromCrashLog(startedAt, out var crashLogPath);
         var failureMessage = (crashFailure, crashLogPath) switch
         {
-            (not null, _)  => $"{crashFailure} See crash log: {crashLogPath}",
+            (not null, _) => $"{crashFailure} See crash log: {crashLogPath}",
             (null, not null) => $"{NotReadyMessage}. See crash log: {crashLogPath}",
             _ => null
         };
@@ -278,102 +290,6 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
         {
             Results[^1] = new HealthCheckItem(failureMessage, false);
             NotifyChanged();
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// Container-supervised finalization: asks the running daemon to restart
-    /// in-process (best-effort) so it re-reads the freshly-written config, then
-    /// polls readiness. Never spawns a daemon — the supervisor owns startup. If
-    /// the daemon is unreachable (e.g. crash-looping on first boot before config
-    /// existed) the supervisor restarts it from the on-disk config and the poll
-    /// still observes it become ready.
-    /// </summary>
-    private async Task<bool> RestartAndPollSupervisedAsync(CancellationToken ct)
-    {
-        if (_daemonApi is null) return false;
-
-        // Capture the daemon's restart generation (PID-file start time, which the
-        // daemon advances on every in-process restart) BEFORE requesting the restart.
-        // Both the draining pre-restart daemon and the restarted one answer the
-        // anonymous /health/ready, so "healthy" alone is not proof the new config is
-        // live — we must also see a newer generation.
-        var beforeStartedAt = _daemonManager?.TryGetRecordedStartTime();
-
-        // Window for crash-log diagnostics if the restart never becomes ready.
-        var restartRequestedAt = _timeProvider.GetUtcNow();
-
-        var daemonReachable = true;
-        var restartAccepted = false;
-        try
-        {
-            restartAccepted = await _daemonApi.RestartAsync(ct);
-        }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
-        {
-            // Daemon not reachable (e.g. crash-looping on first boot before config
-            // existed). The supervisor will start it from the on-disk config; poll below.
-            daemonReachable = false;
-            Results[^1] = new HealthCheckItem("Applying configuration (waiting for supervisor)", null);
-            NotifyChanged();
-        }
-
-        // A reachable daemon that REJECTED the restart (e.g. 401, or the coordinator
-        // declined) will keep running the old config. Surface it instead of polling
-        // the still-running old daemon and falsely reporting success.
-        if (daemonReachable && !restartAccepted)
-        {
-            Results[^1] = new HealthCheckItem(
-                "Daemon rejected the restart request — configuration not applied.", false);
-            NotifyChanged();
-            return false;
-        }
-
-        // Poll until a NEWER daemon generation is healthy. Unlike the host path we
-        // never break early on "not running": the daemon goes down then comes back as
-        // the supervisor's child, possibly after a restart backoff.
-        var deadline = _timeProvider.GetUtcNow() + SupervisedReadyTimeout;
-        var elapsedSeconds = 0;
-        while (_timeProvider.GetUtcNow() < deadline)
-        {
-            ct.ThrowIfCancellationRequested();
-
-            bool ready;
-            try
-            {
-                ready = await _daemonApi.IsHealthyAsync(ct);
-            }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
-            {
-                ready = false; // daemon mid-restart / per-request timeout — keep waiting
-            }
-
-            if (ready && IsRestartedGeneration(beforeStartedAt))
-                return true;
-
-            Results[^1] = new HealthCheckItem($"Applying configuration ({++elapsedSeconds}s)", null);
-            NotifyChanged();
-            await Task.Delay(TimeSpan.FromSeconds(1), _timeProvider, ct);
-        }
-
-        // Timed out: surface the same startup-abort diagnostic the host path does, so a
-        // first-boot bad-config crash-loop isn't reported as a generic "not ready".
-        if (_daemonManager is not null)
-        {
-            var crashFailure = _daemonManager.TryReadStartupFailureFromCrashLog(restartRequestedAt, out var crashLogPath);
-            var failureMessage = (crashFailure, crashLogPath) switch
-            {
-                (not null, _) => $"{crashFailure} See crash log: {crashLogPath}",
-                (null, not null) => $"{NotReadyMessage}. See crash log: {crashLogPath}",
-                _ => null
-            };
-            if (failureMessage is not null)
-            {
-                Results[^1] = new HealthCheckItem(failureMessage, false);
-                NotifyChanged();
-            }
         }
 
         return false;

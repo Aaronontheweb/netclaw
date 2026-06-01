@@ -58,13 +58,12 @@ public partial class InitWizardViewModel : ReactiveViewModel
         DaemonManager? daemonManager = null,
         DaemonApi? daemonApi = null,
         IClipboardService? clipboardService = null,
-        IContainerSupervisor? supervisor = null,
         TimeProvider? timeProvider = null)
         : this(paths, registry, registry, slackProbe, discordProbe,
             navigationState: navigationState,
             oauthFactory: oauthFactory, daemonManager: daemonManager, daemonApi: daemonApi,
             clipboardService: clipboardService,
-            supervisor: supervisor, timeProvider: timeProvider)
+            timeProvider: timeProvider)
     {
     }
 
@@ -82,7 +81,6 @@ public partial class InitWizardViewModel : ReactiveViewModel
         DaemonManager? daemonManager = null,
         DaemonApi? daemonApi = null,
         IClipboardService? clipboardService = null,
-        IContainerSupervisor? supervisor = null,
         TimeProvider? timeProvider = null)
     {
         // Create shared context
@@ -106,7 +104,7 @@ public partial class InitWizardViewModel : ReactiveViewModel
         var identityStep = new IdentityStepViewModel();
         var externalSkillsStep = new ExternalSkillsStepViewModel();
         var skillFeedsStep = new SkillFeedsStepViewModel();
-        _healthCheckStep = new HealthCheckStepViewModel(daemonManager, daemonApi, navigationState, timeProvider, supervisor);
+        _healthCheckStep = new HealthCheckStepViewModel(daemonManager, daemonApi, navigationState, timeProvider);
 
         var steps = new List<IWizardStepViewModel>
         {

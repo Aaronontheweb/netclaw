@@ -5,11 +5,12 @@
 # entrypoint.sh (PID 1) is the only thing that ever starts the daemon — across
 # the two restart paths that used to (or could be feared to) split-brain:
 #
-#   Phase A — in-process config reload (the path a model/config change takes):
-#     POST /api/lifecycle/restart drives the daemon's in-process restart loop.
-#     The process must stay alive (SAME pid), keep holding the lock, and remain
-#     the entrypoint's child. The supervisor must NOT observe an exit and spawn
-#     a second daemon.
+#   Phase A — in-process config reload (the path a model/exposure change takes):
+#     Writing netclaw.json drives the daemon's ConfigWatcherService to perform a
+#     coordinated in-process restart (now incl. Daemon-section/exposure changes).
+#     The process must stay alive (SAME pid), keep holding the lock, and remain the
+#     entrypoint's child — the supervisor must NOT observe an exit and spawn a
+#     second daemon.
 #
 #   Phase B — `netclaw daemon start` under the supervisor:
 #     The CLI must defer to the supervisor and refuse to spawn a detached
@@ -76,16 +77,34 @@ echo "    initial: count=$count pid=$pid ppid=$ppid"
 [[ "$count" == "1" ]]  || fail "expected exactly 1 netclawd at startup, found $count"
 [[ "$ppid" == "1" ]]   || fail "netclawd PPID is '$ppid', expected 1 (entrypoint supervisor)"
 
-# ── Phase A: in-process config reload must not respawn / duplicate ──────────
-echo "==> Phase A: in-process restart (config-reload path)"
-docker exec "$CONTAINER" curl -fsS -X POST http://127.0.0.1:5199/api/lifecycle/restart >/dev/null \
-    || fail "POST /api/lifecycle/restart was rejected"
+# ── Phase A: a config write must reload in-process, not respawn / duplicate ──
+echo "==> Phase A: config-write reload (the path a model/exposure change takes)"
+# The daemon rewrites its PID-file generation (line 2 = start time) on every restart,
+# so a changed value proves the in-process reload actually happened.
+pidfile=/home/netclaw/.netclaw/netclaw.pid
+gen_before="$(docker exec "$CONTAINER" sh -c "sed -n 2p $pidfile 2>/dev/null" | tr -d '[:space:]')"
 
-wait_healthy 60 || fail "daemon did not become healthy again after in-process restart"
+# Write a valid Local-mode Daemon section (a change the watcher used to SKIP — #1279).
+# Port stays 5199 so the health probe keeps working after the restart.
+docker exec -i "$CONTAINER" sh -c 'cat > /home/netclaw/.netclaw/config/netclaw.json' <<'JSON'
+{ "Daemon": { "Host": "127.0.0.1", "Port": 5199, "ExposureMode": "local" } }
+JSON
+
+reloaded=false
+for _ in $(seq 1 30); do
+    gen_now="$(docker exec "$CONTAINER" sh -c "sed -n 2p $pidfile 2>/dev/null" | tr -d '[:space:]')"
+    if [[ -n "$gen_now" && "$gen_now" != "$gen_before" ]]; then reloaded=true; break; fi
+    [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || echo false)" == "true" ]] \
+        || fail "container exited during config-reload restart"
+    sleep 1
+done
+[[ "$reloaded" == "true" ]] || fail "config write did not trigger an in-process restart (generation unchanged)"
+
+wait_healthy 60 || fail "daemon did not become healthy again after config-reload restart"
 
 count_a="$(daemon_count)"; pid_a="$(daemon_pid)"; ppid_a="$(daemon_ppid)"
 echo "    after reload: count=$count_a pid=$pid_a ppid=$ppid_a"
-[[ "$count_a" == "1" ]] || fail "in-process reload produced $count_a daemons (expected 1 — duplicate!)"
+[[ "$count_a" == "1" ]] || fail "config reload produced $count_a daemons (expected 1 — duplicate!)"
 [[ "$pid_a" == "$pid" ]] || fail "PID changed ($pid -> $pid_a): the process exited instead of restarting in-process"
 [[ "$ppid_a" == "1" ]]   || fail "netclawd PPID is '$ppid_a' after reload, expected 1"
 if docker logs "$CONTAINER" 2>&1 | grep -q '\[entrypoint\] netclawd exited'; then
