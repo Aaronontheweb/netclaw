@@ -204,17 +204,21 @@ try {
         return
     }
 
-    # Check PATH
+    # Check PATH and offer to add if missing
     Write-Host ""
-    $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-    if ($currentPath -split ";" | Where-Object { $_ -eq $InstallDir }) {
+    $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+    $pathEntries = $userPath -split ';' | ForEach-Object { $_.TrimEnd('\') }
+    $installDirNormalized = $InstallDir.TrimEnd('\')
+
+    if ($pathEntries -contains $installDirNormalized) {
         Write-Host "Installation complete! netclaw is already on your PATH."
     } else {
         Write-Host "Installation complete!"
         Write-Host ""
-        Write-Host "Add Netclaw to your PATH:"
+        Write-Host "Add Netclaw to your PATH by running:"
         Write-Host ""
-        Write-Host "  [Environment]::SetEnvironmentVariable('PATH', `"$InstallDir;`$env:PATH`", 'User')"
+        Write-Host "  `$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')"
+        Write-Host "  [Environment]::SetEnvironmentVariable('PATH', `"$InstallDir;`$userPath`", 'User')"
         Write-Host ""
         Write-Host "Then restart your terminal."
     }
