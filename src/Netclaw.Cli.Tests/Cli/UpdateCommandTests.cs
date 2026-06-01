@@ -77,6 +77,33 @@ public sealed class UpdateCommandTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task RunAsync_BlocksInstall_WhenExternallySupervised()
+    {
+        // A container supervisor owns the daemon binary/lifecycle; in-place self-update
+        // must be refused even if Daemon.DisableSelfUpdate was not also set (#1279).
+        var manifest = CreateManifest("99.0.0", UpdateCheckService.GetCurrentRid());
+        UpdateCommand.TestHttpMessageHandlerFactory = () => CreateSignedHandler(manifest);
+
+        using var stdout = new StringWriter();
+        var originalOut = Console.Out;
+        Console.SetOut(stdout);
+
+        try
+        {
+            var exitCode = await UpdateCommand.RunAsync(
+                ["update"], _paths, selfUpdateDisabled: false, externallySupervised: true);
+
+            Assert.Equal(1, exitCode);
+            Assert.Contains("not supported under a container supervisor", stdout.ToString());
+            Assert.Contains("Pull a newer container image to upgrade.", stdout.ToString());
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+        }
+    }
+
     [Theory]
     [MemberData(nameof(StartupUpdateSkippedCases))]
     public void ShouldRunStartupUpdateCheck_ReturnsFalse_ForInteractiveOrSelfUpdateFlows(string[] args)

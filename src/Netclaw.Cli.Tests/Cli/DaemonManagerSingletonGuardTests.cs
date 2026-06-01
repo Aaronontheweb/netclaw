@@ -129,6 +129,20 @@ public sealed class DaemonManagerSingletonGuardTests : IDisposable
         Assert.DoesNotContain("Cannot find netclawd", result.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task StopAsync_DefersToSupervisor_WhenSupervised()
+    {
+        // Symmetric with Start(): the CLI must not stop a supervised daemon — a SIGTERM
+        // would just be undone by the supervisor restarting it (#1279).
+        var supervised = new DaemonManager(_paths, TimeProvider.System, new FakeSupervisor(true));
+
+        var result = await supervised.StopAsync("cli-stop");
+
+        Assert.False(result.Success);
+        Assert.Contains("container supervisor", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("docker stop", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private sealed class FakeSupervisor(bool supervised) : IContainerSupervisor
     {
         public bool IsExternallySupervised => supervised;

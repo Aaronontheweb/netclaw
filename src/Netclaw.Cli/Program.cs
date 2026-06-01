@@ -865,7 +865,8 @@ static async Task RunAsync(string[] args)
         using var host = builder.Build();
         var paths = host.Services.GetRequiredService<NetclawPaths>();
         var daemonConfig = host.Services.GetRequiredService<DaemonConfig>();
-        Environment.ExitCode = await UpdateCommand.RunAsync(args, paths, daemonConfig.DisableSelfUpdate);
+        Environment.ExitCode = await UpdateCommand.RunAsync(
+            args, paths, daemonConfig.DisableSelfUpdate, new ContainerSupervisor().IsExternallySupervised);
         return;
     }
 

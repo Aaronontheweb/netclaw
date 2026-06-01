@@ -40,10 +40,17 @@ public sealed partial class DaemonManager
     {
         if (_supervisor.IsExternallySupervised)
         {
+            // Fail loudly rather than silently promising an auto-start: if the marker is
+            // set but no supervisor is actually present (e.g. a derived image that kept
+            // NETCLAW_CONTAINER_SUPERVISOR but replaced the entrypoint), nothing will
+            // start the daemon and the operator needs to know to check the container.
             return TryGetRunningPid(out var supervisedPid)
                 ? new DaemonResult(true, $"Daemon managed by container supervisor (PID {supervisedPid}).")
                 : new DaemonResult(false,
-                    "Daemon startup is managed by the container supervisor; it will start automatically.");
+                    "Daemon is not running and its startup is managed by the container supervisor "
+                    + "(NETCLAW_CONTAINER_SUPERVISOR is set); this command does not start it. If it is "
+                    + "not coming up, check the container/entrypoint logs — the marker may be set without "
+                    + "a supervisor present.");
         }
 
         if (TryGetRunningPid(out var existingPid))
@@ -107,6 +114,15 @@ public sealed partial class DaemonManager
     /// </param>
     public async Task<DaemonResult> StopAsync(string reason)
     {
+        // Symmetric with Start(): when an external supervisor owns the lifecycle, the
+        // CLI must not stop the daemon. A SIGTERM here would be undone — the supervisor
+        // (entrypoint.sh, PID 1) just restarts it — so report that plainly rather than
+        // pretending the stop took effect (#1279).
+        if (_supervisor.IsExternallySupervised)
+            return new DaemonResult(false,
+                "Daemon lifecycle is managed by the container supervisor; this command will not stop it "
+                + "(the supervisor would immediately restart it). Stop the container instead (e.g. `docker stop`).");
+
         if (!TryGetRunningPid(out var pid))
             return new DaemonResult(false, "Daemon is not running.");
 

@@ -47,7 +47,7 @@ internal static class UpdateCommand
         }
     }
 
-    public static async Task<int> RunAsync(string[] args, NetclawPaths paths, bool selfUpdateDisabled = false)
+    public static async Task<int> RunAsync(string[] args, NetclawPaths paths, bool selfUpdateDisabled = false, bool externallySupervised = false)
     {
         var checkOnly = false;
         var force = false;
@@ -114,10 +114,17 @@ internal static class UpdateCommand
         if (checkOnly)
             return 0;
 
-        if (selfUpdateDisabled)
+        // In-place binary self-update stops + restarts the daemon, which is invalid
+        // under a container supervisor (it would race/strand the supervised daemon, and
+        // the swapped binary is lost when the container restarts). Gate it on the
+        // supervisor capability too — not just Daemon.DisableSelfUpdate — so the two
+        // markers can't drift on a custom image (#1279).
+        if (selfUpdateDisabled || externallySupervised)
         {
             Console.WriteLine();
-            Console.WriteLine("Self-update is disabled (Daemon.DisableSelfUpdate=true).");
+            Console.WriteLine(externallySupervised
+                ? "Self-update is not supported under a container supervisor."
+                : "Self-update is disabled (Daemon.DisableSelfUpdate=true).");
             Console.WriteLine("Pull a newer container image to upgrade.");
             return 1;
         }

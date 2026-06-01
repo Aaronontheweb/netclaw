@@ -29,6 +29,15 @@ public interface IContainerSupervisor
 }
 
 /// <inheritdoc cref="IContainerSupervisor"/>
+/// <remarks>
+/// The image-set marker is treated as authoritative on purpose. We deliberately do
+/// NOT try to corroborate it (e.g. by inspecting PID 1): a false negative there would
+/// flip the answer to "not supervised" and let the CLI spawn a detached daemon —
+/// re-opening the exact split-brain (#1279) the marker exists to prevent. The image
+/// sets the marker precisely because it knows it runs a supervisor, so the safe
+/// default is to trust it; the lifecycle commands instead fail loudly (rather than
+/// silently) if the daemon is not running, so a mis-set marker is visible.
+/// </remarks>
 public sealed class ContainerSupervisor : IContainerSupervisor
 {
     public bool IsExternallySupervised =>
