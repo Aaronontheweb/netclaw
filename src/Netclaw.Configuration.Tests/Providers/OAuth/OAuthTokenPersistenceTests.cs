@@ -14,7 +14,7 @@ namespace Netclaw.Configuration.Tests.Providers.OAuth;
 public sealed class OAuthTokenPersistenceTests
 {
     [Fact]
-    public void PersistTokens_RemovesStaleAccountIdWhenResultOmitsAccountId()
+    public void PersistTokens_RemovesStaleOptionalOAuthFieldsWhenResultOmitsThem()
     {
         using var dir = new DisposableTempDir();
         var paths = new NetclawPaths(dir.Path);
@@ -26,7 +26,7 @@ public sealed class OAuthTokenPersistenceTests
             new OAuthDeviceFlowResult(
                 new SensitiveString("access-1"),
                 new SensitiveString("refresh-1"),
-                null,
+                DateTimeOffset.Parse("2026-06-01T00:00:00+00:00"),
                 new SensitiveString("account-1")));
 
         OAuthTokenPersistence.PersistTokens(
@@ -34,7 +34,7 @@ public sealed class OAuthTokenPersistenceTests
             "openai",
             new OAuthDeviceFlowResult(
                 new SensitiveString("access-2"),
-                new SensitiveString("refresh-2"),
+                null,
                 null));
 
         using var doc = JsonDocument.Parse(File.ReadAllText(paths.SecretsPath));
@@ -43,6 +43,14 @@ public sealed class OAuthTokenPersistenceTests
             .GetProperty("openai");
 
         Assert.Equal("access-2", provider.GetProperty("OAuthAccessToken").GetString());
+        Assert.False(provider.TryGetProperty("OAuthRefreshToken", out _));
         Assert.False(provider.TryGetProperty("OAuthAccountId", out _));
+
+        using var configDoc = JsonDocument.Parse(File.ReadAllText(paths.NetclawConfigPath));
+        var configProvider = configDoc.RootElement
+            .GetProperty("Providers")
+            .GetProperty("openai");
+
+        Assert.False(configProvider.TryGetProperty("OAuthTokenExpiry", out _));
     }
 }

@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.8.5"
+  version: "2.8.6"
 ---
 
 # Netclaw Operations
@@ -702,6 +702,10 @@ account ID is required by the Codex backend. If OpenAI OAuth validation reports
 that the account ID is missing, re-authenticate the provider with `netclaw
 provider fix <name>` or remove and add it again. API-key OpenAI auth does not
 use the Codex backend or this account-ID metadata.
+
+When adding an OpenAI provider from the CLI, `netclaw provider add <name>
+openai` defaults to the ChatGPT OAuth device flow. Use `--auth api-key
+--api-key <key>` to force platform API-key auth instead.
 
 ### Adding GitHub Copilot
 

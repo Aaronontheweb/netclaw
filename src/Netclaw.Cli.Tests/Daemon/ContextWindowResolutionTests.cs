@@ -34,6 +34,39 @@ public sealed class ContextWindowResolutionTests
     }
 
     [Fact]
+    public async Task ResolveRuntime_UsesDaemonRuntimeModelWhenNoContextWindowConfigured()
+    {
+        var daemon = CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(BuildStatusResponse(
+            400_000,
+            modelId: "gpt-5.3-codex",
+            provider: "openai-codex")));
+
+        var result = await ContextWindowResolution.ResolveRuntimeAsync(new ModelReference(), daemon);
+
+        Assert.Equal("gpt-5.3-codex", result.ModelId);
+        Assert.Equal("openai-codex", result.Provider);
+        Assert.Equal(400_000, result.ContextWindowTokens);
+    }
+
+    [Fact]
+    public async Task ResolveRuntime_DaemonOfflineWithConfiguredContextWindow_ReturnsConfiguredModel()
+    {
+        var daemon = CreateDaemonApi(_ => throw new HttpRequestException("connection refused"));
+        var configured = new ModelReference
+        {
+            Provider = "local-ollama",
+            ModelId = "qwen3:30b",
+            ContextWindow = 32_768
+        };
+
+        var result = await ContextWindowResolution.ResolveRuntimeAsync(configured, daemon);
+
+        Assert.Equal("qwen3:30b", result.ModelId);
+        Assert.Equal("local-ollama", result.Provider);
+        Assert.Equal(32_768, result.ContextWindowTokens);
+    }
+
+    [Fact]
     public async Task NullConfig_DaemonReturnsZeroContextWindow_Throws()
     {
         var daemon = CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(BuildStatusResponse(0)));
@@ -86,7 +119,10 @@ public sealed class ContextWindowResolutionTests
         return new DaemonApi(new StubHttpClientFactory(handler), configuration, paths);
     }
 
-    private static object BuildStatusResponse(int contextWindow) => new
+    private static object BuildStatusResponse(
+        int contextWindow,
+        string modelId = "qwen3:30b",
+        string provider = "openai-compatible") => new
     {
         Overall = "healthy",
         Build = new { Version = "1.0.0", CommitHash = "abc123", BuildTimestamp = "2026-01-01T00:00:00Z" },
@@ -96,8 +132,8 @@ public sealed class ContextWindowResolutionTests
         Telemetry = new { Enabled = false },
         Model = new
         {
-            ModelId = "qwen3:30b",
-            Provider = "openai-compatible",
+            ModelId = modelId,
+            Provider = provider,
             ContextWindow = contextWindow,
             InputModalities = "Text",
             OutputModalities = "Text"

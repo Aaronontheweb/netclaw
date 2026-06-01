@@ -123,6 +123,36 @@ public sealed class ProviderCommandTests : IDisposable
     }
 
     [Fact]
+    public void ShouldDefaultToOAuthDevice_ReturnsTrueForOpenAiWithoutExplicitCredentialChoice()
+    {
+        var result = ProviderCommand.ShouldDefaultToOAuthDevice(
+            "openai",
+            apiKey: null,
+            requestedAuthMethod: null,
+            [AuthMethod.OAuthDevice, AuthMethod.OAuthPkce, AuthMethod.ApiKey]);
+
+        Assert.True(result);
+    }
+
+    [Theory]
+    [InlineData("openai", "sk-test", null)]
+    [InlineData("openai", null, AuthMethod.ApiKey)]
+    [InlineData("anthropic", null, null)]
+    public void ShouldDefaultToOAuthDevice_ReturnsFalseWhenChoiceIsNotImplicitOpenAiOAuth(
+        string providerType,
+        string? apiKey,
+        AuthMethod? requestedAuthMethod)
+    {
+        var result = ProviderCommand.ShouldDefaultToOAuthDevice(
+            providerType,
+            apiKey,
+            requestedAuthMethod,
+            [AuthMethod.OAuthDevice, AuthMethod.OAuthPkce, AuthMethod.ApiKey]);
+
+        Assert.False(result);
+    }
+
+    [Fact]
     public async Task Add_WithUnknownAuthMethod_ReturnsError()
     {
         var exitCode = await ProviderCommand.RunAsync(

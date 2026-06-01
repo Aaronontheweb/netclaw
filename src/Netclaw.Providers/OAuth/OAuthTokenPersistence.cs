@@ -45,6 +45,8 @@ public static class OAuthTokenPersistence
 
         if (result.RefreshToken is not null)
             providerNode["OAuthRefreshToken"] = result.RefreshToken.Value;
+        else
+            providerNode.Remove("OAuthRefreshToken");
 
         if (result.AccountId is not null)
             providerNode["OAuthAccountId"] = result.AccountId.Value;
@@ -58,19 +60,46 @@ public static class OAuthTokenPersistence
         var json = root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
         SecretsFileWriter.Write(paths.SecretsPath, json, protector);
 
-        if (result.ExpiresAt.HasValue)
+        PersistTokenExpiry(paths, providerName, result.ExpiresAt);
+    }
+
+    private static void PersistTokenExpiry(NetclawPaths paths, string providerName, DateTimeOffset? expiresAt)
+    {
+        if (!expiresAt.HasValue && !File.Exists(paths.NetclawConfigPath))
+            return;
+
+        var configJson = File.Exists(paths.NetclawConfigPath)
+            ? File.ReadAllText(paths.NetclawConfigPath)
+            : "{}";
+        var configRoot = JsonNode.Parse(configJson)?.AsObject() ?? [];
+        var configProviders = configRoot["Providers"]?.AsObject();
+
+        if (configProviders is null)
         {
-            var configJson = File.Exists(paths.NetclawConfigPath)
-                ? File.ReadAllText(paths.NetclawConfigPath) : "{}";
-            var configRoot = JsonNode.Parse(configJson)?.AsObject() ?? [];
-            var configProviders = configRoot["Providers"]?.AsObject() ?? [];
+            if (!expiresAt.HasValue)
+                return;
+
+            configProviders = [];
             configRoot["Providers"] = configProviders;
-            var configProvider = configProviders[providerName]?.AsObject() ?? [];
-            configProviders[providerName] = configProvider;
-            configProvider["OAuthTokenExpiry"] = result.ExpiresAt.Value.ToString("o");
-            File.WriteAllText(paths.NetclawConfigPath,
-                configRoot.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         }
+
+        var configProvider = configProviders[providerName]?.AsObject();
+        if (configProvider is null)
+        {
+            if (!expiresAt.HasValue)
+                return;
+
+            configProvider = [];
+            configProviders[providerName] = configProvider;
+        }
+
+        if (expiresAt.HasValue)
+            configProvider["OAuthTokenExpiry"] = expiresAt.Value.ToString("o");
+        else
+            configProvider.Remove("OAuthTokenExpiry");
+
+        File.WriteAllText(paths.NetclawConfigPath,
+            configRoot.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
     }
 
     /// <summary>
