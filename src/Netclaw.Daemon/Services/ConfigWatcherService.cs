@@ -68,9 +68,23 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
     public Task StartAsync(CancellationToken cancellationToken)
     {
         var configDir = Path.GetDirectoryName(_paths.NetclawConfigPath);
-        if (configDir is null || !Directory.Exists(configDir))
+        if (configDir is null)
         {
-            _logger.LogWarning("Config directory does not exist: {ConfigDir}. Hot-reload disabled.", configDir);
+            _logger.LogWarning("Config path has no directory: {ConfigPath}. Hot-reload disabled.", _paths.NetclawConfigPath);
+            return Task.CompletedTask;
+        }
+
+        // Ensure the directory exists so hot-reload is armed even when the daemon
+        // started before any config was written (fresh container / first boot).
+        // Otherwise a later `netclaw init` write would never be observed and the
+        // wizard — which now relies on the watcher to apply config — would hang.
+        try
+        {
+            Directory.CreateDirectory(configDir);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogWarning(ex, "Could not create config directory: {ConfigDir}. Hot-reload disabled.", configDir);
             return Task.CompletedTask;
         }
 

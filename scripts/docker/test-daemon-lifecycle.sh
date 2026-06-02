@@ -83,6 +83,8 @@ echo "==> Phase A: config-write reload (the path a model/exposure change takes)"
 # so a changed value proves the in-process reload actually happened.
 pidfile=/home/netclaw/.netclaw/netclaw.pid
 gen_before="$(docker exec "$CONTAINER" sh -c "sed -n 2p $pidfile 2>/dev/null" | tr -d '[:space:]')"
+# Require a baseline generation so an empty value can't read as a spurious "changed".
+[[ -n "$gen_before" ]] || fail "daemon PID file has no start-time generation (line 2) at $pidfile"
 
 # Write a valid Local-mode Daemon section (a change the watcher used to SKIP — #1279).
 # Port stays 5199 so the health probe keeps working after the restart.
@@ -113,7 +115,9 @@ fi
 
 # ── Phase B: `netclaw daemon start` must defer to the supervisor ────────────
 echo "==> Phase B: 'netclaw daemon start' under supervisor"
-out="$(docker exec "$CONTAINER" netclaw daemon start)"
+# Capture output without letting a non-zero exit (e.g. a transient not-running blip,
+# which returns exit 1) trip `set -e` before the assertion below runs.
+out="$(docker exec "$CONTAINER" netclaw daemon start 2>&1)" || true
 echo "    daemon start => $out"
 echo "$out" | grep -qi "container supervisor" \
     || fail "'netclaw daemon start' did not defer to the supervisor: $out"

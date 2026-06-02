@@ -141,15 +141,17 @@ public sealed class HealthCheckStepViewModelTests : IDisposable
     private static readonly DateTimeOffset NewGeneration = new(2026, 1, 1, 0, 5, 0, TimeSpan.Zero);
 
     [Fact]
-    public async Task RunWithOrchestrator_RunningDaemon_PollsUntilReloaded_AndReportsReady()
+    public async Task RunWithOrchestrator_RunningDaemon_AppliesConfigViaWatcher_NotByStoppingOrRestarting()
     {
-        // A running daemon reloads in-process when config is written (its
-        // ConfigWatcherService restarts it). The wizard must NOT stop it and must NOT
-        // POST a restart; it just writes config and waits for a NEWER restart generation
-        // — not merely a healthy probe, which the still-draining old daemon answers too (#1279).
+        // Watcher-owned reload: a running daemon reloads in-process when config is written
+        // (its ConfigWatcherService restarts it). The wizard must just write config and
+        // poll /health/ready — never stop the daemon, never POST a restart itself (#1279).
         //
-        // Hold the lock file so DaemonManager.GetStatus() reports the daemon as running
-        // (lock held → running) without a real netclawd process.
+        // Hold the lock so GetStatus() reports running (lock held → running) without a real
+        // netclawd process. With no PID file at capture, generationBefore is null, so this
+        // exercises the "a live generation appears + healthy → ready" integration path; the
+        // stale-vs-newer discrimination (current > before) is covered directly by
+        // IsRestartedGeneration_BlocksStale_AllowsNewerOrDownDaemon.
         using var lockHolder = new FileStream(
             _paths.LockFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
         var daemonManager = new DaemonManager(_paths, TimeProvider.System);
@@ -185,6 +187,8 @@ public sealed class HealthCheckStepViewModelTests : IDisposable
 
         Assert.True(File.Exists(_paths.NetclawConfigPath));
         Assert.Contains(step.Results, r => r.Label == "Daemon ready" && r.Passed == true);
+        // It confirmed readiness by polling health (not by spawning/POSTing).
+        Assert.Contains("GET /api/health/ready", handler.Requests);
         // Watcher-owned: the wizard never stops the daemon and never triggers the restart itself.
         Assert.DoesNotContain(step.Results, r => r.Label.Contains("Stopping daemon", StringComparison.Ordinal));
         Assert.DoesNotContain("POST /api/lifecycle/restart", handler.Requests);

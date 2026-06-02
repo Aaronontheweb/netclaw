@@ -182,7 +182,7 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
         var allPassed = runner.AllPassed;
         if (allPassed)
         {
-            runner.Add(new HealthCheckItem(wasRunning ? "Applying configuration" : "Starting daemon", null));
+            runner.Add(new HealthCheckItem(ProgressLabel(wasRunning), null));
             var daemonOk = await StartIfNeededAndPollAsync(wasRunning, generationBefore, ct);
             if (daemonOk)
             {
@@ -220,13 +220,18 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
     /// a newer restart generation than <paramref name="generationBefore"/>, so the
     /// still-draining pre-restart daemon is not mistaken for the reloaded one.
     /// </summary>
+    // The in-progress label depends only on whether the daemon was already running;
+    // shared by the initial health item and the per-second poll relabel.
+    private static string ProgressLabel(bool wasRunning) =>
+        wasRunning ? "Applying configuration" : "Starting daemon";
+
     private async Task<bool> StartIfNeededAndPollAsync(bool wasRunning, DateTimeOffset? generationBefore, CancellationToken ct)
     {
         if (_daemonManager is null) return false;
 
         // Window for crash-log diagnostics if the daemon never becomes ready.
         var startedAt = _timeProvider.GetUtcNow();
-        var verb = wasRunning ? "Applying configuration" : "Starting daemon";
+        var verb = ProgressLabel(wasRunning);
 
         if (!wasRunning)
         {
@@ -264,13 +269,25 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
             {
                 ready = await api.IsHealthyAsync(ct);
             }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
+            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException && !ct.IsCancellationRequested)
             {
                 ready = false; // daemon mid-restart / per-request timeout — keep waiting
             }
 
             if (ready && IsRestartedGeneration(generationBefore))
                 return true;
+
+            // Fail fast on a startup abort instead of polling the full timeout: a bad
+            // config makes the (re)started daemon log "Daemon startup aborted: …" and
+            // then stay down (host) or crash-loop (supervisor) — there's nothing to wait
+            // for, so surface the diagnostic now.
+            var abort = _daemonManager.TryReadStartupFailureFromCrashLog(startedAt, out var abortLogPath);
+            if (abort is not null)
+            {
+                Results[^1] = new HealthCheckItem($"{abort} See crash log: {abortLogPath}", false);
+                NotifyChanged();
+                return false;
+            }
 
             Results[^1] = new HealthCheckItem($"{verb} ({++elapsedSeconds}s)", null);
             NotifyChanged();

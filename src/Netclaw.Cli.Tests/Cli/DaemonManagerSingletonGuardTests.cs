@@ -20,7 +20,10 @@ public sealed class DaemonManagerSingletonGuardTests : IDisposable
     {
         _paths = new NetclawPaths(_dir.Path);
         _paths.EnsureDirectoriesExist();
-        _sut = new DaemonManager(_paths, TimeProvider.System);
+        // Pin non-supervised so these assertions don't depend on the ambient
+        // NETCLAW_CONTAINER_SUPERVISOR env var (which the official image sets, and which
+        // would otherwise flip the default ContainerSupervisor when running in-image).
+        _sut = new DaemonManager(_paths, TimeProvider.System, new FakeSupervisor(false));
     }
 
     [Fact]
