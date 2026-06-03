@@ -21,8 +21,6 @@ namespace Netclaw.Cli.Tui.Wizard.Steps;
 /// </summary>
 public sealed class ProviderStepViewModel : IWizardStepViewModel
 {
-    private static readonly TimeSpan ProbeHardTimeout = TimeSpan.FromSeconds(20);
-
     private readonly IProviderProbe _probe;
     private readonly ProviderDescriptorRegistry _registry;
     private readonly DeviceFlowServiceFactory? _oauthFactory;
@@ -178,17 +176,15 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
         var result = new ProviderProbeResult(false, "Validation failed before probe completed.", []);
         try
         {
-            result = await _probe.ProbeAsync(probeEntry, ct)
-                .WaitAsync(ProbeHardTimeout, ct);
+            // One timeout authority: the descriptor's own probe deadline (longer for
+            // self-hosted servers). Do NOT wrap this in an outer WaitAsync — a second,
+            // longer deadline is silently preempted by the inner one, which used to make
+            // this step advertise a 20s budget while actually failing at 10s (#1292).
+            result = await _probe.ProbeAsync(probeEntry, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             result = new ProviderProbeResult(false, "Validation cancelled.", []);
-        }
-        catch (TimeoutException)
-        {
-            result = new ProviderProbeResult(false,
-                $"Validation timed out after {(int)ProbeHardTimeout.TotalSeconds} seconds.", []);
         }
         catch (Exception ex)
         {

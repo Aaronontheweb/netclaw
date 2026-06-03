@@ -177,23 +177,13 @@ public sealed class ModelManagerViewModel : ReactiveViewModel
         var (config, _) = ConfigFileHelper.LoadConfigFiles(_paths);
         var modelsSection = ConfigFileHelper.GetOrCreateSection(config, "Models");
 
-        var modelEntry = new Dictionary<string, object>
-        {
-            ["Provider"] = SelectedProvider,
-            ["ModelId"] = SelectedModelId,
-            ["Provenance"] = provenance.ToString()
-        };
-
-        if (discoveredModel?.ContextWindowTokens is { } contextWindow)
-            modelEntry["ContextWindow"] = contextWindow;
-
-        if (discoveredModel is not null)
-        {
-            modelEntry["InputModalities"] = discoveredModel.InputModalities.ToString();
-            modelEntry["OutputModalities"] = discoveredModel.OutputModalities.ToString();
-        }
-
-        modelsSection[roleKey] = modelEntry;
+        modelsSection[roleKey] = ModelEntryWriter.BuildModelEntry(
+            SelectedProvider,
+            SelectedModelId,
+            provenance,
+            discoveredModel?.ContextWindowTokens,
+            discoveredModel?.InputModalities,
+            discoveredModel?.OutputModalities);
         ConfigFileHelper.WriteConfigFile(_paths.NetclawConfigPath, config);
 
         Refresh();
