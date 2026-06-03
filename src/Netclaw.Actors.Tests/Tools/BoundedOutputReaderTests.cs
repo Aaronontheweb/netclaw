@@ -89,7 +89,7 @@ public class BoundedOutputReaderTests
         var (text, truncated) = await BoundedOutputReader.DrainToWindowAsync(reader, 10, CancellationToken.None);
 
         Assert.True(truncated);
-        Assert.Equal("ABCDE\n...\nKLMNO", text);
+        Assert.Equal($"ABCDE{Environment.NewLine}...{Environment.NewLine}KLMNO", text);
     }
 
     // ── Window (pure string head+tail) ──

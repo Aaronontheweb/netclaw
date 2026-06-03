@@ -134,7 +134,9 @@ internal static class BoundedOutputReader
     }
 
     // Separator marking the discarded middle of a truncated head+tail window.
-    private const string Separator = "\n...\n";
+    // Uses the platform newline so it matches the line endings the rest of the
+    // captured output is assembled with (e.g. StringBuilder.AppendLine).
+    private static readonly string Separator = $"{Environment.NewLine}...{Environment.NewLine}";
 
     /// <summary>
     /// Writes <paramref name="span"/> into a ring buffer that retains only the
