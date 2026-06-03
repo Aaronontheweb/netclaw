@@ -3,6 +3,8 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Net;
+using Microsoft.Extensions.Configuration;
 using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Tui;
 using Netclaw.Cli.Tui.Wizard;
@@ -131,5 +133,101 @@ public sealed class HealthCheckStepViewModelTests : IDisposable
         // Second run should execute (not blocked by stale IsComplete)
         await step.RunWithOrchestrator(orchestrator);
         Assert.True(step.IsComplete.Value);
+    }
+
+    // Restart-generation timestamps written to the PID file. The wizard treats a
+    // newer value as proof the daemon actually restarted onto the new config.
+    private static readonly DateTimeOffset OldGeneration = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset NewGeneration = new(2026, 1, 1, 0, 5, 0, TimeSpan.Zero);
+
+    [Fact]
+    public async Task RunWithOrchestrator_RunningDaemon_AppliesConfigViaWatcher_NotByStoppingOrRestarting()
+    {
+        // Watcher-owned reload: a running daemon reloads in-process when config is written
+        // (its ConfigWatcherService restarts it). The wizard must just write config and
+        // poll /health/ready — never stop the daemon, never POST a restart itself (#1279).
+        //
+        // Hold the lock so GetStatus() reports running (lock held → running) without a real
+        // netclawd process. With no PID file at capture, generationBefore is null, so this
+        // exercises the "a live generation appears + healthy → ready" integration path; the
+        // stale-vs-newer discrimination (current > before) is covered directly by
+        // IsRestartedGeneration_BlocksStale_AllowsNewerOrDownDaemon.
+        using var lockHolder = new FileStream(
+            _paths.LockFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        var daemonManager = new DaemonManager(_paths, TimeProvider.System);
+
+        // Fake daemon: healthy, and — simulating the in-process reload restart — stamps a
+        // fresh PID-file generation the first time readiness is probed.
+        var handler = new StubHttpMessageHandler(req =>
+        {
+            if (req.RequestUri!.AbsolutePath == "/api/health/ready")
+                WritePidFile(pid: 4321, startedAt: NewGeneration);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        });
+        var daemonApi = new DaemonApi(new StubHttpClientFactory(handler), new ConfigurationBuilder().Build(), _paths);
+
+        using var step = new HealthCheckStepViewModel(
+            daemonManager,
+            daemonApi,
+            navigationState: new ChatNavigationState(),
+            timeProvider: TimeProvider.System);
+        using var exposureStep = new ExposureModeStepViewModel { SelectedMode = ExposureMode.Local };
+        using var context = new WizardContext
+        {
+            Paths = _paths,
+            Registry = new ProviderDescriptorRegistry([]),
+            RequestRedraw = () => { }
+        };
+
+        step.OnEnter(context, NavigationDirection.Forward);
+        exposureStep.OnEnter(context, NavigationDirection.Forward);
+        using var orchestrator = new WizardOrchestrator([exposureStep, step], context);
+
+        await step.RunWithOrchestrator(orchestrator);
+
+        Assert.True(File.Exists(_paths.NetclawConfigPath));
+        Assert.Contains(step.Results, r => r.Label == "Daemon ready" && r.Passed == true);
+        // It confirmed readiness by polling health (not by spawning/POSTing).
+        Assert.Contains("GET /api/health/ready", handler.Requests);
+        // Watcher-owned: the wizard never stops the daemon and never triggers the restart itself.
+        Assert.DoesNotContain(step.Results, r => r.Label.Contains("Stopping daemon", StringComparison.Ordinal));
+        Assert.DoesNotContain("POST /api/lifecycle/restart", handler.Requests);
+    }
+
+    [Fact]
+    public void IsRestartedGeneration_BlocksStale_AllowsNewerOrDownDaemon()
+    {
+        // The generation gate is what prevents the readiness race: a healthy probe
+        // against the still-draining pre-restart daemon must NOT count as ready (#1279).
+        WritePidFile(pid: 4321, startedAt: OldGeneration); // current recorded generation
+        var daemonManager = new DaemonManager(_paths, TimeProvider.System);
+        using var step = new HealthCheckStepViewModel(daemonManager);
+
+        // Same generation as before the restart → daemon hasn't restarted → not ready.
+        Assert.False(step.IsRestartedGeneration(OldGeneration));
+        // Recorded generation is newer than the pre-restart value → restarted → ready.
+        Assert.True(step.IsRestartedGeneration(OldGeneration.AddMinutes(-1)));
+        // Daemon was down before (no pre-restart generation) → any live instance counts.
+        Assert.True(step.IsRestartedGeneration(null));
+    }
+
+    private void WritePidFile(int pid, DateTimeOffset startedAt) =>
+        File.WriteAllText(_paths.PidFilePath, $"{pid}\n{startedAt:O}");
+
+    private sealed class StubHttpClientFactory(HttpMessageHandler handler) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(handler, disposeHandler: false);
+    }
+
+    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> responder)
+        : HttpMessageHandler
+    {
+        public List<string> Requests { get; } = [];
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests.Add($"{request.Method} {request.RequestUri!.AbsolutePath}");
+            return Task.FromResult(responder(request));
+        }
     }
 }

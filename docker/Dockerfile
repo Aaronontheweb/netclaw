@@ -101,6 +101,12 @@ ENV NETCLAW_DAEMON_PATH=/opt/netclaw/daemon/netclawd
 # Block in-place binary self-update — the image tag IS the version.
 # Update availability checks still run so operators see when a new version exists.
 ENV NETCLAW_Daemon__DisableSelfUpdate=true
+# Declare that an external supervisor (entrypoint.sh, PID 1) owns the daemon
+# lifecycle. The CLI refuses to spawn a detached netclawd in this mode so
+# `netclaw init` / `netclaw daemon start` cannot split-brain with the
+# supervised daemon (#1279). Config changes are applied via an in-process
+# restart through the running daemon instead.
+ENV NETCLAW_CONTAINER_SUPERVISOR=entrypoint
 
 # Persist identity, config, data, and session state on an operator-mounted
 # volume. Real operators must `netclaw init` (or bind-mount a pre-initialized
