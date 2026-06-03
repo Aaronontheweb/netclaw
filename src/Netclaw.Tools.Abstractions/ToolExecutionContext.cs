@@ -166,6 +166,25 @@ public sealed class ToolExecutionContext
     public string? SessionDirectory { get; }
 
     /// <summary>
+    /// Identifier of the in-flight tool call, set by the session pipeline from the
+    /// call's <c>ToolCallMeta</c>. Tools that emit per-call artifacts — e.g. a
+    /// spilled output file under
+    /// <c>{SessionDirectory}/tool-calls/{ToolCallId}.log</c> — use it to name them.
+    /// Null for contexts not built per tool call (the <see cref="Empty"/> sentinel
+    /// and direct-construction paths).
+    /// </summary>
+    public ToolCallId? ToolCallId { get; init; }
+
+    /// <summary>
+    /// Inline tool-output budget <c>N</c>
+    /// (<c>SessionTuning.MaxInlineToolResultChars</c>) that the pipeline enforces,
+    /// surfaced here so a tool can bound its own output to the same <c>N</c> and
+    /// spill the remainder, instead of emitting a larger result the pipeline would
+    /// re-truncate. Zero when unset (no tool-side inline bounding).
+    /// </summary>
+    public int MaxInlineToolResultChars { get; init; }
+
+    /// <summary>
     /// Resolved absolute working directory for the in-flight tool call. Set
     /// by the session pipeline from the candidate tool arguments,
     /// <c>WorkingContext.ProjectDirectory</c>, or <see cref="SessionDirectory"/>

@@ -225,7 +225,9 @@ internal static class SessionToolExecutionPipeline
             spawnChildActor,
             projectDirectory,
             turnContext,
-            modelInputModalities);
+            modelInputModalities,
+            tc.CallId,
+            maxInlineToolResultChars);
         context.RequestedTimeoutSeconds = (int)timeout.TotalSeconds;
 
         // Re-drive of an ApprovedOnce approval: the user already clicked
@@ -928,7 +930,9 @@ internal static class SessionToolExecutionPipeline
         Func<object, string, CancellationToken, Task<object>> spawnChildActor,
         string? projectDirectory,
         TurnContext? turnContext,
-        ModelModality modelInputModalities)
+        ModelModality modelInputModalities,
+        string? toolCallId,
+        int maxInlineToolResultChars)
     {
         // A turn with no authority context carries no trust context — fall closed
         // to the most-restrictive audience. The default is resolved once, here,
@@ -936,6 +940,10 @@ internal static class SessionToolExecutionPipeline
         var context = new ToolExecutionContext(sessionId.Value, sessionDir)
         {
             Audience = turnContext?.Audience ?? source?.Audience ?? TrustAudience.Public,
+            // Per-call id (for naming spilled output files) and the inline budget N,
+            // so a tool can bound its own output to the same N the pipeline enforces.
+            ToolCallId = string.IsNullOrEmpty(toolCallId) ? null : new ToolCallId(toolCallId),
+            MaxInlineToolResultChars = maxInlineToolResultChars,
         };
         context.Boundary = turnContext?.Boundary ?? source?.Boundary;
         context.ChannelType = turnContext?.ChannelType?.ToWireValue()

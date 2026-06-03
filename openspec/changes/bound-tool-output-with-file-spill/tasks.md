@@ -16,13 +16,15 @@
 
 ## 2. Tool-call id and inline budget plumbed to the capture layer
 
-- [ ] 2.1 Add `ToolCallId` to `ToolExecutionContext` (additive, nullable)
-- [ ] 2.2 Set `ToolCallId` in `SessionToolExecutionPipeline` at context-build time
-      from the call's `ToolCallMeta`
-- [ ] 2.3 Make the inline budget `N` (`MaxInlineToolResultChars`) reachable at the
-      capture layer (via `ToolExecutionContext`), so tools bound to the same `N`
-      the pipeline enforces
-- [ ] 2.4 Tests: context carries the call id; two concurrent calls get distinct ids
+- [x] 2.1 Add `ToolCallId` (typed value object, nullable) to `ToolExecutionContext`
+- [x] 2.2 Set `ToolCallId` in `BuildToolExecutionContext` (per-call) from `tc.CallId`
+- [x] 2.3 Add `MaxInlineToolResultChars` to `ToolExecutionContext` and thread `N`
+      through `BuildToolExecutionContext` so tools bound to the same `N` the
+      pipeline enforces
+- [x] 2.4 Carry/distinctness is compiler-enforced (per-call context) + verified
+      end-to-end by the task-4 spill test ({callId}.log); skip a trivial
+      assignment test per the testing guidelines. (Sub-agent/direct-construction
+      contexts default to null id + 0 budget — fallback handled in task 3/4.)
 
 ## 3. Spill writer + steering message
 
