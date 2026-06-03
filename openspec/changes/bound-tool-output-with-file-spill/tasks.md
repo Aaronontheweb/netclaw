@@ -93,22 +93,44 @@
 - [x] 8.2 Updated `netclaw-operations` skill (new "Large tool output" section:
       spill to session file, steer to ranged reads/grep, bounded job log) and
       bumped `metadata.version` 2.8.9 → 2.9.0
-- [~] 8.3 Eval cases flagged + suite run against spark2 (Qwen3.6-35B, openai-compatible):
-      - **At-risk-but-robust (verify still green):** `complex_diagnose_self`,
-        `complex_gh_issues`, `complex_write_and_run`, `multi_turn_tool_repeat`,
-        `multi_turn_tool_carryover`. Their asserts check `[tool:call] shell_execute`
-        + a keyword (doctor/gh issue/34|55/filenames/healthy|daemon|version), not
-        exact tool-result content — so truncating output to N=2000 + spill doesn't
-        break them (keywords live in the head/tail). `multi_turn_tool_carryover` is
-        the closest call (recall from the now-smaller doctor result).
-      - **Coverage GAPS to add (new behavior is untested):**
-        1. large shell output → agent reads the spill file (file_read offset/limit
-           or grep) instead of re-running the command;
-        2. large file_read → agent uses Offset/Limit or grep on the steer rather
-           than re-reading.
+- [x] 8.3 Eval cases flagged + the two coverage gaps ADDED + suite run against
+      spark2 (Qwen3.6-35B, openai-compatible):
+      - **At-risk-but-robust (verified still green, 5/5 each):**
+        `complex_diagnose_self`, `complex_gh_issues`, `complex_write_and_run`,
+        `multi_turn_tool_repeat`, `multi_turn_tool_carryover`. Their asserts check
+        `[tool:call] shell_execute` + a keyword, not exact tool-result content —
+        so truncating output to N=2000 + spill doesn't break them.
+      - **New coverage cases added** (Category 7, `evals/run-evals.sh`), both 5/5.
+        They assert on OUTCOME, not mechanism: the prompts state only the goal and
+        give ZERO handling hints (no mention of spill/redirect/re-run/file_read/
+        Offset/grep) — coping with oversized output must come from AGENTS.md, the
+        netclaw-operations skill, and the tool-result steer text, or the eval is
+        just testing instruction-following. Data is a deterministic-but-opaque
+        Lehmer PRNG (`x=(x*48271)%2147483647`, identical across awk impls), so a
+        deep-line value is reproducible AND un-fabricatable; since one read is
+        bounded to ~N inline, retrieving a deep line is only possible by paging —
+        so a correct value *implies* correct handling (no mechanism assertion).
+        1. `complex_large_shell_output_spill` — "run `awk '…'` and tell me the
+           number on line 200" (a bare safe-verb generator, no path tokens →
+           auto-approves headless; ~210 KB stdout → spills). Asserts the answer
+           contains line 200's value (872671849). Whether the agent reads the
+           spill or self-redirects+reads, the outcome assertion is satisfied.
+        2. `complex_large_file_read_ranged` — a ~314 KB file pre-seeded by
+           `start_eval_daemon` under the workspaces read-root; "list lines
+           4997–5003 of <file>". Asserts the answer contains line 5000's value
+           (1629331733). Line 5000 is ~52 KB in (past the inline window), so a
+           correct answer proves the agent paged with `file_read` Offset/Limit.
+      - **Finding (separate from this change):** the model reliably pages with
+        `file_read` Offset/Limit but treats `Offset` as **0-based** despite its
+        "(1-based)" param description (e.g. `Offset:4999` for "line 5000"). The
+        window prompt tolerates this so the case measures bounded-output paging,
+        not index arithmetic; the off-by-one itself likely warrants a clearer
+        `file_read.Offset` description / operations-skill note as a follow-up.
       - Run: NETCLAW_EVAL_PROVIDER_TYPE=openai-compatible
         NETCLAW_EVAL_PROVIDER_ENDPOINT=https://spark2.testlab.petabridge.net/
-        NETCLAW_EVAL_MODEL_ID=Qwen/Qwen3.6-35B-A3B-FP8 ./evals/run-evals.sh
+        NETCLAW_EVAL_MODEL_ID=Qwen/Qwen3.6-35B-A3B-FP8
+        NETCLAW_EVAL_CATEGORY="Complex Task Execution" ./evals/run-evals.sh
+        → Complex Task Execution 5/5 (100%), both new cases 5/5 uncoached.
 - [x] 8.4 Added `CaptureBenchmarks` confirming O(ceiling): allocation flat at
       ~1255 KB for 256K and 50M chars (vs unbounded before)
 - [ ] 8.5 `openspec validate` passes; sync/archive on PR merge (not yet merged)
