@@ -28,14 +28,17 @@
 
 ## 3. Spill writer + steering message
 
-- [ ] 3.1 Add a spill writer that creates `{sessionDirectory}/tool-calls/` and
-      writes `{toolCallId}.log`, redacting the bounded capture buffer with
-      `SecretOutputRedactor` in a single pass before write (redact-on-write)
-- [ ] 3.2 Add a steering-message builder (path + "read ranges with file_read
-      offset/limit or grep instead of re-running"); include a "capture ceiling
-      exceeded" note when `MaxOutputChars` was hit
-- [ ] 3.3 Tests: spill file written and redacted; path + steer present in the
-      inline result; ceiling-exceeded note when over `MaxOutputChars`
+- [x] 3.1 Add `ToolOutputSpill.RenderAsync`: redact the bounded capture once,
+      window the inline from the redacted text, and write
+      `{sessionDirectory}/tool-calls/{toolCallId}.log` (call id sanitized against
+      path traversal). Removed the redundant `DrainCaptureAsync` — the real flow
+      is DrainToWindow → redact → Window → spill (inline must come from the
+      *redacted* capture), so DrainToWindow + Window + the spill helper supersede it.
+- [x] 3.2 Steering message (path + "read a slice with file_read offset/limit or
+      grep instead of re-running") + a "capture ceiling exceeded" note
+- [x] 3.3 Tests: under-budget verbatim; over-budget spill written + redacted-on-disk
+      + steer; ceiling note; no-session degrade; path-traversal call id contained.
+      15 reader+spill tests pass; slopwatch clean
 
 ## 4. shell_execute adopts capture + spill
 

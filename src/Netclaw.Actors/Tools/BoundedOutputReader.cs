@@ -112,56 +112,10 @@ internal static class BoundedOutputReader
     }
 
     /// <summary>
-    /// Drains <paramref name="reader"/> retaining up to <paramref name="captureMax"/>
-    /// chars (the body destined for a spill file) and deriving a smaller
-    /// <paramref name="inlineBudget"/> head+tail window for the inline result.
-    /// Both windows come from a single bounded-memory pass. The caller is
-    /// responsible for redacting <c>Captured</c> and writing the spill file.
-    /// </summary>
-    /// <param name="captureMax">
-    /// The capture ceiling. MUST be positive — unlike <see cref="DrainToWindowAsync"/>,
-    /// the capture path never disables its bound (an unbounded capture would defeat
-    /// the bounded-memory guarantee and risk OOM), so a non-positive value throws.
-    /// </param>
-    /// <param name="inlineBudget">
-    /// The inline window budget. Clamped to <paramref name="captureMax"/>: an inline
-    /// window larger than the capture is meaningless, and deriving it from the
-    /// already-windowed capture would otherwise slice through the capture's own
-    /// separator.
-    /// </param>
-    /// <returns>
-    /// <c>Captured</c> — the (head+tail) capture buffer for the spill body;
-    /// <c>Inline</c> — the head+tail window within <paramref name="inlineBudget"/>;
-    /// <c>Truncated</c> — true when total output exceeded <paramref name="inlineBudget"/>,
-    /// i.e. <c>Inline</c> dropped data and a spill is warranted;
-    /// <c>CeilingExceeded</c> — true when total output also exceeded
-    /// <paramref name="captureMax"/>, so even <c>Captured</c> is a head+tail view
-    /// rather than the complete output.
-    /// </returns>
-    public static async Task<(string Captured, string Inline, bool Truncated, bool CeilingExceeded)> DrainCaptureAsync(
-        TextReader reader, int captureMax, int inlineBudget, CancellationToken ct)
-    {
-        if (captureMax <= 0)
-            throw new ArgumentOutOfRangeException(nameof(captureMax), captureMax,
-                "Capture ceiling must be positive; the capture path must stay bounded.");
-
-        // An inline window can't be wider than the capture it's derived from.
-        inlineBudget = Math.Min(inlineBudget, captureMax);
-
-        var (captured, ceilingExceeded) = await DrainToWindowAsync(reader, captureMax, ct);
-        var inline = Window(captured, inlineBudget);
-
-        // Truncated reflects the inline budget (the spill trigger), not the ceiling:
-        // when the ceiling is exceeded the inline is necessarily truncated too;
-        // otherwise the capture holds the full output, so compare its length.
-        var truncated = ceilingExceeded || captured.Length > inlineBudget;
-        return (captured, inline, truncated, ceilingExceeded);
-    }
-
-    /// <summary>
     /// Head+tail window of an already-in-memory string to <paramref name="budget"/>
     /// chars. Returns the string unchanged when it already fits (or the budget is
-    /// non-positive). Used to derive a smaller inline window from a larger capture.
+    /// non-positive). Used to derive the inline window from a larger (redacted)
+    /// capture — see <c>ToolOutputSpill</c>.
     /// </summary>
     /// <remarks>
     /// <paramref name="budget"/> bounds the retained <i>content</i>, not the returned
