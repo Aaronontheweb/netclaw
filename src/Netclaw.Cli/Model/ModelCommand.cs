@@ -197,8 +197,11 @@ internal static class ModelCommand
     /// </summary>
     private static string ResolveProbeEndpoint(IProviderProbe probe, ProviderEntry entry)
     {
+        // Match the normalization ExecuteProbeAsync applies (it trims a trailing slash
+        // before appending the model-listing path) so the surfaced endpoint is the one
+        // actually probed, not a cosmetically different string.
         if (!string.IsNullOrWhiteSpace(entry.Endpoint))
-            return entry.Endpoint;
+            return entry.Endpoint.TrimEnd('/');
 
         return probe is ProviderDescriptorRegistry registry
                && registry.TryGet(entry.Type, out var descriptor)

@@ -176,15 +176,25 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
         var result = new ProviderProbeResult(false, "Validation failed before probe completed.", []);
         try
         {
-            // One timeout authority: the descriptor's own probe deadline (longer for
-            // self-hosted servers). Do NOT wrap this in an outer WaitAsync — a second,
-            // longer deadline is silently preempted by the inner one, which used to make
-            // this step advertise a 20s budget while actually failing at 10s (#1292).
-            result = await _probe.ProbeAsync(probeEntry, ct);
+            // Outer wall-clock for the WHOLE probe. The descriptor's own per-request
+            // deadline covers only the /models call; it does NOT cover pre-request work
+            // such as OAuth token exchange, which would otherwise be bounded only by the
+            // HttpClient default (~100s). This budget is deliberately larger than the
+            // descriptor's self-hosted deadline (see ProbeTimeouts.InteractiveWallClock)
+            // so it bounds a hung token exchange without truncating a legitimately slow
+            // self-hosted /models probe — the truncation that was the heart of #1292.
+            result = await _probe.ProbeAsync(probeEntry, ct)
+                .WaitAsync(ProbeTimeouts.InteractiveWallClock, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             result = new ProviderProbeResult(false, "Validation cancelled.", []);
+        }
+        catch (TimeoutException)
+        {
+            result = new ProviderProbeResult(false,
+                $"Validation timed out after {(int)ProbeTimeouts.InteractiveWallClock.TotalSeconds} seconds — "
+                + "the provider did not respond. Check connectivity and try again.", []);
         }
         catch (Exception ex)
         {

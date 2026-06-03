@@ -14,20 +14,8 @@ namespace Netclaw.Providers;
 /// </summary>
 internal static class ProbeHelpers
 {
-    /// <summary>
-    /// Default probe deadline for hosted/cloud providers, which answer /models fast.
-    /// </summary>
-    internal static readonly TimeSpan DefaultProbeTimeout = TimeSpan.FromSeconds(10);
-
-    /// <summary>
-    /// Longer probe deadline for self-hosted endpoints (llama.cpp, vLLM, Ollama).
-    /// A cold server loading a model — or one saturated with inference requests — can
-    /// legitimately take far longer than a hosted API to answer /models. 10s is too
-    /// tight here and produces false "timed out" failures against servers that are
-    /// fine, just busy (see #1292). The descriptor that knows it is self-hosted owns
-    /// this choice; callers do not need to thread a timeout through every probe.
-    /// </summary>
-    internal static readonly TimeSpan SelfHostedProbeTimeout = TimeSpan.FromSeconds(30);
+    // Probe timeout budgets live in the shared ProbeTimeouts type so the providers
+    // layer and the interactive CLI/TUI callers cannot drift apart (see #1292).
 
     /// <summary>
     /// Parses the OpenAI-style model listing response (used by OpenRouter, Anthropic, OpenAI).
@@ -108,7 +96,7 @@ internal static class ProbeHelpers
         CancellationToken ct,
         TimeSpan? timeout = null)
     {
-        var effectiveTimeout = timeout ?? DefaultProbeTimeout;
+        var effectiveTimeout = timeout ?? ProbeTimeouts.Default;
 
         // Resolved up front so it is in scope for the timeout message below — a probe
         // that black-holes against a wrong/blank endpoint (e.g. a self-hosted provider

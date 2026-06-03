@@ -45,7 +45,7 @@ public sealed class OpenAiCompatibleDescriptor : IProviderDescriptor
             },
             ParseModels,
             ct,
-            ProbeHelpers.SelfHostedProbeTimeout);
+            ProbeTimeouts.SelfHosted);
     }
 
     internal static ProviderProbeResult ParseModels(string json)
