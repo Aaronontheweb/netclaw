@@ -85,7 +85,7 @@ public class DispatchingToolExecutorTests
             var result = await _executor.ExecuteAsync(toolCall, context, CancellationToken.None);
 
             Assert.True(result.Length < 3000);                 // windowed inline, not the full 3000
-            Assert.Contains("full output saved to", result);
+            Assert.Contains("output saved to", result);
             Assert.Contains("file_read", result);
             var spill = Path.Combine(sessionDir, "tool-calls", "call-spill.log");
             Assert.True(File.Exists(spill));

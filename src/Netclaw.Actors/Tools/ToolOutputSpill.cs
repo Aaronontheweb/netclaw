@@ -99,7 +99,7 @@ internal static class ToolOutputSpill
         var sb = new StringBuilder(inline);
         sb.Append($"\n\n[output truncated to {budget} chars of {fullLength}");
         if (spillPath is not null)
-            sb.Append($"; full output saved to {spillPath} — read a slice with file_read (offset/limit) or grep it instead of re-running");
+            sb.Append($"; output saved to {spillPath} — read a slice with file_read (offset/limit) or grep it instead of re-running");
         sb.Append(']');
         return sb.ToString();
     }

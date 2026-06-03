@@ -53,7 +53,7 @@ public sealed class ToolOutputSpillTests : IDisposable
         Assert.True(File.Exists(spillPath));
         Assert.Equal(input, await File.ReadAllTextAsync(spillPath, CancellationToken.None)); // full output on disk
         Assert.StartsWith(new string('H', 50), result);                                      // inline head
-        Assert.Contains("full output saved to", result);
+        Assert.Contains("output saved to", result);
         Assert.Contains(spillPath, result);
         Assert.Contains("file_read", result);
         Assert.Contains("grep", result);
