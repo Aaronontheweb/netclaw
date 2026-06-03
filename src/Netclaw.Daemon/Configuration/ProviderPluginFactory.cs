@@ -44,9 +44,16 @@ public sealed class ProviderPluginFactory
 
         var client = plugin.CreateChatClient(provider, model);
         var vendorOptions = plugin.CreateVendorOptionsSource(provider);
-        return vendorOptions is null
-            ? client
-            : new VendorOptionsChatClient(client, vendorOptions);
+        if (vendorOptions is not null)
+            client = new VendorOptionsChatClient(client, vendorOptions);
+
+        // Stream everywhere: the daemon only issues streaming requests at the provider
+        // boundary. Auxiliary calls (title gen, memory distillation, compaction) ask
+        // for a complete response via GetResponseAsync; serve it by aggregating the
+        // stream so streaming-only providers (e.g. the OpenAI Codex backend) work
+        // without a per-provider capability model. Outermost of the two wrappers so
+        // vendor options are applied to the underlying streaming call.
+        return new StreamFirstChatClient(client);
     }
 }
 

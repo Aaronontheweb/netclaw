@@ -6,6 +6,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Netclaw.Configuration;
 using Netclaw.Daemon.Configuration;
 using Xunit;
 
@@ -228,6 +229,90 @@ public sealed class LoggingChatClientTests
         {
             Contents = [new UsageContent(new UsageDetails { InputTokenCount = inputTokens, OutputTokenCount = outputTokens })]
         };
+    }
+
+    [Fact]
+    public async Task GetResponseAsync_attaches_session_id_scope_from_diagnostics_context()
+    {
+        var logger = new ScopeCapturingLogger();
+        var client = new LoggingChatClient(new FakeChatClient(), logger);
+
+        using (SessionDiagnosticsContext.Push("ch/thread"))
+        {
+            await client.GetResponseAsync(
+                [new ChatMessage(ChatRole.User, "hi")],
+                cancellationToken: TestContext.Current.CancellationToken);
+        }
+
+        AssertSessionScope(logger, "ch/thread");
+    }
+
+    [Fact]
+    public async Task GetStreamingResponseAsync_attaches_session_id_scope_from_diagnostics_context()
+    {
+        var logger = new ScopeCapturingLogger();
+        var client = new LoggingChatClient(new FakeChatClient(streaming: true), logger);
+
+        using (SessionDiagnosticsContext.Push("ch/thread"))
+        {
+            await foreach (var _ in client.GetStreamingResponseAsync(
+                [new ChatMessage(ChatRole.User, "hi")],
+                cancellationToken: TestContext.Current.CancellationToken)) { }
+        }
+
+        AssertSessionScope(logger, "ch/thread");
+    }
+
+    [Fact]
+    public async Task GetResponseAsync_without_session_context_attaches_no_session_scope()
+    {
+        Assert.Null(SessionDiagnosticsContext.SessionId);
+        var logger = new ScopeCapturingLogger();
+        var client = new LoggingChatClient(new FakeChatClient(), logger);
+
+        await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")],
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain(logger.Scopes, IsSessionScope);
+    }
+
+    private static void AssertSessionScope(ScopeCapturingLogger logger, string expected) =>
+        Assert.Contains(logger.Scopes, s =>
+            s is IEnumerable<KeyValuePair<string, object>> kvps
+            && kvps.Any(kv => kv.Key == "session.id" && kv.Value is string v && v == expected));
+
+    private static bool IsSessionScope(object? scope) =>
+        scope is IEnumerable<KeyValuePair<string, object>> kvps
+        && kvps.Any(kv => kv.Key == "session.id");
+
+    /// <summary>
+    /// Logger that records the state objects passed to <see cref="ILogger.BeginScope"/>
+    /// so tests can assert which scopes were opened around a call.
+    /// </summary>
+    private sealed class ScopeCapturingLogger : ILogger
+    {
+        public List<object?> Scopes { get; } = [];
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state,
+            Exception? exception, Func<TState, Exception?, string> formatter)
+        {
+        }
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
+        {
+            Scopes.Add(state);
+            return NoopScope.Instance;
+        }
+
+        private sealed class NoopScope : IDisposable
+        {
+            public static readonly NoopScope Instance = new();
+            public void Dispose() { }
+        }
     }
 
     /// <summary>
