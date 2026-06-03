@@ -245,9 +245,10 @@ view inline plus a pointer to the full output — not the whole thing:
 
 - **`shell_execute`** spills the full (redacted) output to
   `{session}/tool-calls/{toolCallId}.log` and gives you the path. Read a slice with
-  `file_read` (`Offset`/`Limit`) or `grep` it — do NOT re-run the command to see more.
+  `file_read` (`StartLine`/`Limit`) or `grep` it — do NOT re-run the command to see more.
 - **`file_read`** on a large file returns the head and steers you to read a
-  specific range with `Offset`/`Limit` or `grep`. Don't `cat` a huge file through
+  specific range with `StartLine`/`Limit` or `grep` (`StartLine` is a 1-based line
+  number — line 1 is the first line). Don't `cat` a huge file through
   `shell_execute` to get around it — that just spills again.
 - **`background_job`** output goes to `~/.netclaw/jobs/{id}/output.log` (bounded);
   `check_background_job` returns a tail, and you can `file_read`/`grep` the log for the rest.

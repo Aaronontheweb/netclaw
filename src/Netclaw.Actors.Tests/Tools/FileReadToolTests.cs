@@ -208,7 +208,7 @@ public class FileReadToolTests : IDisposable
         var lines = Enumerable.Range(1, 10).Select(i => $"Line {i}");
         await File.WriteAllLinesAsync(filePath, lines, TestContext.Current.CancellationToken);
 
-        var args = ToolInput.Create("Path", filePath, "Offset", 3, "Limit", 2);
+        var args = ToolInput.Create("Path", filePath, "StartLine", 3, "Limit", 2);
 
         var result = await _tool.ExecuteAsync(args, CreatePersonalContext(), CancellationToken.None);
 
@@ -229,7 +229,7 @@ public class FileReadToolTests : IDisposable
         var result = await tool.ExecuteAsync(args, CreatePersonalContext(), CancellationToken.None);
 
         Assert.Contains("output truncated", result);
-        Assert.Contains("Offset", result);
+        Assert.Contains("StartLine", result);
         Assert.Contains("grep", result);
         // Bounded read: only the first 100 chars are materialized, not all 500.
         Assert.StartsWith(new string('x', 100), result);
@@ -244,11 +244,11 @@ public class FileReadToolTests : IDisposable
         var lines = Enumerable.Range(1, 20).Select(i => $"Line {i:D2} content here");
         await File.WriteAllLinesAsync(filePath, lines, TestContext.Current.CancellationToken);
 
-        var args = ToolInput.Create("Path", filePath, "Offset", 1, "Limit", 20);
+        var args = ToolInput.Create("Path", filePath, "StartLine", 1, "Limit", 20);
         var result = await tool.ExecuteAsync(args, CreatePersonalContext(), CancellationToken.None);
 
         Assert.Contains("output truncated", result);
-        Assert.Contains("Offset=", result);
+        Assert.Contains("StartLine=", result);
     }
 
     [Fact]

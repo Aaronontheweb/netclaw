@@ -20,7 +20,7 @@ namespace Netclaw.Actors.Tools;
 /// Reads text files and inspects non-text files without returning raw bytes.
 /// </summary>
 [NetclawTool(ToolName,
-    "Read text files or inspect non-text files. Images can be loaded for visual inspection when the active model supports image input; PDFs/media/archives return metadata and guidance. For large text files, use Offset and Limit to read sections.",
+    "Read text files or inspect non-text files. Images can be loaded for visual inspection when the active model supports image input; PDFs/media/archives return metadata and guidance. For large text files, use StartLine and Limit to read sections.",
     Grant = "file")]
 public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
 {
@@ -42,8 +42,8 @@ public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
 
     public record Params(
         [property: Description("Absolute path to the file to read")] string Path,
-        [property: Description("Line number to start reading from (1-based). Use with Limit to read sections of large files and avoid context window truncation.")] int? Offset = null,
-        [property: Description("Maximum number of lines to read. Use with Offset to paginate through large files instead of reading the whole file.")] int? Limit = null);
+        [property: Description("Line number to start reading at, 1-based: the first line is line 1, matching the line numbers shown in this tool's output and in editors/grep/sed. To read line N, pass StartLine=N. Use with Limit to read sections of large files and avoid context window truncation.")] int? StartLine = null,
+        [property: Description("Maximum number of lines to read. Use with StartLine to paginate through large files instead of reading the whole file.")] int? Limit = null);
 
     public FileReadTool(
         ToolConfig config,
@@ -79,7 +79,7 @@ public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
             return $"Error: File not found: {authorizedPath}";
 
         // Treat 0 or negative as "not specified"
-        int? offset = args.Offset > 0 ? args.Offset : null;
+        int? startLine = args.StartLine > 0 ? args.StartLine : null;
         int? limit = args.Limit > 0 ? args.Limit : null;
 
         try
@@ -89,9 +89,9 @@ public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
                 return HandleNonTextFile(authorizedPath, inspection, context);
 
             var encoding = inspection.TextEncoding ?? StrictUtf8;
-            if (offset.HasValue || limit.HasValue)
+            if (startLine.HasValue || limit.HasValue)
             {
-                var lines = await ReadLinesAsync(authorizedPath, encoding, offset ?? 1, limit, _config.MaxOutputChars, ct);
+                var lines = await ReadLinesAsync(authorizedPath, encoding, startLine ?? 1, limit, _config.MaxOutputChars, ct);
                 RecordSkillReadIfApplicable(authorizedPath);
                 return lines; // redaction + inline bound + spill happen centrally in the dispatcher
             }
@@ -104,7 +104,7 @@ public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
             var (content, truncated) = await ReadBoundedHeadAsync(authorizedPath, encoding, _config.MaxOutputChars, ct);
             RecordSkillReadIfApplicable(authorizedPath);
             return truncated
-                ? content + $"\n[output truncated at {_config.MaxOutputChars} chars — read a specific range with Offset and Limit, or grep the file, for the rest]"
+                ? content + $"\n[output truncated at {_config.MaxOutputChars} chars — read a specific range with StartLine and Limit, or grep the file, for the rest]"
                 : content;
         }
         catch (DecoderFallbackException)
@@ -481,7 +481,7 @@ public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
             linesRead++;
 
             if (sb.Length >= maxChars)
-                return sb.ToString(0, maxChars) + $"\n[output truncated at line {lineNumber} — use Offset={lineNumber} with Limit to continue reading]";
+                return sb.ToString(0, maxChars) + $"\n[output truncated at line {lineNumber} — use StartLine={lineNumber} with Limit to continue reading]";
         }
 
         return sb.ToString();
