@@ -117,38 +117,66 @@ public class BoundedOutputReaderTests
     public async Task DrainCapture_under_inline_budget_inline_equals_captured()
     {
         var input = new string('a', 50);
-        var (captured, inline, ceiling) = await BoundedOutputReader.DrainCaptureAsync(
+        var (captured, inline, truncated, ceiling) = await BoundedOutputReader.DrainCaptureAsync(
             new StringReader(input), captureMax: 1000, inlineBudget: 100, CancellationToken.None);
 
         Assert.Equal(input, captured);
         Assert.Equal(input, inline);
+        Assert.False(truncated);   // under the inline budget — no spill needed
         Assert.False(ceiling);
     }
 
     [Fact]
-    public async Task DrainCapture_between_inline_and_ceiling_spills_full_inline_windowed()
+    public async Task DrainCapture_between_inline_and_ceiling_flags_truncated_not_ceiling()
     {
         // 400 chars: over the 100 inline budget, under the 1000 capture ceiling.
         var input = new string('H', 200) + new string('T', 200);
-        var (captured, inline, ceiling) = await BoundedOutputReader.DrainCaptureAsync(
+        var (captured, inline, truncated, ceiling) = await BoundedOutputReader.DrainCaptureAsync(
             new StringReader(input), captureMax: 1000, inlineBudget: 100, CancellationToken.None);
 
         Assert.Equal(input, captured);            // full output captured for spill
-        Assert.False(ceiling);                    // under the capture ceiling
+        Assert.True(truncated);                   // inline dropped data → spill warranted
+        Assert.False(ceiling);                    // but still under the capture ceiling
         Assert.True(inline.Length < captured.Length);
         Assert.StartsWith(new string('H', 50), inline);
         Assert.EndsWith(new string('T', 50), inline);
     }
 
     [Fact]
-    public async Task DrainCapture_over_ceiling_flags_ceiling_exceeded()
+    public async Task DrainCapture_over_ceiling_flags_truncated_and_ceiling()
     {
         var input = new string('x', 5000);
-        var (captured, _, ceiling) = await BoundedOutputReader.DrainCaptureAsync(
+        var (captured, _, truncated, ceiling) = await BoundedOutputReader.DrainCaptureAsync(
             new StringReader(input), captureMax: 1000, inlineBudget: 100, CancellationToken.None);
 
+        Assert.True(truncated);
         Assert.True(ceiling);
         Assert.Contains("...", captured);         // capture itself is head+tail
+    }
+
+    [Fact]
+    public async Task DrainCapture_nonpositive_capture_ceiling_throws()
+    {
+        // The capture path must stay bounded — it must NOT inherit the window's
+        // 0-disables-cap opt-out, which would buffer the whole stream and risk OOM.
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            BoundedOutputReader.DrainCaptureAsync(
+                new StringReader("anything"), captureMax: 0, inlineBudget: 100, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task DrainCapture_inline_budget_clamped_to_capture_ceiling()
+    {
+        // inlineBudget > captureMax is meaningless and would otherwise slice through
+        // the capture's own separator; it is clamped so inline never exceeds capture.
+        var input = new string('H', 2500) + new string('T', 2500);
+        var (captured, inline, _, _) = await BoundedOutputReader.DrainCaptureAsync(
+            new StringReader(input), captureMax: 20, inlineBudget: 1000, CancellationToken.None);
+
+        // Clamped to captureMax: inline is a clean head+tail, identical to the
+        // capture — not a re-window that splices through the capture's separator.
+        Assert.Equal("HHHHHHHHHH\n...\nTTTTTTTTTT", captured);
+        Assert.Equal(captured, inline);
     }
 
     // Hands out at most chunkSize chars per read so tests can exercise the tail
