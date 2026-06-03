@@ -244,7 +244,7 @@ public sealed class LoggingChatClientTests
                 cancellationToken: TestContext.Current.CancellationToken);
         }
 
-        AssertSessionScope(logger, "ch/thread");
+        Assert.True(logger.HasSessionScope("ch/thread"));
     }
 
     [Fact]
@@ -260,7 +260,7 @@ public sealed class LoggingChatClientTests
                 cancellationToken: TestContext.Current.CancellationToken)) { }
         }
 
-        AssertSessionScope(logger, "ch/thread");
+        Assert.True(logger.HasSessionScope("ch/thread"));
     }
 
     [Fact]
@@ -274,45 +274,7 @@ public sealed class LoggingChatClientTests
             [new ChatMessage(ChatRole.User, "hi")],
             cancellationToken: TestContext.Current.CancellationToken);
 
-        Assert.DoesNotContain(logger.Scopes, IsSessionScope);
-    }
-
-    private static void AssertSessionScope(ScopeCapturingLogger logger, string expected) =>
-        Assert.Contains(logger.Scopes, s =>
-            s is IEnumerable<KeyValuePair<string, object>> kvps
-            && kvps.Any(kv => kv.Key == "session.id" && kv.Value is string v && v == expected));
-
-    private static bool IsSessionScope(object? scope) =>
-        scope is IEnumerable<KeyValuePair<string, object>> kvps
-        && kvps.Any(kv => kv.Key == "session.id");
-
-    /// <summary>
-    /// Logger that records the state objects passed to <see cref="ILogger.BeginScope"/>
-    /// so tests can assert which scopes were opened around a call.
-    /// </summary>
-    private sealed class ScopeCapturingLogger : ILogger
-    {
-        public List<object?> Scopes { get; } = [];
-
-        public void Log<TState>(
-            LogLevel logLevel, EventId eventId, TState state,
-            Exception? exception, Func<TState, Exception?, string> formatter)
-        {
-        }
-
-        public bool IsEnabled(LogLevel logLevel) => true;
-
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull
-        {
-            Scopes.Add(state);
-            return NoopScope.Instance;
-        }
-
-        private sealed class NoopScope : IDisposable
-        {
-            public static readonly NoopScope Instance = new();
-            public void Dispose() { }
-        }
+        Assert.False(logger.HasAnySessionScope());
     }
 
     /// <summary>

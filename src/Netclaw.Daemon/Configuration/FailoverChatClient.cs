@@ -52,7 +52,7 @@ public sealed class FailoverChatClient : IChatClient
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
         {
-            _logger.LogWarning(ex,
+            LogWithSession(LogLevel.Warning, ex,
                 "Primary LLM failed, failing over to fallback provider");
             EmitFailoverAlert(ex);
 
@@ -62,7 +62,7 @@ public sealed class FailoverChatClient : IChatClient
             }
             catch (Exception fallbackEx) when (!cancellationToken.IsCancellationRequested)
             {
-                _logger.LogError(fallbackEx,
+                LogWithSession(LogLevel.Error, fallbackEx,
                     "Fallback LLM also failed — all providers unreachable");
                 EmitUnreachableAlert(fallbackEx);
                 throw;
@@ -112,7 +112,7 @@ public sealed class FailoverChatClient : IChatClient
 
         if (primaryInitiationFailure is not null)
         {
-            _logger.LogWarning(primaryInitiationFailure,
+            LogWithSession(LogLevel.Warning, primaryInitiationFailure,
                 "Primary LLM streaming failed on initiation, failing over to fallback");
 
             await foreach (var fallbackUpdate in stream)
@@ -150,7 +150,7 @@ public sealed class FailoverChatClient : IChatClient
         if (primaryPreFirstChunkFailure is null)
             yield break;
 
-        _logger.LogWarning(primaryPreFirstChunkFailure,
+        LogWithSession(LogLevel.Warning, primaryPreFirstChunkFailure,
             "Primary LLM streaming failed before first chunk, failing over to fallback");
         EmitFailoverAlert(primaryPreFirstChunkFailure);
 
@@ -167,6 +167,15 @@ public sealed class FailoverChatClient : IChatClient
 
         await foreach (var fallbackUpdate in preChunkFallbackStream)
             yield return fallbackUpdate;
+    }
+
+    // Failover/outage events are logged outside LoggingChatClient's session scope
+    // (the delegated call has already returned or thrown), so attach the session id
+    // here too — these are the operationally most important LLM log lines.
+    private void LogWithSession(LogLevel level, Exception ex, string message)
+    {
+        using (SessionLoggingScope.Begin(_logger))
+            _logger.Log(level, ex, message);
     }
 
     private void EmitFailoverAlert(Exception ex)

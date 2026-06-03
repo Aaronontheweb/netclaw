@@ -151,6 +151,29 @@ public sealed class FailoverChatClientTests
         Assert.Equal(0, fallbackStreamCalls);
     }
 
+    [Fact]
+    public async Task FailoverLog_carries_session_id_from_diagnostics_context()
+    {
+        var logger = new ScopeCapturingLogger();
+        var primary = new FakeChatClient((_, _, _) =>
+            throw new HttpRequestException("primary down"));
+        var fallback = new FakeChatClient((_, _, _) =>
+            Task.FromResult(new ChatResponse([new ChatMessage(ChatRole.Assistant, "fallback")])));
+        var client = new FailoverChatClient(
+            primary, fallback, logger, NullNotificationSink.Instance, TimeProvider.System);
+
+        using (SessionDiagnosticsContext.Push("ch/failover"))
+        {
+            await client.GetResponseAsync(
+                [new ChatMessage(ChatRole.User, "hi")],
+                cancellationToken: TestContext.Current.CancellationToken);
+        }
+
+        // The failover warning is emitted outside LoggingChatClient's scope, so it
+        // must carry the session id via FailoverChatClient's own scope.
+        Assert.True(logger.HasSessionScope("ch/failover"));
+    }
+
     private static async IAsyncEnumerable<ChatResponseUpdate> ThrowBeforeFirstChunkAsync(
         [System.Runtime.CompilerServices.EnumeratorCancellation]
         CancellationToken cancellationToken)

@@ -8,7 +8,6 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using Netclaw.Configuration;
 
 namespace Netclaw.Daemon.Configuration;
 
@@ -37,24 +36,9 @@ public sealed class LoggingChatClient : DelegatingChatClient
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
-    /// <summary>
-    /// Opens a logging scope carrying the ambient session id (when one is in
-    /// scope) so it surfaces on the OTLP log exporter, which has
-    /// <c>IncludeScopes</c> enabled and otherwise cannot read the
-    /// <see cref="SessionDiagnosticsContext"/> AsyncLocal — that is what makes
-    /// LLM logs correlatable by session in Seq. The scope only adds correlation
-    /// on the OTLP path (i.e. when telemetry export is enabled); the rolling-file
-    /// provider ignores scopes and routes <c>session.log</c> independently from
-    /// the same AsyncLocal. Returns <c>null</c> when no session is in scope
-    /// (e.g. daemon-global calls), which is a no-op <c>using</c>.
-    /// </summary>
-    private IDisposable? BeginSessionScope()
-    {
-        var sessionId = SessionDiagnosticsContext.SessionId;
-        return sessionId is null
-            ? null
-            : _logger.BeginScope(new Dictionary<string, object> { ["session.id"] = sessionId });
-    }
+    // See SessionLoggingScope: tags subsequent log lines with the ambient session
+    // id so they correlate by session in Seq (OTLP). No-op when none is in scope.
+    private IDisposable? BeginSessionScope() => SessionLoggingScope.Begin(_logger);
 
     public override async Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
