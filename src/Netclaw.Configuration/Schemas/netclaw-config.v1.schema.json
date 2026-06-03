@@ -653,6 +653,15 @@
           "type": "boolean",
           "default": false,
           "description": "When true, in-place binary self-update via 'netclaw update' is blocked. Update availability checks still run. Intended for container deployments where the image tag is the version."
+        },
+        "UpdateChannel": {
+          "type": "string",
+          "enum": [
+            "stable",
+            "beta"
+          ],
+          "default": "stable",
+          "description": "Release channel the update check follows. 'stable' (default) only sees stable releases; 'beta' opts into prereleases and rolls onto a stable release once it supersedes a beta. Stable clients are never offered a prerelease."
         }
       },
       "additionalProperties": false
