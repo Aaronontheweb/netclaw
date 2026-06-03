@@ -13,15 +13,15 @@ is additive and `schemaVersion` SHALL remain `1`.
 
 #### Scenario: Publishing a prerelease does not move `latest`
 
-- **WHEN** a prerelease version (e.g. `0.19.0-beta1`) is published while the newest
+- **WHEN** a prerelease version (e.g. `0.19.0-beta.1`) is published while the newest
   stable is `0.18.1`
 - **THEN** `latest` remains `0.18.1`
-- **AND** `latestPrerelease` becomes `0.19.0-beta1`
+- **AND** `latestPrerelease` becomes `0.19.0-beta.1`
 - **AND** the prerelease's assets are appended to `releases[]`
 
 #### Scenario: A stable release supersedes a prior prerelease
 
-- **WHEN** stable `0.19.0` is published after prerelease `0.19.0-beta1`
+- **WHEN** stable `0.19.0` is published after prerelease `0.19.0-beta.1`
 - **THEN** `latest` becomes `0.19.0`
 - **AND** `latestPrerelease` becomes `0.19.0` (the newest of all versions)
 
@@ -70,10 +70,10 @@ verbatim tag string.
 
 #### Scenario: Prerelease tag is marked and does not move `:latest`
 
-- **WHEN** a tag like `0.19.0-beta1` is published
+- **WHEN** a tag like `0.19.0-beta.1` is published
 - **THEN** the GitHub release is flagged as a prerelease
 - **AND** Docker `:latest` and `:major.minor` are unchanged
-- **AND** only `ghcr.io/netclaw-dev/netclaw:0.19.0-beta1` is pushed for that build
+- **AND** only `ghcr.io/netclaw-dev/netclaw:0.19.0-beta.1` is pushed for that build
 
 #### Scenario: Stable tag moves the floating stable tags
 
@@ -83,15 +83,34 @@ verbatim tag string.
 
 #### Scenario: `:beta` tracks the newest prerelease
 
-- **WHEN** `latestPrerelease` is `0.19.0-beta1`
+- **WHEN** `latestPrerelease` is `0.19.0-beta.1`
 - **THEN** `ghcr.io/netclaw-dev/netclaw:beta` resolves to that image
 
 #### Scenario: Version gate validates prefix and suffix
 
-- **WHEN** tag `0.19.0-beta1` is published with `<VersionPrefix>0.19.0</VersionPrefix>`
-  and `<VersionSuffix>beta1</VersionSuffix>`
+- **WHEN** tag `0.19.0-beta.1` is published with `<VersionPrefix>0.19.0</VersionPrefix>`
+  and `<VersionSuffix>beta.1</VersionSuffix>`
 - **THEN** the version gate passes
 - **AND** a tag whose prefix/suffix do not match the props fails the gate
+
+### Requirement: Prerelease tags use dotted identifiers
+
+A prerelease tag's suffix SHALL use dot-separated identifiers where each identifier is
+either all-letters or all-digits (e.g. `beta.1`, `rc.10`) — never a mixed token like
+`beta1`. The release version gate SHALL reject a tag containing a mixed-alphanumeric
+identifier. This keeps a numeric part a numeric identifier, so `beta.10` outranks
+`beta.2` consistently in both the C# comparator and the manifest generator (a mixed
+`beta10` would compare lexically and rank below `beta2`).
+
+#### Scenario: Dotted prerelease tag is accepted
+
+- **WHEN** a tag `0.19.0-beta.1` is published
+- **THEN** the release version gate accepts it
+
+#### Scenario: Mixed-identifier prerelease tag is rejected
+
+- **WHEN** a tag `0.19.0-beta1` is published
+- **THEN** the release version gate fails with guidance to use the dotted form `0.19.0-beta.1`
 
 ### Requirement: Update channel configuration
 
@@ -120,7 +139,7 @@ manifest contents.
 #### Scenario: A newer prerelease is not offered to a stable client
 
 - **WHEN** a stable client checks for updates and the manifest has `latest=0.18.1`,
-  `latestPrerelease=0.19.0-beta1`
+  `latestPrerelease=0.19.0-beta.1`
 - **THEN** no update is reported
 
 #### Scenario: A newer stable is offered to a stable client
@@ -137,18 +156,18 @@ supersedes the running prerelease.
 
 #### Scenario: Beta client is offered the next prerelease
 
-- **WHEN** a beta client on `0.19.0-beta1` checks and `latestPrerelease=0.19.0-beta2`
-- **THEN** an update to `0.19.0-beta2` is reported
+- **WHEN** a beta client on `0.19.0-beta.1` checks and `latestPrerelease=0.19.0-beta.2`
+- **THEN** an update to `0.19.0-beta.2` is reported
 
 #### Scenario: Beta client rolls onto a superseding stable
 
-- **WHEN** a beta client on `0.19.0-beta1` checks after stable `0.19.0` shipped
+- **WHEN** a beta client on `0.19.0-beta.1` checks after stable `0.19.0` shipped
   (`latestPrerelease=0.19.0`)
 - **THEN** an update to `0.19.0` is reported
 
 #### Scenario: Beta client on the newest prerelease has no update
 
-- **WHEN** a beta client on `0.19.0-beta1` checks and `latestPrerelease=0.19.0-beta1`
+- **WHEN** a beta client on `0.19.0-beta.1` checks and `latestPrerelease=0.19.0-beta.1`
 - **THEN** no update is reported
 
 ### Requirement: SemVer-correct version comparison
@@ -161,7 +180,7 @@ ignored. An unparseable version SHALL be treated as "no update available" (fail 
 
 #### Scenario: A prerelease precedes its own release
 
-- **WHEN** comparing `0.19.0-beta1` against `0.19.0`
+- **WHEN** comparing `0.19.0-beta.1` against `0.19.0`
 - **THEN** `0.19.0` is the newer version
 
 #### Scenario: Unparseable version yields no update
@@ -172,14 +191,14 @@ ignored. An unparseable version SHALL be treated as "no update available" (fail 
 ### Requirement: Self-version includes the prerelease suffix
 
 The update check SHALL identify the running binary's version from the assembly
-informational version (which retains the prerelease suffix, e.g. `0.19.0-beta1`), not the
+informational version (which retains the prerelease suffix, e.g. `0.19.0-beta.1`), not the
 numeric assembly version (which strips it). This prevents a beta build from reporting its
 core version and stranding on its own prerelease line.
 
 #### Scenario: A beta build reports its full version
 
-- **WHEN** a binary built from tag `0.19.0-beta1` reports its version for the update check
-- **THEN** the reported version is `0.19.0-beta1`, not `0.19.0`
+- **WHEN** a binary built from tag `0.19.0-beta.1` reports its version for the update check
+- **THEN** the reported version is `0.19.0-beta.1`, not `0.19.0`
 
 ### Requirement: Update check is advisory only
 

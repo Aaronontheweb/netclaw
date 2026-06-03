@@ -22,7 +22,7 @@ internal static class BuildInfo
         Netclaw.Configuration.BuildInfo.GetVersion(Assembly);
 
     /// <summary>
-    /// Full semver including any prerelease suffix (e.g. "0.19.0-beta1"), read from
+    /// Full semver including any prerelease suffix (e.g. "0.19.0-beta.1"), read from
     /// the daemon assembly's informational version. What the update check compares.
     /// </summary>
     public static string FullVersion { get; } =

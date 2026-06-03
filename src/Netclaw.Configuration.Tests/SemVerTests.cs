@@ -33,6 +33,11 @@ public sealed class SemVerTests
     // Dot-separated numeric identifiers compare numerically (the robust beta form).
     [InlineData("1.0.0-beta.2", "1.0.0-beta.10", true)]
     [InlineData("1.0.0-beta.10", "1.0.0-beta.2", false)]
+    // The repo's dotted prerelease convention: beta.10 must outrank beta.2. The release
+    // version gate rejects the non-dotted form (beta10), which would compare lexically
+    // and (incorrectly) rank below beta2.
+    [InlineData("0.19.0-beta.2", "0.19.0-beta.10", true)]
+    [InlineData("0.19.0-beta.9", "0.19.0-beta.10", true)]
     // When a prefix is equal, more identifiers => higher precedence.
     [InlineData("1.0.0-alpha", "1.0.0-alpha.1", true)]
     // Build metadata is ignored.

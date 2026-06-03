@@ -1,9 +1,9 @@
 ## Why
 
 Netclaw had no concept of a release *channel*: any pushed tag — including a semver
-prerelease like `0.19.0-beta1` — became the de-facto "latest" everywhere (install
+prerelease like `0.19.0-beta.1` — became the de-facto "latest" everywhere (install
 scripts, Docker `:latest`, the GitHub "Latest" release, and the update check). A real
-`0.19.0-beta1` was abandoned and a plain `0.18.1` shipped instead, because the pipeline
+`0.19.0-beta.1` was abandoned and a plain `0.18.1` shipped instead, because the pipeline
 could not publish a prerelease for opt-in testers without leaking it to every fresh
 install (GitHub issue #1027). This change introduces a public **beta** channel so we can
 ship prereleases to testers who explicitly opt in, while default installs and stable
@@ -28,7 +28,7 @@ users are never affected.
 - **SemVer-2.0.0-correct version comparison** replaces `System.Version`, which could not
   parse prerelease suffixes (and so silently never offered a prerelease). The running
   binary's self-version is read from the assembly informational version
-  (`BuildInfo.FullVersion`, retains `-beta1`) rather than the suffix-stripped
+  (`BuildInfo.FullVersion`, retains `-beta.1`) rather than the suffix-stripped
   `AssemblyVersion`.
 - The update check remains **advisory only** — it emits a notice/alert and never
   auto-downloads; `Daemon.DisableSelfUpdate` continues to block in-place update while the

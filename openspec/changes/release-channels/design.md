@@ -43,8 +43,8 @@ comparator keeps the two in lockstep with no new dependency. *Alternative:*
 `NuGet.Versioning` — rejected as an avoidable direct dependency for a narrow need.
 
 **`BuildInfo.FullVersion` from `AssemblyInformationalVersion`.** `BuildInfo.Version`
-reads the numeric `AssemblyVersion`, which the .NET SDK strips the `-beta1` suffix from —
-a beta build would report `0.19.0` and never see `0.19.0-beta2`. `FullVersion` reads the
+reads the numeric `AssemblyVersion`, which the .NET SDK strips the `-beta.1` suffix from —
+a beta build would report `0.19.0` and never see `0.19.0-beta.2`. `FullVersion` reads the
 informational version (SourceLink `{version}+{sha}`) and strips the `+sha`. The update
 check uses `FullVersion`; user-agent/`--version` display is left on `Version` to avoid
 churn on unrelated surfaces.
@@ -65,13 +65,16 @@ reason about precedence.
 
 - **Transitional manifest lacks `latestPrerelease`** → installers and the update check
   fall back to `latest` (loud note in installers); the next release republishes the field.
-- **`beta1`/`beta2` vs `beta.1`/`beta.2`** → single alphanumeric identifiers compare
-  lexically, so `beta10 < beta2`. Mitigation: the comparator is spec-correct and matches
-  the generator; use the dotted form (`beta.10`) for ≥10 betas of one line. Documented,
-  not special-cased.
-- **`latestPrerelease` drift between bash and C#** → mitigated by keeping both precedence
-  implementations minimal and co-located conceptually, with SemVer unit tests asserting
-  the rules.
+- **Prerelease ordering (`beta10` vs `beta2`)** → a single mixed-alphanumeric identifier
+  compares lexically (so `beta10 < beta2`), which is SemVer-correct but surprising.
+  Mitigation: the **dotted convention** (`beta.10`) makes the number a numeric identifier
+  that orders numerically in both the C# comparator and the bash generator, and the
+  release version gate **rejects** mixed identifiers like `beta1` so a non-dotted tag can
+  never ship.
+- **`latestPrerelease` drift between bash and C#** → mitigated by a shared ordered-version
+  fixture that BOTH a C# test (over `SemVer`) and a python check (over the generator's
+  precedence key) assert against, so a change to one precedence implementation that
+  diverges from the other fails CI.
 - **Doctor channel resolution on malformed config** → falls back to stable so the check
   still runs; invalid enum values are surfaced by `ConfigSchemaDoctorCheck`, not masked.
 

@@ -1,9 +1,8 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="UpdateAvailableDoctorCheck.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Text.Json.Nodes;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Feeds;
 
@@ -17,24 +16,26 @@ public sealed class UpdateAvailableDoctorCheck : IDoctorCheck
 {
     private const string CheckName = "Update";
 
-    private readonly NetclawPaths _paths;
+    private readonly UpdateChannel _channel;
 
-    public UpdateAvailableDoctorCheck(NetclawPaths paths) => _paths = paths;
+    // Take the channel from the bound DaemonConfig (the same value every other update
+    // surface uses) rather than re-reading netclaw.json — no bespoke config parsing, and
+    // a malformed value is reported by ConfigSchemaDoctorCheck instead of crashing here.
+    public UpdateAvailableDoctorCheck(DaemonConfig daemonConfig) => _channel = daemonConfig.UpdateChannel;
 
     public async Task<DoctorCheckResult> RunAsync(CancellationToken cancellationToken = default)
     {
-        var channel = ResolveChannel();
         try
         {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(TimeSpan.FromSeconds(5));
 
             using var httpClient = new HttpClient();
-            // FullVersion so a beta build reports its prerelease suffix; the resolved
+            // FullVersion so a beta build reports its prerelease suffix; the configured
             // channel keeps doctor consistent with the daemon/CLI (a beta user is told
             // about the next beta, a stable user only about stable releases).
             var result = await UpdateCheckService.CheckForUpdateAsync(
-                httpClient, BuildInfo.FullVersion, cts.Token, channel);
+                httpClient, BuildInfo.FullVersion, cts.Token, _channel);
 
             if (result.IsUpdateAvailable)
             {
@@ -51,26 +52,6 @@ public sealed class UpdateAvailableDoctorCheck : IDoctorCheck
         {
             return DoctorCheckResult.Pass(CheckName,
                 $"Could not check for updates (v{BuildInfo.FullVersion}).");
-        }
-    }
-
-    // Reads Daemon.UpdateChannel from netclaw.json. An invalid value is reported by
-    // ConfigSchemaDoctorCheck, so here we fall back to the documented default (stable)
-    // rather than failing — the availability check should still run.
-    private UpdateChannel ResolveChannel()
-    {
-        var (root, error) = DoctorJsonConfigReader.TryReadConfig(_paths);
-        if (error is not null || root is null)
-            return UpdateChannel.Stable;
-
-        var channelStr = (root["Daemon"] as JsonObject)?["UpdateChannel"]?.GetValue<string>();
-        try
-        {
-            return DaemonConfig.ParseUpdateChannel(channelStr);
-        }
-        catch (InvalidOperationException)
-        {
-            return UpdateChannel.Stable;
         }
     }
 }

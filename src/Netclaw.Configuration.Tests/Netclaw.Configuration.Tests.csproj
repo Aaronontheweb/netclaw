@@ -17,6 +17,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Shared SemVer precedence fixture, asserted by both SemVerConformanceTests (C#)
+         and the feeds/scripts/semver_key.py conformance check (bash/python), to keep the
+         two precedence implementations in lockstep. -->
+    <Content Include="../../feeds/scripts/semver-order.txt" Link="TestData/semver-order.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../Netclaw.Configuration/Netclaw.Configuration.csproj" />
     <ProjectReference Include="../Netclaw.Media/Netclaw.Media.csproj" />
     <ProjectReference Include="../Netclaw.Providers/Netclaw.Providers.csproj" />

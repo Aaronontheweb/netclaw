@@ -115,7 +115,7 @@ public static class SemVer
         if (c != 0) return c;
 
         // A version with no prerelease outranks one that has a prerelease with the
-        // same core (1.0.0 > 1.0.0-beta1).
+        // same core (1.0.0 > 1.0.0-beta.1).
         var aPre = a.Pre.Length > 0;
         var bPre = b.Pre.Length > 0;
         if (!aPre && !bPre) return 0;
@@ -137,8 +137,11 @@ public static class SemVer
 
     private static int ComparePreIdentifier(string a, string b)
     {
-        var aNumeric = int.TryParse(a, out var ai);
-        var bNumeric = int.TryParse(b, out var bi);
+        // Parse as long (not int): numeric identifiers can be large (timestamps, build
+        // counters), and the bash generator compares them with Python's unbounded int —
+        // long covers any realistic value and keeps the two implementations in agreement.
+        var aNumeric = long.TryParse(a, out var ai);
+        var bNumeric = long.TryParse(b, out var bi);
 
         if (aNumeric && bNumeric) return ai.CompareTo(bi);
         // Numeric identifiers always have lower precedence than alphanumeric ones.

@@ -19,10 +19,11 @@ public sealed class SemVerPropertyTests
 {
     private const long Iter = 100_000;
 
-    // A prerelease identifier: a (single-digit) numeric identifier, or an alphanumeric one.
+    // A prerelease identifier: a numeric identifier (multi-digit, so the dotted form
+    // beta.10 vs beta.2 is exercised) or an alphanumeric one.
     private static readonly Gen<string> GenPreId =
         Gen.OneOf(
-            Gen.Int[0, 9].Select(n => n.ToString()),
+            Gen.Int[0, 30].Select(n => n.ToString()),
             Gen.OneOfConst("alpha", "beta", "rc", "x", "a1", "1a"));
 
     // A valid SemVer string: small core components (so collisions exercise the
