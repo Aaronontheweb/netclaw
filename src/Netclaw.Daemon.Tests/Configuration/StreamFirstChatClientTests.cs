@@ -26,9 +26,25 @@ public sealed class StreamFirstChatClientTests
         // 400s against streaming-only backends.
         Assert.False(inner.NonStreamingInvoked);
         Assert.True(inner.StreamingInvoked);
+        Assert.Single(response.Messages); // aggregated into one assistant message, not split
         Assert.Equal("Hello world", response.Text);
         Assert.Equal(7, response.Usage?.InputTokenCount);
         Assert.Equal(3, response.Usage?.OutputTokenCount);
+    }
+
+    [Fact]
+    public async Task GetResponseAsync_on_empty_stream_yields_a_single_empty_assistant_message()
+    {
+        var client = new StreamFirstChatClient(new StreamOnlyChatClient(emptyStream: true));
+
+        var response = await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")],
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        // Callers index Messages[^1] unguarded; an empty completion must not throw.
+        var last = response.Messages[^1];
+        Assert.Equal(ChatRole.Assistant, last.Role);
+        Assert.True(string.IsNullOrEmpty(last.Text));
     }
 
     [Fact]
@@ -57,7 +73,7 @@ public sealed class StreamFirstChatClientTests
     /// that rejects non-streaming), while <see cref="GetStreamingResponseAsync"/> yields
     /// text deltas followed by usage.
     /// </summary>
-    private sealed class StreamOnlyChatClient : IChatClient
+    private sealed class StreamOnlyChatClient(bool emptyStream = false) : IChatClient
     {
         public bool StreamingInvoked { get; private set; }
         public bool NonStreamingInvoked { get; private set; }
@@ -78,6 +94,8 @@ public sealed class StreamFirstChatClientTests
         {
             StreamingInvoked = true;
             await Task.CompletedTask;
+            if (emptyStream)
+                yield break;
             yield return new ChatResponseUpdate(ChatRole.Assistant, "Hello");
             yield return new ChatResponseUpdate(ChatRole.Assistant, " world");
             yield return new ChatResponseUpdate

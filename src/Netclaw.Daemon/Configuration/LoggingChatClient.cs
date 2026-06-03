@@ -39,12 +39,13 @@ public sealed class LoggingChatClient : DelegatingChatClient
 
     /// <summary>
     /// Opens a logging scope carrying the ambient session id (when one is in
-    /// scope) so it rides the standard MEL scope mechanism onto every sink —
-    /// notably the OTLP/Seq exporter (which has <c>IncludeScopes</c> enabled).
-    /// Without this, the exporter cannot read the
-    /// <see cref="SessionDiagnosticsContext"/> AsyncLocal (only the rolling-file
-    /// provider does, and only for file routing), so LLM logs reach Seq with no
-    /// session correlation. Returns <c>null</c> when no session is in scope
+    /// scope) so it surfaces on the OTLP log exporter, which has
+    /// <c>IncludeScopes</c> enabled and otherwise cannot read the
+    /// <see cref="SessionDiagnosticsContext"/> AsyncLocal — that is what makes
+    /// LLM logs correlatable by session in Seq. The scope only adds correlation
+    /// on the OTLP path (i.e. when telemetry export is enabled); the rolling-file
+    /// provider ignores scopes and routes <c>session.log</c> independently from
+    /// the same AsyncLocal. Returns <c>null</c> when no session is in scope
     /// (e.g. daemon-global calls), which is a no-op <c>using</c>.
     /// </summary>
     private IDisposable? BeginSessionScope()

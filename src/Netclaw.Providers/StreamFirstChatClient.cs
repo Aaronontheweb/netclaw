@@ -32,10 +32,22 @@ public sealed class StreamFirstChatClient : DelegatingChatClient
 {
     public StreamFirstChatClient(IChatClient innerClient) : base(innerClient) { }
 
-    public override Task<ChatResponse> GetResponseAsync(
+    public override async Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options = null,
         CancellationToken cancellationToken = default)
-        => base.GetStreamingResponseAsync(messages, options, cancellationToken)
+    {
+        var response = await base
+            .GetStreamingResponseAsync(messages, options, cancellationToken)
             .ToChatResponseAsync(cancellationToken);
+
+        // An empty stream aggregates to a response with zero messages, but callers
+        // (memory distillation, title generation, compaction) index Messages[^1].
+        // Match StreamingResponseReader's guard so an empty completion degrades to
+        // empty text instead of an unguarded index throw at the call site.
+        if (response.Messages.Count == 0)
+            response.Messages.Add(new ChatMessage(ChatRole.Assistant, []));
+
+        return response;
+    }
 }
