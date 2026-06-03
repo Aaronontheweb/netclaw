@@ -93,7 +93,22 @@
 - [x] 8.2 Updated `netclaw-operations` skill (new "Large tool output" section:
       spill to session file, steer to ranged reads/grep, bounded job log) and
       bumped `metadata.version` 2.8.9 → 2.9.0
-- [ ] 8.3 Eval cases flagged (see below); run against the spark2 provider
+- [~] 8.3 Eval cases flagged + suite run against spark2 (Qwen3.6-35B, openai-compatible):
+      - **At-risk-but-robust (verify still green):** `complex_diagnose_self`,
+        `complex_gh_issues`, `complex_write_and_run`, `multi_turn_tool_repeat`,
+        `multi_turn_tool_carryover`. Their asserts check `[tool:call] shell_execute`
+        + a keyword (doctor/gh issue/34|55/filenames/healthy|daemon|version), not
+        exact tool-result content — so truncating output to N=2000 + spill doesn't
+        break them (keywords live in the head/tail). `multi_turn_tool_carryover` is
+        the closest call (recall from the now-smaller doctor result).
+      - **Coverage GAPS to add (new behavior is untested):**
+        1. large shell output → agent reads the spill file (file_read offset/limit
+           or grep) instead of re-running the command;
+        2. large file_read → agent uses Offset/Limit or grep on the steer rather
+           than re-reading.
+      - Run: NETCLAW_EVAL_PROVIDER_TYPE=openai-compatible
+        NETCLAW_EVAL_PROVIDER_ENDPOINT=https://spark2.testlab.petabridge.net/
+        NETCLAW_EVAL_MODEL_ID=Qwen/Qwen3.6-35B-A3B-FP8 ./evals/run-evals.sh
 - [x] 8.4 Added `CaptureBenchmarks` confirming O(ceiling): allocation flat at
       ~1255 KB for 256K and 50M chars (vs unbounded before)
 - [ ] 8.5 `openspec validate` passes; sync/archive on PR merge (not yet merged)
