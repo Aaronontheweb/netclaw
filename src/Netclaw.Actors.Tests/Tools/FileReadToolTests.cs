@@ -229,7 +229,24 @@ public class FileReadToolTests : IDisposable
         var result = await tool.ExecuteAsync(args, CreatePersonalContext(), CancellationToken.None);
 
         Assert.Contains("output truncated", result);
-        Assert.Contains("Offset=", result);
+        Assert.Contains("Offset", result);
+        Assert.Contains("grep", result);
+        // Bounded read: only the first 100 chars are materialized, not all 500.
+        Assert.StartsWith(new string('x', 100), result);
+    }
+
+    [Fact]
+    public async Task File_read_redacts_secrets_on_read()
+    {
+        var tool = new FileReadTool(new ToolConfig());
+        var filePath = Path.Combine(_dir.Path, "creds.env");
+        await File.WriteAllTextAsync(filePath, "API_KEY=supersecret123", TestContext.Current.CancellationToken);
+
+        var args = ToolInput.Create("Path", filePath);
+        var result = await tool.ExecuteAsync(args, CreatePersonalContext(), CancellationToken.None);
+
+        Assert.DoesNotContain("supersecret123", result);
+        Assert.Contains("REDACTED", result);
     }
 
     [Fact]

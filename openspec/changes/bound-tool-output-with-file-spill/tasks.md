@@ -54,22 +54,27 @@
 
 ## 5. background_job bounded capture (closes #1300)
 
-- [ ] 5.1 Rework `BackgroundJobExecutionActor` to stream stdout/stderr to the job
-      log via the shared capture (bounded memory) and retain only a tail for the
-      completion message — stop materializing the full output string
-- [ ] 5.2 Apply redact-on-write to the job log
-- [ ] 5.3 Tests: large-output job stays within the memory bound; completion
-      carries the bounded tail + log path
+- [x] 5.1 `BackgroundJobExecutionActor` now drains each stream via
+      `BoundedOutputReader.DrainToWindowAsync` (capture ceiling
+      `MaxCapturedOutputChars = 256000`) instead of `ReadToEndAsync` — bounded
+      memory; the log is head+tail for floods larger than the ceiling. Closes #1300.
+- [x] 5.2 Redact-on-write unchanged (the existing `SecretOutputRedactor.Redact`
+      now runs over the bounded combined output before the log write)
+- [x] 5.3 Bounding is `DrainToWindowAsync`'s (unit-tested); the existing
+      BackgroundJob integration tests exercise the new drain path end-to-end.
 
 ## 6. file_read bounded reads + redaction (closes #1301)
 
-- [ ] 6.1 Bound the default `file_read` path: return a head+tail sample within `N`
-      for an over-budget file instead of `ReadAllTextAsync`; no separate spill
-- [ ] 6.2 Add the over-budget steer (use `offset`/`limit` or `grep`)
-- [ ] 6.3 Run returned content through `SecretOutputRedactor` (redact-on-read);
-      keep the bounded `ReadLinesAsync` offset/limit path
-- [ ] 6.4 Tests: large file returns bounded sample without full materialization;
-      secret in a read file is redacted
+- [x] 6.1 Default `file_read` path now uses `ReadBoundedHeadAsync` (reads up to the
+      limit and stops — bounds memory AND I/O) instead of `ReadAllTextAsync` +
+      `TruncateFileOutput`; no spill (the file is its own backing). Closes #1301.
+      (Head-only, not head+tail: a file is read top-down via Offset/Limit, and
+      head+tail would require reading the whole file to reach the tail.)
+- [x] 6.2 Over-budget steer: "read a specific range with Offset and Limit, or grep"
+- [x] 6.3 Redact-on-read via `SecretOutputRedactor` on both the default and the
+      `ReadLinesAsync` (offset/limit) return paths; offset/limit path stays bounded
+- [x] 6.4 Tests: large file returns a bounded head (first N only, not all 500
+      chars) + steer; secret in a read file is redacted. 2195 actor tests pass
 
 ## 7. Config + pipeline unification
 

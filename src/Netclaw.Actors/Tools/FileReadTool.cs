@@ -93,12 +93,20 @@ public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
             {
                 var lines = await ReadLinesAsync(authorizedPath, encoding, offset ?? 1, limit, _config.MaxOutputChars, ct);
                 RecordSkillReadIfApplicable(authorizedPath);
-                return lines;
+                return SecretOutputRedactor.Redact(lines); // redact-on-read
             }
 
-            var content = await File.ReadAllTextAsync(authorizedPath, encoding, ct);
+            // Bounded head read (not ReadAllTextAsync): a multi-hundred-MB file must
+            // not be materialized just to truncate it — read up to the limit and stop.
+            // Redact what we return (file_read previously did not redact at all), and
+            // for an over-limit file steer to a ranged read / grep rather than copying
+            // it to a spill — the file on disk is its own backing store. Closes #1301.
+            var (content, truncated) = await ReadBoundedHeadAsync(authorizedPath, encoding, _config.MaxOutputChars, ct);
             RecordSkillReadIfApplicable(authorizedPath);
-            return TruncateFileOutput(content, _config.MaxOutputChars);
+            var redacted = SecretOutputRedactor.Redact(content);
+            return truncated
+                ? redacted + $"\n[output truncated at {_config.MaxOutputChars} chars — read a specific range with Offset and Limit, or grep the file, for what you need]"
+                : redacted;
         }
         catch (DecoderFallbackException)
         {
@@ -422,21 +430,28 @@ public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
                || ReferenceEquals(encoding, StrictUtf32Be);
     }
 
-    private static string TruncateFileOutput(string content, int maxChars)
+    /// <summary>
+    /// Reads up to <paramref name="maxChars"/> chars from the head of the file and
+    /// stops — bounding both memory and I/O so a huge file is never fully
+    /// materialized. Returns the content and whether more remained past the cap.
+    /// </summary>
+    private static async Task<(string Content, bool Truncated)> ReadBoundedHeadAsync(
+        string path, Encoding encoding, int maxChars, CancellationToken ct)
     {
-        if (content.Length <= maxChars)
-            return content;
-        int newlinesBefore = 0, totalNewlines = 0;
-        for (var i = 0; i < content.Length; i++)
+        using var reader = new StreamReader(path, encoding, detectEncodingFromByteOrderMarks: true);
+        var sb = new StringBuilder();
+        var buf = new char[4096];
+        while (sb.Length < maxChars)
         {
-            if (content[i] != '\n') continue;
-            totalNewlines++;
-            if (i < maxChars) newlinesBefore++;
+            var want = Math.Min(buf.Length, maxChars - sb.Length);
+            var read = await reader.ReadAsync(buf.AsMemory(0, want), ct);
+            if (read == 0)
+                return (sb.ToString(), false); // EOF before the cap — not truncated
+            sb.Append(buf, 0, read);
         }
-        var nextLine = newlinesBefore + 1;
-        var totalLines = totalNewlines + 1;
-        return string.Concat(content.AsSpan(0, maxChars),
-            $"\n[output truncated at line {nextLine} of {totalLines} — use Offset={nextLine} with Limit to continue reading]");
+
+        // Hit the cap: truncated iff at least one more char remains on disk.
+        return (sb.ToString(), reader.Peek() >= 0);
     }
 
     private static async Task<string> ReadLinesAsync(
