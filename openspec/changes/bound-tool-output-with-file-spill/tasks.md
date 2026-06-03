@@ -1,17 +1,18 @@
 ## 1. Shared bounded-output reader (foundation, no behavior change)
 
-- [ ] 1.1 Extract `BoundedDrainAsync` from `ShellTool` into a reusable
+- [x] 1.1 Extract `BoundedDrainAsync` from `ShellTool` into a reusable
       `BoundedOutputReader` (Netclaw.Actors/Tools), keeping the #1293 ring core
       (pooled buffer, `ValueTask` reads, block-copy tail ring)
-- [ ] 1.2 Expose `DrainToWindowAsync(TextReader, int budget, ct) → (string Text,
+- [x] 1.2 Expose `DrainToWindowAsync(TextReader, int budget, ct) → (string Text,
       bool Truncated)` (head+tail, in-memory only)
-- [ ] 1.3 Expose `DrainCaptureAsync(TextReader, int captureMax, int inlineBudget,
-      ct) → (string Captured, string Inline, bool Truncated)`; drain past
-      `captureMax` to avoid child deadlock
-- [ ] 1.4 Move/adapt the existing `BoundedDrainAsync` unit tests (window, exact-at-cap,
-      wraparound/start-advance, disabled cap) onto `BoundedOutputReader`
-- [ ] 1.5 Repoint `ShellTool` at `BoundedOutputReader.DrainToWindowAsync` with no
-      behavior change yet; confirm all shell tests stay green
+- [x] 1.3 Expose `DrainCaptureAsync(TextReader, int captureMax, int inlineBudget,
+      ct) → (string Captured, string Inline, bool CeilingExceeded)` over a shared
+      core, plus a pure `Window(string, budget)` helper; drain past `captureMax`
+- [x] 1.4 Move/adapt the `BoundedDrainAsync` unit tests onto `BoundedOutputReader`
+      (`DrainToWindow_*`), add `Window` + `DrainCapture` coverage
+- [x] 1.5 Repoint `ShellTool` and the benchmark at
+      `BoundedOutputReader.DrainToWindowAsync` with no behavior change; 40 reader +
+      shell tests green
 
 ## 2. Tool-call id and inline budget plumbed to the capture layer
 
