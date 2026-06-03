@@ -196,3 +196,7 @@ if ($script:Fail -gt 0) {
     exit 1
 }
 Write-Host "install smoke (ps1): PASSED"
+# Exit explicitly on the result, not on $LASTEXITCODE — the channel checks above run
+# `pwsh -Channel bogus` (which exits non-zero by design), and without this the script
+# would fall off the end and inherit that non-zero code despite all assertions passing.
+exit 0
