@@ -94,7 +94,10 @@ curl -sSL https://releases.netclaw.dev/install.sh | bash
 curl -sSL https://releases.netclaw.dev/install.sh | bash -s -- cli
 curl -sSL https://releases.netclaw.dev/install.sh | bash -s -- daemon
 
-# Pin a specific version
+# Opt into the beta channel (newest prerelease, or latest stable if none)
+curl -sSL https://releases.netclaw.dev/install.sh | bash -s -- --channel beta
+
+# Pin a specific version (e.g. a prerelease)
 NETCLAW_VERSION=0.17.1 curl -sSL https://releases.netclaw.dev/install.sh | bash
 ```
 
@@ -115,6 +118,14 @@ available on macOS ([#1015](https://github.com/netclaw-dev/netclaw/issues/1015))
 iwr -useb https://releases.netclaw.dev/install.ps1 | iex
 ```
 
+The `-Component cli|daemon`, `-Channel beta`, and `-Version` options work the same
+way as their Linux counterparts (download the script and run it with the flag).
+
+**Beta channel.** Stable installs are never affected by prereleases. To test an
+upcoming release, opt in with `--channel beta` (`-Channel beta` on Windows) — it
+installs the newest prerelease, automatically rolling onto the next stable once it
+ships. Pin an exact build with `NETCLAW_VERSION=x.y.z-beta.n`.
+
 **Docker** (multi-arch: amd64/arm64):
 
 ```bash
@@ -126,6 +137,9 @@ docker run -d --name netclawd \
   -e NETCLAW_Daemon__TrustedProxies__0=172.16.0.0/12 \
   ghcr.io/netclaw-dev/netclaw:latest
 ```
+
+Use `ghcr.io/netclaw-dev/netclaw:beta` to track the newest prerelease, or a pinned
+tag like `:0.19.0-beta1`. `:latest` only ever points at the latest stable release.
 
 See the [Docker deployment guide](https://netclaw.dev/deployment/docker/) for
 volume setup, environment variables, and Docker Compose examples.
