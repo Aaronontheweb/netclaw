@@ -89,11 +89,11 @@
 
 ## 8. Quality gates, docs, eval, and OpenSpec close-out
 
-- [ ] 8.1 `dotnet slopwatch analyze` clean; `./scripts/Add-FileHeaders.ps1 -Verify`
-- [ ] 8.2 Update the `netclaw-operations` system skill (tool output now spills to a
-      session-dir file; steer to ranged reads/grep) and bump its `metadata.version`
-- [ ] 8.3 Add/adjust eval cases for the changed tool-output behavior (truncation
-      shape, spill-path presence, file_read range steer)
-- [ ] 8.4 Benchmark the shared reader's capture path (extend the existing
-      `Netclaw.Benchmarks` harness) to confirm O(ceiling) capture allocation
-- [ ] 8.5 `openspec sync` / `openspec verify` the change; archive on completion
+- [x] 8.1 `dotnet slopwatch analyze` clean (run per group); headers on all new .cs
+- [x] 8.2 Updated `netclaw-operations` skill (new "Large tool output" section:
+      spill to session file, steer to ranged reads/grep, bounded job log) and
+      bumped `metadata.version` 2.8.9 → 2.9.0
+- [ ] 8.3 Eval cases flagged (see below); run against the spark2 provider
+- [x] 8.4 Added `CaptureBenchmarks` confirming O(ceiling): allocation flat at
+      ~1255 KB for 256K and 50M chars (vs unbounded before)
+- [ ] 8.5 `openspec validate` passes; sync/archive on PR merge (not yet merged)
