@@ -23,42 +23,41 @@ and its review (#1300, #1301). It should be linked from a PRD if one is opened.
 
 ## What Changes
 
-- Introduce one bounded-output mechanism shared by `shell_execute`,
-  `background_job`, and `file_read`: stream the source in bounded memory,
-  retain an N/2-head + N/2-tail window, and report whether truncation occurred.
-- **BREAKING (behavioral):** lower the default `MaxInlineToolResultChars`
-  from 12000 to **2000**, and make it the single budget `N` for inline tool
-  output. All inline tool results shrink accordingly. (Already configurable;
-  no schema change beyond the default.)
-- **BREAKING (behavioral):** replace head-only `ClampToolResult` truncation
-  with the shared head+tail policy, so the inline result keeps both ends.
-- When a tool's output exceeds `N`, spill the full (redacted) output to
-  `sessionDir/tool-calls/{toolCallId}.log` and append a steering message with
-  the path, directing the model to `file_read` (offset/limit) or `grep`.
-- Plumb `ToolCallId` into `ToolExecutionContext` so the spill file can be named
-  per call.
-- Repurpose `ToolConfig.MaxOutputChars` as the **capture ceiling** — the bounded
-  buffer that becomes the (redacted) spill body — and raise its default from
-  32000 to a comfortable spill size. It no longer doubles as the inline budget;
-  `N` owns that.
-- `file_read`: bound the default path (no more `ReadAllTextAsync` of the whole
-  file); for an over-budget file, return a head+tail sample plus a steer to
-  offset/limit/`grep` rather than materializing it (closes #1301 OOM).
-- `background_job`: stream stdout/stderr to the on-disk log in bounded memory
-  while retaining only a tail for the completion message (closes #1300 OOM).
-- **Redaction, two modes:**
-  - *redact-on-write* for files this system emits (shell/job spill logs),
-    reusing the existing `SecretOutputRedactor` over a bounded capture buffer;
-  - *redact-on-read* in `file_read` for files written by anything else
-    (`file_read` does no redaction today — closes the #1301 cleartext gap).
+- Bound tool output and spill the overflow in **one place** —
+  `DispatchingToolExecutor`, the chokepoint every tool result already passes
+  through (main session and sub-agents) and where the central
+  `SecretOutputRedactor.Redact` already runs. Right after redaction it windows the
+  result to the tool's inline budget and, on overflow, spills the full redacted
+  result to `sessionDir/tool-calls/{toolCallId}.log` with a steer to `file_read`
+  (offset/limit) or `grep`. The spilled file is redacted for free.
+- **Per-tool inline budgets.** Add `INetclawTool.InlineOutputBudgetChars` (default
+  `0` = use the session content budget). `shell_execute` overrides to **2000**
+  (verbose output the model skims); content tools (`file_read`, `web_fetch`,
+  `web_search`, memory, MCP) use the **12000** content budget because the model
+  fetched them to read in full.
+- **Retire `ClampToolResult`.** The dispatcher is the single truncation stage;
+  the head-only pipeline clamp is removed (no double-clamp).
+- `SessionTuning.MaxInlineToolResultChars` stays **12000** (the content default);
+  only verbose tools opt down. `ToolConfig.MaxOutputChars` becomes the **capture
+  ceiling** (32000 → **256000**) — the memory/disk bound on what a tool captures.
+- Tools shrink to "bound capture (OOM) + return raw": `shell_execute` drains both
+  pipes to the ceiling and returns the combined output (no per-tool window /
+  redact / spill); `file_read` reads a bounded head (no `ReadAllTextAsync`) and
+  returns it (closes #1301 OOM). The central dispatcher redaction already covered
+  `file_read`, so its redundant redact-on-read is removed (#1301's redaction half
+  was a false alarm).
+- `background_job`: bounded pipe drain via the shared reader + a capture-ceiling
+  marker (closes #1300 OOM). It keeps its own on-disk log, not the dispatcher
+  spill.
 
 ### Out of scope (this change)
 
-- Per-tool overrides of `N` (a follow-up; `MaxInlineToolResultChars` is global).
 - Spill-file lifecycle/cleanup (tracked separately; the session-log cleanup
   issue owns retention/sweep).
 - A byte-complete (unbounded) spill: capture is bounded by `MaxOutputChars`, so a
-  multi-hundred-MB flood is captured head+tail, not in full. See design D5/D8.
+  multi-hundred-MB flood is captured head+tail, not in full. See design D7/D8.
+- Inferring from a shell command's AST that its output equals an existing file
+  (rejected — output ≠ a referenced file once piped/filtered).
 - **Media egress (#1296)** — image/AV bytes sent *to* the model. It shares the
   "don't `ReadAllBytes` a huge thing" lesson but needs a different fix
   (downscale/streamed-encode/provider file APIs), so it stays a separate change;
@@ -68,42 +67,42 @@ and its review (#1300, #1301). It should be linked from a PRD if one is opened.
 
 ### New Capabilities
 
-- `bounded-tool-output`: the cross-cutting contract for bounding any tool's
-  external output — single budget `N`, head+tail retention, full-output spill to
-  a session-scoped file with a model-facing steering hint, and the two-mode
-  redaction rules (redact-on-write for emitted files, redact-on-read for foreign
-  files). Owns the shared bounded-output reader and the spill-path convention.
+- `bounded-tool-output`: the cross-cutting contract — `DispatchingToolExecutor`
+  bounds every (already-redacted) tool result to the tool's inline budget and
+  spills the overflow to a session file with a steer; per-tool budgets
+  (`InlineOutputBudgetChars`, content default vs verbose override); a shared
+  bounded-output reader; the capture ceiling. Bounded memory on every path.
 
 ### Modified Capabilities
 
-- `netclaw-tools`: `shell_execute` and `file_read` adopt the shared bounded
-  reader and the spill+steer behavior; the truncation requirement changes from a
-  single head-only indicator to head+tail plus an output-file path; `file_read`
-  gains bounded reads, reject/steer for over-budget files, and redact-on-read.
-- `netclaw-session`: tool-result inlining unifies on the single budget `N`
-  (`MaxInlineToolResultChars`, default 2000) with the head+tail policy;
-  `ClampToolResult` aligns to (or defers to) the shared mechanism instead of an
-  independent head-only clamp.
-- `background-job-execution`: output capture SHALL bound memory — stream to the
-  output log + retain a tail — rather than buffering the full output as a
-  managed string before trimming.
-- `tool-call-metadata`: the tool-call identifier is exposed to tools via
-  `ToolExecutionContext` so emitted spill files can be named per call.
+- `netclaw-tools`: `shell_execute` and `file_read` shrink to bounded-capture-and-
+  return; `shell_execute` declares the small verbose budget and bounds combined
+  stdout+stderr; `file_read` reads a bounded head (no full materialization). The
+  truncation requirement moves from a per-tool indicator to the central
+  dispatcher's window + spill + steer.
+- `netclaw-session`: tool-result inlining no longer clamps in the pipeline
+  (`ClampToolResult` removed); the dispatcher is the single bounding+spill stage.
+- `background-job-execution`: output capture SHALL bound memory (shared reader +
+  ceiling marker) rather than buffering the full output before trimming.
 
 ## Impact
 
-- **Code:** new shared bounded-output reader (extracted from
-  `ShellTool.BoundedDrainAsync`); `ShellTool`, `FileReadTool`,
-  `BackgroundJobExecutionActor`, `SessionToolExecutionPipeline`
-  (`ClampToolResult`), `ToolExecutionContext` (+`ToolCallId`); reuse of the
-  existing `SecretOutputRedactor` (no new redaction abstraction).
-- **Config:** `SessionTuning.MaxInlineToolResultChars` default 12000 → 2000.
-- **Security:** closes the `file_read` cleartext-secret gap (redact-on-read);
-  keeps emitted spill files redacted on disk (redact-on-write). Spill files live
-  under the session directory and inherit its access scope.
-- **Operational:** large tool outputs now produce a session-dir `.log` file the
-  agent reads on demand; the model is steered toward ranged reads/`grep` instead
-  of re-running expensive commands. Closes #1300 and #1301; resolves the #1293
-  review's two-stage-truncation tension.
+- **Code:** `DispatchingToolExecutor` (bound+spill), `ToolOutputSpill` (the
+  bound+spill helper), `INetclawTool`/`NetclawTool` (`InlineOutputBudgetChars`
+  rail), `ShellTool` (declares 2000; bound combined; drop redact/spill),
+  `FileReadTool` (bounded head; drop redundant redaction), `BoundedOutputReader`
+  (shared reader), `BackgroundJobExecutionActor` (bounded drain + marker),
+  `SessionToolExecutionPipeline` (`ClampToolResult` removed), `ToolExecutionContext`
+  (`MaxInlineToolResultChars` content budget; `ToolCallId` removed — the
+  dispatcher uses `toolCall.CallId`).
+- **Config:** `SessionTuning.MaxInlineToolResultChars` stays 12000 (content);
+  `ToolConfig.MaxOutputChars` 32000 → 256000 (capture ceiling; schema default
+  updated).
+- **Security:** redaction unchanged in placement (central dispatcher) — the spill
+  file is redacted because redaction runs before it; spill files live under the
+  session directory and inherit its access scope.
+- **Operational:** large tool outputs produce a session-dir `.log` the agent
+  reads on demand; the model is steered toward ranged reads/`grep`. Closes #1300
+  and #1301; resolves the #1293 review's two-stage-truncation tension.
 - **Evals/skills:** tool-output behavior changes — update `netclaw-operations`
-  (and any eval cases asserting on tool-result truncation/format) accordingly.
+  (done) and any eval cases asserting on tool-result truncation/format.

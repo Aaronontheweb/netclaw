@@ -5,13 +5,12 @@
 Tool execution SHALL be encapsulated in a `SessionToolExecutionPipeline` static
 utility class. The pipeline SHALL execute tool calls in parallel, track sub-agent
 activity, and send `ToolExecutionCompleted` or `ToolExecutionFailed` back to the
-actor. The pipeline SHALL bound inline tool results to
-`SessionTuning.MaxInlineToolResultChars` (default 2000) using **head+tail**
-retention (not head-only), so the tail of a result is preserved. For tools that
-already bound their own output to that budget via the `bounded-tool-output`
-capability, this clamp is a no-op safety net; it remains the bounding point for
-results that do not flow through the shared bounded-output mechanism (e.g. MCP
-tool results and in-process tools).
+actor. The pipeline SHALL NOT itself bound or clamp tool-result size: bounding the
+result to the inline budget and spilling the overflow is done once, centrally, by
+`DispatchingToolExecutor` (per the `bounded-tool-output` capability), so the
+pipeline stores the result the dispatcher already bounded. `SessionTuning.MaxInlineToolResultChars`
+is the session **content** budget the dispatcher uses for tools without a smaller
+per-tool override.
 
 #### Scenario: Parallel tool execution
 
@@ -26,10 +25,9 @@ tool results and in-process tools).
 - **WHEN** the configured `ToolExecutionTimeout` elapses
 - **THEN** the pipeline sends `ToolExecutionFailed` with a `TimeoutException`
 
-#### Scenario: Oversized non-shared result clamped head and tail
+#### Scenario: Oversized result already bounded by the dispatcher
 
-- **GIVEN** a tool result that did not pass through the shared bounded-output
-  mechanism exceeds `MaxInlineToolResultChars`
-- **WHEN** the pipeline clamps it
-- **THEN** the clamped result retains both the head and the tail within the budget
-- **AND** the tail of the result is not discarded
+- **GIVEN** a tool returns an oversized result
+- **WHEN** it reaches the pipeline
+- **THEN** the pipeline stores it as-is (already windowed + spilled by
+  `DispatchingToolExecutor`) without re-clamping

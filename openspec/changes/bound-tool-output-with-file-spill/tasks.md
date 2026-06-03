@@ -112,3 +112,26 @@
 - [x] 8.4 Added `CaptureBenchmarks` confirming O(ceiling): allocation flat at
       ~1255 KB for 256K and 50M chars (vs unbounded before)
 - [ ] 8.5 `openspec validate` passes; sync/archive on PR merge (not yet merged)
+
+## 9. Architecture revision (post-implementation-review)
+
+A max-effort review of the per-tool spill design surfaced a HIGH-severity gap
+(sub-agent tool output unbounded) and that the spill was at the wrong altitude.
+The change pivoted; the artifacts above describe the original per-tool approach,
+the proposal/design now describe the as-built. Net deltas:
+
+- [x] 9.1 Move bound+spill into `DispatchingToolExecutor` (the one chokepoint both
+      main session and sub-agents use, already the central redaction point) —
+      retire `ClampToolResult`; tools shrink to bound-capture-and-return.
+- [x] 9.2 Per-tool inline budgets (`INetclawTool.InlineOutputBudgetChars`): content
+      default 12000 (restore `MaxInlineToolResultChars`), `shell_execute` opts to
+      2000. Content tools (file_read/web_fetch/MCP/memory) no longer truncated to
+      a tiny window.
+- [x] 9.3 Remove `file_read` redundant redaction (central dispatcher covers it);
+      drop `ToolExecutionContext.ToolCallId` (dispatcher uses `toolCall.CallId`).
+- [x] 9.4 Steer wording: "output saved to {path}" (not "full"), honest for a
+      capture-ceiling-clipped flood. Rejected shell-AST file inference (output ≠ a
+      referenced file once piped/filtered).
+- [x] 9.5 Tests retargeted to the dispatcher (end-to-end verbose-spill, redact-
+      before-spill, content no-spill); `FakeToolExecutor` mirrors the dispatcher
+      post-processing. 2196 actor tests pass; slopwatch clean.

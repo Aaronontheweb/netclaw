@@ -4,15 +4,15 @@
 
 The system SHALL provide a shell execution tool that runs commands as the
 Netclaw process user context. Stdin SHALL be closed (no interactive commands).
-Execution SHALL enforce a configurable timeout (default: 60 seconds). The
-combined stdout+stderr output SHALL be bounded as model-facing tool output per
-the `bounded-tool-output` capability — a single inline budget `N`
-(`MaxInlineToolResultChars`) with head+tail retention, and a spill to
-`{sessionDirectory}/tool-calls/{toolCallId}.log` with a steering message when the
-output exceeds `N`. The combined output SHALL share one budget across stdout and
-stderr (not a separate per-stream budget). Before execution, the shell tool SHALL
-check the hard deny list via `ShellCommandPolicy`. Hard-denied commands SHALL be
-rejected before `ToolPathPolicy` path checks.
+Execution SHALL enforce a configurable timeout (default: 60 seconds). The tool
+SHALL drain stdout and stderr in bounded memory (each to the capture ceiling
+`ToolConfig.MaxOutputChars`) and return the combined output bounded to the
+ceiling — it does NOT itself window, redact, or spill (the central
+`bounded-tool-output` mechanism does, after redaction). `shell_execute` SHALL
+declare a small verbose inline budget (`InlineOutputBudgetChars`) so its skimmable
+output is bounded aggressively. Before execution, the shell tool SHALL check the
+hard deny list via `ShellCommandPolicy`; hard-denied commands SHALL be rejected
+before `ToolPathPolicy` path checks.
 
 #### Scenario: Execute command and return output
 
@@ -36,15 +36,14 @@ rejected before `ToolPathPolicy` path checks.
 - **THEN** the process is terminated
 - **AND** the tool returns a timeout error message to the LLM
 
-#### Scenario: Output over budget spills to a file with a steer
+#### Scenario: Combined output bounded by the capture ceiling
 
-- **GIVEN** a shell command produces combined output exceeding the inline budget `N`
+- **GIVEN** a shell command writes large output to both stdout and stderr
 - **WHEN** the output is captured
-- **THEN** the inline result contains the head and tail of the output within `N`
-- **AND** the full (redacted) output is written to
-  `{sessionDirectory}/tool-calls/{toolCallId}.log`
-- **AND** the inline result includes that path and a steer to read ranges with
-  `file_read` (offset/limit) or `grep` instead of re-running the command
+- **THEN** the returned combined output is bounded by `MaxOutputChars` (one shared
+  ceiling, not a per-stream cap)
+- **AND** the dispatcher applies the inline budget + spill + steer on top
+  (per `bounded-tool-output`)
 
 #### Scenario: Stdin closed prevents interactive commands
 
@@ -61,26 +60,27 @@ rejected before `ToolPathPolicy` path checks.
 
 ## ADDED Requirements
 
-### Requirement: File read tool bounds output and redacts
+### Requirement: File read tool bounds its read for memory safety
 
-The `file_read` tool SHALL bound the content it returns to the inline budget `N`
-per the `bounded-tool-output` capability and SHALL run the returned content
-through `SecretOutputRedactor` before returning it (redact-on-read). For a file
-larger than `N`, `file_read` SHALL return a head+tail sample within `N` and a
-message steering the model to read a specific range (`offset`/`limit`) or `grep`,
-rather than materializing the entire file in memory. `file_read` SHALL NOT copy
-the file to a separate spill path — the file on disk is its own backing store.
-The existing line-range (`offset`/`limit`) path SHALL remain bounded.
+The `file_read` tool's default (no `offset`/`limit`) path SHALL read a bounded
+head of the file (up to `ToolConfig.MaxOutputChars`) and stop — it SHALL NOT read
+the entire file into memory before truncating. The existing line-range
+(`offset`/`limit`) path SHALL remain bounded. `file_read` SHALL NOT redact its
+result itself; the central `DispatchingToolExecutor` redaction covers it. The
+inline bound + spill (if any) is applied centrally per `bounded-tool-output`;
+`file_read` is a content tool and uses the session content budget.
 
-#### Scenario: Large file returns a bounded sample and a steer
+#### Scenario: Large file is read in bounded memory
 
-- **WHEN** the agent reads a file larger than `N` with no `offset`/`limit`
-- **THEN** the tool returns a head+tail sample within `N`
-- **AND** the tool does not materialize the whole file in memory
-- **AND** the result steers the model to use `offset`/`limit` or `grep`
+- **WHEN** the agent reads a file larger than the capture ceiling with no
+  `offset`/`limit`
+- **THEN** the tool reads only a bounded head and does not materialize the whole
+  file in memory
+- **AND** it appends a steer to read a specific range (`offset`/`limit`) or `grep`
 
-#### Scenario: Secrets in a read file are redacted
+#### Scenario: Secrets in a read file are redacted by the dispatcher
 
 - **GIVEN** a file contains a secret-bearing value (e.g. an API key)
 - **WHEN** the agent reads the file
-- **THEN** the returned content has the secret redacted
+- **THEN** the result returned to the model has the secret redacted (by the
+  central dispatcher redaction)
