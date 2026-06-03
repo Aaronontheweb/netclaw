@@ -86,7 +86,8 @@ public static class UpdateCheckService
     public static async Task<UpdateCheckResult> CheckForUpdateAsync(
         HttpClient httpClient,
         string currentVersion,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        UpdateChannel channel = UpdateChannel.Stable)
     {
         // Return cached result if fresh
         var cached = s_cachedResult;
@@ -110,7 +111,7 @@ public static class UpdateCheckService
                 return failed;
             }
 
-            var result = EvaluateManifest(fetchResult.Manifest!, currentVersion);
+            var result = EvaluateManifest(fetchResult.Manifest!, currentVersion, channel);
             CacheResult(result);
             return result;
         }
@@ -245,16 +246,30 @@ public static class UpdateCheckService
     }
 
     /// <summary>
-    /// Evaluates a manifest against the current version and RID.
+    /// Evaluates a manifest against the current version, RID, and release channel.
     /// Pure function — no I/O.
     /// </summary>
+    /// <remarks>
+    /// The <paramref name="channel"/> decides which version pointer is compared:
+    /// <see cref="UpdateChannel.Stable"/> only ever reads <see cref="BinaryFeedManifest.Latest"/>,
+    /// so a stable client can never be offered a prerelease. <see cref="UpdateChannel.Beta"/>
+    /// reads <see cref="BinaryFeedManifest.LatestPrerelease"/> (the newest of {stable, prerelease}),
+    /// falling back to <c>Latest</c> only on manifests published before the prerelease channel existed.
+    /// </remarks>
     public static UpdateCheckResult EvaluateManifest(
         BinaryFeedManifest manifest,
-        string currentVersion)
+        string currentVersion,
+        UpdateChannel channel = UpdateChannel.Stable)
     {
         var rid = GetCurrentRid();
 
-        if (string.IsNullOrEmpty(manifest.Latest))
+        // Resolve the target pointer for the channel. Beta uses latestPrerelease when
+        // present (always >= latest); an older manifest without it falls back to latest.
+        var targetVersion = channel == UpdateChannel.Beta && !string.IsNullOrEmpty(manifest.LatestPrerelease)
+            ? manifest.LatestPrerelease
+            : manifest.Latest;
+
+        if (string.IsNullOrEmpty(targetVersion))
         {
             return new UpdateCheckResult
             {
@@ -264,13 +279,13 @@ public static class UpdateCheckService
             };
         }
 
-        var isNewer = IsNewerVersion(currentVersion, manifest.Latest);
+        var isNewer = IsNewerVersion(currentVersion, targetVersion);
 
-        // Find the latest release entry
-        var latestRelease = manifest.Releases
-            .FirstOrDefault(r => r.Version == manifest.Latest);
+        // Find the release entry for the resolved target version.
+        var targetRelease = manifest.Releases
+            .FirstOrDefault(r => r.Version == targetVersion);
 
-        var matchingAssets = latestRelease?.Assets
+        var matchingAssets = targetRelease?.Assets
             .Where(a => string.Equals(a.Rid, rid, StringComparison.OrdinalIgnoreCase))
             .ToList() ?? [];
 
@@ -278,8 +293,8 @@ public static class UpdateCheckService
         {
             IsUpdateAvailable = isNewer && matchingAssets.Count > 0,
             CurrentVersion = currentVersion,
-            LatestVersion = manifest.Latest,
-            ReleaseNotesUrl = latestRelease?.ReleaseNotesUrl,
+            LatestVersion = targetVersion,
+            ReleaseNotesUrl = targetRelease?.ReleaseNotesUrl,
             MatchingAssets = matchingAssets,
         };
     }
@@ -296,16 +311,11 @@ public static class UpdateCheckService
 
     /// <summary>
     /// Returns true if <paramref name="latest"/> is newer than <paramref name="current"/>.
+    /// Uses SemVer 2.0.0 precedence (see <see cref="SemVer"/>), so prerelease versions
+    /// like "0.19.0-beta1" compare correctly — unlike <see cref="System.Version"/>, which
+    /// cannot parse a prerelease suffix at all. On a parse failure this returns false
+    /// (fail safe: never offer an update we can't reason about).
     /// </summary>
     public static bool IsNewerVersion(string current, string latest)
-    {
-        if (Version.TryParse(current, out var currentVersion)
-            && Version.TryParse(latest, out var latestVersion))
-        {
-            return latestVersion > currentVersion;
-        }
-
-        // If parsing fails, treat as no update to avoid false positives
-        return false;
-    }
+        => SemVer.IsNewer(current, latest);
 }
