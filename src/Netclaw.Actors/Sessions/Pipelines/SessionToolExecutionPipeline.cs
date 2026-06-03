@@ -226,7 +226,6 @@ internal static class SessionToolExecutionPipeline
             projectDirectory,
             turnContext,
             modelInputModalities,
-            tc.CallId,
             maxInlineToolResultChars);
         context.RequestedTimeoutSeconds = (int)timeout.TotalSeconds;
 
@@ -345,7 +344,7 @@ internal static class SessionToolExecutionPipeline
                 var deniedMessage = new SerializableChatMessage
                 {
                     Role = Protocol.ChatRole.Tool,
-                    Content = ClampToolResult(resultText, maxInlineToolResultChars),
+                    Content = resultText,
                     ToolCallId = new ToolCallId(tc.CallId),
                     Name = tc.Name
                 };
@@ -411,7 +410,7 @@ internal static class SessionToolExecutionPipeline
                 return new ToolCallResult(new SerializableChatMessage
                 {
                     Role = Protocol.ChatRole.Tool,
-                    Content = ClampToolResult(resultText, maxInlineToolResultChars),
+                    Content = resultText,
                     ToolCallId = new ToolCallId(tc.CallId),
                     Name = tc.Name
                 }, [], context.FileAttachments, completedRuns, acceptedFindings);
@@ -565,7 +564,9 @@ internal static class SessionToolExecutionPipeline
 
         modelInputBudget ??= new ModelInputBatchBudget(MaxModelInputBatchBytes);
         var modelInputMaterialization = MaterializeModelInputFiles(context, sessionDir, logger, modelInputBudget);
-        resultText = ClampToolResult(resultText, maxInlineToolResultChars);
+        // No inline clamp here: DispatchingToolExecutor already bounds every tool
+        // result to the inline budget N (and spills the overflow). Clamping again
+        // would re-window the already-windowed+steered result.
         if (modelInputMaterialization.RequestedCount > modelInputMaterialization.MediaReferences.Count)
             resultText = AppendModelInputHandoffWarning(
                 resultText,
@@ -931,7 +932,6 @@ internal static class SessionToolExecutionPipeline
         string? projectDirectory,
         TurnContext? turnContext,
         ModelModality modelInputModalities,
-        string? toolCallId,
         int maxInlineToolResultChars)
     {
         // A turn with no authority context carries no trust context — fall closed
@@ -940,9 +940,8 @@ internal static class SessionToolExecutionPipeline
         var context = new ToolExecutionContext(sessionId.Value, sessionDir)
         {
             Audience = turnContext?.Audience ?? source?.Audience ?? TrustAudience.Public,
-            // Per-call id (for naming spilled output files) and the inline budget N,
-            // so a tool can bound its own output to the same N the pipeline enforces.
-            ToolCallId = string.IsNullOrEmpty(toolCallId) ? null : new ToolCallId(toolCallId),
+            // The session content budget; DispatchingToolExecutor uses it (or a
+            // tool's own override) to bound results and spill the overflow.
             MaxInlineToolResultChars = maxInlineToolResultChars,
         };
         context.Boundary = turnContext?.Boundary ?? source?.Boundary;
@@ -980,23 +979,6 @@ internal static class SessionToolExecutionPipeline
         Rationale = meta?.Rationale,
         TimeoutHintSeconds = meta?.TimeoutHintSeconds
     };
-
-    /// <summary>
-    /// Clamps a tool result to the inline budget using a head+tail window (not
-    /// head-only), so the end of a result — the part that usually carries the
-    /// answer, error, or status — survives. This is the safety net for results
-    /// that did not pass through the shared bounded-output mechanism (MCP tools,
-    /// in-process tools); shared-reader tools already fit within the budget.
-    /// </summary>
-    public static string ClampToolResult(string resultText, int maxInlineToolResultChars)
-    {
-        if (maxInlineToolResultChars <= 0 || resultText.Length <= maxInlineToolResultChars)
-            return resultText;
-
-        var omittedChars = resultText.Length - maxInlineToolResultChars;
-        return BoundedOutputReader.Window(resultText, maxInlineToolResultChars)
-               + $"\n[tool result truncated: omitted {omittedChars} chars to protect context window]";
-    }
 
     /// <summary>
     /// Returns a one-line agent-facing hint pointing at <c>set_working_directory</c>

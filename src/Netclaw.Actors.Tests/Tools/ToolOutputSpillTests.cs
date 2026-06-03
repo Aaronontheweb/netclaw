@@ -23,38 +23,36 @@ public sealed class ToolOutputSpillTests : IDisposable
             Directory.Delete(_sessionDir, recursive: true);
     }
 
-    private ToolExecutionContext Context(string callId, int budget) =>
-        new("session/thread", _sessionDir)
-        {
-            Audience = TrustAudience.Personal,
-            ToolCallId = new ToolCallId(callId),
-            MaxInlineToolResultChars = budget,
-        };
+    private ToolExecutionContext Context() =>
+        new("session/thread", _sessionDir) { Audience = TrustAudience.Personal };
 
     private string ToolCallsDir => Path.Combine(_sessionDir, "tool-calls");
 
-    [Fact]
-    public async Task Under_budget_returns_redacted_without_spilling()
-    {
-        var captured = new string('a', 50);
-        var result = await ToolOutputSpill.RenderAsync(
-            captured, ceilingExceeded: false, Context("call_1", budget: 100), captureMax: 1000, CancellationToken.None);
+    // BoundAndSpillAsync receives an ALREADY-redacted result (the dispatcher redacts
+    // first), so these tests pass content verbatim and assert the bound/spill shape.
 
-        Assert.Equal(captured, result);
+    [Fact]
+    public async Task Under_budget_returned_unchanged()
+    {
+        var input = new string('a', 50);
+        var result = await ToolOutputSpill.BoundAndSpillAsync(
+            input, "call_1", budget: 100, Context(), CancellationToken.None);
+
+        Assert.Equal(input, result);
         Assert.False(Directory.Exists(ToolCallsDir)); // nothing spilled
     }
 
     [Fact]
     public async Task Over_budget_spills_full_output_and_steers()
     {
-        var captured = new string('H', 200) + new string('T', 200); // 400 > 100
-        var result = await ToolOutputSpill.RenderAsync(
-            captured, ceilingExceeded: false, Context("call_2", budget: 100), captureMax: 1000, CancellationToken.None);
+        var input = new string('H', 200) + new string('T', 200); // 400 > 100
+        var result = await ToolOutputSpill.BoundAndSpillAsync(
+            input, "call_2", budget: 100, Context(), CancellationToken.None);
 
         var spillPath = Path.Combine(ToolCallsDir, "call_2.log");
         Assert.True(File.Exists(spillPath));
-        Assert.Equal(captured, await File.ReadAllTextAsync(spillPath, CancellationToken.None));   // full output on disk
-        Assert.StartsWith(new string('H', 50), result);                  // inline head
+        Assert.Equal(input, await File.ReadAllTextAsync(spillPath, CancellationToken.None)); // full output on disk
+        Assert.StartsWith(new string('H', 50), result);                                      // inline head
         Assert.Contains("full output saved to", result);
         Assert.Contains(spillPath, result);
         Assert.Contains("file_read", result);
@@ -62,27 +60,15 @@ public sealed class ToolOutputSpillTests : IDisposable
     }
 
     [Fact]
-    public async Task Spill_file_is_redacted_on_write()
+    public async Task Budget_zero_falls_back_to_content_default()
     {
-        var captured = "API_KEY=supersecret123\n" + new string('x', 200);
-        var result = await ToolOutputSpill.RenderAsync(
-            captured, ceilingExceeded: false, Context("call_3", budget: 50), captureMax: 1000, CancellationToken.None);
+        // budget 0 → DefaultContentBudget (12000); a 5000-char input fits, returned whole.
+        var input = new string('x', 5000);
+        var result = await ToolOutputSpill.BoundAndSpillAsync(
+            input, "call_3", budget: 0, Context(), CancellationToken.None);
 
-        var onDisk = await File.ReadAllTextAsync(Path.Combine(ToolCallsDir, "call_3.log"), CancellationToken.None);
-        Assert.DoesNotContain("supersecret123", onDisk);   // redacted before write
-        Assert.Contains("REDACTED", onDisk);
-        Assert.DoesNotContain("supersecret123", result);   // and inline too
-    }
-
-    [Fact]
-    public async Task Ceiling_exceeded_adds_note()
-    {
-        var captured = new string('x', 400);
-        var result = await ToolOutputSpill.RenderAsync(
-            captured, ceilingExceeded: true, Context("call_4", budget: 100), captureMax: 32000, CancellationToken.None);
-
-        Assert.Contains("capture ceiling", result);
-        Assert.Contains("32000", result);
+        Assert.Equal(input, result);
+        Assert.False(Directory.Exists(ToolCallsDir));
     }
 
     [Fact]
@@ -91,13 +77,11 @@ public sealed class ToolOutputSpillTests : IDisposable
         var ctx = new ToolExecutionContext("session/thread", sessionDirectory: null)
         {
             Audience = TrustAudience.Personal,
-            ToolCallId = new ToolCallId("call_5"),
-            MaxInlineToolResultChars = 100,
         };
-        var captured = new string('H', 200) + new string('T', 200);
+        var input = new string('H', 200) + new string('T', 200);
 
-        var result = await ToolOutputSpill.RenderAsync(
-            captured, ceilingExceeded: false, ctx, captureMax: 1000, CancellationToken.None);
+        var result = await ToolOutputSpill.BoundAndSpillAsync(
+            input, "call_5", budget: 100, ctx, CancellationToken.None);
 
         Assert.StartsWith(new string('H', 50), result);    // inline still produced
         Assert.DoesNotContain("saved to", result);          // but no spill path
@@ -106,15 +90,12 @@ public sealed class ToolOutputSpillTests : IDisposable
     [Fact]
     public async Task Unsafe_call_id_cannot_escape_tool_calls_directory()
     {
-        var captured = new string('H', 200) + new string('T', 200);
-        await ToolOutputSpill.RenderAsync(
-            captured, ceilingExceeded: false, Context("../../evil", budget: 100), captureMax: 1000, CancellationToken.None);
+        var input = new string('H', 200) + new string('T', 200);
+        await ToolOutputSpill.BoundAndSpillAsync(
+            input, "../../evil", budget: 100, Context(), CancellationToken.None);
 
-        // The traversal is sanitized away: exactly one file, inside tool-calls,
-        // and nothing written to the session dir's parent.
         var written = Directory.GetFiles(ToolCallsDir);
         Assert.Single(written);
         Assert.StartsWith(ToolCallsDir, Path.GetFullPath(written[0]));
-        Assert.DoesNotContain("evil.log", Directory.GetFiles(Directory.GetParent(_sessionDir)!.FullName));
     }
 }

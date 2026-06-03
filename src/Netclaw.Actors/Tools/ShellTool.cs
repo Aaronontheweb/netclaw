@@ -23,6 +23,12 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
 {
     public const string ToolName = "shell_execute";
 
+    // Shell output is mostly verbose noise the model skims, so bound it
+    // aggressively: small inline head+tail, full output spilled to a session file
+    // to grep. Content tools (file_read, web_fetch, MCP) keep the larger session
+    // content budget because the model fetched them to read in full.
+    public override int InlineOutputBudgetChars => 2000;
+
     private readonly ToolConfig _config;
     private readonly ToolPathPolicy? _pathPolicy;
     private readonly ShellCommandPolicy? _commandPolicy;
@@ -210,14 +216,15 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
                     : "Error: Command cancelled.";
             }
 
-            var (stdoutText, stdoutCeiling) = await stdoutTask;
-            var (stderrText, stderrCeiling) = await stderrTask;
+            var (stdoutText, _) = await stdoutTask;
+            var (stderrText, _) = await stderrTask;
 
-            // Assemble the raw combined output (stdout then stderr) under one shared
-            // budget — not a per-stream cap. ToolOutputSpill redacts the whole bounded
-            // buffer once, returns an N-char head+tail inline view, and when the output
-            // exceeds the inline budget spills the full redacted output to a session
-            // file and steers the model to read a slice with file_read / grep.
+            // Assemble the raw combined output (stdout then stderr). Each stream was
+            // drained to MaxOutputChars, so the concatenation can be up to 2x — re-window
+            // the COMBINED back to the capture ceiling so the spill body stays bounded by
+            // MaxOutputChars. Redaction and the inline-budget bound + spill+steer happen
+            // centrally in DispatchingToolExecutor; the tool only returns its bounded
+            // capture.
             var combined = new StringBuilder();
             if (stdoutText.Length > 0)
                 combined.Append(stdoutText);
@@ -228,10 +235,8 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
                 combined.Append(stderrText);
             }
 
-            var rendered = await ToolOutputSpill.RenderAsync(
-                combined.ToString(), stdoutCeiling || stderrCeiling, context, _config.MaxOutputChars, ct);
-
-            return $"Exit code: {process.ExitCode}{Environment.NewLine}{rendered}";
+            var captured = BoundedOutputReader.Window(combined.ToString(), _config.MaxOutputChars);
+            return $"Exit code: {process.ExitCode}{Environment.NewLine}{captured}";
         }
     }
 

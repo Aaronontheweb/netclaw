@@ -100,37 +100,20 @@ public class ShellToolTests
     }
 
     [Fact]
-    public async Task Large_output_spills_to_file_and_steers()
+    public async Task ShellTool_returns_raw_combined_output_without_spilling()
     {
-        // Output over the inline budget N → inline head+tail + the full output
-        // spilled to {sessionDir}/tool-calls/{callId}.log + a steer to file_read/grep.
-        // `echo` is a builtin on both bash and cmd.exe; a long literal is
-        // deterministic and writes to stdout (python on the Windows runner resolves
-        // to the Store stub, which writes to stderr).
-        var sessionDir = Path.Combine(Path.GetTempPath(), "nc-shell-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(sessionDir);
-        try
-        {
-            var tool = new ShellTool(new ToolConfig());
-            var context = new ToolExecutionContext("session/thread", sessionDir)
-            {
-                Audience = TrustAudience.Personal,
-                ToolCallId = new ToolCallId("call_spill"),
-                MaxInlineToolResultChars = 50,
-            };
-            var args = ToolInput.Create("Command", $"echo {new string('x', 200)}");
+        // ShellTool only returns its (bounded) raw output now — redaction and the
+        // inline-budget bound + spill happen centrally in DispatchingToolExecutor
+        // (covered by DispatchingToolExecutorTests). `echo` is a builtin on both
+        // bash and cmd.exe; a long literal is deterministic on stdout.
+        var tool = new ShellTool(new ToolConfig());
+        var args = ToolInput.Create("Command", $"echo {new string('x', 200)}");
 
-            var result = await tool.ExecuteAsync(args, context, CancellationToken.None);
+        var result = await tool.ExecuteAsync(args, CancellationToken.None);
 
-            Assert.Contains("Exit code: 0", result);
-            Assert.Contains("full output saved to", result);
-            Assert.Contains("file_read", result);
-            Assert.True(File.Exists(Path.Combine(sessionDir, "tool-calls", "call_spill.log")));
-        }
-        finally
-        {
-            Directory.Delete(sessionDir, recursive: true);
-        }
+        Assert.Contains("Exit code: 0", result);
+        Assert.Contains(new string('x', 200), result); // full output, not yet windowed/spilled
+        Assert.DoesNotContain("saved to", result);      // ShellTool itself does not spill
     }
 
     [Fact]
@@ -400,16 +383,6 @@ public class ShellToolTests
         Assert.Contains("Access denied", result);
     }
 
-    [Fact]
-    public async Task Execute_redacts_secret_like_output()
-    {
-        var args = ToolInput.Create("Command", "echo API_KEY=secret123");
-
-        var result = await _tool.ExecuteAsync(args, CancellationToken.None);
-
-        Assert.Contains("API_KEY=***REDACTED***", result);
-        Assert.DoesNotContain("secret123", result);
-    }
 
     [Fact]
     public async Task High_risk_glob_on_netclaw_config_is_blocked()

@@ -147,8 +147,8 @@ public sealed class BackgroundJobExecutionActor : ReceiveActor
                 var stderrTask = BoundedOutputReader.DrainToWindowAsync(
                     process.StandardError, BackgroundJobManagerActor.MaxCapturedOutputChars, CancellationToken.None);
 
-                var (stdout, _) = await stdoutTask;
-                var (stderr, _) = await stderrTask;
+                var (stdout, stdoutTruncated) = await stdoutTask;
+                var (stderr, stderrTruncated) = await stderrTask;
                 await process.WaitForExitAsync();
 
                 outputBuilder.Append(stdout);
@@ -158,6 +158,12 @@ public sealed class BackgroundJobExecutionActor : ReceiveActor
                     outputBuilder.Append("STDERR:\n");
                     outputBuilder.Append(stderr);
                 }
+
+                // Mark a flood that exceeded the capture ceiling so the log isn't a
+                // silent head+tail splice presented as complete.
+                if (stdoutTruncated || stderrTruncated)
+                    outputBuilder.Append(
+                        $"\n[output exceeded the {BackgroundJobManagerActor.MaxCapturedOutputChars}-char capture ceiling — head and tail shown]");
 
                 var fullOutput = SecretOutputRedactor.Redact(outputBuilder.ToString());
 

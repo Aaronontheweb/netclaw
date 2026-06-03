@@ -93,20 +93,19 @@ public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
             {
                 var lines = await ReadLinesAsync(authorizedPath, encoding, offset ?? 1, limit, _config.MaxOutputChars, ct);
                 RecordSkillReadIfApplicable(authorizedPath);
-                return SecretOutputRedactor.Redact(lines); // redact-on-read
+                return lines; // redaction + inline bound + spill happen centrally in the dispatcher
             }
 
             // Bounded head read (not ReadAllTextAsync): a multi-hundred-MB file must
             // not be materialized just to truncate it — read up to the limit and stop.
-            // Redact what we return (file_read previously did not redact at all), and
-            // for an over-limit file steer to a ranged read / grep rather than copying
-            // it to a spill — the file on disk is its own backing store. Closes #1301.
+            // Closes #1301. Redaction and the inline-budget bound + spill happen
+            // centrally in DispatchingToolExecutor; file_read only bounds its read for
+            // memory safety and steers past the cap.
             var (content, truncated) = await ReadBoundedHeadAsync(authorizedPath, encoding, _config.MaxOutputChars, ct);
             RecordSkillReadIfApplicable(authorizedPath);
-            var redacted = SecretOutputRedactor.Redact(content);
             return truncated
-                ? redacted + $"\n[output truncated at {_config.MaxOutputChars} chars — read a specific range with Offset and Limit, or grep the file, for what you need]"
-                : redacted;
+                ? content + $"\n[output truncated at {_config.MaxOutputChars} chars — read a specific range with Offset and Limit, or grep the file, for the rest]"
+                : content;
         }
         catch (DecoderFallbackException)
         {

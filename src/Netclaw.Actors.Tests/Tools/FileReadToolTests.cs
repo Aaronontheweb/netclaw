@@ -235,19 +235,6 @@ public class FileReadToolTests : IDisposable
         Assert.StartsWith(new string('x', 100), result);
     }
 
-    [Fact]
-    public async Task File_read_redacts_secrets_on_read()
-    {
-        var tool = new FileReadTool(new ToolConfig());
-        var filePath = Path.Combine(_dir.Path, "creds.env");
-        await File.WriteAllTextAsync(filePath, "API_KEY=supersecret123", TestContext.Current.CancellationToken);
-
-        var args = ToolInput.Create("Path", filePath);
-        var result = await tool.ExecuteAsync(args, CreatePersonalContext(), CancellationToken.None);
-
-        Assert.DoesNotContain("supersecret123", result);
-        Assert.Contains("REDACTED", result);
-    }
 
     [Fact]
     public async Task Paginated_read_truncated_by_char_limit_includes_continuation_hint()

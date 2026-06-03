@@ -166,21 +166,13 @@ public sealed class ToolExecutionContext
     public string? SessionDirectory { get; }
 
     /// <summary>
-    /// Identifier of the in-flight tool call, set by the session pipeline from the
-    /// call's <c>ToolCallMeta</c>. Tools that emit per-call artifacts — e.g. a
-    /// spilled output file under
-    /// <c>{SessionDirectory}/tool-calls/{ToolCallId}.log</c> — use it to name them.
-    /// Null for contexts not built per tool call (the <see cref="Empty"/> sentinel
-    /// and direct-construction paths).
-    /// </summary>
-    public ToolCallId? ToolCallId { get; init; }
-
-    /// <summary>
-    /// Inline tool-output budget <c>N</c>
-    /// (<c>SessionTuning.MaxInlineToolResultChars</c>) that the pipeline enforces,
-    /// surfaced here so a tool can bound its own output to the same <c>N</c> and
-    /// spill the remainder, instead of emitting a larger result the pipeline would
-    /// re-truncate. Zero when unset (no tool-side inline bounding).
+    /// The session <i>content</i> inline budget
+    /// (<c>SessionTuning.MaxInlineToolResultChars</c>), surfaced here so
+    /// <c>DispatchingToolExecutor</c> can bound a tool result and spill the
+    /// overflow to <c>{SessionDirectory}/tool-calls/{callId}.log</c>. The dispatcher
+    /// uses a tool's own <c>InlineOutputBudgetChars</c> override when set (verbose
+    /// tools), else this content budget. Zero when unset (the dispatcher falls back
+    /// to its built-in content default).
     /// </summary>
     public int MaxInlineToolResultChars { get; init; }
 
