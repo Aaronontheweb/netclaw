@@ -32,12 +32,14 @@ public sealed record SessionTuning
     public int KeepRecentToolResults { get; init; } = 3;
 
     /// <summary>
-    /// Maximum number of characters from a single tool result that may be
-    /// inlined into conversation history. Oversized results are truncated to
-    /// protect the context window from verbose tool payloads (DOM dumps,
-    /// large JSON blobs, etc.).
+    /// The single inline tool-output budget <c>N</c>: the maximum characters from
+    /// a tool result inlined into conversation history. Oversized results are
+    /// truncated to an <c>N</c>-char head+tail window to protect the context
+    /// window from verbose tool payloads (DOM dumps, large JSON blobs, logs).
+    /// Tools that bound their own output (shell, file_read) spill the full output
+    /// to a session file and steer the model to read a slice instead.
     /// </summary>
-    public int MaxInlineToolResultChars { get; init; } = 12_000;
+    public int MaxInlineToolResultChars { get; init; } = 2_000;
 
     /// <summary>
     /// Number of future user turns that dynamically discovered MCP tools remain

@@ -210,30 +210,28 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
                     : "Error: Command cancelled.";
             }
 
-            var (stdoutText, stdoutTruncated) = await stdoutTask;
-            var (stderrText, stderrTruncated) = await stderrTask;
+            var (stdoutText, stdoutCeiling) = await stdoutTask;
+            var (stderrText, stderrCeiling) = await stderrTask;
 
-            // Redact secrets on the already-bounded strings, then assemble.
-            var stdout = SecretOutputRedactor.Redact(stdoutText);
-            var stderr = SecretOutputRedactor.Redact(stderrText);
-
-            var result = new StringBuilder();
-            if (stdout.Length > 0)
+            // Assemble the raw combined output (stdout then stderr) under one shared
+            // budget — not a per-stream cap. ToolOutputSpill redacts the whole bounded
+            // buffer once, returns an N-char head+tail inline view, and when the output
+            // exceeds the inline budget spills the full redacted output to a session
+            // file and steers the model to read a slice with file_read / grep.
+            var combined = new StringBuilder();
+            if (stdoutText.Length > 0)
+                combined.Append(stdoutText);
+            if (stderrText.Length > 0)
             {
-                result.Append(stdout);
-                if (stdoutTruncated)
-                    result.Append($"\n[stdout truncated — output exceeded {_config.MaxOutputChars} chars; head and tail shown]");
-            }
-            if (stderr.Length > 0)
-            {
-                if (result.Length > 0)
-                    result.AppendLine();
-                result.Append(stderr);
-                if (stderrTruncated)
-                    result.Append($"\n[stderr truncated — output exceeded {_config.MaxOutputChars} chars; head and tail shown]");
+                if (combined.Length > 0)
+                    combined.AppendLine();
+                combined.Append(stderrText);
             }
 
-            return $"Exit code: {process.ExitCode}{Environment.NewLine}{result}";
+            var rendered = await ToolOutputSpill.RenderAsync(
+                combined.ToString(), stdoutCeiling || stderrCeiling, context, _config.MaxOutputChars, ct);
+
+            return $"Exit code: {process.ExitCode}{Environment.NewLine}{rendered}";
         }
     }
 

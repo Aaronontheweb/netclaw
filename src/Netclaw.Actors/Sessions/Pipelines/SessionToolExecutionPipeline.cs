@@ -982,7 +982,11 @@ internal static class SessionToolExecutionPipeline
     };
 
     /// <summary>
-    /// Truncates a tool result to fit within the configured inline character limit.
+    /// Clamps a tool result to the inline budget using a head+tail window (not
+    /// head-only), so the end of a result — the part that usually carries the
+    /// answer, error, or status — survives. This is the safety net for results
+    /// that did not pass through the shared bounded-output mechanism (MCP tools,
+    /// in-process tools); shared-reader tools already fit within the budget.
     /// </summary>
     public static string ClampToolResult(string resultText, int maxInlineToolResultChars)
     {
@@ -990,7 +994,7 @@ internal static class SessionToolExecutionPipeline
             return resultText;
 
         var omittedChars = resultText.Length - maxInlineToolResultChars;
-        return resultText[..maxInlineToolResultChars]
+        return BoundedOutputReader.Window(resultText, maxInlineToolResultChars)
                + $"\n[tool result truncated: omitted {omittedChars} chars to protect context window]";
     }
 

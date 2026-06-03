@@ -42,13 +42,15 @@
 
 ## 4. shell_execute adopts capture + spill
 
-- [ ] 4.1 Switch `ShellTool` to `DrainCaptureAsync` with one shared budget across
-      stdout+stderr (resolves the per-stream doubling), spilling + steering when
-      combined output exceeds `N`
-- [ ] 4.2 Update `ShellToolTests` for the new shape (head+tail inline, spill path,
-      single combined budget); keep the Windows-deterministic `echo` command
-- [ ] 4.3 Verify the `MaxOutputChars` capture ceiling drains-past behavior under a
-      flood (no deadlock, bounded memory)
+- [x] 4.1 Switch `ShellTool` to combined-capture (one shared budget across
+      stdout+stderr via `DrainToWindowAsync` per stream → assembled) then
+      `ToolOutputSpill.RenderAsync`, which redacts once, windows to `N`, and
+      spills+steers. Removed ShellTool's own per-stream redaction and markers.
+- [x] 4.2 Replaced `Output_truncation_applies` with `Large_output_spills_to_file_and_steers`
+      (asserts inline head+tail + spill file + steer); kept the Windows-deterministic
+      `echo`. Redaction/echo/stderr tests still pass (redaction now in RenderAsync).
+- [x] 4.3 Drains-past-ceiling behavior is `DrainToWindowAsync`'s (proven by the
+      reader tests); the existing cancellation/kill test covers the no-deadlock path.
 
 ## 5. background_job bounded capture (closes #1300)
 
@@ -71,13 +73,14 @@
 
 ## 7. Config + pipeline unification
 
-- [ ] 7.1 Lower `SessionTuning.MaxInlineToolResultChars` default 12000 → 2000
-- [ ] 7.2 Repurpose `ToolConfig.MaxOutputChars` as the capture ceiling and raise
-      its default to a comfortable spill size
-- [ ] 7.3 Make `SessionToolExecutionPipeline.ClampToolResult` head+tail (was
-      head-only); it remains the safety net for non-shared-reader results
-- [ ] 7.4 Update `src/Netclaw.Configuration/Schemas/netclaw-config.v1.schema.json`
-      for both default changes (Config Schema Sync Rule)
+- [x] 7.1 Lowered `SessionTuning.MaxInlineToolResultChars` default 12000 → 2000
+- [x] 7.2 Repurposed `ToolConfig.MaxOutputChars` as the capture ceiling, default
+      32000 → 256000 (docs updated to reflect the new role)
+- [x] 7.3 `ClampToolResult` now head+tail (reuses `BoundedOutputReader.Window`);
+      safety net for non-shared-reader results (MCP, in-process)
+- [x] 7.4 Updated `netclaw-config.v1.schema.json` MaxOutputChars default → 256000
+      (MaxInlineToolResultChars schema has only `minimum:100`, which 2000 satisfies).
+      363 config tests + 2194 actor tests pass; slopwatch clean
 
 ## 8. Quality gates, docs, eval, and OpenSpec close-out
 

@@ -295,7 +295,7 @@
         "MaxOutputChars": {
           "type": "integer",
           "minimum": 1,
-          "default": 32000
+          "default": 256000
         },
         "AudienceProfiles": {
           "$ref": "#/$defs/ToolAudienceProfiles"

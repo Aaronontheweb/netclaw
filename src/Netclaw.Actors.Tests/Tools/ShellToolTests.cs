@@ -100,19 +100,37 @@ public class ShellToolTests
     }
 
     [Fact]
-    public async Task Output_truncation_applies()
+    public async Task Large_output_spills_to_file_and_steers()
     {
-        var tool = new ShellTool(new ToolConfig { MaxOutputChars = 50 });
-        // Write >50 chars to stdout with a command that needs no interpreter.
+        // Output over the inline budget N → inline head+tail + the full output
+        // spilled to {sessionDir}/tool-calls/{callId}.log + a steer to file_read/grep.
         // `echo` is a builtin on both bash and cmd.exe; a long literal is
-        // deterministic. (python on the Windows runner resolves to the Store
-        // stub, which writes to stderr — so the truncation would land on stderr
-        // and the marker would read "[stderr truncated", not "[stdout truncated".)
-        var args = ToolInput.Create("Command", $"echo {new string('x', 200)}");
+        // deterministic and writes to stdout (python on the Windows runner resolves
+        // to the Store stub, which writes to stderr).
+        var sessionDir = Path.Combine(Path.GetTempPath(), "nc-shell-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(sessionDir);
+        try
+        {
+            var tool = new ShellTool(new ToolConfig());
+            var context = new ToolExecutionContext("session/thread", sessionDir)
+            {
+                Audience = TrustAudience.Personal,
+                ToolCallId = new ToolCallId("call_spill"),
+                MaxInlineToolResultChars = 50,
+            };
+            var args = ToolInput.Create("Command", $"echo {new string('x', 200)}");
 
-        var result = await tool.ExecuteAsync(args, CancellationToken.None);
+            var result = await tool.ExecuteAsync(args, context, CancellationToken.None);
 
-        Assert.Contains("[stdout truncated", result);
+            Assert.Contains("Exit code: 0", result);
+            Assert.Contains("full output saved to", result);
+            Assert.Contains("file_read", result);
+            Assert.True(File.Exists(Path.Combine(sessionDir, "tool-calls", "call_spill.log")));
+        }
+        finally
+        {
+            Directory.Delete(sessionDir, recursive: true);
+        }
     }
 
     [Fact]
