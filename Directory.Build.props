@@ -8,7 +8,7 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <VersionPrefix>0.23.0-beta.4</VersionPrefix>
+    <VersionPrefix>0.23.0</VersionPrefix>
     <VersionSuffix>beta.4</VersionSuffix>
     <PackageReleaseNotes>Netclaw v0.23.0-beta.4 — streaming-native chat stack, composable routing, and spinner standardization
 
