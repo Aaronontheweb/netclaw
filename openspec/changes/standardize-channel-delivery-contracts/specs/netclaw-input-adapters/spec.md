@@ -199,6 +199,42 @@ implementation change.
 - **AND** obsolete per-channel names are not required as aliases unless a
   concrete external compatibility requirement is documented
 
+### Requirement: Channels render semantic output effects by capability
+
+Session actors SHALL emit semantic `SessionOutput` events rather than
+platform-specific delivery commands. Channel descriptors SHALL declare which
+output effects the channel can render. The channel delivery layer SHALL route
+semantic output to the target channel renderer, which MAY map the output to
+native platform behavior.
+
+Unsupported optional output effects MAY be ignored. Unsupported required output
+effects SHALL fail loudly.
+
+#### Scenario: Processing signal renders as native typing where supported
+
+- **GIVEN** a session emits `ProcessingStateOutput(true)`
+- **AND** the delivery target is a Discord channel that declares support for the
+  processing indicator output effect
+- **WHEN** the channel delivery layer renders the output
+- **THEN** Discord renders the native typing indicator
+- **AND** session logic does not reference Discord-specific APIs
+
+#### Scenario: Unsupported optional output effect is ignored safely
+
+- **GIVEN** a session emits an optional processing indicator output effect
+- **AND** the delivery target channel does not support processing indicators
+- **WHEN** the channel delivery layer renders the output
+- **THEN** no platform-specific delivery action is attempted
+- **AND** the session turn continues
+
+#### Scenario: Required output effect fails loudly when unsupported
+
+- **GIVEN** a session emits an output effect required for correctness
+- **AND** the delivery target channel does not support that effect
+- **WHEN** the channel delivery layer attempts to render the output
+- **THEN** delivery fails loudly with an unsupported output effect error
+- **AND** Netclaw does not silently substitute a different effect
+
 ### Requirement: Stateful remote chat channels expose reliable lifecycle state
 
 Stateful remote chat channels SHALL expose lifecycle state through their runtime

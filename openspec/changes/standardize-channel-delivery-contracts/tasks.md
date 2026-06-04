@@ -8,7 +8,7 @@
 ## 2. Channel descriptor and snapshot contracts
 
 - [ ] 2.1 Add a standard channel descriptor model for output-capable remote chat and local interactive channels.
-- [ ] 2.2 Add capability flags for receive, send, DM, threaded conversations, interactive approval, file ingress, file egress, proactive send, user lookup, destination lookup, and runtime health.
+- [ ] 2.2 Add capability flags for receive, send, DM, threaded conversations, interactive approval, file ingress, file egress, proactive send, user lookup, destination lookup, runtime health, and supported output effects.
 - [ ] 2.3 Add a standard channel runtime snapshot model with enabled, health, connected, ready, principal identity, and activity metadata.
 - [ ] 2.4 Add a channel registry service that enumerates descriptor and snapshot providers for output-capable channels only.
 
@@ -60,13 +60,19 @@
 
 ## 9. Stateful channel lifecycle follow-up
 
-- [ ] 9.1 Add contract tests for not-ready ingress gating, runtime disconnect health, clean reconnect signaling, and handler de-duplication for stateful remote chat channels.
-- [ ] 9.2 Implement Mattermost lifecycle actorization only after the standard snapshot and lifecycle contract tests exist.
-- [ ] 9.3 Verify Slack and Discord satisfy the same lifecycle requirements or document explicit capability differences.
+- [ ] 9.1 Add a channel output renderer contract for semantic `SessionOutput` effects.
+- [ ] 9.2 Add contract tests for supported optional output effects, unsupported optional output effects, and unsupported required output effects.
+- [ ] 9.3 Wire processing-indicator output through channel capabilities so Discord typing indicators and future Slack/Mattermost/TUI equivalents share the same semantic output path.
 
-## 10. Validation and quality gates
+## 10. Stateful channel lifecycle follow-up
 
-- [ ] 10.1 `dotnet test src/Netclaw.Actors.Tests/ --filter Channel`
-- [ ] 10.2 `dotnet test src/Netclaw.Daemon.Tests/`
-- [ ] 10.3 `dotnet slopwatch analyze`
-- [ ] 10.4 `./scripts/Add-FileHeaders.ps1 -Verify`
+- [ ] 10.1 Add contract tests for not-ready ingress gating, runtime disconnect health, clean reconnect signaling, and handler de-duplication for stateful remote chat channels.
+- [ ] 10.2 Implement Mattermost lifecycle actorization only after the standard snapshot and lifecycle contract tests exist.
+- [ ] 10.3 Verify Slack and Discord satisfy the same lifecycle requirements or document explicit capability differences.
+
+## 11. Validation and quality gates
+
+- [ ] 11.1 `dotnet test src/Netclaw.Actors.Tests/ --filter Channel`
+- [ ] 11.2 `dotnet test src/Netclaw.Daemon.Tests/`
+- [ ] 11.3 `dotnet slopwatch analyze`
+- [ ] 11.4 `./scripts/Add-FileHeaders.ps1 -Verify`

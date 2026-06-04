@@ -324,6 +324,50 @@ await channelTools.SendMessageAsync(
     ct);
 ```
 
+### Channel Output Effect
+
+A semantic output event that a channel may render using native platform behavior.
+Session actors emit meaning, not platform commands. Channels decide how to
+render that meaning based on declared capabilities.
+
+Examples: text message, message update, interactive approval prompt, file
+attachment, processing indicator, reaction, thread rename.
+
+Abstraction:
+
+```csharp
+public enum ChannelOutputEffectKind
+{
+    TextMessage,
+    MessageUpdate,
+    InteractiveApproval,
+    FileAttachment,
+    ProcessingIndicator,
+    Reaction,
+    ThreadRename
+}
+
+public interface IChannelOutputRenderer
+{
+    ChannelDescriptorKey ChannelKey { get; }
+
+    ValueTask RenderAsync(
+        ChannelDeliveryTarget target,
+        SessionOutput output,
+        CancellationToken cancellationToken);
+}
+```
+
+Interaction:
+
+```csharp
+if (output is ProcessingStateOutput { IsProcessing: true }
+    && descriptor.Capabilities.Supports(ChannelOutputEffectKind.ProcessingIndicator))
+{
+    await discordRenderer.RenderAsync(target, output, ct);
+}
+```
+
 ### Stateful Channel Lifecycle Owner
 
 The adapter-specific component that serializes socket/API lifecycle state for a
@@ -490,6 +534,32 @@ Existing tool names such as `send_slack_message`, `send_discord_message`, and
 may rename them to the standardized tool names once the registry can enumerate
 channels and resolvers reliably. System skills, CLI/help text, and evals must be
 updated in the same implementation change when tool names change.
+
+## Channel Output Effects
+
+Session actors should emit semantic `SessionOutput` events. They should not emit
+Slack-specific, Discord-specific, Mattermost-specific, or TUI-specific delivery
+commands. The channel delivery layer maps each semantic output event to a native
+platform rendering when the target channel declares support for that effect.
+
+Rules:
+
+- Channel descriptors declare supported output effects.
+- Optional effects may be ignored when unsupported.
+- Required effects fail loudly when unsupported.
+- A channel-specific renderer may use native platform behavior, such as Discord
+  typing indicators for a processing output signal.
+- Adding a new cross-channel feature should add a semantic output/effect,
+  descriptor capability, renderer behavior, and contract tests rather than a
+  one-off platform branch in session logic.
+
+Example mapping:
+
+| Semantic output | Discord rendering | Slack rendering | Mattermost rendering | TUI rendering |
+|-----------------|-------------------|-----------------|----------------------|---------------|
+| `ProcessingStateOutput(true)` | trigger typing indicator | unsupported or future native/status rendering | unsupported or future native/status rendering | spinner/status line |
+| Tool approval request | buttons | buttons | attachment actions | text options or local prompt |
+| Message update | edit message | update message | update post | replace rendered block |
 
 ## Stateful Channel Lifecycle
 
