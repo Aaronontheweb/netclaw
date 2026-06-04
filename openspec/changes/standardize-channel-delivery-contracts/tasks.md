@@ -1,38 +1,38 @@
 ## 1. OpenSpec planning artifacts
 
-- [ ] 1.1 Confirm proposal, design, and spec delta define channels as output-capable delivery surfaces that may also produce input.
-- [ ] 1.2 Confirm reminders and webhooks are represented as trigger consumers of channel delivery targets, not channel registry participants.
-- [ ] 1.3 Confirm Mattermost actorization is represented as an adapter-specific lifecycle task, not the top-level change.
-- [ ] 1.4 Confirm invariants, capability matrix, and multi-window implementation guardrails remain consistent after review edits.
-- [ ] 1.5 Run `openspec validate standardize-channel-delivery-contracts --type change` and resolve all issues.
+- [x] 1.1 Confirm proposal, design, and spec delta define channels as output-capable delivery surfaces that may also produce input.
+- [x] 1.2 Confirm reminders and webhooks are represented as trigger consumers of channel delivery targets, not channel registry participants.
+- [x] 1.3 Confirm Mattermost actorization is represented as an adapter-specific lifecycle task, not the top-level change.
+- [x] 1.4 Confirm invariants, capability matrix, and multi-window implementation guardrails remain consistent after review edits.
+- [x] 1.5 Run `openspec validate standardize-channel-delivery-contracts --type change` and resolve all issues.
 
 ## 2. Channel descriptor and snapshot contracts
 
-- [ ] 2.1 Add a standard channel descriptor model for output-capable remote chat and local interactive channels.
-- [ ] 2.2 Add capability flags for receive, send, DM, threaded conversations, interactive approval, file ingress, file egress, proactive send, user lookup, destination lookup, runtime health, and supported output effects.
-- [ ] 2.3 Add a standard channel runtime snapshot model with enabled, health, connected, ready, principal identity, and activity metadata.
-- [ ] 2.4 Add a channel registry service that enumerates descriptor and snapshot providers for output-capable channels only.
+- [x] 2.1 Add a standard channel descriptor model for output-capable remote chat and local interactive channels.
+- [x] 2.2 Add capability flags for receive, send, DM, threaded conversations, interactive approval, file ingress, file egress, proactive send, user lookup, destination lookup, runtime health, and supported output effects.
+- [x] 2.3 Add a standard channel runtime snapshot model with enabled, health, connected, ready, principal identity, and activity metadata.
+- [x] 2.4 Add a channel registry service that enumerates descriptor and snapshot providers for output-capable channels only.
 
 ## 3. Delivery target contracts
 
-- [ ] 3.1 Add `ChannelDeliveryTarget` with channel key, resolved destination, and optional thread/root target.
+- [x] 3.1 Add `ChannelDeliveryTarget` with channel key, resolved destination, and optional thread/root target.
 - [ ] 3.2 Preserve channel-originated default delivery targets for Slack, Discord, Mattermost, and TUI input turns.
 - [ ] 3.3 Require trigger-originated turns to carry an explicit delivery target when external output is requested.
 - [ ] 3.4 Fail loudly when a trigger-originated turn attempts external output without a delivery target.
 
 ## 4. Existing channel coverage
 
-- [ ] 4.1 Register channel descriptors for Slack, Discord, Mattermost, and TUI or explicitly mark unsupported/not-configured output channels.
+- [x] 4.1 Register channel descriptors for Slack, Discord, Mattermost, and TUI or explicitly mark unsupported/not-configured output channels.
 - [ ] 4.2 Adapt Slack runtime health to the standard snapshot shape without changing Slack behavior.
 - [ ] 4.3 Adapt Discord runtime health to the standard snapshot shape without changing Discord behavior.
 - [ ] 4.4 Adapt Mattermost runtime health to the standard snapshot shape without actorizing it yet.
-- [ ] 4.5 Represent TUI as a local interactive channel and SignalR as daemon infrastructure, not as the same channel record.
+- [x] 4.5 Represent TUI as a local interactive channel and SignalR as daemon infrastructure, not as the same channel record.
 
 ## 5. Trigger-source consumers
 
 - [ ] 5.1 Update reminder definitions to store or resolve explicit channel delivery targets when output is requested.
 - [ ] 5.2 Update webhook route definitions to store or resolve explicit channel delivery targets when output is requested.
-- [ ] 5.3 Ensure reminders and webhooks do not register channel descriptors or channel snapshot providers.
+- [x] 5.3 Ensure reminders and webhooks do not register channel descriptors or channel snapshot providers.
 
 ## 6. Descriptor-driven observability
 
@@ -73,7 +73,7 @@
 
 ## 11. Validation and quality gates
 
-- [ ] 11.1 `dotnet test src/Netclaw.Actors.Tests/ --filter Channel`
-- [ ] 11.2 `dotnet test src/Netclaw.Daemon.Tests/`
-- [ ] 11.3 `dotnet slopwatch analyze`
-- [ ] 11.4 `./scripts/Add-FileHeaders.ps1 -Verify`
+- [x] 11.1 `dotnet test src/Netclaw.Actors.Tests/ --filter Channel`
+- [x] 11.2 `dotnet test src/Netclaw.Daemon.Tests/`
+- [x] 11.3 `dotnet slopwatch analyze`
+- [x] 11.4 `./scripts/Add-FileHeaders.ps1 -Verify`

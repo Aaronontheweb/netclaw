@@ -25,6 +25,8 @@ public static class MattermostChannelRegistrationExtensions
     {
         var mattermostOptions = configuration.GetSection("Mattermost").Get<MattermostChannelOptions>() ?? new MattermostChannelOptions();
         services.AddSingleton(mattermostOptions);
+        services.AddChannelRegistry();
+        services.AddChannelDescriptor(CreateDescriptor(mattermostOptions));
 
         if (!mattermostOptions.Enabled)
             return;
@@ -115,5 +117,50 @@ public static class MattermostChannelRegistrationExtensions
 
         services.AddSingleton<IHostedService>(sp =>
             (IHostedService)sp.GetRequiredKeyedService<IChannel>(MattermostChannelKey));
+    }
+
+    private static ChannelDescriptor CreateDescriptor(MattermostChannelOptions options)
+    {
+        var capabilities = ChannelCapabilities.ReceiveMessages
+            | ChannelCapabilities.SendMessages
+            | ChannelCapabilities.ThreadedConversations
+            | ChannelCapabilities.InteractiveApproval
+            | ChannelCapabilities.FileIngress
+            | ChannelCapabilities.ProactiveSend
+            | ChannelCapabilities.UserLookup
+            | ChannelCapabilities.DestinationLookup
+            | ChannelCapabilities.RuntimeHealth;
+
+        if (options.AllowDirectMessages)
+            capabilities |= ChannelCapabilities.DirectMessages;
+
+        var addressKinds = new HashSet<ChannelAddressKind>
+        {
+            ChannelAddressKind.Destination,
+            ChannelAddressKind.User,
+            ChannelAddressKind.Thread
+        };
+
+        if (options.AllowDirectMessages)
+            addressKinds.Add(ChannelAddressKind.DirectMessage);
+
+        return new ChannelDescriptor(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Mattermost),
+            ChannelType.Mattermost,
+            ChannelKind.RemoteChat,
+            "Mattermost",
+            options.Enabled,
+            capabilities,
+            ToolIntents: new HashSet<ChannelToolIntentKind>
+            {
+                ChannelToolIntentKind.SendMessage,
+                ChannelToolIntentKind.LookupUser
+            },
+            AddressKinds: addressKinds,
+            SupportedOutputEffects: new HashSet<ChannelOutputEffectKind>
+            {
+                ChannelOutputEffectKind.TextMessage,
+                ChannelOutputEffectKind.InteractiveApproval
+            });
     }
 }

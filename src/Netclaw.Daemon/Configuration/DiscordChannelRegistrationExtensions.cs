@@ -25,6 +25,8 @@ public static class DiscordChannelRegistrationExtensions
     {
         var discordOptions = configuration.GetSection("Discord").Get<DiscordChannelOptions>() ?? new DiscordChannelOptions();
         services.AddSingleton(discordOptions);
+        services.AddChannelRegistry();
+        services.AddChannelDescriptor(CreateDescriptor(discordOptions));
 
         if (!discordOptions.Enabled)
             return;
@@ -91,5 +93,40 @@ public static class DiscordChannelRegistrationExtensions
 
         services.AddSingleton<IHostedService>(sp =>
             (IHostedService)sp.GetRequiredKeyedService<IChannel>(DiscordChannelKey));
+    }
+
+    private static ChannelDescriptor CreateDescriptor(DiscordChannelOptions options)
+    {
+        var capabilities = ChannelCapabilities.ReceiveMessages
+            | ChannelCapabilities.SendMessages
+            | ChannelCapabilities.ThreadedConversations
+            | ChannelCapabilities.InteractiveApproval
+            | ChannelCapabilities.FileIngress
+            | ChannelCapabilities.ProactiveSend
+            | ChannelCapabilities.RuntimeHealth;
+
+        var addressKinds = new HashSet<ChannelAddressKind>
+        {
+            ChannelAddressKind.Destination,
+            ChannelAddressKind.Thread
+        };
+
+        return new ChannelDescriptor(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Discord),
+            ChannelType.Discord,
+            ChannelKind.RemoteChat,
+            "Discord",
+            options.Enabled,
+            capabilities,
+            ToolIntents: new HashSet<ChannelToolIntentKind>
+            {
+                ChannelToolIntentKind.SendMessage
+            },
+            AddressKinds: addressKinds,
+            SupportedOutputEffects: new HashSet<ChannelOutputEffectKind>
+            {
+                ChannelOutputEffectKind.TextMessage,
+                ChannelOutputEffectKind.InteractiveApproval
+            });
     }
 }
