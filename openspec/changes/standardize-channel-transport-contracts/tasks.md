@@ -30,17 +30,18 @@
 - [ ] 5.1 Add a standard address resolver contract for users and destinations.
 - [ ] 5.2 Support exact stable ID resolution before name search.
 - [ ] 5.3 Fail loudly with candidates for ambiguous display-name matches.
-- [ ] 5.4 Wire Slack lookup to the standard resolver contract.
-- [ ] 5.5 Wire Discord lookup to the standard resolver contract where supported.
-- [ ] 5.6 Wire Mattermost lookup to the standard resolver contract.
+- [ ] 5.4 Route resolution requests to the resolver registered for the selected descriptor or channel type.
+- [ ] 5.5 Wire Slack lookup to its descriptor-scoped resolver.
+- [ ] 5.6 Wire Discord lookup to its descriptor-scoped resolver where supported.
+- [ ] 5.7 Wire Mattermost lookup to its descriptor-scoped resolver.
 
 ## 6. LLM-facing tool standardization
 
-- [ ] 6.1 Define standard tool intent schemas for send message, lookup user, and lookup destination.
-- [ ] 6.2 Map existing Slack tools to the standard intent schema while preserving their current names.
-- [ ] 6.3 Map existing Discord tools to the standard intent schema while preserving their current names.
-- [ ] 6.4 Map existing Mattermost tools to the standard intent schema while preserving their current names.
-- [ ] 6.5 Decide whether the first generic tool is a single multi-channel tool or generated per-channel aliases after contract tests pass.
+- [ ] 6.1 Define standard tool intent schemas and final tool names for send message, lookup user, and lookup destination.
+- [ ] 6.2 Rename/map existing Slack tools to the standard tool names and intent schema.
+- [ ] 6.3 Rename/map existing Discord tools to the standard tool names and intent schema.
+- [ ] 6.4 Rename/map existing Mattermost tools to the standard tool names and intent schema.
+- [ ] 6.5 Update system skills, CLI/help text, and eval cases for renamed LLM-facing channel tools.
 
 ## 7. Stateful transport lifecycle follow-up
 

@@ -33,8 +33,8 @@ Source PRDs/specs: `PRD-009-input-adapters-and-unified-input.md`,
 - Add standard address-resolution semantics so users, channels, rooms, threads,
   and destinations can be resolved by stable IDs or user-facing names.
 - Add standard LLM-facing tool intent schemas for send-message and lookup tools,
-  while keeping existing per-channel tool names as compatibility aliases during
-  migration.
+  allowing current per-channel tool names to be renamed to the standardized
+  surface during migration.
 - Change daemon runtime status and stats to enumerate registered descriptors
   instead of hard-coding individual adapters.
 - Define socket-adapter lifecycle requirements that Mattermost, Discord, Slack,
@@ -65,5 +65,6 @@ Source PRDs/specs: `PRD-009-input-adapters-and-unified-input.md`,
 - **Reliability:** health and readiness become comparable across adapters.
   Stateful socket adapters expose reconnect and not-ready states through a
   common snapshot shape.
-- **Compatibility:** existing channel-specific tools remain available while they
-  are mapped to standard tool intents. No session identity change is required.
+- **Compatibility:** no session identity change is required. Existing
+  LLM-facing channel tool names may change as part of standardization; system
+  skills and evals must be updated when tool names change.

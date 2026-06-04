@@ -99,20 +99,28 @@ Channel address resolution SHALL use a common resolver contract for supported
 address kinds, including users and destinations. Resolvers SHALL accept stable
 IDs and user-facing names where the backing platform supports them.
 
+Each descriptor-backed adapter SHALL provide its own resolver for the address
+namespaces it supports. The daemon SHALL route resolution requests to the
+resolver associated with the selected descriptor or channel type. If no resolver
+exists for the requested descriptor and address kind, resolution SHALL fail
+loudly as unsupported.
+
 Resolvers SHALL fail loudly on ambiguous names and unsupported address kinds.
 They SHALL NOT silently fall back from one namespace to another.
 
 #### Scenario: Exact stable ID resolves without search ambiguity
 
-- **GIVEN** a send-message tool receives a destination value that is a stable
-  platform channel ID
+- **GIVEN** a send-message tool receives a selected channel descriptor
+- **AND** the destination value is a stable platform channel ID for that
+  descriptor
 - **WHEN** the resolver evaluates the destination
 - **THEN** it resolves the exact ID without display-name search
 
-#### Scenario: Ambiguous display name fails with candidates
+#### Scenario: Ambiguous user-facing query fails with candidates
 
-- **GIVEN** two Mattermost channels have the same display name visible to the bot
-- **WHEN** a lookup query uses that display name
+- **GIVEN** the selected descriptor's resolver returns multiple user or
+  destination candidates for a user-facing query
+- **WHEN** the lookup request requires a single resolved address
 - **THEN** resolution fails loudly
 - **AND** the result includes candidate stable IDs and display names
 
@@ -126,9 +134,10 @@ They SHALL NOT silently fall back from one namespace to another.
 ### Requirement: LLM-facing channel tools use standard intent schemas
 
 LLM-facing channel tools SHALL map to standard tool intents for send message,
-lookup user, and lookup destination. Existing channel-specific tool names MAY
-remain during migration, but their arguments and behavior SHALL map to the
-standard intent schema.
+lookup user, and lookup destination. Existing channel-specific tool names are
+not compatibility requirements and MAY be renamed during migration. When tool
+names change, system skills and eval cases SHALL be updated in the same
+implementation change.
 
 #### Scenario: Send-message tools share a common argument model
 
@@ -139,13 +148,14 @@ standard intent schema.
 - **AND** unsupported options are omitted or reported as unsupported rather than
   silently ignored
 
-#### Scenario: Legacy tool name remains as an alias
+#### Scenario: Channel-specific tools are renamed to standard tools
 
-- **GIVEN** existing sessions know about `send_slack_message`
-- **WHEN** Slack tools are registered under the standard intent model
-- **THEN** `send_slack_message` remains available as an alias or channel-specific
-  registration
-- **AND** it maps to the same send-message intent used by other channels
+- **GIVEN** Slack, Discord, and Mattermost have migrated to the standard intent
+  model
+- **WHEN** LLM-facing channel tools are registered
+- **THEN** the registered tool names follow the standardized naming plan
+- **AND** obsolete per-channel names are not required as aliases unless a
+  concrete external compatibility requirement is documented
 
 ### Requirement: Stateful remote chat adapters expose reliable lifecycle state
 

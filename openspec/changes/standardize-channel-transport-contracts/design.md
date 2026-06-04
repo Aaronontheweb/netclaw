@@ -91,8 +91,11 @@ ready means its scheduler or trigger is registered.
 ## Address Resolution
 
 Address resolution is standardized as an intent, not as one platform's ID model.
-Resolvers accept a query and an address kind. They can return exact matches,
-candidate matches, or a failure.
+Each descriptor-backed adapter provides its own resolver for the address
+namespaces it supports. The channel registry routes a resolution request to the
+resolver associated with the selected descriptor or channel type; it does not use
+a global resolver that guesses across platforms. Resolvers accept a query and an
+address kind. They can return exact matches, candidate matches, or a failure.
 
 Rules:
 
@@ -100,6 +103,7 @@ Rules:
 - User-facing names are searchable where the backing platform supports it.
 - Ambiguous names fail loudly with candidates instead of choosing the first
   match.
+- Unsupported address kinds fail loudly for the selected descriptor.
 - Resolvers do not silently fall back from one namespace to another.
 - Resolved addresses carry both display data and stable platform IDs.
 
@@ -113,10 +117,11 @@ The tool registry should describe channel tools in terms of standard intents:
 - `lookup_destination`: query, destination kind, optional channel key,
   optional exact-only flag.
 
-The implementation can keep existing tool names such as `send_slack_message`,
-`send_discord_message`, and `send_mattermost_message` during migration, but each
-tool must map to the standard intent schema. A generic multi-channel tool can be
-introduced after the registry can enumerate descriptors and resolvers reliably.
+Existing tool names such as `send_slack_message`, `send_discord_message`, and
+`send_mattermost_message` are not compatibility requirements. The implementation
+may rename them to the standardized tool names once the registry can enumerate
+descriptors and resolvers reliably. System skills, CLI/help text, and evals must
+be updated in the same implementation change when tool names change.
 
 ## Stateful Transport Lifecycle
 
@@ -148,7 +153,7 @@ exists.
 4. Change daemon runtime status and stats to consume the registry instead of
    hard-coded Slack/Discord lists.
 5. Normalize Slack, Discord, and Mattermost send/lookup tools onto standard
-   intent schemas while preserving existing tool names as aliases.
+   intent schemas and rename current per-channel tools where needed.
 6. Add name-searchable user and destination resolvers for supported platforms.
 7. Only after descriptors and snapshots are stable, implement adapter-specific
    lifecycle fixes such as Mattermost actorization.
@@ -157,7 +162,6 @@ exists.
 
 - Do not rewrite all adapters in one pass.
 - Do not create a generic channel base actor in this change.
-- Do not remove existing channel-specific tool names during the first migration.
 - Do not change session identity formats.
 - Do not weaken ACL, audience, principal, boundary, or provenance requirements.
 - Do not make SignalR pretend to be a remote chat workspace.
