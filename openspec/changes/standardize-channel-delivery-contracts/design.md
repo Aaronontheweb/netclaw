@@ -22,6 +22,28 @@ the top-level goal. It becomes one stateful-channel task after Mattermost can
 report the same descriptor and runtime snapshot shape as Slack, Discord, and
 future remote chat channels.
 
+## Invariants
+
+These statements are the long-lived grounding rules for this change. If later
+implementation work conflicts with one of these, update the plan before writing
+code.
+
+- A channel is an addressable output-capable delivery surface.
+- A channel may also be an input source, but input capability is not what makes
+  it a channel.
+- Reminders, schedulers, and webhooks are trigger sources. They are not channels.
+- Trigger sources consume channel delivery targets when they need external
+  output.
+- Netclaw must not silently choose a default output channel for trigger-originated
+  turns.
+- SignalR is daemon infrastructure. TUI is the local interactive channel that
+  uses SignalR.
+- Session actors emit semantic `SessionOutput`; channels render those outputs
+  through capability-declared effects.
+- Descriptors and capabilities describe what can happen; ACL still depends on
+  explicit trust context carried by the turn.
+- The code samples in this design are illustrative seams, not mandated API names.
+
 ## Glossary And Abstractions
 
 These examples are illustrative contracts, not final type names. The intent is to
@@ -427,6 +449,23 @@ endpoints may have operational status, but they do not advertise channel send,
 lookup, or lifecycle capabilities unless represented by a logical channel such
 as TUI.
 
+## Capability Scope Matrix
+
+| Surface | Input source | Output channel | Channel descriptor | Delivery target consumer | Address resolver | Runtime snapshot | Output effects | Stateful lifecycle |
+|---------|--------------|----------------|--------------------|--------------------------|------------------|------------------|----------------|--------------------|
+| Slack | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Discord | Yes | Yes | Yes | Yes | Yes, where supported | Yes | Yes | Yes |
+| Mattermost | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| TUI | Yes | Yes | Yes | Yes | Local/session-scoped only | Yes | Yes | No remote socket lifecycle |
+| SignalR hub | No user turn by itself | No | No channel descriptor | No | No | Endpoint status only | No | Endpoint lifecycle only |
+| Reminder/scheduler | Yes | No | No | Yes, when output is requested | No | Trigger status only | No | No |
+| Webhook route | Yes | No | No | Yes, when output is requested | No | Trigger status only | No | No |
+
+This table is deliberately asymmetric. The channel registry is for output-capable
+channels. Trigger sources and daemon endpoints may have their own operational
+status, but they do not become channels unless they can emit output through an
+addressable conversation surface.
+
 ## Component Diagram
 
 ```mermaid
@@ -597,6 +636,26 @@ exists.
 7. Add name-searchable user and destination resolvers for supported channels.
 8. Only after descriptors and snapshots are stable, implement adapter-specific
    lifecycle fixes such as Mattermost actorization.
+
+## Multi-Window Implementation Guardrails
+
+This change is likely to span multiple sessions and compaction windows. Preserve
+the ordering and scope boundaries below to avoid reintroducing the old ambiguity.
+
+1. Start with channel descriptors, delivery targets, and contract tests.
+2. Do not implement a generic channel base actor first.
+3. Do not register reminders, schedulers, webhooks, or SignalR as channels for
+   convenience.
+4. Do not add fallback logic that picks Slack, Discord, Mattermost, or TUI when a
+   trigger source lacks a delivery target.
+5. Do not migrate reminder or webhook output until `ChannelDeliveryTarget` exists
+   and can fail loudly when missing.
+6. Do not rename LLM-facing channel tools without updating system skills and eval
+   cases in the same implementation change.
+7. Do not actorize Mattermost as the first step; actorization comes after the
+   standard runtime snapshot and lifecycle contract tests exist.
+8. Do not let session actors call platform-specific delivery APIs. Add a semantic
+   output effect and channel renderer instead.
 
 ## Non-Goals
 

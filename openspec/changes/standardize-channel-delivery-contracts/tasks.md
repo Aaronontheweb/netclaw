@@ -3,7 +3,8 @@
 - [ ] 1.1 Confirm proposal, design, and spec delta define channels as output-capable delivery surfaces that may also produce input.
 - [ ] 1.2 Confirm reminders and webhooks are represented as trigger consumers of channel delivery targets, not channel registry participants.
 - [ ] 1.3 Confirm Mattermost actorization is represented as an adapter-specific lifecycle task, not the top-level change.
-- [ ] 1.4 Run `openspec validate standardize-channel-delivery-contracts --type change` and resolve all issues.
+- [ ] 1.4 Confirm invariants, capability matrix, and multi-window implementation guardrails remain consistent after review edits.
+- [ ] 1.5 Run `openspec validate standardize-channel-delivery-contracts --type change` and resolve all issues.
 
 ## 2. Channel descriptor and snapshot contracts
 
