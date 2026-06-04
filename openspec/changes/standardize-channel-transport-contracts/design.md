@@ -15,6 +15,276 @@ longer the top-level change. It becomes one stateful-adapter task that should be
 implemented after Mattermost can report the same descriptor and runtime snapshot
 shape as Slack, Discord, and future remote chat adapters.
 
+## Glossary And Abstractions
+
+These examples are illustrative contracts, not final type names. The intent is to
+show the seam each term describes and how the daemon would use it.
+
+### Channel Descriptor
+
+A stable description of what an adapter, logical channel, or endpoint is and what
+it can do. This is mostly configuration/capability metadata, not live health.
+
+Abstraction:
+
+```csharp
+public sealed record ChannelDescriptor(
+    ChannelDescriptorKey Key,
+    ChannelType? ChannelType,
+    ChannelSourceKind Kind,
+    string DisplayName,
+    bool IsEnabled,
+    ChannelCapabilities Capabilities,
+    IReadOnlySet<ChannelToolIntentKind> ToolIntents,
+    IReadOnlySet<ChannelAddressKind> AddressKinds);
+
+public interface IChannelDescriptorProvider
+{
+    ChannelDescriptor GetDescriptor();
+}
+```
+
+Interaction:
+
+```csharp
+var descriptor = slackDescriptorProvider.GetDescriptor();
+
+if (descriptor.Capabilities.HasFlag(ChannelCapabilities.InteractiveApproval))
+{
+    toolRegistry.IncludeApprovalAwareTools(descriptor.Key);
+}
+```
+
+### Channel Source Kind
+
+The category of source represented by a descriptor. This avoids treating a
+daemon endpoint such as SignalR as if it were a Slack-like remote workspace.
+
+Abstraction:
+
+```csharp
+public enum ChannelSourceKind
+{
+    RemoteChatChannel,
+    LocalClientChannel,
+    DaemonEndpoint,
+    InternalSource,
+    HttpIngressSource,
+    NonInteractiveClient
+}
+```
+
+Interaction:
+
+```csharp
+var descriptors = registry.ListDescriptors();
+var endpoints = descriptors.Where(d => d.Kind == ChannelSourceKind.DaemonEndpoint);
+var chatChannels = descriptors.Where(d => d.Kind == ChannelSourceKind.RemoteChatChannel);
+```
+
+### Channel Registry
+
+The daemon-owned index of descriptors, runtime snapshot providers, and address
+resolvers. It routes operations to the selected descriptor instead of guessing
+which platform a user meant.
+
+Abstraction:
+
+```csharp
+public interface IChannelRegistry
+{
+    IReadOnlyCollection<ChannelDescriptor> ListDescriptors();
+
+    ValueTask<ChannelRuntimeSnapshot> GetSnapshotAsync(
+        ChannelDescriptorKey key,
+        CancellationToken cancellationToken);
+
+    IChannelAddressResolver GetResolver(
+        ChannelDescriptorKey key,
+        ChannelAddressKind addressKind);
+}
+```
+
+Interaction:
+
+```csharp
+foreach (var descriptor in registry.ListDescriptors())
+{
+    var snapshot = await registry.GetSnapshotAsync(descriptor.Key, ct);
+    status.AddChannel(descriptor, snapshot);
+}
+```
+
+### Runtime Snapshot
+
+A live, point-in-time report of an adapter or endpoint's current operational
+state. This is not persisted state; it is used by status, stats, tool discovery,
+and health reporting.
+
+Abstraction:
+
+```csharp
+public sealed record ChannelRuntimeSnapshot(
+    ChannelDescriptorKey Key,
+    bool IsEnabled,
+    ChannelHealthStatus Health,
+    string? HealthDetail,
+    bool? IsConnected,
+    bool? IsReady,
+    ChannelPrincipal? Principal,
+    ChannelEndpointIdentity? Endpoint,
+    ChannelActivitySnapshot? Activity);
+
+public interface IChannelRuntimeSnapshotProvider
+{
+    ChannelDescriptorKey Key { get; }
+
+    ValueTask<ChannelRuntimeSnapshot> GetSnapshotAsync(
+        CancellationToken cancellationToken);
+}
+```
+
+Interaction:
+
+```csharp
+var snapshot = await mattermostSnapshotProvider.GetSnapshotAsync(ct);
+
+if (snapshot is { IsEnabled: true, IsReady: false })
+{
+    logger.LogWarning("Mattermost is not ready: {Detail}", snapshot.HealthDetail);
+}
+```
+
+### Address Resolver
+
+A descriptor-scoped resolver for stable IDs and user-facing names. Slack,
+Discord, Mattermost, SignalR, Reminder, and Webhook do not share one mega
+resolver; each descriptor provides only the namespaces it supports.
+
+Abstraction:
+
+```csharp
+public sealed record ChannelAddressResolutionRequest(
+    ChannelDescriptorKey ChannelKey,
+    ChannelAddressKind AddressKind,
+    string Query,
+    bool RequireSingleMatch);
+
+public sealed record ResolvedChannelAddress(
+    ChannelDescriptorKey ChannelKey,
+    ChannelAddressKind AddressKind,
+    string StableId,
+    string DisplayName);
+
+public interface IChannelAddressResolver
+{
+    ChannelDescriptorKey ChannelKey { get; }
+
+    ValueTask<ChannelAddressResolutionResult> ResolveAsync(
+        ChannelAddressResolutionRequest request,
+        CancellationToken cancellationToken);
+}
+```
+
+Interaction:
+
+```csharp
+var resolver = registry.GetResolver(slackKey, ChannelAddressKind.Destination);
+
+var result = await resolver.ResolveAsync(
+    new ChannelAddressResolutionRequest(
+        slackKey,
+        ChannelAddressKind.Destination,
+        "#ops-alerts",
+        RequireSingleMatch: true),
+    ct);
+
+var destination = result.RequireSingle();
+```
+
+### Tool Intent Schema
+
+The normalized argument model used by LLM-facing tools. Tool names can be
+standardized, but adapter-specific execution still happens behind the registry
+and descriptor-selected channel implementation.
+
+Abstraction:
+
+```csharp
+public sealed record SendChannelMessageIntent(
+    ChannelDescriptorKey ChannelKey,
+    ResolvedChannelAddress Destination,
+    string Text,
+    string? ThreadOrRootId = null);
+
+public interface IChannelToolIntentExecutor
+{
+    ValueTask ExecuteAsync(
+        SendChannelMessageIntent intent,
+        ToolExecutionContext context,
+        CancellationToken cancellationToken);
+}
+```
+
+Interaction:
+
+```csharp
+var destination = await channelTools.ResolveDestinationAsync(
+    channelKey: mattermostKey,
+    query: "release-war-room",
+    cancellationToken: ct);
+
+await channelTools.SendMessageAsync(
+    new SendChannelMessageIntent(
+        mattermostKey,
+        destination,
+        "Deploy finished successfully."),
+    toolContext,
+    ct);
+```
+
+### Stateful Transport Lifecycle Owner
+
+The adapter-specific component that serializes socket/API lifecycle state for a
+remote chat adapter. It can be an actor, hosted-service state machine, SDK
+facade, or another single owner. The standard contract is the observable
+snapshot and lifecycle behavior, not the implementation shape.
+
+Abstraction:
+
+```csharp
+public interface IStatefulChannelLifecycleOwner
+{
+    event Func<string, Task>? CleanReconnectRequired;
+
+    ValueTask<ChannelRuntimeSnapshot> ConnectAsync(
+        CancellationToken cancellationToken);
+
+    ValueTask DisconnectAsync(CancellationToken cancellationToken);
+
+    ValueTask<ChannelRuntimeSnapshot> GetSnapshotAsync(
+        CancellationToken cancellationToken);
+}
+```
+
+Interaction:
+
+```csharp
+lifecycle.CleanReconnectRequired += reason =>
+{
+    reconnectQueue.Enqueue(new CleanReconnectRequest(channelKey, reason));
+    return Task.CompletedTask;
+};
+
+var snapshot = await lifecycle.GetSnapshotAsync(ct);
+
+if (snapshot.IsReady != true)
+{
+    ingressMetrics.RecordFilteredWhileNotReady(channelKey);
+    return;
+}
+```
+
 ## Transport And Channel Taxonomy
 
 Netclaw needs to distinguish logical conversation sources from process/network
