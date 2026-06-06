@@ -560,13 +560,46 @@ Rules:
 
 ## LLM-Facing Channel Tool Intents
 
-The tool registry should describe channel tools in terms of standard intents:
+The LLM-facing tool surface should expose one generic tool per channel intent,
+not one tool name per channel. Channel selection is an explicit argument so the
+tool surface stays small while the runtime can still enforce descriptor-backed
+capability checks.
+
+The standard tool names are:
 
 - `send_channel_message`: channel key, destination, text, optional thread/root
   target, optional audience/context hints.
 - `lookup_channel_user`: channel key, query, optional exact-only flag.
 - `lookup_channel_destination`: channel key, query, destination kind, optional
   exact-only flag.
+
+Tool schema rules:
+
+- `channel_key` is required, appears first in each schema, and is constrained to
+  an enum generated from enabled channel descriptors.
+- Tool descriptions must give explicit examples such as `channel_key=slack`,
+  `channel_key=discord`, and `channel_key=mattermost` so smaller models do not
+  have to infer the selector from prose alone.
+- Lookup results must include the originating `channel_key`, address kind,
+  stable platform ID, and display name.
+- `send_channel_message` accepts resolved delivery destinations only. It rejects
+  bare display-name recipients and requires callers to use lookup tools first
+  unless they already have a stable platform ID.
+- `send_channel_message` fails loudly when the requested `channel_key` does not
+  match the delivery destination's `channel_key`.
+- Unsupported capabilities, such as direct messages on a channel descriptor that
+  does not advertise DM support, fail loudly instead of silently falling back to
+  another address kind.
+
+Direct-message workflow:
+
+1. Resolve the user with `lookup_channel_user(channel_key, query)`.
+2. Send with `send_channel_message(channel_key, destination.kind=direct_message,
+   destination.id=<stable user id>, text=...)`.
+
+This keeps a single send tool while preserving explicit channel and destination
+intent. A channel-specific public alias should only be added if evals show the
+generic enum-selected tool is unreliable for target model tiers.
 
 Existing tool names such as `send_slack_message`, `send_discord_message`, and
 `send_mattermost_message` are not compatibility requirements. The implementation

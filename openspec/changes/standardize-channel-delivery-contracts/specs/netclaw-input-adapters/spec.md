@@ -181,21 +181,77 @@ names are not compatibility requirements and MAY be renamed during migration.
 When tool names change, system skills and eval cases SHALL be updated in the same
 implementation change.
 
+Standardized channel tools SHALL use generic LLM-facing names rather than
+channel-specific names: `send_channel_message`, `lookup_channel_user`, and
+`lookup_channel_destination`. Each standardized channel tool SHALL require a
+`channel_key` argument as the first schema property. The `channel_key` argument
+SHALL be enum-constrained from enabled channel descriptors and SHALL NOT be a
+free-form string.
+
+Lookup results SHALL include the originating `channel_key`, resolved address
+kind, stable platform ID, and display name. `send_channel_message` SHALL reject
+destinations whose `channel_key` does not match the requested `channel_key`.
+`send_channel_message` SHALL reject bare user-facing display names; callers MUST
+use a lookup tool first unless they already have a stable platform ID.
+
+Direct messages SHALL use the same `send_channel_message` tool with a resolved
+`direct_message` destination. User-DM sends SHALL follow the workflow:
+`lookup_channel_user(channel_key, query)` ->
+`send_channel_message(channel_key, destination.kind=direct_message,
+destination.id=<stable user id>, text=...)`. If the selected channel descriptor
+does not advertise implemented direct-message output capability, the send SHALL
+fail loudly rather than falling back to a channel post or another channel.
+
 #### Scenario: Send-message tools share a common channel target model
 
 - **GIVEN** Slack, Discord, and Mattermost expose send-message tools
 - **WHEN** their tool definitions are inspected
-- **THEN** each tool accepts a channel key, destination, text, and optional thread
-  or root target using the standard send-channel-message intent schema
+- **THEN** `send_channel_message` accepts a required enum-constrained
+  `channel_key`, destination, text, and optional thread or root target using the
+  standard send-channel-message intent schema
 - **AND** unsupported options are omitted or reported as unsupported rather than
   silently ignored
+
+#### Scenario: Channel selector is explicit and enum-constrained
+
+- **GIVEN** Slack, Discord, and Mattermost are enabled channel descriptors
+- **WHEN** standardized channel tools are registered
+- **THEN** each tool schema lists `channel_key` as a required first property
+- **AND** the schema constrains `channel_key` to the enabled descriptor keys
+- **AND** the schema does not accept arbitrary channel names
+
+#### Scenario: User direct message uses lookup then send
+
+- **GIVEN** the user asks the agent to send a direct message to a user on Slack,
+  Discord, or Mattermost
+- **WHEN** the agent does not already have the user's stable platform ID
+- **THEN** it first calls `lookup_channel_user` with the selected `channel_key`
+- **AND** it passes the returned `channel_key`, `direct_message` address kind,
+  and stable user ID to `send_channel_message`
+
+#### Scenario: Mismatched channel destination fails loudly
+
+- **GIVEN** a lookup result from Slack contains `channel_key=slack`
+- **WHEN** `send_channel_message` is invoked with `channel_key=mattermost` and the
+  Slack destination
+- **THEN** the send fails loudly with a channel mismatch error
+- **AND** no message is sent through any channel
+
+#### Scenario: Bare display-name recipient is rejected
+
+- **GIVEN** `send_channel_message` is invoked with a user-facing display name as
+  the destination
+- **WHEN** the destination is not a stable platform ID or resolved address
+- **THEN** the send fails loudly and instructs the caller to use the lookup tool
+  first
 
 #### Scenario: Channel-specific tools are renamed to standard tools
 
 - **GIVEN** Slack, Discord, and Mattermost have migrated to the standard channel
   delivery intent model
 - **WHEN** LLM-facing channel tools are registered
-- **THEN** the registered tool names follow the standardized naming plan
+- **THEN** the registered tool names are `send_channel_message`,
+  `lookup_channel_user`, and `lookup_channel_destination` where supported
 - **AND** obsolete per-channel names are not required as aliases unless a
   concrete external compatibility requirement is documented
 
