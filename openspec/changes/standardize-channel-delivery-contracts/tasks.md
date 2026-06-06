@@ -27,6 +27,10 @@
 - [ ] 4.3 Adapt Discord runtime health to the standard snapshot shape without changing Discord behavior.
 - [ ] 4.4 Adapt Mattermost runtime health to the standard snapshot shape without actorizing it yet.
 - [x] 4.5 Represent TUI as a local interactive channel and SignalR as daemon infrastructure, not as the same channel record.
+- [x] 4.6 Keep first-slice descriptors limited to implemented delivery behavior, not aspirational roadmap capabilities.
+- [ ] 4.7 Implement Discord proactive DM output before advertising `DirectMessages` or `DirectMessage` address support on the Discord descriptor.
+- [ ] 4.8 Implement Discord `FileOutput` upload before advertising `FileEgress` or `FileAttachment` support on the Discord descriptor.
+- [ ] 4.9 Implement Mattermost `FileOutput` upload before advertising `FileEgress` or `FileAttachment` support on the Mattermost descriptor.
 
 ## 5. Trigger-source consumers
 
@@ -59,7 +63,7 @@
 - [ ] 8.4 Rename/map existing Mattermost tools to the standard tool names and intent schema.
 - [ ] 8.5 Update system skills, CLI/help text, and eval cases for renamed LLM-facing channel tools.
 
-## 9. Stateful channel lifecycle follow-up
+## 9. Channel output effects follow-up
 
 - [ ] 9.1 Add a channel output renderer contract for semantic `SessionOutput` effects.
 - [ ] 9.2 Add contract tests for supported optional output effects, unsupported optional output effects, and unsupported required output effects.
