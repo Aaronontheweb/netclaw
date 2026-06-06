@@ -64,6 +64,14 @@ Netclaw v0.23.0 — Beta channel, streaming-native chat, Docker improvements, an
 
 * **Documented beta/stable release process** — added documentation for the release workflow. ([#1323](https://github.com/netclaw-dev/netclaw/pull/1323))
 
+* **Cited #648 at the chat-client routing seam** — added documentation reference for provider routing behavior. ([#1335](https://github.com/netclaw-dev/netclaw/pull/1335))
+
 * **Archived 8 completed OpenSpec changes** — cleaned up completed specification work and synced delta specs. ([#1325](https://github.com/netclaw-dev/netclaw/pull/1325))
 
 * **Added `.claude/worktrees` to `.gitignore`** — keeps Claude Code worktree artifacts out of version control. ([#1336](https://github.com/netclaw-dev/netclaw/pull/1336))
+
+* **Prepared v0.23.0-beta.5 release** — release preparation commits for beta channel. ([#1337](https://github.com/netclaw-dev/netclaw/pull/1337))
+
+* **Prepared v0.23.0-beta.4 release** — release preparation commits for beta channel. ([#1328](https://github.com/netclaw-dev/netclaw/pull/1328))
+
+* **Prepared v0.23.0-beta.1 release** — release preparation commits for beta channel. ([#1317](https://github.com/netclaw-dev/netclaw/pull/1317))
