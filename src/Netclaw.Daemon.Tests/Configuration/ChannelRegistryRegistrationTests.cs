@@ -90,6 +90,33 @@ public sealed class ChannelRegistryRegistrationTests
     }
 
     [Fact]
+    public async Task Registry_returns_runtime_snapshots_for_registered_descriptors()
+    {
+        using var provider = BuildProvider(new Dictionary<string, string?>
+        {
+            ["Slack:Enabled"] = "false",
+            ["Discord:Enabled"] = "false",
+            ["Mattermost:Enabled"] = "false"
+        });
+
+        var registry = provider.GetRequiredService<IChannelRegistry>();
+
+        var slack = await registry.GetSnapshotAsync(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Slack),
+            TestContext.Current.CancellationToken);
+        Assert.False(slack.IsEnabled);
+        Assert.Equal(ChannelHealthStatus.Degraded, slack.Health);
+        Assert.Equal("Slack connector is disabled in configuration.", slack.HealthDetail);
+
+        var tui = await registry.GetSnapshotAsync(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Tui),
+            TestContext.Current.CancellationToken);
+        Assert.True(tui.IsEnabled);
+        Assert.Equal(ChannelHealthStatus.Healthy, tui.Health);
+        Assert.True(tui.IsReady);
+    }
+
+    [Fact]
     public void Registry_fails_loudly_on_duplicate_descriptor_keys()
     {
         var key = ChannelDescriptorKey.FromChannelType(ChannelType.Slack);
@@ -119,6 +146,14 @@ public sealed class ChannelRegistryRegistrationTests
     private static IReadOnlyDictionary<string, ChannelDescriptor> BuildDescriptors(
         IReadOnlyDictionary<string, string?> settings)
     {
+        using var provider = BuildProvider(settings);
+        return provider.GetRequiredService<IChannelRegistry>()
+            .ListChannels()
+            .ToDictionary(descriptor => descriptor.Key.Value, StringComparer.Ordinal);
+    }
+
+    private static ServiceProvider BuildProvider(IReadOnlyDictionary<string, string?> settings)
+    {
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddChannelRegistry();
@@ -132,9 +167,6 @@ public sealed class ChannelRegistryRegistrationTests
         services.AddDiscordChannelIntegration(configuration);
         services.AddMattermostChannelIntegration(configuration);
 
-        using var provider = services.BuildServiceProvider();
-        return provider.GetRequiredService<IChannelRegistry>()
-            .ListChannels()
-            .ToDictionary(descriptor => descriptor.Key.Value, StringComparer.Ordinal);
+        return services.BuildServiceProvider();
     }
 }

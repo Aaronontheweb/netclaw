@@ -6,6 +6,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Netclaw.Actors.Channels;
+using Netclaw.Channels.Telemetry;
 
 namespace Netclaw.Channels;
 
@@ -264,6 +265,107 @@ public sealed class StaticChannelDescriptorProvider(ChannelDescriptor descriptor
     public ChannelDescriptor GetDescriptor() => descriptor;
 }
 
+public sealed class DescriptorChannelRuntimeSnapshotProvider : IChannelRuntimeSnapshotProvider
+{
+    private readonly ChannelDescriptor _descriptor;
+    private readonly Func<IEnumerable<IChannel>> _channelsAccessor;
+
+    public DescriptorChannelRuntimeSnapshotProvider(
+        ChannelDescriptor descriptor,
+        IEnumerable<IChannel> channels)
+        : this(descriptor, () => channels)
+    {
+    }
+
+    public DescriptorChannelRuntimeSnapshotProvider(
+        ChannelDescriptor descriptor,
+        Func<IEnumerable<IChannel>> channelsAccessor)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(channelsAccessor);
+
+        _descriptor = descriptor;
+        _channelsAccessor = channelsAccessor;
+    }
+
+    public ChannelDescriptorKey Key => _descriptor.Key;
+
+    public async ValueTask<ChannelRuntimeSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default)
+    {
+        if (!_descriptor.IsEnabled)
+        {
+            return new ChannelRuntimeSnapshot(
+                _descriptor.Key,
+                IsEnabled: false,
+                ChannelHealthStatus.Degraded,
+                HealthDetail: $"{_descriptor.DisplayName} connector is disabled in configuration.",
+                IsConnected: false,
+                IsReady: false,
+                Activity: BuildActivitySnapshot(_descriptor.ChannelType));
+        }
+
+        var channel = ResolveRuntimeChannel();
+        if (channel is null)
+        {
+            return _descriptor.Kind == ChannelKind.LocalInteractiveClient
+                ? new ChannelRuntimeSnapshot(
+                    _descriptor.Key,
+                    IsEnabled: true,
+                    ChannelHealthStatus.Healthy,
+                    IsReady: true,
+                    Activity: BuildActivitySnapshot(_descriptor.ChannelType))
+                : new ChannelRuntimeSnapshot(
+                    _descriptor.Key,
+                    IsEnabled: true,
+                    ChannelHealthStatus.Disconnected,
+                    HealthDetail: $"{_descriptor.DisplayName} connector is enabled but was not registered.",
+                    IsConnected: false,
+                    IsReady: false,
+                    Activity: BuildActivitySnapshot(_descriptor.ChannelType));
+        }
+
+        var health = await channel.GetHealthAsync(cancellationToken);
+        return new ChannelRuntimeSnapshot(
+            _descriptor.Key,
+            IsEnabled: true,
+            health.Status,
+            HealthDetail: health.Detail,
+            IsConnected: health.Status != ChannelHealthStatus.Disconnected,
+            IsReady: health.Status == ChannelHealthStatus.Healthy,
+            Activity: BuildActivitySnapshot(_descriptor.ChannelType));
+    }
+
+    private IChannel? ResolveRuntimeChannel()
+    {
+        IChannel? match = null;
+        foreach (var channel in _channelsAccessor())
+        {
+            if (channel.ChannelType != _descriptor.ChannelType)
+                continue;
+
+            if (match is not null)
+                throw new InvalidOperationException($"Multiple runtime channels are registered for '{_descriptor.Key}'.");
+
+            match = channel;
+        }
+
+        return match;
+    }
+
+    private static ChannelActivitySnapshot? BuildActivitySnapshot(ChannelType channelType)
+    {
+        var metrics = ChannelTelemetry.GetAllSnapshots()
+            .FirstOrDefault(snapshot => snapshot.ChannelType == channelType);
+
+        if (metrics is null)
+            return null;
+
+        return new ChannelActivitySnapshot(
+            InputCount: metrics.EventsReceived,
+            OutputCount: metrics.RepliesPosted);
+    }
+}
+
 public static class ChannelRegistryServiceCollectionExtensions
 {
     public static IServiceCollection AddChannelRegistry(this IServiceCollection services)
@@ -285,11 +387,26 @@ public static class ChannelRegistryServiceCollectionExtensions
         return services;
     }
 
+    public static IServiceCollection AddChannelDescriptorWithRuntimeSnapshot(
+        this IServiceCollection services,
+        ChannelDescriptor descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(descriptor);
+
+        services.AddChannelDescriptor(descriptor);
+        services.AddSingleton<IChannelRuntimeSnapshotProvider>(sp =>
+            new DescriptorChannelRuntimeSnapshotProvider(
+                descriptor,
+                () => sp.GetServices<IChannel>()));
+        return services;
+    }
+
     public static IServiceCollection AddTuiChannelDescriptor(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        return services.AddChannelDescriptor(new ChannelDescriptor(
+        return services.AddChannelDescriptorWithRuntimeSnapshot(new ChannelDescriptor(
             ChannelDescriptorKey.FromChannelType(ChannelType.Tui),
             ChannelType.Tui,
             ChannelKind.LocalInteractiveClient,

@@ -26,7 +26,7 @@ public static class DiscordChannelRegistrationExtensions
         var discordOptions = configuration.GetSection("Discord").Get<DiscordChannelOptions>() ?? new DiscordChannelOptions();
         services.AddSingleton(discordOptions);
         services.AddChannelRegistry();
-        services.AddChannelDescriptor(CreateDescriptor(discordOptions));
+        services.AddChannelDescriptorWithRuntimeSnapshot(CreateDescriptor(discordOptions));
 
         if (!discordOptions.Enabled)
             return;

@@ -23,9 +23,9 @@
 ## 4. Existing channel coverage
 
 - [x] 4.1 Register channel descriptors for Slack, Discord, Mattermost, and TUI or explicitly mark unsupported/not-configured output channels.
-- [ ] 4.2 Adapt Slack runtime health to the standard snapshot shape without changing Slack behavior.
-- [ ] 4.3 Adapt Discord runtime health to the standard snapshot shape without changing Discord behavior.
-- [ ] 4.4 Adapt Mattermost runtime health to the standard snapshot shape without actorizing it yet.
+- [x] 4.2 Adapt Slack runtime health to the standard snapshot shape without changing Slack behavior.
+- [x] 4.3 Adapt Discord runtime health to the standard snapshot shape without changing Discord behavior.
+- [x] 4.4 Adapt Mattermost runtime health to the standard snapshot shape without actorizing it yet.
 - [x] 4.5 Represent TUI as a local interactive channel and SignalR as daemon infrastructure, not as the same channel record.
 - [x] 4.6 Keep first-slice descriptors limited to implemented delivery behavior, not aspirational roadmap capabilities.
 - [ ] 4.7 Implement Discord proactive DM output before advertising `DirectMessages` or `DirectMessage` address support on the Discord descriptor.
@@ -40,10 +40,10 @@
 
 ## 6. Descriptor-driven observability
 
-- [ ] 6.1 Change daemon runtime status to enumerate the channel registry instead of hard-coding individual channel adapters.
+- [x] 6.1 Change daemon runtime status to enumerate the channel registry instead of hard-coding individual channel adapters.
 - [ ] 6.2 Change daemon stats channel activity to enumerate descriptor-backed output channels.
 - [ ] 6.3 Keep trigger-source status separate from channel status when reminder or webhook operational state is reported.
-- [ ] 6.4 Preserve current status/stats output fields or provide explicit compatibility mapping.
+- [x] 6.4 Preserve current status/stats output fields or provide explicit compatibility mapping.
 
 ## 7. Address resolution
 
@@ -62,6 +62,7 @@
 - [ ] 8.3 Rename/map existing Discord tools to the standard tool names and intent schema.
 - [ ] 8.4 Rename/map existing Mattermost tools to the standard tool names and intent schema.
 - [ ] 8.5 Update system skills, CLI/help text, and eval cases for renamed LLM-facing channel tools.
+- [ ] 8.6 Define the standardized DM send workflow as user lookup -> direct-message delivery target -> send-channel-message, gated by each channel descriptor's implemented DM output capability.
 
 ## 9. Channel output effects follow-up
 

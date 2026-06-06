@@ -26,7 +26,7 @@ public static class SlackChannelRegistrationExtensions
         var slackOptions = configuration.GetSection("Slack").Get<SlackChannelOptions>() ?? new SlackChannelOptions();
         services.AddSingleton(slackOptions);
         services.AddChannelRegistry();
-        services.AddChannelDescriptor(CreateDescriptor(slackOptions));
+        services.AddChannelDescriptorWithRuntimeSnapshot(CreateDescriptor(slackOptions));
 
         if (!slackOptions.Enabled)
             return;

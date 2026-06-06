@@ -26,7 +26,7 @@ public static class MattermostChannelRegistrationExtensions
         var mattermostOptions = configuration.GetSection("Mattermost").Get<MattermostChannelOptions>() ?? new MattermostChannelOptions();
         services.AddSingleton(mattermostOptions);
         services.AddChannelRegistry();
-        services.AddChannelDescriptor(CreateDescriptor(mattermostOptions));
+        services.AddChannelDescriptorWithRuntimeSnapshot(CreateDescriptor(mattermostOptions));
 
         if (!mattermostOptions.Enabled)
             return;
