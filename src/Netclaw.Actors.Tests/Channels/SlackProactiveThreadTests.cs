@@ -12,12 +12,14 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Time.Testing;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Tests.Channels.TestHelpers;
+using Netclaw.Channels;
 using Netclaw.Channels.Slack;
 using Netclaw.Channels.Slack.Tools;
 using Netclaw.Security;
 using SlackNet;
 using SlackNet.WebApi;
 using Xunit;
+using ChannelType = Netclaw.Actors.Channels.ChannelType;
 
 namespace Netclaw.Actors.Tests.Channels;
 
@@ -340,6 +342,63 @@ public sealed class LookupSlackUserToolTests
 
         await ExecuteAsync(tool, "Alice");
         Assert.Equal(2, fakeApi.CallCount);
+    }
+
+    [Fact]
+    public async Task Resolver_exact_user_id_skips_directory_lookup()
+    {
+        var fakeApi = new FakeSlackUsersApi(CreateUsers());
+        var tool = new LookupSlackUserTool(fakeApi, new SlackChannelOptions(), TimeProvider.System);
+        var request = new ChannelAddressResolutionRequest(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Slack),
+            ChannelAddressKind.User,
+            "U42");
+
+        var result = await tool.ResolveAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.Resolved, result.Status);
+        Assert.Equal("U42", result.RequireSingle().StableId);
+        Assert.Equal(0, fakeApi.CallCount);
+    }
+
+    [Fact]
+    public async Task Resolver_filters_exact_user_id_through_allowed_users()
+    {
+        var options = new SlackChannelOptions { AllowedUserIds = ["U1"] };
+        var fakeApi = new FakeSlackUsersApi(CreateUsers());
+        var tool = new LookupSlackUserTool(fakeApi, options, TimeProvider.System);
+        var request = new ChannelAddressResolutionRequest(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Slack),
+            ChannelAddressKind.User,
+            "U2");
+
+        var result = await tool.ResolveAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.NotFound, result.Status);
+        Assert.Contains("not in the allowed users list", result.Error);
+        Assert.Equal(0, fakeApi.CallCount);
+    }
+
+    [Fact]
+    public async Task Resolver_returns_ambiguous_candidates_for_user_name_matches()
+    {
+        var users = CreateUsers();
+        users.Add(new User
+        {
+            Id = "U3", Name = "alice2", RealName = "Alice Jones",
+            Profile = new UserProfile { DisplayName = "alice_j", Email = "alice2@example.com" }
+        });
+        var tool = CreateTool(users);
+        var request = new ChannelAddressResolutionRequest(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Slack),
+            ChannelAddressKind.User,
+            "Alice");
+
+        var result = await tool.ResolveAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.Ambiguous, result.Status);
+        Assert.Equal(["U1", "U3"], result.Candidates.Select(candidate => candidate.StableId).ToArray());
+        Assert.Contains("matched 2 users", result.Error);
     }
 
     private static Task<string> ExecuteAsync(LookupSlackUserTool tool, string query)

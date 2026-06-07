@@ -58,7 +58,6 @@ public static class SlackChannelRegistrationExtensions
         });
         services.AddSingleton<ISlackOutboundClient, SlackOutboundClient>();
         services.AddSingleton<ISlackTargetLookupClient, SlackApiTargetLookupClient>();
-        services.AddSingleton<ISlackTargetResolver, SlackTargetResolver>();
         services.AddSingleton<IReminderTargetResolver, SlackReminderTargetResolver>();
         services.AddSingleton<SlackApprovalHandler>();
         services.AddKeyedSingleton<IChannel, SlackChannel>(SlackChannelKey);
@@ -66,6 +65,18 @@ public static class SlackChannelRegistrationExtensions
             sp.GetRequiredKeyedService<IChannel>(SlackChannelKey));
         services.AddSingleton<SlackChannel>(sp =>
             (SlackChannel)sp.GetRequiredKeyedService<IChannel>(SlackChannelKey));
+        services.AddSingleton<SlackTargetResolver>(sp =>
+        {
+            var lookup = sp.GetRequiredService<ISlackTargetLookupClient>();
+            return new SlackTargetResolver(
+                lookup,
+                slackOptions,
+                () => string.IsNullOrWhiteSpace(slackOptions.DefaultChannelId)
+                    ? null
+                    : new SlackChannelId(slackOptions.DefaultChannelId));
+        });
+        services.AddSingleton<ISlackTargetResolver>(sp => sp.GetRequiredService<SlackTargetResolver>());
+        services.AddSingleton<IChannelAddressResolver>(sp => sp.GetRequiredService<SlackTargetResolver>());
 
         services.AddSlackNet(c =>
         {
@@ -109,6 +120,7 @@ public static class SlackChannelRegistrationExtensions
             return new LookupSlackUserTool(slackApi.Users, slackOptions, timeProvider);
         });
         services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<LookupSlackUserTool>());
+        services.AddSingleton<IChannelAddressResolver>(sp => sp.GetRequiredService<LookupSlackUserTool>());
 
         services.AddSingleton<IHostedService>(sp =>
             (IHostedService)sp.GetRequiredKeyedService<IChannel>(SlackChannelKey));

@@ -4,8 +4,10 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Akka.Actor;
+using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Tests.Channels.TestHelpers;
+using Netclaw.Channels;
 using Netclaw.Channels.Mattermost;
 using Netclaw.Channels.Mattermost.Tools;
 using Xunit;
@@ -168,5 +170,90 @@ public sealed class SendMattermostMessageToolTests
             if (message is StartMattermostProactiveThread spt)
                 sender.Tell(new MattermostProactiveThreadAck(spt.SessionId));
         }
+    }
+}
+
+public sealed class MattermostAddressResolverTests
+{
+    private const string AllowedUserId = "abcdefghijklmnopqrstuvwxyz";
+    private const string OtherUserId = "bcdefghijklmnopqrstuvwxyza";
+    private const string AllowedChannelId = "12345678901234567890123456";
+    private const string OtherChannelId = "23456789012345678901234567";
+
+    [Fact]
+    public async Task User_resolver_resolves_exact_user_id_without_directory_lookup()
+    {
+        var tool = CreateUserResolver(new MattermostChannelOptions
+        {
+            AllowedUserIds = [AllowedUserId]
+        });
+        var request = new ChannelAddressResolutionRequest(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Mattermost),
+            ChannelAddressKind.User,
+            AllowedUserId);
+
+        var result = await tool.ResolveAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.Resolved, result.Status);
+        Assert.Equal(AllowedUserId, result.RequireSingle().StableId);
+    }
+
+    [Fact]
+    public async Task User_resolver_filters_exact_user_id_through_allowed_users()
+    {
+        var tool = CreateUserResolver(new MattermostChannelOptions
+        {
+            AllowedUserIds = [AllowedUserId]
+        });
+        var request = new ChannelAddressResolutionRequest(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Mattermost),
+            ChannelAddressKind.User,
+            OtherUserId);
+
+        var result = await tool.ResolveAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.NotFound, result.Status);
+        Assert.Contains("not in the allowed users list", result.Error);
+    }
+
+    [Fact]
+    public async Task Destination_resolver_resolves_exact_channel_id()
+    {
+        var resolver = new MattermostDestinationAddressResolver(
+            new MattermostChannelOptions { AllowedChannelIds = [AllowedChannelId] },
+            () => null);
+        var request = new ChannelAddressResolutionRequest(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Mattermost),
+            ChannelAddressKind.Destination,
+            $"channel:{AllowedChannelId}");
+
+        var result = await resolver.ResolveAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.Resolved, result.Status);
+        Assert.Equal(AllowedChannelId, result.RequireSingle().StableId);
+    }
+
+    [Fact]
+    public async Task Destination_resolver_filters_exact_channel_id_through_allowed_channels()
+    {
+        var resolver = new MattermostDestinationAddressResolver(
+            new MattermostChannelOptions { AllowedChannelIds = [AllowedChannelId] },
+            () => null);
+        var request = new ChannelAddressResolutionRequest(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Mattermost),
+            ChannelAddressKind.Destination,
+            OtherChannelId);
+
+        var result = await resolver.ResolveAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.NotFound, result.Status);
+        Assert.Contains("not in the allowed channels list", result.Error);
+    }
+
+    private static LookupMattermostUserTool CreateUserResolver(MattermostChannelOptions options)
+    {
+        return new LookupMattermostUserTool(
+            () => throw new InvalidOperationException("Directory lookup should not be used for exact IDs."),
+            options);
     }
 }

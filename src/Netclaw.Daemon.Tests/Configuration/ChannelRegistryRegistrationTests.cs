@@ -8,7 +8,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Netclaw.Actors.Channels;
 using Netclaw.Channels;
 using Netclaw.Channels.Discord.Tools;
+using Netclaw.Channels.Mattermost;
 using Netclaw.Channels.Mattermost.Tools;
+using Netclaw.Channels.Slack;
 using Netclaw.Channels.Slack.Tools;
 using Netclaw.Daemon.Configuration;
 using Netclaw.Tools;
@@ -109,6 +111,9 @@ public sealed class ChannelRegistryRegistrationTests
         Assert.False(IsRegistered<SendDiscordMessageTool>(services));
         Assert.False(IsRegistered<SendMattermostMessageTool>(services));
         Assert.False(IsRegistered<LookupMattermostUserTool>(services));
+        Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(IChannelAddressResolver));
+        Assert.False(IsRegistered<SlackTargetResolver>(services));
+        Assert.False(IsRegistered<MattermostDestinationAddressResolver>(services));
     }
 
     [Fact]
@@ -126,6 +131,23 @@ public sealed class ChannelRegistryRegistrationTests
         Assert.True(IsRegistered<LookupSlackUserTool>(services));
         Assert.True(IsRegistered<SendDiscordMessageTool>(services));
         Assert.True(IsRegistered<SendMattermostMessageTool>(services));
+        Assert.True(IsRegistered<LookupMattermostUserTool>(services));
+    }
+
+    [Fact]
+    public void Enabled_remote_channels_register_expected_address_resolvers()
+    {
+        var services = BuildServices(new Dictionary<string, string?>
+        {
+            ["Slack:Enabled"] = "true",
+            ["Discord:Enabled"] = "true",
+            ["Mattermost:Enabled"] = "true"
+        });
+
+        Assert.Equal(4, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelAddressResolver)));
+        Assert.True(IsRegistered<SlackTargetResolver>(services));
+        Assert.True(IsRegistered<LookupSlackUserTool>(services));
+        Assert.True(IsRegistered<MattermostDestinationAddressResolver>(services));
         Assert.True(IsRegistered<LookupMattermostUserTool>(services));
     }
 
@@ -310,6 +332,7 @@ public sealed class ChannelRegistryRegistrationTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
+        services.AddSingleton(TimeProvider.System);
         services.AddChannelRegistry();
         services.AddTuiChannelDescriptor();
 
