@@ -20,14 +20,14 @@ public sealed class ImageProcessingDoctorCheck : IDoctorCheck
 
     public Task<DoctorCheckResult> RunAsync(CancellationToken cancellationToken = default)
     {
-        var error = ImageNormalizerProbe.TryProbe();
-        return Task.FromResult(error is null
+        var probe = ImageNormalizerProbe.Probe();
+        return Task.FromResult(probe.IsWorking
             ? DoctorCheckResult.Pass(
                 CheckName,
                 "Native imaging library loaded; image egress normalization is available.")
             : DoctorCheckResult.Error(
                 CheckName,
-                $"Native imaging library failed to load: {error}. Image attachments and file_read "
+                $"Native imaging library failed to load: {probe.Error}. Image attachments and file_read "
                 + "images cannot be bounded for model input.",
                 "This is a packaging regression — the SkiaSharp native library is missing from the "
                 + "binary. Reinstall from an official release; if building locally, publish via "

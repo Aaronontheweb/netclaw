@@ -17,10 +17,10 @@ namespace Netclaw.Media;
 public static class ImageNormalizerProbe
 {
     /// <summary>
-    /// Runs a tiny encode → normalize round-trip. Returns <c>null</c> when imaging
-    /// works, or a short error string describing why it does not.
+    /// Runs a tiny encode → normalize round-trip to confirm the native imaging library
+    /// is present and functional.
     /// </summary>
-    public static string? TryProbe()
+    public static ImagingProbeResult Probe()
     {
         try
         {
@@ -32,20 +32,28 @@ public static class ImageNormalizerProbe
                 using var image = SKImage.FromBitmap(bitmap);
                 using var data = image.Encode(SKEncodedImageFormat.Png, 100);
                 if (data is null || data.Size == 0)
-                    return "encode produced no output";
+                    return ImagingProbeResult.Failed("encode produced no output");
                 png = data.ToArray();
             }
 
             var result = new SkiaImageNormalizer().Normalize(png, new ImageNormalizationOptions());
             return result.Outcome == ImageNormalizationOutcome.Dropped
-                ? $"normalize failed: {result.Reason}"
-                : null;
+                ? ImagingProbeResult.Failed($"normalize failed: {result.Reason}")
+                : ImagingProbeResult.Working;
         }
         catch (Exception ex)
         {
             // DllNotFoundException / TypeInitializationException when the native lib
             // is missing; any other failure is equally a reason to fail the probe.
-            return $"{ex.GetType().Name}: {ex.Message}";
+            return ImagingProbeResult.Failed($"{ex.GetType().Name}: {ex.Message}");
         }
     }
+}
+
+/// <summary>Result of <see cref="ImageNormalizerProbe.Probe"/>: working, or a failure reason.</summary>
+public readonly record struct ImagingProbeResult(bool IsWorking, string? Error)
+{
+    public static ImagingProbeResult Working => new(true, null);
+
+    public static ImagingProbeResult Failed(string error) => new(false, error);
 }

@@ -92,10 +92,26 @@ internal static class SessionMediaStore
     }
 
     /// <summary>
-    /// Appends a visible <c>[image omitted: reason]</c> note to a message's content
-    /// so a dropped image is surfaced to the model rather than vanishing silently.
+    /// Writes one media <see cref="DataContent"/> into session media and folds the
+    /// result into a message under construction: on success the reference is added to
+    /// <paramref name="references"/>; on a drop a visible <c>[image omitted: reason]</c>
+    /// note is appended to the content. Returns the (possibly updated) content. This is
+    /// the single place that owns "turn a DataContent into a reference or an omission
+    /// note", shared by the inbound (`ChannelPipeline`) and persistence
+    /// (`ChatMessageConverter`) paths.
     /// </summary>
-    public static string AppendOmittedImageNote(string content, string reason)
+    public static string WriteMediaInto(
+        DataContent data, string sessionDir, List<SerializableMediaReference> references, string content)
+    {
+        var write = WriteDataContent(data, sessionDir);
+        if (write.Reference is not null)
+            references.Add(write.Reference);
+        else if (write.DroppedReason is not null)
+            content = AppendOmittedImageNote(content, write.DroppedReason);
+        return content;
+    }
+
+    private static string AppendOmittedImageNote(string content, string reason)
     {
         var note = $"[image omitted: {reason}]";
         return string.IsNullOrEmpty(content) ? note : content + "\n" + note;

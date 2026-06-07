@@ -36,7 +36,7 @@ public sealed class SkiaImageNormalizerTests
         // 1400px is within the long-edge cap, so there's nothing to resize. We won't
         // transcode or quality-shrink to force a fit — so an over-budget image is dropped.
         var src = GenerateImage(1400, 1400, SKEncodedImageFormat.Png);
-        var options = new ImageNormalizationOptions { MaxBase64Bytes = 40_000 };
+        var options = new ImageNormalizationOptions { MaxBase64 = new ByteSize(40_000) };
 
         var result = _normalizer.Normalize(src, options);
 
@@ -95,7 +95,7 @@ public sealed class SkiaImageNormalizerTests
         // Oversized in dimension AND a tiny budget: it resizes to the cap but the PNG
         // still can't fit 500 bytes, and we won't transcode/quality-shrink — so it drops.
         var src = GenerateImage(2000, 2000, SKEncodedImageFormat.Png);
-        var options = new ImageNormalizationOptions { MaxBase64Bytes = 500 };
+        var options = new ImageNormalizationOptions { MaxBase64 = new ByteSize(500) };
 
         var result = _normalizer.Normalize(src, options);
 
@@ -145,7 +145,7 @@ public sealed class SkiaImageNormalizerTests
     [Fact]
     public void Gif_over_budget_is_dropped_not_transcoded()
     {
-        var options = new ImageNormalizationOptions { MaxBase64Bytes = 8 }; // smaller than any GIF
+        var options = new ImageNormalizationOptions { MaxBase64 = new ByteSize(8) }; // smaller than any GIF
 
         var result = _normalizer.Normalize(MinimalGif, options);
 

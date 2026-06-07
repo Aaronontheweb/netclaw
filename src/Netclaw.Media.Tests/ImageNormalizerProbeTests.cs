@@ -14,6 +14,6 @@ public sealed class ImageNormalizerProbeTests
     {
         // Exercises the full encode → normalize round-trip against the real native
         // library. A non-null result here means a packaging/native-load regression.
-        Assert.Null(ImageNormalizerProbe.TryProbe());
+        Assert.True(ImageNormalizerProbe.Probe().IsWorking);
     }
 }
