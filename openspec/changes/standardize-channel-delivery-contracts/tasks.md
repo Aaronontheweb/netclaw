@@ -41,8 +41,8 @@
 ## 6. Descriptor-driven observability
 
 - [x] 6.1 Change daemon runtime status to enumerate the channel registry instead of hard-coding individual channel adapters.
-- [ ] 6.2 Change daemon stats channel activity to enumerate descriptor-backed output channels.
-- [ ] 6.3 Keep trigger-source status separate from channel status when reminder or webhook operational state is reported.
+- [x] 6.2 Change daemon stats channel activity to enumerate descriptor-backed output channels.
+- [x] 6.3 Keep trigger-source status separate from channel status when reminder or webhook operational state is reported.
 - [x] 6.4 Preserve current status/stats output fields or provide explicit compatibility mapping.
 
 ## 7. Address resolution
