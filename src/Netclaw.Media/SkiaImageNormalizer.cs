@@ -43,6 +43,10 @@ public sealed class SkiaImageNormalizer : IImageNormalizer
             using var data = SKData.CreateCopy(source);
             using var codec = SKCodec.Create(data);
             if (codec is null)
+                // Skia couldn't parse the bytes as any supported image container: a corrupt
+                // or truncated file, non-image bytes carrying an image MIME, or a format Skia
+                // doesn't decode (e.g. HEIC/AVIF without a platform codec, SVG). JPEG/PNG/WebP/
+                // GIF/BMP all decode fine. Fail loud rather than ship un-vetted bytes.
                 return ImageNormalizationResult.Drop("not a decodable image");
 
             var info = codec.Info;
@@ -50,8 +54,8 @@ public sealed class SkiaImageNormalizer : IImageNormalizer
                 return ImageNormalizationResult.Drop("image has no pixels");
 
             var format = codec.EncodedFormat;
-            var withinLongEdge = Math.Max(info.Width, info.Height) <= options.MaxLongEdgePixels;
-            var withinBudget = ImageDecodeMath.Base64Length(source.Length) <= options.MaxBase64Bytes;
+            var withinLongEdge = Math.Max(info.Width, info.Height) <= options.MaxLongEdge.Value;
+            var withinBudget = ImageDecodeMath.Base64Length(source.Length) <= options.MaxBase64.Value;
 
             // We only ever RESIZE — never transcode or quality-reduce. Skia can re-encode
             // JPEG/PNG/WebP; a format it cannot encode (GIF) is left untouched.
@@ -65,11 +69,11 @@ public sealed class SkiaImageNormalizer : IImageNormalizer
                 return withinBudget
                     ? PassThrough(source.ToArray(), info.Width, info.Height, format)
                     : ImageNormalizationResult.Drop(
-                        $"image exceeds the {FormatBudget(options.MaxBase64Bytes)} payload budget and cannot be bounded by resizing");
+                        $"image exceeds the {options.MaxBase64} payload budget and cannot be bounded by resizing");
             }
 
             // Over the dimension cap: scaled-decode (bounding peak memory), then resize to the cap.
-            var sampleSize = ImageDecodeMath.ChooseDecodeSampleSize(info.Width, info.Height, options.MaxLongEdgePixels);
+            var sampleSize = ImageDecodeMath.ChooseDecodeSampleSize(info.Width, info.Height, options.MaxLongEdge.Value);
             var scaled = codec.GetScaledDimensions(1f / sampleSize);
             if ((long)scaled.Width * scaled.Height * 4 > MaxDecodeBytes)
                 return ImageNormalizationResult.Drop(
@@ -79,24 +83,28 @@ public sealed class SkiaImageNormalizer : IImageNormalizer
             if (decoded is null)
                 return ImageNormalizationResult.Drop("image could not be decoded");
 
-            using var capped = ResizeToLongEdge(decoded, options.MaxLongEdgePixels);
+            using var capped = ResizeToLongEdge(decoded, options.MaxLongEdge.Value);
             var working = capped ?? decoded;
 
-            var bytes = Encode(working, format, options.JpegQuality);
+            var bytes = Encode(working, format, options.JpegQuality.Value);
             if (bytes is null)
                 return ImageNormalizationResult.Drop("image could not be re-encoded");
 
-            if (ImageDecodeMath.Base64Length(bytes.Length) > options.MaxBase64Bytes)
+            // A resized image that still blows the budget is dropped, not shrunk further.
+            // If this drop becomes common in practice, the place to reintroduce a bounded
+            // iterative size-reduction loop is right here (we deliberately kept it "just
+            // resize" for now — see PR #1345 review).
+            if (ImageDecodeMath.Base64Length(bytes.Length) > options.MaxBase64.Value)
                 return ImageNormalizationResult.Drop(
-                    $"image still exceeds the {FormatBudget(options.MaxBase64Bytes)} payload budget after resizing");
+                    $"image still exceeds the {options.MaxBase64} payload budget after resizing");
 
             return new ImageNormalizationResult
             {
                 Outcome = ImageNormalizationOutcome.Normalized,
                 Bytes = bytes,
-                Width = working.Width,
-                Height = working.Height,
-                EncodedByteLength = bytes.Length,
+                Width = new Pixels(working.Width),
+                Height = new Pixels(working.Height),
+                EncodedSize = new ByteSize(bytes.Length),
                 MediaType = MediaTypeFor(format)
             };
         }
@@ -134,9 +142,9 @@ public sealed class SkiaImageNormalizer : IImageNormalizer
         {
             Outcome = ImageNormalizationOutcome.PassedThrough,
             Bytes = bytes,
-            Width = width,
-            Height = height,
-            EncodedByteLength = bytes.Length,
+            Width = new Pixels(width),
+            Height = new Pixels(height),
+            EncodedSize = new ByteSize(bytes.Length),
             MediaType = MediaTypeFor(format)
         };
 
@@ -145,7 +153,7 @@ public sealed class SkiaImageNormalizer : IImageNormalizer
         {
             Outcome = ImageNormalizationOutcome.PassedThrough,
             Bytes = bytes,
-            EncodedByteLength = bytes.Length,
+            EncodedSize = new ByteSize(bytes.Length),
             MediaType = null
         };
 
@@ -156,9 +164,4 @@ public sealed class SkiaImageNormalizer : IImageNormalizer
         SKEncodedImageFormat.Gif => MimeTypeCatalog.ImageGif,
         _ => MimeTypeCatalog.ImagePng
     };
-
-    private static string FormatBudget(int bytes) =>
-        bytes >= 1024 * 1024 ? $"{bytes / (1024 * 1024)}MB"
-        : bytes >= 1024 ? $"{bytes / 1024}KB"
-        : $"{bytes}B";
 }

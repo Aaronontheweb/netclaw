@@ -6,6 +6,32 @@
 namespace Netclaw.Media;
 
 /// <summary>
+/// A pixel count — an image dimension or a dimension cap. A distinct type so a pixel
+/// value can never be silently passed where a byte size is expected (and vice versa).
+/// Access the underlying <see cref="Value"/> explicitly; there is no implicit conversion.
+/// </summary>
+public readonly record struct Pixels(int Value)
+{
+    public override string ToString() => $"{Value}px";
+}
+
+/// <summary>
+/// A size in bytes — an encoded payload or a payload budget. Distinct from
+/// <see cref="Pixels"/> so the two can't be confused at a call site.
+/// </summary>
+public readonly record struct ByteSize(int Value)
+{
+    public override string ToString() =>
+        Value >= 1024 * 1024 ? $"{Value / (1024 * 1024)}MB"
+        : Value >= 1024 ? $"{Value / 1024}KB"
+        : $"{Value}B";
+}
+
+/// <summary>JPEG encoder quality, 1–100. A distinct type so it isn't mistaken for a
+/// pixel or byte count among the other numeric options.</summary>
+public readonly record struct JpegQuality(int Value);
+
+/// <summary>
 /// Outcome of running an image through <see cref="IImageNormalizer"/>.
 /// </summary>
 public enum ImageNormalizationOutcome
@@ -27,18 +53,18 @@ public enum ImageNormalizationOutcome
 /// </summary>
 public sealed record ImageNormalizationOptions
 {
-    /// <summary>Longest output edge in pixels. Anthropic downscales above ~1568px server-side anyway.</summary>
-    public int MaxLongEdgePixels { get; init; } = 1568;
+    /// <summary>Longest output edge. Anthropic downscales above ~1568px server-side anyway.</summary>
+    public Pixels MaxLongEdge { get; init; } = new(1568);
 
     /// <summary>
     /// Budget on the base64-encoded payload size. The wire form of an image is base64,
     /// so this is the quantity that actually bounds request size and heap. Default 5MB
     /// matches Anthropic's hard API limit.
     /// </summary>
-    public int MaxBase64Bytes { get; init; } = 5 * 1024 * 1024;
+    public ByteSize MaxBase64 { get; init; } = new(5 * 1024 * 1024);
 
-    /// <summary>JPEG quality (1-100) used when re-encoding opaque images.</summary>
-    public int JpegQuality { get; init; } = 85;
+    /// <summary>JPEG quality used when re-encoding a resized JPEG source.</summary>
+    public JpegQuality JpegQuality { get; init; } = new(85);
 
     /// <summary>When false, the normalizer passes every image through untouched (rollback switch).</summary>
     public bool Enabled { get; init; } = true;
@@ -55,9 +81,9 @@ public sealed record ImageNormalizationResult
 {
     public required ImageNormalizationOutcome Outcome { get; init; }
     public byte[]? Bytes { get; init; }
-    public int Width { get; init; }
-    public int Height { get; init; }
-    public int EncodedByteLength { get; init; }
+    public Pixels Width { get; init; }
+    public Pixels Height { get; init; }
+    public ByteSize EncodedSize { get; init; }
     public string? MediaType { get; init; }
     public string? Reason { get; init; }
 
