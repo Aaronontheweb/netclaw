@@ -1074,6 +1074,7 @@ static void ConfigureDaemonServices(
     services.AddSlackChannelIntegration(configuration);
     services.AddDiscordChannelIntegration(configuration);
     services.AddMattermostChannelIntegration(configuration);
+    services.AddChannelLookupTools(configuration);
 
     // Config hot-reload watcher
     services.AddSingleton<ConfigWatcherService>();

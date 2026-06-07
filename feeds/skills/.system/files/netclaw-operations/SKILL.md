@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.9.0"
+  version: "2.10.0"
 ---
 
 # Netclaw Operations
@@ -141,6 +141,20 @@ use the channel's proactive-post tool:
 - Discord: `send_discord_message` — posts to a channel only.
 - Mattermost: `send_mattermost_message` — posts to a channel, or DMs a user
   when direct messages are enabled.
+
+Use the generic lookup tools before sending when you do not already have a
+stable channel/user ID:
+
+- `lookup_channel_user(channel_key, query)` resolves users on enabled channels
+  that support user lookup, currently Slack and Mattermost.
+- `lookup_channel_destination(channel_key, query)` resolves destinations on
+  enabled channels that support destination lookup. Slack can resolve channel
+  names and IDs; Mattermost requires an exact channel ID; Discord destination
+  lookup may fail loud until its resolver is implemented.
+
+Both tools require `channel_key` as the first argument. Use the returned
+`stable_id` exactly; if the lookup is ambiguous, pick from the returned
+candidates instead of guessing. Discord user/DM lookup is not supported yet.
 
 `send_discord_message` posts the `message` to a Discord channel and creates a
 conversation thread off it, so user replies route back to a live session.
