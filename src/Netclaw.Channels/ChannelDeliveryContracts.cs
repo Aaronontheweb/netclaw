@@ -120,6 +120,88 @@ public sealed record ResolvedChannelAddress
     public string DisplayName { get; init; }
 }
 
+public sealed record ChannelAddressResolutionRequest
+{
+    public ChannelAddressResolutionRequest(
+        ChannelDescriptorKey channelKey,
+        ChannelAddressKind addressKind,
+        string query,
+        bool requireSingleMatch = true)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(query);
+
+        ChannelKey = channelKey;
+        AddressKind = addressKind;
+        Query = query;
+        RequireSingleMatch = requireSingleMatch;
+    }
+
+    public ChannelDescriptorKey ChannelKey { get; init; }
+
+    public ChannelAddressKind AddressKind { get; init; }
+
+    public string Query { get; init; }
+
+    public bool RequireSingleMatch { get; init; }
+}
+
+public enum ChannelAddressResolutionStatus
+{
+    Resolved,
+    NotFound,
+    Ambiguous,
+    Unsupported
+}
+
+public sealed record ChannelAddressResolutionResult
+{
+    private ChannelAddressResolutionResult(
+        ChannelAddressResolutionStatus status,
+        IReadOnlyList<ResolvedChannelAddress> candidates,
+        string? error = null)
+    {
+        Status = status;
+        Candidates = candidates;
+        Error = error;
+    }
+
+    public ChannelAddressResolutionStatus Status { get; init; }
+
+    public IReadOnlyList<ResolvedChannelAddress> Candidates { get; init; }
+
+    public string? Error { get; init; }
+
+    public static ChannelAddressResolutionResult Resolved(ResolvedChannelAddress address)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+        return new ChannelAddressResolutionResult(ChannelAddressResolutionStatus.Resolved, [address]);
+    }
+
+    public static ChannelAddressResolutionResult NotFound(string? error = null)
+    {
+        return new ChannelAddressResolutionResult(ChannelAddressResolutionStatus.NotFound, [], error);
+    }
+
+    public static ChannelAddressResolutionResult Ambiguous(IReadOnlyList<ResolvedChannelAddress> candidates, string? error = null)
+    {
+        ArgumentNullException.ThrowIfNull(candidates);
+        return new ChannelAddressResolutionResult(ChannelAddressResolutionStatus.Ambiguous, candidates, error);
+    }
+
+    public static ChannelAddressResolutionResult Unsupported(string error)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(error);
+        return new ChannelAddressResolutionResult(ChannelAddressResolutionStatus.Unsupported, [], error);
+    }
+
+    public ResolvedChannelAddress RequireSingle()
+    {
+        return Status == ChannelAddressResolutionStatus.Resolved && Candidates.Count == 1
+            ? Candidates[0]
+            : throw new InvalidOperationException(Error ?? $"Address resolution did not produce a single result. Status: {Status}.");
+    }
+}
+
 public sealed record ChannelDeliveryTarget
 {
     public ChannelDeliveryTarget(
@@ -178,6 +260,17 @@ public interface IChannelRuntimeSnapshotProvider
     ValueTask<ChannelRuntimeSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default);
 }
 
+public interface IChannelAddressResolver
+{
+    ChannelDescriptorKey Key { get; }
+
+    IReadOnlySet<ChannelAddressKind> AddressKinds { get; }
+
+    ValueTask<ChannelAddressResolutionResult> ResolveAsync(
+        ChannelAddressResolutionRequest request,
+        CancellationToken cancellationToken = default);
+}
+
 public interface IChannelRegistry
 {
     IReadOnlyCollection<ChannelDescriptor> ListChannels();
@@ -187,22 +280,31 @@ public interface IChannelRegistry
     ValueTask<ChannelRuntimeSnapshot> GetSnapshotAsync(
         ChannelDescriptorKey key,
         CancellationToken cancellationToken = default);
+
+    IChannelAddressResolver GetResolver(ChannelDescriptorKey key, ChannelAddressKind addressKind);
+
+    ValueTask<ChannelAddressResolutionResult> ResolveAddressAsync(
+        ChannelAddressResolutionRequest request,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed class ChannelRegistry : IChannelRegistry
 {
     private readonly IReadOnlyDictionary<ChannelDescriptorKey, ChannelDescriptor> _descriptors;
     private readonly IReadOnlyDictionary<ChannelDescriptorKey, IChannelRuntimeSnapshotProvider> _snapshotProviders;
+    private readonly IReadOnlyDictionary<(ChannelDescriptorKey Key, ChannelAddressKind AddressKind), IChannelAddressResolver> _addressResolvers;
 
     public ChannelRegistry(
         IEnumerable<IChannelDescriptorProvider> descriptorProviders,
-        IEnumerable<IChannelRuntimeSnapshotProvider> snapshotProviders)
+        IEnumerable<IChannelRuntimeSnapshotProvider> snapshotProviders,
+        IEnumerable<IChannelAddressResolver>? addressResolvers = null)
     {
         ArgumentNullException.ThrowIfNull(descriptorProviders);
         ArgumentNullException.ThrowIfNull(snapshotProviders);
 
         _descriptors = BuildDescriptorLookup(descriptorProviders);
         _snapshotProviders = BuildSnapshotProviderLookup(snapshotProviders);
+        _addressResolvers = BuildAddressResolverLookup(addressResolvers ?? []);
     }
 
     public IReadOnlyCollection<ChannelDescriptor> ListChannels()
@@ -228,6 +330,29 @@ public sealed class ChannelRegistry : IChannelRegistry
             throw new InvalidOperationException($"No channel runtime snapshot provider is registered for key '{key}'.");
 
         return await provider.GetSnapshotAsync(cancellationToken);
+    }
+
+    public IChannelAddressResolver GetResolver(ChannelDescriptorKey key, ChannelAddressKind addressKind)
+    {
+        var descriptor = GetChannel(key);
+        if (!descriptor.AddressKinds.Contains(addressKind))
+            throw new InvalidOperationException($"Channel '{key}' does not support address kind '{addressKind}'.");
+
+        if (_addressResolvers.TryGetValue((key, addressKind), out var resolver))
+            return resolver;
+
+        throw new InvalidOperationException(
+            $"No channel address resolver is registered for key '{key}' and address kind '{addressKind}'.");
+    }
+
+    public async ValueTask<ChannelAddressResolutionResult> ResolveAddressAsync(
+        ChannelAddressResolutionRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var resolver = GetResolver(request.ChannelKey, request.AddressKind);
+        return await resolver.ResolveAsync(request, cancellationToken);
     }
 
     private static IReadOnlyDictionary<ChannelDescriptorKey, ChannelDescriptor> BuildDescriptorLookup(
@@ -257,6 +382,27 @@ public sealed class ChannelRegistry : IChannelRegistry
         }
 
         return snapshotProviders;
+    }
+
+    private static IReadOnlyDictionary<(ChannelDescriptorKey Key, ChannelAddressKind AddressKind), IChannelAddressResolver> BuildAddressResolverLookup(
+        IEnumerable<IChannelAddressResolver> resolvers)
+    {
+        var addressResolvers = new Dictionary<(ChannelDescriptorKey Key, ChannelAddressKind AddressKind), IChannelAddressResolver>();
+
+        foreach (var resolver in resolvers)
+        {
+            foreach (var addressKind in resolver.AddressKinds)
+            {
+                var key = (resolver.Key, addressKind);
+                if (!addressResolvers.TryAdd(key, resolver))
+                {
+                    throw new InvalidOperationException(
+                        $"Duplicate channel address resolver key '{resolver.Key}' for address kind '{addressKind}' registered.");
+                }
+            }
+        }
+
+        return addressResolvers;
     }
 }
 
@@ -399,6 +545,16 @@ public static class ChannelRegistryServiceCollectionExtensions
             new DescriptorChannelRuntimeSnapshotProvider(
                 descriptor,
                 () => sp.GetServices<IChannel>()));
+        return services;
+    }
+
+    public static IServiceCollection AddChannelAddressResolver<TResolver>(this IServiceCollection services)
+        where TResolver : class, IChannelAddressResolver
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<TResolver>();
+        services.AddSingleton<IChannelAddressResolver>(sp => sp.GetRequiredService<TResolver>());
         return services;
     }
 

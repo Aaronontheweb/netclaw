@@ -215,6 +215,83 @@ public sealed class ChannelRegistryRegistrationTests
         Assert.Contains("Duplicate channel descriptor key 'slack'", ex.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Registry_fails_loudly_on_duplicate_address_resolvers()
+    {
+        var key = ChannelDescriptorKey.FromChannelType(ChannelType.Slack);
+        var descriptor = BuildDescriptor(key, ChannelType.Slack, ChannelAddressKind.User);
+        var resolver = new TestAddressResolver(key, ChannelAddressKind.User);
+
+        var providers = new[] { new StaticChannelDescriptorProvider(descriptor) };
+        var resolvers = new[] { resolver, resolver };
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            new ChannelRegistry(providers, Array.Empty<IChannelRuntimeSnapshotProvider>(), resolvers));
+
+        Assert.Contains(
+            "Duplicate channel address resolver key 'slack' for address kind 'User' registered.",
+            ex.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Registry_fails_loudly_when_address_kind_is_not_supported()
+    {
+        var key = ChannelDescriptorKey.FromChannelType(ChannelType.Discord);
+        var descriptor = BuildDescriptor(key, ChannelType.Discord, ChannelAddressKind.Destination);
+        var registry = new ChannelRegistry(
+            [new StaticChannelDescriptorProvider(descriptor)],
+            Array.Empty<IChannelRuntimeSnapshotProvider>(),
+            Array.Empty<IChannelAddressResolver>());
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            registry.GetResolver(key, ChannelAddressKind.DirectMessage));
+
+        Assert.Contains("Channel 'discord' does not support address kind 'DirectMessage'.", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Registry_fails_loudly_when_supported_address_kind_has_no_resolver()
+    {
+        var key = ChannelDescriptorKey.FromChannelType(ChannelType.Mattermost);
+        var descriptor = BuildDescriptor(key, ChannelType.Mattermost, ChannelAddressKind.User);
+        var registry = new ChannelRegistry(
+            [new StaticChannelDescriptorProvider(descriptor)],
+            Array.Empty<IChannelRuntimeSnapshotProvider>(),
+            Array.Empty<IChannelAddressResolver>());
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            registry.GetResolver(key, ChannelAddressKind.User));
+
+        Assert.Contains(
+            "No channel address resolver is registered for key 'mattermost' and address kind 'User'.",
+            ex.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Registry_routes_resolution_requests_to_selected_channel_resolver()
+    {
+        var key = ChannelDescriptorKey.FromChannelType(ChannelType.Slack);
+        var descriptor = BuildDescriptor(key, ChannelType.Slack, ChannelAddressKind.User, ChannelAddressKind.Destination);
+        var userAddress = new ResolvedChannelAddress(key, ChannelAddressKind.User, "U123", "Jennifer Stannard");
+        var destinationAddress = new ResolvedChannelAddress(key, ChannelAddressKind.Destination, "C123", "#general");
+        var resolver = new TestAddressResolver(key, ChannelAddressKind.User, ChannelAddressKind.Destination)
+        {
+            Result = ChannelAddressResolutionResult.Ambiguous([userAddress, destinationAddress], "Multiple matches.")
+        };
+        var registry = new ChannelRegistry(
+            [new StaticChannelDescriptorProvider(descriptor)],
+            Array.Empty<IChannelRuntimeSnapshotProvider>(),
+            [resolver]);
+        var request = new ChannelAddressResolutionRequest(key, ChannelAddressKind.User, "jennifer", requireSingleMatch: false);
+
+        var result = await registry.ResolveAddressAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(resolver.Result, result);
+        Assert.Same(request, resolver.Request);
+    }
+
     private static IReadOnlyDictionary<string, ChannelDescriptor> BuildDescriptors(
         IReadOnlyDictionary<string, string?> settings)
     {
@@ -252,6 +329,23 @@ public sealed class ChannelRegistryRegistrationTests
         return services.Any(descriptor => descriptor.ServiceType == typeof(T));
     }
 
+    private static ChannelDescriptor BuildDescriptor(
+        ChannelDescriptorKey key,
+        ChannelType channelType,
+        params ChannelAddressKind[] addressKinds)
+    {
+        return new ChannelDescriptor(
+            key,
+            channelType,
+            ChannelKind.RemoteChat,
+            channelType.ToString(),
+            IsEnabled: true,
+            ChannelCapabilities.SendMessages,
+            ToolIntents: new HashSet<ChannelToolIntentKind>(),
+            AddressKinds: new HashSet<ChannelAddressKind>(addressKinds),
+            SupportedOutputEffects: new HashSet<ChannelOutputEffectKind>());
+    }
+
     private static void AssertToolIntents(
         ChannelDescriptor descriptor,
         IServiceCollection services,
@@ -277,4 +371,25 @@ public sealed class ChannelRegistryRegistrationTests
         ChannelToolIntentKind Intent,
         Type ToolType,
         string ToolName);
+
+    private sealed class TestAddressResolver(
+        ChannelDescriptorKey key,
+        params ChannelAddressKind[] addressKinds) : IChannelAddressResolver
+    {
+        public ChannelDescriptorKey Key { get; } = key;
+
+        public IReadOnlySet<ChannelAddressKind> AddressKinds { get; } = new HashSet<ChannelAddressKind>(addressKinds);
+
+        public ChannelAddressResolutionRequest? Request { get; private set; }
+
+        public ChannelAddressResolutionResult Result { get; init; } = ChannelAddressResolutionResult.NotFound();
+
+        public ValueTask<ChannelAddressResolutionResult> ResolveAsync(
+            ChannelAddressResolutionRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            Request = request;
+            return ValueTask.FromResult(Result);
+        }
+    }
 }

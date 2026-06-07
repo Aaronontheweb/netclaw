@@ -47,10 +47,10 @@
 
 ## 7. Address resolution
 
-- [ ] 7.1 Add a standard channel address resolver contract for users and destinations.
+- [x] 7.1 Add a standard channel address resolver contract for users and destinations.
 - [ ] 7.2 Support exact stable ID resolution before name search.
 - [ ] 7.3 Fail loudly with candidates for ambiguous display-name matches.
-- [ ] 7.4 Route resolution requests to the resolver registered for the selected channel descriptor.
+- [x] 7.4 Route resolution requests to the resolver registered for the selected channel descriptor.
 - [ ] 7.5 Wire Slack lookup to its channel-scoped resolver.
 - [ ] 7.6 Wire Discord lookup to its channel-scoped resolver where supported.
 - [ ] 7.7 Wire Mattermost lookup to its channel-scoped resolver.
