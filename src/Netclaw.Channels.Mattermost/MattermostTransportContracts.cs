@@ -59,6 +59,13 @@ public sealed record MattermostGatewayInteraction(
     DateTimeOffset ReceivedAt,
     MattermostPostId? PromptPostId = null);
 
+public sealed record MattermostGatewaySnapshot(
+    bool IsConnected,
+    bool IsReady,
+    string? HealthDetail,
+    MattermostUserId? BotUserId,
+    string? BotUsername);
+
 public interface IMattermostGatewayClient
 {
     // Interactive button callbacks arrive via the channel-owned HTTP endpoint
@@ -69,13 +76,23 @@ public interface IMattermostGatewayClient
     // the WebSocket, so its client does expose an InteractionReceived event.)
     event Func<MattermostGatewayMessage, Task>? MessageReceived;
 
+    /// <summary>
+    /// Raised when the current Mattermost socket/session must be discarded and
+    /// replaced with a fresh stop/start cycle.
+    /// </summary>
+    event Func<string, Task>? CleanReconnectRequired;
+
     bool IsConnected { get; }
+
+    bool IsReady { get; }
 
     MattermostUserId? BotUserId { get; }
 
     string? BotUsername { get; }
 
-    Task ConnectAsync(string serverUrl, string botToken, CancellationToken cancellationToken = default);
+    Task<MattermostGatewaySnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default);
+
+    Task<MattermostGatewaySnapshot> ConnectAsync(string serverUrl, string botToken, CancellationToken cancellationToken = default);
 
     Task DisconnectAsync(CancellationToken cancellationToken = default);
 }
@@ -168,15 +185,34 @@ public sealed class UnconfiguredMattermostGatewayClient : IMattermostGatewayClie
         remove { }
     }
 
+    public event Func<string, Task>? CleanReconnectRequired
+    {
+        add { }
+        remove { }
+    }
+
     public bool IsConnected => false;
+
+    public bool IsReady => false;
 
     public MattermostUserId? BotUserId => null;
 
     public string? BotUsername => null;
 
-    public Task ConnectAsync(string serverUrl, string botToken, CancellationToken cancellationToken = default)
-        => throw new InvalidOperationException(
-            "Mattermost channel is enabled, but no Mattermost gateway client is configured.");
+    public Task<MattermostGatewaySnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default) =>
+        Task.FromResult(new MattermostGatewaySnapshot(
+            IsConnected: false,
+            IsReady: false,
+            HealthDetail: "Mattermost gateway client is not configured.",
+            BotUserId: null,
+            BotUsername: null));
+
+    public Task<MattermostGatewaySnapshot> ConnectAsync(
+        string serverUrl,
+        string botToken,
+        CancellationToken cancellationToken = default)
+        => Task.FromException<MattermostGatewaySnapshot>(new InvalidOperationException(
+            "Mattermost channel is enabled, but no Mattermost gateway client is configured."));
 
     public Task DisconnectAsync(CancellationToken cancellationToken = default)
         => Task.CompletedTask;

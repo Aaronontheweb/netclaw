@@ -135,6 +135,12 @@ Reminder channel delivery maps to the generic `send_channel_message` tool with
 - A fatal failure (bad token, unreachable server) stays offline until the
   configuration is fixed and the daemon is restarted; a transient network
   failure retries automatically on a bounded backoff.
+- WebSocket lifecycle is actor-owned. Inbound Mattermost messages are dropped
+  while the gateway is not ready, unexpected disconnects mark channel health as
+  disconnected, and the channel runs a clean stop/start reconnect cycle before
+  accepting ingress again.
+- SDK event handlers are subscribed for the lifecycle actor lifetime, not on
+  each reconnect attempt, so reconnect cycles do not duplicate message handlers.
 
 Common failure patterns:
 

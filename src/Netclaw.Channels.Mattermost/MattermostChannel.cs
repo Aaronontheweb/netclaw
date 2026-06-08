@@ -36,10 +36,12 @@ public sealed class MattermostChannel : IChannel
 
     // Cancels the background reconnect loop when the channel stops.
     private readonly CancellationTokenSource _lifetimeCts = new();
+    private readonly object _reconnectLock = new();
+    private int _queuedCleanReconnect;
 
     private IActorRef? _gateway;
     private Task? _reconnectTask;
-    private string? _connectFailureDetail;
+    private volatile string? _connectFailureDetail;
 
     internal IActorRef? Gateway => _gateway;
     internal IMattermostGatewayClient GatewayClient => _gatewayClient;
@@ -86,23 +88,32 @@ public sealed class MattermostChannel : IChannel
         _modelCapabilities = modelCapabilities;
         _paths = paths;
         _callbackActionStore = callbackActionStore;
+
+        _gatewayClient.CleanReconnectRequired += HandleCleanReconnectRequiredAsync;
     }
 
     public ChannelType ChannelType => ChannelType.Mattermost;
 
     public string DisplayName => "Mattermost";
 
-    public ValueTask<ChannelHealth> GetHealthAsync(CancellationToken cancellationToken = default)
+    public async ValueTask<ChannelHealth> GetHealthAsync(CancellationToken cancellationToken = default)
     {
         if (!_options.Enabled)
-            return ValueTask.FromResult(new ChannelHealth(ChannelHealthStatus.Degraded, "Mattermost channel disabled."));
+            return new ChannelHealth(ChannelHealthStatus.Degraded, "Mattermost channel disabled.");
 
-        if (_gatewayClient.IsConnected)
-            return ValueTask.FromResult(new ChannelHealth(ChannelHealthStatus.Healthy));
+        var gatewaySnapshot = await _gatewayClient.GetSnapshotAsync(cancellationToken);
 
-        return ValueTask.FromResult(new ChannelHealth(
+        if (gatewaySnapshot.IsReady)
+            return new ChannelHealth(ChannelHealthStatus.Healthy);
+
+        if (gatewaySnapshot.IsConnected)
+            return new ChannelHealth(
+                ChannelHealthStatus.Degraded,
+                gatewaySnapshot.HealthDetail ?? _connectFailureDetail ?? "Mattermost gateway connected but not ready.");
+
+        return new ChannelHealth(
             ChannelHealthStatus.Disconnected,
-            _connectFailureDetail ?? "Mattermost WebSocket disconnected."));
+            _connectFailureDetail ?? gatewaySnapshot.HealthDetail ?? "Mattermost WebSocket disconnected.");
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -143,8 +154,9 @@ public sealed class MattermostChannel : IChannel
         try
         {
             // Connect first so BotUserId/BotUsername are available before creating the gateway actor.
-            await _gatewayClient.ConnectAsync(serverUrl, botToken, cancellationToken);
-            CompleteConnectionSetup(serverUrl);
+            var gatewaySnapshot = await _gatewayClient.ConnectAsync(serverUrl, botToken, cancellationToken);
+            EnsureGatewayReadyAfterConnect(gatewaySnapshot);
+            CompleteConnectionSetup(serverUrl, gatewaySnapshot.BotUserId, gatewaySnapshot.BotUsername);
             _connectFailureDetail = null;
             _logger.LogInformation("Channel connected.");
         }
@@ -158,7 +170,10 @@ public sealed class MattermostChannel : IChannel
     /// Wires up message handling and the gateway actor once a connection
     /// succeeds. Idempotent — safe to call again after a reconnect.
     /// </summary>
-    private void CompleteConnectionSetup(string serverUrl)
+    private void CompleteConnectionSetup(
+        string serverUrl,
+        MattermostUserId? botUserId,
+        string? botUsername)
     {
         if (_gateway is not null)
             return;
@@ -181,8 +196,8 @@ public sealed class MattermostChannel : IChannel
                 Paths: _paths,
                 ServerUrl: serverUrl,
                 CallbackUrl: _options.CallbackUrl,
-                BotUserId: _gatewayClient.BotUserId,
-                BotUsername: _gatewayClient.BotUsername,
+                BotUserId: botUserId,
+                BotUsername: botUsername,
                 CallbackActionStore: _callbackActionStore,
                 PromptInjectionDetector: _promptInjectionDetector,
                 ThreadHistoryFetcher: _threadHistoryFetcher,
@@ -227,31 +242,65 @@ public sealed class MattermostChannel : IChannel
             "Mattermost channel could not connect (transient). The daemon will keep running "
             + "and retry the connection in the background. {Reason}",
             failure.Message);
-        StartReconnectLoop();
+        StartReconnectLoop(initialDelay: TimeSpan.FromSeconds(5));
     }
 
-    private void StartReconnectLoop()
+    private void StartReconnectLoop(TimeSpan initialDelay)
     {
-        if (_reconnectTask is { IsCompleted: false })
+        lock (_reconnectLock)
+        {
+            if (_reconnectTask is { IsCompleted: false } activeReconnect)
+            {
+                if (initialDelay == TimeSpan.Zero)
+                {
+                    Interlocked.Exchange(ref _queuedCleanReconnect, 1);
+                    _ = activeReconnect.ContinueWith(
+                        _ => StartQueuedCleanReconnect(),
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                }
+
+                return;
+            }
+
+            _reconnectTask = Task.Run(() => ReconnectLoopAsync(initialDelay, _lifetimeCts.Token));
+        }
+    }
+
+    private void StartQueuedCleanReconnect()
+    {
+        if (Volatile.Read(ref _queuedCleanReconnect) == 0)
             return;
 
-        _reconnectTask = Task.Run(() => ReconnectLoopAsync(_lifetimeCts.Token));
+        StartReconnectLoop(initialDelay: TimeSpan.Zero);
     }
 
-    private async Task ReconnectLoopAsync(CancellationToken cancellationToken)
+    private Task HandleCleanReconnectRequiredAsync(string reason)
     {
-        var delay = TimeSpan.FromSeconds(5);
+        _connectFailureDetail = reason;
+        _logger.LogWarning("Gateway requested clean reconnect: {Reason}", reason);
+        StartReconnectLoop(initialDelay: TimeSpan.Zero);
+        return Task.CompletedTask;
+    }
+
+    private async Task ReconnectLoopAsync(TimeSpan initialDelay, CancellationToken cancellationToken)
+    {
+        var delay = initialDelay;
         var maxDelay = TimeSpan.FromMinutes(5);
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            try
+            if (delay > TimeSpan.Zero)
             {
-                await Task.Delay(delay, _timeProvider, cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
+                try
+                {
+                    await Task.Delay(delay, _timeProvider, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
             }
 
             // Reset transport state so the retry performs a clean login + connect.
@@ -276,10 +325,18 @@ public sealed class MattermostChannel : IChannel
                         ChannelConnectFailureKind.Fatal,
                         "Mattermost is enabled but no bot token is configured.");
 
-                await _gatewayClient.ConnectAsync(_options.ServerUrl, _options.BotToken.Value, cancellationToken);
-                CompleteConnectionSetup(_options.ServerUrl);
+                var gatewaySnapshot = await _gatewayClient.ConnectAsync(_options.ServerUrl, _options.BotToken.Value, cancellationToken);
+                EnsureGatewayReadyAfterConnect(gatewaySnapshot);
+                CompleteConnectionSetup(_options.ServerUrl, gatewaySnapshot.BotUserId, gatewaySnapshot.BotUsername);
                 _connectFailureDetail = null;
                 _logger.LogInformation("Channel reconnected after a transient failure.");
+
+                if (Interlocked.Exchange(ref _queuedCleanReconnect, 0) == 1)
+                {
+                    delay = TimeSpan.Zero;
+                    continue;
+                }
+
                 return;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -305,9 +362,21 @@ public sealed class MattermostChannel : IChannel
                     classified,
                     "Mattermost reconnect attempt failed; will retry. {Reason}",
                     classified.Message);
-                delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, maxDelay.Ticks));
+                delay = delay == TimeSpan.Zero
+                    ? TimeSpan.FromSeconds(5)
+                    : TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, maxDelay.Ticks));
             }
         }
+    }
+
+    private static void EnsureGatewayReadyAfterConnect(MattermostGatewaySnapshot gatewaySnapshot)
+    {
+        if (gatewaySnapshot.IsReady)
+            return;
+
+        throw new ChannelConnectException(
+            ChannelConnectFailureKind.Transient,
+            gatewaySnapshot.HealthDetail ?? "Mattermost gateway connected but did not become ready.");
     }
 
     public async Task StopAsync(CancellationToken cancellationToken)
@@ -326,6 +395,7 @@ public sealed class MattermostChannel : IChannel
             }
         }
 
+        _gatewayClient.CleanReconnectRequired -= HandleCleanReconnectRequiredAsync;
         _gatewayClient.MessageReceived -= HandleMessageReceivedAsync;
 
         if (_gateway is not null)
@@ -346,6 +416,8 @@ public sealed class MattermostChannel : IChannel
         await _gatewayClient.DisconnectAsync(cancellationToken);
         if (_gatewayClient is IDisposable disposable)
             disposable.Dispose();
+
+        _lifetimeCts.Dispose();
     }
 
     private Task HandleMessageReceivedAsync(MattermostGatewayMessage message)

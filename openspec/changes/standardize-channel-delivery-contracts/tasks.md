@@ -73,9 +73,9 @@
 
 ## 10. Stateful channel lifecycle follow-up
 
-- [ ] 10.1 Add contract tests for not-ready ingress gating, runtime disconnect health, clean reconnect signaling, and handler de-duplication for stateful remote chat channels.
-- [ ] 10.2 Implement Mattermost lifecycle actorization only after the standard snapshot and lifecycle contract tests exist.
-- [ ] 10.3 Verify Slack and Discord satisfy the same lifecycle requirements or document explicit capability differences.
+- [x] 10.1 Add contract tests for not-ready ingress gating, runtime disconnect health, clean reconnect signaling, and handler de-duplication for stateful remote chat channels.
+- [x] 10.2 Implement Mattermost lifecycle actorization only after the standard snapshot and lifecycle contract tests exist.
+- [x] 10.3 Verify Slack and Discord satisfy the same lifecycle requirements or document explicit capability differences.
 
 ## 11. Validation and quality gates
 

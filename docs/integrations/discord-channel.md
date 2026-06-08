@@ -128,6 +128,9 @@ DM output is not supported yet.
 - If Discord is enabled with missing `BotToken`, startup fails fast.
 - If Discord is enabled with placeholder clients, startup fails fast.
 - Health reports `Disconnected` when gateway is not connected.
+- Discord gateway lifecycle is actor-owned. Inbound messages and interactions
+  are gated until the socket reaches READY, runtime disconnects surface through
+  channel health, and stale/resumed sessions request a clean reconnect.
 
 Common failure patterns:
 
