@@ -17,13 +17,6 @@ internal sealed class TurnStateTracker
     private const int DuplicateToolThreshold = 3;
     private const double BudgetNudgeRatio = 0.75;
 
-    /// <summary>
-    /// Fallback cumulative empty-response ceiling used when a caller does not
-    /// supply one (e.g. the sub-agent path). Keep in sync with
-    /// <c>SessionConfig.MaxEmptyResponsesPerTurn</c>.
-    /// </summary>
-    internal const int DefaultMaxEmptyResponsesPerTurn = 10;
-
     // Nudge for a thinking-only response: the model emitted reasoning but no
     // final answer. Generic across providers — no provider-specific payload.
     private const string ThinkingOnlyNudge =
@@ -223,7 +216,7 @@ internal sealed class TurnStateTracker
     public EmptyResponseAction EvaluateEmptyResponse(
         LlmResponseKind kind,
         bool truncated,
-        int maxEmptyResponsesPerTurn = DefaultMaxEmptyResponsesPerTurn)
+        int maxEmptyResponsesPerTurn)
     {
         _cumulativeEmptyResponsesThisTurn++;
 

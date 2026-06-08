@@ -152,6 +152,7 @@ Tuning parameters for LLM session behavior.
     "SnapshotInterval": 20,
     "KeepRecentToolResults": 3,
     "MaxToolIterationsPerTurn": 60,
+    "MaxEmptyResponsesPerTurn": 10,
     "SidecarLlmTimeoutSeconds": 90,
     "TurnLlmTimeoutSeconds": 180,
     "ToolExecutionTimeoutSeconds": 90
@@ -165,6 +166,7 @@ Tuning parameters for LLM session behavior.
 | `SnapshotInterval` | int | `20` | Number of turns between persistence snapshots. |
 | `KeepRecentToolResults` | int | `3` | Recent tool call/result pairs kept in full during compaction. |
 | `MaxToolIterationsPerTurn` | int | `60` | Max LLM-to-tools-to-LLM iterations per turn. One LLM response with any number of parallel tool calls counts as exactly one iteration. At ~75% a budget nudge is injected; at 100% tools are stripped and the model is asked to summarize. |
+| `MaxEmptyResponsesPerTurn` | int | `10` | Max empty or thinking-only responses tolerated per turn (range 1–100). Cumulative across the turn and **not** reset by tool calls, so a reasoning model that interleaves tool calls with thinking-only responses still terminates. At the ceiling the turn makes one final tools-disabled attempt, then fails. |
 | `SidecarLlmTimeoutSeconds` | int | `90` | Timeout for sidecar LLM calls (title generation, observer summaries, memory extraction). |
 | `TurnLlmTimeoutSeconds` | int | `180` | Timeout for the primary per-turn LLM streaming call before forcing an error/recovery path. |
 | `ToolExecutionTimeoutSeconds` | int | `90` | Per-tool-call inactivity budget. A tool must produce its first result or stream item within this time, and each later item resets the budget. |
@@ -532,6 +534,7 @@ export NETCLAW_Session__MaxToolIterationsPerTurn="60"
     "SnapshotInterval": 20,
     "KeepRecentToolResults": 3,
     "MaxToolIterationsPerTurn": 60,
+    "MaxEmptyResponsesPerTurn": 10,
     "TurnLlmTimeoutSeconds": 180,
     "ToolExecutionTimeoutSeconds": 90
   },

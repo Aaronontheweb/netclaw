@@ -36,6 +36,13 @@ namespace Netclaw.Actors.SubAgents;
 public sealed class SubAgentActor : ReceiveActor, IWithTimers
 {
     internal const int DefaultMaxToolIterations = 30;
+
+    // Sub-agents bound their own per-turn empty/thinking-only response loop
+    // independently of the parent session's Session.MaxEmptyResponsesPerTurn —
+    // the same way they carry their own DefaultMaxToolIterations rather than
+    // consuming SessionConfig.MaxToolIterationsPerTurn.
+    private const int MaxEmptyResponsesPerTurn = 10;
+
     private const string EmptyResponseMarker = "(no response)";
     private const string MalformedFinalOutputMessage = "Subagent produced malformed final output: it emitted unexecuted tool calls as text. This was not a timeout.";
     private const string MalformedFinalOutputNudge =
@@ -316,7 +323,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             if (analysis.Kind is LlmResponseKind.ThinkingOnly or LlmResponseKind.Empty)
             {
                 var truncated = response.FinishReason == ChatFinishReason.Length;
-                switch (_turnState.EvaluateEmptyResponse(analysis.Kind, truncated))
+                switch (_turnState.EvaluateEmptyResponse(analysis.Kind, truncated, MaxEmptyResponsesPerTurn))
                 {
                     case EmptyResponseAction.Retry retry:
                         _log.Warning(

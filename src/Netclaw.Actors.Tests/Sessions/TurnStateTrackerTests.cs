@@ -19,6 +19,10 @@ public sealed class TurnStateTrackerTests
 {
     private const string ThinkingNudgeMarker = "only reasoning";
 
+    // Cap high enough that the cumulative ceiling never fires in tests that
+    // exercise the consecutive/nudge behavior rather than the ceiling itself.
+    private const int DefaultCap = 10;
+
     public enum ToolPhase
     {
         BeforeAnyToolUse,
@@ -36,7 +40,7 @@ public sealed class TurnStateTrackerTests
         if (phase == ToolPhase.AfterToolUse)
             tracker.RecordToolCompletion(resultCount: 1, maxToolIterationsPerTurn: 30);
 
-        var action = tracker.EvaluateEmptyResponse(kind, truncated: false);
+        var action = tracker.EvaluateEmptyResponse(kind, truncated: false, maxEmptyResponsesPerTurn: DefaultCap);
 
         var retry = Assert.IsType<EmptyResponseAction.Retry>(action);
         if (kind == LlmResponseKind.ThinkingOnly)
@@ -54,13 +58,13 @@ public sealed class TurnStateTrackerTests
         // A length-truncated thinking-only response was cut off, not refused —
         // it must get the brevity nudge, never the "stop thinking" scold.
         var truncated = Assert.IsType<EmptyResponseAction.Retry>(
-            tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: true));
+            tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: true, maxEmptyResponsesPerTurn: DefaultCap));
         Assert.Contains("cut off", truncated.NudgeText);
         Assert.DoesNotContain(ThinkingNudgeMarker, truncated.NudgeText);
 
         // A non-truncated thinking-only still gets the stop-thinking nudge.
         var normal = Assert.IsType<EmptyResponseAction.Retry>(
-            tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: false));
+            tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: false, maxEmptyResponsesPerTurn: DefaultCap));
         Assert.Contains(ThinkingNudgeMarker, normal.NudgeText);
     }
 
@@ -119,12 +123,12 @@ public sealed class TurnStateTrackerTests
         tracker.RecordToolCompletion(resultCount: 1, maxToolIterationsPerTurn: 30);
 
         // The first three consecutive thinking-only responses retry.
-        Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: false));
-        Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: false));
-        Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: false));
+        Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: false, maxEmptyResponsesPerTurn: DefaultCap));
+        Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: false, maxEmptyResponsesPerTurn: DefaultCap));
+        Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: false, maxEmptyResponsesPerTurn: DefaultCap));
 
         // Only the fourth fails the turn.
-        Assert.IsType<EmptyResponseAction.Fail>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: false));
+        Assert.IsType<EmptyResponseAction.Fail>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: false, maxEmptyResponsesPerTurn: DefaultCap));
     }
 
     [Fact]

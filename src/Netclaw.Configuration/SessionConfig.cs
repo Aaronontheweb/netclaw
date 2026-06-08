@@ -124,7 +124,11 @@ public sealed record SessionConfig
         return new SessionConfig
         {
             MaxToolIterationsPerTurn = raw.MaxToolIterationsPerTurn,
-            MaxEmptyResponsesPerTurn = raw.MaxEmptyResponsesPerTurn,
+            // Clamp to >= 1 like the timeout fields below: schema minimum:1 is only
+            // enforced by the advisory `netclaw doctor` check, not at bind time, so a
+            // stray 0/negative here would otherwise escalate-and-fail every turn on
+            // the first empty/thinking-only response.
+            MaxEmptyResponsesPerTurn = Math.Max(1, raw.MaxEmptyResponsesPerTurn),
             MemoryObserverIdleSeconds = raw.MemoryObserverIdleSeconds,
             IdleTimeout = raw.IdleTimeout,
             TurnLlmTimeout = turnLlmTimeout,
