@@ -12,8 +12,8 @@ namespace Netclaw.Actors.Sessions.Handlers;
 /// </summary>
 internal sealed class TurnStateTracker
 {
-    private const int MaxPreToolEmptyRetries = 2;
-    private const int MaxPostToolEmptyRetries = 3;
+    private const int MaxPreToolEmptyRetries = 5;
+    private const int MaxPostToolEmptyRetries = 8;
     private const int DuplicateToolThreshold = 3;
     private const double BudgetNudgeRatio = 0.75;
 

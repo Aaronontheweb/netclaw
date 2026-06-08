@@ -64,9 +64,8 @@ public class EmptyResponseEscalationTests : LlmSessionTestBase
     public async Task Repeated_thinking_only_responses_fail_turn_after_consecutive_limit()
     {
         // The model never produces a reply — only reasoning. Pre-tool consecutive
-        // limit is 2 retries, so the sequence is: call 1 (Retry), call 2 (Retry),
-        // call 3 (Fail — exceeds MaxPreToolEmptyRetries).
-        for (var i = 0; i < 3; i++)
+        // limit is 5 retries, so the sequence is: 5 Retries then Fail on the 6th.
+        for (var i = 0; i < 6; i++)
             _fakeChatClient.PlannedResponses.Enqueue(
                 [new TextReasoningContent($"[fake thinking] still pondering #{i}...")]);
 
@@ -91,8 +90,8 @@ public class EmptyResponseEscalationTests : LlmSessionTestBase
         Assert.Equal(ErrorCategory.ProviderFailure, error.Category);
         await subscriber.ExpectMsgAsync<TurnCompleted>(TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
 
-        // Three main-model calls: Retry, Retry, Fail.
-        Assert.Equal(3, _fakeChatClient.CallCount);
+        // Six main-model calls: 5 Retries + Fail.
+        Assert.Equal(6, _fakeChatClient.CallCount);
 
         // The model never emitted a tool call, so nothing executed.
         Assert.Equal(0, _fakeToolExecutor.CallCount);

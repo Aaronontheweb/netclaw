@@ -90,12 +90,11 @@ public sealed class TurnStateTrackerTests
         var tracker = new TurnStateTracker();
         tracker.RecordToolCompletion(resultCount: 1, maxToolIterationsPerTurn: 30);
 
-        // The first three consecutive thinking-only responses retry.
-        Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: false));
-        Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: false));
-        Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: false));
+        // The first 8 consecutive thinking-only responses retry.
+        for (var i = 0; i < 8; i++)
+            Assert.IsType<EmptyResponseAction.Retry>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: false));
 
-        // Only the fourth fails the turn.
+        // The 9th fails the turn.
         Assert.IsType<EmptyResponseAction.Fail>(tracker.EvaluateEmptyResponse(LlmResponseKind.ThinkingOnly, truncated: false));
     }
 
