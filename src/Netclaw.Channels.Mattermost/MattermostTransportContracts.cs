@@ -89,6 +89,12 @@ public interface IMattermostReplyClient
         string text,
         IReadOnlyList<MattermostAttachment>? attachments,
         CancellationToken cancellationToken = default);
+
+    Task<string> UploadFileAsync(
+        MattermostChannelId channelId,
+        string filePath,
+        string? fileName = null,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -188,4 +194,12 @@ public sealed class UnconfiguredMattermostReplyClient : IMattermostReplyClient
     public Task UpdatePostAsync(MattermostPostId postId, string text, IReadOnlyList<MattermostAttachment>? attachments, CancellationToken cancellationToken = default)
         => throw new InvalidOperationException(
             "Mattermost channel attempted to update a post, but no Mattermost reply client is configured.");
+
+    public Task<string> UploadFileAsync(
+        MattermostChannelId channelId,
+        string filePath,
+        string? fileName = null,
+        CancellationToken cancellationToken = default)
+        => throw new InvalidOperationException(
+            "Mattermost channel attempted to upload a file, but no Mattermost reply client is configured.");
 }

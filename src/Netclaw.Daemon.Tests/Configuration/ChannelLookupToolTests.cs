@@ -32,7 +32,7 @@ public sealed class ChannelLookupToolTests
     }
 
     [Fact]
-    public void Registration_adds_destination_only_for_discord_only_configuration()
+    public void Registration_adds_user_and_destination_for_discord_only_configuration()
     {
         var services = BuildServices(new Dictionary<string, string?>
         {
@@ -41,9 +41,9 @@ public sealed class ChannelLookupToolTests
             ["Mattermost:Enabled"] = "false"
         });
 
-        Assert.False(IsRegistered<LookupChannelUserTool>(services));
+        Assert.True(IsRegistered<LookupChannelUserTool>(services));
         Assert.True(IsRegistered<LookupChannelDestinationTool>(services));
-        Assert.Single(services, descriptor => descriptor.ServiceType == typeof(IChannelTool));
+        Assert.Equal(2, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelTool)));
     }
 
     [Fact]

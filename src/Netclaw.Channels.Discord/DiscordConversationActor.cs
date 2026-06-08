@@ -266,9 +266,28 @@ internal sealed class DiscordConversationActor : ReceiveActor
             return;
         }
 
-        // Defense-in-depth: re-validate the channel ACL even though the tool
-        // already checked it before posting.
-        if (!DiscordAclPolicy.IsAllowedChannel(message.ChannelId, _dependencies.Options, _dependencies.DefaultChannelId))
+        // Defense-in-depth: re-validate the ACL even though the tool already
+        // checked it before posting. DM channel IDs are ephemeral transport
+        // channels, so the configured user ACL is the authority for DMs.
+        if (message.DirectMessageUserId is { } dmUserId)
+        {
+            if (!_dependencies.Options.AllowDirectMessages)
+            {
+                _log.Warning("Rejected proactive DM for user {0}: direct messages disabled", dmUserId.Value);
+                Sender.Tell(new Status.Failure(new InvalidOperationException(
+                    "Discord direct messages are disabled.")));
+                return;
+            }
+
+            if (!DiscordAclPolicy.IsAllowedUser(dmUserId, _dependencies.Options))
+            {
+                _log.Warning("Rejected proactive DM for disallowed user {0}", dmUserId.Value);
+                Sender.Tell(new Status.Failure(new InvalidOperationException(
+                    $"User {dmUserId.Value} is not in the allowed users list.")));
+                return;
+            }
+        }
+        else if (!DiscordAclPolicy.IsAllowedChannel(message.ChannelId, _dependencies.Options, _dependencies.DefaultChannelId))
         {
             _log.Warning("Rejected proactive thread for disallowed channel {0}", message.ChannelId.Value);
             Sender.Tell(new Status.Failure(new InvalidOperationException(
@@ -281,7 +300,7 @@ internal sealed class DiscordConversationActor : ReceiveActor
             message.ChannelId,
             message.ReplyChannelId,
             message.ThreadOrMessageId,
-            rootMessageId: null);
+            message.RootMessageId);
 
         _log.Debug("Routing proactive thread setup to session binding {0}", message.SessionId.Value);
         sessionBinding.Forward(message);

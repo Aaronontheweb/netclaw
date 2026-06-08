@@ -50,7 +50,7 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
 
     public string Description =>
         "Send a message through an enabled chat channel using a resolved destination. " +
-        "Examples: channel_key=slack with destination.kind=destination, channel_key=mattermost with destination.kind=direct_message, channel_key=discord with destination.kind=destination.";
+        "Examples: channel_key=slack with destination.kind=destination, channel_key=mattermost with destination.kind=direct_message, channel_key=discord with destination.kind=destination or direct_message.";
 
     public string GrantCategory => "builtin";
 
@@ -147,7 +147,7 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
                 return await services.GetRequiredService<SendSlackMessageTool>().ExecuteAsync(delegateArguments, ct);
 
             case ChannelType.Discord:
-                delegateArguments["ChannelId"] = destination.StableId;
+                delegateArguments[destination.AddressKind == ChannelAddressKind.DirectMessage ? "UserId" : "ChannelId"] = destination.StableId;
                 return await services.GetRequiredService<SendDiscordMessageTool>().ExecuteAsync(delegateArguments, ct);
 
             case ChannelType.Mattermost:
@@ -400,7 +400,8 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
             ChannelType.Slack => addressKind == ChannelAddressKind.DirectMessage
                 ? stableId.StartsWith("U", StringComparison.Ordinal) || stableId.StartsWith("W", StringComparison.Ordinal)
                 : stableId.StartsWith("C", StringComparison.Ordinal) || stableId.StartsWith("G", StringComparison.Ordinal) || stableId.StartsWith("D", StringComparison.Ordinal),
-            ChannelType.Discord => addressKind == ChannelAddressKind.Destination && IsDiscordSnowflake(stableId),
+            ChannelType.Discord => (addressKind == ChannelAddressKind.Destination || addressKind == ChannelAddressKind.DirectMessage)
+                                   && IsDiscordSnowflake(stableId),
             ChannelType.Mattermost => IsMattermostId(stableId),
             _ => false
         };

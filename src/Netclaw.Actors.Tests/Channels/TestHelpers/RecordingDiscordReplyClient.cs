@@ -13,7 +13,9 @@ internal sealed class RecordingDiscordReplyClient : IDiscordReplyClient
     public List<(DiscordReplyChannelId ThreadId, string Name)> ThreadRenames { get; } = [];
     public List<(DiscordReplyChannelId ChannelId, DiscordMessageId MessageId, string Text, bool RemoveComponents)> Updates { get; } = [];
     public List<DiscordReplyChannelId> TypingTriggers { get; } = [];
+    public List<DiscordFileUpload> Uploads { get; } = [];
     public Exception? ThrowOnPost { get; set; }
+    public Exception? ThrowOnUpload { get; set; }
 
     private int _messageCounter;
 
@@ -56,5 +58,15 @@ internal sealed class RecordingDiscordReplyClient : IDiscordReplyClient
     {
         TypingTriggers.Add(channelId);
         return Task.CompletedTask;
+    }
+
+    public Task<DiscordMessageId?> UploadFileAsync(DiscordFileUpload upload, CancellationToken cancellationToken = default)
+    {
+        if (ThrowOnUpload is { } ex)
+            throw ex;
+
+        Uploads.Add(upload);
+        var messageId = new DiscordMessageId($"file-{Interlocked.Increment(ref _messageCounter)}");
+        return Task.FromResult<DiscordMessageId?>(messageId);
     }
 }

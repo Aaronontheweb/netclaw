@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.10.3"
+  version: "2.10.4"
 ---
 
 # Netclaw Operations
@@ -146,8 +146,7 @@ use the generic proactive-post tool:
   `lookup_channel_destination`.
 - `destination.kind="direct_message"` sends a DM using the stable user ID from
   `lookup_channel_user`; this is supported only by channels that advertise DM
-  output (currently Slack and Mattermost when enabled in config). Discord DMs are
-  not supported yet.
+  output (Slack, Discord, and Mattermost when enabled in config).
 - Reminder- and webhook-originated turns may only call `send_channel_message`
   against the delivery target configured on the reminder or webhook route. If a
   trigger turn has no configured target, Netclaw fails loud instead of choosing a
@@ -157,11 +156,11 @@ Use the generic lookup tools before sending when you do not already have a
 stable channel/user ID:
 
 - `lookup_channel_user(channel_key, query)` resolves users on enabled channels
-  that support user lookup, currently Slack and Mattermost.
+  that support user lookup, currently Slack, Discord, and Mattermost.
 - `lookup_channel_destination(channel_key, query)` resolves destinations on
   enabled channels that support destination lookup. Slack can resolve channel
-  names and IDs; Mattermost requires an exact channel ID; Discord destination
-  lookup may fail loud until its resolver is implemented.
+  names and IDs; Discord can resolve channel mentions, stable IDs, and cached
+  text-channel names; Mattermost requires an exact channel ID.
 
 Both tools require `channel_key` as the first argument. Use the returned
 `channel_key` and `stable_id` exactly; for destination lookups, use the returned
@@ -170,7 +169,7 @@ Both tools require `channel_key` as the first argument. Use the returned
 If lookup is ambiguous, pick from the returned candidates instead of guessing.
 Do not use channel-specific lookup aliases such as `lookup_slack_user` or
 `lookup_mattermost_user`; lookup is intentionally routed through the generic
-channel tools. Discord user/DM lookup is not supported yet.
+channel tools.
 
 Examples:
 
@@ -183,6 +182,11 @@ send_channel_message(
 send_channel_message(
   channel_key: "mattermost",
   destination: { channel_key: "mattermost", kind: "direct_message", id: "26characterMattermostUserId" },
+  text: "Your report is ready.")
+
+send_channel_message(
+  channel_key: "discord",
+  destination: { channel_key: "discord", kind: "direct_message", id: "123456789012345678" },
   text: "Your report is ready.")
 ```
 

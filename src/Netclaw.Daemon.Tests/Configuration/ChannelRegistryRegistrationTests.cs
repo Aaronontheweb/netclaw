@@ -66,19 +66,19 @@ public sealed class ChannelRegistryRegistrationTests
 
         Assert.True(descriptors["slack"].Capabilities.HasFlag(ChannelCapabilities.DirectMessages));
         Assert.True(descriptors["mattermost"].Capabilities.HasFlag(ChannelCapabilities.DirectMessages));
-        Assert.False(descriptors["discord"].Capabilities.HasFlag(ChannelCapabilities.DirectMessages));
+        Assert.True(descriptors["discord"].Capabilities.HasFlag(ChannelCapabilities.DirectMessages));
 
         Assert.Contains(ChannelAddressKind.DirectMessage, descriptors["slack"].AddressKinds);
         Assert.Contains(ChannelAddressKind.DirectMessage, descriptors["mattermost"].AddressKinds);
-        Assert.DoesNotContain(ChannelAddressKind.DirectMessage, descriptors["discord"].AddressKinds);
+        Assert.Contains(ChannelAddressKind.DirectMessage, descriptors["discord"].AddressKinds);
 
         Assert.True(descriptors["slack"].Capabilities.HasFlag(ChannelCapabilities.FileEgress));
-        Assert.False(descriptors["discord"].Capabilities.HasFlag(ChannelCapabilities.FileEgress));
-        Assert.False(descriptors["mattermost"].Capabilities.HasFlag(ChannelCapabilities.FileEgress));
+        Assert.True(descriptors["discord"].Capabilities.HasFlag(ChannelCapabilities.FileEgress));
+        Assert.True(descriptors["mattermost"].Capabilities.HasFlag(ChannelCapabilities.FileEgress));
 
         Assert.Contains(ChannelOutputEffectKind.FileAttachment, descriptors["slack"].SupportedOutputEffects);
-        Assert.DoesNotContain(ChannelOutputEffectKind.FileAttachment, descriptors["discord"].SupportedOutputEffects);
-        Assert.DoesNotContain(ChannelOutputEffectKind.FileAttachment, descriptors["mattermost"].SupportedOutputEffects);
+        Assert.Contains(ChannelOutputEffectKind.FileAttachment, descriptors["discord"].SupportedOutputEffects);
+        Assert.Contains(ChannelOutputEffectKind.FileAttachment, descriptors["mattermost"].SupportedOutputEffects);
 
         Assert.Contains(ChannelOutputEffectKind.ProcessingIndicator, descriptors["discord"].SupportedOutputEffects);
         Assert.DoesNotContain(ChannelOutputEffectKind.ProcessingIndicator, descriptors["slack"].SupportedOutputEffects);
@@ -120,6 +120,7 @@ public sealed class ChannelRegistryRegistrationTests
         Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(IChannelAddressResolver));
         Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(IChannelOutputRenderer));
         Assert.False(IsRegistered<SlackTargetResolver>(services));
+        Assert.False(IsRegistered<DiscordAddressResolver>(services));
         Assert.False(IsRegistered<MattermostDestinationAddressResolver>(services));
     }
 
@@ -160,9 +161,10 @@ public sealed class ChannelRegistryRegistrationTests
             ["Mattermost:Enabled"] = "true"
         });
 
-        Assert.Equal(4, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelAddressResolver)));
+        Assert.Equal(5, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelAddressResolver)));
         Assert.True(IsRegistered<SlackTargetResolver>(services));
         Assert.True(IsRegistered<LookupSlackUserTool>(services));
+        Assert.True(IsRegistered<DiscordAddressResolver>(services));
         Assert.True(IsRegistered<MattermostDestinationAddressResolver>(services));
         Assert.True(IsRegistered<LookupMattermostUserTool>(services));
     }
@@ -191,7 +193,8 @@ public sealed class ChannelRegistryRegistrationTests
         AssertToolIntents(
             descriptors["discord"],
             services,
-            new ChannelToolExpectation(ChannelToolIntentKind.SendMessage, typeof(SendChannelMessageTool), null));
+            new ChannelToolExpectation(ChannelToolIntentKind.SendMessage, typeof(SendChannelMessageTool), null),
+            new ChannelToolExpectation(ChannelToolIntentKind.LookupUser, typeof(LookupChannelUserTool), null));
         AssertToolIntents(
             descriptors["mattermost"],
             services,
@@ -593,5 +596,8 @@ public sealed class ChannelRegistryRegistrationTests
             TypingTriggers.Add(channelId);
             return Task.CompletedTask;
         }
+
+        public Task<DiscordMessageId?> UploadFileAsync(DiscordFileUpload upload, CancellationToken cancellationToken = default)
+            => Task.FromResult<DiscordMessageId?>(new DiscordMessageId("file-1"));
     }
 }

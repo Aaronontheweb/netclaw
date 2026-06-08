@@ -135,6 +135,7 @@ public static class MattermostChannelRegistrationExtensions
             | ChannelCapabilities.ThreadedConversations
             | ChannelCapabilities.InteractiveApproval
             | ChannelCapabilities.FileIngress
+            | ChannelCapabilities.FileEgress
             | ChannelCapabilities.ProactiveSend
             | ChannelCapabilities.UserLookup
             | ChannelCapabilities.DestinationLookup
@@ -169,7 +170,8 @@ public static class MattermostChannelRegistrationExtensions
             SupportedOutputEffects: new HashSet<ChannelOutputEffectKind>
             {
                 ChannelOutputEffectKind.TextMessage,
-                ChannelOutputEffectKind.InteractiveApproval
+                ChannelOutputEffectKind.InteractiveApproval,
+                ChannelOutputEffectKind.FileAttachment
             });
     }
 }

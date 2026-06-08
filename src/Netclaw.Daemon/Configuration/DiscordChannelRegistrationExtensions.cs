@@ -49,6 +49,7 @@ public static class DiscordChannelRegistrationExtensions
         services.AddSingleton<IDiscordGatewayClient, DiscordNetGatewayClient>();
         services.AddSingleton<IDiscordReplyClient, DiscordNetReplyClient>();
         services.AddSingleton<IDiscordOutboundClient, DiscordNetOutboundClient>();
+        services.AddSingleton<IDiscordAddressLookupClient, DiscordNetAddressLookupClient>();
         services.AddChannelOutputRenderer<DiscordProcessingOutputRenderer>();
         services.AddSingleton<IThreadHistoryFetcher>(sp =>
         {
@@ -71,6 +72,13 @@ public static class DiscordChannelRegistrationExtensions
                 logger);
         });
         services.AddSingleton<IReminderTargetResolver, DiscordReminderTargetResolver>();
+        services.AddSingleton<DiscordAddressResolver>(sp => new DiscordAddressResolver(
+            sp.GetRequiredService<IDiscordAddressLookupClient>(),
+            discordOptions,
+            () => string.IsNullOrWhiteSpace(discordOptions.DefaultChannelId)
+                ? null
+                : new DiscordChannelId(discordOptions.DefaultChannelId)));
+        services.AddSingleton<IChannelAddressResolver>(sp => sp.GetRequiredService<DiscordAddressResolver>());
 
         services.AddKeyedSingleton<IChannel, DiscordChannel>(DiscordChannelKey);
         services.AddSingleton<IChannel>(sp =>
@@ -102,14 +110,24 @@ public static class DiscordChannelRegistrationExtensions
             | ChannelCapabilities.ThreadedConversations
             | ChannelCapabilities.InteractiveApproval
             | ChannelCapabilities.FileIngress
+            | ChannelCapabilities.FileEgress
             | ChannelCapabilities.ProactiveSend
+            | ChannelCapabilities.UserLookup
+            | ChannelCapabilities.DestinationLookup
             | ChannelCapabilities.RuntimeHealth;
+
+        if (options.AllowDirectMessages)
+            capabilities |= ChannelCapabilities.DirectMessages;
 
         var addressKinds = new HashSet<ChannelAddressKind>
         {
             ChannelAddressKind.Destination,
+            ChannelAddressKind.User,
             ChannelAddressKind.Thread
         };
+
+        if (options.AllowDirectMessages)
+            addressKinds.Add(ChannelAddressKind.DirectMessage);
 
         return new ChannelDescriptor(
             ChannelDescriptorKey.FromChannelType(ChannelType.Discord),
@@ -120,13 +138,15 @@ public static class DiscordChannelRegistrationExtensions
             capabilities,
             ToolIntents: new HashSet<ChannelToolIntentKind>
             {
-                ChannelToolIntentKind.SendMessage
+                ChannelToolIntentKind.SendMessage,
+                ChannelToolIntentKind.LookupUser
             },
             AddressKinds: addressKinds,
             SupportedOutputEffects: new HashSet<ChannelOutputEffectKind>
             {
                 ChannelOutputEffectKind.TextMessage,
                 ChannelOutputEffectKind.InteractiveApproval,
+                ChannelOutputEffectKind.FileAttachment,
                 ChannelOutputEffectKind.ProcessingIndicator
             });
     }

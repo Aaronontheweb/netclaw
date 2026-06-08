@@ -94,6 +94,8 @@ public interface IDiscordReplyClient
         CancellationToken cancellationToken = default);
 
     Task TriggerTypingAsync(DiscordReplyChannelId channelId, CancellationToken cancellationToken = default);
+
+    Task<DiscordMessageId?> UploadFileAsync(DiscordFileUpload upload, CancellationToken cancellationToken = default);
 }
 
 public sealed record DiscordPostMessage(
@@ -110,6 +112,13 @@ public sealed record DiscordPostResult(
 {
     public static readonly DiscordPostResult Default = new();
 }
+
+public sealed record DiscordFileUpload(
+    DiscordReplyChannelId ReplyChannelId,
+    string FilePath,
+    string FileName,
+    string Text,
+    DiscordMessageId? RootMessageId = null);
 
 public sealed record DiscordButtonSpec(
     string CustomId,
@@ -184,4 +193,8 @@ public sealed class UnconfiguredDiscordReplyClient : IDiscordReplyClient
     public Task TriggerTypingAsync(DiscordReplyChannelId channelId, CancellationToken cancellationToken = default)
         => throw new InvalidOperationException(
             "Discord channel attempted to trigger typing, but no Discord reply client is configured.");
+
+    public Task<DiscordMessageId?> UploadFileAsync(DiscordFileUpload upload, CancellationToken cancellationToken = default)
+        => throw new InvalidOperationException(
+            "Discord channel attempted to upload a file, but no Discord reply client is configured.");
 }

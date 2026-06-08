@@ -166,7 +166,12 @@ public sealed class DiscordSessionBindingContractTests(ITestOutputHelper output)
     private void ResetReplyClient()
     {
         var pendingThrow = _replyClient.ThrowOnPost;
-        _replyClient = new RecordingDiscordReplyClient { ThrowOnPost = pendingThrow };
+        var pendingUploadThrow = _replyClient.ThrowOnUpload;
+        _replyClient = new RecordingDiscordReplyClient
+        {
+            ThrowOnPost = pendingThrow,
+            ThrowOnUpload = pendingUploadThrow
+        };
     }
 
     private IActorRef CreateActorCore(
@@ -198,6 +203,39 @@ public sealed class DiscordSessionBindingContractTests(ITestOutputHelper output)
             new DiscordThreadOrMessageId("thread-test"),
             rootMessageId: null,
             deps));
+    }
+
+    [Fact]
+    public async Task FileOutput_uploads_file_to_discord_reply_channel()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var sid = new SessionId("session-discord-file-output");
+        var paths = TestDiscordGatewayDeps.NewTestPaths();
+        var filePath = Path.Combine(paths.BasePath, $"discord-upload-{Guid.NewGuid():N}.txt");
+        await File.WriteAllTextAsync(filePath, "hello discord", ct);
+
+        var pipeline = new RecordingSessionPipeline(_ =>
+        [
+            new FileOutput
+            {
+                SessionId = sid,
+                FilePath = filePath,
+                FileName = "report.txt",
+                MimeType = new Netclaw.Media.MimeType("text/plain")
+            },
+            new TurnCompleted { SessionId = sid, TurnNumber = new TurnNumber(1) }
+        ]);
+
+        CreateActorCore(sid, pipeline, new ConfigurablePromptInjectionDetector(PromptInjectionResult.Safe()));
+
+        await AwaitAssertAsync(() =>
+        {
+            var upload = Assert.Single(_replyClient.Uploads);
+            Assert.Equal("reply-test", upload.ReplyChannelId.Value);
+            Assert.Equal(filePath, upload.FilePath);
+            Assert.Equal("report.txt", upload.FileName);
+            Assert.Contains("report.txt", upload.Text, StringComparison.Ordinal);
+        }, cancellationToken: ct);
     }
 
     [Fact]

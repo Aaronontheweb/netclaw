@@ -25,7 +25,7 @@ internal static class ChannelLookupToolRegistration
         var discordEnabled = (configuration.GetSection("Discord").Get<DiscordChannelOptions>() ?? new DiscordChannelOptions()).Enabled;
         var mattermostEnabled = (configuration.GetSection("Mattermost").Get<MattermostChannelOptions>() ?? new MattermostChannelOptions()).Enabled;
 
-        if (slackEnabled || mattermostEnabled)
+        if (slackEnabled || discordEnabled || mattermostEnabled)
         {
             services.AddSingleton<LookupChannelUserTool>();
             services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<LookupChannelUserTool>());

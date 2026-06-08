@@ -28,9 +28,9 @@
 - [x] 4.4 Adapt Mattermost runtime health to the standard snapshot shape without actorizing it yet.
 - [x] 4.5 Represent TUI as a local interactive channel and SignalR as daemon infrastructure, not as the same channel record.
 - [x] 4.6 Keep first-slice descriptors limited to implemented delivery behavior, not aspirational roadmap capabilities.
-- [ ] 4.7 Implement Discord proactive DM output before advertising `DirectMessages` or `DirectMessage` address support on the Discord descriptor.
-- [ ] 4.8 Implement Discord `FileOutput` upload before advertising `FileEgress` or `FileAttachment` support on the Discord descriptor.
-- [ ] 4.9 Implement Mattermost `FileOutput` upload before advertising `FileEgress` or `FileAttachment` support on the Mattermost descriptor.
+- [x] 4.7 Implement Discord proactive DM output before advertising `DirectMessages` or `DirectMessage` address support on the Discord descriptor.
+- [x] 4.8 Implement Discord `FileOutput` upload before advertising `FileEgress` or `FileAttachment` support on the Discord descriptor.
+- [x] 4.9 Implement Mattermost `FileOutput` upload before advertising `FileEgress` or `FileAttachment` support on the Mattermost descriptor.
 
 ## 5. Trigger-source consumers
 
@@ -52,7 +52,7 @@
 - [x] 7.3 Fail loudly with candidates for ambiguous display-name matches.
 - [x] 7.4 Route resolution requests to the resolver registered for the selected channel descriptor.
 - [x] 7.5 Wire Slack lookup to its channel-scoped resolver.
-- [ ] 7.6 Wire Discord lookup to its channel-scoped resolver where supported.
+- [x] 7.6 Wire Discord lookup to its channel-scoped resolver where supported.
 - [x] 7.7 Wire Mattermost lookup to its channel-scoped resolver.
 
 ## 8. LLM-facing channel tool standardization

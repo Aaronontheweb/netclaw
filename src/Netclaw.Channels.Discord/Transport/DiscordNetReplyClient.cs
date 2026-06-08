@@ -135,6 +135,27 @@ internal sealed class DiscordNetReplyClient : IDiscordReplyClient
         await messageChannel.TriggerTypingAsync(new RequestOptions { CancelToken = cancellationToken });
     }
 
+    public async Task<DiscordMessageId?> UploadFileAsync(DiscordFileUpload upload, CancellationToken cancellationToken = default)
+    {
+        var channelSnowflake = ParseSnowflake(upload.ReplyChannelId.Value, "reply channel ID");
+        var messageChannel = await ResolveMessageChannelAsync(channelSnowflake, upload.ReplyChannelId.Value);
+        MessageReference? rootRef = null;
+        if (upload.RootMessageId is { } rootMessageId)
+            rootRef = new MessageReference(ParseSnowflake(rootMessageId.Value, "root message ID"));
+
+        await using var stream = File.OpenRead(upload.FilePath);
+        var sentMessage = await messageChannel.SendFileAsync(
+            stream,
+            upload.FileName,
+            text: upload.Text,
+            options: new RequestOptions { CancelToken = cancellationToken },
+            messageReference: rootRef);
+
+        return sentMessage is null
+            ? null
+            : new DiscordMessageId(sentMessage.Id.ToString());
+    }
+
     private async Task<IMessageChannel> ResolveMessageChannelAsync(ulong channelSnowflake, string channelIdForError)
     {
         // Socket cache misses for DM channels — fall back to REST API.

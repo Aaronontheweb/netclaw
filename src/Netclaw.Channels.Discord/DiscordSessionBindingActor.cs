@@ -265,8 +265,8 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
     private async Task HandleProactiveThreadAsync(StartProactiveThread message)
     {
         _replyChannelId = message.ReplyChannelId;
-        _threadCreated = true;
-        _rootMessageId = null;
+        _threadCreated = message.RootMessageId is null;
+        _rootMessageId = message.RootMessageId;
 
         _log.Info("Initializing proactive thread pipeline for session {0}", message.SessionId.Value);
         await EnsureInitializedAsync();
@@ -1110,8 +1110,8 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
                 break;
 
             case FileOutput file:
-                await SafeReplyAsync($":paperclip: Produced file `{file.FileName}` ({file.MimeType}).");
-                _deliveredThisTurn = true;
+                if (await SafeUploadFileAsync(file))
+                    _deliveredThisTurn = true;
                 break;
 
             case ProcessingStateOutput processing:
@@ -1303,6 +1303,51 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             ReplyChannelId: _replyChannelId,
             Text: text,
             Buttons: buttons);
+    }
+
+    private async Task<bool> SafeUploadFileAsync(FileOutput file)
+    {
+        var startedAt = _dependencies.TimeProvider.GetTimestamp();
+        try
+        {
+            if (!File.Exists(file.FilePath))
+            {
+                _log.Warning("File not found for upload: {Path}", file.FilePath);
+                await NotifyDeliveryFailedAsync(DeliveryFailureKind.Unknown, $"File not found for upload: {file.FilePath}");
+                return false;
+            }
+
+            using var cts = new CancellationTokenSource(OperationTimeout);
+            await _dependencies.ReplyClient.UploadFileAsync(
+                new DiscordFileUpload(
+                    _replyChannelId,
+                    file.FilePath,
+                    file.FileName,
+                    $":paperclip: {file.FileName}",
+                    _threadCreated ? null : _rootMessageId),
+                cts.Token);
+
+            var duration = _dependencies.TimeProvider.GetElapsedTime(startedAt).TotalMilliseconds;
+            ChannelTelemetry.For(ChannelType.Discord).RecordReplyPosted(duration);
+            _log.Info("Uploaded file to Discord session: {FileName}", file.FileName);
+            return true;
+        }
+        catch (OperationCanceledException ex)
+        {
+            var duration = _dependencies.TimeProvider.GetElapsedTime(startedAt).TotalMilliseconds;
+            _log.Error(ex, "Timed out uploading file {FileName} to Discord session", file.FileName);
+            ChannelTelemetry.For(ChannelType.Discord).RecordReplyFailed(duration);
+            await NotifyDeliveryFailedAsync(DeliveryFailureKind.TransportFailure, ex.Message);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            var duration = _dependencies.TimeProvider.GetElapsedTime(startedAt).TotalMilliseconds;
+            _log.Error(ex, "Failed to upload file {FileName} to Discord session", file.FileName);
+            ChannelTelemetry.For(ChannelType.Discord).RecordReplyFailed(duration);
+            await NotifyDeliveryFailedAsync(DeliveryFailureKind.TransportFailure, ex.Message);
+            return false;
+        }
     }
 
     private async Task SafeSetThreadNameAsync(string title)
