@@ -20,7 +20,7 @@ namespace Netclaw.Channels.Slack.Tools;
     "Use this to proactively notify users or start discussions. " +
     "Provide exactly one of channel_id or user_id.",
     Grant = "builtin")]
-public sealed partial class SendSlackMessageTool : NetclawTool<SendSlackMessageTool.Params>, IChannelTool
+public sealed partial class SendSlackMessageTool : NetclawTool<SendSlackMessageTool.Params>
 {
     private readonly ISlackOutboundClient _outboundClient;
     private readonly SlackChannelOptions _options;

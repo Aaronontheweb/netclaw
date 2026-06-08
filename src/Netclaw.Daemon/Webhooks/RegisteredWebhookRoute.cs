@@ -83,7 +83,8 @@ public sealed record RegisteredWebhookRoute(string Name, string FilePath, DateTi
         if (Config.NotificationTarget is not { Kind: NotificationTargetKind.Slack, ChannelId: { Length: > 0 } channelId })
             return string.Empty;
 
-        return $"If you need to notify a human, use send_slack_message to post to Slack channel {channelId}.";
+        return "If you need to notify a human, use send_channel_message with " +
+               $"channel_key='slack', destination.channel_key='slack', destination.kind='destination', destination.id='{channelId}', and text set to your notification.";
     }
 
     public static string? GetHeaderValue(IHeaderDictionary headers, string name)

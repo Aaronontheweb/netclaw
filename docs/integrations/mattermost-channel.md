@@ -121,7 +121,8 @@ A bare ID with no prefix is rejected with a disambiguation error. Direct-message
 delivery is supported (it is not on Discord) because a Mattermost DM is an
 addressable channel.
 
-Reminder channel delivery maps to `send_mattermost_message`.
+Reminder channel delivery maps to the generic `send_channel_message` tool with
+`channel_key = "mattermost"` and a resolved destination object.
 
 ## Runtime behavior and troubleshooting
 

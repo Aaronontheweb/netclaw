@@ -107,8 +107,10 @@ public sealed class ChannelLookupToolTests
         var result = await ExecuteAsync(tool, "slack", "alice");
 
         Assert.Contains("Resolved user on channel 'slack'", result);
+        Assert.Contains("channel_key: slack", result);
         Assert.Contains("stable_id: U123", result);
         Assert.Contains("display_name: Alice Smith", result);
+        Assert.Contains("address_kind: user", result);
         Assert.Equal("alice", resolver.Request?.Query);
     }
 
@@ -133,8 +135,10 @@ public sealed class ChannelLookupToolTests
         var result = await ExecuteAsync(tool, "slack", "general");
 
         Assert.Contains("Ambiguous destination lookup", result);
+        Assert.Contains("channel_key: slack", result);
         Assert.Contains("stable_id: C1", result);
         Assert.Contains("stable_id: C2", result);
+        Assert.Contains("address_kind: destination", result);
         Assert.Contains("Multiple destinations matched.", result);
     }
 

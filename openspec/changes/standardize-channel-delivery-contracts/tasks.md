@@ -57,12 +57,12 @@
 
 ## 8. LLM-facing channel tool standardization
 
-- [ ] 8.1 Define standard generic tool schemas and final tool names: `send_channel_message`, `lookup_channel_user`, and `lookup_channel_destination`, each with required first `channel_key` enum-constrained from enabled descriptors.
-- [ ] 8.2 Rename/map existing Slack tools to the standard tool names and intent schema.
-- [ ] 8.3 Rename/map existing Discord tools to the standard tool names and intent schema.
-- [ ] 8.4 Rename/map existing Mattermost tools to the standard tool names and intent schema.
-- [ ] 8.5 Update system skills, CLI/help text, and eval cases for renamed LLM-facing channel tools.
-- [ ] 8.6 Define the standardized DM send workflow as user lookup -> direct-message delivery target -> send-channel-message, gated by each channel descriptor's implemented DM output capability.
+- [x] 8.1 Define standard generic tool schemas and final tool names: `send_channel_message`, `lookup_channel_user`, and `lookup_channel_destination`, each with required first `channel_key` enum-constrained from enabled descriptors.
+- [x] 8.2 Rename/map existing Slack tools to the standard tool names and intent schema.
+- [x] 8.3 Rename/map existing Discord tools to the standard tool names and intent schema.
+- [x] 8.4 Rename/map existing Mattermost tools to the standard tool names and intent schema.
+- [x] 8.5 Update system skills, CLI/help text, and eval cases for renamed LLM-facing channel tools.
+- [x] 8.6 Define the standardized DM send workflow as user lookup -> direct-message delivery target -> send-channel-message, gated by each channel descriptor's implemented DM output capability.
 - [ ] 8.7 Add eval cases for smaller-model channel selection: Slack channel post, Mattermost user DM, Discord channel post, mismatched channel/destination rejection, and unsupported DM capability failure.
 
 ## 9. Channel output effects follow-up

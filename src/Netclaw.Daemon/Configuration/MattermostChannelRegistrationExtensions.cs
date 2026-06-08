@@ -102,7 +102,7 @@ public static class MattermostChannelRegistrationExtensions
         });
         services.AddSingleton<IChannelAddressResolver>(sp => sp.GetRequiredService<MattermostDestinationAddressResolver>());
 
-        // Channel-specific LLM tools: registered as IChannelTool singletons.
+        // Concrete send and lookup implementations used by generic channel tools.
         // The gateway actor ref and default channel ID are resolved lazily via
         // MattermostChannel since they're not available until StartAsync completes.
         services.AddSingleton<SendMattermostMessageTool>(sp =>
@@ -115,7 +115,6 @@ public static class MattermostChannelRegistrationExtensions
                 () => channel.DefaultChannelId,
                 () => channel.Gateway);
         });
-        services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<SendMattermostMessageTool>());
 
         services.AddSingleton<LookupMattermostUserTool>(sp =>
         {
@@ -123,7 +122,6 @@ public static class MattermostChannelRegistrationExtensions
                 () => sp.GetRequiredService<MattermostClient>(),
                 mattermostOptions);
         });
-        services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<LookupMattermostUserTool>());
         services.AddSingleton<IChannelAddressResolver>(sp => sp.GetRequiredService<LookupMattermostUserTool>());
 
         services.AddSingleton<IHostedService>(sp =>

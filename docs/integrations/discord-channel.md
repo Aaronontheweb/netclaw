@@ -113,15 +113,14 @@ Discord ACL evaluation follows fail-closed rules.
 - `delivery_kind = "current_session"` for session-thread replies
 - `delivery_kind = "channel"` with `delivery_transport = "discord"`
 
-Discord channel target resolution accepts canonical forms:
+Discord channel target resolution accepts canonical channel forms:
 
-- `<@123...>` or `<@!123...>` (user mention)
-- `@123...` (user id shorthand)
-- `123...` (raw user snowflake)
-- `dm:<channelId>` (explicit DM channel ID)
+- `<#123...>` (channel mention)
+- `channel:123...` (explicit channel ID)
 
-Reminder channel delivery maps to `send_discord_message`; ensure that tool is
-available in your tool/runtime setup before relying on transport-based delivery.
+Reminder channel delivery maps to the generic `send_channel_message` tool with
+`channel_key = "discord"` and a resolved destination object. Discord proactive
+DM output is not supported yet.
 
 ## Runtime behavior and troubleshooting
 

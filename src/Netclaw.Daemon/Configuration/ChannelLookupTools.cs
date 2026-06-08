@@ -212,9 +212,10 @@ internal abstract class ChannelLookupTool : IChannelTool
     {
         var builder = new StringBuilder();
         builder.AppendLine($"Resolved {LookupLabel} on channel '{key}':");
+        builder.AppendLine($"channel_key: {address.ChannelKey}");
         builder.AppendLine($"stable_id: {address.StableId}");
         builder.AppendLine($"display_name: {address.DisplayName}");
-        builder.AppendLine($"address_kind: {address.AddressKind}");
+        builder.AppendLine($"address_kind: {ChannelAddressKindWire.ToWireValue(address.AddressKind)}");
         return builder.ToString().TrimEnd();
     }
 
@@ -227,7 +228,7 @@ internal abstract class ChannelLookupTool : IChannelTool
         builder.AppendLine($"Ambiguous {LookupLabel} lookup on channel '{key}' for query '{query}'.{FormatErrorSuffix(result.Error)}");
         builder.AppendLine("Candidates:");
         foreach (var candidate in result.Candidates)
-            builder.AppendLine($"- stable_id: {candidate.StableId}; display_name: {candidate.DisplayName}; address_kind: {candidate.AddressKind}");
+            builder.AppendLine($"- channel_key: {candidate.ChannelKey}; stable_id: {candidate.StableId}; display_name: {candidate.DisplayName}; address_kind: {ChannelAddressKindWire.ToWireValue(candidate.AddressKind)}");
 
         return builder.ToString().TrimEnd();
     }

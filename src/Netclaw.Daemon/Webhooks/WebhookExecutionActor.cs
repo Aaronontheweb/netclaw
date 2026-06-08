@@ -22,7 +22,7 @@ internal sealed class WebhookExecutionActor : ReceiveActor
     private readonly DateTimeOffset _dispatchedAt;
 
     private readonly SessionPipelineHandle _handle;
-    private static readonly ToolName NotificationTool = new("send_slack_message");
+    private static readonly ToolName NotificationTool = new("send_channel_message");
     private readonly ExecutionOutputAccumulator _accumulator = new(NotificationTool);
     private bool _completed;
 

@@ -95,16 +95,11 @@ public sealed record ReminderDelivery : INetclawSerializableMessage
     public Channels.ChannelType? OriginChannelType { get; init; }
 
     /// <summary>
-    /// Gets the notification tool name for Channel delivery based on the transport.
-    /// Returns null for non-Channel delivery kinds or unknown transports.
+    /// Gets the notification tool name for Channel delivery.
+    /// Returns null for non-Channel delivery kinds.
     /// </summary>
     public string? GetNotificationToolName() => Kind == DeliveryKind.Channel
-        ? Transport?.ToLowerInvariant() switch
-        {
-            "slack" => "send_slack_message",
-            "discord" => "send_discord_message",
-            _ => null
-        }
+        ? "send_channel_message"
         : null;
 }
 

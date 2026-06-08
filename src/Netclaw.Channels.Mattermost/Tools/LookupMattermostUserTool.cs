@@ -14,13 +14,13 @@ namespace Netclaw.Channels.Mattermost.Tools;
 
 /// <summary>
 /// LLM tool that looks up Mattermost users by username or email.
-/// Returns user IDs suitable for use with <see cref="SendMattermostMessageTool"/>.
+/// Returns user IDs suitable for use with the generic <c>send_channel_message</c> tool.
 /// </summary>
 [NetclawTool("lookup_mattermost_user",
     "Look up a Mattermost user by username or email. " +
-    "Returns their user ID for use with send_mattermost_message.",
+    "Returns their user ID for use with send_channel_message.",
     Grant = "builtin")]
-public sealed partial class LookupMattermostUserTool : NetclawTool<LookupMattermostUserTool.Params>, IChannelTool, IChannelAddressResolver
+public sealed partial class LookupMattermostUserTool : NetclawTool<LookupMattermostUserTool.Params>, IChannelAddressResolver
 {
     private static readonly IReadOnlySet<ChannelAddressKind> UserAddressKinds = new HashSet<ChannelAddressKind>
     {

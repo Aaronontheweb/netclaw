@@ -98,7 +98,7 @@ public static class SlackChannelRegistrationExtensions
                 context.ServiceProvider().GetRequiredService<SlackApprovalHandler>());
         });
 
-        // Channel-specific LLM send tool: registered as an IChannelTool singleton.
+        // Concrete send implementation used by send_channel_message.
         // User lookup is exposed through the generic lookup_channel_user tool.
         // The gateway actor ref and default channel ID are resolved lazily via
         // SlackChannel since they're not available until StartAsync completes.
@@ -112,7 +112,6 @@ public static class SlackChannelRegistrationExtensions
                 () => channel.DefaultChannelId,
                 () => channel.Gateway);
         });
-        services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<SendSlackMessageTool>());
 
         services.AddSingleton<LookupSlackUserTool>(sp =>
         {

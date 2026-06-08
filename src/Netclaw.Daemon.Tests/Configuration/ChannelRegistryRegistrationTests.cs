@@ -126,15 +126,20 @@ public sealed class ChannelRegistryRegistrationTests
             ["Mattermost:Enabled"] = "true"
         });
 
-        Assert.Equal(6, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelTool)));
+        Assert.Equal(3, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelTool)));
         Assert.True(IsRegistered<SendSlackMessageTool>(services));
         Assert.True(IsRegistered<LookupSlackUserTool>(services));
         Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(LookupSlackUserTool)));
+        Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(SendSlackMessageTool)));
         Assert.True(IsRegistered<LookupChannelUserTool>(services));
         Assert.True(IsRegistered<LookupChannelDestinationTool>(services));
+        Assert.True(IsRegistered<SendChannelMessageTool>(services));
         Assert.True(IsRegistered<SendDiscordMessageTool>(services));
+        Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(SendDiscordMessageTool)));
         Assert.True(IsRegistered<SendMattermostMessageTool>(services));
+        Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(SendMattermostMessageTool)));
         Assert.True(IsRegistered<LookupMattermostUserTool>(services));
+        Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(LookupMattermostUserTool)));
     }
 
     [Fact]
@@ -173,17 +178,17 @@ public sealed class ChannelRegistryRegistrationTests
         AssertToolIntents(
             descriptors["slack"],
             services,
-            new ChannelToolExpectation(ChannelToolIntentKind.SendMessage, typeof(SendSlackMessageTool), "send_slack_message"),
+            new ChannelToolExpectation(ChannelToolIntentKind.SendMessage, typeof(SendChannelMessageTool), null),
             new ChannelToolExpectation(ChannelToolIntentKind.LookupUser, typeof(LookupChannelUserTool), null));
         AssertToolIntents(
             descriptors["discord"],
             services,
-            new ChannelToolExpectation(ChannelToolIntentKind.SendMessage, typeof(SendDiscordMessageTool), "send_discord_message"));
+            new ChannelToolExpectation(ChannelToolIntentKind.SendMessage, typeof(SendChannelMessageTool), null));
         AssertToolIntents(
             descriptors["mattermost"],
             services,
-            new ChannelToolExpectation(ChannelToolIntentKind.SendMessage, typeof(SendMattermostMessageTool), "send_mattermost_message"),
-            new ChannelToolExpectation(ChannelToolIntentKind.LookupUser, typeof(LookupMattermostUserTool), "lookup_mattermost_user"));
+            new ChannelToolExpectation(ChannelToolIntentKind.SendMessage, typeof(SendChannelMessageTool), null),
+            new ChannelToolExpectation(ChannelToolIntentKind.LookupUser, typeof(LookupChannelUserTool), null));
     }
 
     [Fact]
@@ -346,6 +351,7 @@ public sealed class ChannelRegistryRegistrationTests
         services.AddSlackChannelIntegration(configuration);
         services.AddDiscordChannelIntegration(configuration);
         services.AddMattermostChannelIntegration(configuration);
+        services.AddChannelSendTools(configuration);
         services.AddChannelLookupTools(configuration);
 
         return services;

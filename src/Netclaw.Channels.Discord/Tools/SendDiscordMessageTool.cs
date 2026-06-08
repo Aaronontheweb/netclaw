@@ -21,7 +21,7 @@ namespace Netclaw.Channels.Discord.Tools;
     "Use this to proactively notify users or start discussions. " +
     "Omit channel_id to use the configured default channel.",
     Grant = "builtin")]
-public sealed partial class SendDiscordMessageTool : NetclawTool<SendDiscordMessageTool.Params>, IChannelTool
+public sealed partial class SendDiscordMessageTool : NetclawTool<SendDiscordMessageTool.Params>
 {
     private const int MaxThreadNameLength = 100;
 

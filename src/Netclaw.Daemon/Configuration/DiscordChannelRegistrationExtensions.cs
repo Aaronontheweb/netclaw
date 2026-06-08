@@ -77,7 +77,7 @@ public static class DiscordChannelRegistrationExtensions
         services.AddSingleton<DiscordChannel>(sp =>
             (DiscordChannel)sp.GetRequiredKeyedService<IChannel>(DiscordChannelKey));
 
-        // Channel-specific LLM tool: registered as an INetclawTool singleton.
+        // Concrete send implementation used by send_channel_message.
         // The gateway actor ref is resolved lazily via DiscordChannel since it
         // is not available until StartAsync completes.
         services.AddSingleton<SendDiscordMessageTool>(sp =>
@@ -89,7 +89,6 @@ public static class DiscordChannelRegistrationExtensions
                 discordOptions,
                 () => channel.Gateway);
         });
-        services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<SendDiscordMessageTool>());
 
         services.AddSingleton<IHostedService>(sp =>
             (IHostedService)sp.GetRequiredKeyedService<IChannel>(DiscordChannelKey));

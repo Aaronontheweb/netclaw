@@ -41,7 +41,7 @@ public sealed class MattermostReminderTargetResolver : IReminderTargetResolver
                 // Preserve the "channel:" prefix in the canonical form. Mattermost
                 // channel IDs and user IDs are both 26-char alphanumeric strings,
                 // so the bare ID is indistinguishable downstream — the reminder
-                // prompt builder and send_mattermost_message dispatcher need the
+                // prompt builder and send_channel_message dispatcher need the
                 // prefix to know whether to target a channel or open a DM.
                 return Task.FromResult(new ReminderTargetResolution(
                     Success: true,
