@@ -724,13 +724,19 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         if (analysis.Kind is LlmResponseKind.ThinkingOnly or LlmResponseKind.Empty)
         {
-            switch (_turnState.EvaluateEmptyResponse(analysis.Kind))
+            var truncated = response.FinishReason == ChatFinishReason.Length;
+            switch (_turnState.EvaluateEmptyResponse(analysis.Kind, truncated, _config.MaxEmptyResponsesPerTurn))
             {
                 case EmptyResponseAction.Retry retry:
-                    _log.Warning("LLM produced {Kind} response ({ThinkingChars} chars) — retrying with nudge",
-                        analysis.Kind, analysis.ThinkingChars);
+                    _log.Warning("LLM produced {Kind} response ({ThinkingChars} chars, truncated={Truncated}) — retrying with nudge",
+                        analysis.Kind, analysis.ThinkingChars, truncated);
                     _state = _state.AddSystemNudge(retry.NudgeText);
                     FireLlmCall();
+                    return;
+                case EmptyResponseAction.RetryWithoutTools retry:
+                    _log.Warning("LLM produced repeated {Kind} responses — final attempt with tools disabled", analysis.Kind);
+                    _state = _state.AddSystemNudge(retry.NudgeText);
+                    FireLlmCall(forceNoTools: true);
                     return;
                 case EmptyResponseAction.Fail fail:
                     _log.Warning("LLM produced {Kind} response — failing turn", analysis.Kind);

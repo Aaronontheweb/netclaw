@@ -17,11 +17,42 @@ internal sealed class TurnStateTracker
     private const int DuplicateToolThreshold = 3;
     private const double BudgetNudgeRatio = 0.75;
 
+    /// <summary>
+    /// Fallback cumulative empty-response ceiling used when a caller does not
+    /// supply one (e.g. the sub-agent path). Keep in sync with
+    /// <c>SessionConfig.MaxEmptyResponsesPerTurn</c>.
+    /// </summary>
+    internal const int DefaultMaxEmptyResponsesPerTurn = 10;
+
     // Nudge for a thinking-only response: the model emitted reasoning but no
     // final answer. Generic across providers — no provider-specific payload.
     private const string ThinkingOnlyNudge =
         "Your last response contained only reasoning and no reply to the user. "
         + "Stop thinking and write your answer now as a normal assistant message.";
+
+    // A length-truncated response was cut off mid-output by the provider's token
+    // ceiling — it did not refuse to answer, so the "stop thinking" scold is
+    // counterproductive. Ask for brevity so the next attempt fits the budget.
+    private const string TruncatedResponseNudge =
+        "Your previous response was cut off before you finished — it reached the output length limit. "
+        + "Give your final answer directly now and keep any reasoning brief.";
+
+    private const string PreToolEmptyNudge =
+        "Your previous response was empty. If you need MCP capabilities, call search_tools(\"servers\") to pick a server "
+        + "(for example browser, memory, or email), then call search_tools(\"<intent>\", server: \"<server_name>\") to load tools. "
+        + "MCP tools are not directly callable until loaded via search_tools.";
+
+    private const string PostToolEmptyNudge =
+        "You received tool results but did not respond. "
+        + "Continue working or produce your final response.";
+
+    // Sent once when the cumulative empty-response ceiling is reached: a final
+    // tools-disabled attempt asking for a direct answer (mirrors the tool-budget
+    // Exhausted escalation) before the turn is failed.
+    private const string CumulativeEmptyEscalationNudge =
+        "You have produced several responses this turn with no reply to the user. "
+        + "Do NOT call any more tools. Write your final answer now as a normal assistant message, "
+        + "using the information you have already gathered.";
 
     private const string EmptyResponseFailureMessage =
         "I didn't manage to produce a reply. Please try rephrasing or sending your request again.";
@@ -37,6 +68,14 @@ internal sealed class TurnStateTracker
     private int _preToolEmptyResponseCount;
     private bool _duplicateNudgeSent;
 
+    // Cumulative empty/thinking-only responses this turn. Unlike the consecutive
+    // counters above, this is reset ONLY in ResetForNewTurn() — never in
+    // ResetEmptyResponseGuards() or ResetToolCounters() — so a model that
+    // interleaves genuine tool calls with empty responses still hits a ceiling
+    // instead of spinning until MaxToolIterationsPerTurn. See issue #1346.
+    private int _cumulativeEmptyResponsesThisTurn;
+    private bool _emptyResponseEscalated;
+
     /// <summary>
     /// Reset all per-turn state. Called at the start of each user turn.
     /// </summary>
@@ -50,6 +89,8 @@ internal sealed class TurnStateTracker
         ForceNoToolsActive = false;
         _toolCallCounts.Clear();
         _duplicateNudgeSent = false;
+        _cumulativeEmptyResponsesThisTurn = 0;
+        _emptyResponseEscalated = false;
     }
 
     /// <summary>
@@ -161,12 +202,49 @@ internal sealed class TurnStateTracker
     /// The LLM produced no reply text and no tool calls. Determine what the
     /// actor should do. Expects <paramref name="kind"/> to be
     /// <see cref="LlmResponseKind.ThinkingOnly"/> or
-    /// <see cref="LlmResponseKind.Empty"/>; a thinking-only response gets a
-    /// nudge telling the model to surface its answer.
+    /// <see cref="LlmResponseKind.Empty"/>.
+    /// <para>
+    /// Two ceilings apply. The <em>consecutive</em> counters fast-fail a model
+    /// that is stuck right now, but they are cleared by
+    /// <see cref="ResetEmptyResponseGuards"/> on every tool batch — so a model
+    /// that interleaves tool calls with empty responses evades them. The
+    /// <em>cumulative</em> ceiling (<paramref name="maxEmptyResponsesPerTurn"/>),
+    /// reset only at <see cref="ResetForNewTurn"/>, is the backstop that survives
+    /// the per-batch reset. On reaching it, the turn escalates once (a final
+    /// tools-disabled attempt) before failing.
+    /// </para>
+    /// <para>
+    /// <paramref name="truncated"/> is true when the provider reported a
+    /// length/token-limit finish reason. Such a response was cut off mid-output,
+    /// not refused, so it gets a brevity nudge rather than the "stop thinking"
+    /// scold.
+    /// </para>
     /// </summary>
-    public EmptyResponseAction EvaluateEmptyResponse(LlmResponseKind kind)
+    public EmptyResponseAction EvaluateEmptyResponse(
+        LlmResponseKind kind,
+        bool truncated,
+        int maxEmptyResponsesPerTurn = DefaultMaxEmptyResponsesPerTurn)
     {
-        var hasThinking = kind == LlmResponseKind.ThinkingOnly;
+        _cumulativeEmptyResponsesThisTurn++;
+
+        // Cumulative backstop — checked before the consecutive guards so an
+        // interleaved tool/empty pattern (which keeps resetting those guards)
+        // still terminates. A purely consecutive stall trips the tighter
+        // consecutive caps below first, preserving fast-fail.
+        if (_cumulativeEmptyResponsesThisTurn > maxEmptyResponsesPerTurn)
+        {
+            if (!_emptyResponseEscalated)
+            {
+                _emptyResponseEscalated = true;
+                return new EmptyResponseAction.RetryWithoutTools(CumulativeEmptyEscalationNudge);
+            }
+
+            return new EmptyResponseAction.Fail(
+                EmptyResponseFailureMessage,
+                new InvalidOperationException(
+                    $"LLM produced {_cumulativeEmptyResponsesThisTurn} empty or thinking-only responses "
+                    + "this turn without producing a reply."));
+        }
 
         // Pre-tool: LLM hasn't done any tool work yet
         if (ToolIterationCount == 0)
@@ -177,11 +255,7 @@ internal sealed class TurnStateTracker
                     EmptyResponseFailureMessage,
                     new InvalidOperationException("LLM produced repeated empty responses before any tool execution."));
 
-            return new EmptyResponseAction.Retry(hasThinking
-                ? ThinkingOnlyNudge
-                : "Your previous response was empty. If you need MCP capabilities, call search_tools(\"servers\") to pick a server "
-                  + "(for example browser, memory, or email), then call search_tools(\"<intent>\", server: \"<server_name>\") to load tools. "
-                  + "MCP tools are not directly callable until loaded via search_tools.");
+            return new EmptyResponseAction.Retry(SelectNudge(kind, truncated, preTool: true));
         }
 
         // Post-tool: nudge the model to produce its final reply
@@ -191,10 +265,16 @@ internal sealed class TurnStateTracker
                 EmptyResponseFailureMessage,
                 new InvalidOperationException("LLM produced repeated empty responses after tool execution."));
 
-        return new EmptyResponseAction.Retry(hasThinking
-            ? ThinkingOnlyNudge
-            : "You received tool results but did not respond. "
-              + "Continue working or produce your final response.");
+        return new EmptyResponseAction.Retry(SelectNudge(kind, truncated, preTool: false));
+    }
+
+    private static string SelectNudge(LlmResponseKind kind, bool truncated, bool preTool)
+    {
+        if (truncated)
+            return TruncatedResponseNudge;
+        if (kind == LlmResponseKind.ThinkingOnly)
+            return ThinkingOnlyNudge;
+        return preTool ? PreToolEmptyNudge : PostToolEmptyNudge;
     }
 }
 
@@ -226,6 +306,12 @@ internal abstract record EmptyResponseAction
 {
     /// <summary>Retry the LLM call with the given nudge text.</summary>
     internal sealed record Retry(string NudgeText) : EmptyResponseAction;
+
+    /// <summary>
+    /// Final escalation attempt: retry with the given nudge but with tools
+    /// disabled, forcing the model toward a text answer before the turn fails.
+    /// </summary>
+    internal sealed record RetryWithoutTools(string NudgeText) : EmptyResponseAction;
 
     /// <summary>Fail the turn with the given error message and cause.</summary>
     internal sealed record Fail(string ErrorMessage, Exception Cause) : EmptyResponseAction;

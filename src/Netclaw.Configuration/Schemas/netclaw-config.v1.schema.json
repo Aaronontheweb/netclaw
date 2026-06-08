@@ -146,6 +146,13 @@
           "default": 60,
           "description": "Maximum LLM-to-tools-to-LLM iterations allowed per turn. One LLM response with any number of parallel tool calls counts as exactly one iteration."
         },
+        "MaxEmptyResponsesPerTurn": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 10,
+          "description": "Maximum empty or thinking-only LLM responses tolerated per turn before the turn is escalated (one final tools-disabled attempt) and then failed. Cumulative across the turn and not reset by tool calls, so a reasoning model that interleaves tool calls with thinking-only responses still terminates."
+        },
         "MemoryObserverIdleSeconds": {
           "type": "integer",
           "minimum": 10,

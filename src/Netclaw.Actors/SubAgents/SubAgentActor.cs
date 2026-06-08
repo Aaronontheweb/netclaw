@@ -315,16 +315,26 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
             if (analysis.Kind is LlmResponseKind.ThinkingOnly or LlmResponseKind.Empty)
             {
-                switch (_turnState.EvaluateEmptyResponse(analysis.Kind))
+                var truncated = response.FinishReason == ChatFinishReason.Length;
+                switch (_turnState.EvaluateEmptyResponse(analysis.Kind, truncated))
                 {
                     case EmptyResponseAction.Retry retry:
                         _log.Warning(
-                            "SubAgent [{AgentName}] produced {Kind} response ({ThinkingChars} reasoning chars) — retrying with nudge",
+                            "SubAgent [{AgentName}] produced {Kind} response ({ThinkingChars} reasoning chars, truncated={Truncated}) — retrying with nudge",
                             _definition.Name,
                             analysis.Kind,
-                            analysis.ThinkingChars);
+                            analysis.ThinkingChars,
+                            truncated);
                         AddSystemNudge(retry.NudgeText);
                         FireLlmCall();
+                        return;
+                    case EmptyResponseAction.RetryWithoutTools retry:
+                        _log.Warning(
+                            "SubAgent [{AgentName}] produced repeated {Kind} responses — final attempt with tools disabled",
+                            _definition.Name,
+                            analysis.Kind);
+                        AddSystemNudge(retry.NudgeText);
+                        FireLlmCall(forceNoTools: true);
                         return;
                     case EmptyResponseAction.Fail fail:
                         _log.Warning(
