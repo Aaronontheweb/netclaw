@@ -338,7 +338,8 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             Provenance = message.Provenance,
             Contents = liveContents,
             ReceivedAt = message.ReceivedAt,
-            ExecutableText = message.Text
+            ExecutableText = message.Text,
+            DefaultDeliveryTarget = BuildDefaultDeliveryTarget()
         };
 
         if (_hydrationPending && IsAuthorizedSender(message.SenderId.Value))
@@ -1012,6 +1013,8 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             Provenance = message.Source.Provenance,
             Contents = [new TextContent(message.Content)],
             ReceivedAt = _dependencies.TimeProvider.GetUtcNow(),
+            DefaultDeliveryTarget = BuildDefaultDeliveryTarget(),
+            RequestedDeliveryTarget = message.Source.RequestedDeliveryTarget,
             ReminderId = message.Source.ReminderId,
             AckTarget = ackTarget
         };
@@ -1037,6 +1040,14 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
     }
 
     private enum ApprovalLookupResult { Matched, WrongRequester, NotFound }
+
+    private ChannelDeliveryTargetInfo BuildDefaultDeliveryTarget()
+        => new(
+            ChannelType.Mattermost.ToWireValue(),
+            "destination",
+            _channelId.Value,
+            _channelId.Value,
+            _rootPostId.Value);
 
     private (ApprovalLookupResult Result, PendingApprovalRequest? Pending) ResolvePendingRequest(
         MattermostUserId senderId, ToolCallId? callId)

@@ -16,9 +16,9 @@
 ## 3. Delivery target contracts
 
 - [x] 3.1 Add `ChannelDeliveryTarget` with channel key, resolved destination, and optional thread/root target.
-- [ ] 3.2 Preserve channel-originated default delivery targets for Slack, Discord, Mattermost, and TUI input turns.
-- [ ] 3.3 Require trigger-originated turns to carry an explicit delivery target when external output is requested.
-- [ ] 3.4 Fail loudly when a trigger-originated turn attempts external output without a delivery target.
+- [x] 3.2 Preserve channel-originated default delivery targets for Slack, Discord, Mattermost, and TUI input turns.
+- [x] 3.3 Require trigger-originated turns to carry an explicit delivery target when external output is requested.
+- [x] 3.4 Fail loudly when a trigger-originated turn attempts external output without a delivery target.
 
 ## 4. Existing channel coverage
 
@@ -34,8 +34,8 @@
 
 ## 5. Trigger-source consumers
 
-- [ ] 5.1 Update reminder definitions to store or resolve explicit channel delivery targets when output is requested.
-- [ ] 5.2 Update webhook route definitions to store or resolve explicit channel delivery targets when output is requested.
+- [x] 5.1 Update reminder definitions to store or resolve explicit channel delivery targets when output is requested.
+- [x] 5.2 Update webhook route definitions to store or resolve explicit channel delivery targets when output is requested.
 - [x] 5.3 Ensure reminders and webhooks do not register channel descriptors or channel snapshot providers.
 
 ## 6. Descriptor-driven observability

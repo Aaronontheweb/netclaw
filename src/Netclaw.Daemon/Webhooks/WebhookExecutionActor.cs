@@ -100,7 +100,8 @@ internal sealed class WebhookExecutionActor : ReceiveActor
                     SourceScope = new SourceScope(_invocation.Route.Name)
                 },
                 Contents = [new TextContent(WebhookPayloadFormatter.Format(_invocation))],
-                ReceivedAt = _invocation.ReceivedAt
+                ReceivedAt = _invocation.ReceivedAt,
+                RequestedDeliveryTarget = _invocation.Route.BuildNotificationDeliveryTarget()
             });
 
             inputQueue.Complete();

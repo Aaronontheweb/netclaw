@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using Akka.Actor;
 using Netclaw.Configuration;
+using Netclaw.Tools;
 
 namespace Netclaw.Actors.Channels;
 
@@ -82,6 +83,20 @@ public sealed record MessageSource
     /// quoted context, this remains the current authorized message text.
     /// </summary>
     public string? ExecutableText { get; init; }
+
+    /// <summary>
+    /// Default output target inherited from the channel that produced this turn.
+    /// </summary>
+    public ChannelDeliveryTargetInfo? DefaultDeliveryTarget { get; init; }
+
+    /// <summary>
+    /// Explicit output target selected by a trigger source such as a reminder or
+    /// webhook route.
+    /// </summary>
+    public ChannelDeliveryTargetInfo? RequestedDeliveryTarget { get; init; }
+
+    public ChannelDeliveryTargetInfo? EffectiveDeliveryTarget
+        => RequestedDeliveryTarget ?? DefaultDeliveryTarget;
 
     /// <summary>
     /// True when the model input contains a quoted adopted-context window.

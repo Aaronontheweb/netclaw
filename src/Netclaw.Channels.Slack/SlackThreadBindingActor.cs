@@ -266,6 +266,8 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             Provenance = message.Source.Provenance,
             Contents = [new TextContent(message.Content)],
             ReceivedAt = _dependencies.TimeProvider.GetUtcNow(),
+            DefaultDeliveryTarget = BuildDefaultDeliveryTarget(),
+            RequestedDeliveryTarget = message.Source.RequestedDeliveryTarget,
             ReminderId = message.Source.ReminderId,
             AckTarget = ackTarget
         };
@@ -599,11 +601,20 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             Provenance = triggeringMessage.Provenance,
             Contents = liveContents,
             ReceivedAt = triggeringMessage.ReceivedAt,
-            ExecutableText = triggeringMessage.Text
+            ExecutableText = triggeringMessage.Text,
+            DefaultDeliveryTarget = BuildDefaultDeliveryTarget()
         };
 
         return new InboundBuildResult(baseInput, false);
     }
+
+    private ChannelDeliveryTargetInfo BuildDefaultDeliveryTarget()
+        => new(
+            ChannelType.Slack.ToWireValue(),
+            "destination",
+            _channelId.Value,
+            _channelId.Value,
+            _threadTs.Value);
 
     /// <summary>
     /// One-shot thread history hydration. Runs once per actor lifetime, in the

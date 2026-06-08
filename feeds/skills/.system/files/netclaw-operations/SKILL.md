@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.10.2"
+  version: "2.10.3"
 ---
 
 # Netclaw Operations
@@ -148,6 +148,10 @@ use the generic proactive-post tool:
   `lookup_channel_user`; this is supported only by channels that advertise DM
   output (currently Slack and Mattermost when enabled in config). Discord DMs are
   not supported yet.
+- Reminder- and webhook-originated turns may only call `send_channel_message`
+  against the delivery target configured on the reminder or webhook route. If a
+  trigger turn has no configured target, Netclaw fails loud instead of choosing a
+  default output channel.
 
 Use the generic lookup tools before sending when you do not already have a
 stable channel/user ID:

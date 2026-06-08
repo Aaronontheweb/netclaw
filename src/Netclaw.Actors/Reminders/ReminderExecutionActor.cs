@@ -150,7 +150,10 @@ internal sealed class ReminderExecutionActor : ReceiveActor
                     SourceKind = new SourceKind("reminder")
                 },
                 Contents = [new TextContent(prompt)],
-                ReceivedAt = _timeProvider.GetUtcNow()
+                ReceivedAt = _timeProvider.GetUtcNow(),
+                RequestedDeliveryTarget = _definition.Delivery.Kind == DeliveryKind.Channel
+                    ? ResolveChannelDeliveryTarget(_definition)
+                    : null
             });
 
             inputQueue.Complete();
@@ -377,6 +380,14 @@ internal sealed class ReminderExecutionActor : ReceiveActor
 
     private static string BuildChannelDeliveryGuidance(ReminderDefinition definition)
     {
+        var target = ResolveChannelDeliveryTarget(definition);
+        if (target is not null)
+        {
+            return "\n\nPost the result using send_channel_message with " +
+                   $"channel_key='{target.ChannelKey}', destination.channel_key='{target.ChannelKey}', " +
+                   $"destination.kind='{target.DestinationKind}', destination.id='{target.DestinationId}', and text set to the result.";
+        }
+
         var transport = definition.Delivery.Transport?.Trim().ToLowerInvariant();
         var address = definition.Delivery.Address?.Trim();
         if (string.IsNullOrWhiteSpace(transport) || string.IsNullOrWhiteSpace(address))
@@ -411,6 +422,49 @@ internal sealed class ReminderExecutionActor : ReceiveActor
         return "\n\nPost the result using send_channel_message with " +
                $"channel_key='{transport}', destination.channel_key='{transport}', " +
                $"destination.kind='{destinationKind}', destination.id='{destinationId}', and text set to the result.";
+    }
+
+    private static ChannelDeliveryTargetInfo? ResolveChannelDeliveryTarget(ReminderDefinition definition)
+    {
+        if (definition.Delivery.Target is not null)
+            return definition.Delivery.Target;
+
+        if (definition.Delivery.Kind != DeliveryKind.Channel)
+            return null;
+
+        var transport = definition.Delivery.Transport?.Trim().ToLowerInvariant();
+        var address = definition.Delivery.Address?.Trim();
+        if (string.IsNullOrWhiteSpace(transport) || string.IsNullOrWhiteSpace(address))
+            return null;
+
+        var destinationKind = "destination";
+        var destinationId = address;
+
+        if (string.Equals(transport, "slack", StringComparison.OrdinalIgnoreCase)
+            && address is { Length: > 0 }
+            && (address.StartsWith("U", StringComparison.Ordinal) || address.StartsWith("W", StringComparison.Ordinal)))
+        {
+            destinationKind = "direct_message";
+        }
+        else if (string.Equals(transport, "mattermost", StringComparison.OrdinalIgnoreCase)
+                 && address is { Length: > 0 })
+        {
+            if (address.StartsWith('@'))
+            {
+                destinationKind = "direct_message";
+                destinationId = address[1..];
+            }
+            else if (address.StartsWith("channel:", StringComparison.OrdinalIgnoreCase))
+            {
+                destinationId = address[8..];
+            }
+        }
+
+        return new ChannelDeliveryTargetInfo(
+            transport,
+            destinationKind,
+            destinationId,
+            address);
     }
 
     private void HandleOutput(ExecutionOutput wrapper)

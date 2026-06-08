@@ -62,6 +62,15 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
     }
 
     public async Task<string> ExecuteAsync(IDictionary<string, object?>? arguments, CancellationToken ct = default)
+        => await ExecuteCoreAsync(arguments, context: null, ct);
+
+    public Task<string> ExecuteAsync(IDictionary<string, object?>? arguments, ToolExecutionContext context, CancellationToken ct = default)
+        => ExecuteCoreAsync(arguments, context, ct);
+
+    private async Task<string> ExecuteCoreAsync(
+        IDictionary<string, object?>? arguments,
+        ToolExecutionContext? context,
+        CancellationToken ct)
     {
         var channelKeyValue = ToolArgumentHelper.GetString(arguments, "channel_key");
         if (string.IsNullOrWhiteSpace(channelKeyValue))
@@ -71,6 +80,12 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
                    ?? ToolArgumentHelper.GetString(arguments, "Message");
         if (string.IsNullOrWhiteSpace(text))
             return "Error: 'text' parameter is required.";
+
+        if (IsTriggerOrigin(context) && context!.RequestedDeliveryTarget is null)
+        {
+            return "Error: trigger-originated channel send requires a configured channel delivery target on the turn. " +
+                   "No default output channel will be selected.";
+        }
 
         if (!TryReadDestination(arguments, out var destination, out var destinationError))
             return destinationError;
@@ -102,6 +117,14 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
         }
 
         var threadOrRootId = ToolArgumentHelper.GetString(arguments, "thread_or_root_id");
+
+        if (IsTriggerOrigin(context) && context!.RequestedDeliveryTarget is { } requestedTarget)
+        {
+            var targetError = ValidateRequestedTriggerTarget(key, destination, threadOrRootId, requestedTarget);
+            if (targetError is not null)
+                return targetError;
+        }
+
         if (!string.IsNullOrWhiteSpace(threadOrRootId))
         {
             return "Error: 'thread_or_root_id' is not supported by send_channel_message yet. " +
@@ -135,9 +158,6 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
                 return $"Error: Channel '{key}' does not have a registered send adapter.";
         }
     }
-
-    public Task<string> ExecuteAsync(IDictionary<string, object?>? arguments, ToolExecutionContext context, CancellationToken ct = default)
-        => ExecuteAsync(arguments, ct);
 
     private JsonElement BuildParameterSchema()
     {
@@ -327,6 +347,51 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
             ? null
             : $"Error: destination.id '{destination.StableId}' does not look like a stable {descriptor.DisplayName} ID. " +
               "Use lookup_channel_destination for channel posts or lookup_channel_user for direct messages.";
+    }
+
+    private static string? ValidateRequestedTriggerTarget(
+        ChannelDescriptorKey channelKey,
+        SendChannelDestination destination,
+        string? threadOrRootId,
+        ChannelDeliveryTargetInfo requestedTarget)
+    {
+        if (!string.Equals(requestedTarget.ChannelKey, channelKey.Value, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Error: trigger-originated channel send must use configured channel_key '{requestedTarget.ChannelKey}', " +
+                   $"not '{channelKey}'.";
+        }
+
+        if (!ChannelAddressKindWire.TryParse(requestedTarget.DestinationKind, out var expectedKind))
+            return $"Error: configured trigger delivery target has unsupported destination kind '{requestedTarget.DestinationKind}'.";
+
+        if (destination.AddressKind != expectedKind)
+        {
+            return "Error: trigger-originated channel send must match the configured delivery target " +
+                   $"destination.kind '{requestedTarget.DestinationKind}'.";
+        }
+
+        if (!string.Equals(destination.StableId, requestedTarget.DestinationId, StringComparison.Ordinal))
+        {
+            return "Error: trigger-originated channel send must match the configured delivery target " +
+                   $"destination.id '{requestedTarget.DestinationId}'.";
+        }
+
+        var suppliedThread = string.IsNullOrWhiteSpace(threadOrRootId) ? null : threadOrRootId.Trim();
+        if (!string.Equals(suppliedThread, requestedTarget.ThreadOrRootId, StringComparison.Ordinal))
+        {
+            return "Error: trigger-originated channel send must match the configured delivery target thread_or_root_id.";
+        }
+
+        return null;
+    }
+
+    private static bool IsTriggerOrigin(ToolExecutionContext? context)
+    {
+        if (string.IsNullOrWhiteSpace(context?.ChannelType))
+            return false;
+
+        return string.Equals(context.ChannelType, ChannelType.Reminder.ToWireValue(), StringComparison.OrdinalIgnoreCase)
+               || string.Equals(context.ChannelType, ChannelType.Webhook.ToWireValue(), StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsStablePlatformId(ChannelType channelType, ChannelAddressKind addressKind, string stableId)

@@ -8,6 +8,7 @@ using Google.Protobuf;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Jobs;
 using Netclaw.Actors.Protocol;
+using Netclaw.Tools;
 using Netclaw.Actors.Reminders;
 using Netclaw.Actors.Sessions;
 using Netclaw.Media;
@@ -386,7 +387,28 @@ internal static class NetclawProtoMapper
             proto.SourceScope = record.SourceScope;
         if (record.SourceKind is not null)
             proto.SourceKind = record.SourceKind;
+        if (record.DefaultDeliveryTarget is not null)
+            proto.DefaultDeliveryTarget = ToProto(record.DefaultDeliveryTarget);
+        if (record.RequestedDeliveryTarget is not null)
+            proto.RequestedDeliveryTarget = ToProto(record.RequestedDeliveryTarget);
         proto.AdoptedSpeakerIds.AddRange(record.AdoptedSpeakerIds);
+        return proto;
+    }
+
+    private static Proto.ToolApprovalRequestedProto.Types.TurnContextRecordProto.Types.ChannelDeliveryTargetRecordProto ToProto(
+        ChannelDeliveryTargetInfo target)
+    {
+        var proto = new Proto.ToolApprovalRequestedProto.Types.TurnContextRecordProto.Types.ChannelDeliveryTargetRecordProto
+        {
+            ChannelKey = target.ChannelKey,
+            DestinationKind = target.DestinationKind,
+            DestinationId = target.DestinationId
+        };
+
+        if (target.DestinationDisplayName is not null)
+            proto.DestinationDisplayName = target.DestinationDisplayName;
+        if (target.ThreadOrRootId is not null)
+            proto.ThreadOrRootId = target.ThreadOrRootId;
         return proto;
     }
 
@@ -406,11 +428,22 @@ internal static class NetclawProtoMapper
             PayloadTaint = (Configuration.PayloadTaint)proto.PayloadTaint,
             SourceScope = proto.HasSourceScope ? proto.SourceScope : null,
             SourceKind = proto.HasSourceKind ? proto.SourceKind : null,
+            DefaultDeliveryTarget = proto.DefaultDeliveryTarget is null ? null : FromProto(proto.DefaultDeliveryTarget),
+            RequestedDeliveryTarget = proto.RequestedDeliveryTarget is null ? null : FromProto(proto.RequestedDeliveryTarget),
             HasAdoptedContext = proto.HasAdoptedContext,
             HasThirdPartyAdoptedContext = proto.HasThirdPartyAdoptedContext,
             AdoptedSpeakerIds = proto.AdoptedSpeakerIds.ToArray(),
             SupportsInteractiveApproval = proto.SupportsInteractiveApproval
         };
+
+    private static ChannelDeliveryTargetInfo FromProto(
+        Proto.ToolApprovalRequestedProto.Types.TurnContextRecordProto.Types.ChannelDeliveryTargetRecordProto proto)
+        => new(
+            proto.ChannelKey,
+            proto.DestinationKind,
+            proto.DestinationId,
+            proto.HasDestinationDisplayName ? proto.DestinationDisplayName : null,
+            proto.HasThreadOrRootId ? proto.ThreadOrRootId : null);
 
     // ── SessionSnapshot ──
 

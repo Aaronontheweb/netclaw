@@ -8,6 +8,7 @@ using System.Text.Json.Serialization;
 using Akka.Actor;
 using Netclaw.Actors.Serialization;
 using Netclaw.Configuration;
+using Netclaw.Tools;
 
 namespace Netclaw.Actors.Reminders;
 
@@ -81,6 +82,14 @@ public sealed record ReminderDelivery : INetclawSerializableMessage
     /// Resolved and validated at set time. Null for CurrentSession and None.
     /// </summary>
     public string? Address { get; init; }
+
+    /// <summary>
+    /// Resolved standard channel delivery target for Channel delivery. Older
+    /// persisted reminders may only have <see cref="Transport"/> and
+    /// <see cref="Address"/>; execution still handles those fields but new
+    /// reminders store this explicit target for trigger-source routing checks.
+    /// </summary>
+    public ChannelDeliveryTargetInfo? Target { get; init; }
 
     /// <summary>
     /// Session ID for CurrentSession delivery. Null for Channel and None.

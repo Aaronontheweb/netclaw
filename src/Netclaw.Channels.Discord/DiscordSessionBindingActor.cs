@@ -369,7 +369,8 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             Provenance = message.Provenance,
             Contents = liveContents,
             ReceivedAt = message.ReceivedAt,
-            ExecutableText = message.Text
+            ExecutableText = message.Text,
+            DefaultDeliveryTarget = BuildDefaultDeliveryTarget()
         };
 
         if (_hydrationPending && IsAuthorizedSender(message.SenderId.Value))
@@ -1034,6 +1035,8 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             Provenance = message.Source.Provenance,
             Contents = [new TextContent(message.Content)],
             ReceivedAt = _dependencies.TimeProvider.GetUtcNow(),
+            DefaultDeliveryTarget = BuildDefaultDeliveryTarget(),
+            RequestedDeliveryTarget = message.Source.RequestedDeliveryTarget,
             ReminderId = message.Source.ReminderId,
             AckTarget = ackTarget
         };
@@ -1059,6 +1062,14 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
     }
 
     private enum ApprovalLookupResult { Matched, WrongRequester, NotFound }
+
+    private ChannelDeliveryTargetInfo BuildDefaultDeliveryTarget()
+        => new(
+            ChannelType.Discord.ToWireValue(),
+            "destination",
+            _channelId.Value,
+            _channelId.Value,
+            _threadOrMessageId.Value);
 
     private (ApprovalLookupResult Result, PendingApprovalRequest? Pending) ResolvePendingRequest(
         DiscordUserId senderId, Netclaw.Tools.ToolCallId? callId)

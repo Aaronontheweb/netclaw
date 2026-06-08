@@ -7,7 +7,9 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Netclaw.Actors.Channels;
 using Netclaw.Channels;
+using Netclaw.Configuration;
 using Netclaw.Daemon.Configuration;
+using Netclaw.Tools;
 using Xunit;
 
 namespace Netclaw.Daemon.Tests.Configuration;
@@ -85,14 +87,52 @@ public sealed class ChannelSendToolTests
         Assert.Contains("destination.kind='direct_message'", result);
     }
 
+    [Fact]
+    public async Task Send_rejects_trigger_origin_without_requested_delivery_target()
+    {
+        var registry = BuildRegistry(BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination));
+        var tool = new SendChannelMessageTool(registry, new ServiceCollection().BuildServiceProvider());
+        var context = TriggerContext(requestedTarget: null);
+
+        var result = await ExecuteAsync(tool, "slack", "slack", "destination", "C1234567890", context);
+
+        Assert.Contains("trigger-originated channel send requires a configured channel delivery target", result);
+        Assert.Contains("No default output channel will be selected", result);
+    }
+
+    [Fact]
+    public async Task Send_rejects_trigger_origin_destination_that_differs_from_requested_target()
+    {
+        var registry = BuildRegistry(BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination));
+        var tool = new SendChannelMessageTool(registry, new ServiceCollection().BuildServiceProvider());
+        var context = TriggerContext(new ChannelDeliveryTargetInfo("slack", "destination", "C9999999999"));
+
+        var result = await ExecuteAsync(tool, "slack", "slack", "destination", "C1234567890", context);
+
+        Assert.Contains("must match the configured delivery target destination.id 'C9999999999'", result);
+    }
+
+    [Fact]
+    public async Task Send_allows_trigger_origin_to_reach_normal_validation_when_requested_target_matches()
+    {
+        var registry = BuildRegistry(BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination));
+        var tool = new SendChannelMessageTool(registry, new ServiceCollection().BuildServiceProvider());
+        var context = TriggerContext(new ChannelDeliveryTargetInfo("slack", "destination", "not-a-stable-id"));
+
+        var result = await ExecuteAsync(tool, "slack", "slack", "destination", "not-a-stable-id", context);
+
+        Assert.Contains("does not look like a stable Slack ID", result);
+    }
+
     private static Task<string> ExecuteAsync(
         SendChannelMessageTool tool,
         string channelKey,
         string destinationChannelKey,
         string destinationKind,
-        string destinationId)
+        string destinationId,
+        ToolExecutionContext? context = null)
     {
-        return tool.ExecuteAsync(new Dictionary<string, object?>
+        var arguments = new Dictionary<string, object?>
         {
             ["channel_key"] = channelKey,
             ["destination"] = new Dictionary<string, object?>
@@ -103,8 +143,20 @@ public sealed class ChannelSendToolTests
             },
             ["text"] = "Test message",
             ["_rationale"] = "test"
-        }, TestContext.Current.CancellationToken);
+        };
+
+        return context is null
+            ? tool.ExecuteAsync(arguments, TestContext.Current.CancellationToken)
+            : tool.ExecuteAsync(arguments, context, TestContext.Current.CancellationToken);
     }
+
+    private static ToolExecutionContext TriggerContext(ChannelDeliveryTargetInfo? requestedTarget)
+        => new("reminder/test", null)
+        {
+            Audience = TrustAudience.Team,
+            ChannelType = ChannelType.Reminder.ToWireValue(),
+            RequestedDeliveryTarget = requestedTarget
+        };
 
     private static string[] ReadChannelKeyEnum(JsonElement schema)
     {
