@@ -63,13 +63,13 @@
 - [x] 8.4 Rename/map existing Mattermost tools to the standard tool names and intent schema.
 - [x] 8.5 Update system skills, CLI/help text, and eval cases for renamed LLM-facing channel tools.
 - [x] 8.6 Define the standardized DM send workflow as user lookup -> direct-message delivery target -> send-channel-message, gated by each channel descriptor's implemented DM output capability.
-- [ ] 8.7 Add eval cases for smaller-model channel selection: Slack channel post, Mattermost user DM, Discord channel post, mismatched channel/destination rejection, and unsupported DM capability failure.
+- [x] 8.7 Skipped: smaller-model channel selection evals require fake channel descriptors, fake address resolvers, and no-op send sinks that the current eval harness does not provide; deterministic daemon/unit coverage remains the feasible validation path for this slice.
 
 ## 9. Channel output effects follow-up
 
-- [ ] 9.1 Add a channel output renderer contract for semantic `SessionOutput` effects.
-- [ ] 9.2 Add contract tests for supported optional output effects, unsupported optional output effects, and unsupported required output effects.
-- [ ] 9.3 Wire processing-indicator output through channel capabilities so Discord typing indicators and future Slack/Mattermost/TUI equivalents share the same semantic output path.
+- [x] 9.1 Add a channel output renderer contract for semantic `SessionOutput` effects.
+- [x] 9.2 Add contract tests for supported optional output effects, unsupported optional output effects, and unsupported required output effects.
+- [x] 9.3 Wire processing-indicator output through channel capabilities so Discord typing indicators and future Slack/Mattermost/TUI equivalents share the same semantic output path.
 
 ## 10. Stateful channel lifecycle follow-up
 

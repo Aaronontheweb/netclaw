@@ -6,7 +6,9 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Netclaw.Actors.Channels;
+using Netclaw.Actors.Protocol;
 using Netclaw.Channels;
+using Netclaw.Channels.Discord;
 using Netclaw.Channels.Discord.Tools;
 using Netclaw.Channels.Mattermost;
 using Netclaw.Channels.Mattermost.Tools;
@@ -77,6 +79,10 @@ public sealed class ChannelRegistryRegistrationTests
         Assert.Contains(ChannelOutputEffectKind.FileAttachment, descriptors["slack"].SupportedOutputEffects);
         Assert.DoesNotContain(ChannelOutputEffectKind.FileAttachment, descriptors["discord"].SupportedOutputEffects);
         Assert.DoesNotContain(ChannelOutputEffectKind.FileAttachment, descriptors["mattermost"].SupportedOutputEffects);
+
+        Assert.Contains(ChannelOutputEffectKind.ProcessingIndicator, descriptors["discord"].SupportedOutputEffects);
+        Assert.DoesNotContain(ChannelOutputEffectKind.ProcessingIndicator, descriptors["slack"].SupportedOutputEffects);
+        Assert.DoesNotContain(ChannelOutputEffectKind.ProcessingIndicator, descriptors["mattermost"].SupportedOutputEffects);
     }
 
     [Fact]
@@ -112,6 +118,7 @@ public sealed class ChannelRegistryRegistrationTests
         Assert.False(IsRegistered<SendMattermostMessageTool>(services));
         Assert.False(IsRegistered<LookupMattermostUserTool>(services));
         Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(IChannelAddressResolver));
+        Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(IChannelOutputRenderer));
         Assert.False(IsRegistered<SlackTargetResolver>(services));
         Assert.False(IsRegistered<MattermostDestinationAddressResolver>(services));
     }
@@ -140,6 +147,7 @@ public sealed class ChannelRegistryRegistrationTests
         Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(SendMattermostMessageTool)));
         Assert.True(IsRegistered<LookupMattermostUserTool>(services));
         Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(LookupMattermostUserTool)));
+        Assert.True(IsRegistered<DiscordProcessingOutputRenderer>(services));
     }
 
     [Fact]
@@ -322,6 +330,104 @@ public sealed class ChannelRegistryRegistrationTests
         Assert.Same(request, resolver.Request);
     }
 
+    [Fact]
+    public async Task Registry_routes_supported_optional_output_effect_to_registered_renderer()
+    {
+        var key = ChannelDescriptorKey.FromChannelType(ChannelType.Discord);
+        var descriptor = BuildDescriptor(key, ChannelType.Discord, ChannelAddressKind.Destination) with
+        {
+            SupportedOutputEffects = new HashSet<ChannelOutputEffectKind>
+            {
+                ChannelOutputEffectKind.ProcessingIndicator
+            }
+        };
+        var renderer = new TestOutputRenderer(key);
+        var registry = new ChannelRegistry(
+            [new StaticChannelDescriptorProvider(descriptor)],
+            [],
+            outputRenderers: [renderer]);
+        var request = BuildProcessingRenderRequest(key);
+
+        var result = await registry.RenderOutputAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelOutputRenderStatus.Rendered, result.Status);
+        Assert.Same(request, renderer.Request);
+    }
+
+    [Fact]
+    public async Task Registry_ignores_unsupported_optional_output_effect()
+    {
+        var key = ChannelDescriptorKey.FromChannelType(ChannelType.Mattermost);
+        var descriptor = BuildDescriptor(key, ChannelType.Mattermost, ChannelAddressKind.Destination);
+        var registry = new ChannelRegistry(
+            [new StaticChannelDescriptorProvider(descriptor)],
+            []);
+        var request = BuildProcessingRenderRequest(key);
+
+        var result = await registry.RenderOutputAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelOutputRenderStatus.IgnoredUnsupported, result.Status);
+        Assert.Contains("does not support output effect 'ProcessingIndicator'", result.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Registry_fails_loudly_for_unsupported_required_output_effect()
+    {
+        var key = ChannelDescriptorKey.FromChannelType(ChannelType.Slack);
+        var descriptor = BuildDescriptor(key, ChannelType.Slack, ChannelAddressKind.Destination);
+        var registry = new ChannelRegistry(
+            [new StaticChannelDescriptorProvider(descriptor)],
+            []);
+        var request = BuildProcessingRenderRequest(key) with
+        {
+            Requirement = ChannelOutputRequirement.Required
+        };
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await registry.RenderOutputAsync(request, TestContext.Current.CancellationToken));
+
+        Assert.Contains("Required output effects cannot be ignored.", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Registry_fails_loudly_when_supported_output_effect_has_no_renderer()
+    {
+        var key = ChannelDescriptorKey.FromChannelType(ChannelType.Discord);
+        var descriptor = BuildDescriptor(key, ChannelType.Discord, ChannelAddressKind.Destination) with
+        {
+            SupportedOutputEffects = new HashSet<ChannelOutputEffectKind>
+            {
+                ChannelOutputEffectKind.ProcessingIndicator
+            }
+        };
+        var registry = new ChannelRegistry(
+            [new StaticChannelDescriptorProvider(descriptor)],
+            []);
+        var request = BuildProcessingRenderRequest(key);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await registry.RenderOutputAsync(request, TestContext.Current.CancellationToken));
+
+        Assert.Contains(
+            "declares support for output effect 'ProcessingIndicator' but no channel output renderer is registered",
+            ex.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Discord_processing_renderer_triggers_typing_for_processing_start()
+    {
+        var replyClient = new RecordingDiscordReplyClient();
+        var renderer = new DiscordProcessingOutputRenderer(replyClient);
+
+        await renderer.RenderAsync(
+            BuildProcessingRenderRequest(ChannelDescriptorKey.FromChannelType(ChannelType.Discord)),
+            TestContext.Current.CancellationToken);
+
+        var channelId = Assert.Single(replyClient.TypingTriggers);
+        Assert.Equal("channel-1", channelId.Value);
+    }
+
     private static IReadOnlyDictionary<string, ChannelDescriptor> BuildDescriptors(
         IReadOnlyDictionary<string, string?> settings)
     {
@@ -360,6 +466,21 @@ public sealed class ChannelRegistryRegistrationTests
     private static bool IsRegistered<T>(IServiceCollection services)
     {
         return services.Any(descriptor => descriptor.ServiceType == typeof(T));
+    }
+
+    private static ChannelOutputRenderRequest BuildProcessingRenderRequest(ChannelDescriptorKey key)
+    {
+        var target = new ChannelDeliveryTarget(
+            key,
+            new ResolvedChannelAddress(key, ChannelAddressKind.Destination, "channel-1", "channel-1"));
+
+        return new ChannelOutputRenderRequest(
+            target,
+            new ProcessingStateOutput(true)
+            {
+                SessionId = new SessionId("session-1")
+            },
+            ChannelOutputEffectKind.ProcessingIndicator);
     }
 
     private static ChannelDescriptor BuildDescriptor(
@@ -426,6 +547,51 @@ public sealed class ChannelRegistryRegistrationTests
         {
             Request = request;
             return ValueTask.FromResult(Result);
+        }
+    }
+
+    private sealed class TestOutputRenderer(ChannelDescriptorKey key) : IChannelOutputRenderer
+    {
+        public ChannelDescriptorKey Key { get; } = key;
+
+        public ChannelOutputRenderRequest? Request { get; private set; }
+
+        public ValueTask RenderAsync(
+            ChannelOutputRenderRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            Request = request;
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingDiscordReplyClient : IDiscordReplyClient
+    {
+        public List<DiscordReplyChannelId> TypingTriggers { get; } = [];
+
+        public Task<DiscordPostResult> PostReplyAsync(
+            DiscordPostMessage message,
+            CancellationToken cancellationToken = default)
+            => Task.FromResult(DiscordPostResult.Default);
+
+        public Task SetThreadNameAsync(
+            DiscordReplyChannelId threadChannelId,
+            string name,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task UpdateMessageAsync(
+            DiscordReplyChannelId channelId,
+            DiscordMessageId messageId,
+            string text,
+            bool removeComponents = false,
+            CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task TriggerTypingAsync(DiscordReplyChannelId channelId, CancellationToken cancellationToken = default)
+        {
+            TypingTriggers.Add(channelId);
+            return Task.CompletedTask;
         }
     }
 }

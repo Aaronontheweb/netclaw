@@ -171,16 +171,19 @@ public sealed class DiscordChannelHealthTests(ITestOutputHelper output) : TestKi
         FakeDiscordGatewayClient gatewayClient,
         TimeProvider? timeProvider = null)
     {
+        var replyClient = new UnconfiguredDiscordReplyClient();
+
         return new DiscordChannel(
             Sys,
             pipeline: null!,
             new SessionIngressGate(),
             gatewayClient,
-            new UnconfiguredDiscordReplyClient(),
+            replyClient,
+            TestChannelRegistries.DiscordWithProcessingRenderer(replyClient),
             new NullContentScanner(),
             SafePromptInjectionDetector.Instance,
             new FakeHttpClientFactory(),
-            threadHistoryFetcher: null,
+            null,
             NullNotificationSink.Instance,
             timeProvider ?? TimeProvider.System,
             new DiscordChannelOptions

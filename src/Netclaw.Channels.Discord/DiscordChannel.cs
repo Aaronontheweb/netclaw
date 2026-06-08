@@ -9,6 +9,7 @@ using Akka.Pattern;
 using Microsoft.Extensions.Logging;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Hosting;
+using Netclaw.Channels;
 using Netclaw.Channels.Discord.Transport;
 using Netclaw.Configuration;
 using Netclaw.Security;
@@ -22,6 +23,7 @@ public sealed class DiscordChannel : IChannel
     private readonly SessionIngressGate _ingressGate;
     private readonly IDiscordGatewayClient _gatewayClient;
     private readonly IDiscordReplyClient _replyClient;
+    private readonly IChannelRegistry _channelRegistry;
     private readonly IContentScanner _contentScanner;
     private readonly IPromptInjectionDetector _promptInjectionDetector;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -49,6 +51,7 @@ public sealed class DiscordChannel : IChannel
         SessionIngressGate ingressGate,
         IDiscordGatewayClient gatewayClient,
         IDiscordReplyClient replyClient,
+        IChannelRegistry channelRegistry,
         IContentScanner contentScanner,
         IPromptInjectionDetector? promptInjectionDetector,
         IHttpClientFactory httpClientFactory,
@@ -66,6 +69,7 @@ public sealed class DiscordChannel : IChannel
         _ingressGate = ingressGate;
         _gatewayClient = gatewayClient;
         _replyClient = replyClient;
+        _channelRegistry = channelRegistry;
         _contentScanner = contentScanner;
         // Fail loud rather than substituting a no-op detector — a no-op reports
         // every input as safe, silently disabling injection scanning. A null
@@ -180,6 +184,7 @@ public sealed class DiscordChannel : IChannel
                 DefaultChannelId: !string.IsNullOrWhiteSpace(_options.DefaultChannelId)
                     ? new DiscordChannelId(_options.DefaultChannelId)
                     : null,
+                ChannelRegistry: _channelRegistry,
                 ReplyClient: _replyClient,
                 ContentScanner: _contentScanner,
                 AudienceProfiles: _audienceProfiles,

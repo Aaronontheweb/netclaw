@@ -127,6 +127,14 @@ internal sealed class DiscordNetReplyClient : IDiscordReplyClient
         }, new RequestOptions { CancelToken = cancellationToken });
     }
 
+    public async Task TriggerTypingAsync(DiscordReplyChannelId channelId, CancellationToken cancellationToken = default)
+    {
+        var channelSnowflake = ParseSnowflake(channelId.Value, "reply channel ID");
+        var messageChannel = await ResolveMessageChannelAsync(channelSnowflake, channelId.Value);
+
+        await messageChannel.TriggerTypingAsync(new RequestOptions { CancelToken = cancellationToken });
+    }
+
     private async Task<IMessageChannel> ResolveMessageChannelAsync(ulong channelSnowflake, string channelIdForError)
     {
         // Socket cache misses for DM channels — fall back to REST API.

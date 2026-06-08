@@ -153,7 +153,7 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
     private SessionPipelineOptions BuildOptions() => new()
     {
         ChannelType = ChannelType.Discord,
-        Filter = OutputFilter.Text | OutputFilter.Files
+        Filter = OutputFilter.Text | OutputFilter.Files | OutputFilter.ProcessingState
     };
 
     private void Initializing()
@@ -1114,6 +1114,10 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
                 _deliveredThisTurn = true;
                 break;
 
+            case ProcessingStateOutput processing:
+                await RenderProcessingStateAsync(processing);
+                break;
+
             case ToolInteractionRequest request when string.Equals(request.Kind, "approval", StringComparison.OrdinalIgnoreCase):
                 _hasObservedApprovalRequest = true;
                 var pendingApproval = new PendingApprovalRequest(request);
@@ -1185,6 +1189,40 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
                 _deliveredThisTurn = false;
                 break;
         }
+    }
+
+    private async Task RenderProcessingStateAsync(ProcessingStateOutput output)
+    {
+        var requirement = output.IsRequired
+            ? ChannelOutputRequirement.Required
+            : ChannelOutputRequirement.Optional;
+        var request = new ChannelOutputRenderRequest(
+            BuildOutputRenderTarget(),
+            output,
+            ChannelOutputEffectKind.ProcessingIndicator,
+            requirement);
+
+        try
+        {
+            await _dependencies.ChannelRegistry.RenderOutputAsync(request);
+        }
+        catch (Exception ex) when (!output.IsRequired)
+        {
+            _log.Warning(ex, "Failed rendering optional Discord processing indicator");
+        }
+    }
+
+    private ChannelDeliveryTarget BuildOutputRenderTarget()
+    {
+        var channelKey = ChannelDescriptorKey.FromChannelType(ChannelType.Discord);
+        return new ChannelDeliveryTarget(
+            channelKey,
+            new ResolvedChannelAddress(
+                channelKey,
+                ChannelAddressKind.Destination,
+                _replyChannelId.Value,
+                _replyChannelId.Value),
+            _threadOrMessageId.Value);
     }
 
     private async Task<DiscordMessageId?> SafeReplyWithButtonsAsync(ToolInteractionRequest request)

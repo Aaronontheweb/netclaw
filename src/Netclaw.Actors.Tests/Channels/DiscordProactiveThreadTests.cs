@@ -373,6 +373,8 @@ public sealed class DiscordProactiveThreadActorTests(ITestOutputHelper output) :
         SessionIngressGate? ingressGate = null,
         Func<SessionId, DiscordChannelId, DiscordReplyChannelId, DiscordThreadOrMessageId, DiscordMessageId?, DiscordGatewayDependencies, Props>? sessionPropsFactory = null)
     {
+        var replyClient = new UnconfiguredDiscordReplyClient();
+
         return new DiscordGatewayDependencies(
             Pipeline: null!,
             IngressGate: ingressGate,
@@ -384,7 +386,8 @@ public sealed class DiscordProactiveThreadActorTests(ITestOutputHelper output) :
                 AllowedChannelIds = ["ch-1"]
             },
             DefaultChannelId: null,
-            ReplyClient: new UnconfiguredDiscordReplyClient(),
+            ChannelRegistry: TestChannelRegistries.DiscordWithProcessingRenderer(replyClient),
+            ReplyClient: replyClient,
             ContentScanner: new NullContentScanner(),
             AudienceProfiles: TestDiscordGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestDiscordGatewayDeps.DefaultVisionCapableModel,

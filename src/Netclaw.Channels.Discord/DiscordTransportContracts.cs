@@ -92,6 +92,8 @@ public interface IDiscordReplyClient
         string text,
         bool removeComponents = false,
         CancellationToken cancellationToken = default);
+
+    Task TriggerTypingAsync(DiscordReplyChannelId channelId, CancellationToken cancellationToken = default);
 }
 
 public sealed record DiscordPostMessage(
@@ -178,4 +180,8 @@ public sealed class UnconfiguredDiscordReplyClient : IDiscordReplyClient
         bool removeComponents = false, CancellationToken cancellationToken = default)
         => throw new InvalidOperationException(
             "Discord channel attempted to update a message, but no Discord reply client is configured.");
+
+    public Task TriggerTypingAsync(DiscordReplyChannelId channelId, CancellationToken cancellationToken = default)
+        => throw new InvalidOperationException(
+            "Discord channel attempted to trigger typing, but no Discord reply client is configured.");
 }

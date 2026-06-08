@@ -304,6 +304,7 @@ public sealed class DiscordFileFlowIntegrationTests : TestKit
                 AllowDirectMessages = true,
             },
             DefaultChannelId: null,
+            ChannelRegistry: TestChannelRegistries.DiscordWithProcessingRenderer(_replyClient),
             ReplyClient: _replyClient,
             ContentScanner: contentScanner ?? new NullContentScanner(),
             AudienceProfiles: TestDiscordGatewayDeps.DefaultAudienceProfiles,
@@ -438,6 +439,9 @@ public sealed class DiscordFileFlowIntegrationTests : TestKit
 
         public Task UpdateMessageAsync(DiscordReplyChannelId channelId, DiscordMessageId messageId, string text,
             bool removeComponents = false, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task TriggerTypingAsync(DiscordReplyChannelId channelId, CancellationToken cancellationToken = default)
             => Task.CompletedTask;
     }
 }

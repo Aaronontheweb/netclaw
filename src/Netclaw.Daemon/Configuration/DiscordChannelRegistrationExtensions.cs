@@ -49,6 +49,7 @@ public static class DiscordChannelRegistrationExtensions
         services.AddSingleton<IDiscordGatewayClient, DiscordNetGatewayClient>();
         services.AddSingleton<IDiscordReplyClient, DiscordNetReplyClient>();
         services.AddSingleton<IDiscordOutboundClient, DiscordNetOutboundClient>();
+        services.AddChannelOutputRenderer<DiscordProcessingOutputRenderer>();
         services.AddSingleton<IThreadHistoryFetcher>(sp =>
         {
             var client = sp.GetRequiredService<DiscordSocketClient>();
@@ -125,7 +126,8 @@ public static class DiscordChannelRegistrationExtensions
             SupportedOutputEffects: new HashSet<ChannelOutputEffectKind>
             {
                 ChannelOutputEffectKind.TextMessage,
-                ChannelOutputEffectKind.InteractiveApproval
+                ChannelOutputEffectKind.InteractiveApproval,
+                ChannelOutputEffectKind.ProcessingIndicator
             });
     }
 }

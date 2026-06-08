@@ -6,6 +6,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Netclaw.Actors.Channels;
+using Netclaw.Actors.Protocol;
 using Netclaw.Channels.Telemetry;
 
 namespace Netclaw.Channels;
@@ -228,6 +229,41 @@ public sealed record ChannelDeliveryTarget
     public string? ThreadOrRootId { get; init; }
 }
 
+public enum ChannelOutputRenderStatus
+{
+    Rendered,
+    IgnoredUnsupported
+}
+
+public enum ChannelOutputRequirement
+{
+    Optional,
+    Required
+}
+
+public sealed record ChannelOutputRenderResult(ChannelOutputRenderStatus Status, string? Detail = null)
+{
+    public static readonly ChannelOutputRenderResult Rendered = new(ChannelOutputRenderStatus.Rendered);
+}
+
+public sealed record ChannelOutputRenderRequest(
+    ChannelDeliveryTarget Target,
+    SessionOutput Output,
+    ChannelOutputEffectKind EffectKind,
+    ChannelOutputRequirement Requirement = ChannelOutputRequirement.Optional)
+{
+    public bool IsRequired => Requirement == ChannelOutputRequirement.Required;
+}
+
+public interface IChannelOutputRenderer
+{
+    ChannelDescriptorKey Key { get; }
+
+    ValueTask RenderAsync(
+        ChannelOutputRenderRequest request,
+        CancellationToken cancellationToken = default);
+}
+
 public sealed record ChannelPrincipal(
     string StableId,
     string? DisplayName = null);
@@ -283,8 +319,14 @@ public interface IChannelRegistry
 
     IChannelAddressResolver GetResolver(ChannelDescriptorKey key, ChannelAddressKind addressKind);
 
+    IChannelOutputRenderer GetOutputRenderer(ChannelDescriptorKey key);
+
     ValueTask<ChannelAddressResolutionResult> ResolveAddressAsync(
         ChannelAddressResolutionRequest request,
+        CancellationToken cancellationToken = default);
+
+    ValueTask<ChannelOutputRenderResult> RenderOutputAsync(
+        ChannelOutputRenderRequest request,
         CancellationToken cancellationToken = default);
 }
 
@@ -293,11 +335,13 @@ public sealed class ChannelRegistry : IChannelRegistry
     private readonly IReadOnlyDictionary<ChannelDescriptorKey, ChannelDescriptor> _descriptors;
     private readonly IReadOnlyDictionary<ChannelDescriptorKey, IChannelRuntimeSnapshotProvider> _snapshotProviders;
     private readonly IReadOnlyDictionary<(ChannelDescriptorKey Key, ChannelAddressKind AddressKind), IChannelAddressResolver> _addressResolvers;
+    private readonly IReadOnlyDictionary<ChannelDescriptorKey, IChannelOutputRenderer> _outputRenderers;
 
     public ChannelRegistry(
         IEnumerable<IChannelDescriptorProvider> descriptorProviders,
         IEnumerable<IChannelRuntimeSnapshotProvider> snapshotProviders,
-        IEnumerable<IChannelAddressResolver>? addressResolvers = null)
+        IEnumerable<IChannelAddressResolver>? addressResolvers = null,
+        IEnumerable<IChannelOutputRenderer>? outputRenderers = null)
     {
         ArgumentNullException.ThrowIfNull(descriptorProviders);
         ArgumentNullException.ThrowIfNull(snapshotProviders);
@@ -305,6 +349,7 @@ public sealed class ChannelRegistry : IChannelRegistry
         _descriptors = BuildDescriptorLookup(descriptorProviders);
         _snapshotProviders = BuildSnapshotProviderLookup(snapshotProviders);
         _addressResolvers = BuildAddressResolverLookup(addressResolvers ?? []);
+        _outputRenderers = BuildOutputRendererLookup(outputRenderers ?? []);
     }
 
     public IReadOnlyCollection<ChannelDescriptor> ListChannels()
@@ -345,6 +390,16 @@ public sealed class ChannelRegistry : IChannelRegistry
             $"No channel address resolver is registered for key '{key}' and address kind '{addressKind}'.");
     }
 
+    public IChannelOutputRenderer GetOutputRenderer(ChannelDescriptorKey key)
+    {
+        _ = GetChannel(key);
+
+        if (_outputRenderers.TryGetValue(key, out var renderer))
+            return renderer;
+
+        throw new InvalidOperationException($"No channel output renderer is registered for key '{key}'.");
+    }
+
     public async ValueTask<ChannelAddressResolutionResult> ResolveAddressAsync(
         ChannelAddressResolutionRequest request,
         CancellationToken cancellationToken = default)
@@ -353,6 +408,33 @@ public sealed class ChannelRegistry : IChannelRegistry
 
         var resolver = GetResolver(request.ChannelKey, request.AddressKind);
         return await resolver.ResolveAsync(request, cancellationToken);
+    }
+
+    public async ValueTask<ChannelOutputRenderResult> RenderOutputAsync(
+        ChannelOutputRenderRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var descriptor = GetChannel(request.Target.ChannelKey);
+        if (!descriptor.SupportedOutputEffects.Contains(request.EffectKind))
+        {
+            var detail = $"Channel '{descriptor.Key}' does not support output effect '{request.EffectKind}'.";
+            if (request.IsRequired)
+                throw new InvalidOperationException($"{detail} Required output effects cannot be ignored.");
+
+            return new ChannelOutputRenderResult(ChannelOutputRenderStatus.IgnoredUnsupported, detail);
+        }
+
+        if (!_outputRenderers.TryGetValue(descriptor.Key, out var renderer))
+        {
+            throw new InvalidOperationException(
+                $"Channel '{descriptor.Key}' declares support for output effect '{request.EffectKind}' " +
+                "but no channel output renderer is registered.");
+        }
+
+        await renderer.RenderAsync(request, cancellationToken);
+        return ChannelOutputRenderResult.Rendered;
     }
 
     private static IReadOnlyDictionary<ChannelDescriptorKey, ChannelDescriptor> BuildDescriptorLookup(
@@ -403,6 +485,20 @@ public sealed class ChannelRegistry : IChannelRegistry
         }
 
         return addressResolvers;
+    }
+
+    private static IReadOnlyDictionary<ChannelDescriptorKey, IChannelOutputRenderer> BuildOutputRendererLookup(
+        IEnumerable<IChannelOutputRenderer> renderers)
+    {
+        var outputRenderers = new Dictionary<ChannelDescriptorKey, IChannelOutputRenderer>();
+
+        foreach (var renderer in renderers)
+        {
+            if (!outputRenderers.TryAdd(renderer.Key, renderer))
+                throw new InvalidOperationException($"Duplicate channel output renderer key '{renderer.Key}' registered.");
+        }
+
+        return outputRenderers;
     }
 }
 
@@ -555,6 +651,16 @@ public static class ChannelRegistryServiceCollectionExtensions
 
         services.AddSingleton<TResolver>();
         services.AddSingleton<IChannelAddressResolver>(sp => sp.GetRequiredService<TResolver>());
+        return services;
+    }
+
+    public static IServiceCollection AddChannelOutputRenderer<TRenderer>(this IServiceCollection services)
+        where TRenderer : class, IChannelOutputRenderer
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<TRenderer>();
+        services.AddSingleton<IChannelOutputRenderer>(sp => sp.GetRequiredService<TRenderer>());
         return services;
     }
 

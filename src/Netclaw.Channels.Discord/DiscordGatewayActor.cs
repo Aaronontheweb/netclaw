@@ -7,6 +7,7 @@ using Akka.Actor;
 using Akka.Event;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
+using Netclaw.Channels;
 using Netclaw.Channels.Telemetry;
 using Netclaw.Configuration;
 using Netclaw.Security;
@@ -150,6 +151,7 @@ public sealed record DiscordGatewayDependencies(
     TimeProvider TimeProvider,
     DiscordChannelOptions Options,
     DiscordChannelId? DefaultChannelId,
+    IChannelRegistry ChannelRegistry,
     IDiscordReplyClient ReplyClient,
     IContentScanner ContentScanner,
     ToolAudienceProfiles AudienceProfiles,
