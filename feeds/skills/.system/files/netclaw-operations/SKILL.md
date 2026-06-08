@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.10.0"
+  version: "2.10.1"
 ---
 
 # Netclaw Operations
@@ -154,7 +154,9 @@ stable channel/user ID:
 
 Both tools require `channel_key` as the first argument. Use the returned
 `stable_id` exactly; if the lookup is ambiguous, pick from the returned
-candidates instead of guessing. Discord user/DM lookup is not supported yet.
+candidates instead of guessing. Do not use channel-specific lookup aliases such
+as `lookup_slack_user`; lookup is intentionally routed through the generic
+channel tools. Discord user/DM lookup is not supported yet.
 
 `send_discord_message` posts the `message` to a Discord channel and creates a
 conversation thread off it, so user replies route back to a live session.

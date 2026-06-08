@@ -20,7 +20,7 @@ namespace Netclaw.Channels.Slack.Tools;
     "Look up a Slack user by name, display name, or email. " +
     "Returns their user ID for use with send_slack_message.",
     Grant = "builtin")]
-public sealed partial class LookupSlackUserTool : NetclawTool<LookupSlackUserTool.Params>, IChannelTool, IChannelAddressResolver
+public sealed partial class LookupSlackUserTool : NetclawTool<LookupSlackUserTool.Params>, IChannelAddressResolver
 {
     private static readonly IReadOnlySet<ChannelAddressKind> UserAddressKinds = new HashSet<ChannelAddressKind>
     {

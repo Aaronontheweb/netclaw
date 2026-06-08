@@ -126,9 +126,12 @@ public sealed class ChannelRegistryRegistrationTests
             ["Mattermost:Enabled"] = "true"
         });
 
-        Assert.Equal(5, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelTool)));
+        Assert.Equal(6, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelTool)));
         Assert.True(IsRegistered<SendSlackMessageTool>(services));
         Assert.True(IsRegistered<LookupSlackUserTool>(services));
+        Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(LookupSlackUserTool)));
+        Assert.True(IsRegistered<LookupChannelUserTool>(services));
+        Assert.True(IsRegistered<LookupChannelDestinationTool>(services));
         Assert.True(IsRegistered<SendDiscordMessageTool>(services));
         Assert.True(IsRegistered<SendMattermostMessageTool>(services));
         Assert.True(IsRegistered<LookupMattermostUserTool>(services));
@@ -171,7 +174,7 @@ public sealed class ChannelRegistryRegistrationTests
             descriptors["slack"],
             services,
             new ChannelToolExpectation(ChannelToolIntentKind.SendMessage, typeof(SendSlackMessageTool), "send_slack_message"),
-            new ChannelToolExpectation(ChannelToolIntentKind.LookupUser, typeof(LookupSlackUserTool), "lookup_slack_user"));
+            new ChannelToolExpectation(ChannelToolIntentKind.LookupUser, typeof(LookupChannelUserTool), null));
         AssertToolIntents(
             descriptors["discord"],
             services,
@@ -343,6 +346,7 @@ public sealed class ChannelRegistryRegistrationTests
         services.AddSlackChannelIntegration(configuration);
         services.AddDiscordChannelIntegration(configuration);
         services.AddMattermostChannelIntegration(configuration);
+        services.AddChannelLookupTools(configuration);
 
         return services;
     }
@@ -384,6 +388,9 @@ public sealed class ChannelRegistryRegistrationTests
         {
             Assert.Contains(services, serviceDescriptor => serviceDescriptor.ServiceType == expectedTool.ToolType);
 
+            if (expectedTool.ToolName is null)
+                continue;
+
             var attribute = Assert.Single(expectedTool.ToolType.GetCustomAttributes(
                 typeof(NetclawToolAttribute), inherit: false));
             Assert.Equal(expectedTool.ToolName, ((NetclawToolAttribute)attribute).Name);
@@ -393,7 +400,7 @@ public sealed class ChannelRegistryRegistrationTests
     private sealed record ChannelToolExpectation(
         ChannelToolIntentKind Intent,
         Type ToolType,
-        string ToolName);
+        string? ToolName);
 
     private sealed class TestAddressResolver(
         ChannelDescriptorKey key,

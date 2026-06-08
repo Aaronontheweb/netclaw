@@ -98,7 +98,8 @@ public static class SlackChannelRegistrationExtensions
                 context.ServiceProvider().GetRequiredService<SlackApprovalHandler>());
         });
 
-        // Channel-specific LLM tools: registered as INetclawTool singletons.
+        // Channel-specific LLM send tool: registered as an IChannelTool singleton.
+        // User lookup is exposed through the generic lookup_channel_user tool.
         // The gateway actor ref and default channel ID are resolved lazily via
         // SlackChannel since they're not available until StartAsync completes.
         services.AddSingleton<SendSlackMessageTool>(sp =>
@@ -119,7 +120,6 @@ public static class SlackChannelRegistrationExtensions
             var timeProvider = sp.GetRequiredService<TimeProvider>();
             return new LookupSlackUserTool(slackApi.Users, slackOptions, timeProvider);
         });
-        services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<LookupSlackUserTool>());
         services.AddSingleton<IChannelAddressResolver>(sp => sp.GetRequiredService<LookupSlackUserTool>());
 
         services.AddSingleton<IHostedService>(sp =>
