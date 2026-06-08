@@ -52,13 +52,6 @@ public sealed class SessionConfigDefaultsTests
     }
 
     [Fact]
-    public void Max_empty_responses_per_turn_defaults_to_10()
-    {
-        var config = new SessionConfig();
-        Assert.Equal(10, config.MaxEmptyResponsesPerTurn);
-    }
-
-    [Fact]
     public void BindFromConfiguration_supports_legacy_root_level_tuning_keys()
     {
         var config = new ConfigurationBuilder()

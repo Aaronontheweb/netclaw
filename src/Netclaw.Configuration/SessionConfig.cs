@@ -27,17 +27,6 @@ public sealed record SessionConfig
     public int MaxToolIterationsPerTurn { get; init; } = 60;
 
     /// <summary>
-    /// Maximum number of empty or thinking-only LLM responses tolerated within a
-    /// single turn before the turn is escalated (one final tools-disabled attempt)
-    /// and then failed. Unlike the consecutive empty-response guards, this ceiling
-    /// is cumulative across the whole turn and is NOT reset when the model makes
-    /// genuine tool calls — so a reasoning model that interleaves tool calls with
-    /// thinking-only responses still terminates instead of spinning until
-    /// <see cref="MaxToolIterationsPerTurn"/>.
-    /// </summary>
-    public int MaxEmptyResponsesPerTurn { get; init; } = 10;
-
-    /// <summary>
     /// Idle seconds before the session memory observer triggers distillation.
     /// The observer watches the conversation stream and distills memories
     /// when the session goes quiet for this duration.
@@ -124,11 +113,6 @@ public sealed record SessionConfig
         return new SessionConfig
         {
             MaxToolIterationsPerTurn = raw.MaxToolIterationsPerTurn,
-            // Clamp to >= 1 like the timeout fields below: schema minimum:1 is only
-            // enforced by the advisory `netclaw doctor` check, not at bind time, so a
-            // stray 0/negative here would otherwise escalate-and-fail every turn on
-            // the first empty/thinking-only response.
-            MaxEmptyResponsesPerTurn = Math.Max(1, raw.MaxEmptyResponsesPerTurn),
             MemoryObserverIdleSeconds = raw.MemoryObserverIdleSeconds,
             IdleTimeout = raw.IdleTimeout,
             TurnLlmTimeout = turnLlmTimeout,
@@ -189,7 +173,6 @@ public sealed record SessionConfig
     private sealed record RawSessionConfig
     {
         public int MaxToolIterationsPerTurn { get; init; } = 60;
-        public int MaxEmptyResponsesPerTurn { get; init; } = 10;
         public int MemoryObserverIdleSeconds { get; init; } = 90;
         public TimeSpan IdleTimeout { get; init; } = TimeSpan.FromMinutes(30);
         public int TurnLlmTimeoutSeconds { get; init; } = 180;
