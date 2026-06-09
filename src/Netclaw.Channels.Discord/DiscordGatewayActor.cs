@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="DiscordGatewayActor.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -14,34 +14,29 @@ using Netclaw.Security;
 
 namespace Netclaw.Channels.Discord;
 
-public sealed class DiscordGatewayActor : ReceiveActor
+public sealed class DiscordGatewayActor : ChannelGatewayActor<DiscordChannelId>
 {
-    private const int MaxProcessedEventIds = 4096;
-
     private readonly DiscordGatewayDependencies _dependencies;
-    private readonly ILoggingAdapter _log;
-    private readonly Dictionary<DiscordEventId, byte> _processedEventIds = [];
-    private readonly Queue<DiscordEventId> _processedEventOrder = new();
 
     public DiscordGatewayActor(DiscordGatewayDependencies dependencies)
+        : base(ChannelType.Discord)
     {
         _dependencies = dependencies;
-        _log = Context.GetLogger().WithContext("Adapter", "discord");
 
         Receive<DiscordGatewayMessage>(message =>
         {
             ChannelTelemetry.For(ChannelType.Discord).RecordEventReceived("message");
 
-            if (!TryMarkEventProcessed(message.EventId))
+            if (!TryMarkEventProcessed(message.EventId.Value))
             {
-                _log.Debug("Dropping duplicate Discord event {0}", message.EventId.Value);
+                Log.Debug("Dropping duplicate Discord event {0}", message.EventId.Value);
                 ChannelTelemetry.For(ChannelType.Discord).RecordEventFiltered("duplicate_event");
                 return;
             }
 
-            var conversation = GetOrCreateConversationActor(message.ChannelId);
+            var conversation = GetOrCreateConversation(message.ChannelId);
 
-            _log.Debug("Routing Discord event {0} to conversation {1}", message.EventId.Value, message.ChannelId);
+            Log.Debug("Routing Discord event {0} to conversation {1}", message.EventId.Value, message.ChannelId);
             conversation.Forward(message);
         });
 
@@ -49,31 +44,10 @@ public sealed class DiscordGatewayActor : ReceiveActor
         {
             ChannelTelemetry.For(ChannelType.Discord).RecordEventReceived("interaction");
 
-            var conversation = GetOrCreateConversationActor(interaction.ChannelId);
+            var conversation = GetOrCreateConversation(interaction.ChannelId);
 
-            _log.Debug("Routing Discord interaction to conversation {0}", interaction.ChannelId);
+            Log.Debug("Routing Discord interaction to conversation {0}", interaction.ChannelId);
             conversation.Forward(interaction);
-        });
-
-        // No ACL call — audience was validated at reminder mint time by
-        // the reminder-audience-authorization capability.
-        Receive<DeliverTrustedSessionTurn>(message =>
-        {
-            if (!TryParseDiscordSessionId(message.SessionId, out var channelId, out _))
-            {
-                _log.Warning(
-                    "Dropping DeliverTrustedSessionTurn with unparseable Discord SessionId {SessionId}",
-                    message.SessionId.Value);
-                Sender.Tell(CommandNack.For(message.SessionId, "Invalid Discord SessionId format"));
-                return;
-            }
-
-            var conversation = GetOrCreateConversationActor(channelId);
-
-            _log.Debug(
-                "Routing DeliverTrustedSessionTurn session={Session} channel={Channel}",
-                message.SessionId.Value, channelId.Value);
-            conversation.Forward(message);
         });
 
         // Proactively-posted thread: the message is already in Discord; route
@@ -81,9 +55,9 @@ public sealed class DiscordGatewayActor : ReceiveActor
         // the ProactiveThreadAck reply flows back to the original asker.
         Receive<StartProactiveThread>(message =>
         {
-            var conversation = GetOrCreateConversationActor(message.ChannelId);
+            var conversation = GetOrCreateConversation(message.ChannelId);
 
-            _log.Debug("Routing proactive thread to conversation {0}", message.ChannelId.Value);
+            Log.Debug("Routing proactive thread to conversation {0}", message.ChannelId.Value);
             conversation.Forward(message);
         });
     }
@@ -112,37 +86,14 @@ public sealed class DiscordGatewayActor : ReceiveActor
         return true;
     }
 
-    private IActorRef GetOrCreateConversationActor(DiscordChannelId channelId)
-    {
-        var actorName = Uri.EscapeDataString(channelId.Value);
-        var existing = Context.Child(actorName);
-        if (!existing.IsNobody())
-            return existing;
+    protected override string ChannelIdValue(DiscordChannelId channelId) => channelId.Value;
 
-        var props = _dependencies.ConversationPropsFactory?.Invoke(channelId, _dependencies)
+    protected override Props CreateConversationProps(DiscordChannelId channelId) =>
+        _dependencies.ConversationPropsFactory?.Invoke(channelId, _dependencies)
             ?? DiscordConversationActor.CreateProps(channelId, _dependencies);
-        return Context.ActorOf(props, actorName);
-    }
 
-    private bool TryMarkEventProcessed(DiscordEventId eventId)
-    {
-        if (string.IsNullOrWhiteSpace(eventId.Value))
-        {
-            _log.Warning("Rejecting Discord event with empty EventId — cannot deduplicate");
-            return false;
-        }
-
-        if (!_processedEventIds.TryAdd(eventId, 0))
-            return false;
-
-        _processedEventOrder.Enqueue(eventId);
-
-        while (_processedEventIds.Count > MaxProcessedEventIds
-               && _processedEventOrder.TryDequeue(out var oldestEventId))
-            _processedEventIds.Remove(oldestEventId);
-
-        return true;
-    }
+    protected override bool TryParseSessionChannelId(SessionId sessionId, out DiscordChannelId channelId) =>
+        TryParseDiscordSessionId(sessionId, out channelId, out _);
 }
 
 public sealed record DiscordGatewayDependencies(
