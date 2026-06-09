@@ -28,6 +28,7 @@ internal sealed class MattermostNetGatewayClient : IMattermostGatewayClient, IMa
 
     public event Func<MattermostGatewayMessage, Task>? MessageReceived;
     public event Func<string, Task>? CleanReconnectRequired;
+    public event Func<MattermostGatewaySnapshot, Task>? ConnectionRestored;
 
     public bool IsConnected => _latestSnapshot.IsConnected;
     public bool IsReady => _latestSnapshot.IsReady;
@@ -85,6 +86,12 @@ internal sealed class MattermostNetGatewayClient : IMattermostGatewayClient, IMa
 
     Task IMattermostGatewayEventSink.PublishCleanReconnectRequiredAsync(string reason) =>
         CleanReconnectRequired?.Invoke(reason) ?? Task.CompletedTask;
+
+    Task IMattermostGatewayEventSink.PublishConnectionRestoredAsync(MattermostGatewaySnapshot snapshot)
+    {
+        UpdateSnapshot(snapshot);
+        return ConnectionRestored?.Invoke(snapshot) ?? Task.CompletedTask;
+    }
 }
 
 internal sealed class MattermostNetGatewayTransport : IMattermostGatewayTransport

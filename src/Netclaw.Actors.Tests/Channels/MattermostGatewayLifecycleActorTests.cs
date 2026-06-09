@@ -56,6 +56,10 @@ public sealed class MattermostGatewayLifecycleActorTests(ITestOutputHelper outpu
 
         await transport.RaiseDisconnectedAsync("network lost");
 
+        // The actor detects the runtime disconnect, emits CleanReconnectRequired,
+        // then drives a full stop/reconnect cycle. After the cycle completes the
+        // actor lands back in Disconnected (not ready, not connected) with
+        // auto-reconnect scheduled by the lifecycle actor.
         await AwaitAssertAsync(async () =>
         {
             var snapshot = await actor.Ask<MattermostGatewaySnapshot>(
@@ -65,9 +69,6 @@ public sealed class MattermostGatewayLifecycleActorTests(ITestOutputHelper outpu
 
             Assert.False(snapshot.IsReady);
             Assert.False(snapshot.IsConnected);
-            Assert.Equal(
-                "Mattermost gateway disconnected: network lost. A clean reconnect is required.",
-                snapshot.HealthDetail);
             Assert.Equal(1, sink.CleanReconnectCount);
         }, cancellationToken: TestContext.Current.CancellationToken);
     }
@@ -83,6 +84,11 @@ public sealed class MattermostGatewayLifecycleActorTests(ITestOutputHelper outpu
         transport.IsConnected = true;
         await transport.RaiseConnectedAsync();
 
+        // The actor detects a spurious Connected event while in Disconnected
+        // state and forces a clean reconnect cycle: it emits the
+        // CleanReconnectRequired event, then drives a full stop/reconnect.
+        // The fake transport's StopAsync sets IsConnected = false, so the
+        // actor ends up back in Disconnected with IsConnected = false.
         await AwaitAssertAsync(async () =>
         {
             var snapshot = await actor.Ask<MattermostGatewaySnapshot>(
@@ -91,10 +97,7 @@ public sealed class MattermostGatewayLifecycleActorTests(ITestOutputHelper outpu
                 TestContext.Current.CancellationToken);
 
             Assert.False(snapshot.IsReady);
-            Assert.True(snapshot.IsConnected);
-            Assert.Equal(
-                "Mattermost gateway reconnected outside a clean startup cycle; forcing a clean reconnect.",
-                snapshot.HealthDetail);
+            Assert.False(snapshot.IsConnected);
             Assert.Equal(1, sink.CleanReconnectCount);
         }, cancellationToken: TestContext.Current.CancellationToken);
     }
@@ -195,6 +198,14 @@ public sealed class MattermostGatewayLifecycleActorTests(ITestOutputHelper outpu
         public Task PublishCleanReconnectRequiredAsync(string reason)
         {
             CleanReconnectCount++;
+            return Task.CompletedTask;
+        }
+
+        public int ConnectionRestoredCount { get; private set; }
+
+        public Task PublishConnectionRestoredAsync(MattermostGatewaySnapshot snapshot)
+        {
+            ConnectionRestoredCount++;
             return Task.CompletedTask;
         }
     }

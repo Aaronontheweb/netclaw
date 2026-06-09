@@ -13,6 +13,8 @@ internal interface IMattermostGatewayEventSink
     Task PublishMessageAsync(MattermostGatewayMessage message);
 
     Task PublishCleanReconnectRequiredAsync(string reason);
+
+    Task PublishConnectionRestoredAsync(MattermostGatewaySnapshot snapshot);
 }
 
 internal interface IMattermostGatewayTransport
@@ -44,6 +46,9 @@ internal sealed class MattermostNetGatewayLifecycleActor : ReceiveActor
     private readonly IMattermostGatewayEventSink _eventSink;
     private readonly ILogger _logger;
 
+    private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(5);
+
     private bool _isReadyBehavior;
     private long _connectAttempt;
     private IActorRef _self = ActorRefs.Nobody;
@@ -52,6 +57,12 @@ internal sealed class MattermostNetGatewayLifecycleActor : ReceiveActor
     private string? _botUsername;
     private string? _healthDetail = DisconnectedDetail;
     private bool _cleanReconnectEmitted;
+
+    private bool _autoReconnect;
+    private string? _retryServerUrl;
+    private string? _retryBotToken;
+    private TimeSpan _retryDelay;
+    private ICancelable? _retryTimer;
 
     public MattermostNetGatewayLifecycleActor(
         IMattermostGatewayTransport transport,
@@ -94,8 +105,25 @@ internal sealed class MattermostNetGatewayLifecycleActor : ReceiveActor
     {
         _isReadyBehavior = false;
         ReceiveCommon();
-        Receive<Connect>(connect => StartConnecting(connect.ServerUrl, connect.BotToken, Sender));
-        Receive<Disconnect>(_ => StartDisconnecting(Sender));
+        Receive<Connect>(connect =>
+        {
+            StoreRetryCredentials(connect.ServerUrl, connect.BotToken);
+            _autoReconnect = true;
+            StartConnecting(connect.ServerUrl, connect.BotToken, Sender);
+        });
+        Receive<Disconnect>(_ =>
+        {
+            CancelAutoReconnect();
+            StartDisconnecting(Sender);
+        });
+        Receive<RetryConnect>(_ =>
+        {
+            if (!_autoReconnect || _retryServerUrl is null || _retryBotToken is null)
+                return;
+
+            _logger.LogInformation("Attempting Mattermost reconnect (delay was {Delay}).", _retryDelay);
+            StartConnecting(_retryServerUrl, _retryBotToken, ActorRefs.Nobody);
+        });
         Receive<MattermostConnected>(_ => RequestCleanReconnect(
             "Mattermost gateway reconnected outside a clean startup cycle; forcing a clean reconnect."));
         Receive<MattermostDisconnected>(HandleDisconnectedWhileNotReady);
@@ -248,6 +276,7 @@ internal sealed class MattermostNetGatewayLifecycleActor : ReceiveActor
                 "Mattermost gateway connected but the current bot identity is unavailable.");
             _healthDetail = failure.Message;
             FailPendingConnect(failure);
+            ScheduleRetryIfEnabled();
             Become(Disconnected);
             return;
         }
@@ -259,14 +288,20 @@ internal sealed class MattermostNetGatewayLifecycleActor : ReceiveActor
                 "Mattermost gateway started but the WebSocket is not connected.");
             _healthDetail = failure.Message;
             FailPendingConnect(failure);
+            ScheduleRetryIfEnabled();
             Become(Disconnected);
             return;
         }
 
         _botUserId = new MattermostUserId(started.Identity.UserId);
         _botUsername = started.Identity.Username;
+        _retryDelay = TimeSpan.Zero;
+        var isRetry = _pendingConnectReplyTo is null;
         TransitionToReady();
         CompletePendingConnect(CurrentSnapshot());
+
+        if (isRetry)
+            Dispatch("Mattermost connection restored", () => _eventSink.PublishConnectionRestoredAsync(CurrentSnapshot()));
     }
 
     private void HandleStartFailed(MattermostStartFailed failed)
@@ -274,13 +309,31 @@ internal sealed class MattermostNetGatewayLifecycleActor : ReceiveActor
         if (failed.Attempt != _connectAttempt)
             return;
 
-        _healthDetail = failed.Exception.Message;
-        FailPendingConnect(failed.Exception);
+        var classified = MattermostConnectFailureClassifier.Classify(failed.Exception);
+        _healthDetail = classified.Message;
+        FailPendingConnect(classified);
+
+        if (classified.IsFatal)
+        {
+            _logger.LogError(classified,
+                "Mattermost connect hit a fatal failure; auto-reconnect disabled. {Reason}",
+                classified.Message);
+            _autoReconnect = false;
+        }
+        else
+        {
+            ScheduleRetryIfEnabled();
+        }
+
         Become(Disconnected);
     }
 
-    private void StartDisconnecting(IActorRef replyTo)
+    private void StartDisconnecting(IActorRef replyTo, bool preserveAutoReconnect = false)
     {
+        CancelRetryTimer();
+        if (!preserveAutoReconnect)
+            _autoReconnect = false;
+
         ++_connectAttempt;
         _healthDetail = "Mattermost gateway disconnecting.";
         _cleanReconnectEmitted = false;
@@ -317,15 +370,19 @@ internal sealed class MattermostNetGatewayLifecycleActor : ReceiveActor
         _healthDetail = DisconnectedDetail;
         _botUserId = null;
         _botUsername = null;
+        ScheduleRetryIfEnabled();
         Become(Disconnected);
-        stopped.ReplyTo.Tell(CurrentSnapshot());
+        if (!stopped.ReplyTo.Equals(ActorRefs.Nobody))
+            stopped.ReplyTo.Tell(CurrentSnapshot());
     }
 
     private void HandleStopFailed(MattermostStopFailed failed)
     {
         _healthDetail = failed.Exception.Message;
+        ScheduleRetryIfEnabled();
         Become(Disconnected);
-        failed.ReplyTo.Tell(new Status.Failure(failed.Exception));
+        if (!failed.ReplyTo.Equals(ActorRefs.Nobody))
+            failed.ReplyTo.Tell(new Status.Failure(failed.Exception));
     }
 
     private void HandleDisconnectedWhileReady(MattermostDisconnected disconnected)
@@ -376,14 +433,17 @@ internal sealed class MattermostNetGatewayLifecycleActor : ReceiveActor
     {
         _healthDetail = reason;
         FailPendingConnect(new ChannelConnectException(ChannelConnectFailureKind.Transient, reason));
+
+        if (!_cleanReconnectEmitted)
+        {
+            _cleanReconnectEmitted = true;
+            _logger.LogWarning("Gateway requested clean reconnect: {Reason}", reason);
+            Dispatch("Mattermost clean reconnect", () => _eventSink.PublishCleanReconnectRequiredAsync(reason));
+        }
+
+        _retryDelay = TimeSpan.Zero;
         Become(CleanReconnectRequired);
-
-        if (_cleanReconnectEmitted)
-            return;
-
-        _cleanReconnectEmitted = true;
-        _logger.LogWarning("Gateway requested clean reconnect: {Reason}", reason);
-        Dispatch("Mattermost clean reconnect", () => _eventSink.PublishCleanReconnectRequiredAsync(reason));
+        StartDisconnecting(ActorRefs.Nobody, preserveAutoReconnect: true);
     }
 
     private void HandleLogReceived(MattermostLogReceived received) =>
@@ -446,6 +506,39 @@ internal sealed class MattermostNetGatewayLifecycleActor : ReceiveActor
         }
 
         stopWork.ReplyTo.Tell(CurrentSnapshot());
+    }
+
+    private void StoreRetryCredentials(string serverUrl, string botToken)
+    {
+        _retryServerUrl = serverUrl;
+        _retryBotToken = botToken;
+    }
+
+    private void ScheduleRetryIfEnabled()
+    {
+        if (!_autoReconnect || _retryServerUrl is null || _retryBotToken is null)
+            return;
+
+        CancelRetryTimer();
+        _retryTimer = Context.System.Scheduler.ScheduleTellOnceCancelable(
+            _retryDelay, Self, RetryConnect.Instance, ActorRefs.NoSender);
+
+        _retryDelay = _retryDelay == TimeSpan.Zero
+            ? InitialRetryDelay
+            : TimeSpan.FromTicks(Math.Min(_retryDelay.Ticks * 2, MaxRetryDelay.Ticks));
+    }
+
+    private void CancelRetryTimer()
+    {
+        _retryTimer?.Cancel();
+        _retryTimer = null;
+    }
+
+    private void CancelAutoReconnect()
+    {
+        _autoReconnect = false;
+        _retryDelay = TimeSpan.Zero;
+        CancelRetryTimer();
     }
 
     private MattermostGatewaySnapshot CurrentSnapshot()
@@ -590,4 +683,9 @@ internal sealed class MattermostNetGatewayLifecycleActor : ReceiveActor
     private sealed record MattermostMessageReceived(MattermostGatewayMessage Message) : IMattermostGatewayInternalMessage;
 
     private sealed record DispatchFailed(string Operation, Exception Exception) : IMattermostGatewayInternalMessage;
+
+    private sealed record RetryConnect : IMattermostGatewayInternalMessage
+    {
+        public static readonly RetryConnect Instance = new();
+    }
 }

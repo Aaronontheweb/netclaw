@@ -34,13 +34,7 @@ public sealed class MattermostChannel : IChannel
     private readonly NetclawPaths _paths;
     private readonly MattermostCallbackActionStore? _callbackActionStore;
 
-    // Cancels the background reconnect loop when the channel stops.
-    private readonly CancellationTokenSource _lifetimeCts = new();
-    private readonly object _reconnectLock = new();
-    private int _queuedCleanReconnect;
-
     private IActorRef? _gateway;
-    private Task? _reconnectTask;
     private volatile string? _connectFailureDetail;
 
     internal IActorRef? Gateway => _gateway;
@@ -90,6 +84,7 @@ public sealed class MattermostChannel : IChannel
         _callbackActionStore = callbackActionStore;
 
         _gatewayClient.CleanReconnectRequired += HandleCleanReconnectRequiredAsync;
+        _gatewayClient.ConnectionRestored += HandleConnectionRestoredAsync;
     }
 
     public ChannelType ChannelType => ChannelType.Mattermost;
@@ -226,8 +221,6 @@ public sealed class MattermostChannel : IChannel
 
         if (failure.IsFatal)
         {
-            // Retrying will not help — the operator must fix the configuration.
-            // The rest of the daemon keeps running.
             _logger.LogError(
                 failure,
                 "Mattermost channel could not connect and will stay offline until the "
@@ -237,130 +230,32 @@ public sealed class MattermostChannel : IChannel
             return;
         }
 
+        // Transient failures are retried by the lifecycle actor's built-in
+        // auto-reconnect. The channel just logs and waits for the
+        // ConnectionRestored event.
         _logger.LogWarning(
             failure,
-            "Mattermost channel could not connect (transient). The daemon will keep running "
-            + "and retry the connection in the background. {Reason}",
+            "Mattermost channel could not connect (transient). The lifecycle actor will "
+            + "retry the connection in the background. {Reason}",
             failure.Message);
-        StartReconnectLoop(initialDelay: TimeSpan.FromSeconds(5));
-    }
-
-    private void StartReconnectLoop(TimeSpan initialDelay)
-    {
-        lock (_reconnectLock)
-        {
-            if (_reconnectTask is { IsCompleted: false })
-            {
-                if (initialDelay == TimeSpan.Zero)
-                    Volatile.Write(ref _queuedCleanReconnect, 1);
-
-                return;
-            }
-
-            Volatile.Write(ref _queuedCleanReconnect, 0);
-            _reconnectTask = Task.Run(() => ReconnectLoopAsync(initialDelay, _lifetimeCts.Token));
-        }
     }
 
     private Task HandleCleanReconnectRequiredAsync(string reason)
     {
         _connectFailureDetail = reason;
         _logger.LogWarning("Gateway requested clean reconnect: {Reason}", reason);
-        StartReconnectLoop(initialDelay: TimeSpan.Zero);
         return Task.CompletedTask;
     }
 
-    private bool DrainQueuedReconnect()
-        => Interlocked.Exchange(ref _queuedCleanReconnect, 0) == 1;
-
-    private async Task ReconnectLoopAsync(TimeSpan initialDelay, CancellationToken cancellationToken)
+    private Task HandleConnectionRestoredAsync(MattermostGatewaySnapshot snapshot)
     {
-        var delay = initialDelay;
-        var maxDelay = TimeSpan.FromMinutes(5);
-
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            if (delay > TimeSpan.Zero)
-            {
-                try
-                {
-                    await Task.Delay(delay, _timeProvider, cancellationToken);
-                }
-                catch (OperationCanceledException)
-                {
-                    return;
-                }
-            }
-
-            // Reset transport state so the retry performs a clean login + connect.
-            try
-            {
-                await _gatewayClient.DisconnectAsync(cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Transport reset before reconnect failed; continuing.");
-            }
-
-            try
-            {
-                if (string.IsNullOrWhiteSpace(_options.ServerUrl))
-                    throw new ChannelConnectException(
-                        ChannelConnectFailureKind.Fatal,
-                        "Mattermost is enabled but Mattermost:ServerUrl is not configured.");
-
-                if (_options.BotToken.IsNullOrEmpty())
-                    throw new ChannelConnectException(
-                        ChannelConnectFailureKind.Fatal,
-                        "Mattermost is enabled but no bot token is configured.");
-
-                var gatewaySnapshot = await _gatewayClient.ConnectAsync(_options.ServerUrl, _options.BotToken.Value, cancellationToken);
-                EnsureGatewayReadyAfterConnect(gatewaySnapshot);
-                CompleteConnectionSetup(_options.ServerUrl, gatewaySnapshot.BotUserId, gatewaySnapshot.BotUsername);
-                _connectFailureDetail = null;
-                _logger.LogInformation("Channel reconnected after a transient failure.");
-
-                if (DrainQueuedReconnect())
-                {
-                    delay = TimeSpan.Zero;
-                    continue;
-                }
-
-                return;
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                var classified = MattermostConnectFailureClassifier.Classify(ex);
-                _connectFailureDetail = classified.Message;
-
-                if (classified.IsFatal)
-                {
-                    _logger.LogError(
-                        classified,
-                        "Mattermost reconnect hit a fatal failure; giving up until the daemon "
-                        + "is restarted. {Reason}",
-                        classified.Message);
-
-                    // A clean reconnect was queued while this loop was running.
-                    // Fatal failures are config-driven so a queued reconnect
-                    // would hit the same wall — don't restart.
-                    DrainQueuedReconnect();
-                    return;
-                }
-
-                _logger.LogWarning(
-                    classified,
-                    "Mattermost reconnect attempt failed; will retry. {Reason}",
-                    classified.Message);
-                delay = delay == TimeSpan.Zero
-                    ? TimeSpan.FromSeconds(5)
-                    : TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, maxDelay.Ticks));
-            }
-        }
+        _connectFailureDetail = null;
+        CompleteConnectionSetup(
+            _options.ServerUrl!,
+            snapshot.BotUserId,
+            snapshot.BotUsername);
+        _logger.LogInformation("Channel reconnected after a transient failure.");
+        return Task.CompletedTask;
     }
 
     private static void EnsureGatewayReadyAfterConnect(MattermostGatewaySnapshot gatewaySnapshot)
@@ -375,21 +270,8 @@ public sealed class MattermostChannel : IChannel
 
     public async Task StopAsync(CancellationToken cancellationToken)
     {
-        // Stop the background reconnect loop before tearing down the transport.
-        await _lifetimeCts.CancelAsync();
-        if (_reconnectTask is { } reconnectTask)
-        {
-            try
-            {
-                await reconnectTask;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Reconnect loop ended with an error during shutdown.");
-            }
-        }
-
         _gatewayClient.CleanReconnectRequired -= HandleCleanReconnectRequiredAsync;
+        _gatewayClient.ConnectionRestored -= HandleConnectionRestoredAsync;
         _gatewayClient.MessageReceived -= HandleMessageReceivedAsync;
 
         if (_gateway is not null)
@@ -410,8 +292,6 @@ public sealed class MattermostChannel : IChannel
         await _gatewayClient.DisconnectAsync(cancellationToken);
         if (_gatewayClient is IDisposable disposable)
             disposable.Dispose();
-
-        _lifetimeCts.Dispose();
     }
 
     private Task HandleMessageReceivedAsync(MattermostGatewayMessage message)

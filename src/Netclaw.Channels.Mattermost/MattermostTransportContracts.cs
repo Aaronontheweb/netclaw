@@ -82,6 +82,12 @@ public interface IMattermostGatewayClient
     /// </summary>
     event Func<string, Task>? CleanReconnectRequired;
 
+    /// <summary>
+    /// Raised when the lifecycle actor successfully reconnects after a transient
+    /// failure. The snapshot contains the restored bot identity and health state.
+    /// </summary>
+    event Func<MattermostGatewaySnapshot, Task>? ConnectionRestored;
+
     bool IsConnected { get; }
 
     bool IsReady { get; }
@@ -186,6 +192,12 @@ public sealed class UnconfiguredMattermostGatewayClient : IMattermostGatewayClie
     }
 
     public event Func<string, Task>? CleanReconnectRequired
+    {
+        add { }
+        remove { }
+    }
+
+    public event Func<MattermostGatewaySnapshot, Task>? ConnectionRestored
     {
         add { }
         remove { }
