@@ -138,6 +138,38 @@ public sealed class MattermostGatewayLifecycleActorTests(ITestOutputHelper outpu
             cancellationToken: TestContext.Current.CancellationToken);
     }
 
+    [Fact]
+    public async Task Connection_restored_publishes_after_auto_retry_recovery()
+    {
+        // Regression: the auto-retry path connects with ActorRefs.Nobody as
+        // the reply-to, and storing it verbatim made the `is null` isRetry
+        // check misfire — ConnectionRestored never published after an
+        // auto-retry recovery.
+        var transport = new FakeMattermostGatewayTransport();
+        var sink = new RecordingGatewayEventSink();
+        var actor = CreateLifecycleActor(transport, sink);
+
+        var readySnapshot = await ConnectAsync(actor);
+        Assert.True(readySnapshot.IsReady);
+        Assert.Equal(0, sink.ConnectionRestoredCount);
+
+        await transport.RaiseDisconnectedAsync("network lost");
+
+        // Clean reconnect cycle → zero-delay auto-retry → the fake start
+        // succeeds, so the actor recovers to Ready and MUST publish
+        // ConnectionRestored exactly once.
+        await AwaitAssertAsync(async () =>
+        {
+            var snapshot = await actor.Ask<MattermostGatewaySnapshot>(
+                MattermostNetGatewayLifecycleActor.GetSnapshot.Instance,
+                TimeSpan.FromSeconds(3),
+                TestContext.Current.CancellationToken);
+
+            Assert.True(snapshot.IsReady);
+            Assert.Equal(1, sink.ConnectionRestoredCount);
+        }, TimeSpan.FromSeconds(10), cancellationToken: TestContext.Current.CancellationToken);
+    }
+
     private IActorRef CreateLifecycleActor(
         FakeMattermostGatewayTransport transport,
         RecordingGatewayEventSink sink)

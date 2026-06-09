@@ -331,7 +331,16 @@ internal sealed class DiscordNetGatewayLifecycleActor : ReceiveActor, IWithTimer
         _botMentionTag = null;
         _cleanReconnectEmitted = false;
         _fatalCloseHandled = false;
-        _pendingConnectReplyTo = replyTo;
+
+        // Normalize Nobody to null: "no pending caller" must have exactly one
+        // representation. The auto-retry path connects with ActorRefs.Nobody,
+        // and storing it verbatim made every `_pendingConnectReplyTo is null`
+        // check misfire — HandleReadyTimedOut took the caller-driven branch on
+        // retries and parked the actor in CleanReconnectRequired with nothing
+        // scheduled to ever leave it, silently dropping all Discord traffic
+        // until restart. It also kept ConnectionRestored from publishing after
+        // an auto-retry recovery (isRetry computed false).
+        _pendingConnectReplyTo = replyTo.IsNobody() ? null : replyTo;
 
         var attempt = ++_connectAttempt;
         Timers.StartSingleTimer(ReadyTimeoutTimerKey, new ReadyTimedOut(attempt), ReadyTimeout);
