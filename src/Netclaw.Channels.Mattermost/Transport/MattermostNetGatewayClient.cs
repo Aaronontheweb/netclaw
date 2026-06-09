@@ -178,7 +178,7 @@ internal sealed class MattermostNetGatewayTransport : IMattermostGatewayTranspor
 
     public bool IsConnected => _client.IsConnected;
 
-    public async Task<MattermostBotIdentity> StartAsync(string serverUrl, string botToken)
+    public async Task<MattermostBotIdentity> StartAsync(string serverUrl, string botToken, CancellationToken cancellationToken = default)
     {
         _serverUrl = serverUrl.TrimEnd('/');
         // First layer of bot self-dedup: the SDK refuses to surface our own
@@ -194,7 +194,7 @@ internal sealed class MattermostNetGatewayTransport : IMattermostGatewayTranspor
         _logger.LogInformation("Bot identity resolved: {BotUserId} (@{Username})",
             me.Id, me.Username);
 
-        await _client.StartReceivingAsync();
+        await _client.StartReceivingAsync(cancellationToken);
         return new MattermostBotIdentity(me.Id, me.Username);
     }
 

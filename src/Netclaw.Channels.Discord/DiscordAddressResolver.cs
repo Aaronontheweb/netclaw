@@ -193,6 +193,6 @@ public sealed class DiscordAddressResolver(
         return user.UserId.Value;
     }
 
-    private static bool IsDiscordSnowflake(string value)
+    internal static bool IsDiscordSnowflake(string value)
         => value.Length is >= 17 and <= 20 && value.All(char.IsAsciiDigit);
 }

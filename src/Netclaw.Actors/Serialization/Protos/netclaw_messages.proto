@@ -280,6 +280,16 @@ message WorkingContextProto {
   optional string project_directory = 2;
 }
 
+// ── Channel delivery target (top-level, reusable) ──
+
+message ChannelDeliveryTargetProto {
+  string channel_key = 1;
+  string destination_kind = 2;
+  string destination_id = 3;
+  optional string destination_display_name = 4;
+  optional string thread_or_root_id = 5;
+}
+
 // ── Reminders ──
 
 message ReminderDeliveryProto {
@@ -288,6 +298,7 @@ message ReminderDeliveryProto {
   optional string address = 3;
   optional string session_id = 4;
   optional ChannelType origin_channel_type = 5;
+  optional ChannelDeliveryTargetProto target = 6;
 }
 
 message ReminderScheduleProto {

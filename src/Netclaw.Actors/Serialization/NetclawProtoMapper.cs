@@ -606,6 +606,8 @@ internal static class NetclawProtoMapper
             proto.SessionId = rd.SessionId;
         if (rd.OriginChannelType is not null)
             proto.OriginChannelType = (Proto.ChannelType)(int)rd.OriginChannelType.Value;
+        if (rd.Target is not null)
+            proto.Target = ToChannelDeliveryTargetProto(rd.Target);
         return proto;
     }
 
@@ -615,8 +617,33 @@ internal static class NetclawProtoMapper
         Transport = proto.HasTransport ? proto.Transport : null,
         Address = proto.HasAddress ? proto.Address : null,
         SessionId = proto.HasSessionId ? proto.SessionId : null,
-        OriginChannelType = proto.HasOriginChannelType ? (ChannelType)(int)proto.OriginChannelType : null
+        OriginChannelType = proto.HasOriginChannelType ? (ChannelType)(int)proto.OriginChannelType : null,
+        Target = proto.Target is not null ? FromChannelDeliveryTargetProto(proto.Target) : null
     };
+
+    private static Proto.ChannelDeliveryTargetProto ToChannelDeliveryTargetProto(ChannelDeliveryTargetInfo target)
+    {
+        var proto = new Proto.ChannelDeliveryTargetProto
+        {
+            ChannelKey = target.ChannelKey,
+            DestinationKind = target.DestinationKind,
+            DestinationId = target.DestinationId
+        };
+
+        if (target.DestinationDisplayName is not null)
+            proto.DestinationDisplayName = target.DestinationDisplayName;
+        if (target.ThreadOrRootId is not null)
+            proto.ThreadOrRootId = target.ThreadOrRootId;
+        return proto;
+    }
+
+    private static ChannelDeliveryTargetInfo FromChannelDeliveryTargetProto(Proto.ChannelDeliveryTargetProto proto)
+        => new(
+            proto.ChannelKey,
+            proto.DestinationKind,
+            proto.DestinationId,
+            proto.HasDestinationDisplayName ? proto.DestinationDisplayName : null,
+            proto.HasThreadOrRootId ? proto.ThreadOrRootId : null);
 
     // ── ReminderSchedule ──
 

@@ -74,7 +74,7 @@ public sealed class SlackTargetResolver(
 
         var raw = target.Trim();
 
-        if (raw.StartsWith("C", StringComparison.Ordinal) || raw.StartsWith("G", StringComparison.Ordinal))
+        if (IsSlackChannelId(raw))
         {
             var channelId = new SlackChannelId(raw);
             return SlackAclPolicy.IsAllowedChannel(channelId, options, defaultChannelIdAccessor())
@@ -82,7 +82,7 @@ public sealed class SlackTargetResolver(
                 : new SlackTargetResolutionResult(false, $"Slack channel '{raw}' is not in the allowed channels list.", null, null);
         }
 
-        if (raw.StartsWith("U", StringComparison.Ordinal))
+        if (IsSlackUserId(raw))
         {
             var userId = new SlackUserId(raw);
             return SlackAclPolicy.IsAllowedUser(userId, options)
@@ -180,7 +180,8 @@ public sealed class SlackTargetResolver(
 
     private async Task<List<ResolvedChannelAddress>> FindChannelMatchesAsync(string query, CancellationToken ct)
     {
-        var matches = new List<ResolvedChannelAddress>();
+        var exactMatches = new List<ResolvedChannelAddress>();
+        var substringMatches = new List<ResolvedChannelAddress>();
         var cursor = default(string);
 
         do
@@ -188,19 +189,28 @@ public sealed class SlackTargetResolver(
             var page = await lookupClient.ListChannelsAsync(cursor, ct);
             foreach (var channel in page.Channels)
             {
-                if (!IsAllowedChannel(channel) || !MatchesChannelQuery(channel, query))
+                if (!IsAllowedChannel(channel))
+                    continue;
+
+                var quality = GetMatchQuality(channel, query);
+                if (quality == MatchQuality.None)
                     continue;
 
                 var displayName = string.IsNullOrWhiteSpace(channel.Name)
                     ? channel.Id
                     : $"#{channel.Name}";
-                matches.Add(new ResolvedChannelAddress(Key, ChannelAddressKind.Destination, channel.Id, displayName));
+                var address = new ResolvedChannelAddress(Key, ChannelAddressKind.Destination, channel.Id, displayName);
+
+                if (quality == MatchQuality.Exact)
+                    exactMatches.Add(address);
+                else
+                    substringMatches.Add(address);
             }
 
             cursor = page.NextCursor;
         } while (!string.IsNullOrWhiteSpace(cursor));
 
-        return matches;
+        return exactMatches.Count > 0 ? exactMatches : substringMatches;
     }
 
     private ChannelAddressResolutionResult ToResolutionResult(
@@ -227,18 +237,50 @@ public sealed class SlackTargetResolver(
         return SlackAclPolicy.IsAllowedChannel(new SlackChannelId(channel.Id), options, defaultChannelIdAccessor());
     }
 
-    private static bool MatchesChannelQuery(Conversation channel, string query)
+    private enum MatchQuality { None, Substring, Exact }
+
+    private static MatchQuality GetMatchQuality(Conversation channel, string query)
     {
         var name = channel.Name ?? string.Empty;
         var normalizedName = channel.NameNormalized ?? string.Empty;
 
-        return name.Contains(query, StringComparison.OrdinalIgnoreCase)
-            || normalizedName.Contains(query, StringComparison.OrdinalIgnoreCase);
+        if (string.Equals(name, query, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalizedName, query, StringComparison.OrdinalIgnoreCase))
+            return MatchQuality.Exact;
+
+        if (name.Contains(query, StringComparison.OrdinalIgnoreCase)
+            || normalizedName.Contains(query, StringComparison.OrdinalIgnoreCase))
+            return MatchQuality.Substring;
+
+        return MatchQuality.None;
     }
 
     private static bool IsSlackChannelId(string value)
     {
-        return value.StartsWith("C", StringComparison.Ordinal) || value.StartsWith("G", StringComparison.Ordinal);
+        if (value.Length < 9)
+            return false;
+        if (!value.StartsWith("C", StringComparison.Ordinal) && !value.StartsWith("G", StringComparison.Ordinal))
+            return false;
+        for (var i = 1; i < value.Length; i++)
+        {
+            if (!char.IsAsciiLetterOrDigit(value[i]))
+                return false;
+        }
+        return true;
+    }
+
+    private static bool IsSlackUserId(string value)
+    {
+        if (value.Length < 9)
+            return false;
+        if (!value.StartsWith("U", StringComparison.Ordinal) && !value.StartsWith("W", StringComparison.Ordinal))
+            return false;
+        for (var i = 1; i < value.Length; i++)
+        {
+            if (!char.IsAsciiLetterOrDigit(value[i]))
+                return false;
+        }
+        return true;
     }
 
     private async Task<string?> ResolveUserAsync(string query, CancellationToken ct)

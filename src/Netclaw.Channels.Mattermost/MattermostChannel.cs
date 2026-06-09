@@ -34,7 +34,7 @@ public sealed class MattermostChannel : IChannel
     private readonly NetclawPaths _paths;
     private readonly MattermostCallbackActionStore? _callbackActionStore;
 
-    private IActorRef? _gateway;
+    private volatile IActorRef? _gateway;
     private volatile string? _connectFailureDetail;
 
     internal IActorRef? Gateway => _gateway;

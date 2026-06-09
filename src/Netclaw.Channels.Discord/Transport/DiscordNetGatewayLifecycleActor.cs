@@ -171,6 +171,7 @@ internal sealed class DiscordNetGatewayLifecycleActor : ReceiveActor, IWithTimer
         _client.Disconnected -= OnDisconnectedAsync;
         _client.MessageReceived -= OnMessageReceivedAsync;
         _client.ButtonExecuted -= OnButtonExecutedAsync;
+        CancelRetryTimer();
         base.PostStop();
     }
 
@@ -915,7 +916,6 @@ internal sealed class DiscordNetGatewayLifecycleActor : ReceiveActor, IWithTimer
         }
 
         _retryDelay = TimeSpan.Zero;
-        Become(CleanReconnectRequired);
         StartDisconnecting(ActorRefs.Nobody, preserveAutoReconnect: true);
     }
 

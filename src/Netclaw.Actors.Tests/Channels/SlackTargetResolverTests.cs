@@ -120,12 +120,12 @@ public sealed class SlackTargetResolverTests
     public async Task Resolve_raw_channel_id_skips_directory_lookup()
     {
         var lookup = new FakeSlackTargetLookupClient();
-        var resolver = CreateResolver(lookup, new SlackChannelOptions { AllowedChannelIds = ["C0123ABC"] });
+        var resolver = CreateResolver(lookup, new SlackChannelOptions { AllowedChannelIds = ["C0123ABCDEF"] });
 
-        var result = await resolver.ResolveAsync("C0123ABC", TestContext.Current.CancellationToken);
+        var result = await resolver.ResolveAsync("C0123ABCDEF", TestContext.Current.CancellationToken);
 
         Assert.True(result.Success);
-        Assert.Equal("C0123ABC", result.ChannelId);
+        Assert.Equal("C0123ABCDEF", result.ChannelId);
         Assert.Equal(0, lookup.ChannelListCallCount);
         Assert.Equal(0, lookup.UserListCallCount);
     }
@@ -136,10 +136,10 @@ public sealed class SlackTargetResolverTests
         var lookup = new FakeSlackTargetLookupClient();
         var resolver = CreateResolver(lookup);
 
-        var result = await resolver.ResolveAsync("U0456XYZ", TestContext.Current.CancellationToken);
+        var result = await resolver.ResolveAsync("U0456XYZABC", TestContext.Current.CancellationToken);
 
         Assert.True(result.Success);
-        Assert.Equal("U0456XYZ", result.UserId);
+        Assert.Equal("U0456XYZABC", result.UserId);
         Assert.Equal(0, lookup.ChannelListCallCount);
         Assert.Equal(0, lookup.UserListCallCount);
     }
@@ -153,7 +153,7 @@ public sealed class SlackTargetResolverTests
             [
                 new SlackChannelPage(
                 [
-                    new Conversation { Id = "C1", Name = "general" },
+                    new Conversation { Id = "C1", Name = "general-public" },
                     new Conversation { Id = "C2", Name = "general-private" }
                 ],
                 null)
@@ -175,11 +175,11 @@ public sealed class SlackTargetResolverTests
     public async Task Channel_address_resolver_filters_disallowed_destination_ids()
     {
         var lookup = new FakeSlackTargetLookupClient();
-        var resolver = CreateResolver(lookup, new SlackChannelOptions { AllowedChannelIds = ["C1"] });
+        var resolver = CreateResolver(lookup, new SlackChannelOptions { AllowedChannelIds = ["C012345AAAA"] });
         var request = new ChannelAddressResolutionRequest(
             ChannelDescriptorKey.FromChannelType(ChannelType.Slack),
             ChannelAddressKind.Destination,
-            "C2");
+            "C012345BBBB");
 
         var result = await resolver.ResolveAsync(request, TestContext.Current.CancellationToken);
 

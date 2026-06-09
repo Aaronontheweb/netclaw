@@ -16,7 +16,7 @@ public readonly record struct ChannelDescriptorKey
     public ChannelDescriptorKey(string value)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(value);
-        Value = value;
+        Value = value.ToLowerInvariant();
     }
 
     public string Value { get; }
@@ -114,12 +114,19 @@ public sealed record ChannelDescriptor(
             ChannelToolIntentKind.LookupUser
         };
 
+    private static readonly IReadOnlySet<ChannelOutputEffectKind> RemoteChatBaseOutputEffects =
+        new HashSet<ChannelOutputEffectKind>
+        {
+            ChannelOutputEffectKind.TextMessage,
+            ChannelOutputEffectKind.FileAttachment
+        };
+
     public static ChannelDescriptor CreateRemoteChat(
         ChannelType channelType,
         string displayName,
         bool isEnabled,
         bool allowDirectMessages,
-        IReadOnlySet<ChannelOutputEffectKind>? supportedOutputEffects = null)
+        IReadOnlySet<ChannelOutputEffectKind>? additionalOutputEffects = null)
     {
         var capabilities = RemoteChatBaseCapabilities;
         if (allowDirectMessages)
@@ -134,6 +141,13 @@ public sealed record ChannelDescriptor(
         if (allowDirectMessages)
             addressKinds.Add(ChannelAddressKind.DirectMessage);
 
+        var outputEffects = new HashSet<ChannelOutputEffectKind>(RemoteChatBaseOutputEffects);
+        if (additionalOutputEffects is not null)
+        {
+            foreach (var effect in additionalOutputEffects)
+                outputEffects.Add(effect);
+        }
+
         return new ChannelDescriptor(
             ChannelDescriptorKey.FromChannelType(channelType),
             channelType,
@@ -143,7 +157,7 @@ public sealed record ChannelDescriptor(
             capabilities,
             RemoteChatToolIntents,
             addressKinds,
-            supportedOutputEffects ?? new HashSet<ChannelOutputEffectKind>());
+            outputEffects);
     }
 }
 
@@ -385,6 +399,7 @@ public interface IChannelRegistry
 public sealed class ChannelRegistry : IChannelRegistry
 {
     private readonly IReadOnlyDictionary<ChannelDescriptorKey, ChannelDescriptor> _descriptors;
+    private readonly IReadOnlyCollection<ChannelDescriptor> _sortedDescriptors;
     private readonly IReadOnlyDictionary<ChannelDescriptorKey, IChannelRuntimeSnapshotProvider> _snapshotProviders;
     private readonly IReadOnlyDictionary<(ChannelDescriptorKey Key, ChannelAddressKind AddressKind), IChannelAddressResolver> _addressResolvers;
     private readonly IReadOnlyDictionary<ChannelDescriptorKey, IChannelOutputRenderer> _outputRenderers;
@@ -399,17 +414,15 @@ public sealed class ChannelRegistry : IChannelRegistry
         ArgumentNullException.ThrowIfNull(snapshotProviders);
 
         _descriptors = BuildDescriptorLookup(descriptorProviders);
+        _sortedDescriptors = _descriptors.Values
+            .OrderBy(d => d.Key.Value, StringComparer.Ordinal)
+            .ToArray();
         _snapshotProviders = BuildSnapshotProviderLookup(snapshotProviders);
         _addressResolvers = BuildAddressResolverLookup(addressResolvers ?? []);
         _outputRenderers = BuildOutputRendererLookup(outputRenderers ?? []);
     }
 
-    public IReadOnlyCollection<ChannelDescriptor> ListChannels()
-    {
-        return _descriptors.Values
-            .OrderBy(descriptor => descriptor.Key.Value, StringComparer.Ordinal)
-            .ToArray();
-    }
+    public IReadOnlyCollection<ChannelDescriptor> ListChannels() => _sortedDescriptors;
 
     public ChannelDescriptor GetChannel(ChannelDescriptorKey key)
     {
@@ -783,7 +796,7 @@ public static class ChannelAddressKindWire
         }
     }
 
-    private static string Normalize(string value)
+    internal static string Normalize(string value)
     {
         var buffer = new char[value.Length];
         var count = 0;

@@ -36,7 +36,7 @@ public sealed class DiscordChannel : IChannel
     private readonly ModelCapabilities _modelCapabilities;
     private readonly NetclawPaths _paths;
 
-    private IActorRef? _gateway;
+    private volatile IActorRef? _gateway;
     private volatile string? _connectFailureDetail;
 
     public DiscordChannel(

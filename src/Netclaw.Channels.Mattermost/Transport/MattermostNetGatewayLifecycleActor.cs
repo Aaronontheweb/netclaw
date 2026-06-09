@@ -29,7 +29,7 @@ internal interface IMattermostGatewayTransport
 
     bool IsConnected { get; }
 
-    Task<MattermostBotIdentity> StartAsync(string serverUrl, string botToken);
+    Task<MattermostBotIdentity> StartAsync(string serverUrl, string botToken, CancellationToken cancellationToken = default);
 
     Task StopAsync();
 }
@@ -98,6 +98,7 @@ internal sealed class MattermostNetGatewayLifecycleActor : ReceiveActor
         _transport.Connected -= OnConnectedAsync;
         _transport.Disconnected -= OnDisconnectedAsync;
         _transport.LogReceived -= OnLogReceivedAsync;
+        CancelRetryTimer();
         base.PostStop();
     }
 
@@ -246,7 +247,7 @@ internal sealed class MattermostNetGatewayLifecycleActor : ReceiveActor
         Task<MattermostBotIdentity> startTask;
         try
         {
-            startTask = _transport.StartAsync(serverUrl, botToken);
+            startTask = _transport.StartAsync(serverUrl, botToken, CancellationToken.None);
         }
         catch (Exception ex)
         {
@@ -442,7 +443,6 @@ internal sealed class MattermostNetGatewayLifecycleActor : ReceiveActor
         }
 
         _retryDelay = TimeSpan.Zero;
-        Become(CleanReconnectRequired);
         StartDisconnecting(ActorRefs.Nobody, preserveAutoReconnect: true);
     }
 

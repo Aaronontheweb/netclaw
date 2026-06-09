@@ -287,7 +287,7 @@ public sealed class MattermostGatewayLifecycleActorTests(ITestOutputHelper outpu
 
         public int LogSubscriberCount { get; private set; }
 
-        public Task<MattermostBotIdentity> StartAsync(string serverUrl, string botToken)
+        public Task<MattermostBotIdentity> StartAsync(string serverUrl, string botToken, CancellationToken cancellationToken = default)
         {
             StartCount++;
             IsConnected = true;

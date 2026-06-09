@@ -7,7 +7,9 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Netclaw.Actors.Channels;
 using Netclaw.Channels;
+using Netclaw.Channels.Discord;
 using Netclaw.Channels.Discord.Tools;
+using Netclaw.Channels.Mattermost;
 using Netclaw.Channels.Mattermost.Tools;
 using Netclaw.Channels.Slack.Tools;
 using Netclaw.Tools;
@@ -389,15 +391,10 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
            || value.Any(char.IsWhiteSpace);
 
     private static bool IsDiscordSnowflake(string value)
-        => value.Length is >= 17 and <= 20 && value.All(char.IsAsciiDigit);
+        => DiscordAddressResolver.IsDiscordSnowflake(value);
 
     private static bool IsMattermostId(string value)
-    {
-        if (value.Length != 26)
-            return false;
-
-        return value.All(char.IsAsciiLetterOrDigit);
-    }
+        => MattermostIdentifierFormat.IsMattermostId(value);
 
     private static bool TryGetFlexible(IDictionary<string, object?> arguments, string key, out object? value)
     {
@@ -434,20 +431,7 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
     }
 
     private static string NormalizeKey(string key)
-    {
-        if (string.IsNullOrWhiteSpace(key))
-            return string.Empty;
-
-        var buffer = new char[key.Length];
-        var count = 0;
-        foreach (var ch in key)
-        {
-            if (char.IsLetterOrDigit(ch))
-                buffer[count++] = ch;
-        }
-
-        return count == 0 ? string.Empty : new string(buffer, 0, count);
-    }
+        => ChannelAddressKindWire.Normalize(key);
 
     private readonly record struct SendChannelDestination(
         ChannelDescriptorKey ChannelKey,
