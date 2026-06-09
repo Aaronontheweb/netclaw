@@ -457,9 +457,7 @@ public sealed class ChannelRegistryRegistrationTests
             .AddInMemoryCollection(settings)
             .Build();
 
-        services.AddSlackChannelIntegration(configuration);
-        services.AddDiscordChannelIntegration(configuration);
-        services.AddMattermostChannelIntegration(configuration);
+        services.AddChannelIntegrations(configuration);
         services.AddChannelSendTools(configuration);
         services.AddChannelLookupTools(configuration);
 

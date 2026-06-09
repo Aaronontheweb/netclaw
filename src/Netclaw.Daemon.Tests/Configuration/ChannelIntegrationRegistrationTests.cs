@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="MattermostChannelRegistrationExtensionsTests.cs" company="Petabridge, LLC">
+// <copyright file="ChannelIntegrationRegistrationTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
@@ -13,10 +13,10 @@ using Xunit;
 
 namespace Netclaw.Daemon.Tests.Configuration;
 
-public sealed class MattermostChannelRegistrationExtensionsTests
+public sealed class ChannelIntegrationRegistrationTests
 {
     [Fact]
-    public void Invalid_server_url_does_not_throw_during_registration()
+    public void Invalid_mattermost_server_url_does_not_throw_during_registration()
     {
         var services = new ServiceCollection();
         services.AddLogging();
@@ -32,7 +32,7 @@ public sealed class MattermostChannelRegistrationExtensionsTests
             })
             .Build();
 
-        var ex = Record.Exception(() => services.AddMattermostChannelIntegration(configuration));
+        var ex = Record.Exception(() => services.AddChannelIntegrations(configuration));
 
         Assert.Null(ex);
 

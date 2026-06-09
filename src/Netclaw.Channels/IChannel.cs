@@ -21,6 +21,19 @@ public interface IChannel : IHostedService
     ValueTask<ChannelHealth> GetHealthAsync(CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// Enablement flags shared by every remote chat channel options type
+/// (Slack, Discord, Mattermost). Lets channel-agnostic registration code
+/// read the values that drive <see cref="ChannelDescriptor.CreateRemoteChat"/>
+/// without knowing the concrete options type.
+/// </summary>
+public interface IRemoteChatChannelOptions
+{
+    bool Enabled { get; }
+
+    bool AllowDirectMessages { get; }
+}
+
 public enum ChannelHealthStatus
 {
     Healthy,
