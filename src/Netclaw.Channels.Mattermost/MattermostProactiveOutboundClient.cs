@@ -49,6 +49,7 @@ public sealed class MattermostProactiveOutboundClient : IChannelOutboundClient
         var isDirectMessage = request.AddressKind == ChannelAddressKind.DirectMessage;
 
         MattermostChannelId targetChannelId;
+        MattermostUserId? directMessageUserId = null;
         if (isDirectMessage)
         {
             if (!_options.AllowDirectMessages)
@@ -67,6 +68,10 @@ public sealed class MattermostProactiveOutboundClient : IChannelOutboundClient
             {
                 return $"Error: Failed to open DM channel: {ex.Message}";
             }
+
+            // DM channel ids are ephemeral, so the conversation actor must
+            // re-validate against the user ACL rather than the channel ACL.
+            directMessageUserId = userId;
         }
         else if (request.AddressKind == ChannelAddressKind.Destination)
         {
@@ -96,7 +101,7 @@ public sealed class MattermostProactiveOutboundClient : IChannelOutboundClient
         try
         {
             await gateway.Ask<MattermostProactiveThreadAck>(
-                new StartMattermostProactiveThread(result.ChannelId, result.RootPostId, sessionId),
+                new StartMattermostProactiveThread(result.ChannelId, result.RootPostId, sessionId, directMessageUserId),
                 TimeSpan.FromSeconds(30),
                 ct);
         }

@@ -4,12 +4,19 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Akka.Actor;
+using Akka.Configuration;
+using Akka.Hosting;
+using Akka.Hosting.TestKit;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Tests.Channels.TestHelpers;
 using Netclaw.Channels;
 using Netclaw.Channels.Mattermost;
 using Netclaw.Channels.Mattermost.Tools;
+using Netclaw.Configuration;
+using Netclaw.Security;
 using Xunit;
 
 namespace Netclaw.Actors.Tests.Channels;
@@ -258,5 +265,131 @@ public sealed class MattermostAddressResolverTests
         return new LookupMattermostUserTool(
             () => throw new InvalidOperationException("Directory lookup should not be used for exact IDs."),
             options);
+    }
+}
+
+/// <summary>
+/// Drives <see cref="StartMattermostProactiveThread"/> through the real
+/// <see cref="MattermostConversationActor"/> ACL path. Regression coverage for
+/// proactive DMs: DM channel ids are ephemeral and never allowlisted, so the
+/// conversation actor must validate the user ACL for DMs (Discord parity)
+/// instead of nacking every proactive DM via the channel ACL.
+/// </summary>
+public sealed class MattermostProactiveThreadActorTests(ITestOutputHelper output) : TestKit(output: output)
+{
+    protected override Config? Config =>
+        ConfigurationFactory.ParseString("akka.test.default-timeout = 5s");
+
+    protected override void ConfigureServices(HostBuilderContext context, IServiceCollection services)
+    {
+    }
+
+    protected override void ConfigureAkka(AkkaConfigurationBuilder builder, IServiceProvider provider)
+    {
+    }
+
+    [Fact]
+    public async Task StartProactiveThread_acks_dm_channel_when_user_is_allowed()
+    {
+        var conversation = CreateConversation("dm-u-1", new MattermostChannelOptions
+        {
+            Enabled = true,
+            AllowDirectMessages = true,
+            AllowedChannelIds = ["ch-1"],
+            AllowedUserIds = ["u-1"]
+        });
+
+        conversation.Tell(new StartMattermostProactiveThread(
+            new MattermostChannelId("dm-u-1"),
+            new MattermostRootPostId("root-1"),
+            new SessionId("dm-u-1/root-1"),
+            DirectMessageUserId: new MattermostUserId("u-1")));
+
+        var ack = await ExpectMsgAsync<MattermostProactiveThreadAck>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal("dm-u-1/root-1", ack.SessionId.Value);
+    }
+
+    [Fact]
+    public async Task StartProactiveThread_nacks_dm_when_user_is_disallowed()
+    {
+        var conversation = CreateConversation("dm-u-bad", new MattermostChannelOptions
+        {
+            Enabled = true,
+            AllowDirectMessages = true,
+            AllowedUserIds = ["u-1"]
+        });
+
+        conversation.Tell(new StartMattermostProactiveThread(
+            new MattermostChannelId("dm-u-bad"),
+            new MattermostRootPostId("root-1"),
+            new SessionId("dm-u-bad/root-1"),
+            DirectMessageUserId: new MattermostUserId("u-bad")));
+
+        var nack = await ExpectMsgAsync<CommandNack>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Contains("allowed users", nack.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task StartProactiveThread_nacks_dm_when_direct_messages_disabled()
+    {
+        var conversation = CreateConversation("dm-u-1", new MattermostChannelOptions
+        {
+            Enabled = true,
+            AllowDirectMessages = false,
+            AllowedUserIds = ["u-1"]
+        });
+
+        conversation.Tell(new StartMattermostProactiveThread(
+            new MattermostChannelId("dm-u-1"),
+            new MattermostRootPostId("root-1"),
+            new SessionId("dm-u-1/root-1"),
+            DirectMessageUserId: new MattermostUserId("u-1")));
+
+        var nack = await ExpectMsgAsync<CommandNack>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Contains("direct messages are disabled", nack.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task StartProactiveThread_nacks_disallowed_channel_without_dm_marker()
+    {
+        var conversation = CreateConversation("ch-99", new MattermostChannelOptions
+        {
+            Enabled = true,
+            AllowDirectMessages = true,
+            AllowedChannelIds = ["ch-1"],
+            AllowedUserIds = ["u-1"]
+        });
+
+        conversation.Tell(new StartMattermostProactiveThread(
+            new MattermostChannelId("ch-99"),
+            new MattermostRootPostId("root-1"),
+            new SessionId("ch-99/root-1")));
+
+        var nack = await ExpectMsgAsync<CommandNack>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Contains("allowed channels", nack.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private IActorRef CreateConversation(string channelId, MattermostChannelOptions options)
+    {
+        var deps = new MattermostGatewayDependencies(
+            Pipeline: null!,
+            IngressGate: null,
+            TimeProvider: TimeProvider.System,
+            Options: options,
+            DefaultChannelId: null,
+            ReplyClient: new UnconfiguredMattermostReplyClient(),
+            ContentScanner: new NullContentScanner(),
+            AudienceProfiles: TestMattermostGatewayDeps.DefaultAudienceProfiles,
+            ModelCapabilities: TestMattermostGatewayDeps.DefaultVisionCapableModel,
+            Paths: TestMattermostGatewayDeps.NewTestPaths(),
+            SessionPropsFactory: (_, _, _, _) => Props.Create(() => new ForwardActor(TestActor)));
+
+        return Sys.ActorOf(
+            MattermostConversationActor.CreateProps(new MattermostChannelId(channelId), deps),
+            $"mm-proactive-{channelId}-{Guid.NewGuid():N}");
     }
 }

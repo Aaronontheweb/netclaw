@@ -161,7 +161,34 @@ internal sealed class MattermostConversationActor : ChannelConversationActor<Mat
 
     private void HandleProactiveThread(StartMattermostProactiveThread message)
     {
-        if (!MattermostAclPolicy.IsAllowedChannel(
+        // Defense-in-depth: re-validate the ACL even though the tool already
+        // checked it before posting. DM channel IDs are ephemeral transport
+        // channels, so the configured user ACL is the authority for DMs.
+        if (message.DirectMessageUserId is { } dmUserId)
+        {
+            if (!_dependencies.Options.AllowDirectMessages)
+            {
+                Log.Warning(
+                    "Rejecting proactive DM for user {User}: direct messages disabled",
+                    dmUserId.Value);
+                Sender.Tell(CommandNack.For(
+                    message.SessionId,
+                    "Mattermost direct messages are disabled"));
+                return;
+            }
+
+            if (!MattermostAclPolicy.IsAllowedUser(dmUserId, _dependencies.Options))
+            {
+                Log.Warning(
+                    "Rejecting proactive DM for disallowed user {User}",
+                    dmUserId.Value);
+                Sender.Tell(CommandNack.For(
+                    message.SessionId,
+                    $"User {dmUserId.Value} is not in the allowed users list"));
+                return;
+            }
+        }
+        else if (!MattermostAclPolicy.IsAllowedChannel(
                 message.ChannelId,
                 _dependencies.Options,
                 _dependencies.DefaultChannelId))
