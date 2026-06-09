@@ -9,7 +9,6 @@ using Akka.Hosting.TestKit;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Time.Testing;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Tests.Channels.TestHelpers;
 using Netclaw.Channels;
@@ -67,106 +66,6 @@ public sealed class DiscordChannelHealthTests(ITestOutputHelper output) : TestKi
         Assert.Equal("Discord.Net resumed a stale gateway session.", health.Detail);
     }
 
-    [Fact]
-    public async Task Clean_reconnect_request_runs_clean_disconnect_then_connect()
-    {
-        var gateway = new FakeDiscordGatewayClient
-        {
-            IsConnected = true,
-            IsReady = false,
-            HealthDetail = "Discord.Net resumed a stale gateway session.",
-            BotUserId = new DiscordUserId("bot-1")
-        };
-        var channel = CreateChannel(gateway);
-
-        try
-        {
-            await gateway.RaiseCleanReconnectRequiredAsync("Discord.Net resumed a stale gateway session.");
-
-            await AwaitAssertAsync(() =>
-            {
-                Assert.Equal(1, gateway.DisconnectCount);
-                Assert.Equal(1, gateway.ConnectCount);
-                Assert.True(gateway.IsReady);
-            }, duration: TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
-        }
-        finally
-        {
-            await channel.StopAsync(TestContext.Current.CancellationToken);
-        }
-    }
-
-    [Fact]
-    public async Task Clean_reconnect_retries_when_connect_returns_not_ready()
-    {
-        var timeProvider = new FakeTimeProvider(DateTimeOffset.Parse("2026-05-30T00:00:00Z"));
-        var gateway = new FakeDiscordGatewayClient
-        {
-            IsConnected = true,
-            IsReady = false,
-            HealthDetail = "Discord.Net resumed a stale gateway session.",
-            BotUserId = new DiscordUserId("bot-1")
-        };
-        gateway.ConnectReadyResults.Enqueue(false);
-        gateway.ConnectReadyResults.Enqueue(true);
-        var channel = CreateChannel(gateway, timeProvider);
-
-        try
-        {
-            await gateway.RaiseCleanReconnectRequiredAsync("Discord.Net resumed a stale gateway session.");
-
-            await AwaitAssertAsync(() =>
-            {
-                Assert.Equal(1, gateway.ConnectCount);
-                Assert.False(gateway.IsReady);
-            }, duration: TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
-
-            await AwaitAssertAsync(() =>
-            {
-                if (gateway.ConnectCount < 2)
-                    timeProvider.Advance(TimeSpan.FromSeconds(5));
-
-                Assert.Equal(2, gateway.DisconnectCount);
-                Assert.Equal(2, gateway.ConnectCount);
-                Assert.True(gateway.IsReady);
-            }, duration: TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
-        }
-        finally
-        {
-            await channel.StopAsync(TestContext.Current.CancellationToken);
-        }
-    }
-
-    [Fact]
-    public async Task Clean_reconnect_request_during_active_reconnect_is_not_dropped()
-    {
-        var gateway = new FakeDiscordGatewayClient
-        {
-            IsConnected = true,
-            IsReady = false,
-            HealthDetail = "Discord.Net resumed a stale gateway session.",
-            BotUserId = new DiscordUserId("bot-1"),
-            RaiseCleanReconnectDuringFirstConnect = true
-        };
-        var channel = CreateChannel(gateway);
-
-        try
-        {
-            await gateway.RaiseCleanReconnectRequiredAsync("Discord.Net resumed a stale gateway session.");
-
-            await AwaitAssertAsync(() =>
-            {
-                Assert.Equal(2, gateway.DisconnectCount);
-                Assert.Equal(2, gateway.ConnectCount);
-                Assert.True(gateway.IsReady);
-            }, duration: TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
-        }
-        finally
-        {
-            await channel.StopAsync(TestContext.Current.CancellationToken);
-        }
-    }
-
     private DiscordChannel CreateChannel(
         FakeDiscordGatewayClient gatewayClient,
         TimeProvider? timeProvider = null)
@@ -221,6 +120,12 @@ public sealed class DiscordChannelHealthTests(ITestOutputHelper output) : TestKi
         {
             add => _cleanReconnectRequired += value;
             remove => _cleanReconnectRequired -= value;
+        }
+
+        public event Func<DiscordGatewaySnapshot, Task>? ConnectionRestored
+        {
+            add { }
+            remove { }
         }
 
         public bool IsConnected { get; set; }

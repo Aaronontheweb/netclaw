@@ -18,6 +18,8 @@ internal interface IDiscordGatewayEventSink
     Task PublishInteractionAsync(DiscordGatewayInteraction interaction);
 
     Task PublishCleanReconnectRequiredAsync(string reason);
+
+    Task PublishConnectionRestoredAsync(DiscordGatewaySnapshot snapshot);
 }
 
 internal interface IDiscordGatewayTransport
@@ -103,6 +105,8 @@ internal sealed class DiscordNetGatewayLifecycleActor : ReceiveActor, IWithTimer
     private const string DisconnectedDetail = "Discord gateway disconnected.";
     private const string ReadyTimeoutTimerKey = "discord-ready-timeout";
     private static readonly TimeSpan ReadyTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(5);
 
     private readonly IDiscordGatewayTransport _client;
     private readonly TimeProvider _timeProvider;
@@ -118,6 +122,11 @@ internal sealed class DiscordNetGatewayLifecycleActor : ReceiveActor, IWithTimer
     private string? _healthDetail = DisconnectedDetail;
     private bool _cleanReconnectEmitted;
     private bool _fatalCloseHandled;
+
+    private bool _autoReconnect;
+    private string? _retryBotToken;
+    private TimeSpan _retryDelay;
+    private ICancelable? _retryTimer;
 
     public ITimerScheduler Timers { get; set; } = null!;
 
@@ -169,8 +178,25 @@ internal sealed class DiscordNetGatewayLifecycleActor : ReceiveActor, IWithTimer
     {
         _isReadyBehavior = false;
         ReceiveCommon();
-        Receive<Connect>(connect => StartConnecting(connect.BotToken, Sender));
-        Receive<Disconnect>(_ => StartDisconnecting(Sender));
+        Receive<Connect>(connect =>
+        {
+            _retryBotToken = connect.BotToken;
+            _autoReconnect = true;
+            StartConnecting(connect.BotToken, Sender);
+        });
+        Receive<Disconnect>(_ =>
+        {
+            CancelAutoReconnect();
+            StartDisconnecting(Sender);
+        });
+        Receive<RetryConnect>(_ =>
+        {
+            if (!_autoReconnect || _retryBotToken is null)
+                return;
+
+            _logger.LogInformation("Attempting Discord reconnect (delay was {Delay}).", _retryDelay);
+            StartConnecting(_retryBotToken, ActorRefs.Nobody);
+        });
         Receive<DiscordConnected>(_ => RequestCleanReconnect(
             "Discord gateway reconnected outside a clean startup cycle; forcing a clean reconnect."));
         Receive<DiscordReady>(_ => RequestCleanReconnect(
@@ -364,9 +390,23 @@ internal sealed class DiscordNetGatewayLifecycleActor : ReceiveActor, IWithTimer
         if (failed.Attempt != _connectAttempt)
             return;
 
-        _healthDetail = failed.Exception.Message;
+        var classified = DiscordConnectFailureClassifier.Classify(failed.Exception);
+        _healthDetail = classified.Message;
         Timers.Cancel(ReadyTimeoutTimerKey);
-        FailPendingConnect(failed.Exception);
+        FailPendingConnect(classified);
+
+        if (classified.IsFatal)
+        {
+            _logger.LogError(classified,
+                "Discord connect hit a fatal failure; auto-reconnect disabled. {Reason}",
+                classified.Message);
+            _autoReconnect = false;
+        }
+        else
+        {
+            ScheduleRetryIfEnabled();
+        }
+
         Become(Disconnected);
     }
 
@@ -390,8 +430,12 @@ internal sealed class DiscordNetGatewayLifecycleActor : ReceiveActor, IWithTimer
         RequestCleanReconnect(failure.Message);
     }
 
-    private void StartDisconnecting(IActorRef replyTo)
+    private void StartDisconnecting(IActorRef replyTo, bool preserveAutoReconnect = false)
     {
+        CancelRetryTimer();
+        if (!preserveAutoReconnect)
+            _autoReconnect = false;
+
         ++_connectAttempt;
         _healthDetail = "Discord gateway disconnecting.";
         _cleanReconnectEmitted = false;
@@ -436,15 +480,19 @@ internal sealed class DiscordNetGatewayLifecycleActor : ReceiveActor, IWithTimer
         _botUserId = null;
         _botMentionTag = null;
         _fatalCloseHandled = false;
+        ScheduleRetryIfEnabled();
         Become(Disconnected);
-        stopped.ReplyTo.Tell(CurrentSnapshot());
+        if (!stopped.ReplyTo.Equals(ActorRefs.Nobody))
+            stopped.ReplyTo.Tell(CurrentSnapshot());
     }
 
     private void HandleStopFailed(DiscordStopFailed failed)
     {
         _healthDetail = failed.Exception.Message;
+        ScheduleRetryIfEnabled();
         Become(Disconnected);
-        failed.ReplyTo.Tell(new Status.Failure(failed.Exception));
+        if (!failed.ReplyTo.Equals(ActorRefs.Nobody))
+            failed.ReplyTo.Tell(new Status.Failure(failed.Exception));
     }
 
     private void HandleReadyWhileConnecting()
@@ -460,6 +508,7 @@ internal sealed class DiscordNetGatewayLifecycleActor : ReceiveActor, IWithTimer
                 _healthDetail = failure.Message;
                 Timers.Cancel(ReadyTimeoutTimerKey);
                 FailPendingConnect(failure);
+                ScheduleRetryIfEnabled();
                 Become(CleanReconnectRequired);
             }
             else
@@ -470,8 +519,13 @@ internal sealed class DiscordNetGatewayLifecycleActor : ReceiveActor, IWithTimer
             return;
         }
 
+        _retryDelay = TimeSpan.Zero;
+        var isRetry = _pendingConnectReplyTo is null;
         TransitionToReady();
         CompletePendingConnect(CurrentSnapshot());
+
+        if (isRetry)
+            Dispatch("Discord connection restored", () => _eventSink.PublishConnectionRestoredAsync(CurrentSnapshot()));
     }
 
     private void HandleReadyRefresh()
@@ -535,6 +589,7 @@ internal sealed class DiscordNetGatewayLifecycleActor : ReceiveActor, IWithTimer
     {
         _healthDetail = classified.Message;
         Timers.Cancel(ReadyTimeoutTimerKey);
+        CancelAutoReconnect();
         FailPendingConnect(classified);
         Become(Disconnected);
 
@@ -850,22 +905,18 @@ internal sealed class DiscordNetGatewayLifecycleActor : ReceiveActor, IWithTimer
     {
         _healthDetail = reason;
         Timers.Cancel(ReadyTimeoutTimerKey);
+        FailPendingConnect(new ChannelConnectException(ChannelConnectFailureKind.Transient, reason));
 
-        if (_pendingConnectReplyTo is not null)
+        if (!_cleanReconnectEmitted)
         {
-            FailPendingConnect(new ChannelConnectException(ChannelConnectFailureKind.Transient, reason));
-            Become(CleanReconnectRequired);
-            return;
+            _cleanReconnectEmitted = true;
+            _logger.LogWarning("Gateway requested clean reconnect: {Reason}", reason);
+            Dispatch("Discord clean reconnect", () => _eventSink.PublishCleanReconnectRequiredAsync(reason));
         }
 
+        _retryDelay = TimeSpan.Zero;
         Become(CleanReconnectRequired);
-
-        if (_cleanReconnectEmitted)
-            return;
-
-        _cleanReconnectEmitted = true;
-        _logger.LogWarning("Gateway requested clean reconnect: {Reason}", reason);
-        Dispatch("Discord clean reconnect", () => _eventSink.PublishCleanReconnectRequiredAsync(reason));
+        StartDisconnecting(ActorRefs.Nobody, preserveAutoReconnect: true);
     }
 
     private bool TryRefreshBotIdentity(string source)
@@ -895,6 +946,33 @@ internal sealed class DiscordNetGatewayLifecycleActor : ReceiveActor, IWithTimer
         }
 
         return true;
+    }
+
+    private void ScheduleRetryIfEnabled()
+    {
+        if (!_autoReconnect || _retryBotToken is null)
+            return;
+
+        CancelRetryTimer();
+        _retryTimer = Context.System.Scheduler.ScheduleTellOnceCancelable(
+            _retryDelay, Self, RetryConnect.Instance, ActorRefs.NoSender);
+
+        _retryDelay = _retryDelay == TimeSpan.Zero
+            ? InitialRetryDelay
+            : TimeSpan.FromTicks(Math.Min(_retryDelay.Ticks * 2, MaxRetryDelay.Ticks));
+    }
+
+    private void CancelRetryTimer()
+    {
+        _retryTimer?.Cancel();
+        _retryTimer = null;
+    }
+
+    private void CancelAutoReconnect()
+    {
+        _autoReconnect = false;
+        _retryDelay = TimeSpan.Zero;
+        CancelRetryTimer();
     }
 
     private DiscordGatewaySnapshot CurrentSnapshot()
@@ -1077,4 +1155,9 @@ internal sealed class DiscordNetGatewayLifecycleActor : ReceiveActor, IWithTimer
     private sealed record DiscordButtonDeferFailed(ulong InteractionId, Exception Exception) : IDiscordGatewayInternalMessage;
 
     private sealed record DispatchFailed(string Operation, Exception Exception) : IDiscordGatewayInternalMessage;
+
+    private sealed record RetryConnect : IDiscordGatewayInternalMessage
+    {
+        public static readonly RetryConnect Instance = new();
+    }
 }

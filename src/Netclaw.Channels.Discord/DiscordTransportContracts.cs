@@ -73,6 +73,12 @@ public interface IDiscordGatewayClient
     /// </summary>
     event Func<string, Task>? CleanReconnectRequired;
 
+    /// <summary>
+    /// Raised when the lifecycle actor successfully reconnects after a transient
+    /// failure. The snapshot contains the restored bot identity and health state.
+    /// </summary>
+    event Func<DiscordGatewaySnapshot, Task>? ConnectionRestored;
+
     Task<DiscordGatewaySnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default);
 
     Task<DiscordGatewaySnapshot> ConnectAsync(string botToken, CancellationToken cancellationToken = default);
@@ -152,6 +158,12 @@ public sealed class UnconfiguredDiscordGatewayClient : IDiscordGatewayClient
     }
 
     public event Func<string, Task>? CleanReconnectRequired
+    {
+        add { }
+        remove { }
+    }
+
+    public event Func<DiscordGatewaySnapshot, Task>? ConnectionRestored
     {
         add { }
         remove { }

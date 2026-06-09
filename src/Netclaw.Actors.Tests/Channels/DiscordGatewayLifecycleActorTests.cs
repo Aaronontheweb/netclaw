@@ -47,6 +47,10 @@ public sealed class DiscordGatewayLifecycleActorTests(ITestOutputHelper output) 
 
         await transport.RaiseReadyAsync();
 
+        // The actor detects a spurious Ready event while in Disconnected
+        // state and forces a clean reconnect cycle: it emits the
+        // CleanReconnectRequired event, then drives a full stop/reconnect.
+        // The fake transport's StopAsync sets ConnectionState to Disconnected.
         await AwaitAssertAsync(async () =>
         {
             var snapshot = await actor.Ask<DiscordGatewaySnapshot>(
@@ -55,10 +59,7 @@ public sealed class DiscordGatewayLifecycleActorTests(ITestOutputHelper output) 
                 TestContext.Current.CancellationToken);
 
             Assert.False(snapshot.IsReady);
-            Assert.True(snapshot.IsConnected);
-            Assert.Equal(
-                "Discord gateway received READY outside a clean startup cycle; forcing a clean reconnect.",
-                snapshot.HealthDetail);
+            Assert.False(snapshot.IsConnected);
             Assert.Equal(1, sink.CleanReconnectCount);
         }, cancellationToken: TestContext.Current.CancellationToken);
     }
@@ -90,6 +91,9 @@ public sealed class DiscordGatewayLifecycleActorTests(ITestOutputHelper output) 
         var readySnapshot = await connectTask;
         Assert.True(readySnapshot.IsReady);
 
+        // Raise a spurious Connected event while in Ready state — the actor
+        // forces a clean reconnect cycle which now drives a full stop.
+        // The fake transport's StopAsync sets ConnectionState to Disconnected.
         await transport.RaiseConnectedAsync();
 
         await AwaitAssertAsync(async () =>
@@ -100,10 +104,7 @@ public sealed class DiscordGatewayLifecycleActorTests(ITestOutputHelper output) 
                 TestContext.Current.CancellationToken);
 
             Assert.False(snapshot.IsReady);
-            Assert.True(snapshot.IsConnected);
-            Assert.Equal(
-                "Discord gateway reconnected outside a clean startup cycle; forcing a clean reconnect.",
-                snapshot.HealthDetail);
+            Assert.False(snapshot.IsConnected);
             Assert.Equal(1, sink.CleanReconnectCount);
         }, cancellationToken: TestContext.Current.CancellationToken);
     }
@@ -137,6 +138,14 @@ public sealed class DiscordGatewayLifecycleActorTests(ITestOutputHelper output) 
         public Task PublishCleanReconnectRequiredAsync(string reason)
         {
             CleanReconnectCount++;
+            return Task.CompletedTask;
+        }
+
+        public int ConnectionRestoredCount { get; private set; }
+
+        public Task PublishConnectionRestoredAsync(DiscordGatewaySnapshot snapshot)
+        {
+            ConnectionRestoredCount++;
             return Task.CompletedTask;
         }
     }
