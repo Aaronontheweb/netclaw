@@ -159,19 +159,21 @@ public sealed class RemoteChatChannelBuilder<TChannel, TOptions>
     }
 
     /// <summary>
-    /// Registers the concrete send implementation consumed by the generic
-    /// <c>send_channel_message</c> tool. Registered as the concrete type only —
-    /// the generic tool carries the <c>IChannelTool</c> marker.
+    /// Registers the channel's <see cref="IChannelOutboundClient"/> — the
+    /// proactive send implementation (ACL checks, platform post, session
+    /// binding) that the generic <c>send_channel_message</c> tool dispatches
+    /// to by channel key.
     /// </summary>
-    public RemoteChatChannelBuilder<TChannel, TOptions> WithSendTool<TTool>(
-        Func<IServiceProvider, TOptions, TTool> factory)
-        where TTool : class
+    public RemoteChatChannelBuilder<TChannel, TOptions> WithProactiveSendClient<TClient>(
+        Func<IServiceProvider, TOptions, TClient> factory)
+        where TClient : class, IChannelOutboundClient
     {
         ArgumentNullException.ThrowIfNull(factory);
         if (!_options.Enabled)
             return this;
 
-        _services.AddSingleton<TTool>(sp => factory(sp, _options));
+        _services.AddSingleton<TClient>(sp => factory(sp, _options));
+        _services.AddSingleton<IChannelOutboundClient>(sp => sp.GetRequiredService<TClient>());
         return this;
     }
 

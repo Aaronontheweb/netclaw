@@ -124,6 +124,41 @@ public sealed class ChannelSendToolTests
         Assert.Contains("does not look like a stable Slack ID", result);
     }
 
+    [Fact]
+    public async Task Send_dispatches_to_outbound_client_matching_channel_key()
+    {
+        var registry = BuildRegistry(
+            BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination),
+            BuildDescriptor(ChannelType.Mattermost, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination));
+        var slackClient = new FakeOutboundClient(ChannelDescriptorKey.FromChannelType(ChannelType.Slack));
+        var mattermostClient = new FakeOutboundClient(ChannelDescriptorKey.FromChannelType(ChannelType.Mattermost));
+        using var services = new ServiceCollection()
+            .AddSingleton<IChannelOutboundClient>(slackClient)
+            .AddSingleton<IChannelOutboundClient>(mattermostClient)
+            .BuildServiceProvider();
+        var tool = new SendChannelMessageTool(registry, services);
+
+        var result = await ExecuteAsync(tool, "slack", "slack", "destination", "C1234567890");
+
+        Assert.Equal("sent via slack", result);
+        Assert.NotNull(slackClient.Request);
+        Assert.Equal(ChannelAddressKind.Destination, slackClient.Request!.AddressKind);
+        Assert.Equal("C1234567890", slackClient.Request.TargetId);
+        Assert.Equal("Test message", slackClient.Request.Text);
+        Assert.Null(mattermostClient.Request);
+    }
+
+    [Fact]
+    public async Task Send_fails_loudly_when_no_outbound_client_is_registered_for_channel()
+    {
+        var registry = BuildRegistry(BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination));
+        var tool = new SendChannelMessageTool(registry, new ServiceCollection().BuildServiceProvider());
+
+        var result = await ExecuteAsync(tool, "slack", "slack", "destination", "C1234567890");
+
+        Assert.Contains("does not have a registered send adapter", result);
+    }
+
     private static Task<string> ExecuteAsync(
         SendChannelMessageTool tool,
         string channelKey,
@@ -205,5 +240,18 @@ public sealed class ChannelSendToolTests
             ToolIntents: toolIntents,
             AddressKinds: new HashSet<ChannelAddressKind>(addressKinds),
             SupportedOutputEffects: new HashSet<ChannelOutputEffectKind>());
+    }
+
+    private sealed class FakeOutboundClient(ChannelDescriptorKey key) : IChannelOutboundClient
+    {
+        public ChannelDescriptorKey Key { get; } = key;
+
+        public ChannelSendRequest? Request { get; private set; }
+
+        public Task<string> SendMessageAsync(ChannelSendRequest request, CancellationToken ct = default)
+        {
+            Request = request;
+            return Task.FromResult($"sent via {Key.Value}");
+        }
     }
 }

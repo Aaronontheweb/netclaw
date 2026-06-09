@@ -23,9 +23,9 @@ using ChannelType = Netclaw.Actors.Channels.ChannelType;
 
 namespace Netclaw.Actors.Tests.Channels;
 
-#region SendSlackMessageTool Tests
+#region SlackProactiveOutboundClient Tests
 
-public sealed class SendSlackMessageToolTests
+public sealed class SlackProactiveOutboundClientTests
 {
     private static readonly SlackChannelOptions DefaultOptions = new()
     {
@@ -35,34 +35,30 @@ public sealed class SendSlackMessageToolTests
     };
 
     [Fact]
-    public async Task Rejects_when_both_channel_and_user_provided()
+    public async Task Rejects_unsupported_address_kind()
     {
-        var tool = CreateTool();
-        var result = await ExecuteAsync(tool, "hello", channelId: "C1", userId: "U1");
-        Assert.Contains("exactly one", result);
-    }
+        var client = CreateClient();
 
-    [Fact]
-    public async Task Rejects_when_neither_provided()
-    {
-        var tool = CreateTool();
-        var result = await ExecuteAsync(tool, "hello");
-        Assert.Contains("exactly one", result);
+        var result = await client.SendMessageAsync(
+            new ChannelSendRequest(ChannelAddressKind.User, "U1", "hello"),
+            CancellationToken.None);
+
+        Assert.Contains("does not support address kind", result);
     }
 
     [Fact]
     public async Task Rejects_disallowed_user()
     {
-        var tool = CreateTool();
-        var result = await ExecuteAsync(tool, "hello", userId: "UBAD");
+        var client = CreateClient();
+        var result = await SendAsync(client, "hello", userId: "UBAD");
         Assert.Contains("not in the allowed users list", result);
     }
 
     [Fact]
     public async Task Rejects_disallowed_channel()
     {
-        var tool = CreateTool();
-        var result = await ExecuteAsync(tool, "hello", channelId: "CBAD");
+        var client = CreateClient();
+        var result = await SendAsync(client, "hello", channelId: "CBAD");
         Assert.Contains("not in the allowed channels list", result);
     }
 
@@ -71,12 +67,12 @@ public sealed class SendSlackMessageToolTests
     {
         var fake = new FakeSlackOutboundClient();
         var gateway = new FakeGatewayActor();
-        var tool = CreateTool(
+        var client = CreateClient(
             outbound: fake,
             gatewayAccessor: () => gateway,
             defaultChannelIdAccessor: () => new SlackChannelId("CDEFAULT"));
 
-        var result = await ExecuteAsync(tool, "hello", channelId: "CDEFAULT");
+        var result = await SendAsync(client, "hello", channelId: "CDEFAULT");
         Assert.Contains("Message sent", result);
     }
 
@@ -88,16 +84,16 @@ public sealed class SendSlackMessageToolTests
             AllowDirectMessages = false,
             AllowedUserIds = ["U1"]
         };
-        var tool = CreateTool(options: options);
-        var result = await ExecuteAsync(tool, "hello", userId: "U1");
+        var client = CreateClient(options: options);
+        var result = await SendAsync(client, "hello", userId: "U1");
         Assert.Contains("Direct messages are disabled", result);
     }
 
     [Fact]
     public async Task Returns_error_when_gateway_disconnected()
     {
-        var tool = CreateTool(gatewayAccessor: () => null);
-        var result = await ExecuteAsync(tool, "hello", channelId: "C1");
+        var client = CreateClient(gatewayAccessor: () => null);
+        var result = await SendAsync(client, "hello", channelId: "C1");
         Assert.Contains("gateway is not connected", result);
     }
 
@@ -105,8 +101,8 @@ public sealed class SendSlackMessageToolTests
     public async Task Returns_error_on_Slack_API_failure()
     {
         var fake = new FakeSlackOutboundClient { ShouldThrow = true };
-        var tool = CreateTool(outbound: fake);
-        var result = await ExecuteAsync(tool, "hello", channelId: "C1");
+        var client = CreateClient(outbound: fake);
+        var result = await SendAsync(client, "hello", channelId: "C1");
         Assert.Contains("Failed to post message to Slack", result);
     }
 
@@ -114,8 +110,8 @@ public sealed class SendSlackMessageToolTests
     public async Task Returns_error_on_DM_open_failure()
     {
         var fake = new FakeSlackOutboundClient { ShouldThrow = true };
-        var tool = CreateTool(outbound: fake);
-        var result = await ExecuteAsync(tool, "hello", userId: "U1");
+        var client = CreateClient(outbound: fake);
+        var result = await SendAsync(client, "hello", userId: "U1");
         Assert.Contains("Failed to open DM channel", result);
     }
 
@@ -124,50 +120,16 @@ public sealed class SendSlackMessageToolTests
     {
         var fake = new FakeSlackOutboundClient();
         var gateway = new FakeGatewayActor();
-        var tool = CreateTool(outbound: fake, gatewayAccessor: () => gateway);
+        var client = CreateClient(outbound: fake, gatewayAccessor: () => gateway);
 
-        var result = await ExecuteAsync(tool, "hello world", channelId: "C1");
+        var result = await SendAsync(client, "hello world", channelId: "C1");
 
+        Assert.Equal("slack", client.Key.Value);
         Assert.Contains("Message sent to channel C1", result);
         Assert.Contains("C1/", result);
         Assert.Single(fake.PostedThreads);
         Assert.Equal("C1", fake.PostedThreads[0].ChannelId.Value);
-    }
-
-    [Fact]
-    public async Task Accepts_lowercase_message_and_snake_case_channel_id()
-    {
-        var fake = new FakeSlackOutboundClient();
-        var gateway = new FakeGatewayActor();
-        var tool = CreateTool(outbound: fake, gatewayAccessor: () => gateway);
-
-        var result = await tool.ExecuteAsync(new Dictionary<string, object?>
-        {
-            ["message"] = "hello from lowercase",
-            ["channel_id"] = "C1"
-        }, CancellationToken.None);
-
-        Assert.Contains("Message sent to channel C1", result);
-        Assert.Single(fake.PostedThreads);
-        Assert.Equal("hello from lowercase", fake.PostedThreads[0].Text);
-    }
-
-    [Fact]
-    public async Task Accepts_text_alias_for_message_parameter()
-    {
-        var fake = new FakeSlackOutboundClient();
-        var gateway = new FakeGatewayActor();
-        var tool = CreateTool(outbound: fake, gatewayAccessor: () => gateway);
-
-        var result = await tool.ExecuteAsync(new Dictionary<string, object?>
-        {
-            ["text"] = "hello from text alias",
-            ["ChannelId"] = "C1"
-        }, CancellationToken.None);
-
-        Assert.Contains("Message sent to channel C1", result);
-        Assert.Single(fake.PostedThreads);
-        Assert.Equal("hello from text alias", fake.PostedThreads[0].Text);
+        Assert.Equal("hello world", fake.PostedThreads[0].Text);
     }
 
     [Fact]
@@ -175,34 +137,31 @@ public sealed class SendSlackMessageToolTests
     {
         var fake = new FakeSlackOutboundClient();
         var gateway = new FakeGatewayActor();
-        var tool = CreateTool(outbound: fake, gatewayAccessor: () => gateway);
+        var client = CreateClient(outbound: fake, gatewayAccessor: () => gateway);
 
-        var result = await ExecuteAsync(tool, "hello user", userId: "U1");
+        var result = await SendAsync(client, "hello user", userId: "U1");
 
         Assert.Contains("Message sent to user U1", result);
         Assert.Single(fake.OpenedDms);
         Assert.Equal("U1", fake.OpenedDms[0].Value);
     }
 
-    private static Task<string> ExecuteAsync(SendSlackMessageTool tool, string message,
+    private static Task<string> SendAsync(SlackProactiveOutboundClient client, string text,
         string? channelId = null, string? userId = null)
     {
-        var args = new Dictionary<string, object?>
-        {
-            ["Message"] = message
-        };
-        if (channelId is not null) args["ChannelId"] = channelId;
-        if (userId is not null) args["UserId"] = userId;
-        return tool.ExecuteAsync(args, CancellationToken.None);
+        var request = userId is not null
+            ? new ChannelSendRequest(ChannelAddressKind.DirectMessage, userId, text)
+            : new ChannelSendRequest(ChannelAddressKind.Destination, channelId!, text);
+        return client.SendMessageAsync(request, CancellationToken.None);
     }
 
-    private static SendSlackMessageTool CreateTool(
+    private static SlackProactiveOutboundClient CreateClient(
         FakeSlackOutboundClient? outbound = null,
         SlackChannelOptions? options = null,
         Func<SlackChannelId?>? defaultChannelIdAccessor = null,
         Func<IActorRef?>? gatewayAccessor = null)
     {
-        return new SendSlackMessageTool(
+        return new SlackProactiveOutboundClient(
             outbound ?? new FakeSlackOutboundClient(),
             options ?? DefaultOptions,
             defaultChannelIdAccessor ?? (() => null),

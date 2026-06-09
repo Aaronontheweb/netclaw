@@ -1,41 +1,29 @@
-﻿// -----------------------------------------------------------------------
-// <copyright file="SendSlackMessageTool.cs" company="Petabridge, LLC">
+// -----------------------------------------------------------------------
+// <copyright file="SlackProactiveOutboundClient.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.ComponentModel;
 using Akka.Actor;
+using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
-using Netclaw.Tools;
 
-namespace Netclaw.Channels.Slack.Tools;
+namespace Netclaw.Channels.Slack;
 
 /// <summary>
-/// LLM tool that sends a proactive message to a Slack channel or DMs a user,
-/// creating a new conversation thread. The new thread is wired into the actor
-/// hierarchy so user replies route back to a live session.
+/// Slack implementation of <see cref="IChannelOutboundClient"/>: ACL-checks the
+/// destination, posts a proactive message to a channel (or opens a DM channel
+/// first), and wires the new thread into the actor hierarchy so user replies
+/// route back to a live session. Distinct from <see cref="ISlackOutboundClient"/>,
+/// which is the raw Slack API transport this class orchestrates.
 /// </summary>
-[NetclawTool("send_slack_message",
-    "Send a message to a Slack channel or DM a user, creating a new conversation thread. " +
-    "Use this to proactively notify users or start discussions. " +
-    "Provide exactly one of channel_id or user_id.",
-    Grant = "builtin")]
-public sealed partial class SendSlackMessageTool : NetclawTool<SendSlackMessageTool.Params>
+public sealed class SlackProactiveOutboundClient : IChannelOutboundClient
 {
     private readonly ISlackOutboundClient _outboundClient;
     private readonly SlackChannelOptions _options;
     private readonly Func<SlackChannelId?> _defaultChannelIdAccessor;
     private readonly Func<IActorRef?> _gatewayAccessor;
 
-    public record Params(
-        [property: Description("The message text to send")]
-        string Message,
-        [property: Description("Slack channel ID (C...) to post to. Mutually exclusive with user_id.")]
-        string? ChannelId = null,
-        [property: Description("Slack user ID (U...) to DM. Mutually exclusive with channel_id.")]
-        string? UserId = null);
-
-    public SendSlackMessageTool(
+    public SlackProactiveOutboundClient(
         ISlackOutboundClient outboundClient,
         SlackChannelOptions options,
         Func<SlackChannelId?> defaultChannelIdAccessor,
@@ -47,29 +35,25 @@ public sealed partial class SendSlackMessageTool : NetclawTool<SendSlackMessageT
         _gatewayAccessor = gatewayAccessor;
     }
 
-    protected override async Task<string> ExecuteAsync(Params args, CancellationToken ct)
+    public ChannelDescriptorKey Key => ChannelDescriptorKey.FromChannelType(ChannelType.Slack);
+
+    public async Task<string> SendMessageAsync(ChannelSendRequest request, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(args.Message))
-            return "Error: 'message' parameter is required.";
-
-        var hasChannel = !string.IsNullOrWhiteSpace(args.ChannelId);
-        var hasUser = !string.IsNullOrWhiteSpace(args.UserId);
-
-        if (hasChannel == hasUser) // both set or neither set
-            return "Error: Provide exactly one of 'channel_id' or 'user_id'.";
+        ArgumentNullException.ThrowIfNull(request);
 
         var gateway = _gatewayAccessor();
         if (gateway is null)
             return "Error: Slack gateway is not connected.";
 
-        SlackChannelId targetChannelId;
+        var isDirectMessage = request.AddressKind == ChannelAddressKind.DirectMessage;
 
-        if (hasUser)
+        SlackChannelId targetChannelId;
+        if (isDirectMessage)
         {
             if (!_options.AllowDirectMessages)
                 return "Error: Direct messages are disabled. Enable AllowDirectMessages in Slack configuration to send DMs.";
 
-            var userId = new SlackUserId(args.UserId!);
+            var userId = new SlackUserId(request.TargetId);
 
             if (!SlackAclPolicy.IsAllowedUser(userId, _options))
                 return $"Error: User {userId.Value} is not in the allowed users list.";
@@ -83,18 +67,22 @@ public sealed partial class SendSlackMessageTool : NetclawTool<SendSlackMessageT
                 return $"Error: Failed to open DM channel: {ex.Message}";
             }
         }
-        else
+        else if (request.AddressKind == ChannelAddressKind.Destination)
         {
-            targetChannelId = new SlackChannelId(args.ChannelId!);
+            targetChannelId = new SlackChannelId(request.TargetId);
 
             if (!SlackAclPolicy.IsAllowedChannel(targetChannelId, _options, _defaultChannelIdAccessor()))
                 return $"Error: Channel {targetChannelId.Value} is not in the allowed channels list.";
+        }
+        else
+        {
+            return $"Error: Slack outbound send does not support address kind '{request.AddressKind}'.";
         }
 
         SlackNewThread result;
         try
         {
-            result = await _outboundClient.PostNewThreadAsync(targetChannelId, args.Message, ct);
+            result = await _outboundClient.PostNewThreadAsync(targetChannelId, request.Text, ct);
         }
         catch (Exception ex)
         {
@@ -102,6 +90,7 @@ public sealed partial class SendSlackMessageTool : NetclawTool<SendSlackMessageT
         }
 
         var sessionId = new SessionId($"{result.ChannelId.Value}/{result.ThreadTs.Value}");
+        var target = isDirectMessage ? $"user {request.TargetId}" : $"channel {request.TargetId}";
 
         try
         {
@@ -113,12 +102,10 @@ public sealed partial class SendSlackMessageTool : NetclawTool<SendSlackMessageT
         catch (Exception)
         {
             // Message was already posted to Slack; the pipeline just didn't initialize
-            var target = hasUser ? $"user {args.UserId}" : $"channel {args.ChannelId}";
             return $"Message sent to {target} but session pipeline failed to initialize. " +
                    $"Thread: {result.ChannelId.Value}/{result.ThreadTs.Value}";
         }
 
-        var successTarget = hasUser ? $"user {args.UserId}" : $"channel {args.ChannelId}";
-        return $"Message sent to {successTarget}. Thread: {result.ChannelId.Value}/{result.ThreadTs.Value}";
+        return $"Message sent to {target}. Thread: {result.ChannelId.Value}/{result.ThreadTs.Value}";
     }
 }

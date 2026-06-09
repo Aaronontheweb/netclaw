@@ -1,45 +1,33 @@
 // -----------------------------------------------------------------------
-// <copyright file="SendDiscordMessageTool.cs" company="Petabridge, LLC">
+// <copyright file="DiscordProactiveOutboundClient.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.ComponentModel;
 using Akka.Actor;
+using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
-using Netclaw.Tools;
 
-namespace Netclaw.Channels.Discord.Tools;
+namespace Netclaw.Channels.Discord;
 
 /// <summary>
-/// LLM tool that posts a proactive message to a Discord channel or DM. Channel
-/// posts create a Discord thread; DMs use the root DM message as the session
-/// anchor. The session is wired into the actor hierarchy so user replies route
-/// back to a live session.
+/// Discord implementation of <see cref="IChannelOutboundClient"/>: ACL-checks
+/// the destination and posts a proactive message. Channel posts create a
+/// Discord thread; DMs use the root DM message as the session anchor. The
+/// session is wired into the actor hierarchy so user replies route back to a
+/// live session. Distinct from <see cref="IDiscordOutboundClient"/>, which is
+/// the raw Discord API transport this class orchestrates.
 /// </summary>
-[NetclawTool("send_discord_message",
-    "Send a message to a Discord channel or DM a user, creating a new conversation session. " +
-    "Use this to proactively notify users or start discussions. " +
-    "Provide channel_id for a channel post, user_id for a DM, or omit both to use the configured default channel.",
-    Grant = "builtin")]
-public sealed partial class SendDiscordMessageTool : NetclawTool<SendDiscordMessageTool.Params>
+public sealed class DiscordProactiveOutboundClient : IChannelOutboundClient
 {
-    private const int MaxThreadNameLength = 100;
+    // The generic send_channel_message tool has no thread-name parameter, so
+    // proactive channel posts always create the thread with this default name.
+    private const string DefaultThreadName = "Conversation";
 
     private readonly IDiscordOutboundClient _outboundClient;
     private readonly DiscordChannelOptions _options;
     private readonly Func<IActorRef?> _gatewayAccessor;
 
-    public record Params(
-        [property: Description("The message text to send")]
-        string Message,
-        [property: Description("Discord channel ID to post to. Mutually exclusive with user_id. Defaults to the configured default channel if both are omitted.")]
-        string? ChannelId = null,
-        [property: Description("Discord user ID to DM. Mutually exclusive with channel_id.")]
-        string? UserId = null,
-        [property: Description("Optional name for the conversation thread created on the message.")]
-        string? ThreadName = null);
-
-    public SendDiscordMessageTool(
+    public DiscordProactiveOutboundClient(
         IDiscordOutboundClient outboundClient,
         DiscordChannelOptions options,
         Func<IActorRef?> gatewayAccessor)
@@ -49,52 +37,37 @@ public sealed partial class SendDiscordMessageTool : NetclawTool<SendDiscordMess
         _gatewayAccessor = gatewayAccessor;
     }
 
-    protected override async Task<string> ExecuteAsync(Params args, CancellationToken ct)
+    public ChannelDescriptorKey Key => ChannelDescriptorKey.FromChannelType(ChannelType.Discord);
+
+    public async Task<string> SendMessageAsync(ChannelSendRequest request, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(args.Message))
-            return "Error: 'message' parameter is required.";
+        ArgumentNullException.ThrowIfNull(request);
 
         var gateway = _gatewayAccessor();
         if (gateway is null)
             return "Error: Discord gateway is not connected.";
 
-        var hasChannel = !string.IsNullOrWhiteSpace(args.ChannelId);
-        var hasUser = !string.IsNullOrWhiteSpace(args.UserId);
+        if (request.AddressKind == ChannelAddressKind.DirectMessage)
+            return await SendDirectMessageAsync(request, gateway, ct);
 
-        if (hasChannel && hasUser)
-            return "Error: Provide only one of 'channel_id' or 'user_id'.";
+        if (request.AddressKind != ChannelAddressKind.Destination)
+            return $"Error: Discord outbound send does not support address kind '{request.AddressKind}'.";
 
-        if (hasUser)
-            return await SendDirectMessageAsync(args, gateway, ct);
-
+        // The default channel is implicitly allowed even when it is absent from
+        // AllowedChannelIds, so the ACL check needs it for comparison.
         var defaultChannelId = string.IsNullOrWhiteSpace(_options.DefaultChannelId)
             ? (DiscordChannelId?)null
             : new DiscordChannelId(_options.DefaultChannelId);
 
-        var channelIdValue = !string.IsNullOrWhiteSpace(args.ChannelId)
-            ? args.ChannelId!
-            : defaultChannelId?.Value;
-
-        if (string.IsNullOrWhiteSpace(channelIdValue))
-            return "Error: No 'channel_id' provided and no default Discord channel is configured.";
-
-        var targetChannelId = new DiscordChannelId(channelIdValue);
+        var targetChannelId = new DiscordChannelId(request.TargetId);
 
         if (!DiscordAclPolicy.IsAllowedChannel(targetChannelId, _options, defaultChannelId))
             return $"Error: Channel {targetChannelId.Value} is not in the allowed channels list.";
 
-        var threadName = "Conversation";
-        if (!string.IsNullOrWhiteSpace(args.ThreadName))
-        {
-            threadName = args.ThreadName!.Length > MaxThreadNameLength
-                ? args.ThreadName![..MaxThreadNameLength]
-                : args.ThreadName!;
-        }
-
         DiscordNewThread result;
         try
         {
-            result = await _outboundClient.PostNewThreadAsync(targetChannelId, args.Message, threadName, ct);
+            result = await _outboundClient.PostNewThreadAsync(targetChannelId, request.Text, DefaultThreadName, ct);
         }
         catch (DiscordThreadCreationFailedException ex)
         {
@@ -131,19 +104,19 @@ public sealed partial class SendDiscordMessageTool : NetclawTool<SendDiscordMess
         return $"Message sent to channel {targetChannelId.Value}. Thread: {sessionId.Value}";
     }
 
-    private async Task<string> SendDirectMessageAsync(Params args, IActorRef gateway, CancellationToken ct)
+    private async Task<string> SendDirectMessageAsync(ChannelSendRequest request, IActorRef gateway, CancellationToken ct)
     {
         if (!_options.AllowDirectMessages)
             return "Error: Direct messages are disabled. Enable AllowDirectMessages in Discord configuration to send DMs.";
 
-        var userId = new DiscordUserId(args.UserId!);
+        var userId = new DiscordUserId(request.TargetId);
         if (!DiscordAclPolicy.IsAllowedUser(userId, _options))
             return $"Error: User {userId.Value} is not in the allowed users list.";
 
         DiscordNewDirectMessage result;
         try
         {
-            result = await _outboundClient.PostDirectMessageAsync(userId, args.Message, ct);
+            result = await _outboundClient.PostDirectMessageAsync(userId, request.Text, ct);
         }
         catch (Exception ex)
         {

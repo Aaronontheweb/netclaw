@@ -9,7 +9,6 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Channels;
 using Netclaw.Channels.Discord;
-using Netclaw.Channels.Discord.Tools;
 using Netclaw.Channels.Mattermost;
 using Netclaw.Channels.Mattermost.Tools;
 using Netclaw.Channels.Slack;
@@ -112,10 +111,11 @@ public sealed class ChannelRegistryRegistrationTests
         });
 
         Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(IChannelTool));
-        Assert.False(IsRegistered<SendSlackMessageTool>(services));
+        Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(IChannelOutboundClient));
+        Assert.False(IsRegistered<SlackProactiveOutboundClient>(services));
         Assert.False(IsRegistered<LookupSlackUserTool>(services));
-        Assert.False(IsRegistered<SendDiscordMessageTool>(services));
-        Assert.False(IsRegistered<SendMattermostMessageTool>(services));
+        Assert.False(IsRegistered<DiscordProactiveOutboundClient>(services));
+        Assert.False(IsRegistered<MattermostProactiveOutboundClient>(services));
         Assert.False(IsRegistered<LookupMattermostUserTool>(services));
         Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(IChannelAddressResolver));
         Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(IChannelOutputRenderer));
@@ -135,17 +135,15 @@ public sealed class ChannelRegistryRegistrationTests
         });
 
         Assert.Equal(3, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelTool)));
-        Assert.True(IsRegistered<SendSlackMessageTool>(services));
+        Assert.Equal(3, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelOutboundClient)));
+        Assert.True(IsRegistered<SlackProactiveOutboundClient>(services));
         Assert.True(IsRegistered<LookupSlackUserTool>(services));
         Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(LookupSlackUserTool)));
-        Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(SendSlackMessageTool)));
         Assert.True(IsRegistered<LookupChannelUserTool>(services));
         Assert.True(IsRegistered<LookupChannelDestinationTool>(services));
         Assert.True(IsRegistered<SendChannelMessageTool>(services));
-        Assert.True(IsRegistered<SendDiscordMessageTool>(services));
-        Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(SendDiscordMessageTool)));
-        Assert.True(IsRegistered<SendMattermostMessageTool>(services));
-        Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(SendMattermostMessageTool)));
+        Assert.True(IsRegistered<DiscordProactiveOutboundClient>(services));
+        Assert.True(IsRegistered<MattermostProactiveOutboundClient>(services));
         Assert.True(IsRegistered<LookupMattermostUserTool>(services));
         Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(LookupMattermostUserTool)));
         Assert.True(IsRegistered<DiscordProcessingOutputRenderer>(services));

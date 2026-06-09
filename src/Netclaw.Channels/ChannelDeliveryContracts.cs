@@ -330,6 +330,53 @@ public interface IChannelOutputRenderer
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// A proactive outbound send resolved by the generic <c>send_channel_message</c>
+/// tool: post to a channel destination or open a direct-message conversation.
+/// </summary>
+public sealed record ChannelSendRequest
+{
+    public ChannelSendRequest(ChannelAddressKind addressKind, string targetId, string text)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(text);
+
+        AddressKind = addressKind;
+        TargetId = targetId;
+        Text = text;
+    }
+
+    /// <summary>
+    /// <see cref="ChannelAddressKind.Destination"/> for channel posts or
+    /// <see cref="ChannelAddressKind.DirectMessage"/> for DMs.
+    /// </summary>
+    public ChannelAddressKind AddressKind { get; init; }
+
+    /// <summary>
+    /// Stable platform ID: a channel ID for destination sends, a user ID for
+    /// direct-message sends.
+    /// </summary>
+    public string TargetId { get; init; }
+
+    public string Text { get; init; }
+}
+
+/// <summary>
+/// Per-channel proactive send implementation dispatched to by channel key from
+/// the generic <c>send_channel_message</c> tool. Implementations own the
+/// channel's outbound ACL checks (allowed channels/users, direct-message gate),
+/// the platform post, and wiring the new thread into the session pipeline.
+/// The returned string is the tool result shown to the LLM — either a success
+/// summary or an <c>Error: ...</c> message; implementations must not throw for
+/// expected send failures.
+/// </summary>
+public interface IChannelOutboundClient
+{
+    ChannelDescriptorKey Key { get; }
+
+    Task<string> SendMessageAsync(ChannelSendRequest request, CancellationToken ct = default);
+}
+
 public sealed record ChannelPrincipal(
     string StableId,
     string? DisplayName = null);

@@ -8,10 +8,7 @@ using Microsoft.Extensions.AI;
 using Netclaw.Actors.Channels;
 using Netclaw.Channels;
 using Netclaw.Channels.Discord;
-using Netclaw.Channels.Discord.Tools;
 using Netclaw.Channels.Mattermost;
-using Netclaw.Channels.Mattermost.Tools;
-using Netclaw.Channels.Slack.Tools;
 using Netclaw.Tools;
 
 namespace Netclaw.Daemon.Configuration;
@@ -129,24 +126,29 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
         if (validationError is not null)
             return validationError;
 
-        var idParamName = destination.AddressKind == ChannelAddressKind.DirectMessage ? "UserId" : "ChannelId";
-        var delegateArguments = new Dictionary<string, object?>
-        {
-            ["Message"] = text.Trim(),
-            [idParamName] = destination.StableId
-        };
-
-        INetclawTool? sendTool = descriptor.ChannelType switch
-        {
-            ChannelType.Slack => services.GetRequiredService<SendSlackMessageTool>(),
-            ChannelType.Discord => services.GetRequiredService<SendDiscordMessageTool>(),
-            ChannelType.Mattermost => services.GetRequiredService<SendMattermostMessageTool>(),
-            _ => null
-        };
-
-        return sendTool is not null
-            ? await sendTool.ExecuteAsync(delegateArguments, ct)
+        var outboundClient = ResolveOutboundClient(key);
+        return outboundClient is not null
+            ? await outboundClient.SendMessageAsync(
+                new ChannelSendRequest(destination.AddressKind, destination.StableId, text.Trim()),
+                ct)
             : $"Error: Channel '{key}' does not have a registered send adapter.";
+    }
+
+    private IChannelOutboundClient? ResolveOutboundClient(ChannelDescriptorKey key)
+    {
+        IChannelOutboundClient? match = null;
+        foreach (var client in services.GetServices<IChannelOutboundClient>())
+        {
+            if (!client.Key.Equals(key))
+                continue;
+
+            if (match is not null)
+                throw new InvalidOperationException($"Multiple channel outbound clients are registered for '{key}'.");
+
+            match = client;
+        }
+
+        return match;
     }
 
     private JsonElement BuildParameterSchema()

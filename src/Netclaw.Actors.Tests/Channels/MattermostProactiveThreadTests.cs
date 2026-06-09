@@ -14,7 +14,7 @@ using Xunit;
 
 namespace Netclaw.Actors.Tests.Channels;
 
-public sealed class SendMattermostMessageToolTests
+public sealed class MattermostProactiveOutboundClientTests
 {
     private static readonly MattermostChannelOptions DefaultOptions = new()
     {
@@ -24,31 +24,11 @@ public sealed class SendMattermostMessageToolTests
     };
 
     [Fact]
-    public async Task Rejects_when_both_channel_and_user_provided()
-    {
-        var tool = CreateTool();
-
-        var result = await ExecuteAsync(tool, "hello", channelId: "ch-1", userId: "u-1");
-
-        Assert.Contains("exactly one", result);
-    }
-
-    [Fact]
-    public async Task Rejects_when_neither_provided()
-    {
-        var tool = CreateTool();
-
-        var result = await ExecuteAsync(tool, "hello");
-
-        Assert.Contains("exactly one", result);
-    }
-
-    [Fact]
     public async Task Rejects_disallowed_user()
     {
-        var tool = CreateTool();
+        var client = CreateClient();
 
-        var result = await ExecuteAsync(tool, "hello", userId: "u-bad");
+        var result = await SendAsync(client, "hello", userId: "u-bad");
 
         Assert.Contains("not in the allowed users list", result);
     }
@@ -61,9 +41,9 @@ public sealed class SendMattermostMessageToolTests
             AllowDirectMessages = false,
             AllowedUserIds = ["u-1"]
         };
-        var tool = CreateTool(options: options);
+        var client = CreateClient(options: options);
 
-        var result = await ExecuteAsync(tool, "hello", userId: "u-1");
+        var result = await SendAsync(client, "hello", userId: "u-1");
 
         Assert.Contains("Direct messages are disabled", result);
     }
@@ -71,9 +51,9 @@ public sealed class SendMattermostMessageToolTests
     [Fact]
     public async Task Rejects_disallowed_channel()
     {
-        var tool = CreateTool();
+        var client = CreateClient();
 
-        var result = await ExecuteAsync(tool, "hello", channelId: "ch-bad");
+        var result = await SendAsync(client, "hello", channelId: "ch-bad");
 
         Assert.Contains("not in the allowed channels list", result);
     }
@@ -82,9 +62,9 @@ public sealed class SendMattermostMessageToolTests
     public async Task Successful_dm_uses_allowed_user_id()
     {
         var fake = new FakeMattermostOutboundClient();
-        var tool = CreateTool(outbound: fake);
+        var client = CreateClient(outbound: fake);
 
-        var result = await ExecuteAsync(tool, "hello user", userId: "u-1");
+        var result = await SendAsync(client, "hello user", userId: "u-1");
 
         Assert.Contains("Message sent to user u-1", result);
         Assert.Single(fake.OpenedDms);
@@ -95,41 +75,36 @@ public sealed class SendMattermostMessageToolTests
     public async Task Successful_channel_message_posts_and_wires_session()
     {
         var fake = new FakeMattermostOutboundClient();
-        var tool = CreateTool(outbound: fake);
+        var client = CreateClient(outbound: fake);
 
-        var result = await ExecuteAsync(tool, "hello channel", channelId: "ch-1");
+        var result = await SendAsync(client, "hello channel", channelId: "ch-1");
 
+        Assert.Equal("mattermost", client.Key.Value);
         Assert.Contains("Message sent to channel ch-1", result);
         Assert.Single(fake.PostedThreads);
         Assert.Equal("ch-1", fake.PostedThreads[0].ChannelId.Value);
         Assert.Equal("hello channel", fake.PostedThreads[0].Text);
     }
 
-    private static Task<string> ExecuteAsync(
-        SendMattermostMessageTool tool,
-        string message,
+    private static Task<string> SendAsync(
+        MattermostProactiveOutboundClient client,
+        string text,
         string? channelId = null,
         string? userId = null)
     {
-        var args = new Dictionary<string, object?>
-        {
-            ["Message"] = message
-        };
-        if (channelId is not null)
-            args["ChannelId"] = channelId;
-        if (userId is not null)
-            args["UserId"] = userId;
-
-        return tool.ExecuteAsync(args, CancellationToken.None);
+        var request = userId is not null
+            ? new ChannelSendRequest(ChannelAddressKind.DirectMessage, userId, text)
+            : new ChannelSendRequest(ChannelAddressKind.Destination, channelId!, text);
+        return client.SendMessageAsync(request, CancellationToken.None);
     }
 
-    private static SendMattermostMessageTool CreateTool(
+    private static MattermostProactiveOutboundClient CreateClient(
         FakeMattermostOutboundClient? outbound = null,
         MattermostChannelOptions? options = null,
         Func<MattermostChannelId?>? defaultChannelIdAccessor = null,
         Func<IActorRef?>? gatewayAccessor = null)
     {
-        return new SendMattermostMessageTool(
+        return new MattermostProactiveOutboundClient(
             outbound ?? new FakeMattermostOutboundClient(),
             options ?? DefaultOptions,
             defaultChannelIdAccessor ?? (() => null),

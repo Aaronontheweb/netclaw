@@ -8,7 +8,6 @@ using Mattermost;
 using Netclaw.Actors.Channels;
 using Netclaw.Channels;
 using Netclaw.Channels.Discord;
-using Netclaw.Channels.Discord.Tools;
 using Netclaw.Channels.Discord.Transport;
 using Netclaw.Channels.Mattermost;
 using Netclaw.Channels.Mattermost.Tools;
@@ -104,11 +103,11 @@ public static class ChannelIntegrationRegistrationExtensions
             // User lookup is exposed through the generic lookup_channel_user tool.
             // The gateway actor ref and default channel ID are resolved lazily via
             // SlackChannel since they're not available until StartAsync completes.
-            .WithSendTool((sp, options) =>
+            .WithProactiveSendClient((sp, options) =>
             {
                 var outbound = sp.GetRequiredService<ISlackOutboundClient>();
                 var channel = sp.GetRequiredService<SlackChannel>();
-                return new SendSlackMessageTool(
+                return new SlackProactiveOutboundClient(
                     outbound,
                     options,
                     () => channel.DefaultChannelId,
@@ -177,11 +176,11 @@ public static class ChannelIntegrationRegistrationExtensions
                     : new DiscordChannelId(options.DefaultChannelId)))
             // The gateway actor ref is resolved lazily via DiscordChannel since it
             // is not available until StartAsync completes.
-            .WithSendTool((sp, options) =>
+            .WithProactiveSendClient((sp, options) =>
             {
                 var outbound = sp.GetRequiredService<IDiscordOutboundClient>();
                 var channel = sp.GetRequiredService<DiscordChannel>();
-                return new SendDiscordMessageTool(
+                return new DiscordProactiveOutboundClient(
                     outbound,
                     options,
                     () => channel.Gateway);
@@ -247,11 +246,11 @@ public static class ChannelIntegrationRegistrationExtensions
                     : new MattermostChannelId(options.DefaultChannelId)))
             // The gateway actor ref and default channel ID are resolved lazily via
             // MattermostChannel since they're not available until StartAsync completes.
-            .WithSendTool((sp, options) =>
+            .WithProactiveSendClient((sp, options) =>
             {
                 var outbound = sp.GetRequiredService<IMattermostOutboundClient>();
                 var channel = sp.GetRequiredService<MattermostChannel>();
-                return new SendMattermostMessageTool(
+                return new MattermostProactiveOutboundClient(
                     outbound,
                     options,
                     () => channel.DefaultChannelId,
