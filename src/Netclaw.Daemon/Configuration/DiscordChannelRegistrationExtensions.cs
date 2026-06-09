@@ -104,50 +104,10 @@ public static class DiscordChannelRegistrationExtensions
     }
 
     private static ChannelDescriptor CreateDescriptor(DiscordChannelOptions options)
-    {
-        var capabilities = ChannelCapabilities.ReceiveMessages
-            | ChannelCapabilities.SendMessages
-            | ChannelCapabilities.ThreadedConversations
-            | ChannelCapabilities.InteractiveApproval
-            | ChannelCapabilities.FileIngress
-            | ChannelCapabilities.FileEgress
-            | ChannelCapabilities.ProactiveSend
-            | ChannelCapabilities.UserLookup
-            | ChannelCapabilities.DestinationLookup
-            | ChannelCapabilities.RuntimeHealth;
-
-        if (options.AllowDirectMessages)
-            capabilities |= ChannelCapabilities.DirectMessages;
-
-        var addressKinds = new HashSet<ChannelAddressKind>
-        {
-            ChannelAddressKind.Destination,
-            ChannelAddressKind.User,
-            ChannelAddressKind.Thread
-        };
-
-        if (options.AllowDirectMessages)
-            addressKinds.Add(ChannelAddressKind.DirectMessage);
-
-        return new ChannelDescriptor(
-            ChannelDescriptorKey.FromChannelType(ChannelType.Discord),
+        => ChannelDescriptor.CreateRemoteChat(
             ChannelType.Discord,
-            ChannelKind.RemoteChat,
             "Discord",
             options.Enabled,
-            capabilities,
-            ToolIntents: new HashSet<ChannelToolIntentKind>
-            {
-                ChannelToolIntentKind.SendMessage,
-                ChannelToolIntentKind.LookupUser
-            },
-            AddressKinds: addressKinds,
-            SupportedOutputEffects: new HashSet<ChannelOutputEffectKind>
-            {
-                ChannelOutputEffectKind.TextMessage,
-                ChannelOutputEffectKind.InteractiveApproval,
-                ChannelOutputEffectKind.FileAttachment,
-                ChannelOutputEffectKind.ProcessingIndicator
-            });
-    }
+            options.AllowDirectMessages,
+            new HashSet<ChannelOutputEffectKind> { ChannelOutputEffectKind.ProcessingIndicator });
 }

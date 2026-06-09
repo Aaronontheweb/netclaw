@@ -93,7 +93,59 @@ public sealed record ChannelDescriptor(
     ChannelCapabilities Capabilities,
     IReadOnlySet<ChannelToolIntentKind> ToolIntents,
     IReadOnlySet<ChannelAddressKind> AddressKinds,
-    IReadOnlySet<ChannelOutputEffectKind> SupportedOutputEffects);
+    IReadOnlySet<ChannelOutputEffectKind> SupportedOutputEffects)
+{
+    private static readonly ChannelCapabilities RemoteChatBaseCapabilities =
+        ChannelCapabilities.ReceiveMessages
+        | ChannelCapabilities.SendMessages
+        | ChannelCapabilities.ThreadedConversations
+        | ChannelCapabilities.InteractiveApproval
+        | ChannelCapabilities.FileIngress
+        | ChannelCapabilities.FileEgress
+        | ChannelCapabilities.ProactiveSend
+        | ChannelCapabilities.UserLookup
+        | ChannelCapabilities.DestinationLookup
+        | ChannelCapabilities.RuntimeHealth;
+
+    private static readonly IReadOnlySet<ChannelToolIntentKind> RemoteChatToolIntents =
+        new HashSet<ChannelToolIntentKind>
+        {
+            ChannelToolIntentKind.SendMessage,
+            ChannelToolIntentKind.LookupUser
+        };
+
+    public static ChannelDescriptor CreateRemoteChat(
+        ChannelType channelType,
+        string displayName,
+        bool isEnabled,
+        bool allowDirectMessages,
+        IReadOnlySet<ChannelOutputEffectKind>? supportedOutputEffects = null)
+    {
+        var capabilities = RemoteChatBaseCapabilities;
+        if (allowDirectMessages)
+            capabilities |= ChannelCapabilities.DirectMessages;
+
+        var addressKinds = new HashSet<ChannelAddressKind>
+        {
+            ChannelAddressKind.Destination,
+            ChannelAddressKind.User
+        };
+
+        if (allowDirectMessages)
+            addressKinds.Add(ChannelAddressKind.DirectMessage);
+
+        return new ChannelDescriptor(
+            ChannelDescriptorKey.FromChannelType(channelType),
+            channelType,
+            ChannelKind.RemoteChat,
+            displayName,
+            isEnabled,
+            capabilities,
+            RemoteChatToolIntents,
+            addressKinds,
+            supportedOutputEffects ?? new HashSet<ChannelOutputEffectKind>());
+    }
+}
 
 public sealed record ResolvedChannelAddress
 {
@@ -687,5 +739,60 @@ public static class ChannelRegistryServiceCollectionExtensions
                 ChannelOutputEffectKind.InteractiveApproval,
                 ChannelOutputEffectKind.FileAttachment
             }));
+    }
+}
+
+public static class ChannelAddressKindWire
+{
+    public static string ToWireValue(ChannelAddressKind addressKind)
+        => addressKind switch
+        {
+            ChannelAddressKind.Destination => "destination",
+            ChannelAddressKind.User => "user",
+            ChannelAddressKind.Thread => "thread",
+            ChannelAddressKind.DirectMessage => "direct_message",
+            ChannelAddressKind.LocalSession => "local_session",
+            _ => addressKind.ToString().ToLowerInvariant()
+        };
+
+    public static bool TryParse(string value, out ChannelAddressKind addressKind)
+    {
+        var normalized = Normalize(value);
+        switch (normalized)
+        {
+            case "destination":
+            case "channel":
+                addressKind = ChannelAddressKind.Destination;
+                return true;
+            case "user":
+                addressKind = ChannelAddressKind.User;
+                return true;
+            case "thread":
+                addressKind = ChannelAddressKind.Thread;
+                return true;
+            case "directmessage":
+            case "dm":
+                addressKind = ChannelAddressKind.DirectMessage;
+                return true;
+            case "localsession":
+                addressKind = ChannelAddressKind.LocalSession;
+                return true;
+            default:
+                addressKind = default;
+                return false;
+        }
+    }
+
+    private static string Normalize(string value)
+    {
+        var buffer = new char[value.Length];
+        var count = 0;
+        foreach (var ch in value)
+        {
+            if (char.IsLetterOrDigit(ch))
+                buffer[count++] = char.ToLowerInvariant(ch);
+        }
+
+        return count == 0 ? string.Empty : new string(buffer, 0, count);
     }
 }

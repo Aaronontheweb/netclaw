@@ -1281,15 +1281,16 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                 return false;
             }
 
-            using var cts = new CancellationTokenSource(OperationTimeout);
+            using var uploadCts = new CancellationTokenSource(OperationTimeout);
             var fileId = await _dependencies.ReplyClient.UploadFileAsync(
                 _channelId,
                 file.FilePath,
                 file.FileName,
-                cts.Token);
+                uploadCts.Token);
 
+            using var postCts = new CancellationTokenSource(OperationTimeout);
             var postMessage = BuildPostMessage($":paperclip: {file.FileName}", fileIds: [fileId]);
-            await _dependencies.ReplyClient.PostReplyAsync(postMessage, cts.Token);
+            await _dependencies.ReplyClient.PostReplyAsync(postMessage, postCts.Token);
 
             var duration = _dependencies.TimeProvider.GetElapsedTime(startedAt).TotalMilliseconds;
             ChannelTelemetry.For(ChannelType.Mattermost).RecordReplyPosted(duration);

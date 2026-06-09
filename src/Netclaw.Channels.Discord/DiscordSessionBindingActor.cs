@@ -265,7 +265,7 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
     private async Task HandleProactiveThreadAsync(StartProactiveThread message)
     {
         _replyChannelId = message.ReplyChannelId;
-        _threadCreated = message.RootMessageId is null;
+        _threadCreated = message.DirectMessageUserId is not null || message.RootMessageId is null;
         _rootMessageId = message.RootMessageId;
 
         _log.Info("Initializing proactive thread pipeline for session {0}", message.SessionId.Value);

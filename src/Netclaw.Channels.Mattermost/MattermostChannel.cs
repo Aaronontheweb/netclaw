@@ -249,31 +249,17 @@ public sealed class MattermostChannel : IChannel
     {
         lock (_reconnectLock)
         {
-            if (_reconnectTask is { IsCompleted: false } activeReconnect)
+            if (_reconnectTask is { IsCompleted: false })
             {
                 if (initialDelay == TimeSpan.Zero)
-                {
-                    Interlocked.Exchange(ref _queuedCleanReconnect, 1);
-                    _ = activeReconnect.ContinueWith(
-                        _ => StartQueuedCleanReconnect(),
-                        CancellationToken.None,
-                        TaskContinuationOptions.ExecuteSynchronously,
-                        TaskScheduler.Default);
-                }
+                    Volatile.Write(ref _queuedCleanReconnect, 1);
 
                 return;
             }
 
+            Volatile.Write(ref _queuedCleanReconnect, 0);
             _reconnectTask = Task.Run(() => ReconnectLoopAsync(initialDelay, _lifetimeCts.Token));
         }
-    }
-
-    private void StartQueuedCleanReconnect()
-    {
-        if (Volatile.Read(ref _queuedCleanReconnect) == 0)
-            return;
-
-        StartReconnectLoop(initialDelay: TimeSpan.Zero);
     }
 
     private Task HandleCleanReconnectRequiredAsync(string reason)
@@ -283,6 +269,9 @@ public sealed class MattermostChannel : IChannel
         StartReconnectLoop(initialDelay: TimeSpan.Zero);
         return Task.CompletedTask;
     }
+
+    private bool DrainQueuedReconnect()
+        => Interlocked.Exchange(ref _queuedCleanReconnect, 0) == 1;
 
     private async Task ReconnectLoopAsync(TimeSpan initialDelay, CancellationToken cancellationToken)
     {
@@ -331,7 +320,7 @@ public sealed class MattermostChannel : IChannel
                 _connectFailureDetail = null;
                 _logger.LogInformation("Channel reconnected after a transient failure.");
 
-                if (Interlocked.Exchange(ref _queuedCleanReconnect, 0) == 1)
+                if (DrainQueuedReconnect())
                 {
                     delay = TimeSpan.Zero;
                     continue;
@@ -355,6 +344,11 @@ public sealed class MattermostChannel : IChannel
                         "Mattermost reconnect hit a fatal failure; giving up until the daemon "
                         + "is restarted. {Reason}",
                         classified.Message);
+
+                    // A clean reconnect was queued while this loop was running.
+                    // Fatal failures are config-driven so a queued reconnect
+                    // would hit the same wall — don't restart.
+                    DrainQueuedReconnect();
                     return;
                 }
 

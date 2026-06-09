@@ -116,47 +116,35 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
             return $"Error: Channel '{key}' does not support message sending.";
         }
 
-        var threadOrRootId = ToolArgumentHelper.GetString(arguments, "thread_or_root_id");
-
         if (IsTriggerOrigin(context) && context!.RequestedDeliveryTarget is { } requestedTarget)
         {
-            var targetError = ValidateRequestedTriggerTarget(key, destination, threadOrRootId, requestedTarget);
+            var targetError = ValidateRequestedTriggerTarget(key, destination, requestedTarget);
             if (targetError is not null)
                 return targetError;
-        }
-
-        if (!string.IsNullOrWhiteSpace(threadOrRootId))
-        {
-            return "Error: 'thread_or_root_id' is not supported by send_channel_message yet. " +
-                   "Omit it to create a new channel-specific conversation thread.";
         }
 
         var validationError = ValidateDestination(descriptor, destination);
         if (validationError is not null)
             return validationError;
 
+        var idParamName = destination.AddressKind == ChannelAddressKind.DirectMessage ? "UserId" : "ChannelId";
         var delegateArguments = new Dictionary<string, object?>
         {
-            ["Message"] = text.Trim()
+            ["Message"] = text.Trim(),
+            [idParamName] = destination.StableId
         };
 
-        switch (descriptor.ChannelType)
+        INetclawTool? sendTool = descriptor.ChannelType switch
         {
-            case ChannelType.Slack:
-                delegateArguments[destination.AddressKind == ChannelAddressKind.DirectMessage ? "UserId" : "ChannelId"] = destination.StableId;
-                return await services.GetRequiredService<SendSlackMessageTool>().ExecuteAsync(delegateArguments, ct);
+            ChannelType.Slack => services.GetRequiredService<SendSlackMessageTool>(),
+            ChannelType.Discord => services.GetRequiredService<SendDiscordMessageTool>(),
+            ChannelType.Mattermost => services.GetRequiredService<SendMattermostMessageTool>(),
+            _ => null
+        };
 
-            case ChannelType.Discord:
-                delegateArguments[destination.AddressKind == ChannelAddressKind.DirectMessage ? "UserId" : "ChannelId"] = destination.StableId;
-                return await services.GetRequiredService<SendDiscordMessageTool>().ExecuteAsync(delegateArguments, ct);
-
-            case ChannelType.Mattermost:
-                delegateArguments[destination.AddressKind == ChannelAddressKind.DirectMessage ? "UserId" : "ChannelId"] = destination.StableId;
-                return await services.GetRequiredService<SendMattermostMessageTool>().ExecuteAsync(delegateArguments, ct);
-
-            default:
-                return $"Error: Channel '{key}' does not have a registered send adapter.";
-        }
+        return sendTool is not null
+            ? await sendTool.ExecuteAsync(delegateArguments, ct)
+            : $"Error: Channel '{key}' does not have a registered send adapter.";
     }
 
     private JsonElement BuildParameterSchema()
@@ -205,10 +193,6 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
                 "text": {
                     "type": "string",
                     "description": "Message text to send."
-                },
-                "thread_or_root_id": {
-                    "type": "string",
-                    "description": "Optional existing thread/root target. Currently unsupported; omit to create a new conversation thread."
                 },
                 "_rationale": {
                     "type": "string",
@@ -352,7 +336,6 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
     private static string? ValidateRequestedTriggerTarget(
         ChannelDescriptorKey channelKey,
         SendChannelDestination destination,
-        string? threadOrRootId,
         ChannelDeliveryTargetInfo requestedTarget)
     {
         if (!string.Equals(requestedTarget.ChannelKey, channelKey.Value, StringComparison.OrdinalIgnoreCase))
@@ -374,12 +357,6 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
         {
             return "Error: trigger-originated channel send must match the configured delivery target " +
                    $"destination.id '{requestedTarget.DestinationId}'.";
-        }
-
-        var suppliedThread = string.IsNullOrWhiteSpace(threadOrRootId) ? null : threadOrRootId.Trim();
-        if (!string.Equals(suppliedThread, requestedTarget.ThreadOrRootId, StringComparison.Ordinal))
-        {
-            return "Error: trigger-originated channel send must match the configured delivery target thread_or_root_id.";
         }
 
         return null;
@@ -477,59 +454,4 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
         ChannelAddressKind AddressKind,
         string StableId,
         string? DisplayName);
-}
-
-internal static class ChannelAddressKindWire
-{
-    public static string ToWireValue(ChannelAddressKind addressKind)
-        => addressKind switch
-        {
-            ChannelAddressKind.Destination => "destination",
-            ChannelAddressKind.User => "user",
-            ChannelAddressKind.Thread => "thread",
-            ChannelAddressKind.DirectMessage => "direct_message",
-            ChannelAddressKind.LocalSession => "local_session",
-            _ => addressKind.ToString().ToLowerInvariant()
-        };
-
-    public static bool TryParse(string value, out ChannelAddressKind addressKind)
-    {
-        var normalized = Normalize(value);
-        switch (normalized)
-        {
-            case "destination":
-            case "channel":
-                addressKind = ChannelAddressKind.Destination;
-                return true;
-            case "user":
-                addressKind = ChannelAddressKind.User;
-                return true;
-            case "thread":
-                addressKind = ChannelAddressKind.Thread;
-                return true;
-            case "directmessage":
-            case "dm":
-                addressKind = ChannelAddressKind.DirectMessage;
-                return true;
-            case "localsession":
-                addressKind = ChannelAddressKind.LocalSession;
-                return true;
-            default:
-                addressKind = default;
-                return false;
-        }
-    }
-
-    private static string Normalize(string value)
-    {
-        var buffer = new char[value.Length];
-        var count = 0;
-        foreach (var ch in value)
-        {
-            if (char.IsLetterOrDigit(ch))
-                buffer[count++] = char.ToLowerInvariant(ch);
-        }
-
-        return count == 0 ? string.Empty : new string(buffer, 0, count);
-    }
 }

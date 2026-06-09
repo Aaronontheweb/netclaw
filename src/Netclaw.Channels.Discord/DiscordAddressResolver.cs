@@ -31,27 +31,24 @@ public sealed class DiscordAddressResolver(
     DiscordChannelOptions options,
     Func<DiscordChannelId?> defaultChannelIdAccessor) : IChannelAddressResolver
 {
-    private static readonly IReadOnlySet<ChannelAddressKind> UserAddressKinds = new HashSet<ChannelAddressKind>
-    {
-        ChannelAddressKind.User
-    };
-
-    private static readonly IReadOnlySet<ChannelAddressKind> UserAndDirectMessageAddressKinds = new HashSet<ChannelAddressKind>
+    private static readonly IReadOnlySet<ChannelAddressKind> UserAndDestinationKinds = new HashSet<ChannelAddressKind>
     {
         ChannelAddressKind.User,
-        ChannelAddressKind.DirectMessage
+        ChannelAddressKind.Destination
     };
 
-    private static readonly IReadOnlySet<ChannelAddressKind> DestinationAddressKinds = new HashSet<ChannelAddressKind>
+    private static readonly IReadOnlySet<ChannelAddressKind> UserDmAndDestinationKinds = new HashSet<ChannelAddressKind>
     {
+        ChannelAddressKind.User,
+        ChannelAddressKind.DirectMessage,
         ChannelAddressKind.Destination
     };
 
     public ChannelDescriptorKey Key { get; } = ChannelDescriptorKey.FromChannelType(ChannelType.Discord);
 
     public IReadOnlySet<ChannelAddressKind> AddressKinds => options.AllowDirectMessages
-        ? UserAndDirectMessageAddressKinds.Concat(DestinationAddressKinds).ToHashSet()
-        : UserAddressKinds.Concat(DestinationAddressKinds).ToHashSet();
+        ? UserDmAndDestinationKinds
+        : UserAndDestinationKinds;
 
     public async ValueTask<ChannelAddressResolutionResult> ResolveAsync(
         ChannelAddressResolutionRequest request,
