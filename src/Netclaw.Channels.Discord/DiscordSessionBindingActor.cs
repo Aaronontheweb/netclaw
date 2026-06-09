@@ -112,10 +112,10 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
         Recover<CursorAdvanced>(ApplyCursorAdvanced);
         Recover<PendingApprovalPromptTracked>(ApplyPendingApprovalPromptTracked);
         Recover<PendingApprovalPromptCleared>(ApplyPendingApprovalPromptCleared);
-        // After journal replay completes, queue a one-shot hydration. The
-        // self-tell lands in the mailbox after InitializePipeline (from
-        // PreStart), so the actor finishes pipeline init first, then
-        // transitions into Hydrating and processes PerformHydration.
+        // After journal replay completes, queue a one-shot hydration. Recovery
+        // can beat pipeline initialization on slower dispatchers; Initializing
+        // unstashes after switching to Hydrating so the hydration trigger cannot
+        // strand the actor in startup.
         Recover<RecoveryCompleted>(_ => Self.Tell(PerformHydration.Instance));
 
         Initializing();
@@ -164,10 +164,10 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             {
                 await EnsureInitializedAsync();
                 Become(Hydrating);
-                // Do NOT UnstashAll here. PerformHydration is already in the
-                // mailbox (sent from the RecoveryCompleted handler) and will be
-                // processed next by the Hydrating behavior. Stashed live
-                // inbounds stay stashed until Hydrating transitions to Active.
+                // RecoveryCompleted can be stashed while pipeline initialization
+                // is still running. Move it into Hydrating; live inbounds are
+                // re-stashed there until hydration finishes.
+                Stash.UnstashAll();
             }
             catch (Exception ex)
             {

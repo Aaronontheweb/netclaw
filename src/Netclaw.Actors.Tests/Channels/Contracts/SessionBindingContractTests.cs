@@ -711,15 +711,20 @@ public abstract class SessionBindingContractTests : TestKit
         var pipeline = new RecordingSessionPipeline(_ =>
         [
             new TurnCompleted { SessionId = sid, TurnNumber = new Netclaw.Actors.Protocol.TurnNumber(1) }
-        ]);
+        ], reactive: true);
 
         var actor = CreateBindingActor(sid, pipeline, detector);
 
         // Send immediately — before pipeline init might complete
         actor.Tell(CreateInboundMessage("stashed message", "user-1"), TestActor);
 
-        // Pipeline should still initialize successfully
-        await AwaitAssertAsync(() => Assert.NotNull(pipeline.CapturedOptions), cancellationToken: ct);
+        await pipeline.Created.WaitAsync(ct);
+
+        await AwaitAssertAsync(() =>
+        {
+            Assert.Contains(pipeline.CapturedInputs, input =>
+                input.Contents.OfType<TextContent>().Any(content => content.Text == "stashed message"));
+        }, cancellationToken: ct);
     }
 
     protected virtual IActorRef CreateBindingActorWithPipeline(
