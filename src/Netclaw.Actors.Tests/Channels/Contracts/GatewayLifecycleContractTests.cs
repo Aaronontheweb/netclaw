@@ -105,6 +105,9 @@ public abstract class GatewayLifecycleContractTests : TestKit
     /// <summary>Clean-reconnect-required events published to the event sink.</summary>
     protected abstract int CleanReconnectCount { get; }
 
+    /// <summary>How many times the event sink has published ConnectionRestored.</summary>
+    protected abstract int ConnectionRestoredCount { get; }
+
     /// <summary>StartAsync calls observed on the fake transport.</summary>
     protected abstract int TransportStartCount { get; }
 
@@ -251,6 +254,13 @@ public abstract class GatewayLifecycleContractTests : TestKit
             var snapshot = await GetSnapshotAsync(actor);
             Assert.True(snapshot.IsReady);
             Assert.Equal(2, TransportStartCount);
+
+            // Recovering via auto-retry MUST publish ConnectionRestored —
+            // regression for the Nobody-vs-null reply-to skew that kept the
+            // isRetry branch from ever firing (and, on Discord, parked the
+            // actor in a permanent CleanReconnectRequired zombie when the
+            // retried connect timed out).
+            Assert.Equal(1, ConnectionRestoredCount);
         }, cancellationToken: TestContext.Current.CancellationToken);
     }
 

@@ -227,7 +227,17 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
         _healthDetail = _channelDisplayName + " gateway connecting.";
         ResetIdentityState();
         _cleanReconnectEmitted = false;
-        _pendingConnectReplyTo = replyTo;
+
+        // Normalize Nobody to null: "no pending caller" must have exactly one
+        // representation. The auto-retry path connects with ActorRefs.Nobody,
+        // and storing it verbatim made every `_pendingConnectReplyTo is null`
+        // check misfire — Discord's ready-timeout handler took the
+        // caller-driven branch on retries and parked the actor in
+        // CleanReconnectRequired with nothing scheduled to ever leave it
+        // (the 0.24.0-beta.2 zombie: all traffic silently dropped until
+        // restart), and ConnectionRestored never published after an
+        // auto-retry recovery.
+        _pendingConnectReplyTo = replyTo.IsNobody() ? null : replyTo;
 
         var attempt = ++_connectAttempt;
         OnConnectingEntered(attempt);
@@ -356,10 +366,9 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
     protected void CompleteConnectToReady()
     {
         _retryDelay = TimeSpan.Zero;
-        // Known issue: ConnectionRestored never fires on the auto-retry path
-        // (RetryConnect connects with ActorRefs.Nobody as the reply-to, which is
-        // not null, so isRetry is always false there — see SPEC-015 Phase 4
-        // notes); preserved as-is during the lifecycle extraction.
+        // A retry is any connect with no pending caller — StartConnecting
+        // normalizes ActorRefs.Nobody to null, so this check is reliable for
+        // both operator-driven connects and auto-retries.
         var isRetry = _pendingConnectReplyTo is null;
         TransitionToReady();
         CompletePendingConnect(CurrentSnapshot());

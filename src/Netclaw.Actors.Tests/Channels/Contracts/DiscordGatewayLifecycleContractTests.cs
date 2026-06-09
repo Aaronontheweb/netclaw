@@ -84,6 +84,8 @@ public sealed class DiscordGatewayLifecycleContractTests(ITestOutputHelper outpu
 
     protected override int CleanReconnectCount => _sink.CleanReconnectCount;
 
+    protected override int ConnectionRestoredCount => _sink.ConnectionRestoredCount;
+
     protected override int TransportStartCount => _transport.StartCount;
 
     protected override string DisconnectedHealthDetail => "Discord gateway disconnected.";

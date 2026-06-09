@@ -66,6 +66,8 @@ public sealed class MattermostGatewayLifecycleContractTests(ITestOutputHelper ou
 
     protected override int CleanReconnectCount => _sink.CleanReconnectCount;
 
+    protected override int ConnectionRestoredCount => _sink.ConnectionRestoredCount;
+
     protected override int TransportStartCount => _transport.StartCount;
 
     protected override string DisconnectedHealthDetail => "Mattermost gateway disconnected.";
