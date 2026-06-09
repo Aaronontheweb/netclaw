@@ -29,3 +29,44 @@ public enum ChannelHealthStatus
 }
 
 public sealed record ChannelHealth(ChannelHealthStatus Status, string? Detail = null);
+
+/// <summary>
+/// Common health surface shared by channel gateway transport snapshots
+/// (Discord, Mattermost). Channel-specific snapshot records carry their own
+/// bot identity fields on top of this contract.
+/// </summary>
+public interface IGatewaySnapshot
+{
+    bool IsConnected { get; }
+
+    bool IsReady { get; }
+
+    string? HealthDetail { get; }
+}
+
+/// <summary>
+/// Shared <see cref="ChannelHealth"/> evaluation for channels whose transport
+/// exposes an <see cref="IGatewaySnapshot"/>. Fallback strings are
+/// caller-supplied so each channel keeps its exact operator-facing wording.
+/// </summary>
+public static class GatewayChannelHealth
+{
+    public static ChannelHealth Evaluate(
+        IGatewaySnapshot snapshot,
+        string? connectFailureDetail,
+        string notReadyFallback,
+        string disconnectedFallback)
+    {
+        if (snapshot.IsReady)
+            return new ChannelHealth(ChannelHealthStatus.Healthy);
+
+        if (snapshot.IsConnected)
+            return new ChannelHealth(
+                ChannelHealthStatus.Degraded,
+                snapshot.HealthDetail ?? connectFailureDetail ?? notReadyFallback);
+
+        return new ChannelHealth(
+            ChannelHealthStatus.Disconnected,
+            connectFailureDetail ?? snapshot.HealthDetail ?? disconnectedFallback);
+    }
+}

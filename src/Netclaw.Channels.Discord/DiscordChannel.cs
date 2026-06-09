@@ -101,18 +101,11 @@ public sealed class DiscordChannel : IChannel
             return new ChannelHealth(ChannelHealthStatus.Degraded, "Discord channel disabled.");
 
         var gatewaySnapshot = await _gatewayClient.GetSnapshotAsync(cancellationToken);
-
-        if (gatewaySnapshot.IsReady)
-            return new ChannelHealth(ChannelHealthStatus.Healthy);
-
-        if (gatewaySnapshot.IsConnected)
-            return new ChannelHealth(
-                ChannelHealthStatus.Degraded,
-                gatewaySnapshot.HealthDetail ?? _connectFailureDetail ?? "Discord gateway connected but not ready.");
-
-        return new ChannelHealth(
-            ChannelHealthStatus.Disconnected,
-            _connectFailureDetail ?? gatewaySnapshot.HealthDetail ?? "Discord gateway disconnected.");
+        return GatewayChannelHealth.Evaluate(
+            gatewaySnapshot,
+            _connectFailureDetail,
+            notReadyFallback: "Discord gateway connected but not ready.",
+            disconnectedFallback: "Discord gateway disconnected.");
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)

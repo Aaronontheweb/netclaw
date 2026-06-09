@@ -97,18 +97,11 @@ public sealed class MattermostChannel : IChannel
             return new ChannelHealth(ChannelHealthStatus.Degraded, "Mattermost channel disabled.");
 
         var gatewaySnapshot = await _gatewayClient.GetSnapshotAsync(cancellationToken);
-
-        if (gatewaySnapshot.IsReady)
-            return new ChannelHealth(ChannelHealthStatus.Healthy);
-
-        if (gatewaySnapshot.IsConnected)
-            return new ChannelHealth(
-                ChannelHealthStatus.Degraded,
-                gatewaySnapshot.HealthDetail ?? _connectFailureDetail ?? "Mattermost gateway connected but not ready.");
-
-        return new ChannelHealth(
-            ChannelHealthStatus.Disconnected,
-            _connectFailureDetail ?? gatewaySnapshot.HealthDetail ?? "Mattermost WebSocket disconnected.");
+        return GatewayChannelHealth.Evaluate(
+            gatewaySnapshot,
+            _connectFailureDetail,
+            notReadyFallback: "Mattermost gateway connected but not ready.",
+            disconnectedFallback: "Mattermost WebSocket disconnected.");
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
