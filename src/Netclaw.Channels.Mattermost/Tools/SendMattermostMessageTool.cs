@@ -20,7 +20,7 @@ namespace Netclaw.Channels.Mattermost.Tools;
     "Use this to proactively notify users or start discussions. " +
     "Provide exactly one of channel_id or user_id.",
     Grant = "builtin")]
-public sealed partial class SendMattermostMessageTool : NetclawTool<SendMattermostMessageTool.Params>, IChannelTool
+public sealed partial class SendMattermostMessageTool : NetclawTool<SendMattermostMessageTool.Params>
 {
     private readonly IMattermostOutboundClient _outboundClient;
     private readonly MattermostChannelOptions _options;

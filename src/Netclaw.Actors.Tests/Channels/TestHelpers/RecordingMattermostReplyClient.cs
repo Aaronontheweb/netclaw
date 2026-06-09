@@ -12,6 +12,7 @@ internal sealed class RecordingMattermostReplyClient : IMattermostReplyClient
     private readonly object _lock = new();
     private readonly List<MattermostPostMessage> _posts = [];
     private readonly List<(MattermostPostId PostId, string Text, IReadOnlyList<MattermostAttachment>? Attachments)> _updates = [];
+    private readonly List<(MattermostChannelId ChannelId, string FilePath, string? FileName)> _uploads = [];
 
     public IReadOnlyList<MattermostPostMessage> Posts
     {
@@ -23,7 +24,14 @@ internal sealed class RecordingMattermostReplyClient : IMattermostReplyClient
         get { lock (_lock) return _updates.ToList(); }
     }
 
+    public IReadOnlyList<(MattermostChannelId ChannelId, string FilePath, string? FileName)> Uploads
+    {
+        get { lock (_lock) return _uploads.ToList(); }
+    }
+
     public Exception? ThrowOnPost { get; set; }
+
+    public Exception? ThrowOnUpload { get; set; }
 
     private int _messageCounter;
 
@@ -33,6 +41,7 @@ internal sealed class RecordingMattermostReplyClient : IMattermostReplyClient
         {
             _posts.Clear();
             _updates.Clear();
+            _uploads.Clear();
         }
     }
 
@@ -50,5 +59,19 @@ internal sealed class RecordingMattermostReplyClient : IMattermostReplyClient
     {
         lock (_lock) _updates.Add((postId, text, attachments));
         return Task.CompletedTask;
+    }
+
+    public Task<string> UploadFileAsync(
+        MattermostChannelId channelId,
+        string filePath,
+        string? fileName = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (ThrowOnUpload is { } ex)
+            throw ex;
+
+        var fileId = $"file-{Interlocked.Increment(ref _messageCounter)}";
+        lock (_lock) _uploads.Add((channelId, filePath, fileName));
+        return Task.FromResult(fileId);
     }
 }

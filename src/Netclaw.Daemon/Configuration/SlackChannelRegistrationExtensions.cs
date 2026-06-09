@@ -25,6 +25,8 @@ public static class SlackChannelRegistrationExtensions
     {
         var slackOptions = configuration.GetSection("Slack").Get<SlackChannelOptions>() ?? new SlackChannelOptions();
         services.AddSingleton(slackOptions);
+        services.AddChannelRegistry();
+        services.AddChannelDescriptorWithRuntimeSnapshot(CreateDescriptor(slackOptions));
 
         if (!slackOptions.Enabled)
             return;
@@ -56,7 +58,6 @@ public static class SlackChannelRegistrationExtensions
         });
         services.AddSingleton<ISlackOutboundClient, SlackOutboundClient>();
         services.AddSingleton<ISlackTargetLookupClient, SlackApiTargetLookupClient>();
-        services.AddSingleton<ISlackTargetResolver, SlackTargetResolver>();
         services.AddSingleton<IReminderTargetResolver, SlackReminderTargetResolver>();
         services.AddSingleton<SlackApprovalHandler>();
         services.AddKeyedSingleton<IChannel, SlackChannel>(SlackChannelKey);
@@ -64,6 +65,18 @@ public static class SlackChannelRegistrationExtensions
             sp.GetRequiredKeyedService<IChannel>(SlackChannelKey));
         services.AddSingleton<SlackChannel>(sp =>
             (SlackChannel)sp.GetRequiredKeyedService<IChannel>(SlackChannelKey));
+        services.AddSingleton<SlackTargetResolver>(sp =>
+        {
+            var lookup = sp.GetRequiredService<ISlackTargetLookupClient>();
+            return new SlackTargetResolver(
+                lookup,
+                slackOptions,
+                () => string.IsNullOrWhiteSpace(slackOptions.DefaultChannelId)
+                    ? null
+                    : new SlackChannelId(slackOptions.DefaultChannelId));
+        });
+        services.AddSingleton<ISlackTargetResolver>(sp => sp.GetRequiredService<SlackTargetResolver>());
+        services.AddSingleton<IChannelAddressResolver>(sp => sp.GetRequiredService<SlackTargetResolver>());
 
         services.AddSlackNet(c =>
         {
@@ -85,7 +98,8 @@ public static class SlackChannelRegistrationExtensions
                 context.ServiceProvider().GetRequiredService<SlackApprovalHandler>());
         });
 
-        // Channel-specific LLM tools: registered as INetclawTool singletons.
+        // Concrete send implementation used by send_channel_message.
+        // User lookup is exposed through the generic lookup_channel_user tool.
         // The gateway actor ref and default channel ID are resolved lazily via
         // SlackChannel since they're not available until StartAsync completes.
         services.AddSingleton<SendSlackMessageTool>(sp =>
@@ -98,7 +112,6 @@ public static class SlackChannelRegistrationExtensions
                 () => channel.DefaultChannelId,
                 () => channel.Gateway);
         });
-        services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<SendSlackMessageTool>());
 
         services.AddSingleton<LookupSlackUserTool>(sp =>
         {
@@ -106,9 +119,16 @@ public static class SlackChannelRegistrationExtensions
             var timeProvider = sp.GetRequiredService<TimeProvider>();
             return new LookupSlackUserTool(slackApi.Users, slackOptions, timeProvider);
         });
-        services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<LookupSlackUserTool>());
+        services.AddSingleton<IChannelAddressResolver>(sp => sp.GetRequiredService<LookupSlackUserTool>());
 
         services.AddSingleton<IHostedService>(sp =>
             (IHostedService)sp.GetRequiredKeyedService<IChannel>(SlackChannelKey));
     }
+
+    private static ChannelDescriptor CreateDescriptor(SlackChannelOptions options)
+        => ChannelDescriptor.CreateRemoteChat(
+            ChannelType.Slack,
+            "Slack",
+            options.Enabled,
+            options.AllowDirectMessages);
 }

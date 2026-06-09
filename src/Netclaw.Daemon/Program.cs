@@ -26,6 +26,7 @@ using Netclaw.Actors.Reminders;
 using Netclaw.Actors.Skills;
 using Netclaw.Actors.SubAgents;
 using Netclaw.Actors.Tools;
+using Netclaw.Channels;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Http;
 using Netclaw.Providers;
@@ -1068,9 +1069,13 @@ static void ConfigureDaemonServices(
     services.AddSingleton<SessionPipeline>();
     services.AddSingleton<ISessionPipeline>(sp => sp.GetRequiredService<SessionPipeline>());
 
+    services.AddChannelRegistry();
+    services.AddTuiChannelDescriptor();
     services.AddSlackChannelIntegration(configuration);
     services.AddDiscordChannelIntegration(configuration);
     services.AddMattermostChannelIntegration(configuration);
+    services.AddChannelSendTools(configuration);
+    services.AddChannelLookupTools(configuration);
 
     // Config hot-reload watcher
     services.AddSingleton<ConfigWatcherService>();

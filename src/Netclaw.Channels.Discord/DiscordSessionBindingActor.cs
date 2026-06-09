@@ -112,10 +112,10 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
         Recover<CursorAdvanced>(ApplyCursorAdvanced);
         Recover<PendingApprovalPromptTracked>(ApplyPendingApprovalPromptTracked);
         Recover<PendingApprovalPromptCleared>(ApplyPendingApprovalPromptCleared);
-        // After journal replay completes, queue a one-shot hydration. The
-        // self-tell lands in the mailbox after InitializePipeline (from
-        // PreStart), so the actor finishes pipeline init first, then
-        // transitions into Hydrating and processes PerformHydration.
+        // After journal replay completes, queue a one-shot hydration. Recovery
+        // can beat pipeline initialization on slower dispatchers; Initializing
+        // unstashes after switching to Hydrating so the hydration trigger cannot
+        // strand the actor in startup.
         Recover<RecoveryCompleted>(_ => Self.Tell(PerformHydration.Instance));
 
         Initializing();
@@ -153,7 +153,7 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
     private SessionPipelineOptions BuildOptions() => new()
     {
         ChannelType = ChannelType.Discord,
-        Filter = OutputFilter.Text | OutputFilter.Files
+        Filter = OutputFilter.Text | OutputFilter.Files | OutputFilter.ProcessingState
     };
 
     private void Initializing()
@@ -164,10 +164,10 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             {
                 await EnsureInitializedAsync();
                 Become(Hydrating);
-                // Do NOT UnstashAll here. PerformHydration is already in the
-                // mailbox (sent from the RecoveryCompleted handler) and will be
-                // processed next by the Hydrating behavior. Stashed live
-                // inbounds stay stashed until Hydrating transitions to Active.
+                // RecoveryCompleted can be stashed while pipeline initialization
+                // is still running. Move it into Hydrating; live inbounds are
+                // re-stashed there until hydration finishes.
+                Stash.UnstashAll();
             }
             catch (Exception ex)
             {
@@ -265,8 +265,8 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
     private async Task HandleProactiveThreadAsync(StartProactiveThread message)
     {
         _replyChannelId = message.ReplyChannelId;
-        _threadCreated = true;
-        _rootMessageId = null;
+        _threadCreated = message.DirectMessageUserId is not null || message.RootMessageId is null;
+        _rootMessageId = message.RootMessageId;
 
         _log.Info("Initializing proactive thread pipeline for session {0}", message.SessionId.Value);
         await EnsureInitializedAsync();
@@ -369,7 +369,8 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             Provenance = message.Provenance,
             Contents = liveContents,
             ReceivedAt = message.ReceivedAt,
-            ExecutableText = message.Text
+            ExecutableText = message.Text,
+            DefaultDeliveryTarget = BuildDefaultDeliveryTarget()
         };
 
         if (_hydrationPending && IsAuthorizedSender(message.SenderId.Value))
@@ -1034,6 +1035,8 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             Provenance = message.Source.Provenance,
             Contents = [new TextContent(message.Content)],
             ReceivedAt = _dependencies.TimeProvider.GetUtcNow(),
+            DefaultDeliveryTarget = BuildDefaultDeliveryTarget(),
+            RequestedDeliveryTarget = message.Source.RequestedDeliveryTarget,
             ReminderId = message.Source.ReminderId,
             AckTarget = ackTarget
         };
@@ -1059,6 +1062,14 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
     }
 
     private enum ApprovalLookupResult { Matched, WrongRequester, NotFound }
+
+    private ChannelDeliveryTargetInfo BuildDefaultDeliveryTarget()
+        => new(
+            ChannelType.Discord.ToWireValue(),
+            "destination",
+            _channelId.Value,
+            _channelId.Value,
+            _threadOrMessageId.Value);
 
     private (ApprovalLookupResult Result, PendingApprovalRequest? Pending) ResolvePendingRequest(
         DiscordUserId senderId, Netclaw.Tools.ToolCallId? callId)
@@ -1099,8 +1110,12 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
                 break;
 
             case FileOutput file:
-                await SafeReplyAsync($":paperclip: Produced file `{file.FileName}` ({file.MimeType}).");
-                _deliveredThisTurn = true;
+                if (await SafeUploadFileAsync(file))
+                    _deliveredThisTurn = true;
+                break;
+
+            case ProcessingStateOutput processing:
+                await RenderProcessingStateAsync(processing);
                 break;
 
             case ToolInteractionRequest request when string.Equals(request.Kind, "approval", StringComparison.OrdinalIgnoreCase):
@@ -1174,6 +1189,40 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
                 _deliveredThisTurn = false;
                 break;
         }
+    }
+
+    private async Task RenderProcessingStateAsync(ProcessingStateOutput output)
+    {
+        var requirement = output.IsRequired
+            ? ChannelOutputRequirement.Required
+            : ChannelOutputRequirement.Optional;
+        var request = new ChannelOutputRenderRequest(
+            BuildOutputRenderTarget(),
+            output,
+            ChannelOutputEffectKind.ProcessingIndicator,
+            requirement);
+
+        try
+        {
+            await _dependencies.ChannelRegistry.RenderOutputAsync(request);
+        }
+        catch (Exception ex) when (!output.IsRequired)
+        {
+            _log.Warning(ex, "Failed rendering optional Discord processing indicator");
+        }
+    }
+
+    private ChannelDeliveryTarget BuildOutputRenderTarget()
+    {
+        var channelKey = ChannelDescriptorKey.FromChannelType(ChannelType.Discord);
+        return new ChannelDeliveryTarget(
+            channelKey,
+            new ResolvedChannelAddress(
+                channelKey,
+                ChannelAddressKind.Destination,
+                _replyChannelId.Value,
+                _replyChannelId.Value),
+            _threadOrMessageId.Value);
     }
 
     private async Task<DiscordMessageId?> SafeReplyWithButtonsAsync(ToolInteractionRequest request)
@@ -1254,6 +1303,51 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             ReplyChannelId: _replyChannelId,
             Text: text,
             Buttons: buttons);
+    }
+
+    private async Task<bool> SafeUploadFileAsync(FileOutput file)
+    {
+        var startedAt = _dependencies.TimeProvider.GetTimestamp();
+        try
+        {
+            if (!File.Exists(file.FilePath))
+            {
+                _log.Warning("File not found for upload: {Path}", file.FilePath);
+                await NotifyDeliveryFailedAsync(DeliveryFailureKind.Unknown, $"File not found for upload: {file.FilePath}");
+                return false;
+            }
+
+            using var cts = new CancellationTokenSource(OperationTimeout);
+            await _dependencies.ReplyClient.UploadFileAsync(
+                new DiscordFileUpload(
+                    _replyChannelId,
+                    file.FilePath,
+                    file.FileName,
+                    $":paperclip: {file.FileName}",
+                    _threadCreated ? null : _rootMessageId),
+                cts.Token);
+
+            var duration = _dependencies.TimeProvider.GetElapsedTime(startedAt).TotalMilliseconds;
+            ChannelTelemetry.For(ChannelType.Discord).RecordReplyPosted(duration);
+            _log.Info("Uploaded file to Discord session: {FileName}", file.FileName);
+            return true;
+        }
+        catch (OperationCanceledException ex)
+        {
+            var duration = _dependencies.TimeProvider.GetElapsedTime(startedAt).TotalMilliseconds;
+            _log.Error(ex, "Timed out uploading file {FileName} to Discord session", file.FileName);
+            ChannelTelemetry.For(ChannelType.Discord).RecordReplyFailed(duration);
+            await NotifyDeliveryFailedAsync(DeliveryFailureKind.TransportFailure, ex.Message);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            var duration = _dependencies.TimeProvider.GetElapsedTime(startedAt).TotalMilliseconds;
+            _log.Error(ex, "Failed to upload file {FileName} to Discord session", file.FileName);
+            ChannelTelemetry.For(ChannelType.Discord).RecordReplyFailed(duration);
+            await NotifyDeliveryFailedAsync(DeliveryFailureKind.TransportFailure, ex.Message);
+            return false;
+        }
     }
 
     private async Task SafeSetThreadNameAsync(string title)

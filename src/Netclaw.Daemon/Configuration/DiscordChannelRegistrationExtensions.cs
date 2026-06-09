@@ -25,6 +25,8 @@ public static class DiscordChannelRegistrationExtensions
     {
         var discordOptions = configuration.GetSection("Discord").Get<DiscordChannelOptions>() ?? new DiscordChannelOptions();
         services.AddSingleton(discordOptions);
+        services.AddChannelRegistry();
+        services.AddChannelDescriptorWithRuntimeSnapshot(CreateDescriptor(discordOptions));
 
         if (!discordOptions.Enabled)
             return;
@@ -47,6 +49,8 @@ public static class DiscordChannelRegistrationExtensions
         services.AddSingleton<IDiscordGatewayClient, DiscordNetGatewayClient>();
         services.AddSingleton<IDiscordReplyClient, DiscordNetReplyClient>();
         services.AddSingleton<IDiscordOutboundClient, DiscordNetOutboundClient>();
+        services.AddSingleton<IDiscordAddressLookupClient, DiscordNetAddressLookupClient>();
+        services.AddChannelOutputRenderer<DiscordProcessingOutputRenderer>();
         services.AddSingleton<IThreadHistoryFetcher>(sp =>
         {
             var client = sp.GetRequiredService<DiscordSocketClient>();
@@ -68,6 +72,13 @@ public static class DiscordChannelRegistrationExtensions
                 logger);
         });
         services.AddSingleton<IReminderTargetResolver, DiscordReminderTargetResolver>();
+        services.AddSingleton<DiscordAddressResolver>(sp => new DiscordAddressResolver(
+            sp.GetRequiredService<IDiscordAddressLookupClient>(),
+            discordOptions,
+            () => string.IsNullOrWhiteSpace(discordOptions.DefaultChannelId)
+                ? null
+                : new DiscordChannelId(discordOptions.DefaultChannelId)));
+        services.AddSingleton<IChannelAddressResolver>(sp => sp.GetRequiredService<DiscordAddressResolver>());
 
         services.AddKeyedSingleton<IChannel, DiscordChannel>(DiscordChannelKey);
         services.AddSingleton<IChannel>(sp =>
@@ -75,7 +86,7 @@ public static class DiscordChannelRegistrationExtensions
         services.AddSingleton<DiscordChannel>(sp =>
             (DiscordChannel)sp.GetRequiredKeyedService<IChannel>(DiscordChannelKey));
 
-        // Channel-specific LLM tool: registered as an INetclawTool singleton.
+        // Concrete send implementation used by send_channel_message.
         // The gateway actor ref is resolved lazily via DiscordChannel since it
         // is not available until StartAsync completes.
         services.AddSingleton<SendDiscordMessageTool>(sp =>
@@ -87,9 +98,16 @@ public static class DiscordChannelRegistrationExtensions
                 discordOptions,
                 () => channel.Gateway);
         });
-        services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<SendDiscordMessageTool>());
 
         services.AddSingleton<IHostedService>(sp =>
             (IHostedService)sp.GetRequiredKeyedService<IChannel>(DiscordChannelKey));
     }
+
+    private static ChannelDescriptor CreateDescriptor(DiscordChannelOptions options)
+        => ChannelDescriptor.CreateRemoteChat(
+            ChannelType.Discord,
+            "Discord",
+            options.Enabled,
+            options.AllowDirectMessages,
+            new HashSet<ChannelOutputEffectKind> { ChannelOutputEffectKind.ProcessingIndicator });
 }

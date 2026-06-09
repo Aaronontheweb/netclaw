@@ -8,6 +8,7 @@ using System.Text.Json.Serialization;
 using Akka.Actor;
 using Netclaw.Actors.Serialization;
 using Netclaw.Configuration;
+using Netclaw.Tools;
 
 namespace Netclaw.Actors.Reminders;
 
@@ -83,6 +84,14 @@ public sealed record ReminderDelivery : INetclawSerializableMessage
     public string? Address { get; init; }
 
     /// <summary>
+    /// Resolved standard channel delivery target for Channel delivery. Older
+    /// persisted reminders may only have <see cref="Transport"/> and
+    /// <see cref="Address"/>; execution still handles those fields but new
+    /// reminders store this explicit target for trigger-source routing checks.
+    /// </summary>
+    public ChannelDeliveryTargetInfo? Target { get; init; }
+
+    /// <summary>
     /// Session ID for CurrentSession delivery. Null for Channel and None.
     /// </summary>
     public string? SessionId { get; init; }
@@ -95,16 +104,11 @@ public sealed record ReminderDelivery : INetclawSerializableMessage
     public Channels.ChannelType? OriginChannelType { get; init; }
 
     /// <summary>
-    /// Gets the notification tool name for Channel delivery based on the transport.
-    /// Returns null for non-Channel delivery kinds or unknown transports.
+    /// Gets the notification tool name for Channel delivery.
+    /// Returns null for non-Channel delivery kinds.
     /// </summary>
     public string? GetNotificationToolName() => Kind == DeliveryKind.Channel
-        ? Transport?.ToLowerInvariant() switch
-        {
-            "slack" => "send_slack_message",
-            "discord" => "send_discord_message",
-            _ => null
-        }
+        ? "send_channel_message"
         : null;
 }
 

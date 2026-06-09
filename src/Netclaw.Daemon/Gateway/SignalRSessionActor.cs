@@ -11,6 +11,7 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Reminders;
 using Netclaw.Configuration;
+using Netclaw.Tools;
 
 namespace Netclaw.Daemon.Gateway;
 
@@ -194,6 +195,8 @@ internal sealed class SignalRSessionActor : ReceiveActor, IWithUnboundedStash, I
                 Provenance = msg.Source.Provenance,
                 Contents = [new Microsoft.Extensions.AI.TextContent(msg.Content)],
                 ReceivedAt = msg.Source.ReceivedAt,
+                DefaultDeliveryTarget = BuildDefaultDeliveryTarget(),
+                RequestedDeliveryTarget = msg.Source.RequestedDeliveryTarget,
                 ReminderId = msg.Source.ReminderId,
                 AckTarget = ackTarget
             };
@@ -284,6 +287,15 @@ internal sealed class SignalRSessionActor : ReceiveActor, IWithUnboundedStash, I
         _handle.Dispose();
         base.PostStop();
     }
+
+    private ChannelDeliveryTargetInfo BuildDefaultDeliveryTarget()
+        => new(
+            (_channelType == Actors.Channels.ChannelType.SignalR
+                ? Actors.Channels.ChannelType.Tui
+                : _channelType).ToWireValue(),
+            "local_session",
+            _sessionId.Value,
+            _sessionId.Value);
 
     // ─── Message protocol ───────────────────────────────────────────────────
 

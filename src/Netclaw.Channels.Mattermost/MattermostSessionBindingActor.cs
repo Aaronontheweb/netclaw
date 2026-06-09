@@ -338,7 +338,8 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             Provenance = message.Provenance,
             Contents = liveContents,
             ReceivedAt = message.ReceivedAt,
-            ExecutableText = message.Text
+            ExecutableText = message.Text,
+            DefaultDeliveryTarget = BuildDefaultDeliveryTarget()
         };
 
         if (_hydrationPending && IsAuthorizedSender(message.SenderId.Value))
@@ -1012,6 +1013,8 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             Provenance = message.Source.Provenance,
             Contents = [new TextContent(message.Content)],
             ReceivedAt = _dependencies.TimeProvider.GetUtcNow(),
+            DefaultDeliveryTarget = BuildDefaultDeliveryTarget(),
+            RequestedDeliveryTarget = message.Source.RequestedDeliveryTarget,
             ReminderId = message.Source.ReminderId,
             AckTarget = ackTarget
         };
@@ -1037,6 +1040,14 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
     }
 
     private enum ApprovalLookupResult { Matched, WrongRequester, NotFound }
+
+    private ChannelDeliveryTargetInfo BuildDefaultDeliveryTarget()
+        => new(
+            ChannelType.Mattermost.ToWireValue(),
+            "destination",
+            _channelId.Value,
+            _channelId.Value,
+            _rootPostId.Value);
 
     private (ApprovalLookupResult Result, PendingApprovalRequest? Pending) ResolvePendingRequest(
         MattermostUserId senderId, ToolCallId? callId)
@@ -1077,8 +1088,8 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                 break;
 
             case FileOutput file:
-                await SafeReplyAsync($":paperclip: Produced file `{file.FileName}` ({file.MimeType}).");
-                _deliveredThisTurn = true;
+                if (await SafeUploadFileAsync(file))
+                    _deliveredThisTurn = true;
                 break;
 
             case ToolInteractionRequest request when string.Equals(request.Kind, "approval", StringComparison.OrdinalIgnoreCase):
@@ -1249,12 +1260,60 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
 
     private MattermostPostMessage BuildPostMessage(
         string text,
+        IReadOnlyList<string>? fileIds = null,
         IReadOnlyList<MattermostAttachment>? attachments = null)
         => new(
             ChannelId: _channelId,
             Text: text,
             RootPostId: _rootPostId.IsEmpty ? null : new MattermostPostId(_rootPostId.Value),
+            FileIds: fileIds,
             Attachments: attachments);
+
+    private async Task<bool> SafeUploadFileAsync(FileOutput file)
+    {
+        var startedAt = _dependencies.TimeProvider.GetTimestamp();
+        try
+        {
+            if (!File.Exists(file.FilePath))
+            {
+                _log.Warning("File not found for upload: {Path}", file.FilePath);
+                await NotifyDeliveryFailedAsync(DeliveryFailureKind.Unknown, $"File not found for upload: {file.FilePath}");
+                return false;
+            }
+
+            using var uploadCts = new CancellationTokenSource(OperationTimeout);
+            var fileId = await _dependencies.ReplyClient.UploadFileAsync(
+                _channelId,
+                file.FilePath,
+                file.FileName,
+                uploadCts.Token);
+
+            using var postCts = new CancellationTokenSource(OperationTimeout);
+            var postMessage = BuildPostMessage($":paperclip: {file.FileName}", fileIds: [fileId]);
+            await _dependencies.ReplyClient.PostReplyAsync(postMessage, postCts.Token);
+
+            var duration = _dependencies.TimeProvider.GetElapsedTime(startedAt).TotalMilliseconds;
+            ChannelTelemetry.For(ChannelType.Mattermost).RecordReplyPosted(duration);
+            _log.Info("Uploaded file to Mattermost thread: {FileName}", file.FileName);
+            return true;
+        }
+        catch (OperationCanceledException ex)
+        {
+            var duration = _dependencies.TimeProvider.GetElapsedTime(startedAt).TotalMilliseconds;
+            _log.Error(ex, "Timed out uploading file {FileName} to Mattermost thread", file.FileName);
+            ChannelTelemetry.For(ChannelType.Mattermost).RecordReplyFailed(duration);
+            await NotifyDeliveryFailedAsync(DeliveryFailureKind.TransportFailure, ex.Message);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            var duration = _dependencies.TimeProvider.GetElapsedTime(startedAt).TotalMilliseconds;
+            _log.Error(ex, "Failed to upload file {FileName} to Mattermost thread", file.FileName);
+            ChannelTelemetry.For(ChannelType.Mattermost).RecordReplyFailed(duration);
+            await NotifyDeliveryFailedAsync(DeliveryFailureKind.TransportFailure, ex.Message);
+            return false;
+        }
+    }
 
     private async Task NotifyDeliveryFailedAsync(DeliveryFailureKind failureKind, string errorMessage)
     {

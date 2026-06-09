@@ -12,6 +12,7 @@ using Microsoft.Extensions.Hosting;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Tests.Channels.TestHelpers;
+using Netclaw.Channels;
 using Netclaw.Channels.Discord;
 using Netclaw.Channels.Discord.Tools;
 using Netclaw.Configuration;
@@ -27,6 +28,8 @@ public sealed class SendDiscordMessageToolTests
     private static readonly DiscordChannelOptions DefaultOptions = new()
     {
         Enabled = true,
+        AllowDirectMessages = true,
+        AllowedUserIds = ["u-1", "u-2"],
         AllowedChannelIds = ["ch-1", "ch-2"]
     };
 
@@ -119,6 +122,58 @@ public sealed class SendDiscordMessageToolTests
     }
 
     [Fact]
+    public async Task Successful_dm_uses_allowed_user_id()
+    {
+        var fake = new FakeDiscordOutboundClient();
+        var tool = CreateTool(outbound: fake);
+
+        var result = await tool.ExecuteAsync(new Dictionary<string, object?>
+        {
+            ["Message"] = "hello user",
+            ["UserId"] = "u-1"
+        }, CancellationToken.None);
+
+        Assert.Contains("Message sent to user u-1", result);
+        Assert.Single(fake.DirectMessages);
+        Assert.Equal("u-1", fake.DirectMessages[0].UserId.Value);
+        Assert.Equal("hello user", fake.DirectMessages[0].Text);
+    }
+
+    [Fact]
+    public async Task Rejects_disallowed_user()
+    {
+        var tool = CreateTool();
+
+        var result = await tool.ExecuteAsync(new Dictionary<string, object?>
+        {
+            ["Message"] = "hello user",
+            ["UserId"] = "u-bad"
+        }, CancellationToken.None);
+
+        Assert.Contains("not in the allowed users list", result);
+    }
+
+    [Fact]
+    public async Task Rejects_dm_when_direct_messages_disabled()
+    {
+        var options = new DiscordChannelOptions
+        {
+            Enabled = true,
+            AllowDirectMessages = false,
+            AllowedUserIds = ["u-1"]
+        };
+        var tool = CreateTool(options: options);
+
+        var result = await tool.ExecuteAsync(new Dictionary<string, object?>
+        {
+            ["Message"] = "hello user",
+            ["UserId"] = "u-1"
+        }, CancellationToken.None);
+
+        Assert.Contains("Direct messages are disabled", result);
+    }
+
+    [Fact]
     public async Task Uses_provided_thread_name()
     {
         var fake = new FakeDiscordOutboundClient();
@@ -188,6 +243,7 @@ public sealed class SendDiscordMessageToolTests
         public bool ShouldThrow { get; init; }
         public bool ThrowThreadCreationFailure { get; init; }
         public List<(DiscordChannelId ChannelId, string Text, string ThreadName)> Posts { get; } = [];
+        public List<(DiscordUserId UserId, string Text)> DirectMessages { get; } = [];
 
         public Task<DiscordNewThread> PostNewThreadAsync(
             DiscordChannelId channelId, string text, string threadName, CancellationToken ct = default)
@@ -209,6 +265,23 @@ public sealed class SendDiscordMessageToolTests
                 new DiscordReplyChannelId(threadId),
                 new DiscordThreadOrMessageId(threadId)));
         }
+
+        public Task<DiscordNewDirectMessage> PostDirectMessageAsync(
+            DiscordUserId userId,
+            string text,
+            CancellationToken ct = default)
+        {
+            if (ShouldThrow) throw new InvalidOperationException("Discord API error");
+            DirectMessages.Add((userId, text));
+            var dmChannelId = $"dm-{userId.Value}";
+            var rootMessageId = $"root-{userId.Value}";
+            return Task.FromResult(new DiscordNewDirectMessage(
+                new DiscordChannelId(dmChannelId),
+                new DiscordReplyChannelId(dmChannelId),
+                new DiscordThreadOrMessageId(rootMessageId),
+                new DiscordMessageId(rootMessageId),
+                userId));
+        }
     }
 
     /// <summary>
@@ -228,6 +301,158 @@ public sealed class SendDiscordMessageToolTests
             if (message is StartProactiveThread spt)
                 sender.Tell(new ProactiveThreadAck(spt.SessionId));
         }
+    }
+}
+
+#endregion
+
+#region DiscordAddressResolver Tests
+
+public sealed class DiscordAddressResolverTests
+{
+    private const string AllowedUserId = "123456789012345678";
+    private const string OtherUserId = "234567890123456789";
+    private const string AllowedChannelId = "345678901234567890";
+    private const string OtherChannelId = "456789012345678901";
+
+    [Fact]
+    public async Task User_resolver_resolves_exact_user_id_without_directory_lookup()
+    {
+        var resolver = CreateResolver(new DiscordChannelOptions
+        {
+            AllowDirectMessages = true,
+            AllowedUserIds = [AllowedUserId]
+        });
+
+        var result = await resolver.ResolveAsync(new ChannelAddressResolutionRequest(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Discord),
+            ChannelAddressKind.User,
+            AllowedUserId), TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.Resolved, result.Status);
+        Assert.Equal(AllowedUserId, result.RequireSingle().StableId);
+    }
+
+    [Fact]
+    public async Task User_resolver_filters_exact_user_id_through_allowed_users()
+    {
+        var resolver = CreateResolver(new DiscordChannelOptions
+        {
+            AllowDirectMessages = true,
+            AllowedUserIds = [AllowedUserId]
+        });
+
+        var result = await resolver.ResolveAsync(new ChannelAddressResolutionRequest(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Discord),
+            ChannelAddressKind.User,
+            OtherUserId), TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.NotFound, result.Status);
+        Assert.Contains("allowed users", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Direct_message_resolution_requires_direct_messages_enabled()
+    {
+        var resolver = CreateResolver(new DiscordChannelOptions
+        {
+            AllowDirectMessages = false,
+            AllowedUserIds = [AllowedUserId]
+        });
+
+        var result = await resolver.ResolveAsync(new ChannelAddressResolutionRequest(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Discord),
+            ChannelAddressKind.DirectMessage,
+            AllowedUserId), TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.Unsupported, result.Status);
+        Assert.Contains("disabled", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Destination_resolver_resolves_channel_mention()
+    {
+        var resolver = CreateResolver(new DiscordChannelOptions
+        {
+            AllowedChannelIds = [AllowedChannelId]
+        });
+
+        var result = await resolver.ResolveAsync(new ChannelAddressResolutionRequest(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Discord),
+            ChannelAddressKind.Destination,
+            $"<#{AllowedChannelId}>"), TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.Resolved, result.Status);
+        Assert.Equal(AllowedChannelId, result.RequireSingle().StableId);
+    }
+
+    [Fact]
+    public async Task Destination_resolver_filters_exact_channel_id_through_allowed_channels()
+    {
+        var resolver = CreateResolver(new DiscordChannelOptions
+        {
+            AllowedChannelIds = [AllowedChannelId]
+        });
+
+        var result = await resolver.ResolveAsync(new ChannelAddressResolutionRequest(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Discord),
+            ChannelAddressKind.Destination,
+            OtherChannelId), TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.NotFound, result.Status);
+        Assert.Contains("allowed channels", result.Error, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task User_resolver_resolves_cached_name_matches()
+    {
+        var lookup = new FakeDiscordAddressLookupClient
+        {
+            Users =
+            [
+                new DiscordLookupUser(new DiscordUserId(AllowedUserId), "alice", "Alice", "Alice A.", IsBot: false)
+            ]
+        };
+        var resolver = CreateResolver(new DiscordChannelOptions
+        {
+            AllowDirectMessages = true,
+            AllowedUserIds = [AllowedUserId]
+        }, lookup);
+
+        var result = await resolver.ResolveAsync(new ChannelAddressResolutionRequest(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Discord),
+            ChannelAddressKind.DirectMessage,
+            "@alice"), TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.Resolved, result.Status);
+        Assert.Equal(AllowedUserId, result.RequireSingle().StableId);
+        Assert.Equal(ChannelAddressKind.DirectMessage, result.RequireSingle().AddressKind);
+    }
+
+    private static DiscordAddressResolver CreateResolver(
+        DiscordChannelOptions options,
+        FakeDiscordAddressLookupClient? lookup = null)
+    {
+        return new DiscordAddressResolver(
+            lookup ?? new FakeDiscordAddressLookupClient(),
+            options,
+            () => null);
+    }
+
+    private sealed class FakeDiscordAddressLookupClient : IDiscordAddressLookupClient
+    {
+        public IReadOnlyList<DiscordLookupUser> Users { get; init; } = [];
+        public IReadOnlyList<DiscordLookupDestination> Destinations { get; init; } = [];
+
+        public ValueTask<IReadOnlyList<DiscordLookupUser>> FindUsersAsync(
+            string query,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(Users);
+
+        public ValueTask<IReadOnlyList<DiscordLookupDestination>> FindDestinationsAsync(
+            string query,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(Destinations);
     }
 }
 
@@ -324,6 +549,70 @@ public sealed class DiscordProactiveThreadActorTests(ITestOutputHelper output) :
     }
 
     [Fact]
+    public async Task StartProactiveThread_allows_dm_channel_when_user_is_allowed()
+    {
+        var sink = CreateTestProbe("proactive-dm-sink");
+        var deps = CreateDependencies(
+            options: new DiscordChannelOptions
+            {
+                Enabled = true,
+                AllowDirectMessages = true,
+                AllowedChannelIds = ["ch-1"],
+                AllowedUserIds = ["u-1"]
+            },
+            sessionPropsFactory: (_, _, _, _, _, _) => Props.Create(() => new ForwardActor(sink.Ref)));
+
+        var conversation = Sys.ActorOf(
+            DiscordConversationActor.CreateProps(new DiscordChannelId("dm-1"), deps),
+            "discord-proactive-dm");
+
+        conversation.Tell(new StartProactiveThread(
+            new DiscordChannelId("dm-1"),
+            new DiscordReplyChannelId("dm-1"),
+            new DiscordThreadOrMessageId("msg-1"),
+            new SessionId("dm-1/msg-1"),
+            DirectMessageUserId: new DiscordUserId("u-1"),
+            RootMessageId: new DiscordMessageId("msg-1")));
+
+        var routed = await sink.ExpectMsgAsync<StartProactiveThread>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal("dm-1/msg-1", routed.SessionId.Value);
+        Assert.Equal("msg-1", routed.RootMessageId?.Value);
+    }
+
+    [Fact]
+    public async Task StartProactiveThread_rejects_dm_when_user_is_disallowed()
+    {
+        var sink = CreateTestProbe("proactive-dm-disallowed-sink");
+        var deps = CreateDependencies(
+            options: new DiscordChannelOptions
+            {
+                Enabled = true,
+                AllowDirectMessages = true,
+                AllowedUserIds = ["u-1"]
+            },
+            sessionPropsFactory: (_, _, _, _, _, _) => Props.Create(() => new ForwardActor(sink.Ref)));
+
+        var conversation = Sys.ActorOf(
+            DiscordConversationActor.CreateProps(new DiscordChannelId("dm-2"), deps),
+            "discord-proactive-dm-disallowed");
+
+        conversation.Tell(new StartProactiveThread(
+            new DiscordChannelId("dm-2"),
+            new DiscordReplyChannelId("dm-2"),
+            new DiscordThreadOrMessageId("msg-2"),
+            new SessionId("dm-2/msg-2"),
+            DirectMessageUserId: new DiscordUserId("u-bad"),
+            RootMessageId: new DiscordMessageId("msg-2")));
+
+        var failure = await ExpectMsgAsync<Status.Failure>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Contains("allowed users", failure.Cause.Message, StringComparison.OrdinalIgnoreCase);
+
+        await sink.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(250), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
     public async Task StartProactiveThread_rejected_when_ingress_closed()
     {
         var sink = CreateTestProbe("proactive-ingress-sink");
@@ -371,20 +660,24 @@ public sealed class DiscordProactiveThreadActorTests(ITestOutputHelper output) :
 
     private static DiscordGatewayDependencies CreateDependencies(
         SessionIngressGate? ingressGate = null,
+        DiscordChannelOptions? options = null,
         Func<SessionId, DiscordChannelId, DiscordReplyChannelId, DiscordThreadOrMessageId, DiscordMessageId?, DiscordGatewayDependencies, Props>? sessionPropsFactory = null)
     {
+        var replyClient = new UnconfiguredDiscordReplyClient();
+
         return new DiscordGatewayDependencies(
             Pipeline: null!,
             IngressGate: ingressGate,
             TimeProvider: TimeProvider.System,
-            Options: new DiscordChannelOptions
+            Options: options ?? new DiscordChannelOptions
             {
                 Enabled = true,
                 MentionOnly = false,
                 AllowedChannelIds = ["ch-1"]
             },
             DefaultChannelId: null,
-            ReplyClient: new UnconfiguredDiscordReplyClient(),
+            ChannelRegistry: TestChannelRegistries.DiscordWithProcessingRenderer(replyClient),
+            ReplyClient: replyClient,
             ContentScanner: new NullContentScanner(),
             AudienceProfiles: TestDiscordGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestDiscordGatewayDeps.DefaultVisionCapableModel,

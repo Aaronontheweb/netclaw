@@ -25,6 +25,8 @@ public static class MattermostChannelRegistrationExtensions
     {
         var mattermostOptions = configuration.GetSection("Mattermost").Get<MattermostChannelOptions>() ?? new MattermostChannelOptions();
         services.AddSingleton(mattermostOptions);
+        services.AddChannelRegistry();
+        services.AddChannelDescriptorWithRuntimeSnapshot(CreateDescriptor(mattermostOptions));
 
         if (!mattermostOptions.Enabled)
             return;
@@ -90,8 +92,17 @@ public static class MattermostChannelRegistrationExtensions
             sp.GetRequiredKeyedService<IChannel>(MattermostChannelKey));
         services.AddSingleton<MattermostChannel>(sp =>
             (MattermostChannel)sp.GetRequiredKeyedService<IChannel>(MattermostChannelKey));
+        services.AddSingleton<MattermostDestinationAddressResolver>(sp =>
+        {
+            return new MattermostDestinationAddressResolver(
+                mattermostOptions,
+                () => string.IsNullOrWhiteSpace(mattermostOptions.DefaultChannelId)
+                    ? null
+                    : new MattermostChannelId(mattermostOptions.DefaultChannelId));
+        });
+        services.AddSingleton<IChannelAddressResolver>(sp => sp.GetRequiredService<MattermostDestinationAddressResolver>());
 
-        // Channel-specific LLM tools: registered as IChannelTool singletons.
+        // Concrete send and lookup implementations used by generic channel tools.
         // The gateway actor ref and default channel ID are resolved lazily via
         // MattermostChannel since they're not available until StartAsync completes.
         services.AddSingleton<SendMattermostMessageTool>(sp =>
@@ -104,16 +115,23 @@ public static class MattermostChannelRegistrationExtensions
                 () => channel.DefaultChannelId,
                 () => channel.Gateway);
         });
-        services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<SendMattermostMessageTool>());
 
         services.AddSingleton<LookupMattermostUserTool>(sp =>
         {
-            var client = sp.GetRequiredService<MattermostClient>();
-            return new LookupMattermostUserTool(client, mattermostOptions);
+            return new LookupMattermostUserTool(
+                () => sp.GetRequiredService<MattermostClient>(),
+                mattermostOptions);
         });
-        services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<LookupMattermostUserTool>());
+        services.AddSingleton<IChannelAddressResolver>(sp => sp.GetRequiredService<LookupMattermostUserTool>());
 
         services.AddSingleton<IHostedService>(sp =>
             (IHostedService)sp.GetRequiredKeyedService<IChannel>(MattermostChannelKey));
     }
+
+    private static ChannelDescriptor CreateDescriptor(MattermostChannelOptions options)
+        => ChannelDescriptor.CreateRemoteChat(
+            ChannelType.Mattermost,
+            "Mattermost",
+            options.Enabled,
+            options.AllowDirectMessages);
 }
