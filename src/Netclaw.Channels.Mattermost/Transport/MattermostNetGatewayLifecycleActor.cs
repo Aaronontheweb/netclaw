@@ -234,7 +234,15 @@ internal sealed class MattermostNetGatewayLifecycleActor : ReceiveActor
         _botUserId = null;
         _botUsername = null;
         _cleanReconnectEmitted = false;
-        _pendingConnectReplyTo = replyTo;
+
+        // Normalize Nobody to null: the auto-retry path connects with
+        // ActorRefs.Nobody, and storing it verbatim made the
+        // `_pendingConnectReplyTo is null` isRetry checks misfire — most
+        // visibly keeping ConnectionRestored from publishing after an
+        // auto-retry recovery. Mirrors the same fix in the Discord lifecycle
+        // actor, where the skew also produced a stuck CleanReconnectRequired
+        // state.
+        _pendingConnectReplyTo = replyTo.IsNobody() ? null : replyTo;
 
         var attempt = ++_connectAttempt;
         Become(Connecting);
