@@ -127,6 +127,10 @@ failure GIFs, screenshot diffs) for debugging.
 - Security: `src/Netclaw.Security/` (ACL, device pairing, token management)
 - Tools: `src/Netclaw.Tools.Abstractions/` and `src/Netclaw.Tools.Generators/`
 
+For a step-by-step guide to adding a new chat channel integration (e.g.,
+Microsoft Teams, WhatsApp, Signal), see
+[Adding a Channel](docs/runbooks/adding-a-channel.md).
+
 ## Architecture
 
 Netclaw uses a **daemon + thin client** architecture:
