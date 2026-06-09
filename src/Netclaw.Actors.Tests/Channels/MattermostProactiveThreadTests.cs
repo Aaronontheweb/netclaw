@@ -225,6 +225,34 @@ public sealed class MattermostAddressResolverTests
         Assert.Contains("not in the allowed channels list", result.Error);
     }
 
+    [Fact]
+    public async Task List_destinations_enumerates_default_channel_and_allowlist()
+    {
+        var resolver = new MattermostDestinationAddressResolver(
+            new MattermostChannelOptions { AllowedChannelIds = [AllowedChannelId] },
+            () => new MattermostChannelId(OtherChannelId));
+
+        var result = await resolver.ListDestinationsAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.Listed, result.Status);
+        Assert.Equal(2, result.Candidates.Count);
+        Assert.Contains(result.Candidates, c => c.StableId == AllowedChannelId);
+        Assert.Contains(result.Candidates, c => c.StableId == OtherChannelId);
+    }
+
+    [Fact]
+    public async Task List_destinations_is_empty_when_nothing_is_configured()
+    {
+        var resolver = new MattermostDestinationAddressResolver(
+            new MattermostChannelOptions(),
+            () => null);
+
+        var result = await resolver.ListDestinationsAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.Listed, result.Status);
+        Assert.Empty(result.Candidates);
+    }
+
     private static LookupMattermostUserTool CreateUserResolver(MattermostChannelOptions options)
     {
         return new LookupMattermostUserTool(

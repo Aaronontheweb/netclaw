@@ -157,6 +157,40 @@ public sealed class SlackTargetResolver(
         return ToResolutionResult(request.AddressKind, matches, raw);
     }
 
+    /// <summary>
+    /// Blank-query listing: every Slack conversation visible to the bot that
+    /// passes the same <see cref="SlackAclPolicy.IsAllowedChannel"/> gate the
+    /// search path applies. Membership is not required here — matching the
+    /// search behavior, which can also resolve channels the bot has not yet
+    /// been invited into (the send then fails loudly at delivery time).
+    /// </summary>
+    public async ValueTask<ChannelAddressResolutionResult> ListDestinationsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var destinations = new List<ResolvedChannelAddress>();
+        var cursor = default(string);
+
+        do
+        {
+            var page = await lookupClient.ListChannelsAsync(cursor, cancellationToken);
+            foreach (var channel in page.Channels)
+            {
+                if (!IsAllowedChannel(channel))
+                    continue;
+
+                var displayName = string.IsNullOrWhiteSpace(channel.Name)
+                    ? channel.Id
+                    : $"#{channel.Name}";
+                destinations.Add(new ResolvedChannelAddress(
+                    Key, ChannelAddressKind.Destination, channel.Id, displayName));
+            }
+
+            cursor = page.NextCursor;
+        } while (!string.IsNullOrWhiteSpace(cursor));
+
+        return ChannelAddressResolutionResult.Listed(destinations);
+    }
+
     private async Task<string?> ResolveChannelByNameAsync(string channelName, CancellationToken ct)
     {
         var cursor = default(string);

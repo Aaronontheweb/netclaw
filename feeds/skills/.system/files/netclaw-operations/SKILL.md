@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.10.4"
+  version: "2.11.0"
 ---
 
 # Netclaw Operations
@@ -161,6 +161,13 @@ stable channel/user ID:
   enabled channels that support destination lookup. Slack can resolve channel
   names and IDs; Discord can resolve channel mentions, stable IDs, and cached
   text-channel names; Mattermost requires an exact channel ID.
+- **Discovery:** call `lookup_channel_destination` with `query` omitted (or
+  blank) to list every destination the channel can currently deliver to —
+  Slack lists ACL-allowed conversations visible to the bot, Discord lists
+  ACL-allowed guild text channels, and Mattermost lists the configured
+  allowlist. Use this to answer "where can I post?" before sending. Listing
+  is destination-only: user directories are unbounded, so
+  `lookup_channel_user` always requires a query.
 
 Both tools require `channel_key` as the first argument. Use the returned
 `channel_key` and `stable_id` exactly; for destination lookups, use the returned

@@ -367,6 +367,32 @@ public sealed class DiscordAddressResolverTests
         Assert.Equal(ChannelAddressKind.DirectMessage, result.RequireSingle().AddressKind);
     }
 
+    [Fact]
+    public async Task List_destinations_applies_channel_acl()
+    {
+        var lookup = new FakeDiscordAddressLookupClient
+        {
+            Destinations =
+            [
+                new DiscordLookupDestination(new DiscordChannelId("100000000000000001"), "general"),
+                new DiscordLookupDestination(new DiscordChannelId("100000000000000002"), "secret-ops"),
+                new DiscordLookupDestination(new DiscordChannelId("100000000000000003"), "announcements")
+            ]
+        };
+        var resolver = CreateResolver(new DiscordChannelOptions
+        {
+            AllowedChannelIds = ["100000000000000001", "100000000000000003"]
+        }, lookup);
+
+        var result = await resolver.ListDestinationsAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.Listed, result.Status);
+        Assert.Equal(2, result.Candidates.Count);
+        Assert.Contains(result.Candidates, c => c.StableId == "100000000000000001" && c.DisplayName == "#general");
+        Assert.Contains(result.Candidates, c => c.StableId == "100000000000000003" && c.DisplayName == "#announcements");
+        Assert.DoesNotContain(result.Candidates, c => c.StableId == "100000000000000002");
+    }
+
     private static DiscordAddressResolver CreateResolver(
         DiscordChannelOptions options,
         FakeDiscordAddressLookupClient? lookup = null)
@@ -389,6 +415,10 @@ public sealed class DiscordAddressResolverTests
 
         public ValueTask<IReadOnlyList<DiscordLookupDestination>> FindDestinationsAsync(
             string query,
+            CancellationToken cancellationToken = default)
+            => ValueTask.FromResult(Destinations);
+
+        public ValueTask<IReadOnlyList<DiscordLookupDestination>> ListDestinationsAsync(
             CancellationToken cancellationToken = default)
             => ValueTask.FromResult(Destinations);
     }

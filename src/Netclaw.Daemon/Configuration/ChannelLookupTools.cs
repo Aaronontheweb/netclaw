@@ -58,13 +58,19 @@ internal sealed class LookupChannelDestinationTool(IChannelRegistry registry) : 
 {
     public override string Name => "lookup_channel_destination";
 
-    public override string Description => "Look up a destination on an enabled chat channel. Returns stable channel or destination IDs for channel-specific workflows.";
+    public override string Description => "Look up a destination on an enabled chat channel. Returns stable channel or destination IDs for channel-specific workflows. Omit 'query' to list every destination the channel can currently deliver to.";
 
     protected override ChannelAddressKind AddressKind => ChannelAddressKind.Destination;
 
     protected override string LookupLabel => "destination";
 
-    protected override string QueryDescription => "Destination ID or name to resolve on the selected channel.";
+    protected override string QueryDescription => "Destination ID or name to resolve on the selected channel. Omit or leave blank to list all destinations the bot can deliver to.";
+
+    // Blank-query listing is destination-only: the deliverable destination
+    // set is bounded (bot memberships, guild channels, or a configured
+    // allowlist), while user directories are unbounded and only make sense
+    // as server-side searches — lookup_channel_user keeps requiring a query.
+    protected override bool SupportsBlankQueryListing => true;
 }
 
 internal abstract class ChannelLookupTool : IChannelTool
@@ -95,6 +101,13 @@ internal abstract class ChannelLookupTool : IChannelTool
 
     protected abstract string QueryDescription { get; }
 
+    /// <summary>
+    /// When true, a blank or missing 'query' triggers a listing of every
+    /// deliverable destination instead of an error, and 'query' is omitted
+    /// from the schema's required array.
+    /// </summary>
+    protected virtual bool SupportsBlankQueryListing => false;
+
     public AITool ToAITool()
     {
         return _aiTool ??= AIFunctionFactory.CreateDeclaration(Name, Description, ParameterSchema);
@@ -107,7 +120,7 @@ internal abstract class ChannelLookupTool : IChannelTool
             return "Error: 'channel_key' parameter is required.";
 
         var query = ToolArgumentHelper.GetString(arguments, "query");
-        if (string.IsNullOrWhiteSpace(query))
+        if (string.IsNullOrWhiteSpace(query) && !SupportsBlankQueryListing)
             return "Error: 'query' parameter is required.";
 
         var key = ChannelDescriptorKey.Create(channelKeyValue.Trim());
@@ -135,6 +148,12 @@ internal abstract class ChannelLookupTool : IChannelTool
         ChannelAddressResolutionResult result;
         try
         {
+            if (string.IsNullOrWhiteSpace(query))
+            {
+                result = await _registry.ListDestinationsAsync(key, ct);
+                return FormatListing(key, result);
+            }
+
             result = await _registry.ResolveAddressAsync(
                 new ChannelAddressResolutionRequest(key, AddressKind, query.Trim()),
                 ct);
@@ -177,7 +196,9 @@ internal abstract class ChannelLookupTool : IChannelTool
                     "description": "Set to true to run this tool in the background and receive results later."
                 }
             },
-            "required": ["channel_key", "query", "_rationale"]
+            "required": {{(SupportsBlankQueryListing
+                ? """["channel_key", "_rationale"]"""
+                : """["channel_key", "query", "_rationale"]""")}}
         }
         """;
 
@@ -216,6 +237,30 @@ internal abstract class ChannelLookupTool : IChannelTool
         builder.AppendLine($"stable_id: {address.StableId}");
         builder.AppendLine($"display_name: {address.DisplayName}");
         builder.AppendLine($"address_kind: {ChannelAddressKindWire.ToWireValue(address.AddressKind)}");
+        return builder.ToString().TrimEnd();
+    }
+
+    private const int MaxListedDestinations = 50;
+
+    private string FormatListing(ChannelDescriptorKey key, ChannelAddressResolutionResult result)
+    {
+        if (result.Status == ChannelAddressResolutionStatus.Unsupported)
+            return $"Error: {result.Error ?? $"Channel '{key}' does not support destination listing."}";
+
+        if (result.Status != ChannelAddressResolutionStatus.Listed)
+            return $"Error: Unexpected listing status '{result.Status}' from channel '{key}'.";
+
+        if (result.Candidates.Count == 0)
+            return $"Channel '{key}' has no destinations it can currently deliver to. Channels may need to invite the bot, or the operator may need to extend the channel allowlist.";
+
+        var builder = new StringBuilder();
+        builder.AppendLine($"Channel '{key}' can deliver to {result.Candidates.Count} destination(s):");
+        foreach (var candidate in result.Candidates.Take(MaxListedDestinations))
+            builder.AppendLine($"- channel_key: {candidate.ChannelKey}; stable_id: {candidate.StableId}; display_name: {candidate.DisplayName}; address_kind: {ChannelAddressKindWire.ToWireValue(candidate.AddressKind)}");
+
+        if (result.Candidates.Count > MaxListedDestinations)
+            builder.AppendLine($"…and {result.Candidates.Count - MaxListedDestinations} more. Use a 'query' to narrow the search.");
+
         return builder.ToString().TrimEnd();
     }
 

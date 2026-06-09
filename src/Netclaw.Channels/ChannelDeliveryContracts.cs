@@ -217,7 +217,15 @@ public enum ChannelAddressResolutionStatus
     Resolved,
     NotFound,
     Ambiguous,
-    Unsupported
+    Unsupported,
+
+    /// <summary>
+    /// The result is an enumeration of every destination the channel can
+    /// deliver to (a blank-query listing), not a match against a query.
+    /// An empty candidate list is a valid listing: it means the channel is
+    /// reachable but has nothing it is currently allowed to deliver to.
+    /// </summary>
+    Listed
 }
 
 public sealed record ChannelAddressResolutionResult
@@ -259,6 +267,17 @@ public sealed record ChannelAddressResolutionResult
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(error);
         return new ChannelAddressResolutionResult(ChannelAddressResolutionStatus.Unsupported, [], error);
+    }
+
+    /// <summary>
+    /// A blank-query listing of every deliverable destination. Unlike
+    /// <see cref="Ambiguous"/>, an empty list is valid here — it means the
+    /// channel currently has no destinations it is allowed to deliver to.
+    /// </summary>
+    public static ChannelAddressResolutionResult Listed(IReadOnlyList<ResolvedChannelAddress> destinations)
+    {
+        ArgumentNullException.ThrowIfNull(destinations);
+        return new ChannelAddressResolutionResult(ChannelAddressResolutionStatus.Listed, destinations);
     }
 
     public ResolvedChannelAddress RequireSingle()
@@ -418,6 +437,21 @@ public interface IChannelAddressResolver
     ValueTask<ChannelAddressResolutionResult> ResolveAsync(
         ChannelAddressResolutionRequest request,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lists every destination this channel can currently deliver to,
+    /// gated by the same ACL checks <see cref="ResolveAsync"/> applies.
+    /// Listing exists for destinations only — never users — because the
+    /// deliverable destination set is bounded (bot memberships, guild
+    /// channels, or a configured allowlist) while user directories are
+    /// unbounded and only make sense as server-side searches. Default is
+    /// a loud <see cref="ChannelAddressResolutionResult.Unsupported"/>;
+    /// resolvers opt in by overriding.
+    /// </summary>
+    ValueTask<ChannelAddressResolutionResult> ListDestinationsAsync(
+        CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(ChannelAddressResolutionResult.Unsupported(
+            $"Channel '{Key}' does not support destination listing."));
 }
 
 public interface IChannelRegistry
@@ -436,6 +470,15 @@ public interface IChannelRegistry
 
     ValueTask<ChannelAddressResolutionResult> ResolveAddressAsync(
         ChannelAddressResolutionRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lists every destination the channel can deliver to. Routed through
+    /// the same (key, Destination) resolver lookup as
+    /// <see cref="ResolveAddressAsync"/>.
+    /// </summary>
+    ValueTask<ChannelAddressResolutionResult> ListDestinationsAsync(
+        ChannelDescriptorKey key,
         CancellationToken cancellationToken = default);
 
     ValueTask<ChannelOutputRenderResult> RenderOutputAsync(
@@ -520,6 +563,14 @@ public sealed class ChannelRegistry : IChannelRegistry
 
         var resolver = GetResolver(request.ChannelKey, request.AddressKind);
         return await resolver.ResolveAsync(request, cancellationToken);
+    }
+
+    public async ValueTask<ChannelAddressResolutionResult> ListDestinationsAsync(
+        ChannelDescriptorKey key,
+        CancellationToken cancellationToken = default)
+    {
+        var resolver = GetResolver(key, ChannelAddressKind.Destination);
+        return await resolver.ListDestinationsAsync(cancellationToken);
     }
 
     public async ValueTask<ChannelOutputRenderResult> RenderOutputAsync(

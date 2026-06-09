@@ -188,6 +188,60 @@ public sealed class SlackTargetResolverTests
         Assert.Equal(0, lookup.ChannelListCallCount);
     }
 
+    [Fact]
+    public async Task List_destinations_paginates_and_applies_channel_acl()
+    {
+        var lookup = new FakeSlackTargetLookupClient
+        {
+            ChannelPages =
+            [
+                new SlackChannelPage(
+                [
+                    new Conversation { Id = "C1", Name = "openclaw", NameNormalized = "openclaw" },
+                    new Conversation { Id = "C2", Name = "secret-ops", NameNormalized = "secret-ops" }
+                ],
+                null),
+                new SlackChannelPage(
+                [
+                    new Conversation { Id = "C3", Name = "general", NameNormalized = "general" }
+                ],
+                null)
+            ]
+        };
+
+        var resolver = CreateResolver(lookup, new SlackChannelOptions { AllowedChannelIds = ["C1", "C3"] });
+        var result = await resolver.ListDestinationsAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.Listed, result.Status);
+        Assert.Equal(2, result.Candidates.Count);
+        Assert.Contains(result.Candidates, c => c.StableId == "C1" && c.DisplayName == "#openclaw");
+        Assert.Contains(result.Candidates, c => c.StableId == "C3" && c.DisplayName == "#general");
+        Assert.DoesNotContain(result.Candidates, c => c.StableId == "C2");
+        Assert.Equal(2, lookup.ChannelListCallCount);
+    }
+
+    [Fact]
+    public async Task List_destinations_returns_empty_listing_when_nothing_is_allowed()
+    {
+        var lookup = new FakeSlackTargetLookupClient
+        {
+            ChannelPages =
+            [
+                new SlackChannelPage(
+                [
+                    new Conversation { Id = "C9", Name = "random", NameNormalized = "random" }
+                ],
+                null)
+            ]
+        };
+
+        var resolver = CreateResolver(lookup, new SlackChannelOptions { AllowedChannelIds = [] });
+        var result = await resolver.ListDestinationsAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(ChannelAddressResolutionStatus.Listed, result.Status);
+        Assert.Empty(result.Candidates);
+    }
+
     private static SlackTargetResolver CreateResolver(
         ISlackTargetLookupClient lookup,
         SlackChannelOptions? options = null,
