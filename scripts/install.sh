@@ -32,9 +32,10 @@ fi
 MANIFEST_URL="${MANIFEST_URL:-https://releases.netclaw.dev/manifest.json}"
 
 # ── Argument parsing ──
-COMPONENT="all"   # "all", "cli", or "daemon"
-DRY_RUN=false     # --dry-run: resolve and report what would happen, install nothing
-CHANNEL="stable"  # release channel: "stable" (default) or "beta" (opt into prereleases)
+COMPONENT="all"        # "all", "cli", or "daemon"
+DRY_RUN=false          # --dry-run: resolve and report what would happen, install nothing
+CHANNEL="stable"       # release channel: "stable" (default) or "beta" (opt into prereleases)
+CHANNEL_EXPLICIT=false # true when --channel was explicitly passed
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=true; shift ;;
@@ -42,8 +43,8 @@ while [ $# -gt 0 ]; do
             if [ $# -lt 2 ]; then
                 echo "Error: --channel requires a value (stable|beta)" >&2; exit 1
             fi
-            CHANNEL="$2"; shift 2 ;;
-        --channel=*) CHANNEL="${1#*=}"; shift ;;
+            CHANNEL="$2"; CHANNEL_EXPLICIT=true; shift 2 ;;
+        --channel=*) CHANNEL="${1#*=}"; CHANNEL_EXPLICIT=true; shift ;;
         all|cli|daemon) COMPONENT="$1"; shift ;;
         *) echo "Usage: install.sh [all|cli|daemon] [--channel stable|beta] [--dry-run]" >&2; exit 1 ;;
     esac
@@ -273,20 +274,33 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 # ── Persist UpdateChannel into config ──
-# When --channel is specified and a config file exists, write Daemon.UpdateChannel
-# so the daemon's self-update mechanism uses the correct channel. Setting "stable"
-# explicitly removes a stale "beta" override; setting "beta" opts into prereleases.
-CONFIG_DIR="${CONFIG_DIR:-$HOME/.netclaw/config}"
-CONFIG_FILE="$CONFIG_DIR/netclaw.json"
-if [ -f "$CONFIG_FILE" ]; then
-    if command -v jq >/dev/null 2>&1; then
-        jq --arg ch "$CHANNEL" '.Daemon = ((.Daemon // {}) + {UpdateChannel: $ch})' \
-            "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
-        echo "  Set Daemon.UpdateChannel to '$CHANNEL' in $CONFIG_FILE"
-    else
-        echo "  Note: jq not found — could not set Daemon.UpdateChannel in config."
-        echo "  To receive $CHANNEL updates, add to $CONFIG_FILE:"
-        echo "    \"Daemon\": { \"UpdateChannel\": \"$CHANNEL\" }"
+# Only runs when --channel was explicitly passed. Without this guard a plain
+# upgrade (`install.sh` with no flags) would silently overwrite an existing
+# beta channel to stable — a silent fallback the project prohibits.
+if [ "$CHANNEL_EXPLICIT" = true ]; then
+    CONFIG_DIR="${CONFIG_DIR:-$HOME/.netclaw/config}"
+    CONFIG_FILE="$CONFIG_DIR/netclaw.json"
+    if [ -f "$CONFIG_FILE" ]; then
+        if command -v jq >/dev/null 2>&1; then
+            if jq --arg ch "$CHANNEL" '.Daemon = ((.Daemon // {}) + {UpdateChannel: $ch})' \
+                "$CONFIG_FILE" > "${CONFIG_FILE}.tmp"; then
+                mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+                echo "  Set Daemon.UpdateChannel to '$CHANNEL' in $CONFIG_FILE"
+            else
+                rm -f "${CONFIG_FILE}.tmp"
+                echo "  Warning: could not update Daemon.UpdateChannel (malformed config?)." >&2
+            fi
+        else
+            echo "  Note: jq not found — could not set Daemon.UpdateChannel in config."
+            echo "  To receive $CHANNEL updates, add to $CONFIG_FILE:"
+            echo "    \"Daemon\": { \"UpdateChannel\": \"$CHANNEL\" }"
+        fi
+    elif [ "$CHANNEL" != "stable" ]; then
+        # Fresh install: config doesn't exist yet. Write a minimal seed so
+        # `netclaw init` can discover the channel preference.
+        mkdir -p "$CONFIG_DIR"
+        printf '{"configVersion":1,"Daemon":{"UpdateChannel":"%s"}}\n' "$CHANNEL" > "$CONFIG_FILE"
+        echo "  Created $CONFIG_FILE with UpdateChannel '$CHANNEL'"
     fi
 fi
 

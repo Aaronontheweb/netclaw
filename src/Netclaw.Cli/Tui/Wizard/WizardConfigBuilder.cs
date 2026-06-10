@@ -83,13 +83,7 @@ public sealed class WizardConfigBuilder
                 return;
 
             var prev = Daemon ?? new DaemonConfigSection();
-            Daemon = new DaemonConfigSection
-            {
-                ExposureMode = prev.ExposureMode,
-                UpdateChannel = parsed,
-                Host = prev.Host,
-                TrustedProxies = prev.TrustedProxies,
-            };
+            Daemon = prev with { UpdateChannel = parsed };
         }
         catch
         {
@@ -565,7 +559,7 @@ public sealed class IdentityConfigSection
     public required string UserTimezone { get; init; }
 }
 
-public sealed class DaemonConfigSection
+public sealed record DaemonConfigSection
 {
     public ExposureMode ExposureMode { get; init; } = ExposureMode.Local;
 
