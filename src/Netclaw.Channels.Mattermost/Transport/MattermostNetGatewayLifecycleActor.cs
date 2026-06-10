@@ -55,9 +55,10 @@ internal sealed class MattermostNetGatewayLifecycleActor :
 
     public MattermostNetGatewayLifecycleActor(
         IMattermostGatewayTransport transport,
+        TimeProvider timeProvider,
         IMattermostGatewayEventSink eventSink,
         ILogger logger)
-        : base("Mattermost", logger)
+        : base("Mattermost", timeProvider, logger)
     {
         _transport = transport;
         _eventSink = eventSink;
@@ -65,9 +66,10 @@ internal sealed class MattermostNetGatewayLifecycleActor :
 
     public static Props CreateProps(
         IMattermostGatewayTransport transport,
+        TimeProvider timeProvider,
         IMattermostGatewayEventSink eventSink,
         ILogger logger) =>
-        Props.Create(() => new MattermostNetGatewayLifecycleActor(transport, eventSink, logger));
+        Props.Create(() => new MattermostNetGatewayLifecycleActor(transport, timeProvider, eventSink, logger));
 
     protected override bool IsTransportConnected => _transport.IsConnected;
 
@@ -114,12 +116,6 @@ internal sealed class MattermostNetGatewayLifecycleActor :
         Receive<MattermostConnected>(_ => HealthDetail = null);
         Receive<MattermostDisconnected>(HandleDisconnectedWhileReady);
         Receive<MattermostMessageReceived>(HandleMessageReceived);
-    }
-
-    protected override void RegisterCleanReconnectRequiredChannelHandlers()
-    {
-        Receive<MattermostConnected>(_ => { });
-        Receive<MattermostDisconnected>(HandleDisconnectedWhileNotReady);
     }
 
     protected override void RegisterDisconnectingChannelHandlers()

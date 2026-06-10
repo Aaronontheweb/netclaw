@@ -8,6 +8,7 @@ using Akka.Actor;
 using Discord;
 using Discord.WebSocket;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 using Netclaw.Channels.Discord;
 using Netclaw.Channels.Discord.Transport;
 using Xunit;
@@ -19,17 +20,21 @@ public sealed class DiscordGatewayLifecycleContractTests(ITestOutputHelper outpu
 {
     private FakeDiscordGatewayTransport _transport = null!;
     private RecordingGatewayEventSink _sink = null!;
+    private FakeTimeProvider _timeProvider = null!;
 
     protected override IActorRef CreateLifecycleActor()
     {
         _transport = new FakeDiscordGatewayTransport { CurrentUserId = 42 };
         _sink = new RecordingGatewayEventSink();
+        _timeProvider = new FakeTimeProvider();
         return Sys.ActorOf(DiscordNetGatewayLifecycleActor.CreateProps(
             _transport,
-            TimeProvider.System,
+            _timeProvider,
             _sink,
             NullLogger.Instance));
     }
+
+    protected override void AdvanceTimeProvider(TimeSpan offset) => _timeProvider.Advance(offset);
 
     protected override async Task<LifecycleSnapshotView> GetSnapshotAsync(IActorRef actor)
     {

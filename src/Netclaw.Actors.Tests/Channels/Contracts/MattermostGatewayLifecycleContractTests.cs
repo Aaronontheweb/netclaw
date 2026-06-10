@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using Akka.Actor;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 using Netclaw.Channels.Mattermost;
 using Netclaw.Channels.Mattermost.Transport;
 using Xunit;
@@ -16,16 +17,21 @@ public sealed class MattermostGatewayLifecycleContractTests(ITestOutputHelper ou
 {
     private FakeMattermostGatewayTransport _transport = null!;
     private RecordingGatewayEventSink _sink = null!;
+    private FakeTimeProvider _timeProvider = null!;
 
     protected override IActorRef CreateLifecycleActor()
     {
         _transport = new FakeMattermostGatewayTransport();
         _sink = new RecordingGatewayEventSink();
+        _timeProvider = new FakeTimeProvider();
         return Sys.ActorOf(MattermostNetGatewayLifecycleActor.CreateProps(
             _transport,
+            _timeProvider,
             _sink,
             NullLogger.Instance));
     }
+
+    protected override void AdvanceTimeProvider(TimeSpan offset) => _timeProvider.Advance(offset);
 
     protected override async Task<LifecycleSnapshotView> GetSnapshotAsync(IActorRef actor)
     {

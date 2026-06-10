@@ -11,9 +11,11 @@ namespace Netclaw.Channels;
 /// <summary>
 /// Shared gateway lifecycle state machine for channels with a WebSocket-style
 /// transport (SPEC-015 §1.1): Disconnected → Connecting → Ready, plus
-/// CleanReconnectRequired and Disconnecting. The base owns state transitions,
-/// the Connect/Disconnect/GetSnapshot ask protocol, exponential-backoff
-/// auto-reconnect, snapshot health reporting, and the clean-reconnect →
+/// Disconnecting. The base owns state transitions, the
+/// Connect/Disconnect/GetSnapshot ask protocol, exponential-backoff
+/// auto-reconnect (with a stability window gating backoff resets), the
+/// optional ready-signal timeout for channels whose transport start does not
+/// imply readiness, snapshot health reporting, and the clean-reconnect →
 /// stop → auto-reconnect flow. Subclasses supply transport start/stop calls,
 /// the snapshot factory, transport event subscriptions, and per-state
 /// handlers for channel-specific transport events.
@@ -33,15 +35,26 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
     private static readonly TimeSpan InitialRetryDelay = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// How long a connection must hold Ready before a subsequent failure
+    /// resets the retry backoff to zero. A ready→drop flap inside this window
+    /// keeps the previous backoff growing instead of reconnecting with zero
+    /// delay forever.
+    /// </summary>
+    private static readonly TimeSpan BackoffResetStabilityWindow = TimeSpan.FromSeconds(60);
+
     private readonly string _channelDisplayName;
     private readonly string _disconnectedDetail;
     private readonly string _notReadyDetail;
+    private readonly TimeProvider _timeProvider;
 
     private bool _isReadyBehavior;
     private long _connectAttempt;
     private IActorRef? _pendingConnectReplyTo;
     private string? _healthDetail;
     private bool _cleanReconnectEmitted;
+    private ICancelable? _readySignalTimer;
+    private DateTimeOffset? _readyEnteredAt;
 
     private bool _autoReconnect;
     private TConnectCommand? _retryConnectCommand;
@@ -54,9 +67,10 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
     /// Hooks must therefore only register handlers (method groups / lambdas) —
     /// never read subclass fields at registration time.
     /// </remarks>
-    protected ChannelLifecycleActor(string channelDisplayName, ILogger logger)
+    protected ChannelLifecycleActor(string channelDisplayName, TimeProvider timeProvider, ILogger logger)
     {
         _channelDisplayName = channelDisplayName;
+        _timeProvider = timeProvider;
         Logger = logger;
         _disconnectedDetail = channelDisplayName + " gateway disconnected.";
         _notReadyDetail = channelDisplayName + " gateway connected but not ready.";
@@ -66,6 +80,9 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
     }
 
     protected ILogger Logger { get; }
+
+    /// <summary>Clock used for backoff stability tracking; also available to subclasses for event timestamps.</summary>
+    protected TimeProvider TimeProvider => _timeProvider;
 
     /// <summary>
     /// Self captured in <see cref="PreStart"/> for use by transport event
@@ -99,6 +116,15 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
     /// <summary>True once the channel has resolved the bot's own identity.</summary>
     protected abstract bool HasBotIdentity { get; }
 
+    /// <summary>
+    /// How long the actor waits in Connecting for the channel's explicit
+    /// ready signal before treating the attempt as a transient failure and
+    /// driving a clean reconnect. Null (the default) means a successful
+    /// transport start implies readiness (Mattermost) and no timer is armed;
+    /// channels with a separate ready event (Discord's READY) override this.
+    /// </summary>
+    protected virtual TimeSpan? ReadySignalTimeout => null;
+
     protected override void PreStart()
     {
         SelfRef = Self;
@@ -110,6 +136,7 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
     {
         UnsubscribeTransportEvents();
         CancelRetryTimer();
+        CancelReadySignalTimer();
         base.PostStop();
     }
 
@@ -152,6 +179,7 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
         Receive<Disconnect>(_ => StartDisconnecting(Sender));
         Receive<StartSucceeded>(HandleStartSucceeded);
         Receive<StartFailed>(HandleStartFailed);
+        Receive<ReadySignalTimedOut>(HandleReadySignalTimedOut);
         RegisterConnectingChannelHandlers();
         ReceiveNotReadyIngress();
         ReceiveUnexpected(nameof(Connecting));
@@ -165,19 +193,6 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
         Receive<Disconnect>(_ => StartDisconnecting(Sender));
         RegisterReadyChannelHandlers();
         ReceiveUnexpected(nameof(Ready));
-    }
-
-    private void CleanReconnectRequired()
-    {
-        _isReadyBehavior = false;
-        ReceiveCommon();
-        Receive<TConnectCommand>(_ => Sender.Tell(new Status.Failure(new ChannelConnectException(
-            ChannelConnectFailureKind.Transient,
-            _channelDisplayName + " gateway requires a clean disconnect before reconnecting."))));
-        Receive<Disconnect>(_ => StartDisconnecting(Sender));
-        RegisterCleanReconnectRequiredChannelHandlers();
-        ReceiveNotReadyIngress();
-        ReceiveUnexpected(nameof(CleanReconnectRequired));
     }
 
     private void Disconnecting()
@@ -207,26 +222,29 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
     private void ReceiveUnexpected(string behaviorName) =>
         ReceiveAny(message => HandleWrongBehaviorMessage(message, behaviorName));
 
-    /// <summary>Protected state-transition entry points for channel-specific flows
-    /// (fatal closes, ready timeouts, transport-drop wait cycles).</summary>
+    /// <summary>Protected state-transition entry point for channel-specific flows (fatal closes).</summary>
     protected void BecomeDisconnectedBehavior() => Become(Disconnected);
 
-    protected void BecomeConnectingBehavior() => Become(Connecting);
-
-    protected void BecomeCleanReconnectRequiredBehavior() => Become(CleanReconnectRequired);
-
     /// <summary>
-    /// Stamps a new connect attempt, invalidating in-flight start/timeout work
-    /// from earlier attempts. Used by channels that re-enter Connecting without
-    /// restarting the transport (e.g. Discord waiting for a self-reconnect).
+    /// Re-enters Connecting without restarting the transport — fresh attempt
+    /// stamp and (when <see cref="ReadySignalTimeout"/> is configured) a fresh
+    /// ready-signal timer. Used by channels whose transport reconnects on its
+    /// own after a drop (Discord.Net) so the actor waits for the transport's
+    /// ready signal instead of tearing the client down.
     /// </summary>
-    protected long AdvanceConnectAttempt() => ++_connectAttempt;
+    protected void WaitForReadySignal()
+    {
+        var attempt = ++_connectAttempt;
+        ArmReadySignalTimer(attempt);
+        Become(Connecting);
+    }
 
     private void StartConnecting(TConnectCommand command, IActorRef replyTo)
     {
         _healthDetail = _channelDisplayName + " gateway connecting.";
         ResetIdentityState();
         _cleanReconnectEmitted = false;
+        _readyEnteredAt = null;
 
         // Normalize Nobody to null: "no pending caller" must have exactly one
         // representation. The auto-retry path connects with ActorRefs.Nobody,
@@ -240,9 +258,46 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
         _pendingConnectReplyTo = replyTo.IsNobody() ? null : replyTo;
 
         var attempt = ++_connectAttempt;
-        OnConnectingEntered(attempt);
+        ArmReadySignalTimer(attempt);
         Become(Connecting);
         BeginStart(command, attempt);
+    }
+
+    private void ArmReadySignalTimer(long attempt)
+    {
+        CancelReadySignalTimer();
+        if (ReadySignalTimeout is not { } timeout)
+            return;
+
+        _readySignalTimer = Context.System.Scheduler.ScheduleTellOnceCancelable(
+            timeout,
+            Self,
+            new ReadySignalTimedOut(attempt, new ChannelConnectException(
+                ChannelConnectFailureKind.Transient,
+                $"{_channelDisplayName} gateway did not reach ready within {timeout.TotalSeconds:F0} seconds.")),
+            ActorRefs.NoSender);
+    }
+
+    /// <summary>Cancels any pending ready-signal timeout. The base cancels on every
+    /// exit from Connecting; exposed for channel-specific exits (Discord's fatal closes).</summary>
+    protected void CancelReadySignalTimer()
+    {
+        _readySignalTimer?.Cancel();
+        _readySignalTimer = null;
+    }
+
+    private void HandleReadySignalTimedOut(ReadySignalTimedOut timedOut)
+    {
+        if (timedOut.Attempt != _connectAttempt)
+            return;
+
+        // ONE canonical transient-fail path whether or not an operator ask is
+        // pending: fail the ask, publish CleanReconnectRequired, stop the
+        // transport, and land in Disconnected with the auto-retry scheduled.
+        // (Branching on HasPendingConnect here previously produced a permanent
+        // zombie: a behavior with no retry scheduled and the transport left
+        // running.)
+        RequestCleanReconnect(timedOut.Exception.Message);
     }
 
     private void BeginStart(TConnectCommand command, long attempt)
@@ -360,40 +415,39 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
     }
 
     /// <summary>
-    /// Completes a successful connect: clears the retry backoff, transitions to
-    /// Ready, and replies to a pending operator connect ask with the snapshot.
+    /// Completes a successful connect: transitions to Ready, replies to a
+    /// pending operator connect ask with the snapshot, and publishes
+    /// ConnectionRestored.
     /// </summary>
     protected void CompleteConnectToReady()
     {
-        _retryDelay = TimeSpan.Zero;
-        // A retry is any connect with no pending caller — StartConnecting
-        // normalizes ActorRefs.Nobody to null, so this check is reliable for
-        // both operator-driven connects and auto-retries.
-        var isRetry = _pendingConnectReplyTo is null;
         TransitionToReady();
         CompletePendingConnect(CurrentSnapshot());
 
-        if (isRetry)
-        {
-            Dispatch(
-                _channelDisplayName + " connection restored",
-                () => PublishConnectionRestoredAsync(CurrentSnapshot()));
-        }
+        // Published on EVERY transition to Ready, not just auto-retries: if an
+        // operator connect ask timed out client-side but the transport reached
+        // Ready afterwards, this event is the channel's only signal to finish
+        // its connection setup (channels handle it idempotently).
+        Dispatch(
+            _channelDisplayName + " connection restored",
+            () => PublishConnectionRestoredAsync(CurrentSnapshot()));
     }
 
     private void TransitionToReady()
     {
         _healthDetail = null;
         _cleanReconnectEmitted = false;
-        OnTransitionedToReady();
+        _readyEnteredAt = _timeProvider.GetUtcNow();
+        CancelReadySignalTimer();
         Become(Ready);
     }
 
     /// <summary>
     /// Forces a teardown of the current transport session: publishes
     /// CleanReconnectRequired (once per cycle), fails any pending connect ask,
-    /// then drives a stop with auto-reconnect preserved so an immediate retry
-    /// follows the stop.
+    /// then drives a stop with auto-reconnect preserved so a retry follows the
+    /// stop — immediately if the previous Ready period was stable, with the
+    /// grown backoff otherwise.
     /// </summary>
     protected void RequestCleanReconnect(string reason)
     {
@@ -410,8 +464,27 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
                 () => PublishCleanReconnectRequiredAsync(reason));
         }
 
-        _retryDelay = TimeSpan.Zero;
+        ResetRetryDelayIfStable();
         StartDisconnecting(ActorRefs.Nobody, preserveAutoReconnect: true);
+    }
+
+    /// <summary>
+    /// Resets the retry backoff to zero only when the connection had been
+    /// Ready for at least <see cref="BackoffResetStabilityWindow"/>. The reset
+    /// decision is deferred to the failure edge — a connect success alone does
+    /// not reset — so a ready→drop flap inside the window keeps the previous
+    /// backoff growing (5s → … → 5min) instead of hammering the server with
+    /// zero-delay reconnects forever.
+    /// </summary>
+    private void ResetRetryDelayIfStable()
+    {
+        if (_readyEnteredAt is { } readyEnteredAt
+            && _timeProvider.GetUtcNow() - readyEnteredAt >= BackoffResetStabilityWindow)
+        {
+            _retryDelay = TimeSpan.Zero;
+        }
+
+        _readyEnteredAt = null;
     }
 
     /// <summary>Schedules the next auto-reconnect attempt with exponential backoff.</summary>
@@ -562,12 +635,7 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
             return;
 
         if (connectWork is IGatewayConnectFailure failure)
-        {
             FailPendingConnect(failure.Exception);
-            return;
-        }
-
-        OnIgnoredConnectWork(connectWork);
     }
 
     private void IgnoreWrongBehaviorStopWork(IGatewayStopWork stopWork, string behaviorName)
@@ -641,34 +709,8 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
     /// <summary>Registers channel transport-event and ingress handlers for the Ready state.</summary>
     protected abstract void RegisterReadyChannelHandlers();
 
-    /// <summary>Registers channel transport-event handlers for the CleanReconnectRequired state.</summary>
-    protected abstract void RegisterCleanReconnectRequiredChannelHandlers();
-
     /// <summary>Registers channel transport-event handlers for the Disconnecting state.</summary>
     protected abstract void RegisterDisconnectingChannelHandlers();
-
-    /// <summary>Called when a connect attempt enters Connecting (e.g. to arm a ready-timeout timer).</summary>
-    protected virtual void OnConnectingEntered(long attempt)
-    {
-    }
-
-    /// <summary>Cancels any channel ready-signal timer; called on start failure, disconnect, and clean reconnect.</summary>
-    protected virtual void CancelReadySignalTimer()
-    {
-    }
-
-    /// <summary>Called when the actor transitions to Ready (e.g. to cancel a ready-timeout timer).</summary>
-    protected virtual void OnTransitionedToReady()
-    {
-    }
-
-    /// <summary>
-    /// Called for non-failure connect work ignored in the wrong behavior while a
-    /// connect ask is pending (e.g. Discord's ready timeout must still fail the ask).
-    /// </summary>
-    protected virtual void OnIgnoredConnectWork(IGatewayConnectWork connectWork)
-    {
-    }
 
     /// <summary>Asks the actor for its current <typeparamref name="TSnapshot"/>.</summary>
     public sealed record GetSnapshot
@@ -715,6 +757,13 @@ public abstract class ChannelLifecycleActor<TSnapshot, TConnectCommand> : Receiv
     private sealed record StartSucceeded(long Attempt, object? StartResult) : IGatewayConnectWork;
 
     private sealed record StartFailed(long Attempt, Exception Exception) : IGatewayConnectFailure;
+
+    /// <summary>
+    /// Carries the failure as <see cref="IGatewayConnectFailure"/> so the
+    /// wrong-behavior path fails a pending ask if a stale timer ever slips
+    /// past the cancel points.
+    /// </summary>
+    private sealed record ReadySignalTimedOut(long Attempt, Exception Exception) : IGatewayConnectFailure;
 
     private sealed record StopSucceeded(IActorRef ReplyTo) : IGatewayStopWork;
 

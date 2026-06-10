@@ -109,31 +109,28 @@ internal sealed class DiscordSocketGatewayTransport(DiscordSocketClient client) 
 /// disable auto-reconnect and stop the socket client.
 /// </summary>
 internal sealed class DiscordNetGatewayLifecycleActor :
-    ChannelLifecycleActor<DiscordGatewaySnapshot, DiscordNetGatewayLifecycleActor.Connect>,
-    IWithTimers
+    ChannelLifecycleActor<DiscordGatewaySnapshot, DiscordNetGatewayLifecycleActor.Connect>
 {
-    private const string ReadyTimeoutTimerKey = "discord-ready-timeout";
-    private static readonly TimeSpan ReadyTimeout = TimeSpan.FromSeconds(30);
-
     private readonly IDiscordGatewayTransport _client;
-    private readonly TimeProvider _timeProvider;
     private readonly IDiscordGatewayEventSink _eventSink;
 
     private DiscordUserId? _botUserId;
     private string? _botMentionTag;
-    private bool _fatalCloseHandled;
 
-    public ITimerScheduler Timers { get; set; } = null!;
+    // Set only by HandleFatalClose, which lands in Disconnected with
+    // auto-reconnect cancelled; the only way back out is an operator connect,
+    // which resets it via ResetIdentityState. So it is always false on any
+    // transition to Ready.
+    private bool _fatalCloseHandled;
 
     public DiscordNetGatewayLifecycleActor(
         IDiscordGatewayTransport client,
         TimeProvider timeProvider,
         IDiscordGatewayEventSink eventSink,
         ILogger logger)
-        : base("Discord", logger)
+        : base("Discord", timeProvider, logger)
     {
         _client = client;
-        _timeProvider = timeProvider;
         _eventSink = eventSink;
     }
 
@@ -143,6 +140,9 @@ internal sealed class DiscordNetGatewayLifecycleActor :
         IDiscordGatewayEventSink eventSink,
         ILogger logger) =>
         Props.Create(() => new DiscordNetGatewayLifecycleActor(client, timeProvider, eventSink, logger));
+
+    /// <summary>Discord's start does not imply readiness; wait up to 30s for Discord.Net's READY event.</summary>
+    protected override TimeSpan? ReadySignalTimeout => TimeSpan.FromSeconds(30);
 
     protected override bool IsTransportConnected => _client.ConnectionState == ConnectionState.Connected;
 
@@ -188,7 +188,6 @@ internal sealed class DiscordNetGatewayLifecycleActor :
 
     protected override void RegisterConnectingChannelHandlers()
     {
-        Receive<ReadyTimedOut>(HandleReadyTimedOut);
         Receive<DiscordConnected>(_ => HealthDetail = "Discord gateway connected; waiting for READY.");
         Receive<DiscordReady>(_ => HandleReadyWhileConnecting());
         Receive<DiscordDisconnected>(HandleDisconnectedWhileConnecting);
@@ -203,13 +202,6 @@ internal sealed class DiscordNetGatewayLifecycleActor :
         Receive<DiscordMessageReceived>(HandleMessageReceived);
         Receive<DiscordButtonExecuted>(HandleButtonExecuted);
         Receive<DiscordButtonDeferred>(HandleButtonDeferred);
-    }
-
-    protected override void RegisterCleanReconnectRequiredChannelHandlers()
-    {
-        Receive<DiscordConnected>(_ => { });
-        Receive<DiscordReady>(_ => { });
-        Receive<DiscordDisconnected>(HandleDisconnectedWhileNotReady);
     }
 
     protected override void RegisterDisconnectingChannelHandlers()
@@ -278,27 +270,6 @@ internal sealed class DiscordNetGatewayLifecycleActor :
             : "Discord gateway started; waiting for READY.";
     }
 
-    protected override void OnConnectingEntered(long attempt) =>
-        Timers.StartSingleTimer(ReadyTimeoutTimerKey, new ReadyTimedOut(attempt), ReadyTimeout);
-
-    protected override void CancelReadySignalTimer() => Timers.Cancel(ReadyTimeoutTimerKey);
-
-    protected override void OnTransitionedToReady()
-    {
-        _fatalCloseHandled = false;
-        Timers.Cancel(ReadyTimeoutTimerKey);
-    }
-
-    protected override void OnIgnoredConnectWork(IGatewayConnectWork connectWork)
-    {
-        if (connectWork is ReadyTimedOut)
-        {
-            FailPendingConnect(new ChannelConnectException(
-                ChannelConnectFailureKind.Transient,
-                "Discord gateway did not reach READY within 30 seconds."));
-        }
-    }
-
     protected override void ResetIdentityState()
     {
         _botUserId = null;
@@ -319,47 +290,16 @@ internal sealed class DiscordNetGatewayLifecycleActor :
     protected override Task PublishConnectionRestoredAsync(DiscordGatewaySnapshot snapshot) =>
         _eventSink.PublishConnectionRestoredAsync(snapshot);
 
-    private void HandleReadyTimedOut(ReadyTimedOut timeout)
-    {
-        if (timeout.Attempt != CurrentConnectAttempt)
-            return;
-
-        var failure = new ChannelConnectException(
-            ChannelConnectFailureKind.Transient,
-            "Discord gateway did not reach READY within 30 seconds.");
-
-        if (HasPendingConnect)
-        {
-            HealthDetail = failure.Message;
-            FailPendingConnect(failure);
-            BecomeCleanReconnectRequiredBehavior();
-            return;
-        }
-
-        RequestCleanReconnect(failure.Message);
-    }
-
     private void HandleReadyWhileConnecting()
     {
         if (!TryRefreshBotIdentity("READY"))
         {
-            var failure = new ChannelConnectException(
-                ChannelConnectFailureKind.Transient,
+            // Canonical transient-fail path for both operator-driven and
+            // auto-retry connects: fail any pending ask, publish
+            // CleanReconnectRequired, stop the transport, and land in
+            // Disconnected with the auto-retry scheduled.
+            RequestCleanReconnect(
                 "Discord gateway reached READY, but Discord.Net did not expose the current bot identity.");
-
-            if (HasPendingConnect)
-            {
-                HealthDetail = failure.Message;
-                Timers.Cancel(ReadyTimeoutTimerKey);
-                FailPendingConnect(failure);
-                ScheduleRetryIfEnabled();
-                BecomeCleanReconnectRequiredBehavior();
-            }
-            else
-            {
-                RequestCleanReconnect(failure.Message);
-            }
-
             return;
         }
 
@@ -422,15 +362,13 @@ internal sealed class DiscordNetGatewayLifecycleActor :
     private void WaitForReadyAfterTransportDrop()
     {
         HealthDetail = DisconnectedDetail;
-        var attempt = AdvanceConnectAttempt();
-        Timers.StartSingleTimer(ReadyTimeoutTimerKey, new ReadyTimedOut(attempt), ReadyTimeout);
-        BecomeConnectingBehavior();
+        WaitForReadySignal();
     }
 
     private void HandleFatalClose(ChannelConnectException classified)
     {
         HealthDetail = classified.Message;
-        Timers.Cancel(ReadyTimeoutTimerKey);
+        CancelReadySignalTimer();
         CancelAutoReconnect();
         FailPendingConnect(classified);
         BecomeDisconnectedBehavior();
@@ -539,7 +477,7 @@ internal sealed class DiscordNetGatewayLifecycleActor :
             IsDirectMessage: isDm,
             ContainsBotMention: containsMention,
             Text: message.Content,
-            ReceivedAt: _timeProvider.GetUtcNow(),
+            ReceivedAt: TimeProvider.GetUtcNow(),
             Attachments: attachments,
             IsInThread: isThread);
 
@@ -619,7 +557,7 @@ internal sealed class DiscordNetGatewayLifecycleActor :
             RequesterSenderId: requesterSenderId is not null
                 ? new DiscordUserId(requesterSenderId)
                 : null,
-            ReceivedAt: _timeProvider.GetUtcNow(),
+            ReceivedAt: TimeProvider.GetUtcNow(),
             PromptMessageId: promptMessageId,
             ReplyChannelId: new DiscordReplyChannelId(replyChannelId));
 
@@ -740,8 +678,6 @@ internal sealed class DiscordNetGatewayLifecycleActor :
     }
 
     internal sealed record Connect(string BotToken);
-
-    private sealed record ReadyTimedOut(long Attempt) : IGatewayConnectWork;
 
     private sealed record DiscordConnected : IGatewayInternalMessage
     {

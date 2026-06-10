@@ -60,6 +60,14 @@ public abstract class GatewayLifecycleContractTests : TestKit
         ((Akka.TestKit.TestScheduler)Sys.Scheduler).Advance(offset);
 
     /// <summary>
+    /// Advances the fixture's fake wall clock (<see cref="TimeProvider"/>),
+    /// which drives the backoff-reset stability window. Independent of
+    /// <see cref="AdvanceScheduler"/>: timers fire on virtual scheduler time,
+    /// stability is measured on the fake clock.
+    /// </summary>
+    protected abstract void AdvanceTimeProvider(TimeSpan offset);
+
+    /// <summary>
     /// Creates the lifecycle actor wired to a fresh fake transport and
     /// recording event sink (both stored on the fixture for the hooks below).
     /// </summary>
@@ -255,13 +263,97 @@ public abstract class GatewayLifecycleContractTests : TestKit
             Assert.True(snapshot.IsReady);
             Assert.Equal(2, TransportStartCount);
 
-            // Recovering via auto-retry MUST publish ConnectionRestored —
-            // regression for the Nobody-vs-null reply-to skew that kept the
-            // isRetry branch from ever firing (and, on Discord, parked the
-            // actor in a permanent CleanReconnectRequired zombie when the
-            // retried connect timed out).
-            Assert.Equal(1, ConnectionRestoredCount);
+            // Recovering via auto-retry MUST publish ConnectionRestored.
+            // Expected count is 2 because ConnectionRestored now publishes on
+            // EVERY transition to Ready (the initial operator connect counts
+            // too) — the channel-side setup is idempotent, so always
+            // publishing closes the Healthy-but-deaf gap where a client-side
+            // ask timeout suppressed the only setup signal.
+            Assert.Equal(2, ConnectionRestoredCount);
         }, cancellationToken: TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Operator_connect_publishes_connection_restored()
+    {
+        var actor = CreateLifecycleActor();
+        var ready = await ConnectAsync(actor);
+        Assert.True(ready.IsReady);
+
+        // ConnectionRestored must publish on every transition to Ready — not
+        // just auto-retries. If the operator's connect ask times out
+        // client-side but the transport reaches Ready afterwards, this event
+        // is the channel's only signal to finish its connection setup
+        // (subscribe ingress, create the gateway actor).
+        await AwaitAssertAsync(
+            () => Assert.Equal(1, ConnectionRestoredCount),
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        // ...and exactly once for a single connect (barrier, then re-check).
+        await GetSnapshotAsync(actor);
+        Assert.Equal(1, ConnectionRestoredCount);
+    }
+
+    [Fact]
+    public async Task Flapping_connection_grows_retry_backoff()
+    {
+        var actor = CreateLifecycleActor();
+        await ConnectAsync(actor);
+
+        // Flap #1: drop inside the 60s stability window. The first failure
+        // schedules an immediate retry (initial delay is zero) and grows the
+        // backoff to 5s.
+        await RaiseRuntimeDisconnectAsync(actor, "flap-1");
+        await AwaitCleanReconnectSettledAsync(actor, expectedCleanReconnects: 1);
+        AdvanceScheduler(TimeSpan.FromSeconds(1));
+        await AwaitAssertAsync(async () =>
+        {
+            Assert.Equal(2, TransportStartCount);
+            Assert.True((await GetSnapshotAsync(actor)).IsReady);
+        }, cancellationToken: TestContext.Current.CancellationToken);
+
+        // Flap #2, again inside the stability window: the backoff must NOT
+        // reset to zero — the next retry honors the grown 5s delay instead of
+        // hammering the transport with zero-delay reconnects.
+        await RaiseRuntimeDisconnectAsync(actor, "flap-2");
+        await AwaitCleanReconnectSettledAsync(actor, expectedCleanReconnects: 2);
+
+        AdvanceScheduler(TimeSpan.FromSeconds(1));
+        await GetSnapshotAsync(actor); // mailbox barrier
+        Assert.Equal(2, TransportStartCount); // retry must NOT have fired yet
+
+        AdvanceScheduler(TimeSpan.FromSeconds(5));
+        await AwaitAssertAsync(
+            () => Assert.Equal(3, TransportStartCount),
+            cancellationToken: TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Stable_ready_period_resets_retry_backoff()
+    {
+        var actor = CreateLifecycleActor();
+        await ConnectAsync(actor);
+
+        // Grow the backoff to 5s with one quick flap.
+        await RaiseRuntimeDisconnectAsync(actor, "flap");
+        await AwaitCleanReconnectSettledAsync(actor, expectedCleanReconnects: 1);
+        AdvanceScheduler(TimeSpan.FromSeconds(1));
+        await AwaitAssertAsync(async () =>
+        {
+            Assert.Equal(2, TransportStartCount);
+            Assert.True((await GetSnapshotAsync(actor)).IsReady);
+        }, cancellationToken: TestContext.Current.CancellationToken);
+
+        // Hold Ready past the stability window, then drop: the backoff must
+        // reset, so the next retry fires immediately instead of after 5s.
+        AdvanceTimeProvider(TimeSpan.FromSeconds(61));
+        await RaiseRuntimeDisconnectAsync(actor, "drop after stable period");
+        await AwaitCleanReconnectSettledAsync(actor, expectedCleanReconnects: 2);
+
+        AdvanceScheduler(TimeSpan.FromSeconds(1));
+        await AwaitAssertAsync(
+            () => Assert.Equal(3, TransportStartCount),
+            cancellationToken: TestContext.Current.CancellationToken);
     }
 
     [Fact]
@@ -299,13 +391,13 @@ public abstract class GatewayLifecycleContractTests : TestKit
     /// auto-reconnect retry — so tests that advance virtual time (or stop the
     /// actor) afterwards know the retry timer already exists.
     /// </summary>
-    private async Task AwaitCleanReconnectSettledAsync(IActorRef actor) =>
+    private async Task AwaitCleanReconnectSettledAsync(IActorRef actor, int expectedCleanReconnects = 1) =>
         await AwaitAssertAsync(async () =>
         {
             var snapshot = await GetSnapshotAsync(actor);
             Assert.False(snapshot.IsReady);
             Assert.False(snapshot.IsConnected);
             Assert.Equal(DisconnectedHealthDetail, snapshot.HealthDetail);
-            Assert.Equal(1, CleanReconnectCount);
+            Assert.Equal(expectedCleanReconnects, CleanReconnectCount);
         }, cancellationToken: TestContext.Current.CancellationToken);
 }
