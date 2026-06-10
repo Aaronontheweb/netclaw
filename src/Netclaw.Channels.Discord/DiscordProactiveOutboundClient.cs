@@ -45,13 +45,13 @@ public sealed class DiscordProactiveOutboundClient : IChannelOutboundClient
 
         var gateway = _gatewayAccessor();
         if (gateway is null)
-            return "Error: Discord gateway is not connected.";
+            return ProactiveSendFormatting.GatewayNotConnected("Discord");
 
         if (request.AddressKind == ChannelAddressKind.DirectMessage)
             return await SendDirectMessageAsync(request, gateway, ct);
 
         if (request.AddressKind != ChannelAddressKind.Destination)
-            return $"Error: Discord outbound send does not support address kind '{request.AddressKind}'.";
+            return ProactiveSendFormatting.UnsupportedAddressKind("Discord", request.AddressKind);
 
         // The default channel is implicitly allowed even when it is absent from
         // AllowedChannelIds, so the ACL check needs it for comparison.
@@ -62,7 +62,7 @@ public sealed class DiscordProactiveOutboundClient : IChannelOutboundClient
         var targetChannelId = new DiscordChannelId(request.TargetId);
 
         if (!DiscordAclPolicy.IsAllowedChannel(targetChannelId, _options, defaultChannelId))
-            return $"Error: Channel {targetChannelId.Value} is not in the allowed channels list.";
+            return ProactiveSendFormatting.ChannelNotAllowed(targetChannelId.Value);
 
         DiscordNewThread result;
         try
@@ -77,10 +77,11 @@ public sealed class DiscordProactiveOutboundClient : IChannelOutboundClient
         }
         catch (Exception ex)
         {
-            return $"Error: Failed to post message to Discord: {ex.Message}";
+            return ProactiveSendFormatting.PostFailed("Discord", ex.Message);
         }
 
-        var sessionId = new SessionId($"{result.ChannelId.Value}/{result.ThreadOrMessageId.Value}");
+        var sessionId = SessionIdFormat.Build(result.ChannelId.Value, result.ThreadOrMessageId.Value);
+        var target = ProactiveSendFormatting.DescribeTarget(isDirectMessage: false, targetChannelId.Value);
 
         try
         {
@@ -90,28 +91,27 @@ public sealed class DiscordProactiveOutboundClient : IChannelOutboundClient
                     result.ReplyChannelId,
                     result.ThreadOrMessageId,
                     sessionId),
-                TimeSpan.FromSeconds(30),
+                ProactiveSendFormatting.ProactiveThreadAckTimeout,
                 ct);
         }
         catch (Exception)
         {
             // The message was already posted to Discord; only the session
             // pipeline failed to initialize.
-            return $"Message sent to channel {targetChannelId.Value} but session pipeline failed to initialize. " +
-                   $"Thread: {sessionId.Value}";
+            return ProactiveSendFormatting.SentButPipelineFailed(target, sessionId.Value);
         }
 
-        return $"Message sent to channel {targetChannelId.Value}. Thread: {sessionId.Value}";
+        return ProactiveSendFormatting.Sent(target, sessionId.Value);
     }
 
     private async Task<string> SendDirectMessageAsync(ChannelSendRequest request, IActorRef gateway, CancellationToken ct)
     {
         if (!_options.AllowDirectMessages)
-            return "Error: Direct messages are disabled. Enable AllowDirectMessages in Discord configuration to send DMs.";
+            return ProactiveSendFormatting.DirectMessagesDisabled("Discord");
 
         var userId = new DiscordUserId(request.TargetId);
         if (!DiscordAclPolicy.IsAllowedUser(userId, _options))
-            return $"Error: User {userId.Value} is not in the allowed users list.";
+            return ProactiveSendFormatting.UserNotAllowed(userId.Value);
 
         DiscordNewDirectMessage result;
         try
@@ -123,7 +123,8 @@ public sealed class DiscordProactiveOutboundClient : IChannelOutboundClient
             return $"Error: Failed to post direct message to Discord: {ex.Message}";
         }
 
-        var sessionId = new SessionId($"{result.ChannelId.Value}/{result.ThreadOrMessageId.Value}");
+        var sessionId = SessionIdFormat.Build(result.ChannelId.Value, result.ThreadOrMessageId.Value);
+        var target = ProactiveSendFormatting.DescribeTarget(isDirectMessage: true, userId.Value);
 
         try
         {
@@ -135,15 +136,14 @@ public sealed class DiscordProactiveOutboundClient : IChannelOutboundClient
                     sessionId,
                     DirectMessageUserId: result.UserId,
                     RootMessageId: result.RootMessageId),
-                TimeSpan.FromSeconds(30),
+                ProactiveSendFormatting.ProactiveThreadAckTimeout,
                 ct);
         }
         catch (Exception)
         {
-            return $"Message sent to user {userId.Value} but session pipeline failed to initialize. " +
-                   $"Thread: {sessionId.Value}";
+            return ProactiveSendFormatting.SentButPipelineFailed(target, sessionId.Value);
         }
 
-        return $"Message sent to user {userId.Value}. Thread: {sessionId.Value}";
+        return ProactiveSendFormatting.Sent(target, sessionId.Value);
     }
 }

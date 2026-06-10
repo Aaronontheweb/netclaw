@@ -44,7 +44,7 @@ public sealed class MattermostProactiveOutboundClient : IChannelOutboundClient
 
         var gateway = _gatewayAccessor();
         if (gateway is null)
-            return "Error: Mattermost gateway is not connected.";
+            return ProactiveSendFormatting.GatewayNotConnected("Mattermost");
 
         var isDirectMessage = request.AddressKind == ChannelAddressKind.DirectMessage;
 
@@ -53,12 +53,12 @@ public sealed class MattermostProactiveOutboundClient : IChannelOutboundClient
         if (isDirectMessage)
         {
             if (!_options.AllowDirectMessages)
-                return "Error: Direct messages are disabled. Enable AllowDirectMessages in Mattermost configuration to send DMs.";
+                return ProactiveSendFormatting.DirectMessagesDisabled("Mattermost");
 
             var userId = new MattermostUserId(request.TargetId);
 
             if (!MattermostAclPolicy.IsAllowedUser(userId, _options))
-                return $"Error: User {userId.Value} is not in the allowed users list.";
+                return ProactiveSendFormatting.UserNotAllowed(userId.Value);
 
             try
             {
@@ -66,7 +66,7 @@ public sealed class MattermostProactiveOutboundClient : IChannelOutboundClient
             }
             catch (Exception ex)
             {
-                return $"Error: Failed to open DM channel: {ex.Message}";
+                return ProactiveSendFormatting.OpenDmChannelFailed(ex.Message);
             }
 
             // DM channel ids are ephemeral, so the conversation actor must
@@ -78,11 +78,11 @@ public sealed class MattermostProactiveOutboundClient : IChannelOutboundClient
             targetChannelId = new MattermostChannelId(request.TargetId);
 
             if (!MattermostAclPolicy.IsAllowedChannel(targetChannelId, _options, _defaultChannelIdAccessor()))
-                return $"Error: Channel {targetChannelId.Value} is not in the allowed channels list.";
+                return ProactiveSendFormatting.ChannelNotAllowed(targetChannelId.Value);
         }
         else
         {
-            return $"Error: Mattermost outbound send does not support address kind '{request.AddressKind}'.";
+            return ProactiveSendFormatting.UnsupportedAddressKind("Mattermost", request.AddressKind);
         }
 
         MattermostNewThread result;
@@ -92,25 +92,24 @@ public sealed class MattermostProactiveOutboundClient : IChannelOutboundClient
         }
         catch (Exception ex)
         {
-            return $"Error: Failed to post message to Mattermost: {ex.Message}";
+            return ProactiveSendFormatting.PostFailed("Mattermost", ex.Message);
         }
 
-        var sessionId = new SessionId($"{result.ChannelId.Value}/{result.RootPostId.Value}");
-        var target = isDirectMessage ? $"user {request.TargetId}" : $"channel {request.TargetId}";
+        var sessionId = SessionIdFormat.Build(result.ChannelId.Value, result.RootPostId.Value);
+        var target = ProactiveSendFormatting.DescribeTarget(isDirectMessage, request.TargetId);
 
         try
         {
             await gateway.Ask<MattermostProactiveThreadAck>(
                 new StartMattermostProactiveThread(result.ChannelId, result.RootPostId, sessionId, directMessageUserId),
-                TimeSpan.FromSeconds(30),
+                ProactiveSendFormatting.ProactiveThreadAckTimeout,
                 ct);
         }
         catch (Exception)
         {
-            return $"Message sent to {target} but session pipeline failed to initialize. " +
-                   $"Thread: {result.ChannelId.Value}/{result.RootPostId.Value}";
+            return ProactiveSendFormatting.SentButPipelineFailed(target, sessionId.Value);
         }
 
-        return $"Message sent to {target}. Thread: {result.ChannelId.Value}/{result.RootPostId.Value}";
+        return ProactiveSendFormatting.Sent(target, sessionId.Value);
     }
 }

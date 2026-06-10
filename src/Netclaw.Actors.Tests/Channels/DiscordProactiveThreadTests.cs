@@ -22,6 +22,13 @@ namespace Netclaw.Actors.Tests.Channels;
 
 #region DiscordProactiveOutboundClient Tests
 
+/// <summary>
+/// Discord-specific proactive send behavior (default-channel bypass,
+/// thread-creation partial success, default thread name). The cross-channel
+/// canonical outcomes (ACL denials, DM gate, gateway availability,
+/// success/nack strings) live in
+/// <see cref="Contracts.DiscordProactiveOutboundClientContractTests"/>.
+/// </summary>
 public sealed class DiscordProactiveOutboundClientTests
 {
     private static readonly DiscordChannelOptions DefaultOptions = new()
@@ -31,14 +38,6 @@ public sealed class DiscordProactiveOutboundClientTests
         AllowedUserIds = ["u-1", "u-2"],
         AllowedChannelIds = ["ch-1", "ch-2"]
     };
-
-    [Fact]
-    public async Task Rejects_disallowed_channel()
-    {
-        var client = CreateClient();
-        var result = await SendAsync(client, "hello", channelId: "ch-bad");
-        Assert.Contains("not in the allowed channels list", result);
-    }
 
     [Fact]
     public async Task Allows_default_channel_not_in_allow_list()
@@ -56,14 +55,6 @@ public sealed class DiscordProactiveOutboundClientTests
         Assert.Contains("Message sent to channel ch-default", result);
         Assert.Single(fake.Posts);
         Assert.Equal("ch-default", fake.Posts[0].ChannelId.Value);
-    }
-
-    [Fact]
-    public async Task Returns_error_when_gateway_disconnected()
-    {
-        var client = CreateClient(gatewayAccessor: () => null);
-        var result = await SendAsync(client, "hello", channelId: "ch-1");
-        Assert.Contains("gateway is not connected", result);
     }
 
     [Fact]
@@ -120,30 +111,6 @@ public sealed class DiscordProactiveOutboundClientTests
     }
 
     [Fact]
-    public async Task Rejects_disallowed_user()
-    {
-        var client = CreateClient();
-        var result = await SendAsync(client, "hello user", userId: "u-bad");
-        Assert.Contains("not in the allowed users list", result);
-    }
-
-    [Fact]
-    public async Task Rejects_dm_when_direct_messages_disabled()
-    {
-        var options = new DiscordChannelOptions
-        {
-            Enabled = true,
-            AllowDirectMessages = false,
-            AllowedUserIds = ["u-1"]
-        };
-        var client = CreateClient(options: options);
-
-        var result = await SendAsync(client, "hello user", userId: "u-1");
-
-        Assert.Contains("Direct messages are disabled", result);
-    }
-
-    [Fact]
     public async Task Channel_posts_create_thread_with_default_name()
     {
         var fake = new FakeDiscordOutboundClient();
@@ -173,73 +140,11 @@ public sealed class DiscordProactiveOutboundClientTests
         return new DiscordProactiveOutboundClient(
             outbound ?? new FakeDiscordOutboundClient(),
             options ?? DefaultOptions,
-            gatewayAccessor ?? (() => new FakeGatewayActor()));
+            gatewayAccessor ?? (() => AckGateway()));
     }
 
-    private sealed class FakeDiscordOutboundClient : IDiscordOutboundClient
-    {
-        public bool ShouldThrow { get; init; }
-        public bool ThrowThreadCreationFailure { get; init; }
-        public List<(DiscordChannelId ChannelId, string Text, string ThreadName)> Posts { get; } = [];
-        public List<(DiscordUserId UserId, string Text)> DirectMessages { get; } = [];
-
-        public Task<DiscordNewThread> PostNewThreadAsync(
-            DiscordChannelId channelId, string text, string threadName, CancellationToken ct = default)
-        {
-            if (ShouldThrow) throw new InvalidOperationException("Discord API error");
-            if (ThrowThreadCreationFailure)
-            {
-                throw new DiscordThreadCreationFailedException(
-                    channelId,
-                    new DiscordMessageId($"root-{channelId.Value}"),
-                    "Root message posted but thread creation failed.",
-                    new InvalidOperationException("Missing Create Public Threads permission"));
-            }
-            Posts.Add((channelId, text, threadName));
-            // Discord convention: a thread created from a message shares its id.
-            var threadId = $"thread-{channelId.Value}";
-            return Task.FromResult(new DiscordNewThread(
-                channelId,
-                new DiscordReplyChannelId(threadId),
-                new DiscordThreadOrMessageId(threadId)));
-        }
-
-        public Task<DiscordNewDirectMessage> PostDirectMessageAsync(
-            DiscordUserId userId,
-            string text,
-            CancellationToken ct = default)
-        {
-            if (ShouldThrow) throw new InvalidOperationException("Discord API error");
-            DirectMessages.Add((userId, text));
-            var dmChannelId = $"dm-{userId.Value}";
-            var rootMessageId = $"root-{userId.Value}";
-            return Task.FromResult(new DiscordNewDirectMessage(
-                new DiscordChannelId(dmChannelId),
-                new DiscordReplyChannelId(dmChannelId),
-                new DiscordThreadOrMessageId(rootMessageId),
-                new DiscordMessageId(rootMessageId),
-                userId));
-        }
-    }
-
-    /// <summary>
-    /// Minimal fake that satisfies IActorRef for the Ask pattern without an
-    /// actor system. Immediately responds with <see cref="ProactiveThreadAck"/>.
-    /// </summary>
-    private sealed class FakeGatewayActor : MinimalActorRef
-    {
-        public override ActorPath Path { get; } =
-            new RootActorPath(Address.AllSystems) / "fake-discord-gateway";
-
-        public override IActorRefProvider Provider =>
-            throw new NotSupportedException("Not needed for tool tests");
-
-        protected override void TellInternal(object message, IActorRef sender)
-        {
-            if (message is StartProactiveThread spt)
-                sender.Tell(new ProactiveThreadAck(spt.SessionId));
-        }
-    }
+    private static FakeProactiveGateway AckGateway() =>
+        new(msg => msg is StartProactiveThread spt ? new ProactiveThreadAck(spt.SessionId) : null);
 }
 
 #endregion

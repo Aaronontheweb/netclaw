@@ -142,7 +142,7 @@ internal sealed class MattermostConversationActor : ChannelConversationActor<Mat
             return;
         }
 
-        var sessionId = new SessionId($"{_channelId.Value}/{interaction.RootPostId.Value}");
+        var sessionId = SessionIdFormat.Build(_channelId.Value, interaction.RootPostId.Value);
         var sessionBinding = GetOrCreateSessionBinding(
             _channelId.Value,
             interaction.RootPostId.Value,

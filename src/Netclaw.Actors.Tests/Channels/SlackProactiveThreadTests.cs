@@ -25,6 +25,11 @@ namespace Netclaw.Actors.Tests.Channels;
 
 #region SlackProactiveOutboundClient Tests
 
+/// <summary>
+/// Slack-specific proactive send behavior. The cross-channel canonical
+/// outcomes (ACL denials, DM gate, gateway availability, success/nack strings)
+/// live in <see cref="Contracts.SlackProactiveOutboundClientContractTests"/>.
+/// </summary>
 public sealed class SlackProactiveOutboundClientTests
 {
     private static readonly SlackChannelOptions DefaultOptions = new()
@@ -35,66 +40,15 @@ public sealed class SlackProactiveOutboundClientTests
     };
 
     [Fact]
-    public async Task Rejects_unsupported_address_kind()
-    {
-        var client = CreateClient();
-
-        var result = await client.SendMessageAsync(
-            new ChannelSendRequest(ChannelAddressKind.User, "U1", "hello"),
-            CancellationToken.None);
-
-        Assert.Contains("does not support address kind", result);
-    }
-
-    [Fact]
-    public async Task Rejects_disallowed_user()
-    {
-        var client = CreateClient();
-        var result = await SendAsync(client, "hello", userId: "UBAD");
-        Assert.Contains("not in the allowed users list", result);
-    }
-
-    [Fact]
-    public async Task Rejects_disallowed_channel()
-    {
-        var client = CreateClient();
-        var result = await SendAsync(client, "hello", channelId: "CBAD");
-        Assert.Contains("not in the allowed channels list", result);
-    }
-
-    [Fact]
     public async Task Allows_default_channel()
     {
         var fake = new FakeSlackOutboundClient();
-        var gateway = new FakeGatewayActor();
         var client = CreateClient(
             outbound: fake,
-            gatewayAccessor: () => gateway,
             defaultChannelIdAccessor: () => new SlackChannelId("CDEFAULT"));
 
         var result = await SendAsync(client, "hello", channelId: "CDEFAULT");
         Assert.Contains("Message sent", result);
-    }
-
-    [Fact]
-    public async Task Rejects_DM_when_AllowDirectMessages_false()
-    {
-        var options = new SlackChannelOptions
-        {
-            AllowDirectMessages = false,
-            AllowedUserIds = ["U1"]
-        };
-        var client = CreateClient(options: options);
-        var result = await SendAsync(client, "hello", userId: "U1");
-        Assert.Contains("Direct messages are disabled", result);
-    }
-
-    [Fact]
-    public async Task Returns_error_when_gateway_disconnected()
-    {
-        var client = CreateClient(gatewayAccessor: () => null);
-        var result = await SendAsync(client, "hello", channelId: "C1");
-        Assert.Contains("gateway is not connected", result);
     }
 
     [Fact]
@@ -119,8 +73,7 @@ public sealed class SlackProactiveOutboundClientTests
     public async Task Successful_channel_message()
     {
         var fake = new FakeSlackOutboundClient();
-        var gateway = new FakeGatewayActor();
-        var client = CreateClient(outbound: fake, gatewayAccessor: () => gateway);
+        var client = CreateClient(outbound: fake);
 
         var result = await SendAsync(client, "hello world", channelId: "C1");
 
@@ -136,8 +89,7 @@ public sealed class SlackProactiveOutboundClientTests
     public async Task Successful_DM()
     {
         var fake = new FakeSlackOutboundClient();
-        var gateway = new FakeGatewayActor();
-        var client = CreateClient(outbound: fake, gatewayAccessor: () => gateway);
+        var client = CreateClient(outbound: fake);
 
         var result = await SendAsync(client, "hello user", userId: "U1");
 
@@ -165,50 +117,11 @@ public sealed class SlackProactiveOutboundClientTests
             outbound ?? new FakeSlackOutboundClient(),
             options ?? DefaultOptions,
             defaultChannelIdAccessor ?? (() => null),
-            gatewayAccessor ?? (() => new FakeGatewayActor()));
+            gatewayAccessor ?? (() => AckGateway()));
     }
 
-    private sealed class FakeSlackOutboundClient : ISlackOutboundClient
-    {
-        public bool ShouldThrow { get; init; }
-        public List<SlackUserId> OpenedDms { get; } = [];
-        public List<(SlackChannelId ChannelId, string Text)> PostedThreads { get; } = [];
-
-        public Task<SlackChannelId> OpenDmChannelAsync(SlackUserId userId, CancellationToken ct = default)
-        {
-            if (ShouldThrow) throw new InvalidOperationException("Slack API error");
-            OpenedDms.Add(userId);
-            return Task.FromResult(new SlackChannelId($"D{userId.Value}"));
-        }
-
-        public Task<SlackNewThread> PostNewThreadAsync(SlackChannelId channelId, string text, CancellationToken ct = default)
-        {
-            if (ShouldThrow) throw new InvalidOperationException("Slack API error");
-            PostedThreads.Add((channelId, text));
-            return Task.FromResult(new SlackNewThread(channelId, new SlackThreadTs("1234567890.000001")));
-        }
-    }
-
-    /// <summary>
-    /// Minimal fake that satisfies IActorRef for Ask pattern without an actor system.
-    /// Immediately responds with ProactiveThreadAck.
-    /// </summary>
-    private sealed class FakeGatewayActor : MinimalActorRef
-    {
-        public override ActorPath Path { get; } =
-            new RootActorPath(Address.AllSystems) / "fake-gateway";
-
-        public override IActorRefProvider Provider =>
-            throw new NotSupportedException("Not needed for tool tests");
-
-        protected override void TellInternal(object message, IActorRef sender)
-        {
-            if (message is StartProactiveThread spt)
-            {
-                sender.Tell(new ProactiveThreadAck(spt.SessionId));
-            }
-        }
-    }
+    private static FakeProactiveGateway AckGateway() =>
+        new(msg => msg is StartProactiveThread spt ? new ProactiveThreadAck(spt.SessionId) : null);
 }
 
 #endregion

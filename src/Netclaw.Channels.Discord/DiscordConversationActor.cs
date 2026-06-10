@@ -149,7 +149,7 @@ internal sealed class DiscordConversationActor : ChannelConversationActor<Discor
         // cold-spawn redraw path. See issue #939.
         var replyChannelId = interaction.ReplyChannelId
             ?? new DiscordReplyChannelId(interaction.ThreadOrMessageId.Value);
-        var sessionId = new SessionId($"{_channelId.Value}/{interaction.ThreadOrMessageId.Value}");
+        var sessionId = SessionIdFormat.Build(_channelId.Value, interaction.ThreadOrMessageId.Value);
         var sessionBinding = GetOrCreateSessionBinding(
             _channelId.Value,
             interaction.ThreadOrMessageId.Value,

@@ -43,7 +43,7 @@ public sealed class SlackProactiveOutboundClient : IChannelOutboundClient
 
         var gateway = _gatewayAccessor();
         if (gateway is null)
-            return "Error: Slack gateway is not connected.";
+            return ProactiveSendFormatting.GatewayNotConnected("Slack");
 
         var isDirectMessage = request.AddressKind == ChannelAddressKind.DirectMessage;
 
@@ -51,12 +51,12 @@ public sealed class SlackProactiveOutboundClient : IChannelOutboundClient
         if (isDirectMessage)
         {
             if (!_options.AllowDirectMessages)
-                return "Error: Direct messages are disabled. Enable AllowDirectMessages in Slack configuration to send DMs.";
+                return ProactiveSendFormatting.DirectMessagesDisabled("Slack");
 
             var userId = new SlackUserId(request.TargetId);
 
             if (!SlackAclPolicy.IsAllowedUser(userId, _options))
-                return $"Error: User {userId.Value} is not in the allowed users list.";
+                return ProactiveSendFormatting.UserNotAllowed(userId.Value);
 
             try
             {
@@ -64,7 +64,7 @@ public sealed class SlackProactiveOutboundClient : IChannelOutboundClient
             }
             catch (Exception ex)
             {
-                return $"Error: Failed to open DM channel: {ex.Message}";
+                return ProactiveSendFormatting.OpenDmChannelFailed(ex.Message);
             }
         }
         else if (request.AddressKind == ChannelAddressKind.Destination)
@@ -72,11 +72,11 @@ public sealed class SlackProactiveOutboundClient : IChannelOutboundClient
             targetChannelId = new SlackChannelId(request.TargetId);
 
             if (!SlackAclPolicy.IsAllowedChannel(targetChannelId, _options, _defaultChannelIdAccessor()))
-                return $"Error: Channel {targetChannelId.Value} is not in the allowed channels list.";
+                return ProactiveSendFormatting.ChannelNotAllowed(targetChannelId.Value);
         }
         else
         {
-            return $"Error: Slack outbound send does not support address kind '{request.AddressKind}'.";
+            return ProactiveSendFormatting.UnsupportedAddressKind("Slack", request.AddressKind);
         }
 
         SlackNewThread result;
@@ -86,26 +86,25 @@ public sealed class SlackProactiveOutboundClient : IChannelOutboundClient
         }
         catch (Exception ex)
         {
-            return $"Error: Failed to post message to Slack: {ex.Message}";
+            return ProactiveSendFormatting.PostFailed("Slack", ex.Message);
         }
 
-        var sessionId = new SessionId($"{result.ChannelId.Value}/{result.ThreadTs.Value}");
-        var target = isDirectMessage ? $"user {request.TargetId}" : $"channel {request.TargetId}";
+        var sessionId = SessionIdFormat.Build(result.ChannelId.Value, result.ThreadTs.Value);
+        var target = ProactiveSendFormatting.DescribeTarget(isDirectMessage, request.TargetId);
 
         try
         {
             await gateway.Ask<ProactiveThreadAck>(
                 new StartProactiveThread(result.ChannelId, result.ThreadTs, sessionId),
-                TimeSpan.FromSeconds(30),
+                ProactiveSendFormatting.ProactiveThreadAckTimeout,
                 ct);
         }
         catch (Exception)
         {
             // Message was already posted to Slack; the pipeline just didn't initialize
-            return $"Message sent to {target} but session pipeline failed to initialize. " +
-                   $"Thread: {result.ChannelId.Value}/{result.ThreadTs.Value}";
+            return ProactiveSendFormatting.SentButPipelineFailed(target, sessionId.Value);
         }
 
-        return $"Message sent to {target}. Thread: {result.ChannelId.Value}/{result.ThreadTs.Value}";
+        return ProactiveSendFormatting.Sent(target, sessionId.Value);
     }
 }

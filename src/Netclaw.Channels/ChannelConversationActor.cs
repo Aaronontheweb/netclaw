@@ -221,7 +221,7 @@ public abstract class ChannelConversationActor<TMessage> : ReceiveActor
 
     /// <summary>Builds the deterministic session id (<c>{channelId}/{threadKey}</c>) for a thread key.</summary>
     protected SessionId BuildSessionId(string threadKey) =>
-        new($"{ChannelIdValue}/{threadKey}");
+        SessionIdFormat.Build(ChannelIdValue, threadKey);
 
     /// <summary>
     /// Returns the session binding child for <paramref name="threadKey"/>,

@@ -21,6 +21,11 @@ using Xunit;
 
 namespace Netclaw.Actors.Tests.Channels;
 
+/// <summary>
+/// Mattermost-specific proactive send behavior. The cross-channel canonical
+/// outcomes (ACL denials, DM gate, gateway availability, success/nack strings)
+/// live in <see cref="Contracts.MattermostProactiveOutboundClientContractTests"/>.
+/// </summary>
 public sealed class MattermostProactiveOutboundClientTests
 {
     private static readonly MattermostChannelOptions DefaultOptions = new()
@@ -29,41 +34,6 @@ public sealed class MattermostProactiveOutboundClientTests
         AllowedUserIds = ["u-1", "u-2"],
         AllowedChannelIds = ["ch-1", "ch-2"]
     };
-
-    [Fact]
-    public async Task Rejects_disallowed_user()
-    {
-        var client = CreateClient();
-
-        var result = await SendAsync(client, "hello", userId: "u-bad");
-
-        Assert.Contains("not in the allowed users list", result);
-    }
-
-    [Fact]
-    public async Task Rejects_dm_when_direct_messages_disabled()
-    {
-        var options = new MattermostChannelOptions
-        {
-            AllowDirectMessages = false,
-            AllowedUserIds = ["u-1"]
-        };
-        var client = CreateClient(options: options);
-
-        var result = await SendAsync(client, "hello", userId: "u-1");
-
-        Assert.Contains("Direct messages are disabled", result);
-    }
-
-    [Fact]
-    public async Task Rejects_disallowed_channel()
-    {
-        var client = CreateClient();
-
-        var result = await SendAsync(client, "hello", channelId: "ch-bad");
-
-        Assert.Contains("not in the allowed channels list", result);
-    }
 
     [Fact]
     public async Task Successful_dm_uses_allowed_user_id()
@@ -115,44 +85,13 @@ public sealed class MattermostProactiveOutboundClientTests
             outbound ?? new FakeMattermostOutboundClient(),
             options ?? DefaultOptions,
             defaultChannelIdAccessor ?? (() => null),
-            gatewayAccessor ?? (() => new FakeGatewayActor()));
+            gatewayAccessor ?? (() => AckGateway()));
     }
 
-    private sealed class FakeMattermostOutboundClient : IMattermostOutboundClient
-    {
-        public List<MattermostUserId> OpenedDms { get; } = [];
-        public List<(MattermostChannelId ChannelId, string Text)> PostedThreads { get; } = [];
-
-        public Task<MattermostChannelId> OpenDmChannelAsync(MattermostUserId userId, CancellationToken ct = default)
-        {
-            OpenedDms.Add(userId);
-            return Task.FromResult(new MattermostChannelId($"dm-{userId.Value}"));
-        }
-
-        public Task<MattermostNewThread> PostNewThreadAsync(
-            MattermostChannelId channelId,
-            string text,
-            CancellationToken ct = default)
-        {
-            PostedThreads.Add((channelId, text));
-            return Task.FromResult(new MattermostNewThread(channelId, new MattermostRootPostId($"root-{channelId.Value}")));
-        }
-    }
-
-    private sealed class FakeGatewayActor : MinimalActorRef
-    {
-        public override ActorPath Path { get; } =
-            new RootActorPath(Address.AllSystems) / "fake-mattermost-gateway";
-
-        public override IActorRefProvider Provider =>
-            throw new NotSupportedException("Not needed for tool tests");
-
-        protected override void TellInternal(object message, IActorRef sender)
-        {
-            if (message is StartMattermostProactiveThread spt)
-                sender.Tell(new MattermostProactiveThreadAck(spt.SessionId));
-        }
-    }
+    private static FakeProactiveGateway AckGateway() =>
+        new(msg => msg is StartMattermostProactiveThread spt
+            ? new MattermostProactiveThreadAck(spt.SessionId)
+            : null);
 }
 
 public sealed class MattermostAddressResolverTests

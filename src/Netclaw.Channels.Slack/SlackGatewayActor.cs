@@ -66,16 +66,11 @@ public sealed class SlackGatewayActor : ChannelGatewayActor<SlackChannelId>
         channelId = default!;
         threadTs = default!;
 
-        var value = sessionId.Value;
-        if (string.IsNullOrEmpty(value))
+        if (!SessionIdFormat.TrySplit(sessionId, out var channelPart, out var threadPart))
             return false;
 
-        var slashIdx = value.IndexOf('/', StringComparison.Ordinal);
-        if (slashIdx <= 0 || slashIdx == value.Length - 1)
-            return false;
-
-        channelId = new SlackChannelId(value[..slashIdx]);
-        threadTs = new SlackThreadTs(value[(slashIdx + 1)..]);
+        channelId = new SlackChannelId(channelPart);
+        threadTs = new SlackThreadTs(threadPart);
         return true;
     }
 

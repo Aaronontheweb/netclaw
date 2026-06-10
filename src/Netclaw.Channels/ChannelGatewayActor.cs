@@ -11,6 +11,44 @@ using Netclaw.Actors.Protocol;
 namespace Netclaw.Channels;
 
 /// <summary>
+/// Single owner of the channel session-id grammar: <c>{channelId}/{threadKey}</c>.
+/// Every channel builds session ids through <see cref="Build"/> and parses them
+/// through <see cref="TrySplit"/> — the per-channel <c>TryParse*SessionId</c>
+/// helpers are typed wrappers over this class. Session ids are persisted (they
+/// key session state and reminders), so changing this format is a breaking
+/// migration, never a refactor.
+/// </summary>
+public static class SessionIdFormat
+{
+    /// <summary>Builds the deterministic <c>{channelId}/{threadKey}</c> session id.</summary>
+    public static SessionId Build(string channelId, string threadKey) =>
+        new($"{channelId}/{threadKey}");
+
+    /// <summary>
+    /// Splits a session id into its channel and thread parts. Rejects empty
+    /// values, a missing separator, an empty channel part (separator first),
+    /// and an empty thread part (separator last).
+    /// </summary>
+    public static bool TrySplit(SessionId sessionId, out string channelId, out string threadKey)
+    {
+        channelId = string.Empty;
+        threadKey = string.Empty;
+
+        var value = sessionId.Value;
+        if (string.IsNullOrEmpty(value))
+            return false;
+
+        var slashIdx = value.IndexOf('/', StringComparison.Ordinal);
+        if (slashIdx <= 0 || slashIdx == value.Length - 1)
+            return false;
+
+        channelId = value[..slashIdx];
+        threadKey = value[(slashIdx + 1)..];
+        return true;
+    }
+}
+
+/// <summary>
 /// Shared per-channel gateway routing plumbing (SPEC-015 §1.3): bounded
 /// duplicate event-id tracking, get-or-create of per-conversation child
 /// actors keyed by escaped channel id, and the channel-agnostic

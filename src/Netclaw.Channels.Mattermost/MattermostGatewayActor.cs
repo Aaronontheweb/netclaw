@@ -71,16 +71,11 @@ public sealed class MattermostGatewayActor : ChannelGatewayActor<MattermostChann
         channelId = default;
         rootPostId = default;
 
-        var value = sessionId.Value;
-        if (string.IsNullOrEmpty(value))
+        if (!SessionIdFormat.TrySplit(sessionId, out var channelPart, out var threadPart))
             return false;
 
-        var slashIdx = value.IndexOf('/', StringComparison.Ordinal);
-        if (slashIdx <= 0 || slashIdx == value.Length - 1)
-            return false;
-
-        channelId = new MattermostChannelId(value[..slashIdx]);
-        rootPostId = new MattermostRootPostId(value[(slashIdx + 1)..]);
+        channelId = new MattermostChannelId(channelPart);
+        rootPostId = new MattermostRootPostId(threadPart);
         return true;
     }
 

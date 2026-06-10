@@ -73,16 +73,11 @@ public sealed class DiscordGatewayActor : ChannelGatewayActor<DiscordChannelId>
         channelId = default;
         threadOrMessageId = default;
 
-        var value = sessionId.Value;
-        if (string.IsNullOrEmpty(value))
+        if (!SessionIdFormat.TrySplit(sessionId, out var channelPart, out var threadPart))
             return false;
 
-        var slashIdx = value.IndexOf('/', StringComparison.Ordinal);
-        if (slashIdx <= 0 || slashIdx == value.Length - 1)
-            return false;
-
-        channelId = new DiscordChannelId(value[..slashIdx]);
-        threadOrMessageId = new DiscordThreadOrMessageId(value[(slashIdx + 1)..]);
+        channelId = new DiscordChannelId(channelPart);
+        threadOrMessageId = new DiscordThreadOrMessageId(threadPart);
         return true;
     }
 
