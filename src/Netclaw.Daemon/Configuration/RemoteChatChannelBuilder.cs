@@ -7,6 +7,7 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Reminders;
 using Netclaw.Channels;
 using Netclaw.Configuration.Http;
+using Netclaw.Tools;
 
 namespace Netclaw.Daemon.Configuration;
 
@@ -54,7 +55,21 @@ public static class RemoteChatChannelRegistrationExtensions
         if (!options.Enabled)
             return builder;
 
-        services.AddKeyedSingleton<IChannel, TChannel>(channelKey);
+        services.AddKeyedSingleton<IChannel>(channelKey, (sp, _) =>
+        {
+            // Thread-history fetchers are registered keyed by channel key (see
+            // WithThreadHistory): with two or more channels enabled, an unkeyed
+            // IThreadHistoryFetcher registration would resolve to the LAST
+            // channel's fetcher for every channel, silently cross-wiring thread
+            // rehydration. The channel is activated with its own keyed fetcher
+            // passed explicitly; every other constructor dependency resolves
+            // unkeyed as before. A channel that requires a fetcher but never
+            // called WithThreadHistory fails loudly inside CreateInstance.
+            var fetcher = sp.GetKeyedService<IThreadHistoryFetcher>(channelKey);
+            return fetcher is null
+                ? ActivatorUtilities.CreateInstance<TChannel>(sp)
+                : ActivatorUtilities.CreateInstance<TChannel>(sp, fetcher);
+        });
         services.AddSingleton<IChannel>(sp =>
             sp.GetRequiredKeyedService<IChannel>(channelKey));
         services.AddSingleton<TChannel>(sp =>
@@ -62,7 +77,30 @@ public static class RemoteChatChannelRegistrationExtensions
         services.AddSingleton<IHostedService>(sp =>
             sp.GetRequiredKeyedService<IChannel>(channelKey));
 
+        AddSharedChannelTools(services);
+
         return builder;
+    }
+
+    /// <summary>
+    /// Registers the channel-agnostic tools (send + the two lookups) exactly
+    /// once when the first enabled remote chat channel is added, so any future
+    /// channel registered through this builder gets them without touching a
+    /// hardcoded enablement list. The explicit guard is required because the
+    /// <see cref="IChannelTool"/> forwards are factory-based registrations that
+    /// <c>TryAddEnumerable</c> cannot deduplicate.
+    /// </summary>
+    private static void AddSharedChannelTools(IServiceCollection services)
+    {
+        if (services.Any(descriptor => descriptor.ServiceType == typeof(SendChannelMessageTool)))
+            return;
+
+        services.AddSingleton<SendChannelMessageTool>();
+        services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<SendChannelMessageTool>());
+        services.AddSingleton<LookupChannelUserTool>();
+        services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<LookupChannelUserTool>());
+        services.AddSingleton<LookupChannelDestinationTool>();
+        services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<LookupChannelDestinationTool>());
     }
 }
 
@@ -146,7 +184,14 @@ public sealed class RemoteChatChannelBuilder<TChannel, TOptions>
         return this;
     }
 
-    /// <summary>Registers the channel's thread history fetcher.</summary>
+    /// <summary>
+    /// Registers the channel's thread history fetcher, keyed by the channel
+    /// key. Keying is load-bearing: an unkeyed registration would make every
+    /// channel resolve the LAST registered fetcher in multi-channel hosts.
+    /// The channel factory in
+    /// <see cref="RemoteChatChannelRegistrationExtensions.AddRemoteChatChannel{TChannel, TOptions}"/>
+    /// resolves the keyed fetcher and passes it to the channel constructor.
+    /// </summary>
     public RemoteChatChannelBuilder<TChannel, TOptions> WithThreadHistory(
         Func<IServiceProvider, TOptions, IThreadHistoryFetcher> factory)
     {
@@ -154,7 +199,7 @@ public sealed class RemoteChatChannelBuilder<TChannel, TOptions>
         if (!_options.Enabled)
             return this;
 
-        _services.AddSingleton<IThreadHistoryFetcher>(sp => factory(sp, _options));
+        _services.AddKeyedSingleton<IThreadHistoryFetcher>(_channelKey, (sp, _) => factory(sp, _options));
         return this;
     }
 

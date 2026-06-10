@@ -4,7 +4,6 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text.Json;
-using Microsoft.Extensions.DependencyInjection;
 using Netclaw.Actors.Channels;
 using Netclaw.Channels;
 using Netclaw.Configuration;
@@ -28,7 +27,7 @@ public sealed class ChannelSendToolTests
                 ChannelCapabilities.SendMessages,
                 [ChannelAddressKind.LocalSession],
                 includeSendIntent: false));
-        var tool = new SendChannelMessageTool(registry, new ServiceCollection().BuildServiceProvider());
+        var tool = new SendChannelMessageTool(registry);
 
         var keys = ReadChannelKeyEnum(tool.ParameterSchema);
 
@@ -41,7 +40,7 @@ public sealed class ChannelSendToolTests
         var registry = BuildRegistry(
             BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination),
             BuildDescriptor(ChannelType.Mattermost, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination));
-        var tool = new SendChannelMessageTool(registry, new ServiceCollection().BuildServiceProvider());
+        var tool = new SendChannelMessageTool(registry);
 
         var result = await ExecuteAsync(tool, "mattermost", "slack", "destination", "C1234567890");
 
@@ -52,7 +51,7 @@ public sealed class ChannelSendToolTests
     public async Task Send_rejects_unsupported_direct_message_capability()
     {
         var registry = BuildRegistry(BuildDescriptor(ChannelType.Discord, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination));
-        var tool = new SendChannelMessageTool(registry, new ServiceCollection().BuildServiceProvider());
+        var tool = new SendChannelMessageTool(registry);
 
         var result = await ExecuteAsync(tool, "discord", "discord", "direct_message", "123456789012345678");
 
@@ -63,7 +62,7 @@ public sealed class ChannelSendToolTests
     public async Task Send_rejects_bare_display_name_destination()
     {
         var registry = BuildRegistry(BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination));
-        var tool = new SendChannelMessageTool(registry, new ServiceCollection().BuildServiceProvider());
+        var tool = new SendChannelMessageTool(registry);
 
         var result = await ExecuteAsync(tool, "slack", "slack", "destination", "#general");
 
@@ -79,7 +78,7 @@ public sealed class ChannelSendToolTests
             ChannelCapabilities.SendMessages | ChannelCapabilities.DirectMessages,
             ChannelAddressKind.Destination,
             ChannelAddressKind.DirectMessage));
-        var tool = new SendChannelMessageTool(registry, new ServiceCollection().BuildServiceProvider());
+        var tool = new SendChannelMessageTool(registry);
 
         var result = await ExecuteAsync(tool, "slack", "slack", "user", "U1234567890");
 
@@ -91,7 +90,7 @@ public sealed class ChannelSendToolTests
     public async Task Send_rejects_trigger_origin_without_requested_delivery_target()
     {
         var registry = BuildRegistry(BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination));
-        var tool = new SendChannelMessageTool(registry, new ServiceCollection().BuildServiceProvider());
+        var tool = new SendChannelMessageTool(registry);
         var context = TriggerContext(requestedTarget: null);
 
         var result = await ExecuteAsync(tool, "slack", "slack", "destination", "C1234567890", context);
@@ -104,7 +103,7 @@ public sealed class ChannelSendToolTests
     public async Task Send_rejects_trigger_origin_destination_that_differs_from_requested_target()
     {
         var registry = BuildRegistry(BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination));
-        var tool = new SendChannelMessageTool(registry, new ServiceCollection().BuildServiceProvider());
+        var tool = new SendChannelMessageTool(registry);
         var context = TriggerContext(new ChannelDeliveryTargetInfo("slack", "destination", "C9999999999"));
 
         var result = await ExecuteAsync(tool, "slack", "slack", "destination", "C1234567890", context);
@@ -116,7 +115,7 @@ public sealed class ChannelSendToolTests
     public async Task Send_allows_trigger_origin_to_reach_normal_validation_when_requested_target_matches()
     {
         var registry = BuildRegistry(BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination));
-        var tool = new SendChannelMessageTool(registry, new ServiceCollection().BuildServiceProvider());
+        var tool = new SendChannelMessageTool(registry);
         var context = TriggerContext(new ChannelDeliveryTargetInfo("slack", "destination", "not-a-stable-id"));
 
         var result = await ExecuteAsync(tool, "slack", "slack", "destination", "not-a-stable-id", context);
@@ -127,16 +126,15 @@ public sealed class ChannelSendToolTests
     [Fact]
     public async Task Send_dispatches_to_outbound_client_matching_channel_key()
     {
-        var registry = BuildRegistry(
-            BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination),
-            BuildDescriptor(ChannelType.Mattermost, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination));
         var slackClient = new FakeOutboundClient(ChannelDescriptorKey.FromChannelType(ChannelType.Slack));
         var mattermostClient = new FakeOutboundClient(ChannelDescriptorKey.FromChannelType(ChannelType.Mattermost));
-        using var services = new ServiceCollection()
-            .AddSingleton<IChannelOutboundClient>(slackClient)
-            .AddSingleton<IChannelOutboundClient>(mattermostClient)
-            .BuildServiceProvider();
-        var tool = new SendChannelMessageTool(registry, services);
+        var registry = BuildRegistry(
+            [
+                BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination),
+                BuildDescriptor(ChannelType.Mattermost, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination)
+            ],
+            [slackClient, mattermostClient]);
+        var tool = new SendChannelMessageTool(registry);
 
         var result = await ExecuteAsync(tool, "slack", "slack", "destination", "C1234567890");
 
@@ -152,7 +150,7 @@ public sealed class ChannelSendToolTests
     public async Task Send_fails_loudly_when_no_outbound_client_is_registered_for_channel()
     {
         var registry = BuildRegistry(BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination));
-        var tool = new SendChannelMessageTool(registry, new ServiceCollection().BuildServiceProvider());
+        var tool = new SendChannelMessageTool(registry);
 
         var result = await ExecuteAsync(tool, "slack", "slack", "destination", "C1234567890");
 
@@ -206,8 +204,15 @@ public sealed class ChannelSendToolTests
 
     private static ChannelRegistry BuildRegistry(params ChannelDescriptor[] descriptors)
     {
+        return BuildRegistry(descriptors, []);
+    }
+
+    private static ChannelRegistry BuildRegistry(
+        IReadOnlyList<ChannelDescriptor> descriptors,
+        IReadOnlyList<IChannelOutboundClient> outboundClients)
+    {
         var providers = descriptors.Select(descriptor => new StaticChannelDescriptorProvider(descriptor)).ToArray();
-        return new ChannelRegistry(providers, []);
+        return new ChannelRegistry(providers, [], outboundClients: outboundClients);
     }
 
     private static ChannelDescriptor BuildDescriptor(

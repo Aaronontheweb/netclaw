@@ -468,6 +468,13 @@ public interface IChannelRegistry
 
     IChannelOutputRenderer GetOutputRenderer(ChannelDescriptorKey key);
 
+    /// <summary>
+    /// Returns the proactive outbound send client for the channel. Throws
+    /// <see cref="InvalidOperationException"/> when the channel is unknown or
+    /// no outbound client is registered for it.
+    /// </summary>
+    IChannelOutboundClient GetOutboundClient(ChannelDescriptorKey key);
+
     ValueTask<ChannelAddressResolutionResult> ResolveAddressAsync(
         ChannelAddressResolutionRequest request,
         CancellationToken cancellationToken = default);
@@ -493,12 +500,14 @@ public sealed class ChannelRegistry : IChannelRegistry
     private readonly IReadOnlyDictionary<ChannelDescriptorKey, IChannelRuntimeSnapshotProvider> _snapshotProviders;
     private readonly IReadOnlyDictionary<(ChannelDescriptorKey Key, ChannelAddressKind AddressKind), IChannelAddressResolver> _addressResolvers;
     private readonly IReadOnlyDictionary<ChannelDescriptorKey, IChannelOutputRenderer> _outputRenderers;
+    private readonly IReadOnlyDictionary<ChannelDescriptorKey, IChannelOutboundClient> _outboundClients;
 
     public ChannelRegistry(
         IEnumerable<IChannelDescriptorProvider> descriptorProviders,
         IEnumerable<IChannelRuntimeSnapshotProvider> snapshotProviders,
         IEnumerable<IChannelAddressResolver>? addressResolvers = null,
-        IEnumerable<IChannelOutputRenderer>? outputRenderers = null)
+        IEnumerable<IChannelOutputRenderer>? outputRenderers = null,
+        IEnumerable<IChannelOutboundClient>? outboundClients = null)
     {
         ArgumentNullException.ThrowIfNull(descriptorProviders);
         ArgumentNullException.ThrowIfNull(snapshotProviders);
@@ -510,6 +519,7 @@ public sealed class ChannelRegistry : IChannelRegistry
         _snapshotProviders = BuildSnapshotProviderLookup(snapshotProviders);
         _addressResolvers = BuildAddressResolverLookup(addressResolvers ?? []);
         _outputRenderers = BuildOutputRendererLookup(outputRenderers ?? []);
+        _outboundClients = BuildOutboundClientLookup(outboundClients ?? []);
     }
 
     public IReadOnlyCollection<ChannelDescriptor> ListChannels() => _sortedDescriptors;
@@ -553,6 +563,16 @@ public sealed class ChannelRegistry : IChannelRegistry
             return renderer;
 
         throw new InvalidOperationException($"No channel output renderer is registered for key '{key}'.");
+    }
+
+    public IChannelOutboundClient GetOutboundClient(ChannelDescriptorKey key)
+    {
+        _ = GetChannel(key);
+
+        if (_outboundClients.TryGetValue(key, out var client))
+            return client;
+
+        throw new InvalidOperationException($"No channel outbound client is registered for key '{key}'.");
     }
 
     public async ValueTask<ChannelAddressResolutionResult> ResolveAddressAsync(
@@ -662,6 +682,20 @@ public sealed class ChannelRegistry : IChannelRegistry
         }
 
         return outputRenderers;
+    }
+
+    private static IReadOnlyDictionary<ChannelDescriptorKey, IChannelOutboundClient> BuildOutboundClientLookup(
+        IEnumerable<IChannelOutboundClient> clients)
+    {
+        var outboundClients = new Dictionary<ChannelDescriptorKey, IChannelOutboundClient>();
+
+        foreach (var client in clients)
+        {
+            if (!outboundClients.TryAdd(client.Key, client))
+                throw new InvalidOperationException($"Duplicate channel outbound client key '{client.Key}' registered.");
+        }
+
+        return outboundClients;
     }
 }
 

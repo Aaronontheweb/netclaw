@@ -69,12 +69,16 @@ public static class ChannelIntegrationRegistrationExtensions
             .WithOutboundClient<ISlackOutboundClient, SlackOutboundClient>()
             .WithLookupClient<ISlackTargetLookupClient, SlackApiTargetLookupClient>()
             .WithReminderResolver<SlackReminderTargetResolver>()
+            // The default-channel accessor reads the RUNTIME-resolved ID from
+            // SlackChannel (StartAsync resolves DefaultChannelName → ID), not
+            // the raw config value — a name-only configuration would otherwise
+            // leave the resolver blind to the default channel. The channel is
+            // resolved lazily inside the accessor: the channel registry
+            // constructs this resolver eagerly, before any channel exists.
             .WithResolver((sp, options) => new SlackTargetResolver(
                 sp.GetRequiredService<ISlackTargetLookupClient>(),
                 options,
-                () => string.IsNullOrWhiteSpace(options.DefaultChannelId)
-                    ? null
-                    : new SlackChannelId(options.DefaultChannelId)))
+                () => sp.GetRequiredService<SlackChannel>().DefaultChannelId))
             .WithServices((channelServices, options) =>
             {
                 channelServices.AddSingleton<SlackApprovalHandler>();
@@ -103,16 +107,15 @@ public static class ChannelIntegrationRegistrationExtensions
             // User lookup is exposed through the generic lookup_channel_user tool.
             // The gateway actor ref and default channel ID are resolved lazily via
             // SlackChannel since they're not available until StartAsync completes.
-            .WithProactiveSendClient((sp, options) =>
-            {
-                var outbound = sp.GetRequiredService<ISlackOutboundClient>();
-                var channel = sp.GetRequiredService<SlackChannel>();
-                return new SlackProactiveOutboundClient(
-                    outbound,
-                    options,
-                    () => channel.DefaultChannelId,
-                    () => channel.Gateway);
-            })
+            // The channel itself is also resolved lazily inside the accessors:
+            // the channel registry constructs outbound clients eagerly, and an
+            // eager channel resolution would recurse through the registry's own
+            // construction (channel → registry → outbound client → channel).
+            .WithProactiveSendClient((sp, options) => new SlackProactiveOutboundClient(
+                sp.GetRequiredService<ISlackOutboundClient>(),
+                options,
+                () => sp.GetRequiredService<SlackChannel>().DefaultChannelId,
+                () => sp.GetRequiredService<SlackChannel>().Gateway))
             .WithLookupTool((sp, options) =>
             {
                 var slackApi = sp.GetRequiredService<SlackNet.ISlackApiClient>();
@@ -175,16 +178,15 @@ public static class ChannelIntegrationRegistrationExtensions
                     ? null
                     : new DiscordChannelId(options.DefaultChannelId)))
             // The gateway actor ref is resolved lazily via DiscordChannel since it
-            // is not available until StartAsync completes.
-            .WithProactiveSendClient((sp, options) =>
-            {
-                var outbound = sp.GetRequiredService<IDiscordOutboundClient>();
-                var channel = sp.GetRequiredService<DiscordChannel>();
-                return new DiscordProactiveOutboundClient(
-                    outbound,
-                    options,
-                    () => channel.Gateway);
-            });
+            // is not available until StartAsync completes. The channel itself is
+            // also resolved lazily inside the accessor: DiscordChannel injects
+            // IChannelRegistry, which constructs outbound clients eagerly — an
+            // eager channel resolution here would recurse through the registry's
+            // own construction.
+            .WithProactiveSendClient((sp, options) => new DiscordProactiveOutboundClient(
+                sp.GetRequiredService<IDiscordOutboundClient>(),
+                options,
+                () => sp.GetRequiredService<DiscordChannel>().Gateway));
     }
 
     internal static void AddMattermostChannel(IServiceCollection services, IConfiguration configuration)
@@ -201,7 +203,16 @@ public static class ChannelIntegrationRegistrationExtensions
             {
                 var serverUrl = MattermostServerUrl(options);
                 var botToken = MattermostBotToken(options);
-                channelServices.AddSingleton(_ => new MattermostClient(serverUrl, botToken));
+                // MattermostClient rejects empty API keys at construction, and
+                // the channel registry constructs the outbound client (and with
+                // it this client) eagerly at startup. Use the same
+                // "unconfigured" placeholder as the SlackNet registration above
+                // so an enabled-but-tokenless channel still constructs — it
+                // degrades loudly in MattermostChannel.StartAsync before the
+                // client is ever used (see issue #1033).
+                channelServices.AddSingleton(_ => new MattermostClient(
+                    serverUrl,
+                    string.IsNullOrEmpty(botToken) ? "unconfigured" : botToken));
 
                 if (!string.IsNullOrEmpty(options.CallbackUrl))
                     channelServices.AddSingleton(new MattermostCallbackActionStore(TimeProvider.System));
@@ -245,17 +256,16 @@ public static class ChannelIntegrationRegistrationExtensions
                     ? null
                     : new MattermostChannelId(options.DefaultChannelId)))
             // The gateway actor ref and default channel ID are resolved lazily via
-            // MattermostChannel since they're not available until StartAsync completes.
-            .WithProactiveSendClient((sp, options) =>
-            {
-                var outbound = sp.GetRequiredService<IMattermostOutboundClient>();
-                var channel = sp.GetRequiredService<MattermostChannel>();
-                return new MattermostProactiveOutboundClient(
-                    outbound,
-                    options,
-                    () => channel.DefaultChannelId,
-                    () => channel.Gateway);
-            })
+            // MattermostChannel since they're not available until StartAsync
+            // completes. The channel itself is also resolved lazily inside the
+            // accessors: the channel registry constructs outbound clients eagerly,
+            // and an eager channel resolution would recurse through the registry's
+            // own construction.
+            .WithProactiveSendClient((sp, options) => new MattermostProactiveOutboundClient(
+                sp.GetRequiredService<IMattermostOutboundClient>(),
+                options,
+                () => sp.GetRequiredService<MattermostChannel>().DefaultChannelId,
+                () => sp.GetRequiredService<MattermostChannel>().Gateway))
             .WithLookupTool((sp, options) => new LookupMattermostUserTool(
                 () => sp.GetRequiredService<MattermostClient>(),
                 options));

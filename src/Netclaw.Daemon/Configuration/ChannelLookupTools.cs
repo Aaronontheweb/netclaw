@@ -7,40 +7,13 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Netclaw.Channels;
-using Netclaw.Channels.Discord;
-using Netclaw.Channels.Mattermost;
-using Netclaw.Channels.Slack;
 using Netclaw.Tools;
 
 namespace Netclaw.Daemon.Configuration;
 
-internal static class ChannelLookupToolRegistration
-{
-    public static IServiceCollection AddChannelLookupTools(this IServiceCollection services, IConfiguration configuration)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(configuration);
-
-        var slackEnabled = (configuration.GetSection("Slack").Get<SlackChannelOptions>() ?? new SlackChannelOptions()).Enabled;
-        var discordEnabled = (configuration.GetSection("Discord").Get<DiscordChannelOptions>() ?? new DiscordChannelOptions()).Enabled;
-        var mattermostEnabled = (configuration.GetSection("Mattermost").Get<MattermostChannelOptions>() ?? new MattermostChannelOptions()).Enabled;
-
-        if (slackEnabled || discordEnabled || mattermostEnabled)
-        {
-            services.AddSingleton<LookupChannelUserTool>();
-            services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<LookupChannelUserTool>());
-        }
-
-        if (slackEnabled || discordEnabled || mattermostEnabled)
-        {
-            services.AddSingleton<LookupChannelDestinationTool>();
-            services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<LookupChannelDestinationTool>());
-        }
-
-        return services;
-    }
-}
-
+// Registered once per host by the remote chat channel builder
+// (RemoteChatChannelRegistrationExtensions.AddSharedChannelTools) whenever at
+// least one remote chat channel is enabled.
 internal sealed class LookupChannelUserTool(IChannelRegistry registry) : ChannelLookupTool(registry)
 {
     public override string Name => "lookup_channel_user";

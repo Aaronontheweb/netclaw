@@ -43,7 +43,9 @@ public sealed class ChannelLookupToolTests
 
         Assert.True(IsRegistered<LookupChannelUserTool>(services));
         Assert.True(IsRegistered<LookupChannelDestinationTool>(services));
-        Assert.Equal(2, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelTool)));
+        // Three IChannelTool forwards: the two lookup tools plus the generic
+        // send tool, all registered once by the builder.
+        Assert.Equal(3, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelTool)));
     }
 
     [Fact]
@@ -58,7 +60,9 @@ public sealed class ChannelLookupToolTests
 
         Assert.True(IsRegistered<LookupChannelUserTool>(services));
         Assert.True(IsRegistered<LookupChannelDestinationTool>(services));
-        Assert.Equal(2, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelTool)));
+        Assert.Equal(3, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelTool)));
+        Assert.Equal(1, services.Count(descriptor => descriptor.ServiceType == typeof(LookupChannelUserTool)));
+        Assert.Equal(1, services.Count(descriptor => descriptor.ServiceType == typeof(LookupChannelDestinationTool)));
     }
 
     [Fact]
@@ -317,7 +321,9 @@ public sealed class ChannelLookupToolTests
             .AddInMemoryCollection(settings)
             .Build();
 
-        services.AddChannelLookupTools(configuration);
+        // The generic lookup tools are registered by the remote chat channel
+        // builder when at least one channel is enabled.
+        services.AddChannelIntegrations(configuration);
         return services;
     }
 

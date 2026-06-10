@@ -1071,9 +1071,9 @@ static void ConfigureDaemonServices(
 
     services.AddChannelRegistry();
     services.AddTuiChannelDescriptor();
+    // Also registers the generic channel tools (send_channel_message + the two
+    // lookups) whenever at least one remote chat channel is enabled.
     services.AddChannelIntegrations(configuration);
-    services.AddChannelSendTools(configuration);
-    services.AddChannelLookupTools(configuration);
 
     // Config hot-reload watcher
     services.AddSingleton<ConfigWatcherService>();
