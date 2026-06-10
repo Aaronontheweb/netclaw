@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Configuration;
 using Netclaw.Cli.Config;
 using Netclaw.Cli.Json;
 using Netclaw.Cli.Mcp;
@@ -68,30 +69,19 @@ public sealed class WizardConfigBuilder
         if (Daemon?.UpdateChannel is not null)
             return;
 
-        var parsed = TryReadExistingUpdateChannel();
-        if (parsed is null || parsed == UpdateChannel.Stable)
+        if (!File.Exists(_paths.NetclawConfigPath))
+            return;
+
+        var config = new ConfigurationBuilder()
+            .AddJsonFile(_paths.NetclawConfigPath, optional: true, reloadOnChange: false)
+            .Build();
+
+        var existing = DaemonConfig.BindFromConfiguration(config.GetSection("Daemon"));
+        if (existing.UpdateChannel == UpdateChannel.Stable)
             return;
 
         var prev = Daemon ?? new DaemonConfigSection();
-        Daemon = prev with { UpdateChannel = parsed };
-    }
-
-    private UpdateChannel? TryReadExistingUpdateChannel()
-    {
-        if (!File.Exists(_paths.NetclawConfigPath))
-            return null;
-
-        try
-        {
-            var existing = JsonNode.Parse(File.ReadAllText(_paths.NetclawConfigPath));
-            var channelValue = existing?["Daemon"]?["UpdateChannel"]?.GetValue<string>();
-            return string.IsNullOrEmpty(channelValue)
-                ? null
-                : DaemonConfig.ParseUpdateChannel(channelValue);
-        }
-        catch (JsonException) { return null; }
-        catch (IOException) { return null; }
-        catch (ArgumentException) { return null; }
+        Daemon = prev with { UpdateChannel = existing.UpdateChannel };
     }
 
     /// <summary>
