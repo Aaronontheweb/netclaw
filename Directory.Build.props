@@ -8,7 +8,7 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <VersionPrefix>0.24.0-beta.3</VersionPrefix>
+    <VersionPrefix>0.24.0</VersionPrefix>
     <VersionSuffix>beta.3</VersionSuffix>
     <PackageReleaseNotes>Netclaw v0.24.0-beta.3 — Channel infrastructure standardization, Discord/Mattermost gateway self-healing, and install script fix
 
