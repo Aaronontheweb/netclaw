@@ -68,27 +68,30 @@ public sealed class WizardConfigBuilder
         if (Daemon?.UpdateChannel is not null)
             return;
 
-        if (!File.Exists(_paths.NetclawConfigPath))
+        var parsed = TryReadExistingUpdateChannel();
+        if (parsed is null || parsed == UpdateChannel.Stable)
             return;
+
+        var prev = Daemon ?? new DaemonConfigSection();
+        Daemon = prev with { UpdateChannel = parsed };
+    }
+
+    private UpdateChannel? TryReadExistingUpdateChannel()
+    {
+        if (!File.Exists(_paths.NetclawConfigPath))
+            return null;
 
         try
         {
             var existing = JsonNode.Parse(File.ReadAllText(_paths.NetclawConfigPath));
             var channelValue = existing?["Daemon"]?["UpdateChannel"]?.GetValue<string>();
-            if (string.IsNullOrEmpty(channelValue))
-                return;
-
-            var parsed = DaemonConfig.ParseUpdateChannel(channelValue);
-            if (parsed == UpdateChannel.Stable)
-                return;
-
-            var prev = Daemon ?? new DaemonConfigSection();
-            Daemon = prev with { UpdateChannel = parsed };
+            return string.IsNullOrEmpty(channelValue)
+                ? null
+                : DaemonConfig.ParseUpdateChannel(channelValue);
         }
-        catch
-        {
-            // Existing config is malformed — proceed without preserving.
-        }
+        catch (JsonException) { return null; }
+        catch (IOException) { return null; }
+        catch (ArgumentException) { return null; }
     }
 
     /// <summary>
