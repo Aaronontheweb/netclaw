@@ -12,6 +12,7 @@ using Discord.WebSocket;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using Netclaw.Channels;
 using Netclaw.Channels.Discord;
 using Netclaw.Channels.Discord.Transport;
 using Xunit;
@@ -87,10 +88,109 @@ public sealed class DiscordGatewayLifecycleRetryTimeoutTests(ITestOutputHelper o
         Assert.Equal(2, sink.CleanReconnectCount);
 
         // 5. The next auto-retry fires; this time READY arrives. The actor
-        //    must fully recover AND publish ConnectionRestored — the same
-        //    Nobody-vs-null skew kept the isRetry branch from ever firing.
-        AdvanceScheduler(TimeSpan.FromSeconds(1));
+        //    must fully recover AND publish ConnectionRestored. The advance is
+        //    6s (not 1s) because the flap in step 4 happened inside the 60s
+        //    stability window, so the backoff deliberately grew to 5s instead
+        //    of resetting to zero.
+        AdvanceScheduler(TimeSpan.FromSeconds(6));
         await AwaitAssertAsync(() => Assert.Equal(3, transport.StartCount), cancellationToken: ct);
+        transport.ConnectionState = ConnectionState.Connected;
+        await transport.RaiseReadyAsync();
+        await AwaitAssertAsync(async () =>
+        {
+            var snapshot = await actor.Ask<DiscordGatewaySnapshot>(
+                DiscordNetGatewayLifecycleActor.GetSnapshot.Instance, TimeSpan.FromSeconds(3), ct);
+            Assert.True(snapshot.IsReady);
+
+            // 2, not 1: ConnectionRestored now publishes on every transition
+            // to Ready, so the initial caller-driven connect in step 1 counts
+            // alongside the auto-retry recovery.
+            Assert.Equal(2, sink.ConnectionRestoredCount);
+        }, cancellationToken: ct);
+    }
+
+    [Fact]
+    public async Task Ready_timeout_with_pending_connect_publishes_clean_reconnect_and_recovers()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var transport = new FakeTransport
+        {
+            ConnectionState = ConnectionState.Disconnected,
+            CurrentUserId = 42
+        };
+        var sink = new RecordingSink();
+        var actor = Sys.ActorOf(DiscordNetGatewayLifecycleActor.CreateProps(
+            transport, TimeProvider.System, sink, NullLogger.Instance));
+
+        // Operator connect; READY never arrives. The ask timeout is real-time
+        // and generous — the 30s ready timeout runs on virtual time.
+        var connectTask = actor.Ask<DiscordGatewaySnapshot>(
+            new DiscordNetGatewayLifecycleActor.Connect("test-token"),
+            TimeSpan.FromSeconds(10), ct);
+        await AwaitAssertAsync(() => Assert.Equal(1, transport.StartCount), cancellationToken: ct);
+
+        AdvanceScheduler(TimeSpan.FromSeconds(31));
+
+        // The pending ask must fail transiently...
+        var failure = await Assert.ThrowsAsync<ChannelConnectException>(() => connectTask);
+        Assert.Equal(ChannelConnectFailureKind.Transient, failure.Kind);
+
+        // ...and the actor must drive the SAME clean-reconnect cycle as the
+        // no-caller case — publish, stop the transport, schedule the retry —
+        // instead of parking with the transport still running and no exit
+        // (the operator-path zombie: any startup where Discord took >30s to
+        // reach READY permanently deafened the channel).
+        await AwaitCleanReconnectSettledAsync(actor, ct);
+        Assert.Equal(1, sink.CleanReconnectCount);
+
+        // The auto-retry fires; READY arrives this time; full recovery.
+        AdvanceScheduler(TimeSpan.FromSeconds(1));
+        await AwaitAssertAsync(() => Assert.Equal(2, transport.StartCount), cancellationToken: ct);
+        transport.ConnectionState = ConnectionState.Connected;
+        await transport.RaiseReadyAsync();
+        await AwaitAssertAsync(async () =>
+        {
+            var snapshot = await actor.Ask<DiscordGatewaySnapshot>(
+                DiscordNetGatewayLifecycleActor.GetSnapshot.Instance, TimeSpan.FromSeconds(3), ct);
+            Assert.True(snapshot.IsReady);
+            Assert.Equal(1, sink.ConnectionRestoredCount);
+        }, cancellationToken: ct);
+    }
+
+    [Fact]
+    public async Task Identity_unavailable_ready_with_pending_connect_schedules_retry_that_recovers()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var transport = new FakeTransport
+        {
+            ConnectionState = ConnectionState.Disconnected,
+            CurrentUserId = null
+        };
+        var sink = new RecordingSink();
+        var actor = Sys.ActorOf(DiscordNetGatewayLifecycleActor.CreateProps(
+            transport, TimeProvider.System, sink, NullLogger.Instance));
+
+        var connectTask = actor.Ask<DiscordGatewaySnapshot>(
+            new DiscordNetGatewayLifecycleActor.Connect("test-token"),
+            TimeSpan.FromSeconds(10), ct);
+        await AwaitAssertAsync(() => Assert.Equal(1, transport.StartCount), cancellationToken: ct);
+
+        // READY fires but Discord.Net exposes no current user: the connect
+        // must fail transiently AND land in a state whose retry actually runs.
+        // The dropped-retry zombie scheduled RetryConnect into a behavior with
+        // no handler for it, so the one-shot retry was silently discarded.
+        transport.ConnectionState = ConnectionState.Connected;
+        await transport.RaiseReadyAsync();
+
+        var failure = await Assert.ThrowsAsync<ChannelConnectException>(() => connectTask);
+        Assert.Equal(ChannelConnectFailureKind.Transient, failure.Kind);
+        await AwaitCleanReconnectSettledAsync(actor, ct);
+        Assert.Equal(1, sink.CleanReconnectCount);
+
+        // Identity becomes available; the scheduled retry must reconnect.
+        transport.CurrentUserId = 42;
+        AdvanceScheduler(TimeSpan.FromSeconds(1));
+        await AwaitAssertAsync(() => Assert.Equal(2, transport.StartCount), cancellationToken: ct);
         transport.ConnectionState = ConnectionState.Connected;
         await transport.RaiseReadyAsync();
         await AwaitAssertAsync(async () =>

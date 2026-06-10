@@ -36,6 +36,7 @@ public sealed class DiscordChannel : IChannel
     private readonly ModelCapabilities _modelCapabilities;
     private readonly NetclawPaths _paths;
 
+    private readonly object _connectionSetupLock = new();
     private volatile IActorRef? _gateway;
     private volatile string? _connectFailureDetail;
 
@@ -101,18 +102,11 @@ public sealed class DiscordChannel : IChannel
             return new ChannelHealth(ChannelHealthStatus.Degraded, "Discord channel disabled.");
 
         var gatewaySnapshot = await _gatewayClient.GetSnapshotAsync(cancellationToken);
-
-        if (gatewaySnapshot.IsReady)
-            return new ChannelHealth(ChannelHealthStatus.Healthy);
-
-        if (gatewaySnapshot.IsConnected)
-            return new ChannelHealth(
-                ChannelHealthStatus.Degraded,
-                gatewaySnapshot.HealthDetail ?? _connectFailureDetail ?? "Discord gateway connected but not ready.");
-
-        return new ChannelHealth(
-            ChannelHealthStatus.Disconnected,
-            _connectFailureDetail ?? gatewaySnapshot.HealthDetail ?? "Discord gateway disconnected.");
+        return GatewayChannelHealth.Evaluate(
+            gatewaySnapshot,
+            _connectFailureDetail,
+            notReadyFallback: "Discord gateway connected but not ready.",
+            disconnectedFallback: "Discord gateway disconnected.");
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -158,13 +152,25 @@ public sealed class DiscordChannel : IChannel
 
     /// <summary>
     /// Wires up message handling and the gateway actor once a connection
-    /// succeeds. Idempotent — safe to call again after a reconnect.
+    /// succeeds. Idempotent and thread-safe: ConnectionRestored publishes on
+    /// every transition to Ready, so a normal operator connect reaches this
+    /// from both the connect-ask continuation and the event handler — the
+    /// lock + guard make the setup exactly-once (no duplicate gateway actor,
+    /// no double event subscription).
     /// </summary>
     private void CompleteConnectionSetup(DiscordUserId? botUserId)
     {
-        if (_gateway is not null)
-            return;
+        lock (_connectionSetupLock)
+        {
+            if (_gateway is not null)
+                return;
 
+            CompleteConnectionSetupCore(botUserId);
+        }
+    }
+
+    private void CompleteConnectionSetupCore(DiscordUserId? botUserId)
+    {
         _gatewayClient.MessageReceived += HandleMessageReceivedAsync;
         _gatewayClient.InteractionReceived += HandleInteractionReceivedAsync;
 
@@ -243,7 +249,7 @@ public sealed class DiscordChannel : IChannel
     {
         _connectFailureDetail = null;
         CompleteConnectionSetup(snapshot.BotUserId);
-        _logger.LogInformation("Channel reconnected after a transient failure.");
+        _logger.LogInformation("Gateway connection ready; channel setup ensured.");
         return Task.CompletedTask;
     }
 

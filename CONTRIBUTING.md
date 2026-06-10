@@ -121,6 +121,7 @@ failure GIFs, screenshot diffs) for debugging.
 - Channels: `src/Netclaw.Channels/` (channel abstractions)
 - Slack: `src/Netclaw.Channels.Slack/` (Slack Socket Mode gateway)
 - Discord: `src/Netclaw.Channels.Discord/` (Discord gateway)
+- Mattermost: `src/Netclaw.Channels.Mattermost/` (Mattermost gateway)
 - Providers: `src/Netclaw.Providers/` (LLM provider implementations)
 - OpenAI Compatible: `src/Netclaw.OpenAICompatible/` (OpenAI-compatible API layer)
 - Search: `src/Netclaw.Search/` (web search backends)

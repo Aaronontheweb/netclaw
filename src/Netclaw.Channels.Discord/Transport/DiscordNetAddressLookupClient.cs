@@ -44,6 +44,20 @@ internal sealed class DiscordNetAddressLookupClient(DiscordSocketClient client) 
         return ValueTask.FromResult<IReadOnlyList<DiscordLookupDestination>>(matches);
     }
 
+    public ValueTask<IReadOnlyList<DiscordLookupDestination>> ListDestinationsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var destinations = client.Guilds
+            .SelectMany(guild => guild.TextChannels)
+            .Select(channel => new DiscordLookupDestination(
+                new DiscordChannelId(channel.Id.ToString()),
+                channel.Name))
+            .DistinctBy(destination => destination.ChannelId.Value)
+            .ToArray();
+
+        return ValueTask.FromResult<IReadOnlyList<DiscordLookupDestination>>(destinations);
+    }
+
     private static bool MatchesUserQuery(SocketGuildUser user, string query)
     {
         return string.Equals(user.Id.ToString(), query, StringComparison.Ordinal)

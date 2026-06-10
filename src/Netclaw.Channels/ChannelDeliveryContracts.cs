@@ -217,7 +217,15 @@ public enum ChannelAddressResolutionStatus
     Resolved,
     NotFound,
     Ambiguous,
-    Unsupported
+    Unsupported,
+
+    /// <summary>
+    /// The result is an enumeration of every destination the channel can
+    /// deliver to (a blank-query listing), not a match against a query.
+    /// An empty candidate list is a valid listing: it means the channel is
+    /// reachable but has nothing it is currently allowed to deliver to.
+    /// </summary>
+    Listed
 }
 
 public sealed record ChannelAddressResolutionResult
@@ -259,6 +267,17 @@ public sealed record ChannelAddressResolutionResult
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(error);
         return new ChannelAddressResolutionResult(ChannelAddressResolutionStatus.Unsupported, [], error);
+    }
+
+    /// <summary>
+    /// A blank-query listing of every deliverable destination. Unlike
+    /// <see cref="Ambiguous"/>, an empty list is valid here — it means the
+    /// channel currently has no destinations it is allowed to deliver to.
+    /// </summary>
+    public static ChannelAddressResolutionResult Listed(IReadOnlyList<ResolvedChannelAddress> destinations)
+    {
+        ArgumentNullException.ThrowIfNull(destinations);
+        return new ChannelAddressResolutionResult(ChannelAddressResolutionStatus.Listed, destinations);
     }
 
     public ResolvedChannelAddress RequireSingle()
@@ -330,6 +349,53 @@ public interface IChannelOutputRenderer
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// A proactive outbound send resolved by the generic <c>send_channel_message</c>
+/// tool: post to a channel destination or open a direct-message conversation.
+/// </summary>
+public sealed record ChannelSendRequest
+{
+    public ChannelSendRequest(ChannelAddressKind addressKind, string targetId, string text)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(text);
+
+        AddressKind = addressKind;
+        TargetId = targetId;
+        Text = text;
+    }
+
+    /// <summary>
+    /// <see cref="ChannelAddressKind.Destination"/> for channel posts or
+    /// <see cref="ChannelAddressKind.DirectMessage"/> for DMs.
+    /// </summary>
+    public ChannelAddressKind AddressKind { get; init; }
+
+    /// <summary>
+    /// Stable platform ID: a channel ID for destination sends, a user ID for
+    /// direct-message sends.
+    /// </summary>
+    public string TargetId { get; init; }
+
+    public string Text { get; init; }
+}
+
+/// <summary>
+/// Per-channel proactive send implementation dispatched to by channel key from
+/// the generic <c>send_channel_message</c> tool. Implementations own the
+/// channel's outbound ACL checks (allowed channels/users, direct-message gate),
+/// the platform post, and wiring the new thread into the session pipeline.
+/// The returned string is the tool result shown to the LLM — either a success
+/// summary or an <c>Error: ...</c> message; implementations must not throw for
+/// expected send failures.
+/// </summary>
+public interface IChannelOutboundClient
+{
+    ChannelDescriptorKey Key { get; }
+
+    Task<string> SendMessageAsync(ChannelSendRequest request, CancellationToken ct = default);
+}
+
 public sealed record ChannelPrincipal(
     string StableId,
     string? DisplayName = null);
@@ -371,6 +437,21 @@ public interface IChannelAddressResolver
     ValueTask<ChannelAddressResolutionResult> ResolveAsync(
         ChannelAddressResolutionRequest request,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lists every destination this channel can currently deliver to,
+    /// gated by the same ACL checks <see cref="ResolveAsync"/> applies.
+    /// Listing exists for destinations only — never users — because the
+    /// deliverable destination set is bounded (bot memberships, guild
+    /// channels, or a configured allowlist) while user directories are
+    /// unbounded and only make sense as server-side searches. Default is
+    /// a loud <see cref="ChannelAddressResolutionResult.Unsupported"/>;
+    /// resolvers opt in by overriding.
+    /// </summary>
+    ValueTask<ChannelAddressResolutionResult> ListDestinationsAsync(
+        CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(ChannelAddressResolutionResult.Unsupported(
+            $"Channel '{Key}' does not support destination listing."));
 }
 
 public interface IChannelRegistry
@@ -387,8 +468,24 @@ public interface IChannelRegistry
 
     IChannelOutputRenderer GetOutputRenderer(ChannelDescriptorKey key);
 
+    /// <summary>
+    /// Returns the proactive outbound send client for the channel. Throws
+    /// <see cref="InvalidOperationException"/> when the channel is unknown or
+    /// no outbound client is registered for it.
+    /// </summary>
+    IChannelOutboundClient GetOutboundClient(ChannelDescriptorKey key);
+
     ValueTask<ChannelAddressResolutionResult> ResolveAddressAsync(
         ChannelAddressResolutionRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Lists every destination the channel can deliver to. Routed through
+    /// the same (key, Destination) resolver lookup as
+    /// <see cref="ResolveAddressAsync"/>.
+    /// </summary>
+    ValueTask<ChannelAddressResolutionResult> ListDestinationsAsync(
+        ChannelDescriptorKey key,
         CancellationToken cancellationToken = default);
 
     ValueTask<ChannelOutputRenderResult> RenderOutputAsync(
@@ -403,12 +500,14 @@ public sealed class ChannelRegistry : IChannelRegistry
     private readonly IReadOnlyDictionary<ChannelDescriptorKey, IChannelRuntimeSnapshotProvider> _snapshotProviders;
     private readonly IReadOnlyDictionary<(ChannelDescriptorKey Key, ChannelAddressKind AddressKind), IChannelAddressResolver> _addressResolvers;
     private readonly IReadOnlyDictionary<ChannelDescriptorKey, IChannelOutputRenderer> _outputRenderers;
+    private readonly IReadOnlyDictionary<ChannelDescriptorKey, IChannelOutboundClient> _outboundClients;
 
     public ChannelRegistry(
         IEnumerable<IChannelDescriptorProvider> descriptorProviders,
         IEnumerable<IChannelRuntimeSnapshotProvider> snapshotProviders,
         IEnumerable<IChannelAddressResolver>? addressResolvers = null,
-        IEnumerable<IChannelOutputRenderer>? outputRenderers = null)
+        IEnumerable<IChannelOutputRenderer>? outputRenderers = null,
+        IEnumerable<IChannelOutboundClient>? outboundClients = null)
     {
         ArgumentNullException.ThrowIfNull(descriptorProviders);
         ArgumentNullException.ThrowIfNull(snapshotProviders);
@@ -420,6 +519,7 @@ public sealed class ChannelRegistry : IChannelRegistry
         _snapshotProviders = BuildSnapshotProviderLookup(snapshotProviders);
         _addressResolvers = BuildAddressResolverLookup(addressResolvers ?? []);
         _outputRenderers = BuildOutputRendererLookup(outputRenderers ?? []);
+        _outboundClients = BuildOutboundClientLookup(outboundClients ?? []);
     }
 
     public IReadOnlyCollection<ChannelDescriptor> ListChannels() => _sortedDescriptors;
@@ -465,6 +565,16 @@ public sealed class ChannelRegistry : IChannelRegistry
         throw new InvalidOperationException($"No channel output renderer is registered for key '{key}'.");
     }
 
+    public IChannelOutboundClient GetOutboundClient(ChannelDescriptorKey key)
+    {
+        _ = GetChannel(key);
+
+        if (_outboundClients.TryGetValue(key, out var client))
+            return client;
+
+        throw new InvalidOperationException($"No channel outbound client is registered for key '{key}'.");
+    }
+
     public async ValueTask<ChannelAddressResolutionResult> ResolveAddressAsync(
         ChannelAddressResolutionRequest request,
         CancellationToken cancellationToken = default)
@@ -473,6 +583,14 @@ public sealed class ChannelRegistry : IChannelRegistry
 
         var resolver = GetResolver(request.ChannelKey, request.AddressKind);
         return await resolver.ResolveAsync(request, cancellationToken);
+    }
+
+    public async ValueTask<ChannelAddressResolutionResult> ListDestinationsAsync(
+        ChannelDescriptorKey key,
+        CancellationToken cancellationToken = default)
+    {
+        var resolver = GetResolver(key, ChannelAddressKind.Destination);
+        return await resolver.ListDestinationsAsync(cancellationToken);
     }
 
     public async ValueTask<ChannelOutputRenderResult> RenderOutputAsync(
@@ -564,6 +682,20 @@ public sealed class ChannelRegistry : IChannelRegistry
         }
 
         return outputRenderers;
+    }
+
+    private static IReadOnlyDictionary<ChannelDescriptorKey, IChannelOutboundClient> BuildOutboundClientLookup(
+        IEnumerable<IChannelOutboundClient> clients)
+    {
+        var outboundClients = new Dictionary<ChannelDescriptorKey, IChannelOutboundClient>();
+
+        foreach (var client in clients)
+        {
+            if (!outboundClients.TryAdd(client.Key, client))
+                throw new InvalidOperationException($"Duplicate channel outbound client key '{client.Key}' registered.");
+        }
+
+        return outboundClients;
     }
 }
 
