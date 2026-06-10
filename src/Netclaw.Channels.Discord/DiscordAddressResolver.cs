@@ -24,6 +24,13 @@ public interface IDiscordAddressLookupClient
     ValueTask<IReadOnlyList<DiscordLookupUser>> FindUsersAsync(string query, CancellationToken cancellationToken = default);
 
     ValueTask<IReadOnlyList<DiscordLookupDestination>> FindDestinationsAsync(string query, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Every text channel across the guilds the bot has joined, unfiltered.
+    /// ACL filtering happens in <see cref="DiscordAddressResolver"/> — the
+    /// client only reflects the gateway cache.
+    /// </summary>
+    ValueTask<IReadOnlyList<DiscordLookupDestination>> ListDestinationsAsync(CancellationToken cancellationToken = default);
 }
 
 public sealed class DiscordAddressResolver(
@@ -122,6 +129,27 @@ public sealed class DiscordAddressResolver(
             .ToArray();
 
         return ToResolutionResult(request.AddressKind, matches, query);
+    }
+
+    /// <summary>
+    /// Blank-query listing: every guild text channel the bot can see that
+    /// passes the same <see cref="DiscordAclPolicy.IsAllowedChannel"/> gate
+    /// the search path applies.
+    /// </summary>
+    public async ValueTask<ChannelAddressResolutionResult> ListDestinationsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var destinations = (await lookupClient.ListDestinationsAsync(cancellationToken))
+            .Where(destination => DiscordAclPolicy.IsAllowedChannel(destination.ChannelId, options, defaultChannelIdAccessor()))
+            .Select(destination => new ResolvedChannelAddress(
+                Key,
+                ChannelAddressKind.Destination,
+                destination.ChannelId.Value,
+                string.IsNullOrWhiteSpace(destination.Name) ? destination.ChannelId.Value : $"#{destination.Name}"))
+            .DistinctBy(address => address.StableId)
+            .ToArray();
+
+        return ChannelAddressResolutionResult.Listed(destinations);
     }
 
     private static ChannelAddressResolutionResult ToResolutionResult(

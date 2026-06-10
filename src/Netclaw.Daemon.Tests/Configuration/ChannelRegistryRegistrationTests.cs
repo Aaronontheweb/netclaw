@@ -9,7 +9,6 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Channels;
 using Netclaw.Channels.Discord;
-using Netclaw.Channels.Discord.Tools;
 using Netclaw.Channels.Mattermost;
 using Netclaw.Channels.Mattermost.Tools;
 using Netclaw.Channels.Slack;
@@ -112,10 +111,14 @@ public sealed class ChannelRegistryRegistrationTests
         });
 
         Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(IChannelTool));
-        Assert.False(IsRegistered<SendSlackMessageTool>(services));
+        Assert.False(IsRegistered<SendChannelMessageTool>(services));
+        Assert.False(IsRegistered<LookupChannelUserTool>(services));
+        Assert.False(IsRegistered<LookupChannelDestinationTool>(services));
+        Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(IChannelOutboundClient));
+        Assert.False(IsRegistered<SlackProactiveOutboundClient>(services));
         Assert.False(IsRegistered<LookupSlackUserTool>(services));
-        Assert.False(IsRegistered<SendDiscordMessageTool>(services));
-        Assert.False(IsRegistered<SendMattermostMessageTool>(services));
+        Assert.False(IsRegistered<DiscordProactiveOutboundClient>(services));
+        Assert.False(IsRegistered<MattermostProactiveOutboundClient>(services));
         Assert.False(IsRegistered<LookupMattermostUserTool>(services));
         Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(IChannelAddressResolver));
         Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(IChannelOutputRenderer));
@@ -134,18 +137,19 @@ public sealed class ChannelRegistryRegistrationTests
             ["Mattermost:Enabled"] = "true"
         });
 
+        // N enabled channels produce exactly ONE registration of each generic
+        // tool plus ONE IChannelTool forward each (3 channels → 3 forwards
+        // total, not 9).
         Assert.Equal(3, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelTool)));
-        Assert.True(IsRegistered<SendSlackMessageTool>(services));
+        Assert.Equal(1, services.Count(descriptor => descriptor.ServiceType == typeof(SendChannelMessageTool)));
+        Assert.Equal(1, services.Count(descriptor => descriptor.ServiceType == typeof(LookupChannelUserTool)));
+        Assert.Equal(1, services.Count(descriptor => descriptor.ServiceType == typeof(LookupChannelDestinationTool)));
+        Assert.Equal(3, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelOutboundClient)));
+        Assert.True(IsRegistered<SlackProactiveOutboundClient>(services));
         Assert.True(IsRegistered<LookupSlackUserTool>(services));
         Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(LookupSlackUserTool)));
-        Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(SendSlackMessageTool)));
-        Assert.True(IsRegistered<LookupChannelUserTool>(services));
-        Assert.True(IsRegistered<LookupChannelDestinationTool>(services));
-        Assert.True(IsRegistered<SendChannelMessageTool>(services));
-        Assert.True(IsRegistered<SendDiscordMessageTool>(services));
-        Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(SendDiscordMessageTool)));
-        Assert.True(IsRegistered<SendMattermostMessageTool>(services));
-        Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(SendMattermostMessageTool)));
+        Assert.True(IsRegistered<DiscordProactiveOutboundClient>(services));
+        Assert.True(IsRegistered<MattermostProactiveOutboundClient>(services));
         Assert.True(IsRegistered<LookupMattermostUserTool>(services));
         Assert.False(typeof(IChannelTool).IsAssignableFrom(typeof(LookupMattermostUserTool)));
         Assert.True(IsRegistered<DiscordProcessingOutputRenderer>(services));
@@ -273,6 +277,41 @@ public sealed class ChannelRegistryRegistrationTests
             "Duplicate channel address resolver key 'slack' for address kind 'User' registered.",
             ex.Message,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Registry_fails_loudly_on_duplicate_outbound_clients()
+    {
+        var key = ChannelDescriptorKey.FromChannelType(ChannelType.Slack);
+        var descriptor = BuildDescriptor(key, ChannelType.Slack, ChannelAddressKind.Destination);
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            new ChannelRegistry(
+                [new StaticChannelDescriptorProvider(descriptor)],
+                Array.Empty<IChannelRuntimeSnapshotProvider>(),
+                outboundClients: [new TestOutboundClient(key), new TestOutboundClient(key)]));
+
+        Assert.Contains("Duplicate channel outbound client key 'slack'", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Registry_resolves_each_enabled_channel_outbound_client_by_key()
+    {
+        using var provider = BuildProvider(new Dictionary<string, string?>
+        {
+            ["Slack:Enabled"] = "true",
+            ["Discord:Enabled"] = "true",
+            ["Mattermost:Enabled"] = "true"
+        });
+
+        var registry = provider.GetRequiredService<IChannelRegistry>();
+
+        Assert.IsType<SlackProactiveOutboundClient>(
+            registry.GetOutboundClient(ChannelDescriptorKey.FromChannelType(ChannelType.Slack)));
+        Assert.IsType<DiscordProactiveOutboundClient>(
+            registry.GetOutboundClient(ChannelDescriptorKey.FromChannelType(ChannelType.Discord)));
+        Assert.IsType<MattermostProactiveOutboundClient>(
+            registry.GetOutboundClient(ChannelDescriptorKey.FromChannelType(ChannelType.Mattermost)));
     }
 
     [Fact]
@@ -457,11 +496,9 @@ public sealed class ChannelRegistryRegistrationTests
             .AddInMemoryCollection(settings)
             .Build();
 
-        services.AddSlackChannelIntegration(configuration);
-        services.AddDiscordChannelIntegration(configuration);
-        services.AddMattermostChannelIntegration(configuration);
-        services.AddChannelSendTools(configuration);
-        services.AddChannelLookupTools(configuration);
+        // The generic channel tools are registered by the builder inside
+        // AddChannelIntegrations when at least one remote channel is enabled.
+        services.AddChannelIntegrations(configuration);
 
         return services;
     }
@@ -551,6 +588,14 @@ public sealed class ChannelRegistryRegistrationTests
             Request = request;
             return ValueTask.FromResult(Result);
         }
+    }
+
+    private sealed class TestOutboundClient(ChannelDescriptorKey key) : IChannelOutboundClient
+    {
+        public ChannelDescriptorKey Key { get; } = key;
+
+        public Task<string> SendMessageAsync(ChannelSendRequest request, CancellationToken ct = default)
+            => Task.FromResult($"sent via {Key.Value}");
     }
 
     private sealed class TestOutputRenderer(ChannelDescriptorKey key) : IChannelOutputRenderer

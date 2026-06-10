@@ -45,6 +45,7 @@ internal sealed class MattermostNetGatewayClient : IMattermostGatewayClient, IMa
         _lifecycleActor = actorSystem.ActorOf(
             MattermostNetGatewayLifecycleActor.CreateProps(
                 new MattermostNetGatewayTransport(client, timeProvider, logger),
+                timeProvider,
                 this,
                 logger),
             "mattermost-net-gateway-lifecycle");

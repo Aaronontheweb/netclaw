@@ -1071,11 +1071,9 @@ static void ConfigureDaemonServices(
 
     services.AddChannelRegistry();
     services.AddTuiChannelDescriptor();
-    services.AddSlackChannelIntegration(configuration);
-    services.AddDiscordChannelIntegration(configuration);
-    services.AddMattermostChannelIntegration(configuration);
-    services.AddChannelSendTools(configuration);
-    services.AddChannelLookupTools(configuration);
+    // Also registers the generic channel tools (send_channel_message + the two
+    // lookups) whenever at least one remote chat channel is enabled.
+    services.AddChannelIntegrations(configuration);
 
     // Config hot-reload watcher
     services.AddSingleton<ConfigWatcherService>();

@@ -64,7 +64,7 @@ public sealed record MattermostGatewaySnapshot(
     bool IsReady,
     string? HealthDetail,
     MattermostUserId? BotUserId,
-    string? BotUsername);
+    string? BotUsername) : IGatewaySnapshot;
 
 public interface IMattermostGatewayClient
 {

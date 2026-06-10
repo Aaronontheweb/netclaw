@@ -59,7 +59,7 @@ public sealed record DiscordGatewaySnapshot(
     bool IsConnected,
     bool IsReady,
     string? HealthDetail,
-    DiscordUserId? BotUserId);
+    DiscordUserId? BotUserId) : IGatewaySnapshot;
 
 public interface IDiscordGatewayClient
 {

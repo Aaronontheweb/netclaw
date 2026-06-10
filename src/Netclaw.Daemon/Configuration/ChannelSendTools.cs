@@ -8,39 +8,15 @@ using Microsoft.Extensions.AI;
 using Netclaw.Actors.Channels;
 using Netclaw.Channels;
 using Netclaw.Channels.Discord;
-using Netclaw.Channels.Discord.Tools;
 using Netclaw.Channels.Mattermost;
-using Netclaw.Channels.Mattermost.Tools;
-using Netclaw.Channels.Slack.Tools;
 using Netclaw.Tools;
 
 namespace Netclaw.Daemon.Configuration;
 
-internal static class ChannelSendToolRegistration
-{
-    public static IServiceCollection AddChannelSendTools(this IServiceCollection services, IConfiguration configuration)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(configuration);
-
-        var slackEnabled = IsChannelEnabled(configuration, "Slack");
-        var discordEnabled = IsChannelEnabled(configuration, "Discord");
-        var mattermostEnabled = IsChannelEnabled(configuration, "Mattermost");
-
-        if (slackEnabled || discordEnabled || mattermostEnabled)
-        {
-            services.AddSingleton<SendChannelMessageTool>();
-            services.AddSingleton<IChannelTool>(sp => sp.GetRequiredService<SendChannelMessageTool>());
-        }
-
-        return services;
-    }
-
-    private static bool IsChannelEnabled(IConfiguration configuration, string sectionName)
-        => bool.TryParse(configuration[$"{sectionName}:Enabled"], out var enabled) && enabled;
-}
-
-internal sealed class SendChannelMessageTool(IChannelRegistry registry, IServiceProvider services) : IChannelTool
+// Registered once per host by the remote chat channel builder
+// (RemoteChatChannelRegistrationExtensions.AddSharedChannelTools) whenever at
+// least one remote chat channel is enabled.
+internal sealed class SendChannelMessageTool(IChannelRegistry registry) : IChannelTool
 {
     private AITool? _aiTool;
     private JsonElement? _parameterSchema;
@@ -129,24 +105,23 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry, IService
         if (validationError is not null)
             return validationError;
 
-        var idParamName = destination.AddressKind == ChannelAddressKind.DirectMessage ? "UserId" : "ChannelId";
-        var delegateArguments = new Dictionary<string, object?>
+        IChannelOutboundClient outboundClient;
+        try
         {
-            ["Message"] = text.Trim(),
-            [idParamName] = destination.StableId
-        };
-
-        INetclawTool? sendTool = descriptor.ChannelType switch
+            // Duplicate-key detection happens once at ChannelRegistry
+            // construction, not per send.
+            outboundClient = registry.GetOutboundClient(key);
+        }
+        catch (InvalidOperationException)
         {
-            ChannelType.Slack => services.GetRequiredService<SendSlackMessageTool>(),
-            ChannelType.Discord => services.GetRequiredService<SendDiscordMessageTool>(),
-            ChannelType.Mattermost => services.GetRequiredService<SendMattermostMessageTool>(),
-            _ => null
-        };
+            // The descriptor advertises SendMessage but no outbound client was
+            // wired — surface as a tool error rather than an unhandled throw.
+            return $"Error: Channel '{key}' does not have a registered send adapter.";
+        }
 
-        return sendTool is not null
-            ? await sendTool.ExecuteAsync(delegateArguments, ct)
-            : $"Error: Channel '{key}' does not have a registered send adapter.";
+        return await outboundClient.SendMessageAsync(
+            new ChannelSendRequest(destination.AddressKind, destination.StableId, text.Trim()),
+            ct);
     }
 
     private JsonElement BuildParameterSchema()

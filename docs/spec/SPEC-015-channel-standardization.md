@@ -1,6 +1,6 @@
 # SPEC-015: Channel Infrastructure Standardization
 
-**Status:** Draft
+**Status:** Implemented (Phases 1-7); §1.4/§1.5 updated to the as-built API
 **Goal:** Reduce per-channel implementation cost from ~15 files to ~5, and close
 test coverage gaps identified in the cross-channel audit.
 
@@ -178,19 +178,23 @@ registration pattern discoverable.
 
 Replace per-channel `AddXxxChannelIntegration` methods with a fluent builder:
 
+As implemented (`RemoteChatChannelBuilder` in `Netclaw.Daemon`): the channel
+type and any additional output effects are parameters of `AddRemoteChatChannel`
+(so the descriptor registers eagerly even when the channel is disabled), and
+the `With*` methods take factories:
+
 ```csharp
 services.AddRemoteChatChannel<MattermostChannel, MattermostChannelOptions>(
-        "Mattermost", configuration)
-    .WithTransport<IMattermostGatewayClient, MattermostNetGatewayClient>()
-    .WithReplyClient<IMattermostReplyClient, MattermostNetReplyClient>()
-    .WithOutboundClient<IMattermostOutboundClient, MattermostNetOutboundClient>()
-    .WithResolver<MattermostAddressResolver>()
-    .WithRenderer<MattermostOutputRenderer>()
-    .WithReminderResolver<MattermostReminderTargetResolver>()
-    .WithThreadHistory<MattermostThreadHistoryFetcher>()
-    .WithSendTool<SendMattermostMessageTool>()
-    .WithLookupTool<LookupMattermostUserTool>()
-    .WithAdditionalOutputEffects(ChannelOutputEffectKind.ProcessingIndicator);
+        ChannelType.Mattermost, configuration)
+    .WithTransport<IMattermostGatewayClient>((sp, options) => ...)
+    .WithReplyClient<IMattermostReplyClient>((sp, options) => ...)
+    .WithProactiveSendClient((sp, options, channel) => ...)   // IChannelOutboundClient
+    .WithResolver((sp, options) => ...)                       // IChannelAddressResolver
+    .WithRenderer((sp, options) => ...)
+    .WithReminderResolver((sp, options) => ...)
+    .WithThreadHistory((sp, options) => ...)
+    .WithLookupTool((sp, options) => ...)
+    .WithServices((services, options) => ...);                // one escape hatch per channel for SDK quirks
 ```
 
 The builder handles:
@@ -228,15 +232,16 @@ public interface IChannelOutboundClient
 }
 ```
 
-Then `SendChannelMessageTool` can dispatch directly to the outbound client
-by key, and the per-channel send tools go away entirely. The per-channel
-`IXxxOutboundClient` implementations adopt the common interface.
-
-**Risk:** Medium. The per-channel tools have slightly different parameter
-schemas (Discord supports `thread_name`, Mattermost supports `root_post_id`).
-Need to verify the generic tool can accommodate channel-specific parameters
-without becoming a kitchen sink. Alternatively, keep per-channel tools but
-have them extend a generic base that handles the common validation/dispatch.
+`SendChannelMessageTool` dispatches directly to the outbound client by key,
+and the per-channel send tools were deleted entirely (Phase 7, implemented).
+The risk noted below turned out to be moot: since the registration builder
+landed, the per-channel send tools were never `IChannelTool`-marked — they were
+consumed only by `SendChannelMessageTool`'s internal switch, so their
+channel-specific parameters (`thread_name`, default-channel fallback) were
+unreachable dead surface. The per-channel logic now lives in
+`SlackProactiveOutboundClient` / `DiscordProactiveOutboundClient` /
+`MattermostProactiveOutboundClient`, which sit ABOVE the SDK transport
+interfaces because the ACL checks must live above the fake seam used in tests.
 
 ### Summary: what stays per-channel
 

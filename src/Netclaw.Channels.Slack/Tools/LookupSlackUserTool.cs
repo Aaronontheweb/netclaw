@@ -14,7 +14,7 @@ namespace Netclaw.Channels.Slack.Tools;
 
 /// <summary>
 /// LLM tool that looks up Slack users by name, display name, or email.
-/// Returns user IDs suitable for use with <see cref="SendSlackMessageTool"/>.
+/// Returns user IDs suitable for use with the generic send_channel_message tool.
 /// </summary>
 [NetclawTool("lookup_slack_user",
     "Look up a Slack user by name, display name, or email. " +

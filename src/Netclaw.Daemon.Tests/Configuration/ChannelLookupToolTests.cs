@@ -43,7 +43,9 @@ public sealed class ChannelLookupToolTests
 
         Assert.True(IsRegistered<LookupChannelUserTool>(services));
         Assert.True(IsRegistered<LookupChannelDestinationTool>(services));
-        Assert.Equal(2, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelTool)));
+        // Three IChannelTool forwards: the two lookup tools plus the generic
+        // send tool, all registered once by the builder.
+        Assert.Equal(3, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelTool)));
     }
 
     [Fact]
@@ -58,7 +60,9 @@ public sealed class ChannelLookupToolTests
 
         Assert.True(IsRegistered<LookupChannelUserTool>(services));
         Assert.True(IsRegistered<LookupChannelDestinationTool>(services));
-        Assert.Equal(2, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelTool)));
+        Assert.Equal(3, services.Count(descriptor => descriptor.ServiceType == typeof(IChannelTool)));
+        Assert.Equal(1, services.Count(descriptor => descriptor.ServiceType == typeof(LookupChannelUserTool)));
+        Assert.Equal(1, services.Count(descriptor => descriptor.ServiceType == typeof(LookupChannelDestinationTool)));
     }
 
     [Fact]
@@ -164,14 +168,139 @@ public sealed class ChannelLookupToolTests
         Assert.Contains("No channel address resolver is registered for key 'discord'", result);
     }
 
-    private static Task<string> ExecuteAsync(ChannelLookupTool tool, string channelKey, string query)
+    [Fact]
+    public async Task Blank_query_on_destination_lookup_lists_deliverable_destinations()
     {
-        return tool.ExecuteAsync(new Dictionary<string, object?>
+        var key = ChannelDescriptorKey.FromChannelType(ChannelType.Slack);
+        var resolver = new TestAddressResolver(key, ChannelAddressKind.Destination)
+        {
+            ListResult = ChannelAddressResolutionResult.Listed(
+            [
+                new ResolvedChannelAddress(key, ChannelAddressKind.Destination, "C1", "#general"),
+                new ResolvedChannelAddress(key, ChannelAddressKind.Destination, "C2", "#ops")
+            ])
+        };
+        var registry = BuildRegistry(
+            [BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelAddressKind.Destination)],
+            [resolver]);
+        var tool = new LookupChannelDestinationTool(registry);
+
+        var result = await ExecuteAsync(tool, "slack", query: null);
+
+        Assert.Contains("can deliver to 2 destination(s)", result);
+        Assert.Contains("stable_id: C1", result);
+        Assert.Contains("display_name: #ops", result);
+    }
+
+    [Fact]
+    public async Task Blank_query_listing_with_no_destinations_explains_why()
+    {
+        var key = ChannelDescriptorKey.FromChannelType(ChannelType.Mattermost);
+        var resolver = new TestAddressResolver(key, ChannelAddressKind.Destination)
+        {
+            ListResult = ChannelAddressResolutionResult.Listed([])
+        };
+        var registry = BuildRegistry(
+            [BuildDescriptor(ChannelType.Mattermost, isEnabled: true, ChannelAddressKind.Destination)],
+            [resolver]);
+        var tool = new LookupChannelDestinationTool(registry);
+
+        var result = await ExecuteAsync(tool, "mattermost", query: null);
+
+        Assert.Contains("no destinations it can currently deliver to", result);
+    }
+
+    [Fact]
+    public async Task Blank_query_listing_caps_output_and_reports_remainder()
+    {
+        var key = ChannelDescriptorKey.FromChannelType(ChannelType.Slack);
+        var destinations = Enumerable.Range(1, 53)
+            .Select(i => new ResolvedChannelAddress(key, ChannelAddressKind.Destination, $"C{i}", $"#room-{i}"))
+            .ToArray();
+        var resolver = new TestAddressResolver(key, ChannelAddressKind.Destination)
+        {
+            ListResult = ChannelAddressResolutionResult.Listed(destinations)
+        };
+        var registry = BuildRegistry(
+            [BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelAddressKind.Destination)],
+            [resolver]);
+        var tool = new LookupChannelDestinationTool(registry);
+
+        var result = await ExecuteAsync(tool, "slack", query: null);
+
+        Assert.Contains("can deliver to 53 destination(s)", result);
+        Assert.Contains("stable_id: C50", result);
+        Assert.DoesNotContain("stable_id: C51;", result);
+        Assert.Contains("and 3 more", result);
+    }
+
+    [Fact]
+    public async Task Blank_query_listing_surfaces_unsupported_resolver()
+    {
+        var key = ChannelDescriptorKey.FromChannelType(ChannelType.Discord);
+        // No ListResult set: the resolver answers Unsupported, mirroring the
+        // IChannelAddressResolver interface default for non-opted-in resolvers.
+        var resolver = new TestAddressResolver(key, ChannelAddressKind.Destination);
+        var registry = BuildRegistry(
+            [BuildDescriptor(ChannelType.Discord, isEnabled: true, ChannelAddressKind.Destination)],
+            [resolver]);
+        var tool = new LookupChannelDestinationTool(registry);
+
+        var result = await ExecuteAsync(tool, "discord", query: null);
+
+        Assert.Contains("Error:", result);
+        Assert.Contains("does not support destination listing", result);
+    }
+
+    [Fact]
+    public async Task Blank_query_on_user_lookup_remains_an_error()
+    {
+        var key = ChannelDescriptorKey.FromChannelType(ChannelType.Slack);
+        var resolver = new TestAddressResolver(key, ChannelAddressKind.User);
+        var registry = BuildRegistry(
+            [BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelAddressKind.User)],
+            [resolver]);
+        var tool = new LookupChannelUserTool(registry);
+
+        var result = await ExecuteAsync(tool, "slack", query: null);
+
+        Assert.Contains("Error: 'query' parameter is required.", result);
+    }
+
+    [Fact]
+    public void Query_is_optional_for_destination_lookup_but_required_for_user_lookup()
+    {
+        var registry = BuildRegistry(
+            BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelAddressKind.User, ChannelAddressKind.Destination));
+
+        var destinationRequired = ReadRequired(new LookupChannelDestinationTool(registry).ParameterSchema);
+        var userRequired = ReadRequired(new LookupChannelUserTool(registry).ParameterSchema);
+
+        Assert.DoesNotContain("query", destinationRequired);
+        Assert.Contains("query", userRequired);
+        Assert.Contains("channel_key", destinationRequired);
+    }
+
+    private static string[] ReadRequired(JsonElement schema)
+    {
+        return schema
+            .GetProperty("required")
+            .EnumerateArray()
+            .Select(element => element.GetString()!)
+            .ToArray();
+    }
+
+    private static Task<string> ExecuteAsync(ChannelLookupTool tool, string channelKey, string? query)
+    {
+        var arguments = new Dictionary<string, object?>
         {
             ["channel_key"] = channelKey,
-            ["query"] = query,
             ["_rationale"] = "test"
-        }, TestContext.Current.CancellationToken);
+        };
+        if (query is not null)
+            arguments["query"] = query;
+
+        return tool.ExecuteAsync(arguments, TestContext.Current.CancellationToken);
     }
 
     private static string[] ReadChannelKeyEnum(JsonElement schema)
@@ -192,7 +321,9 @@ public sealed class ChannelLookupToolTests
             .AddInMemoryCollection(settings)
             .Build();
 
-        services.AddChannelLookupTools(configuration);
+        // The generic lookup tools are registered by the remote chat channel
+        // builder when at least one channel is enabled.
+        services.AddChannelIntegrations(configuration);
         return services;
     }
 
@@ -243,12 +374,28 @@ public sealed class ChannelLookupToolTests
 
         public ChannelAddressResolutionResult Result { get; init; } = ChannelAddressResolutionResult.NotFound();
 
+        /// <summary>
+        /// When null, listing answers the same loud Unsupported the
+        /// IChannelAddressResolver interface default produces (an explicit
+        /// implementation shadows the default, so it is replicated here).
+        /// </summary>
+        public ChannelAddressResolutionResult? ListResult { get; init; }
+
         public ValueTask<ChannelAddressResolutionResult> ResolveAsync(
             ChannelAddressResolutionRequest request,
             CancellationToken cancellationToken = default)
         {
             Request = request;
             return ValueTask.FromResult(Result);
+        }
+
+        public ValueTask<ChannelAddressResolutionResult> ListDestinationsAsync(
+            CancellationToken cancellationToken = default)
+        {
+            return ListResult is not null
+                ? ValueTask.FromResult(ListResult)
+                : ValueTask.FromResult(ChannelAddressResolutionResult.Unsupported(
+                    $"Channel '{Key}' does not support destination listing."));
         }
     }
 }

@@ -32,13 +32,23 @@ public interface ISlackTargetLookupClient
 {
     Task<SlackChannelPage> ListChannelsAsync(string? cursor, CancellationToken ct = default);
     Task<SlackUserPage> ListUsersAsync(string? cursor, CancellationToken ct = default);
+
+    /// <summary>
+    /// Fetches metadata (name, archived state) for a single conversation via
+    /// <c>conversations.info</c>. Throws <see cref="SlackException"/> when the
+    /// channel is unknown or unreadable by the bot.
+    /// </summary>
+    Task<Conversation> GetChannelInfoAsync(string channelId, CancellationToken ct = default);
 }
 
 public sealed class SlackApiTargetLookupClient(ISlackApiClient slackApi) : ISlackTargetLookupClient
 {
     public async Task<SlackChannelPage> ListChannelsAsync(string? cursor, CancellationToken ct = default)
     {
+        // Archived channels are never deliverable, so they must not resolve
+        // through name search either.
         var page = await slackApi.Conversations.List(
+            excludeArchived: true,
             types: [ConversationType.PublicChannel, ConversationType.PrivateChannel],
             cursor: cursor,
             cancellationToken: ct);
@@ -51,6 +61,9 @@ public sealed class SlackApiTargetLookupClient(ISlackApiClient slackApi) : ISlac
         var page = await slackApi.Users.List(cursor: cursor, cancellationToken: ct);
         return new SlackUserPage(page.Members.ToList(), page.ResponseMetadata?.NextCursor);
     }
+
+    public Task<Conversation> GetChannelInfoAsync(string channelId, CancellationToken ct = default)
+        => slackApi.Conversations.Info(channelId, cancellationToken: ct);
 }
 
 public sealed class SlackTargetResolver(
@@ -155,6 +168,60 @@ public sealed class SlackTargetResolver(
 
         var matches = await FindChannelMatchesAsync(raw, cancellationToken);
         return ToResolutionResult(request.AddressKind, matches, raw);
+    }
+
+    /// <summary>
+    /// Blank-query listing derived from configuration, mirroring the
+    /// Mattermost resolver: the deliverable destination set is exactly the
+    /// runtime-resolved default channel plus
+    /// <see cref="SlackChannelOptions.AllowedChannelIds"/> — the same
+    /// allowlist <see cref="SlackAclPolicy.IsAllowedChannel"/> enforces — so
+    /// no workspace-wide <c>conversations.list</c> pagination is needed
+    /// (O(allowlist) instead of O(workspace) rate-limited calls). Display
+    /// names are resolved per channel via <c>conversations.info</c>; channels
+    /// whose info reports archived are skipped because archived channels are
+    /// never deliverable. Membership is not required for a channel to appear
+    /// here — the operator allowlisted it; a send to a channel the bot has
+    /// not joined fails loudly at delivery time.
+    /// </summary>
+    public async ValueTask<ChannelAddressResolutionResult> ListDestinationsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var ids = new List<string>();
+        if (defaultChannelIdAccessor() is { } defaultChannel)
+            ids.Add(defaultChannel.Value);
+
+        ids.AddRange(options.AllowedChannelIds);
+
+        var destinations = new List<ResolvedChannelAddress>();
+        foreach (var id in ids
+                     .Where(id => !string.IsNullOrWhiteSpace(id))
+                     .Distinct(StringComparer.Ordinal)
+                     .Order(StringComparer.Ordinal))
+        {
+            Conversation? info;
+            try
+            {
+                info = await lookupClient.GetChannelInfoAsync(id, cancellationToken);
+            }
+            catch (SlackException)
+            {
+                // Fall back to the raw ID as the display name (Mattermost
+                // precedent): the operator configured this channel as
+                // deliverable even if the bot cannot read its metadata.
+                info = null;
+            }
+
+            // Archived channels are never deliverable — skip them.
+            if (info?.IsArchived == true)
+                continue;
+
+            var displayName = string.IsNullOrWhiteSpace(info?.Name) ? id : $"#{info!.Name}";
+            destinations.Add(new ResolvedChannelAddress(
+                Key, ChannelAddressKind.Destination, id, displayName));
+        }
+
+        return ChannelAddressResolutionResult.Listed(destinations);
     }
 
     private async Task<string?> ResolveChannelByNameAsync(string channelName, CancellationToken ct)
