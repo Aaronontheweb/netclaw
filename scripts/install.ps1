@@ -226,8 +226,8 @@ try {
     # Only runs when -Channel was explicitly passed. Without this guard a plain
     # upgrade would silently overwrite an existing beta channel to stable.
     if ($PSBoundParameters.ContainsKey('Channel')) {
-        $configDir = Join-Path $env:USERPROFILE ".netclaw"
-        $configFile = Join-Path $configDir "config\netclaw.json"
+        $configDir = if ($env:NETCLAW_CONFIG_DIR) { $env:NETCLAW_CONFIG_DIR } else { Join-Path $env:USERPROFILE ".netclaw\config" }
+        $configFile = Join-Path $configDir "netclaw.json"
         if (Test-Path $configFile) {
             try {
                 $existingConfig = Get-Content -Raw $configFile | ConvertFrom-Json
@@ -249,8 +249,7 @@ try {
         } elseif ($Channel -ne "stable") {
             # Fresh install: config doesn't exist yet. Write a minimal seed so
             # `netclaw init` can discover the channel preference.
-            $configSubDir = Join-Path $configDir "config"
-            New-Item -ItemType Directory -Path $configSubDir -Force | Out-Null
+            New-Item -ItemType Directory -Path $configDir -Force | Out-Null
             $seed = @{ configVersion = 1; Daemon = @{ UpdateChannel = $Channel } }
             $seed | ConvertTo-Json -Depth 5 | Set-Content -Path $configFile -Encoding UTF8
             Write-Host "  Created $configFile with UpdateChannel '$Channel'"
