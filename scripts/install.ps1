@@ -222,6 +222,32 @@ try {
         return
     }
 
+    # ── Persist UpdateChannel into config ──
+    # When -Channel is specified and a config file exists, write Daemon.UpdateChannel
+    # so the daemon's self-update mechanism uses the correct channel. Setting "stable"
+    # explicitly removes a stale "beta" override; setting "beta" opts into prereleases.
+    $configDir = Join-Path $env:LOCALAPPDATA "netclaw"
+    $configFile = Join-Path $configDir "config\netclaw.json"
+    if (Test-Path $configFile) {
+        try {
+            $existingConfig = Get-Content -Raw $configFile | ConvertFrom-Json
+            if (-not $existingConfig.Daemon) {
+                $existingConfig | Add-Member -NotePropertyName "Daemon" -NotePropertyValue ([PSCustomObject]@{ UpdateChannel = $Channel })
+            } else {
+                if ($existingConfig.Daemon.PSObject.Properties["UpdateChannel"]) {
+                    $existingConfig.Daemon.UpdateChannel = $Channel
+                } else {
+                    $existingConfig.Daemon | Add-Member -NotePropertyName "UpdateChannel" -NotePropertyValue $Channel
+                }
+            }
+            $existingConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $configFile -Encoding UTF8
+            Write-Host "  Set Daemon.UpdateChannel to '$Channel' in $configFile"
+        } catch {
+            Write-Host "  Note: could not update Daemon.UpdateChannel in config: $_"
+            Write-Host "  To receive $Channel updates, set Daemon.UpdateChannel to '$Channel' in $configFile"
+        }
+    }
+
     # Check PATH and offer to add if missing
     Write-Host ""
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")

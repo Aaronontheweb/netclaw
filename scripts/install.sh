@@ -272,6 +272,24 @@ if [ "$DRY_RUN" = true ]; then
     exit 0
 fi
 
+# ── Persist UpdateChannel into config ──
+# When --channel is specified and a config file exists, write Daemon.UpdateChannel
+# so the daemon's self-update mechanism uses the correct channel. Setting "stable"
+# explicitly removes a stale "beta" override; setting "beta" opts into prereleases.
+CONFIG_DIR="${CONFIG_DIR:-$HOME/.netclaw/config}"
+CONFIG_FILE="$CONFIG_DIR/netclaw.json"
+if [ -f "$CONFIG_FILE" ]; then
+    if command -v jq >/dev/null 2>&1; then
+        jq --arg ch "$CHANNEL" '.Daemon = ((.Daemon // {}) + {UpdateChannel: $ch})' \
+            "$CONFIG_FILE" > "${CONFIG_FILE}.tmp" && mv "${CONFIG_FILE}.tmp" "$CONFIG_FILE"
+        echo "  Set Daemon.UpdateChannel to '$CHANNEL' in $CONFIG_FILE"
+    else
+        echo "  Note: jq not found — could not set Daemon.UpdateChannel in config."
+        echo "  To receive $CHANNEL updates, add to $CONFIG_FILE:"
+        echo "    \"Daemon\": { \"UpdateChannel\": \"$CHANNEL\" }"
+    fi
+fi
+
 # PATH instructions
 echo ""
 if echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
