@@ -40,7 +40,7 @@
 - [x] 6.2 Update `src/Netclaw.Configuration/Resources/AGENTS.md` § Background Jobs: jobs may run indefinitely, log streams live, killed when conversation goes idle, notified on all termination including Lost; document alternatives for long detached work (check-back reminders, scheduled tasks)
 - [x] 6.3 Update `feeds/skills/.system/files/netclaw-operations/SKILL.md` § Background Jobs with the same semantics + monitoring guidance (poll log for readiness, cancel when done); bump `metadata.version`
 - [x] 6.4 Add eval regression case: background job submitted → read live log → check status → cancel → process tree gone
-- [ ] 6.5 Run `./evals/run-evals.sh` (identity template + skill content changed)
+- [x] 6.5 Run `./evals/run-evals.sh` (identity template + skill content changed)
 
 ## 7. Quality gates
 

@@ -371,6 +371,18 @@ start_eval_daemon() {
     awk 'BEGIN{x=1;for(i=1;i<=30000;i++){x=(x*48271)%2147483647;print x}}' \
         > "$EVAL_HOME/data/workspaces/netclaw-eval-largefile.txt"
 
+    # Pre-trust the 'sleep' verb so the background-job lifecycle eval can
+    # actually submit its job: the headless container has no approval
+    # requester, and background submission evaluates the approval gate before
+    # StartBackgroundJob — without this every submission dies at the gate and
+    # the case can only test API shape, not the lifecycle. trust-verb writes a
+    # global-wildcard (verb, null) entry to tool-approvals.json under the
+    # CLI's NETCLAW_HOME; $EVAL_HOME/data is what the container mounts at
+    # /home/netclaw/.netclaw, and the daemon re-reads the file per approval
+    # evaluation.
+    NETCLAW_HOME="$EVAL_HOME/data" "$NETCLAW_BIN" approvals trust-verb sleep --audience personal >/dev/null 2>&1 \
+        || echo "WARN: could not pre-trust 'sleep' — tool_background_job_lifecycle will fail at the approval gate" >&2
+
     # The eval container runs as the non-root `netclaw` user and needs write
     # access to the bind-mounted identity, logs, skills, and data trees.
     chmod -R ugo+rwX "$EVAL_HOME/identity" "$EVAL_HOME/logs" "$EVAL_HOME/data" "$EVAL_HOME/skills"
@@ -1028,12 +1040,16 @@ assert_tool_timeout_arg_recovery() {
 
 assert_tool_background_job_lifecycle() {
     # Detached-process regression (hung-session fix): a long-running command
-    # must go through background submission (not block a synchronous call),
-    # be monitorable while running, and be cancelled when done.
-    # shell_execute proves the submit; check_background_job proves the agent
-    # manages the job through the job surface instead of re-running or
-    # abandoning the process.
-    stdout_contains '\[tool:call\] shell_execute' \
+    # must go through background submission (not block a synchronous call)
+    # and be managed through the job surface (check_background_job), not
+    # re-run or abandoned. Behavioral assertion only: the headless eval
+    # container has no approval requester and 'sleep' is not on the safe
+    # command allowlist, so the submission is denied at the approval gate —
+    # the daemon-side lifecycle itself is covered by the unit/integration
+    # suite. What this eval proves is that the MODEL reaches for the right
+    # API shape: a shell_execute call carrying _background:true, plus a
+    # check_background_job call for status/cancel.
+    stdout_contains '\[tool:call\] shell_execute(.*_background.:true' \
         && stdout_contains '\[tool:call\] check_background_job'
 }
 
@@ -1501,7 +1517,7 @@ run_all() {
         "Run 'echo netclaw-timeout-eval-ok' in the shell with a 5 minute timeout." \
         "Use the shell to run: echo netclaw-timeout-eval-ok — give it a 300 second timeout since it might be slow."
 
-    run_case tool_background_job_lifecycle "background job submitted, monitored, cancelled" \
+    run_multi_turn_case tool_background_job_lifecycle "background job submitted, monitored, cancelled" \
         "Run 'sleep 120' as a background job — it should keep running while we keep talking. Tell me the job id and where its output log is." \
         "Check that background job's status, then cancel it — we're done with it."
 
