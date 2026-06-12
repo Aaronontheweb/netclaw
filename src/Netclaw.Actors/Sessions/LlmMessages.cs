@@ -78,9 +78,17 @@ internal sealed record ToolExecutionCompleted : INoSerializationVerificationNeed
     public List<FileAttachmentInfo> FileAttachments { get; init; } = [];
     public List<CompletedSubAgentRun> CompletedSubAgentRuns { get; init; } = [];
     public List<AcceptedSubAgentFinding> AcceptedSubAgentFindings { get; init; } = [];
+    public List<Jobs.ActiveJobInfo> StartedBackgroundJobs { get; init; } = [];
 }
 
 internal sealed record ToolExecutionSingleCompleted(ToolCallResult Result) : INoSerializationVerificationNeeded;
+
+/// <summary>
+/// Piped back to a passivating session when the background-job reap ask fails
+/// (timeout or manager error). Passivation proceeds — loudly — because the
+/// manager's kill is idempotent and no job process outlives the daemon.
+/// </summary>
+internal sealed record JobReapFailed(Exception Cause) : INoSerializationVerificationNeeded;
 
 internal sealed record ToolExecutionBatchCompleted : INoSerializationVerificationNeeded;
 

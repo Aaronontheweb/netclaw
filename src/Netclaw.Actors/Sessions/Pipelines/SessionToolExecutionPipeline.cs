@@ -22,13 +22,17 @@ namespace Netclaw.Actors.Sessions.Pipelines;
 /// <summary>
 /// Result of a single tool call execution, including the serialized message,
 /// file attachments, and any sub-agent activity.
+/// <paramref name="StartedBackgroundJob"/> is set when the call was routed to
+/// background execution, so the session actor can track the job in
+/// <c>SessionState.ActiveBackgroundJobs</c>.
 /// </summary>
 internal sealed record ToolCallResult(
     SerializableChatMessage Message,
     IReadOnlyList<SerializableMediaReference> ModelInputMediaReferences,
     IReadOnlyList<FileAttachmentInfo> FileAttachments,
     IReadOnlyList<CompletedSubAgentRun> CompletedSubAgentRuns,
-    IReadOnlyList<AcceptedSubAgentFinding> AcceptedSubAgentFindings);
+    IReadOnlyList<AcceptedSubAgentFinding> AcceptedSubAgentFindings,
+    Jobs.ActiveJobInfo? StartedBackgroundJob = null);
 
 internal sealed record ModelInputMaterializationResult(
     IReadOnlyList<SerializableMediaReference> MediaReferences,
@@ -153,7 +157,8 @@ internal static class SessionToolExecutionPipeline
                 ModelInputMediaReferences = modelInputMediaReferences,
                 FileAttachments = fileAttachments,
                 CompletedSubAgentRuns = [.. results.SelectMany(r => r.CompletedSubAgentRuns)],
-                AcceptedSubAgentFindings = [.. results.SelectMany(r => r.AcceptedSubAgentFindings)]
+                AcceptedSubAgentFindings = [.. results.SelectMany(r => r.AcceptedSubAgentFindings)],
+                StartedBackgroundJobs = [.. results.Where(r => r.StartedBackgroundJob is not null).Select(r => r.StartedBackgroundJob!)]
             });
         }
         catch (TimeoutException ex)
@@ -394,10 +399,11 @@ internal static class SessionToolExecutionPipeline
                         tc, sessionId, source, auditLogger, timeProvider,
                         turnContext,
                         meta, backgroundJobManager,
-                        // Honor the agent's requested timeout; when absent, the
-                        // inherited per-call default applies (same source as the
-                        // synchronous path).
-                        meta.TimeoutHintSeconds ?? (int)timeout.TotalSeconds,
+                        // Honor the agent's requested timeout; when absent, no
+                        // kill timer is armed — a background job is a detached
+                        // process with no completion expectation, reaped by its
+                        // own exit, cancellation, or session passivation.
+                        meta.TimeoutHintSeconds ?? 0,
                         sw.Elapsed, logger,
                         context.AppliedApprovalDecision,
                         context.AppliedApprovalPattern);
@@ -497,10 +503,11 @@ internal static class SessionToolExecutionPipeline
                         tc, sessionId, source, auditLogger, timeProvider,
                         turnContext,
                         meta, backgroundJobManager,
-                        // Honor the agent's requested timeout; when absent, the
-                        // inherited per-call default applies (same source as the
-                        // synchronous path).
-                        meta.TimeoutHintSeconds ?? (int)timeout.TotalSeconds,
+                        // Honor the agent's requested timeout; when absent, no
+                        // kill timer is armed — a background job is a detached
+                        // process with no completion expectation, reaped by its
+                        // own exit, cancellation, or session passivation.
+                        meta.TimeoutHintSeconds ?? 0,
                         sw.Elapsed, logger,
                         decision.ToString(),
                         string.Join(", ", ctx.Patterns));
@@ -788,8 +795,11 @@ internal static class SessionToolExecutionPipeline
                 ApprovalPattern = approvalPattern
             });
 
-            var resultText = $"Background job {started.JobId.Value} submitted. " +
-                             "Use check_background_job to monitor progress or cancel.";
+            var logPathHint = started.OutputLogPath is not null
+                ? $" Output streams to {started.OutputLogPath} while the job runs — file_read/grep it to monitor."
+                : string.Empty;
+            var resultText = $"Background job {started.JobId.Value} submitted.{logPathHint} " +
+                             "Use check_background_job to check status or cancel.";
             var resultMessage = new SerializableChatMessage
             {
                 Role = Protocol.ChatRole.Tool,
@@ -797,7 +807,17 @@ internal static class SessionToolExecutionPipeline
                 ToolCallId = new ToolCallId(tc.CallId),
                 Name = tc.Name
             };
-            return new ToolCallResult(resultMessage, [], [], [], []);
+            var jobInfo = new Jobs.ActiveJobInfo
+            {
+                JobId = started.JobId,
+                Command = command,
+                Rationale = startCmd.Rationale,
+                StartedAtMs = timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
+                Audience = audience.Value,
+                Boundary = boundary.Value,
+                OutputLogPath = started.OutputLogPath
+            };
+            return new ToolCallResult(resultMessage, [], [], [], [], jobInfo);
         }
         catch (Exception ex)
         {

@@ -106,11 +106,43 @@ public sealed record SessionState
             activeJobs = activeJobs.Remove(evt.SourceBackgroundJobId);
         }
 
+        // Reaped entries were surfaced in this turn's context block (the
+        // assembler includes them whenever present) — prune so the agent
+        // learns of the reap exactly once instead of on every turn forever.
+        activeJobs = PruneReaped(activeJobs);
+
         return this with
         {
             History = History.Add(evt.UserMessage).Add(evt.AssistantReply),
             TurnCount = TurnCount + 1,
             ProcessedReminderIds = processedReminders,
+            ProcessedBackgroundJobIds = processedJobs,
+            ActiveBackgroundJobs = activeJobs
+        };
+    }
+
+    /// <summary>
+    /// Per-turn background-job bookkeeping for the LIVE turn-completion paths,
+    /// which mutate state inline instead of going through
+    /// <see cref="Apply(TurnRecorded)"/>: dedup-records a delivery turn's job
+    /// ID, removes the delivered entry, and prunes reaped entries that were
+    /// surfaced in this turn's context block. Mirrors the job logic in
+    /// <see cref="Apply(TurnRecorded)"/> — keep the two in lockstep.
+    /// </summary>
+    public SessionState CompleteTurnBackgroundJobBookkeeping(string? sourceBackgroundJobId)
+    {
+        var processedJobs = ProcessedBackgroundJobIds;
+        var activeJobs = ActiveBackgroundJobs;
+        if (!string.IsNullOrEmpty(sourceBackgroundJobId))
+        {
+            processedJobs = processedJobs.Add(sourceBackgroundJobId);
+            activeJobs = activeJobs.Remove(sourceBackgroundJobId);
+        }
+
+        activeJobs = PruneReaped(activeJobs);
+
+        return this with
+        {
             ProcessedBackgroundJobIds = processedJobs,
             ActiveBackgroundJobs = activeJobs
         };
@@ -178,6 +210,38 @@ public sealed record SessionState
         {
             ActiveBackgroundJobs = ActiveBackgroundJobs.SetItem(jobKey, info)
         };
+    }
+
+    /// <summary>
+    /// Marks every tracked job as reaped (killed at session passivation). The
+    /// marked state is captured by the passivation snapshot so the next
+    /// rehydration surfaces the reap to the agent exactly once.
+    /// </summary>
+    public SessionState MarkAllBackgroundJobsReaped(long reapedAtMs)
+    {
+        if (ActiveBackgroundJobs.IsEmpty)
+            return this;
+
+        var marked = ActiveBackgroundJobs;
+        foreach (var (key, job) in marked)
+        {
+            if (job.ReapedAtMs is null)
+                marked = marked.SetItem(key, job with { ReapedAtMs = reapedAtMs });
+        }
+
+        return this with { ActiveBackgroundJobs = marked };
+    }
+
+    private static ImmutableDictionary<string, ActiveJobInfo> PruneReaped(
+        ImmutableDictionary<string, ActiveJobInfo> activeJobs)
+    {
+        foreach (var (key, job) in activeJobs)
+        {
+            if (job.ReapedAtMs is not null)
+                activeJobs = activeJobs.Remove(key);
+        }
+
+        return activeJobs;
     }
 
     // ── Command helpers ──

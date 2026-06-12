@@ -1026,6 +1026,17 @@ assert_tool_timeout_arg_recovery() {
         && stdout_contains 'netclaw-timeout-eval-ok'
 }
 
+assert_tool_background_job_lifecycle() {
+    # Detached-process regression (hung-session fix): a long-running command
+    # must go through background submission (not block a synchronous call),
+    # be monitorable while running, and be cancelled when done.
+    # shell_execute proves the submit; check_background_job proves the agent
+    # manages the job through the job surface instead of re-running or
+    # abandoning the process.
+    stdout_contains '\[tool:call\] shell_execute' \
+        && stdout_contains '\[tool:call\] check_background_job'
+}
+
 # Category 5: Grounding & Alignment
 assert_grounding_no_hallucinate_version() {
     stdout_contains '\[tool:call\]'
@@ -1489,6 +1500,10 @@ run_all() {
     run_case tool_timeout_arg_recovery "long-timeout shell call lands on _timeout_seconds" \
         "Run 'echo netclaw-timeout-eval-ok' in the shell with a 5 minute timeout." \
         "Use the shell to run: echo netclaw-timeout-eval-ok — give it a 300 second timeout since it might be slow."
+
+    run_case tool_background_job_lifecycle "background job submitted, monitored, cancelled" \
+        "Run 'sleep 120' as a background job — it should keep running while we keep talking. Tell me the job id and where its output log is." \
+        "Check that background job's status, then cancel it — we're done with it."
 
     end_category
 

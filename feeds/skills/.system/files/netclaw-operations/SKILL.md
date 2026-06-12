@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.12.1"
+  version: "2.13.0"
 ---
 
 # Netclaw Operations
@@ -246,43 +246,60 @@ the user to add the path to trusted roots in config.
 
 ## Background Jobs
 
-Shell commands expected to run longer than the session timeout can be submitted
-as background jobs. Background jobs run independently of the session — results
-are delivered asynchronously when the job completes, even if the session was
-passivated.
+A background job is a **detached process with no expectation of completion** —
+use it for anything that outlives a single tool call: long builds, test suites,
+dev servers, watchers. Output streams to the job's log file while it runs, and
+you are notified whenever the process terminates, by whatever cause.
 
 To submit: set `_background: true` in the `shell_execute` tool call metadata.
-Approval gates are evaluated before the job starts.
+Approval gates are evaluated before the job starts. The submit result includes
+the output log path.
+
+Lifecycle:
+
+- **No `_timeout_seconds` = no kill timer.** The job runs until it exits, you
+  cancel it, or the session passivates. A positive `_timeout_seconds` arms an
+  explicit kill timer.
+- **Jobs are killed when the session passivates** (conversation idle past the
+  idle timeout). A job killed this way shows as `reaped` in
+  `[active-background-jobs]` on your next turn — its process is gone; resubmit
+  if still needed (its output log remains readable). For work that must survive
+  an idle conversation, use a scheduled task; check-back reminders also keep
+  the session (and its jobs) alive across a long wait.
+- On daemon restart, running jobs are killed and you receive a `lost`
+  notification with the log path — relaunch if still needed.
+- Process exit (success or failure) delivers a result turn with exit code,
+  output tail, and log path — even if the session was passivated mid-flight.
+
+Monitoring a running job (e.g. waiting for a dev server to come up):
+
+- `file_read`/`grep` the output log — it streams live (secret-redacted,
+  rotation-bounded) at `~/.netclaw/jobs/{id}/output.log`.
+- `check_background_job(JobId: "id")` — status, elapsed time, live output tail
+- Probe the service directly (e.g. curl the port) once the log shows it started.
+- `check_background_job(JobId: "id", Cancel: true)` — cancel a running job.
+  **Cancel servers and watchers when you are done validating** — do not leave
+  them holding one of the 5 concurrent job slots.
 
 Rules:
 
 - Only `shell_execute` supports background mode. Other tools ignore `_background`.
 - `_timeout_seconds` alone does NOT trigger background execution.
-- `_timeout_seconds` is honored as you set it (there is no ceiling or floor) —
-  set it to however long the work genuinely needs. When omitted, the default
-  tool timeout applies.
+- For synchronous calls `_timeout_seconds` is honored as you set it (no ceiling
+  or floor); when omitted, the default tool timeout applies. Background jobs
+  differ: omitted means no timer at all.
 - **Long-running delegation calls** (e.g. `curl` to a local coding-agent or
-  model server that takes minutes to respond) should run as background jobs and
-  carry a `_timeout_seconds` large enough for the work. A synchronous call set
-  to a short timeout (or left at the default) will be killed mid-flight while
-  the remote server is still working.
+  model server that takes minutes to respond) should run as background jobs.
 - The user must approve the command before it starts running in the background.
 - Maximum 5 concurrent background jobs; overflow queues FIFO.
 - Job definitions persist to `~/.netclaw/jobs/{id}.json`.
-- Output is captured (bounded; head+tail for very large output) to
-  `~/.netclaw/jobs/{id}/output.log` — `file_read`/`grep` it for detail beyond the tail.
-
-Monitoring tools:
-
-- `check_background_job(JobId: "id")` — query status, elapsed time, output tail
-- `check_background_job(JobId: "id", Cancel: true)` — cancel a running job
 
 `check_background_job` is only available when shell execution is granted (same
 `shell` grant category). It validates that the requesting session matches the
 submitting session's audience and boundary.
 
-After submitting a background job, schedule a check-back reminder so you report
-results proactively when the job completes.
+After submitting a long finite job, schedule a check-back reminder so you report
+results proactively when it completes.
 
 Active background jobs appear in the `[active-background-jobs]` section of the
 session context on every turn.

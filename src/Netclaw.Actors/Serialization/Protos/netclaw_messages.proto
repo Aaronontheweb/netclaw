@@ -225,6 +225,9 @@ message ActiveJobInfoProto {
   int64 started_at_ms = 4;
   TrustAudience audience = 5;
   string boundary = 6;
+  // 0 = not reaped (proto3 cannot express absence for scalars).
+  int64 reaped_at_ms = 7;
+  string output_log_path = 8;
 }
 
 message SessionSnapshotProto {

@@ -241,14 +241,27 @@ public static class SessionMessageAssembler
     {
         var sb = new System.Text.StringBuilder();
         sb.Append("[active-background-jobs]");
+        var anyReaped = false;
         foreach (var (_, job) in state.ActiveBackgroundJobs)
         {
             sb.Append("\n- job_id: ").Append(job.JobId);
             sb.Append("  command: ").Append(job.Command);
+            if (job.ReapedAtMs is not null)
+            {
+                anyReaped = true;
+                sb.Append("  status: reaped");
+            }
+
             if (!string.IsNullOrEmpty(job.Rationale))
                 sb.Append("  rationale: ").Append(job.Rationale);
+            if (!string.IsNullOrEmpty(job.OutputLogPath))
+                sb.Append("\n  output log: ").Append(job.OutputLogPath);
         }
+
         sb.Append("\nUse check_background_job to query status or cancel.");
+        if (anyReaped)
+            sb.Append("\nJobs marked 'reaped' were killed when this session went idle (passivation) — "
+                      + "their processes are gone; resubmit if still needed. Their output logs remain readable.");
         return sb.ToString();
     }
 
