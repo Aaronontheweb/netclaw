@@ -83,9 +83,7 @@ internal static class SessionToolExecutionPipeline
         IApprovalChannel? approvalChannel = null,
         Action<ToolInteractionRequestDispatch>? emitApprovalRequest = null,
         TimeSpan? approvalTimeout = null,
-        int maxToolTimeoutSeconds = 600,
         ILogger? logger = null,
-        int shellTimeoutSeconds = 60,
         IActorRef? backgroundJobManager = null,
         string? projectDirectory = null,
         bool setWorkingDirectoryAvailable = false,
@@ -121,9 +119,7 @@ internal static class SessionToolExecutionPipeline
                     approvalChannel,
                     emitApprovalRequest,
                     approvalTimeout ?? Timeout.InfiniteTimeSpan,
-                    maxToolTimeoutSeconds,
                     logger,
-                    shellTimeoutSeconds,
                     backgroundJobManager,
                     projectDirectory,
                     setWorkingDirectoryAvailable,
@@ -195,9 +191,7 @@ internal static class SessionToolExecutionPipeline
         IApprovalChannel? approvalChannel = null,
         Action<ToolInteractionRequestDispatch>? emitApprovalRequest = null,
         TimeSpan? approvalTimeout = null,
-        int maxToolTimeoutSeconds = 600,
         ILogger? logger = null,
-        int shellTimeoutSeconds = 60,
         IActorRef? backgroundJobManager = null,
         string? projectDirectory = null,
         bool setWorkingDirectoryAvailable = false,
@@ -207,14 +201,38 @@ internal static class SessionToolExecutionPipeline
         TurnContext? turnContext = null,
         ModelInputBatchBudget? modelInputBudget = null)
     {
+        // Pre-dispatch validation, on the ORIGINAL (pre-extraction) arguments:
+        // provider args-parse sentinel, present-but-invalid meta values, and
+        // unrecognized argument keys. Shared with the executor (and thus the
+        // sub-agent path) via IToolExecutor.ValidateToolCall so the rules live
+        // in one place. Rejecting here — rather than letting the executor return
+        // the rejection string from ExecuteAsync — is what lets the denial be
+        // audited as Allowed=false instead of being misreported as executed.
+        if (executor.ValidateToolCall(tc) is { } rejection)
+        {
+            auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, TimeSpan.Zero, meta: null) with
+            {
+                Allowed = false,
+                DenyReason = rejection.DenyReason
+            });
+
+            return new ToolCallResult(new SerializableChatMessage
+            {
+                Role = Protocol.ChatRole.Tool,
+                Content = rejection.Message,
+                ToolCallId = new ToolCallId(tc.CallId),
+                Name = tc.Name
+            }, [], [], [], []);
+        }
+
         var (meta, cleanedTc) = ToolCallMetaExtractor.Extract(tc);
         tc = cleanedTc;
 
-        if (meta?.TimeoutHintSeconds is not null)
-        {
-            timeout = ToolCallMetaExtractor.ComputeEffectiveTimeout(
-                meta.TimeoutHintSeconds, timeout, maxToolTimeoutSeconds);
-        }
+        // The agent's per-call timeout hint is honored as requested; when absent
+        // the inherited default (SessionConfig.ToolExecutionTimeout) applies.
+        // ExtractFrom only yields a positive hint, so there is nothing to clamp.
+        if (meta?.TimeoutHintSeconds is { } hintSeconds)
+            timeout = TimeSpan.FromSeconds(hintSeconds);
 
         var sw = Stopwatch.StartNew();
         string resultText;
@@ -376,7 +394,10 @@ internal static class SessionToolExecutionPipeline
                         tc, sessionId, source, auditLogger, timeProvider,
                         turnContext,
                         meta, backgroundJobManager,
-                        meta.TimeoutHintSeconds ?? shellTimeoutSeconds,
+                        // Honor the agent's requested timeout; when absent, the
+                        // inherited per-call default applies (same source as the
+                        // synchronous path).
+                        meta.TimeoutHintSeconds ?? (int)timeout.TotalSeconds,
                         sw.Elapsed, logger,
                         context.AppliedApprovalDecision,
                         context.AppliedApprovalPattern);
@@ -476,7 +497,10 @@ internal static class SessionToolExecutionPipeline
                         tc, sessionId, source, auditLogger, timeProvider,
                         turnContext,
                         meta, backgroundJobManager,
-                        meta.TimeoutHintSeconds ?? shellTimeoutSeconds,
+                        // Honor the agent's requested timeout; when absent, the
+                        // inherited per-call default applies (same source as the
+                        // synchronous path).
+                        meta.TimeoutHintSeconds ?? (int)timeout.TotalSeconds,
                         sw.Elapsed, logger,
                         decision.ToString(),
                         string.Join(", ", ctx.Patterns));

@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.11.2"
+  version: "2.12.1"
 ---
 
 # Netclaw Operations
@@ -258,6 +258,14 @@ Rules:
 
 - Only `shell_execute` supports background mode. Other tools ignore `_background`.
 - `_timeout_seconds` alone does NOT trigger background execution.
+- `_timeout_seconds` is honored as you set it (there is no ceiling or floor) —
+  set it to however long the work genuinely needs. When omitted, the default
+  tool timeout applies.
+- **Long-running delegation calls** (e.g. `curl` to a local coding-agent or
+  model server that takes minutes to respond) should run as background jobs and
+  carry a `_timeout_seconds` large enough for the work. A synchronous call set
+  to a short timeout (or left at the default) will be killed mid-flight while
+  the remote server is still working.
 - The user must approve the command before it starts running in the background.
 - Maximum 5 concurrent background jobs; overflow queues FIFO.
 - Job definitions persist to `~/.netclaw/jobs/{id}.json`.
@@ -278,6 +286,18 @@ results proactively when the job completes.
 
 Active background jobs appear in the `[active-background-jobs]` section of the
 session context on every turn.
+
+## Tool argument validation
+
+Tool argument names are validated strictly — unrecognized keys reject the call
+before execution with a `did you mean '<canonical>'?` suggestion and the list
+of valid argument names. Meta keys are exact-match: `_timeout_seconds` and
+`_background` (a leading underscore, snake_case). `TimeoutSeconds`,
+`timeout_seconds`, or `_timeoutSeconds` are rejected, never silently dropped.
+Values must parse as their declared type: `_timeout_seconds: "1200ms"` or
+`_background: "yes"` rejects the call instead of silently using defaults. When
+a call is rejected this way the tool did NOT run — fix the argument and
+re-issue once; do not retry the same shape.
 
 ## Large tool output
 
