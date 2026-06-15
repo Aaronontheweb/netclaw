@@ -98,20 +98,52 @@ public class JobOutputLogTests : IDisposable
     }
 
     [Fact]
-    public async Task RotationFailure_FailsLoudAndKeepsAcceptingWrites()
+    public async Task RotationFailure_IsNonFatal_AndCaptureContinues()
     {
         await using var log = new JobOutputLog(LogPath, rotationThresholdBytes: 64);
-        // A directory squatting on the rotation target makes File.Move throw
-        // deterministically, regardless of platform or effective user.
+        // A directory squatting on the rotation target makes the rotation's
+        // File.Move throw deterministically, regardless of platform or user.
         Directory.CreateDirectory(log.RotatedPath);
 
         for (var i = 0; i < 10; i++)
             await log.WriteLineAsync($"line-{i} padding-padding-padding-padding-padding", isStderr: false);
 
-        Assert.NotNull(log.WriteFailure);
-        // Pump contract: writes after the failure must not throw — the caller
-        // keeps draining the process pipes so the child never deadlocks.
-        await log.WriteLineAsync("still draining", isStderr: false);
+        // A transient rotation (File.Move) failure must NOT be treated as a
+        // capture failure: the pipe is healthy, so capture continues writing to
+        // the current log rather than going permanently silent for the job.
+        Assert.Null(log.WriteFailure);
+        await log.WriteLineAsync("still-capturing-after-failed-rotate", isStderr: false);
+
+        var content = await ReadAllSharedAsync(LogPath);
+        Assert.Contains("still-capturing-after-failed-rotate", content);
+        // Move never succeeded, so nothing rotated out.
+        Assert.False(log.Rotated);
+    }
+
+    [Fact]
+    public async Task ReadTail_FallsBackToRotatedFile_WhenCurrentLogMissing()
+    {
+        // Simulate the rotation window: the current log has been File.Move'd to
+        // the .1 slot and the fresh current file is not open yet. ReadTail must
+        // read the rotated predecessor rather than throw / report an empty tail.
+        await using (var log = new JobOutputLog(LogPath))
+        {
+            await log.WriteLineAsync("server listening on :4000", isStderr: false);
+        }
+
+        var rotated = JobOutputLog.RotatedPathFor(LogPath);
+        File.Move(LogPath, rotated);
+        Assert.False(File.Exists(LogPath));
+
+        var (tail, _) = JobOutputLog.ReadTail(LogPath, 2000);
+        Assert.Contains("server listening on :4000", tail);
+    }
+
+    [Fact]
+    public void ReadTail_RethrowsWhenNeitherCurrentNorRotatedExists()
+    {
+        var missing = Path.Combine(_dir.Path, "never", "created.log");
+        Assert.ThrowsAny<IOException>(() => JobOutputLog.ReadTail(missing, 2000));
     }
 
     private static async Task<string> ReadAllSharedAsync(string path)

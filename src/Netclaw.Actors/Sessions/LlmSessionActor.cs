@@ -180,8 +180,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     // Reap-on-passivation handshake: while a KillJobsForSession ask is in
     // flight, the final snapshot is deferred so it captures the reaped marks.
+    // _jobReapEpoch is bumped per reap request so a late reply from a
+    // superseded passivation (aborted, then re-entered) cannot resolve a newer
+    // handshake — see JobReapResolved.
     private bool _jobReapPending;
     private bool _passivationDeferredForReap;
+    private long _jobReapEpoch;
     private IActorRef? _restartDrainReplyTo;
     private string? _pendingRestartNotice;
     private string? _turnRestartNotice;
@@ -258,6 +262,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             ClearActiveToolBatchTracking();
         });
         Recover<SessionTitleSet>(evt => _state = _state.Apply(evt));
+        Recover<SessionBackgroundJobsReaped>(evt => _state = _state.Apply(evt));
         Recover<SessionCompacted>(evt =>
         {
             _state = _state.Apply(evt);
@@ -445,7 +450,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         Command<CompactionWorkCompleted>(_ => { });
         Command<CompactionWorkFailed>(_ => { });
         CommandDistillationAckNoOp();
-        CommandStaleJobReapMessages();
+        CommandJobReapResolved();
         Command<SpawnChildActorRequest>(msg => Sender.Tell(Context.ActorOf(msg.Props, msg.ActorName)));
         Command<DeliveryFailed>(HandleDeliveryFailedWhenReady);
         Command<PrepareForDaemonRestart>(_ => RequestRestartDrain());
@@ -707,7 +712,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         });
         Command<PrepareForDaemonRestart>(_ => RequestRestartDrain());
         CommandDistillationAckNoOp();
-        CommandStaleJobReapMessages();
+        CommandJobReapResolved();
     }
 
     private void HandleLlmResponseReceived(LlmResponseReceived msg)
@@ -1158,7 +1163,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         Command<CompactionFailed>(HandleLegacyCompactionFailed);
 
         CommandDistillationAckNoOp();
-        CommandStaleJobReapMessages();
+        CommandJobReapResolved();
     }
 
     private void HandleCompactionWatchdogExpired(ProcessingWatchdogExpired msg)
@@ -1426,11 +1431,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             if (jobRegistry.TryGet<BackgroundJobManagerActorKey>(out var jobManager))
             {
                 _jobReapPending = true;
+                var reapEpoch = ++_jobReapEpoch;
                 jobManager.Ask<Jobs.SessionJobsReaped>(
                         new Jobs.KillJobsForSession(_sessionId), JobReapAckTimeout)
                     .PipeTo(Self,
-                        success: ack => ack,
-                        failure: ex => new JobReapFailed(ex));
+                        success: ack => new JobReapResolved(reapEpoch, ack.ReapedCount, null),
+                        failure: ex => new JobReapResolved(reapEpoch, 0, ex));
             }
             else
             {
@@ -1440,22 +1446,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             }
         }
 
-        Command<Jobs.SessionJobsReaped>(ack =>
-        {
-            _log.Info("Background job reap acknowledged: {ReapedCount} job(s) reaped for passivation", ack.ReapedCount);
-            FinishJobReap();
-        });
-
-        Command<JobReapFailed>(msg =>
-        {
-            // Fail loud, proceed anyway: the manager's kill is idempotent and no
-            // job process outlives the daemon. State is still marked so the next
-            // rehydration tells the agent its processes are gone.
-            _log.Error(msg.Cause,
-                "Background job reap was not acknowledged within {Timeout}s — passivating anyway; processes die with the daemon at the latest",
-                JobReapAckTimeout.TotalSeconds);
-            FinishJobReap();
-        });
+        // The reap reply is handled by the same epoch-correlated handler used in
+        // every other phase (CommandJobReapResolved) — registered for ALL phases
+        // so a reply can never dead-letter no matter where the session is when it
+        // lands. Here in Passivating the handler also releases the deferred
+        // CompletePassivation via FinishJobReap.
+        CommandJobReapResolved();
 
         Command<SessionDistillationCompleted>(msg =>
         {
@@ -1602,20 +1598,22 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // Marks tracked jobs reaped and releases a passivation that was waiting on
     // the reap handshake. Runs for both the ack and the loud-failure path —
     // the manager's definitions are the authoritative status either way.
-    // Known limitation: reap marks are snapshot-only (no journal event). If the
-    // final snapshot is skipped because an approval-parked batch is outstanding
-    // (SaveSnapshotIfSafe), the marks are lost on recovery and the context block
-    // may show reaped jobs as running until the agent queries — the manager's
-    // on-disk definitions remain the source of truth.
+    // The reap is journaled (not just folded into the passivation snapshot) so
+    // the marks survive recovery even when that snapshot is skipped because an
+    // approval batch is parked (SaveSnapshotIfSafe). Otherwise a crash in that
+    // window would rehydrate the killed jobs as "running" in the context block.
     private void FinishJobReap()
     {
-        _state = _state.MarkAllBackgroundJobsReaped(NowMs());
-        _jobReapPending = false;
-        if (_passivationDeferredForReap)
+        Persist(new SessionBackgroundJobsReaped { SessionId = _sessionId, ReapedAtMs = NowMs() }, evt =>
         {
-            _passivationDeferredForReap = false;
-            CompletePassivation();
-        }
+            _state = _state.Apply(evt);
+            _jobReapPending = false;
+            if (_passivationDeferredForReap)
+            {
+                _passivationDeferredForReap = false;
+                CompletePassivation();
+            }
+        });
     }
 
     // Actual termination after the grace window expires. The observer
@@ -1657,25 +1655,39 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         Command<AcceptedDistillationProposalsRecorded>(_ => { });
     }
 
-    // A reap outcome can land after passivation was aborted by a racing user
-    // message (Ready) or after that message started processing (Processing).
-    // The kills already happened — mark state so the context block stays
-    // truthful instead of showing dead jobs as running.
-    private void CommandStaleJobReapMessages()
+    // Single handler for the reap Ask reply, registered in EVERY non-terminal
+    // phase (Ready/Processing/Compacting/Passivating) so the reply can never
+    // dead-letter regardless of which phase the session is in when it lands —
+    // passivation may have been aborted back to Ready, moved on to
+    // Processing/Compacting, or still be in Passivating. Centralizing here means
+    // a future phase cannot silently drop the reply by forgetting a bespoke
+    // registration. Epoch-correlated so a late reply from a superseded reap
+    // request cannot resolve a newer handshake.
+    private void CommandJobReapResolved()
     {
-        Command<Jobs.SessionJobsReaped>(ack =>
+        Command<JobReapResolved>(HandleJobReapResolved);
+    }
+
+    private void HandleJobReapResolved(JobReapResolved msg)
+    {
+        if (msg.Epoch != _jobReapEpoch)
         {
-            _log.Info(
-                "Background job reap ack arrived after passivation aborted ({ReapedCount} job(s)); marking state",
-                ack.ReapedCount);
-            _state = _state.MarkAllBackgroundJobsReaped(NowMs());
-            _jobReapPending = false;
-        });
-        Command<JobReapFailed>(msg =>
-        {
-            _log.Warning("Stale background job reap failure after passivation aborted: {Error}", msg.Cause.Message);
-            _jobReapPending = false;
-        });
+            _log.Debug(
+                "Ignoring superseded background-job reap reply (epoch {Stale}, current {Current})",
+                msg.Epoch, _jobReapEpoch);
+            return;
+        }
+
+        if (msg.Error is not null)
+            // Fail loud, proceed anyway: the manager's kill is idempotent and no
+            // job process outlives the daemon.
+            _log.Error(msg.Error,
+                "Background job reap was not acknowledged within {Timeout}s — proceeding anyway; processes die with the daemon at the latest",
+                JobReapAckTimeout.TotalSeconds);
+        else
+            _log.Info("Background job reap acknowledged: {ReapedCount} job(s) reaped", msg.ReapedCount);
+
+        FinishJobReap();
     }
 
     private void CommandSessionContextMessages()

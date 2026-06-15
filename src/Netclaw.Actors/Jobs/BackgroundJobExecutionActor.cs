@@ -6,6 +6,7 @@
 using System.Diagnostics;
 using Akka.Actor;
 using Akka.Event;
+using Netclaw.Security;
 
 namespace Netclaw.Actors.Jobs;
 
@@ -55,6 +56,22 @@ public sealed class BackgroundJobExecutionActor : ReceiveActor
     {
         _timeoutHandle?.Cancel();
         KillProcess();
+
+        // Release the OS process handle + the wait handle WaitForExitAsync
+        // allocates. Without this they linger until finalization; over a
+        // long-lived daemon that starts many jobs (the intended workload),
+        // that leaks kernel handles. Best-effort: the capture Task may still
+        // hold the streams on a kill/timeout path and throw ObjectDisposedException,
+        // which its own catch swallows.
+        try
+        {
+            _process?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            _log.Warning("Failed to dispose process for job {JobId}: {Error}",
+                _definition.Id, ex.Message);
+        }
     }
 
     private void SpawnProcess()
@@ -149,6 +166,12 @@ public sealed class BackgroundJobExecutionActor : ReceiveActor
 
                 var (tail, _) = JobOutputLog.ReadTail(
                     outputLogPath, BackgroundJobManagerActor.MaxOutputTailChars);
+
+                // Re-redact the assembled multi-line tail before it is delivered
+                // to the session/LLM. The on-disk log is redacted per line, which
+                // misses secrets that span line boundaries (e.g. a PEM block); a
+                // pass over the joined tail catches those before they reach the model.
+                tail = SecretOutputRedactor.Redact(tail);
 
                 if (outputLog.Rotated)
                     tail += $"\n[earlier output rotated to {outputLog.RotatedPath}]";

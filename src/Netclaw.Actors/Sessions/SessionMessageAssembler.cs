@@ -222,7 +222,11 @@ public static class SessionMessageAssembler
         if (!input.State.WorkingContext.IsEmpty && input.Audience != TrustAudience.Public)
             parts.Add(input.State.WorkingContext.ToContextBlock());
 
-        if (!input.State.ActiveBackgroundJobs.IsEmpty)
+        // Suppressed for Public audience, same as WorkingContext: the block
+        // exposes internal operational state — commands, rationales, and the
+        // on-disk output-log path — that must not leak to a Public-scoped turn
+        // on a session that started jobs at a higher audience.
+        if (!input.State.ActiveBackgroundJobs.IsEmpty && input.Audience != TrustAudience.Public)
             parts.Add(FormatActiveBackgroundJobs(input.State));
 
         if (input.SlashCommandSkillContent is not null)

@@ -192,6 +192,11 @@ message ToolBatchAbandonedProto {
   int64 abandoned_at_ms = 3;
 }
 
+message SessionBackgroundJobsReapedProto {
+  SessionIdProto session_id = 1;
+  int64 reaped_at_ms = 2;
+}
+
 // ── Adopted context ──
 
 message AdoptedContextRecordedProto {

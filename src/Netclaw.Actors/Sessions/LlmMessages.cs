@@ -84,11 +84,17 @@ internal sealed record ToolExecutionCompleted : INoSerializationVerificationNeed
 internal sealed record ToolExecutionSingleCompleted(ToolCallResult Result) : INoSerializationVerificationNeeded;
 
 /// <summary>
-/// Piped back to a passivating session when the background-job reap ask fails
-/// (timeout or manager error). Passivation proceeds — loudly — because the
-/// manager's kill is idempotent and no job process outlives the daemon.
+/// Piped back to the session as the resolution of a background-job reap Ask
+/// (issued when a session with active jobs passivates). <see cref="Error"/> is
+/// non-null when the Ask failed (timeout or manager error) — passivation then
+/// proceeds anyway, because the manager's kill is idempotent and no job process
+/// outlives the daemon. <see cref="Epoch"/> correlates the reply to the exact
+/// reap request that produced it: a session can abort passivation and re-issue
+/// a fresh reap, and a late reply from the superseded request must not resolve
+/// the newer handshake.
 /// </summary>
-internal sealed record JobReapFailed(Exception Cause) : INoSerializationVerificationNeeded;
+internal sealed record JobReapResolved(long Epoch, int ReapedCount, Exception? Error)
+    : INoSerializationVerificationNeeded;
 
 internal sealed record ToolExecutionBatchCompleted : INoSerializationVerificationNeeded;
 

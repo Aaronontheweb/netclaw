@@ -14,12 +14,16 @@ namespace Netclaw.Actors.Jobs;
 /// job runs — a background job is a detached process with no completion
 /// expectation, so exit time is too late to make output visible.
 /// Lines are secret-redacted at write time (per line — a secret spanning a line
-/// boundary would evade the pass; the redactor's patterns are token-shaped, so
-/// this is an accepted trade for a live log). Disk is bounded by single-slot
-/// rotation: when the current log crosses the threshold it moves to the `.1`
-/// slot (replacing any earlier rotation), so a chatty long-running process
-/// holds at most ~2x the threshold on disk and the most recent output is
-/// always in the current log.
+/// boundary would evade THIS pass; the redactor's patterns are mostly
+/// token-shaped). The on-disk log therefore inherits a per-line redaction
+/// limitation, but every place a tail is surfaced to the model (completion
+/// delivery, check_background_job, lost-job notification) re-runs the redactor
+/// over the assembled multi-line tail, so multi-line secrets cannot reach the
+/// LLM even though they may persist in the file (file access is trust-gated).
+/// Disk is bounded by single-slot rotation: when the current log crosses the
+/// threshold it moves to the `.1` slot (replacing any earlier rotation), so a
+/// chatty long-running process holds at most ~2x the threshold on disk and the
+/// most recent output is always in the current log.
 /// </summary>
 public sealed class JobOutputLog : IAsyncDisposable
 {
@@ -31,15 +35,21 @@ public sealed class JobOutputLog : IAsyncDisposable
     private StreamWriter? _writer;
     private long _bytesWritten;
 
+    // Read un-gated on the WriteLineAsync fast path (below) from either pump
+    // thread while written under the gate on the other; volatile gives that
+    // cross-thread read a happens-before edge so it can't observe a stale null.
+    private volatile string? _writeFailure;
+
     public bool Rotated { get; private set; }
 
     /// <summary>
     /// First write failure, if any. Once a write fails the log stops accepting
     /// lines but callers MUST keep draining the process pipes — a child blocked
     /// on a full pipe never exits. The failure is surfaced on the completion
-    /// message so the broken capture is loud, not silent.
+    /// message so the broken capture is loud, not silent. A transient rotation
+    /// (File.Move) hiccup does NOT set this — see <see cref="Rotate"/>.
     /// </summary>
-    public string? WriteFailure { get; private set; }
+    public string? WriteFailure => _writeFailure;
 
     public JobOutputLog(string path, long rotationThresholdBytes = DefaultRotationThresholdBytes)
     {
@@ -64,7 +74,7 @@ public sealed class JobOutputLog : IAsyncDisposable
 
     public async Task WriteLineAsync(string line, bool isStderr)
     {
-        if (WriteFailure is not null)
+        if (_writeFailure is not null)
             return;
 
         await _gate.WaitAsync().ConfigureAwait(false);
@@ -75,6 +85,12 @@ public sealed class JobOutputLog : IAsyncDisposable
             if (isStderr)
                 redacted = "[stderr] " + redacted;
 
+            // AutoFlush=true: each line is flushed to the OS so the log is
+            // live-readable mid-run (waiting for a "server ready" line is the
+            // core use case). This is a write() to the page cache per line, not
+            // an fsync — cheap for the intended workload; a time-throttled flush
+            // was rejected because it can leave a final, quiescent ready-line
+            // unflushed and invisible to a poller.
             await _writer.WriteLineAsync(redacted).ConfigureAwait(false);
             _bytesWritten += Encoding.UTF8.GetByteCount(redacted) + Environment.NewLine.Length;
 
@@ -83,7 +99,7 @@ public sealed class JobOutputLog : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            WriteFailure = ex.Message;
+            _writeFailure = ex.Message;
             try
             {
                 _writer?.Dispose();
@@ -110,7 +126,7 @@ public sealed class JobOutputLog : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            WriteFailure ??= ex.Message;
+            _writeFailure ??= ex.Message;
         }
         finally
         {
@@ -120,10 +136,30 @@ public sealed class JobOutputLog : IAsyncDisposable
 
     /// <summary>
     /// Bounded tail read: seeks from the end instead of loading the whole file,
-    /// so querying a multi-megabyte log costs O(maxChars). Reads only the
-    /// current log — output rotated to the `.1` slot is reachable by path.
+    /// so querying a multi-megabyte log costs O(maxChars). Reads the current log;
+    /// if it is momentarily absent because a concurrent <see cref="Rotate"/> is
+    /// mid-File.Move, falls back to the rotated `.1` predecessor (where the bytes
+    /// just landed) rather than reporting an empty tail.
     /// </summary>
     public static (string Tail, bool Truncated) ReadTail(string path, int maxChars)
+    {
+        try
+        {
+            return ReadTailFrom(path, maxChars);
+        }
+        catch (FileNotFoundException)
+        {
+            // Rotation window: the current log was just moved to the `.1` slot
+            // and the fresh current file is not open yet. The most-recent bytes
+            // are in the rotated predecessor — read those instead of throwing.
+            var rotated = RotatedPathFor(path);
+            if (File.Exists(rotated))
+                return ReadTailFrom(rotated, maxChars);
+            throw;
+        }
+    }
+
+    private static (string Tail, bool Truncated) ReadTailFrom(string path, int maxChars)
     {
         using var fs = new FileStream(
             path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
@@ -158,9 +194,28 @@ public sealed class JobOutputLog : IAsyncDisposable
     {
         _writer?.Dispose();
         _writer = null;
-        File.Move(_path, RotatedPath, overwrite: true);
-        Rotated = true;
-        _bytesWritten = 0;
-        _writer = OpenWriter();
+        try
+        {
+            File.Move(_path, RotatedPath, overwrite: true);
+            Rotated = true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) // slopwatch-ignore: SW003 transient rotation failure is deliberately non-fatal — capture continues on the current log (see below)
+        {
+            // A transient move failure (e.g. an AV scanner / indexer holding the
+            // `.1` target on Windows) must NOT kill capture for the rest of a
+            // possibly hours-long job. The current log was not moved, so keep
+            // appending to it and retry rotation after another threshold's worth
+            // of output. The log can briefly exceed the cap — strictly better
+            // than silently losing all subsequent output. This is deliberately
+            // NOT a WriteFailure: the pipe is healthy and capture continues.
+        }
+        finally
+        {
+            // Reset on both paths: a clean rotation starts a fresh current log at
+            // 0; a failed rotation defers the retry by a full threshold instead
+            // of hammering File.Move on every line.
+            _bytesWritten = 0;
+            _writer = OpenWriter();
+        }
     }
 }

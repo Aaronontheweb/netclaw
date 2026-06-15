@@ -98,36 +98,24 @@ public sealed record SessionState
         if (!string.IsNullOrEmpty(evt.SourceReminderId))
             processedReminders = processedReminders.Add(evt.SourceReminderId);
 
-        var processedJobs = ProcessedBackgroundJobIds;
-        var activeJobs = ActiveBackgroundJobs;
-        if (!string.IsNullOrEmpty(evt.SourceBackgroundJobId))
-        {
-            processedJobs = processedJobs.Add(evt.SourceBackgroundJobId);
-            activeJobs = activeJobs.Remove(evt.SourceBackgroundJobId);
-        }
-
-        // Reaped entries were surfaced in this turn's context block (the
-        // assembler includes them whenever present) — prune so the agent
-        // learns of the reap exactly once instead of on every turn forever.
-        activeJobs = PruneReaped(activeJobs);
-
-        return this with
+        // Background-job dedup/remove/prune is delegated to the single shared
+        // helper so the replay path here and the live turn-completion path in
+        // LlmSessionActor cannot drift.
+        return (this with
         {
             History = History.Add(evt.UserMessage).Add(evt.AssistantReply),
             TurnCount = TurnCount + 1,
-            ProcessedReminderIds = processedReminders,
-            ProcessedBackgroundJobIds = processedJobs,
-            ActiveBackgroundJobs = activeJobs
-        };
+            ProcessedReminderIds = processedReminders
+        }).CompleteTurnBackgroundJobBookkeeping(evt.SourceBackgroundJobId);
     }
 
     /// <summary>
-    /// Per-turn background-job bookkeeping for the LIVE turn-completion paths,
-    /// which mutate state inline instead of going through
-    /// <see cref="Apply(TurnRecorded)"/>: dedup-records a delivery turn's job
-    /// ID, removes the delivered entry, and prunes reaped entries that were
-    /// surfaced in this turn's context block. Mirrors the job logic in
-    /// <see cref="Apply(TurnRecorded)"/> — keep the two in lockstep.
+    /// Single source of truth for per-turn background-job bookkeeping, shared by
+    /// the replay path (<see cref="Apply(TurnRecorded)"/>) and the live
+    /// turn-completion path (LlmSessionActor): dedup-records a delivery turn's
+    /// job ID, removes the delivered entry, and prunes reaped entries that were
+    /// surfaced in this turn's context block (so the agent learns of a reap
+    /// exactly once instead of on every turn forever).
     /// </summary>
     public SessionState CompleteTurnBackgroundJobBookkeeping(string? sourceBackgroundJobId)
     {
@@ -152,6 +140,9 @@ public sealed record SessionState
     {
         return this with { Title = evt.Title };
     }
+
+    public SessionState Apply(SessionBackgroundJobsReaped evt)
+        => MarkAllBackgroundJobsReaped(evt.ReapedAtMs);
 
     public SessionState Apply(AdoptedContextRecorded evt)
     {

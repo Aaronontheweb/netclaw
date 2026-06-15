@@ -11,6 +11,7 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
+using Netclaw.Security;
 
 namespace Netclaw.Actors.Jobs;
 
@@ -242,6 +243,9 @@ public sealed class BackgroundJobManagerActor : ReceiveActor
             // Bounded seek-from-end: the log streams while the job runs and is
             // rotation-capped at megabytes — never load the whole file for a tail.
             (outputTail, _) = JobOutputLog.ReadTail(outputFilePath, MaxOutputTailChars);
+            // Re-redact the multi-line tail: the on-disk log is redacted per line,
+            // which misses secrets spanning line boundaries before they reach the LLM.
+            outputTail = SecretOutputRedactor.Redact(outputTail);
             outputFileExists = true;
         }
         catch (FileNotFoundException) { } // slopwatch-ignore: SW003 output file may not exist yet for running jobs
@@ -321,6 +325,8 @@ public sealed class BackgroundJobManagerActor : ReceiveActor
         try
         {
             (outputTail, _) = JobOutputLog.ReadTail(outputFilePath, MaxOutputTailChars);
+            // Re-redact the multi-line tail before it is delivered to the session.
+            outputTail = SecretOutputRedactor.Redact(outputTail);
         }
         catch (FileNotFoundException) { } // slopwatch-ignore: SW003 job may have produced no output before the restart
         catch (DirectoryNotFoundException) { } // slopwatch-ignore: SW003 job may have produced no output before the restart

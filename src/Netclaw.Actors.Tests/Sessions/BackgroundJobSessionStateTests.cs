@@ -139,6 +139,36 @@ public sealed class BackgroundJobSessionStateTests
     }
 
     [Fact]
+    public void SessionBackgroundJobsReaped_event_marks_all_active_jobs_reaped()
+    {
+        // The journaled reap event (replayed on recovery when the passivation
+        // snapshot was skipped) must mark every tracked job reaped so the
+        // context block does not rehydrate killed jobs as "running".
+        var a = new ActiveJobInfo
+        {
+            JobId = new Netclaw.Actors.Jobs.BackgroundJobId("a"),
+            Command = "jekyll serve",
+            Rationale = "dev server",
+            StartedAtMs = 1000,
+            Audience = TrustAudience.Personal,
+            Boundary = TrustBoundary.Personal
+        };
+        var b = a with { JobId = new Netclaw.Actors.Jobs.BackgroundJobId("b") };
+
+        var state = SessionState.Empty
+            .TrackBackgroundJob("bg-job:a", a)
+            .TrackBackgroundJob("bg-job:b", b)
+            .Apply(new SessionBackgroundJobsReaped
+            {
+                SessionId = new SessionId("test/thread"),
+                ReapedAtMs = 5000
+            });
+
+        Assert.Equal(5000, state.ActiveBackgroundJobs["bg-job:a"].ReapedAtMs);
+        Assert.Equal(5000, state.ActiveBackgroundJobs["bg-job:b"].ReapedAtMs);
+    }
+
+    [Fact]
     public void MarkAllBackgroundJobsReaped_PreservesEarlierReapTimestamp()
     {
         var info = new ActiveJobInfo
