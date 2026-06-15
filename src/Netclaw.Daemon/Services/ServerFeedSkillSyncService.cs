@@ -264,6 +264,13 @@ internal sealed class ServerFeedSkillSyncService : BackgroundService
             }
         }
 
+        // Reverse pass: drop skills the server no longer advertises. This is
+        // only reached with a confirmed, non-empty index (see the early returns
+        // above), so a transient outage or empty response never triggers a prune.
+        var serverSkillNames = index.Skills.Select(e => e.Name).ToList();
+        if (SkillSyncHelpers.PruneRemovedSkills(feedDir, serverSkillNames, syncState, _logger))
+            updated = true;
+
         if (updated)
         {
             syncState.LastSyncUtc = now;

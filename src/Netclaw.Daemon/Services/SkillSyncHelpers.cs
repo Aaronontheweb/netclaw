@@ -64,6 +64,83 @@ internal static class SkillSyncHelpers
         File.WriteAllText(path, json);
     }
 
+    /// <summary>
+    /// Removes skills that are no longer present in a server feed's index from
+    /// both the on-disk feed directory and the sync state.
+    /// </summary>
+    /// <remarks>
+    /// Only the server-feed sync path calls this. The system-skill feed
+    /// deliberately keeps removed skills on disk — its CDN manifest is the sole
+    /// source of built-in skills, so a transient empty manifest must never wipe
+    /// them. A private server feed is, by contrast, authoritative for its own
+    /// <c>.server-feeds/{name}/</c> namespace (which nothing else writes to), so
+    /// dropping skills the server no longer advertises is the correct,
+    /// non-destructive behavior.
+    /// <para>
+    /// Callers MUST gate this on a successful, non-empty index fetch. Pruning
+    /// against an empty or failed response would delete every locally synced
+    /// skill on a transient server outage.
+    /// </para>
+    /// </remarks>
+    /// <param name="feedDir">The feed's on-disk root (e.g. <c>.server-feeds/{name}</c>).</param>
+    /// <param name="serverSkillNames">Skill names present in the freshly fetched, non-empty server index.</param>
+    /// <param name="syncState">Sync state to prune in place.</param>
+    /// <param name="logger">Logger for prune diagnostics.</param>
+    /// <returns><c>true</c> if any sync-state entry or on-disk directory was removed.</returns>
+    internal static bool PruneRemovedSkills(
+        string feedDir,
+        IReadOnlyCollection<string> serverSkillNames,
+        SkillSyncState syncState,
+        ILogger logger)
+    {
+        var present = new HashSet<string>(serverSkillNames, StringComparer.Ordinal);
+        var changed = false;
+
+        // 1) Prune stale sync-state entries.
+        var staleStateKeys = syncState.Skills.Keys
+            .Where(name => !present.Contains(name))
+            .ToList();
+        foreach (var name in staleStateKeys)
+        {
+            syncState.Skills.Remove(name);
+            changed = true;
+        }
+
+        // 2) Prune stale on-disk directories. The feed root also holds this
+        //    service's own bookkeeping (.staging from ReplaceSkillDirectoryAsync,
+        //    .sync-state.json) — skip anything dot-prefixed so we only ever touch
+        //    skill directories that the sync service itself created.
+        if (Directory.Exists(feedDir))
+        {
+            foreach (var dir in Directory.GetDirectories(feedDir))
+            {
+                var dirName = Path.GetFileName(dir);
+                if (string.IsNullOrEmpty(dirName) || dirName.StartsWith('.'))
+                    continue;
+
+                if (present.Contains(dirName))
+                    continue;
+
+                try
+                {
+                    Directory.Delete(dir, recursive: true);
+                    logger.LogInformation(
+                        "Pruned removed skill '{SkillName}' from feed directory {FeedDir}",
+                        dirName, feedDir);
+                    changed = true;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogWarning(ex,
+                        "Failed to prune removed skill '{SkillName}' from {FeedDir} — leaving in place",
+                        dirName, feedDir);
+                }
+            }
+        }
+
+        return changed;
+    }
+
     internal static async Task ReplaceSkillDirectoryAsync(
         string parentDirectory,
         string skillName,
