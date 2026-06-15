@@ -114,7 +114,18 @@ internal sealed class ServerFeedSkillSyncService : BackgroundService
             }
         }
 
-        RescanAndUpdateIndex();
+        // Rebuild the registry from disk. Guarded because the scan walks the same
+        // feed tree this service (and others) may be mutating concurrently — a
+        // directory vanishing mid-scan must not tear down the background service.
+        try
+        {
+            RescanAndUpdateIndex();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex,
+                "Skill index rebuild after server feed sync failed — registry left as-is");
+        }
     }
 
     private async Task SyncFeedAsync(SkillFeedSource feed, CancellationToken cancellationToken)

@@ -15,6 +15,9 @@ internal static class SkillSyncHelpers
 {
     internal static readonly string[] AllowedResourcePrefixes = ["references", "scripts", "assets"];
 
+    // A directory is a skill iff it owns a SKILL.md — the same rule SkillScanner uses.
+    private const string SkillFileName = "SKILL.md";
+
     private static readonly JsonSerializerOptions IndentedJsonOptions = new() { WriteIndented = true };
 
     internal static string ComputeSha256(string content)
@@ -93,10 +96,19 @@ internal static class SkillSyncHelpers
         SkillSyncState syncState,
         ILogger logger)
     {
+        // Never prune against a non-authoritative answer. The caller already
+        // early-returns on an empty index; this makes the destructive operation
+        // safe even if a future caller forgets to.
+        if (serverSkillNames.Count == 0)
+            return false;
+
         var present = new HashSet<string>(serverSkillNames, StringComparer.Ordinal);
         var changed = false;
 
-        // 1) Prune stale sync-state entries.
+        // Drop sync-state entries the server no longer advertises. This is the
+        // load-bearing half: clearing the entry is what lets the forward sync
+        // re-download the skill if it ever reappears — otherwise a same-version
+        // re-add would be skipped while its files are gone.
         var staleStateKeys = syncState.Skills.Keys
             .Where(name => !present.Contains(name))
             .ToList();
@@ -106,19 +118,20 @@ internal static class SkillSyncHelpers
             changed = true;
         }
 
-        // 2) Prune stale on-disk directories. The feed root also holds this
-        //    service's own bookkeeping (.staging from ReplaceSkillDirectoryAsync,
-        //    .sync-state.json) — skip anything dot-prefixed so we only ever touch
-        //    skill directories that the sync service itself created.
+        // Delete on-disk skill directories the server no longer advertises. Only
+        // touch real skill directories (those that own a SKILL.md) so a stray
+        // non-skill directory under the feed root is never recursively deleted;
+        // dot-prefixed bookkeeping (.staging, .sync-state.json) has no root
+        // SKILL.md and is skipped for the same reason.
         if (Directory.Exists(feedDir))
         {
             foreach (var dir in Directory.GetDirectories(feedDir))
             {
                 var dirName = Path.GetFileName(dir);
-                if (string.IsNullOrEmpty(dirName) || dirName.StartsWith('.'))
+                if (string.IsNullOrEmpty(dirName) || dirName.StartsWith('.') || present.Contains(dirName))
                     continue;
 
-                if (present.Contains(dirName))
+                if (!File.Exists(Path.Combine(dir, SkillFileName)))
                     continue;
 
                 try
