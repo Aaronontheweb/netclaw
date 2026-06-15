@@ -88,9 +88,8 @@ public sealed class JobOutputLog : IAsyncDisposable
             {
                 _writer?.Dispose();
             }
-            catch
+            catch // slopwatch-ignore: SW003 writer already broken from the original failure, which is what gets reported via WriteFailure
             {
-                // Writer is already broken; the original failure is what gets reported.
             }
 
             _writer = null;

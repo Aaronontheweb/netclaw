@@ -14,6 +14,7 @@ using Xunit;
 
 namespace Netclaw.Actors.Tests.Jobs;
 
+[Collection(BackgroundJobProcessCollection.Name)]
 public class BackgroundJobExecutionActorTests : TestKit
 {
     private readonly DisposableTempDir _dir = new();
