@@ -39,7 +39,6 @@ public sealed class BackgroundJobManagerActor : ReceiveActor
     private readonly TimeProvider _timeProvider;
     private readonly IOperationalNotificationSink _notificationSink;
     private readonly ILoggingAdapter _log;
-    private bool _startupSchemaAlertsEmitted;
 
     private readonly HashSet<string> _activeJobIds = [];
     private readonly Queue<string> _deferredQueue = new();
@@ -60,14 +59,17 @@ public sealed class BackgroundJobManagerActor : ReceiveActor
         Receive<CancelBackgroundJob>(HandleCancel);
         Receive<QueryBackgroundJob>(HandleQuery);
         Receive<KillJobsForSession>(HandleKillJobsForSession);
-        Receive<Reconcile>(_ => HandleReconcile());
         Receive<GetBackgroundJobManagerHealth>(_ => HandleGetHealth());
     }
 
     protected override void PreStart()
     {
         _log.Info("BackgroundJobManagerActor started");
-        Self.Tell(Reconcile.Instance);
+        // Run synchronously in PreStart so reconciliation completes before any
+        // user message is dispatched. A Self.Tell approach races on slow schedulers
+        // (macOS CI): ActorOf returns before PreStart executes, allowing external
+        // messages to queue ahead of the Reconcile message.
+        HandleReconcile();
     }
 
     private async Task HandleStartAsync(StartBackgroundJob cmd)
@@ -283,11 +285,7 @@ public sealed class BackgroundJobManagerActor : ReceiveActor
     private void HandleReconcile()
     {
         var persisted = _store.List();
-        if (!_startupSchemaAlertsEmitted)
-        {
-            EmitRejectedLegacyDefinitionAlerts();
-            _startupSchemaAlertsEmitted = true;
-        }
+        EmitRejectedLegacyDefinitionAlerts();
 
         var reconciled = 0;
 
@@ -497,8 +495,4 @@ public sealed class BackgroundJobManagerActor : ReceiveActor
                output + filePath;
     }
 
-    private sealed record Reconcile : INoSerializationVerificationNeeded
-    {
-        public static readonly Reconcile Instance = new();
-    }
 }
