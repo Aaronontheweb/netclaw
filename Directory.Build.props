@@ -9,22 +9,20 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <VersionPrefix>0.24.0</VersionPrefix>
-    <VersionSuffix>beta.5</VersionSuffix>
-    <PackageReleaseNotes>Netclaw v0.24.0-beta.3 — Channel infrastructure standardization, Discord/Mattermost gateway self-healing, and install script fix
+    <VersionSuffix>beta.6</VersionSuffix>
+    <PackageReleaseNotes>Netclaw v0.24.0-beta.6 — Simplified init/config TUI, sub-agent log observability, and scheduler race fix
 
 **Features**
 
-* **Standardized channel infrastructure (SPEC-015)** — generic `ChannelLifecycleActor` and `RemoteChatChannelBuilder` reduce new channel implementations to ~80 LOC (down from 1,100+ duplicated LOC across Discord and Mattermost), while enforcing a standardized security pipeline and gateway lifecycle. ([#1375](https://github.com/netclaw-dev/netclaw/pull/1375))
-
-* **`lookup_channel_destination` blank-query support** — passing `query: null` or an empty string now returns all available destinations, enabling "Select Destination" TUI steps that list every channel without filtering. ([#1375](https://github.com/netclaw-dev/netclaw/pull/1375))
+* **Simplified init wizard and rebuilt config TUI** — the init wizard has been streamlined and the configuration TUI rebuilt from scratch, with canonical channel-ID resolution for all gateway integrations. ([#1368](https://github.com/netclaw-dev/netclaw/pull/1368))
 
 **Bug Fixes**
 
-* **Discord gateway no longer enters zombie state after failed auto-retry** — fixed a critical reliability issue where the Discord gateway dropped every inbound message for 30+ minutes and would not recover without a daemon restart. The gateway now correctly enters its self-healing reconnect loop and publishes `ConnectionRestored` on recovery. ([#1374](https://github.com/netclaw-dev/netclaw/pull/1374))
+* **Sub-agent logs are now session-correlated** — sub-agent log output is now properly tagged with session context, making it easier to trace sub-agent activity back to its parent conversation. ([#1428](https://github.com/netclaw-dev/netclaw/pull/1428))
 
-* **Mattermost auto-retry recovery publishes `ConnectionRestored`** — the same gateway-lifecycle fix applied to the Mattermost actor; auto-retry timeouts now correctly trigger the self-healing reconnect loop. ([#1375](https://github.com/netclaw-dev/netclaw/pull/1375))
+* **MCP permissions render clipping fixed** — MCP permission entries in the config TUI no longer clip or overflow their containers. ([#1424](https://github.com/netclaw-dev/netclaw/pull/1425))
 
-* **Install scripts persist `--channel` preference to config** — `Daemon.UpdateChannel` is now written to `netclaw.json` during `--channel beta` installs (both `install.sh` and `install.ps1`), so the daemon's self-update mechanism no longer silently defaults to stable. The init wizard preserves an existing beta channel from config. ([#1377](https://github.com/netclaw-dev/netclaw/pull/1377))
+* **BackgroundJobManagerActor startup race eliminated** — fixed a race condition in the scheduler's startup reconciliation logic that could cause jobs to be missed or duplicated during daemon initialization. ([#1417](https://github.com/netclaw-dev/netclaw/pull/1417))
 
 ---</PackageReleaseNotes>
   </PropertyGroup>
