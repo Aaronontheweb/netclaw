@@ -387,9 +387,23 @@ compare_shot_frame() {
   # heuristic jitter). cmp -s would false-fail on such runs. compare -metric AE
   # counts differing pixels; exit 0 means zero pixels differ (true pass).
   # Fall back to cmp -s only if ImageMagick is absent.
+  # Use ImageMagick pixel comparison rather than cmp -s (byte-for-byte).
+  # Two sources of false failures are tolerated:
+  #   1. VHS PNG zlib encoder jitter — same pixels, different byte streams
+  #      across process invocations (AE = 0, always passes).
+  #   2. Terminal cursor block — Set CursorBlink false freezes the cursor but
+  #      not its on/off state; the block (~160 px) can appear or not between
+  #      runs. AE_CURSOR_TOLERANCE covers this without masking real regressions
+  #      (wrong cursor row, missing content, blank screen = thousands of px).
+  # Fall back to cmp -s only if ImageMagick is absent.
+  local AE_CURSOR_TOLERANCE=500
   if command -v compare >/dev/null 2>&1; then
-    if compare -metric AE "$baseline" "$capture" /dev/null 2>/dev/null; then
-      echo "  PASS: ${frame} — pixel-identical to baseline."
+    local ae
+    ae=$(compare -metric AE "$baseline" "$capture" /dev/null 2>&1 || true)
+    local ae_int="${ae%%.*}"
+    ae_int="${ae_int// /}"
+    if [[ "${ae_int:-0}" -le "$AE_CURSOR_TOLERANCE" ]]; then
+      echo "  PASS: ${frame} — pixel-close to baseline (AE=${ae_int:-0})."
       return
     fi
   else
