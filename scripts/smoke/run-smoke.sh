@@ -91,13 +91,21 @@ SHOT_FRAMES=(
 # (run_shot_tape_with_retry): after a tape runs, only its own captures are
 # inspected for the transient blank described below. Keep in sync with the
 # `Screenshot` directives in tests/smoke/tapes/screenshots/<tape>.tape.
-declare -A SHOT_TAPE_FRAMES=(
-  [help]="help"
-  [wizard-screens]="wizard-provider-picker wizard-security-posture"
-  [provider-manager]="provider-manager-empty"
-  [mcp-permissions]="mcp-permissions-server-list mcp-permissions-tool-grid"
-  [config-search]="config-search-selection config-search-brave-entry config-search-saved"
-)
+#
+# A function with a case is used instead of `declare -A` because macOS ships
+# bash 3.2, which has no associative arrays — `declare -A` there parses the
+# `[help]=...` entries as indexed-array assignments and aborts under set -u
+# (`help: unbound variable`), breaking the non-screenshot smoke modes too.
+shot_tape_frames() {
+  case "$1" in
+    help)             echo "help" ;;
+    wizard-screens)   echo "wizard-provider-picker wizard-security-posture" ;;
+    provider-manager) echo "provider-manager-empty" ;;
+    mcp-permissions)  echo "mcp-permissions-server-list mcp-permissions-tool-grid" ;;
+    config-search)    echo "config-search-selection config-search-brave-entry config-search-saved" ;;
+    *)                echo "" ;;
+  esac
+}
 
 # Max attempts per tape when a transient blank frame is detected. A TUI screen
 # can render momentarily blank because Termina emits a full-screen clear
@@ -398,7 +406,8 @@ frame_is_blank() {
 # broken tape still fails at compare time instead of looping forever.
 run_shot_tape_with_retry() {
   local tape="$1"
-  local frames="${SHOT_TAPE_FRAMES[$tape]:-}"
+  local frames
+  frames="$(shot_tape_frames "$tape")"
   local attempt=1
   while :; do
     run_shot_tape "$tape"
