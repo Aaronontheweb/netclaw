@@ -71,7 +71,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly List<SendUserMessage> _buffer = [];
     private readonly HashSet<string> _inFlightReminderIds = new(StringComparer.Ordinal);
     private readonly HashSet<string> _inFlightBackgroundJobIds = new(StringComparer.Ordinal);
-    private readonly Dictionary<IActorRef, OutputFilter> _subscribers = [];
+    private readonly SessionSubscriberManager _subscribers = new();
     private readonly List<AITool> _availableTools = [];
     private readonly Dictionary<string, PendingToolInteraction> _pendingToolInteractions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, ResolvedToolApproval> _resolvedToolApprovals = new(StringComparer.Ordinal);
@@ -366,15 +366,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         }
     }
 
-    private static bool IsLegalTransition(SessionPhase from, SessionPhase to) => from switch
-    {
-        SessionPhase.Recovering => to == SessionPhase.Ready,
-        SessionPhase.Ready => to is SessionPhase.Processing or SessionPhase.Compacting or SessionPhase.Passivating,
-        SessionPhase.Processing => to is SessionPhase.Ready or SessionPhase.Compacting,
-        SessionPhase.Compacting => to is SessionPhase.Ready or SessionPhase.Processing,
-        SessionPhase.Passivating => to is SessionPhase.Ready or SessionPhase.Processing,
-        _ => false
-    };
+    private static bool IsLegalTransition(SessionPhase from, SessionPhase to)
+        => SessionPhaseTransitions.IsLegal(from, to);
 
     private void EmitProcessingStateForPhase(SessionPhase phase)
     {
@@ -1960,15 +1953,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // These are emitted directly from the tool execution thread via Tell(),
         // which is thread-safe. The snapshot ensures we don't read _subscribers
         // from a non-actor thread.
-        var subscriberSnapshot = _subscribers.ToList();
+        var subscriberSnapshot = _subscribers.Snapshot();
         var logActor = _logActor;
         Action<SubAgentOutput> emitSubAgentOutput = output =>
         {
-            foreach (var (subscriber, filter) in subscriberSnapshot)
-            {
-                if (filter.HasFlag(OutputFilter.ToolCalls))
-                    subscriber.Tell(output);
-            }
+            SessionSubscriberManager.Emit(subscriberSnapshot, output, OutputFilter.ToolCalls);
             logActor?.Tell(output);
         };
 
@@ -2452,13 +2441,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         Command<JoinSession>(cmd =>
         {
-            // Detect re-join: same subscriber already registered with same filter.
-            var isReJoin = _subscribers.TryGetValue(cmd.Subscriber, out var existingFilter)
-                           && existingFilter == cmd.Filter;
+            var isReJoin = _subscribers.IsReJoin(cmd.Subscriber, cmd.Filter);
 
             if (!isReJoin)
             {
-                _subscribers[cmd.Subscriber] = cmd.Filter;
+                _subscribers.AddOrUpdate(cmd.Subscriber, cmd.Filter);
                 Context.WatchWith(cmd.Subscriber,
                     new LeaveSession(cmd.Subscriber) { SessionId = _sessionId });
 
@@ -4281,14 +4268,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void EmitOutput(SessionOutput output, OutputFilter requiredFlag = OutputFilter.None)
     {
-        foreach (var (subscriber, filter) in _subscribers)
-        {
-            if (requiredFlag == OutputFilter.None || filter.HasFlag(requiredFlag))
-            {
-                subscriber.Tell(output);
-            }
-        }
-
+        _subscribers.Emit(output, requiredFlag);
         _logActor?.Tell(output);
         _observerActor?.Tell(output);
     }
