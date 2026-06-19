@@ -22,8 +22,13 @@ Down 5
 Enter
 
 # ─── Frame 1: Provider selection ───────────────────────────────────────────
-# SelectBackendForEditing is synchronous — Wait+Screen is the only gate needed.
+# SelectBackendForEditing is synchronous. Two anchors are required: the title
+# confirms the screen loaded, and the DuckDuckGo description confirms the
+# cursor is on row 1 (DuckDuckGo). Without the second anchor, a Down key
+# leaked from the "Down 5" Settings navigation can move the cursor to Brave
+# before the screenshot fires, capturing the wrong row.
 Wait+Screen@10s /Choose the backend Netclaw uses for web search/
+Wait+Screen@5s /DuckDuckGo works without setup/
 Screenshot "/tmp/shot-config-search-selection.png"
 
 # ─── Frame 2: Brave entry state ────────────────────────────────────────────

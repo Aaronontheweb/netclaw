@@ -63,14 +63,24 @@ Wait+Screen@5s /3 tools/
 Screenshot "/tmp/shot-mcp-permissions-server-list.png"
 
 # ─── Navigate into the ToolGrid ──────────────────────────────────────
+# Sleep 1s here is an intentional settle guard: the daemon can push a
+# server-state update (tool re-index, reconnect) immediately after the
+# server-list frame stabilises. Navigating into the tool grid during such
+# an update causes Enter to hit the TUI mid-transition, producing a blank
+# screen rather than the tool grid. The sleep lets any in-flight update
+# complete before Enter is delivered.
+Sleep 1s
 Enter
 
 # ─── Frame 2: ToolGrid ───────────────────────────────────────────────
 # All header rows (Server, Audience, Server enabled, Server default) plus
 # all tool rows (add, echo, record-tasks) must be visible simultaneously.
 # If the #1424 regression reappears, tool rows will overwrite the header.
-Wait+Screen@10s /record-tasks/
-Wait+Screen@5s /Server default/
+# Timeout is 15s to match the server-list anchor; /Server default:/ (with
+# colon) matches the rendered "Server default: [Auto]" line, which is
+# unique to the tool-grid view and absent from the server-list scrollback.
+Wait+Screen@15s /record-tasks/
+Wait+Screen@10s /Server default:/
 Screenshot "/tmp/shot-mcp-permissions-tool-grid.png"
 
 # ─── Exit TUI ────────────────────────────────────────────────────────
