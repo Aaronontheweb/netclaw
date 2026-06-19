@@ -311,6 +311,28 @@ public sealed class ChannelsConfigViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Adapter_menu_done_row_returns_to_picker()
+    {
+        WriteChannelConfig();
+        WriteChannelSecrets();
+        using var vm = CreateViewModel();
+        vm.OpenAdapterManagement(ChannelType.Slack);
+
+        // The discoverable "Done" row (last management item) backs out to the adapter picker, like Esc.
+        var items = vm.GetManagementMenuItems();
+        var doneIndex = items
+            .Select((item, index) => (item, index))
+            .Single(entry => entry.item.Action == ChannelsManagementAction.Done)
+            .index;
+        Assert.Equal("Done", items[doneIndex].Label);
+
+        vm.MoveManagementMenu(doneIndex);
+        vm.ActivateManagementMenuItem();
+
+        Assert.Equal(ChannelsConfigScreen.Picker, vm.Screen.Value);
+    }
+
+    [Fact]
     public void Esc_from_incomplete_add_channel_draft_writes_nothing()
     {
         WriteAllChannelConfig();
