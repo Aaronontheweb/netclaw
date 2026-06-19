@@ -45,10 +45,13 @@ public sealed class NetclawToolGenerator : IIncrementalGenerator
             return null;
 
         var grant = "default";
+        var liveness = "Opaque";
         foreach (var namedArg in attr.NamedArguments)
         {
             if (namedArg.Key == "Grant" && namedArg.Value.Value is string g)
                 grant = g;
+            if (namedArg.Key == "Liveness")
+                liveness = GetEnumMemberName(namedArg.Value, liveness);
         }
 
         // Find the TParams type from the base class
@@ -119,6 +122,7 @@ public sealed class NetclawToolGenerator : IIncrementalGenerator
             name,
             description,
             grant,
+            liveness,
             paramsType.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
             [.. parameters]);
     }
@@ -150,6 +154,24 @@ public sealed class NetclawToolGenerator : IIncrementalGenerator
                 _ => "string" // fallback
             }
         };
+    }
+
+    private static string GetEnumMemberName(TypedConstant value, string defaultName)
+    {
+        if (value.Kind != TypedConstantKind.Enum ||
+            value.Type is not INamedTypeSymbol enumType ||
+            value.Value is null)
+        {
+            return defaultName;
+        }
+
+        foreach (var member in enumType.GetMembers().OfType<IFieldSymbol>())
+        {
+            if (member.HasConstantValue && Equals(member.ConstantValue, value.Value))
+                return member.Name;
+        }
+
+        return $"__Unknown_{value.Value}";
     }
 
     private static void GenerateSource(SourceProductionContext spc, ToolModel model)
@@ -227,6 +249,7 @@ public sealed class NetclawToolGenerator : IIncrementalGenerator
         sb.AppendLine("    public override Netclaw.Tools.LlmFacingToolName LlmFacingName => _generatedLlmFacingName;");
         sb.AppendLine($"    public override string Description => \"{EscapeJson(model.ToolDescription)}\";");
         sb.AppendLine($"    public override string GrantCategory => \"{EscapeJson(model.Grant)}\";");
+        sb.AppendLine($"    public override Netclaw.Tools.ToolLivenessMode LivenessMode => Netclaw.Tools.ToolLivenessMode.{model.Liveness};");
         sb.AppendLine("    public override JsonElement ParameterSchema => _generatedSchema;");
         sb.AppendLine();
 
@@ -310,13 +333,14 @@ public sealed class NetclawToolGenerator : IIncrementalGenerator
 internal sealed class ToolModel
 {
     public ToolModel(string? ns, string className, string toolName, string toolDescription,
-        string grant, string paramsTypeName, ImmutableArray<ToolParameter> parameters)
+        string grant, string liveness, string paramsTypeName, ImmutableArray<ToolParameter> parameters)
     {
         Namespace = ns;
         ClassName = className;
         ToolName = toolName;
         ToolDescription = toolDescription;
         Grant = grant;
+        Liveness = liveness;
         ParamsTypeName = paramsTypeName;
         Parameters = parameters;
     }
@@ -326,6 +350,7 @@ internal sealed class ToolModel
     public string ToolName { get; }
     public string ToolDescription { get; }
     public string Grant { get; }
+    public string Liveness { get; }
     public string ParamsTypeName { get; }
     public ImmutableArray<ToolParameter> Parameters { get; }
 }

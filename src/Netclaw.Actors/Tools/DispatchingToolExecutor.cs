@@ -70,6 +70,10 @@ public sealed class DispatchingToolExecutor : IToolExecutor
         return null;
     }
 
+    /// <inheritdoc />
+    public ToolLivenessMode GetLivenessMode(FunctionCallContent toolCall)
+        => _registry.GetByName(toolCall.Name)?.LivenessMode ?? ToolLivenessMode.Opaque;
+
     /// <summary>
     /// The schema-independent half of <see cref="ValidateToolCall"/>: provider
     /// args-parse sentinel + present-but-invalid meta values. Static so it is
