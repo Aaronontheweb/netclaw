@@ -31,6 +31,9 @@ Enter
 
 # ─── Frame 1: Provider picker ────────────────────────────────────────
 Wait+Screen@10s /Choose your LLM provider:/
+# The heading can appear before the full provider list is painted on slower
+# CI runners. Anchor on the last row so the screenshot captures the settled list.
+Wait+Screen@5s /7\. Venice\.ai/
 Screenshot "/tmp/shot-wizard-provider-picker.png"
 
 # Provider list ordering is alphabetical by TypeKey:
