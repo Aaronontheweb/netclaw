@@ -31,8 +31,13 @@ Enter
 # With no providers configured the list shows every known type as a
 # "(not configured)" row plus the "+ Add new provider..." sentinel.
 # Anchor on "Ollama" (a guaranteed type row) so we know the list rendered.
+# Sleep lets VHS flush the full frame; the SECOND Wait+Screen is an anti-blank
+# re-assert immediately before capture — if a Termina startup full-refresh
+# blanked the screen during the Sleep, this blocks until the list repaints.
+# (Defence in depth: run-smoke.sh also re-runs the tape if a blank slips through.)
 Wait+Screen@10s /Ollama/
 Sleep 1s
+Wait+Screen@5s /Ollama/
 Screenshot "/tmp/shot-provider-manager-empty.png"
 
 # Frame captured; quit the TUI back to the shell.

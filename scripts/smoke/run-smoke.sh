@@ -87,6 +87,26 @@ SHOT_FRAMES=(
   config-search-saved
 )
 
+# Which frames each capture tape emits. Used by the blank-frame retry
+# (run_shot_tape_with_retry): after a tape runs, only its own captures are
+# inspected for the transient blank described below. Keep in sync with the
+# `Screenshot` directives in tests/smoke/tapes/screenshots/<tape>.tape.
+declare -A SHOT_TAPE_FRAMES=(
+  [help]="help"
+  [wizard-screens]="wizard-provider-picker wizard-security-posture"
+  [provider-manager]="provider-manager-empty"
+  [mcp-permissions]="mcp-permissions-server-list mcp-permissions-tool-grid"
+  [config-search]="config-search-selection config-search-brave-entry config-search-saved"
+)
+
+# Max attempts per tape when a transient blank frame is detected. A TUI screen
+# can render momentarily blank because Termina emits a full-screen clear
+# ([2J) + repaint as one write on a startup resize event, and VHS can
+# sample the PNG between the clear and the repaint half of that same write.
+# The write is atomic from the app's side (real users never see it); only VHS's
+# mid-write PTY sampling does. Re-running the tape re-captures a settled frame.
+SHOT_BLANK_RETRIES="${SHOT_BLANK_RETRIES:-3}"
+
 usage() {
   sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
   exit 2
@@ -356,6 +376,55 @@ run_shot_tape() {
   fi
 }
 
+# frame_is_blank <png> — true if the capture is a near-uniform frame, i.e. the
+# transient Termina full-refresh blank (see SHOT_BLANK_RETRIES). Baseline-
+# independent: it counts unique colors with ImageMagick `identify %k`. A blank
+# frame is the solid theme background (~1 color); any populated TUI screen has
+# hundreds. The threshold (16) sits far below the sparsest real frame and far
+# above a blank, so it never misclassifies a real screen as blank.
+frame_is_blank() {
+  local png="$1"
+  command -v identify >/dev/null 2>&1 || return 1   # can't tell → treat as not blank
+  [[ -f "$png" ]] || return 1                        # missing capture is handled elsewhere
+  local colors
+  colors=$(identify -format '%k' "$png" 2>/dev/null || echo "")
+  [[ "$colors" =~ ^[0-9]+$ ]] || return 1
+  (( colors < 16 ))
+}
+
+# run_shot_tape_with_retry <tape> — run a capture tape, then inspect the frames
+# it emits. If any is a transient blank (SHOT_BLANK_RETRIES), re-run the whole
+# tape so the next attempt captures a settled frame. Bounded so a genuinely
+# broken tape still fails at compare time instead of looping forever.
+run_shot_tape_with_retry() {
+  local tape="$1"
+  local frames="${SHOT_TAPE_FRAMES[$tape]:-}"
+  local attempt=1
+  while :; do
+    run_shot_tape "$tape"
+    [[ -z "$frames" ]] && return          # no frame map → accept the single run
+
+    local blank="" f
+    for f in $frames; do
+      if frame_is_blank "/tmp/shot-${f}.png"; then
+        blank="$f"
+        break
+      fi
+    done
+    [[ -z "$blank" ]] && return            # all frames populated → done
+
+    if (( attempt >= SHOT_BLANK_RETRIES )); then
+      echo "  WARN: ${tape} produced a blank frame (${blank}) on all ${attempt} attempts;" >&2
+      echo "        leaving it for compare_shot_frame to fail on." >&2
+      return
+    fi
+    echo "  RETRY: ${tape} attempt ${attempt} produced a blank frame (${blank}) —" >&2
+    echo "         re-running tape (transient Termina full-refresh capture)." >&2
+    attempt=$((attempt + 1))
+    for f in $frames; do rm -f "/tmp/shot-${f}.png"; done   # clear stale captures
+  done
+}
+
 # compare_shot_frame <frame> — compare /tmp/shot-<frame>.png against the
 # committed baseline. Records a failure (and writes review PNGs) on a
 # missing capture, missing baseline, or pixel mismatch.
@@ -382,21 +451,17 @@ compare_shot_frame() {
   fi
 
   # Use ImageMagick pixel comparison rather than cmp -s (byte-for-byte).
-  # VHS's PNG zlib encoder is not deterministic across processes: it produces
-  # different byte streams for visually identical frames (classic zlib filter-
-  # heuristic jitter). cmp -s would false-fail on such runs. compare -metric AE
-  # counts differing pixels; exit 0 means zero pixels differ (true pass).
-  # Fall back to cmp -s only if ImageMagick is absent.
-  # Use ImageMagick pixel comparison rather than cmp -s (byte-for-byte).
   # Two sources of false failures are tolerated:
   #   1. VHS PNG zlib encoder jitter — same pixels, different byte streams
   #      across process invocations (AE = 0, always passes).
   #   2. Terminal cursor block — Set CursorBlink false freezes the cursor but
-  #      not its on/off state; the block (~160 px) can appear or not between
-  #      runs. AE_CURSOR_TOLERANCE covers this without masking real regressions
-  #      (wrong cursor row, missing content, blank screen = thousands of px).
+  #      not its on/off state; the shell-prompt cursor cell can appear or not
+  #      between runs. The block is one character cell (measured AE≈493 at this
+  #      geometry). AE_CURSOR_TOLERANCE is set to ~2 cells so a single cursor
+  #      cell passes with margin, while real regressions still fail — a changed
+  #      word/line differs by thousands of px, a blank screen by ~68,000.
   # Fall back to cmp -s only if ImageMagick is absent.
-  local AE_CURSOR_TOLERANCE=500
+  local AE_CURSOR_TOLERANCE=1000
   if command -v compare >/dev/null 2>&1; then
     local ae
     ae=$(compare -metric AE "$baseline" "$capture" /dev/null 2>&1 || true)
@@ -434,7 +499,7 @@ if [[ "$shots_mode" -eq 1 ]]; then
   # Fresh /tmp so a stale capture from an earlier run cannot be compared.
   rm -f /tmp/shot-*.png
   for tape in "${SHOT_TAPES[@]}"; do
-    run_shot_tape "$tape"
+    run_shot_tape_with_retry "$tape"
   done
 
   echo
