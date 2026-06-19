@@ -515,7 +515,8 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
             new ChannelsManagementMenuItem(ChannelsManagementAction.DirectMessages, "Direct messages", "Enable or disable DM ingress and audience."),
             new ChannelsManagementMenuItem(ChannelsManagementAction.RotateCredentials, "Rotate credentials", "Replace tokens only when explicitly entered."),
             new ChannelsManagementMenuItem(ChannelsManagementAction.ToggleEnabled, enabled ? $"Disable {ActiveAdapterName}" : $"Enable {ActiveAdapterName}", "Preserve saved setup while changing runtime state."),
-            new ChannelsManagementMenuItem(ChannelsManagementAction.ResetConnection, $"Reset {ActiveAdapterName} connection", "Remove saved config and credentials.")
+            new ChannelsManagementMenuItem(ChannelsManagementAction.ResetConnection, $"Reset {ActiveAdapterName} connection", "Remove saved config and credentials."),
+            new ChannelsManagementMenuItem(ChannelsManagementAction.Done, "Done", "Return to Channels.")
         ];
     }
 
@@ -554,6 +555,10 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
             case ChannelsManagementAction.ResetConnection:
                 _resetConfirmIndex = 0;
                 Screen.Value = ChannelsConfigScreen.ResetConfirm;
+                break;
+            case ChannelsManagementAction.Done:
+                // Discoverable equivalent of Esc ("[Esc] Channels") — return to the adapter picker.
+                Screen.Value = ChannelsConfigScreen.Picker;
                 break;
         }
 
@@ -1961,7 +1966,8 @@ internal enum ChannelsManagementAction
     DirectMessages,
     RotateCredentials,
     ToggleEnabled,
-    ResetConnection
+    ResetConnection,
+    Done
 }
 
 internal sealed record ChannelsManagementMenuItem(
