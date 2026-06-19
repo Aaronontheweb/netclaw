@@ -381,9 +381,22 @@ compare_shot_frame() {
     return
   fi
 
-  if cmp -s "$baseline" "$capture"; then
-    echo "  PASS: ${frame} — pixel-identical to baseline."
-    return
+  # Use ImageMagick pixel comparison rather than cmp -s (byte-for-byte).
+  # VHS's PNG zlib encoder is not deterministic across processes: it produces
+  # different byte streams for visually identical frames (classic zlib filter-
+  # heuristic jitter). cmp -s would false-fail on such runs. compare -metric AE
+  # counts differing pixels; exit 0 means zero pixels differ (true pass).
+  # Fall back to cmp -s only if ImageMagick is absent.
+  if command -v compare >/dev/null 2>&1; then
+    if compare -metric AE "$baseline" "$capture" /dev/null 2>/dev/null; then
+      echo "  PASS: ${frame} — pixel-identical to baseline."
+      return
+    fi
+  else
+    if cmp -s "$baseline" "$capture"; then
+      echo "  PASS: ${frame} — pixel-identical to baseline."
+      return
+    fi
   fi
 
   # Mismatch — keep the actual, and a visual diff if ImageMagick is around.
