@@ -17,9 +17,7 @@ Enter
 # catch a frame mid-render; the Sleep after keeps the next keystroke from
 # leaking into the capture.
 Wait+Screen@10s /Usage:/
-Sleep 1s
 Screenshot "/tmp/shot-help.png"
-Sleep 1s
 
 Type "exit"
 Enter

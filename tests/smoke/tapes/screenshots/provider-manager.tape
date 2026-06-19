@@ -16,8 +16,8 @@
 #
 # Navigation + anchors mirror tapes/provider-add.tape; see that file and
 # src/Netclaw.Cli/Tui/ProviderManagerPage.cs for the synchronization
-# rationale. The Screenshot is bracketed by Sleep 1s to settle the frame
-# and keep the next keystroke from leaking into the capture.
+# rationale. Wait+Screen on a list item is sufficient — the list renders
+# synchronously on navigation; no Sleep is needed.
 #
 # Prepended preamble: tapes/screenshot-preamble.tape (determinism-pinned).
 
@@ -32,9 +32,7 @@ Enter
 # "(not configured)" row plus the "+ Add new provider..." sentinel.
 # Anchor on "Ollama" (a guaranteed type row) so we know the list rendered.
 Wait+Screen@10s /Ollama/
-Sleep 1s
 Screenshot "/tmp/shot-provider-manager-empty.png"
-Sleep 1s
 
 # Frame captured; quit the TUI back to the shell.
 Ctrl+Q

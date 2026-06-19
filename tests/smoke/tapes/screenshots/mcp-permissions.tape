@@ -59,9 +59,8 @@ Enter
 # ─── Frame 1: ServerList ─────────────────────────────────────────────
 # smoke-math should appear as "Connected, 3 tools".
 Wait+Screen@15s /smoke-math/
-Sleep 1s
+Wait+Screen@5s /3 tools/
 Screenshot "/tmp/shot-mcp-permissions-server-list.png"
-Sleep 1s
 
 # ─── Navigate into the ToolGrid ──────────────────────────────────────
 Enter
@@ -71,9 +70,8 @@ Enter
 # all tool rows (add, echo, record-tasks) must be visible simultaneously.
 # If the #1424 regression reappears, tool rows will overwrite the header.
 Wait+Screen@10s /record-tasks/
-Sleep 1s
+Wait+Screen@5s /Server default/
 Screenshot "/tmp/shot-mcp-permissions-tool-grid.png"
-Sleep 1s
 
 # ─── Exit TUI ────────────────────────────────────────────────────────
 Ctrl+Q
