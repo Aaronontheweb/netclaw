@@ -64,6 +64,11 @@ internal sealed class SearchConfigEditorPage : ReactivePage<SearchConfigEditorVi
         => Layouts.Vertical()
             .WithSpacing(1)
             .WithChild(BuildContent())
+            // Consume the remaining panel height so the status/keybind bars pin to the bottom (matching
+            // every other config page) instead of floating up under short screens like "Validating…". Also
+            // makes the vertical claim full panel height, which the diff renderer needs to overwrite stale
+            // rows left by a taller prior screen.
+            .WithChild(Layouts.Empty().Fill())
             .WithChild(BuildStatusBar())
             .WithChild(BuildKeyBindings());
 

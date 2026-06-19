@@ -96,7 +96,10 @@ public sealed class ModelManagerPage : ReactivePage<ModelManagerViewModel>
                 var text = state switch
                 {
                     ModelManagerState.RoleOverview =>
-                        " [\u2191/\u2193] Navigate  [Enter] Assign  [D] Discover  [C] Clear  [Esc] Quit",
+                        // Embedded in `netclaw config`, Esc backs out to the dashboard; standalone it exits.
+                        ViewModel.IsEmbeddedInConfig
+                            ? " [\u2191/\u2193] Navigate  [Enter] Assign  [D] Discover  [C] Clear  [Esc] Back  [Ctrl+Q] Quit"
+                            : " [\u2191/\u2193] Navigate  [Enter] Assign  [D] Discover  [C] Clear  [Esc] Quit",
                     ModelManagerState.ConfirmAssignment =>
                         " [Enter] Confirm  [Esc] Cancel",
                     _ =>
