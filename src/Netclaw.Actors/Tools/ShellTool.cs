@@ -253,7 +253,8 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
 
     /// <summary>
     /// Streams stdout/stderr as <see cref="ToolActivityUpdate"/> items while the
-    /// process runs, keeping the per-call inactivity watchdog alive. The terminal
+    /// process runs. Shell output is live display data only; the parent pipeline
+    /// still treats shell as opaque and enforces a wall-clock budget. The terminal
     /// <see cref="ToolCompletedUpdate"/> carries the same bounded head+tail result
     /// as the non-streaming path.
     /// </summary>
@@ -389,12 +390,10 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
                 ? context.RequestedTimeoutSeconds.Value
                 : DefaultTimeoutSeconds;
 
-            // Wall-clock ceiling: the watchdog's inactivity budget resets on
-            // each activity item (keeping chatty commands alive), but a command
-            // that trickles output can run indefinitely without a hard cap.
-            // This CTS enforces the same absolute wall-clock limit that the
-            // non-streaming path uses via its own CancelAfter — whichever
-            // fires first (inactivity watchdog or wall-clock) wins.
+            // Wall-clock ceiling matching the non-streaming path. The parent
+            // pipeline also bounds opaque shell calls by wall-clock time, but the
+            // tool keeps its own process-level cap so direct callers and cleanup
+            // semantics stay consistent.
             using var wallClockCts = new CancellationTokenSource();
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, wallClockCts.Token);
             wallClockCts.CancelAfter(TimeSpan.FromSeconds(effectiveTimeoutSeconds));
