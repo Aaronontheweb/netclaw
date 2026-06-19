@@ -115,6 +115,13 @@ shot_tape_frames() {
 # mid-write PTY sampling does. Re-running the tape re-captures a settled frame.
 SHOT_BLANK_RETRIES="${SHOT_BLANK_RETRIES:-3}"
 
+# Pixel tolerance (ImageMagick AE) for a frame to count as matching its
+# baseline. Shared by compare_shot_frame (the pass/fail gate) and the retry
+# trigger (a capture above this differs enough to re-run). ~2 character cells —
+# clears a single shell-cursor cell (~493 px) while still failing on real
+# content changes (thousands of px). See compare_shot_frame for the rationale.
+SHOT_AE_TOLERANCE="${SHOT_AE_TOLERANCE:-1000}"
+
 usage() {
   sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
   exit 2
@@ -400,6 +407,30 @@ frame_is_blank() {
   (( colors < 16 ))
 }
 
+# frame_needs_retry <frame> — true if the capture looks like a transient Termina
+# full-refresh artifact that re-running the tape can clear. Two shapes:
+#   * fully blank (frame_is_blank) — VHS sampled the [2J-cleared frame.
+#   * partial/garbled — VHS sampled mid-repaint, so only the top rows landed
+#     (e.g. the MCP tool grid captured before its lower rows painted). Such a
+#     frame has plenty of colors (so frame_is_blank misses it) but differs from
+#     baseline by far more than the cursor tolerance.
+# A genuine regression also trips the second branch, but it reproduces every
+# attempt and so still fails at compare time — only the latency differs.
+frame_needs_retry() {
+  local frame="$1"
+  local capture="/tmp/shot-${frame}.png"
+  local baseline="${SHOT_BASELINE_DIR}/${frame}.approved.png"
+  [[ -f "$capture" ]] || return 1
+  frame_is_blank "$capture" && return 0
+  command -v compare >/dev/null 2>&1 || return 1
+  [[ -f "$baseline" ]] || return 1
+  local ae ae_int
+  ae=$(compare -metric AE "$baseline" "$capture" /dev/null 2>&1 || true)
+  ae_int="${ae%%.*}"; ae_int="${ae_int// /}"
+  [[ "$ae_int" =~ ^[0-9]+$ ]] || return 1
+  (( ae_int > SHOT_AE_TOLERANCE ))
+}
+
 # run_shot_tape_with_retry <tape> — run a capture tape, then inspect the frames
 # it emits. If any is a transient blank (SHOT_BLANK_RETRIES), re-run the whole
 # tape so the next attempt captures a settled frame. Bounded so a genuinely
@@ -413,22 +444,22 @@ run_shot_tape_with_retry() {
     run_shot_tape "$tape"
     [[ -z "$frames" ]] && return          # no frame map → accept the single run
 
-    local blank="" f
+    local bad="" f
     for f in $frames; do
-      if frame_is_blank "/tmp/shot-${f}.png"; then
-        blank="$f"
+      if frame_needs_retry "$f"; then
+        bad="$f"
         break
       fi
     done
-    [[ -z "$blank" ]] && return            # all frames populated → done
+    [[ -z "$bad" ]] && return              # all frames settled → done
 
     if (( attempt >= SHOT_BLANK_RETRIES )); then
-      echo "  WARN: ${tape} produced a blank frame (${blank}) on all ${attempt} attempts;" >&2
+      echo "  WARN: ${tape} produced a transient frame (${bad}) on all ${attempt} attempts;" >&2
       echo "        leaving it for compare_shot_frame to fail on." >&2
       return
     fi
-    echo "  RETRY: ${tape} attempt ${attempt} produced a blank frame (${blank}) —" >&2
-    echo "         re-running tape (transient Termina full-refresh capture)." >&2
+    echo "  RETRY: ${tape} attempt ${attempt} produced a transient frame (${bad}) —" >&2
+    echo "         re-running tape (blank or partial Termina full-refresh capture)." >&2
     attempt=$((attempt + 1))
     for f in $frames; do rm -f "/tmp/shot-${f}.png"; done   # clear stale captures
   done
@@ -469,14 +500,14 @@ compare_shot_frame() {
   #      geometry). AE_CURSOR_TOLERANCE is set to ~2 cells so a single cursor
   #      cell passes with margin, while real regressions still fail — a changed
   #      word/line differs by thousands of px, a blank screen by ~68,000.
-  # Fall back to cmp -s only if ImageMagick is absent.
-  local AE_CURSOR_TOLERANCE=1000
+  # Fall back to cmp -s only if ImageMagick is absent. The tolerance
+  # (SHOT_AE_TOLERANCE) is shared with the retry trigger (frame_needs_retry).
   if command -v compare >/dev/null 2>&1; then
     local ae
     ae=$(compare -metric AE "$baseline" "$capture" /dev/null 2>&1 || true)
     local ae_int="${ae%%.*}"
     ae_int="${ae_int// /}"
-    if [[ "${ae_int:-0}" -le "$AE_CURSOR_TOLERANCE" ]]; then
+    if [[ "${ae_int:-0}" -le "$SHOT_AE_TOLERANCE" ]]; then
       echo "  PASS: ${frame} — pixel-close to baseline (AE=${ae_int:-0})."
       return
     fi
