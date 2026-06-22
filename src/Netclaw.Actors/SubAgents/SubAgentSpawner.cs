@@ -170,9 +170,9 @@ public sealed class SubAgentSpawner
                 // including keepalives) and the no-progress deadline (keepalives but
                 // no real tokens for NoProgressTimeoutSeconds). ct — the spawning
                 // tool call's token — only adds parent-turn / user cancellation on
-                // top; note the parent's own per-call watchdog does NOT bound a
-                // keepalive wedge, because the sub-agent emits liveness activity on
-                // every keepalive, which refreshes it.
+                // top; once streaming spawn_agent has emitted its first activity,
+                // the parent no longer applies an inter-item watchdog. Keepalive
+                // wedges are bounded by the sub-agent's own no-progress watchdog.
                 timeout: Timeout.InfiniteTimeSpan,
                 cancellationToken: ct);
 
