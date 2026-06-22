@@ -227,8 +227,7 @@ public sealed class SkillSourcesConfigViewModelTests : IDisposable
         vm.ActivateSelected(); // RequiresAuth -> token field
         vm.AppendText("secret-token");
         vm.ActivateSelected();
-        await vm.PendingProbe!;
-        vm.ActivateSelected(); // success -> name review
+        await vm.PendingProbe!; // success auto-advances to name review (no second Enter)
         ReplaceDraft(vm, "custom-feed");
 
         // Make the DataProtection keys directory unusable (a file, not a directory) so the commit's
@@ -341,12 +340,31 @@ public sealed class SkillSourcesConfigViewModelTests : IDisposable
 
         vm.ActivateSelected();              // phase 2: save anyway -> name review
         Assert.Equal(SkillSourcesScreen.AddRemoteName, vm.Screen.Value);
+        Assert.False(vm.AddRemoteNameTitleIsSuccess); // a save-anyway failure must not render success-green
         ReplaceDraft(vm, "custom-feed");
         vm.ActivateSelected();
 
         var feed = SingleFeedSection();
         Assert.Equal("https://skills.example.test", feed["Url"]);
         Assert.Null(feed["ApiKey"]);
+    }
+
+    [Fact]
+    public async Task Reachable_skill_server_auto_advances_to_name_without_a_second_enter()
+    {
+        using var vm = new SkillSourcesConfigViewModel(_paths, new FakeSkillFeedProbe(true, skillCount: 53));
+
+        BeginAddRemoteServer(vm);
+        vm.AppendText("https://skills.example.test");
+        vm.ActivateSelected();   // single Enter kicks off the probe
+        await vm.PendingProbe!;  // a reachable feed advances on its own — no second Enter
+
+        Assert.Equal(SkillSourcesScreen.AddRemoteName, vm.Screen.Value);
+        // The probe's reachable confirmation is carried onto the name screen (not lost to the auto-advance),
+        // the way the init wizard shows "Found N skills". The fake probe reports "reachable"; the real probe
+        // formats the advertised count into this same message.
+        Assert.Contains("reachable", vm.AddRemoteNameTitle, StringComparison.OrdinalIgnoreCase);
+        Assert.True(vm.AddRemoteNameTitleIsSuccess); // drives the success-green header on the name screen
     }
 
     [Fact]
@@ -728,10 +746,10 @@ public sealed class SkillSourcesConfigViewModelTests : IDisposable
         Assert.Equal(SkillSourcesScreen.AddRemoteUrl, vm.Screen.Value);
     }
 
-    // Drives the probe-driven add flow for an auth-gated server. The reachability probe now runs
-    // OFF the loop, so each probe is two-phase: the first ActivateSelected kicks it off (await
-    // PendingProbe), the second ActivateSelected acts on the completed result (reveal token / advance
-    // to name). The vm must be constructed with a requiresAuth FakeSkillFeedProbe.
+    // Drives the probe-driven add flow for an auth-gated server. The reachability probe runs OFF the loop.
+    // A FAILURE (401) is two-phase: the first ActivateSelected kicks off the probe (await PendingProbe), the
+    // second acts on the result (reveal the token field). A SUCCESS auto-advances to the name step on its own
+    // — no second keypress — so after the token re-probe we only await. Construct vm with a requiresAuth probe.
     private static async Task AddRemoteServer(SkillSourcesConfigViewModel vm, string url, string token, string name)
     {
         BeginAddRemoteServer(vm);
@@ -741,9 +759,8 @@ public sealed class SkillSourcesConfigViewModelTests : IDisposable
         vm.ActivateSelected();              // phase 2: RequiresAuth -> reveal token field
         Assert.Equal(SkillSourcesScreen.AddRemoteToken, vm.Screen.Value);
         vm.AppendText(token);
-        vm.ActivateSelected();              // phase 1: re-probe with token -> success
+        vm.ActivateSelected();              // re-probe with token -> success auto-advances to name review
         await vm.PendingProbe!;
-        vm.ActivateSelected();              // phase 2: success -> advance to name review
         Assert.Equal(SkillSourcesScreen.AddRemoteName, vm.Screen.Value);
         ReplaceDraft(vm, name);
         vm.ActivateSelected();

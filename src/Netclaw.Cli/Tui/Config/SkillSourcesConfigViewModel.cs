@@ -254,6 +254,7 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
     private SkillSourceAuthMode _pendingRemoteAuthMode;
     private string? _pendingRemoteApiKey;
     private string? _pendingRemoteProbeMessage;
+    private bool _pendingRemoteProbeMessageIsSuccess;
     private int _pendingRemoteTimeoutSeconds = DefaultFeedTimeoutSeconds;
     private SkillSourceDetailAction? _editingAction;
     private SkillSourcesScreen? _validationEditScreen;
@@ -649,6 +650,19 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
     // Exposes the in-flight off-loop reachability probe so tests can await it deterministically
     // (no Task.Delay) instead of racing the thread-pool continuation.
     internal Task? PendingProbe => _probeTask;
+
+    // Title for the name-review step. Auto-advance drops the operator here without a confirming keypress, so
+    // carry the probe's result line (e.g. "Skill feed reachable — 53 skills advertised.") onto this screen —
+    // the way the init wizard shows "Found N skills" — instead of letting that confirmation vanish.
+    internal string AddRemoteNameTitle =>
+        string.IsNullOrWhiteSpace(_pendingRemoteProbeMessage)
+            ? "Review remote skill server source."
+            : _pendingRemoteProbeMessage!;
+
+    // True only when the carried title is a reachable confirmation (so the page renders it success-green).
+    // A save-anyway failure also lands here carrying its message, but must NOT read as success.
+    internal bool AddRemoteNameTitleIsSuccess =>
+        !string.IsNullOrWhiteSpace(_pendingRemoteProbeMessage) && _pendingRemoteProbeMessageIsSuccess;
 
     // Kicks off a reachability probe OFF the single-threaded TUI loop so a slow/unreachable feed
     // never freezes input. The synchronous setup (status + redraw) runs on the loop thread; the
@@ -1275,7 +1289,8 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
             return;
         }
 
-        // Phase 1: a new URL/token — kick off the off-loop probe. The continuation is status-only.
+        // Phase 1: a new URL/token — kick off the off-loop probe. The continuation is status-only EXCEPT it
+        // marshals the success advance onto the loop thread (navigation is never safe off-loop).
         _lastProbeFingerprint = fingerprint;
         _pendingRemoteProbeResult = null;
         StartBackgroundProbe(
@@ -1287,14 +1302,48 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
             {
                 _pendingRemoteProbeResult = r;
                 _pendingRemoteProbeMessage = r.Message;
+                _pendingRemoteProbeMessageIsSuccess = r.Success;
+
+                if (r.Success)
+                {
+                    // A reachable feed needs no decision, so advance straight to the name step like the init
+                    // wizard rather than making the operator press Enter again. Navigation must run on the
+                    // loop thread; marshal it there via InvokeAsync (this continuation runs off-loop). The
+                    // marshaled AutoAdvanceAfterProbeSuccess re-checks that nothing changed in flight, and the
+                    // ct skips the advance if a newer probe or a dispose has superseded this one. In tests the
+                    // unbound InvokeAsync runs inline, so the advance lands within the awaited probe task.
+                    SetStatus(r.Message, ConfigStatusTone.Success);
+                    var ct = _probeCts?.Token ?? CancellationToken.None;
+                    _ = InvokeAsync(() => AutoAdvanceAfterProbeSuccess(fingerprint), ct);
+                    return;
+                }
+
+                // Failures still pause for a deliberate keypress: a 401 needs the operator to add a bearer
+                // token, and an unreachable feed needs an explicit "save anyway" decision.
                 SetStatus(
-                    r.Success
-                        ? $"{r.Message} Press Enter to continue."
-                        : r.RequiresAuth && _pendingRemoteAuthMode != SkillSourceAuthMode.BearerToken
-                            ? $"{r.Message} Press Enter to add a bearer token."
-                            : $"{r.Message} Press Enter to save anyway.",
-                    r.Success ? ConfigStatusTone.Success : ConfigStatusTone.Warning);
+                    r.RequiresAuth && _pendingRemoteAuthMode != SkillSourceAuthMode.BearerToken
+                        ? $"{r.Message} Press Enter to add a bearer token."
+                        : $"{r.Message} Press Enter to save anyway.",
+                    ConfigStatusTone.Warning);
             });
+    }
+
+    // Loop-thread continuation of a successful add-server probe: advance to the name step. Re-checks that the
+    // operator did not edit the URL/token or leave the URL screen while the probe was in flight, so a stale
+    // marshaled call can never hijack navigation. The phase-2 success branch above is the fallback for the
+    // rare race where the operator presses Enter before this marshaled advance reaches the loop.
+    private void AutoAdvanceAfterProbeSuccess(string fingerprint)
+    {
+        // A probe is launched from either the URL screen or (after a 401) the token screen; advance only if
+        // still on one of those — if the operator backed out of the add flow, the marshaled call is stale.
+        if (Screen.Value is not (SkillSourcesScreen.AddRemoteUrl or SkillSourcesScreen.AddRemoteToken)
+            || _lastProbeFingerprint != fingerprint
+            || _pendingRemoteProbeResult is not { Success: true }
+            || _pendingRemoteUrl is null)
+            return;
+
+        _pendingRemoteProbeResult = null;
+        ShowTextScreen(SkillSourcesScreen.AddRemoteName, MakeUniqueName(SuggestNameFromUrl(_pendingRemoteUrl)));
     }
 
     private void SaveNewRemoteSource()

@@ -106,9 +106,10 @@ internal sealed class SkillSourcesConfigPage : ReactivePage<SkillSourcesConfigVi
                     "Blank tokens are not saved. Existing tokens are removed only through Remove token.",
                     isPassword: true),
                 SkillSourcesScreen.AddRemoteName => BuildTextDraft(
-                    "Review remote skill server source.",
+                    ViewModel.AddRemoteNameTitle,
                     "Source name",
-                    "Enter adds the source and autosaves."),
+                    "Enter adds the source and autosaves.",
+                    titleColor: ViewModel.AddRemoteNameTitleIsSuccess ? Color.Green : null),
                 SkillSourcesScreen.RenameSource => BuildTextDraft(
                     "Rename this skill source.",
                     "Source name",
@@ -209,13 +210,14 @@ internal sealed class SkillSourcesConfigPage : ReactivePage<SkillSourcesConfigVi
         string hint,
         string? calloutTitle = null,
         IReadOnlyList<string>? calloutLines = null,
-        bool isPassword = false)
+        bool isPassword = false,
+        Color? titleColor = null)
     {
         var input = EnsureTextInput(isPassword);
         input.OnFocused();
 
         var layout = Layouts.Vertical()
-            .WithChild(Header($"  {title}"))
+            .WithChild(Header($"  {title}", titleColor))
             .WithChild(Layouts.Empty().Height(1))
             .WithChild(NetclawTuiChrome.BuildTextInputPanel(input, fieldLabel))
             .WithChild(Layouts.Empty().Height(1))
@@ -677,7 +679,7 @@ internal sealed class SkillSourcesConfigPage : ReactivePage<SkillSourcesConfigVi
         _textInputScreen = null;
     }
 
-    private static TextNode Header(string text) => new TextNode(text).WithForeground(Color.White).Bold();
+    private static TextNode Header(string text, Color? color = null) => new TextNode(text).WithForeground(color ?? Color.White).Bold();
     private static TextNode Hint(string text) => new TextNode(text).WithForeground(Color.Gray);
     private static TextNode Text(string text, Color color) => new TextNode(text).WithForeground(color);
 
