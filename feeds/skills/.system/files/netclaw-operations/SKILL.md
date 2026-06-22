@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.13.0"
+  version: "2.14.0"
 ---
 
 # Netclaw Operations
@@ -288,6 +288,10 @@ Rules:
 - For synchronous calls `_timeout_seconds` is honored as you set it (no ceiling
   or floor); when omitted, the default tool timeout applies. Background jobs
   differ: omitted means no timer at all.
+- Synchronous tool timeouts are wall-clock budgets for opaque tools; repeated
+  stdout/progress output does not extend them. `spawn_agent` is self-monitoring:
+  the parent only guards startup silence, and the subagent reports its own stall
+  or success once it has started.
 - **Long-running delegation calls** (e.g. `curl` to a local coding-agent or
   model server that takes minutes to respond) should run as background jobs.
 - The user must approve the command before it starts running in the background.

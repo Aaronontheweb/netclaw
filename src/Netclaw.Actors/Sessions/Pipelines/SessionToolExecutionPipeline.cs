@@ -633,14 +633,19 @@ internal static class SessionToolExecutionPipeline
 
         try
         {
-            // Consumed as a stream under a per-call inactivity watchdog. A
-            // non-streaming tool emits only the terminal item, so a flat budget
-            // is equivalent to the former timeout; inactivity throws
-            // TimeoutException, which the caller turns into a per-tool error.
+            // Opaque tools are bounded by one wall-clock budget. Self-monitoring
+            // tools (spawn_agent) are only bounded until their first stream item;
+            // after that, their own internal watchdogs must return terminal
+            // success or failure.
+            var livenessMode = executor.GetLivenessMode(toolCall);
+            var budget = livenessMode == ToolLivenessMode.SelfMonitoring
+                ? ToolWatchdogBudget.FirstItemOnly(timeout)
+                : ToolWatchdogBudget.WallClock(timeout);
+
             return await StreamingToolWatchdog.ConsumeAsync(
                 executor.ExecuteStreamAsync(toolCall, context, cancellationToken),
                 toolCall.Name,
-                ToolWatchdogBudget.Flat(timeout),
+                budget,
                 timeProvider,
                 onActivity: null,
                 cancellationToken);

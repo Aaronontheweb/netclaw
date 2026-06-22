@@ -33,6 +33,12 @@ public interface IToolExecutor
     ToolArgumentRejection? ValidateToolCall(FunctionCallContent toolCall) => null;
 
     /// <summary>
+    /// Return the liveness mode for the resolved tool. Unknown tools and test
+    /// fakes default to opaque so callers keep the conservative wall-clock bound.
+    /// </summary>
+    ToolLivenessMode GetLivenessMode(FunctionCallContent toolCall) => ToolLivenessMode.Opaque;
+
+    /// <summary>
     /// Execute a tool call as a stream of <see cref="ToolCallUpdate"/> items. The
     /// default implementation runs <see cref="ExecuteAsync"/> and yields its
     /// result as a single terminal completion item; <see cref="DispatchingToolExecutor"/>

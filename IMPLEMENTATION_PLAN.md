@@ -614,7 +614,7 @@ Done when:
 #### Task 4.3: Keep streaming/progress execution contract coherent
 
 **PRD:** `docs/prd/PRD-001-netclaw-mvp.md`, `docs/prd/PRD-006-mcp-tool-integration.md`
-**Spec:** `openspec/changes/streaming-tool-call-execution/tasks.md`, `openspec/changes/progress-aware-turn-loop/tasks.md`, `openspec/specs/session-state-machine/spec.md`
+**Spec:** `docs/spec/SPEC-016-tool-liveness-and-stall-detection.md`, `openspec/changes/streaming-tool-call-execution/tasks.md`, `openspec/specs/session-state-machine/spec.md`
 **Surface area:** runtime, actors, tools
 **Verification:** L2
 
@@ -622,8 +622,17 @@ Done when:
 
 - [ ] Tool-call streaming, progress reporting, session phase transitions, and
   persistence snapshots agree on the same state names.
+- [ ] Tool liveness is classified as `Opaque` or `SelfMonitoring`; generated
+  tools default to `Opaque`, and `spawn_agent` is explicitly `SelfMonitoring`.
+- [ ] Opaque tools use one wall-clock budget; streamed stdout/stderr or other
+  output does not reset the budget.
+- [ ] Self-monitoring tools use only a parent first-item startup guard after
+  which the child/tool-owned watchdog reports terminal success or failure.
 - [ ] Actor tests prove progress events survive normal tool completion,
   tool failure, cancellation, and session recovery.
+- [ ] Actor tests prove a quiet-but-healthy sub-agent is not killed by the parent
+  `Session.ToolExecutionTimeoutSeconds`, while child prefill/no-progress stalls
+  still produce terminal failed `spawn_agent` results.
 - [ ] No turn loop can report success while a tool result is still pending.
 - [ ] Logs/traces correlate model call, tool call, approval, and session turn.
 
