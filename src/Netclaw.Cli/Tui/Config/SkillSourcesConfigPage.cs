@@ -106,7 +106,7 @@ internal sealed class SkillSourcesConfigPage : ReactivePage<SkillSourcesConfigVi
                     "Blank tokens are not saved. Existing tokens are removed only through Remove token.",
                     isPassword: true),
                 SkillSourcesScreen.AddRemoteName => BuildTextDraft(
-                    "Review remote skill server source.",
+                    ViewModel.AddRemoteNameTitle,
                     "Source name",
                     "Enter adds the source and autosaves."),
                 SkillSourcesScreen.RenameSource => BuildTextDraft(
