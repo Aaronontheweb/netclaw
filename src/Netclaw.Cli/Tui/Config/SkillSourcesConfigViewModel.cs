@@ -254,6 +254,7 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
     private SkillSourceAuthMode _pendingRemoteAuthMode;
     private string? _pendingRemoteApiKey;
     private string? _pendingRemoteProbeMessage;
+    private bool _pendingRemoteProbeMessageIsSuccess;
     private int _pendingRemoteTimeoutSeconds = DefaultFeedTimeoutSeconds;
     private SkillSourceDetailAction? _editingAction;
     private SkillSourcesScreen? _validationEditScreen;
@@ -657,6 +658,11 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
         string.IsNullOrWhiteSpace(_pendingRemoteProbeMessage)
             ? "Review remote skill server source."
             : _pendingRemoteProbeMessage!;
+
+    // True only when the carried title is a reachable confirmation (so the page renders it success-green).
+    // A save-anyway failure also lands here carrying its message, but must NOT read as success.
+    internal bool AddRemoteNameTitleIsSuccess =>
+        !string.IsNullOrWhiteSpace(_pendingRemoteProbeMessage) && _pendingRemoteProbeMessageIsSuccess;
 
     // Kicks off a reachability probe OFF the single-threaded TUI loop so a slow/unreachable feed
     // never freezes input. The synchronous setup (status + redraw) runs on the loop thread; the
@@ -1296,6 +1302,7 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
             {
                 _pendingRemoteProbeResult = r;
                 _pendingRemoteProbeMessage = r.Message;
+                _pendingRemoteProbeMessageIsSuccess = r.Success;
 
                 if (r.Success)
                 {

@@ -340,6 +340,7 @@ public sealed class SkillSourcesConfigViewModelTests : IDisposable
 
         vm.ActivateSelected();              // phase 2: save anyway -> name review
         Assert.Equal(SkillSourcesScreen.AddRemoteName, vm.Screen.Value);
+        Assert.False(vm.AddRemoteNameTitleIsSuccess); // a save-anyway failure must not render success-green
         ReplaceDraft(vm, "custom-feed");
         vm.ActivateSelected();
 
@@ -363,6 +364,7 @@ public sealed class SkillSourcesConfigViewModelTests : IDisposable
         // the way the init wizard shows "Found N skills". The fake probe reports "reachable"; the real probe
         // formats the advertised count into this same message.
         Assert.Contains("reachable", vm.AddRemoteNameTitle, StringComparison.OrdinalIgnoreCase);
+        Assert.True(vm.AddRemoteNameTitleIsSuccess); // drives the success-green header on the name screen
     }
 
     [Fact]
