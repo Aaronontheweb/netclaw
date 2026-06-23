@@ -1,3 +1,26 @@
+#### 0.24.1 2026-06-23 ####
+
+Netclaw v0.24.1 — TUI reliability improvements, remote skill server awareness, spawn_agent liveness fixes, and SQLitePCLRaw CVE mitigation
+
+**Features**
+
+* **Show advertised skill count for remote skill servers** — the TUI now displays the number of skills advertised by each remote skill server, giving users visibility into available capabilities. ([#1452](https://github.com/netclaw-dev/netclaw/pull/1452))
+
+**Bug Fixes**
+
+* **SQLitePCLRaw CVE suppression** — suppressed GHSA-2m69-gcr7-jv3q (SQLitePCLRaw CVE-2025-6965) until upstream patches the vulnerability. ([#1444](https://github.com/netclaw-dev/netclaw/pull/1444))
+
+* **Auto-start init health checks** — the TUI now automatically starts health checks during the init wizard, ensuring servers are ready before proceeding. ([#1454](https://github.com/netclaw-dev/netclaw/pull/1454))
+
+* **Config-screen consistency** — the TUI config screen now consistently shows Done rows, an embedded footer, and proper Search spacer styling. ([#1441](https://github.com/netclaw-dev/netclaw/pull/1441))
+
+* **Auto-advance add-skill-server flow** — the skill server add flow now automatically advances on a successful probe, reducing manual steps. ([#1458](https://github.com/netclaw-dev/netclaw/pull/1458))
+
+* **spawn_agent liveness respect** — spawn_agent now properly respects self-monitoring liveness checks, ensuring child agents are health-checked correctly after startup. ([#1453](https://github.com/netclaw-dev/netclaw/pull/1453))
+
+* **Security & Access menu Done rows** — added Done rows to the Security & Access menu and editors for consistent UI feedback. ([#1448](https://github.com/netclaw-dev/netclaw/pull/1448))
+
+
 #### 0.24.0 2026-06-18 ####
 
 Netclaw v0.24.0 — Beta release channel, streaming-native chat stack, rebuilt config TUI, Docker reliability, and the full 0.24.0 beta journey
