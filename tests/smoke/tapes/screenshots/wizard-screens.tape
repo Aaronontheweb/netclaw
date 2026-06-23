@@ -17,8 +17,9 @@
 #
 # Navigation + anchors mirror tapes/init-wizard.tape; see that file and
 # src/Netclaw.Cli/Tui/Wizard/Steps/*StepView.cs for the synchronization
-# rationale. Each Screenshot is bracketed by Sleep 1s — VHS can otherwise
-# capture an unsettled frame, or let the next keystroke leak into the shot.
+# rationale. Wizard step transitions are synchronous — Wait+Screen is the
+# only gate needed. The Sleep 1s after Ctrl+Q below is intentional: it is
+# the alt-screen restore guard (CSI ?1049l), not a screenshot timing guard.
 #
 # Prepended preamble: tapes/screenshot-preamble.tape (determinism-pinned).
 
@@ -30,9 +31,10 @@ Enter
 
 # ─── Frame 1: Provider picker ────────────────────────────────────────
 Wait+Screen@10s /Choose your LLM provider:/
-Sleep 1s
+# The heading can appear before the full provider list is painted on slower
+# CI runners. Anchor on the last row so the screenshot captures the settled list.
+Wait+Screen@5s /7\. Venice\.ai/
 Screenshot "/tmp/shot-wizard-provider-picker.png"
-Sleep 1s
 
 # Provider list ordering is alphabetical by TypeKey:
 #   anthropic, github-copilot, ollama, openai, openai-compatible, openrouter
@@ -78,9 +80,7 @@ Enter
 
 # ─── Frame 2: Security posture ───────────────────────────────────────
 Wait+Screen@10s /Who will interact with this Netclaw instance/
-Sleep 1s
 Screenshot "/tmp/shot-wizard-security-posture.png"
-Sleep 1s
 
 # Both frames captured; abandon the wizard. Ctrl+Q is the TUI quit
 # shortcut (Ctrl+C requires a double-press under raw input mode).
