@@ -53,37 +53,58 @@ public sealed class DispatchingToolExecutor : IToolExecutor
 
     /// <inheritdoc />
     public ToolArgumentRejection? ValidateToolCall(FunctionCallContent toolCall)
+        => _registry.GetByName(toolCall.Name) is { } registered
+            ? ValidateCore(toolCall, registered, MetaResolverFor(registered))
+            : null; // unknown-tool is handled separately by the execute paths
+
+    /// <inheritdoc />
+    public ToolCallInterpretation InterpretToolCall(FunctionCallContent toolCall)
     {
+        // The single execution-preflight seam: resolve the tool + build the resolver
+        // ONCE, then validate and (only on success) extract — so validation and
+        // extraction can never disagree, and a caller cannot extract without first
+        // validating (the silent-drop footgun). Both the main pipeline and the
+        // sub-agent loop route through this.
         if (_registry.GetByName(toolCall.Name) is not { } registered)
-            return null; // unknown-tool is handled separately by the execute paths
+            return new ToolCallInterpretation(null, null, toolCall); // unknown tool: execute path reports it
 
-        // Schema-aware meta resolution: near-miss names (TimeoutSeconds) resolve to
-        // meta, but a key that binds to the tool's OWN declared parameter wins and
-        // is forwarded — so a third-party MCP server's real `timeout` is never
-        // hijacked. Shared with PrepareToolCall so validation and extraction agree.
         var resolveMeta = MetaResolverFor(registered);
+        if (ValidateCore(toolCall, registered, resolveMeta) is { } rejection)
+            return new ToolCallInterpretation(rejection, null, toolCall);
 
-        // Registry-free checks first (parse sentinel, meta values).
-        if (ValidateArguments(toolCall.Arguments, resolveMeta) is { } rejection)
-            return rejection;
-
-        // Unrecognized argument keys — native tools only; MCP servers validate
-        // their own schema and reject observably.
-        if (registered is not McpToolAdapter
-            && ToolArgumentValidator.ValidateArgumentKeys(registered, toolCall.Arguments) is { } keyError)
-            return new ToolArgumentRejection(keyError, "unrecognized_argument");
-
-        return null;
+        var (meta, cleaned) = ToolCallMetaExtractor.Extract(toolCall, resolveMeta);
+        return new ToolCallInterpretation(null, meta, cleaned);
     }
 
     /// <inheritdoc />
     public (ToolCallMeta? Meta, FunctionCallContent Cleaned) PrepareToolCall(FunctionCallContent toolCall)
     {
-        // Schema-aware extraction (see MetaResolverFor / ValidateToolCall). Unknown
-        // tool → exact-match default, since there is no schema to consult.
+        // Extraction only (no validation) — used by the persistence path, which must
+        // record the model's message regardless of whether it would be rejected.
+        // Schema-aware; unknown tool → exact-match default (no schema to consult).
         return _registry.GetByName(toolCall.Name) is { } registered
             ? ToolCallMetaExtractor.Extract(toolCall, MetaResolverFor(registered))
             : ToolCallMetaExtractor.Extract(toolCall);
+    }
+
+    // Validate against a tool already resolved from the registry, using a resolver
+    // built once by the caller — so InterpretToolCall and ValidateToolCall share one
+    // definition and never drift. Schema-aware meta resolution (see MetaResolverFor):
+    // a key that binds to the tool's OWN declared parameter is forwarded, never
+    // hijacked as meta. Meta-value validity and ambiguous double-spellings are checked
+    // in ValidateArguments (every tool); unrecognized keys are native-only (MCP
+    // servers validate their own schema and reject observably).
+    private static ToolArgumentRejection? ValidateCore(
+        FunctionCallContent toolCall, INetclawTool registered, Func<string, string?> resolveMeta)
+    {
+        if (ValidateArguments(toolCall.Arguments, resolveMeta) is { } rejection)
+            return rejection;
+
+        if (registered is not McpToolAdapter
+            && ToolArgumentValidator.ValidateArgumentKeys(registered, toolCall.Arguments) is { } keyError)
+            return new ToolArgumentRejection(keyError, "unrecognized_argument");
+
+        return null;
     }
 
     private static Func<string, string?> MetaResolverFor(INetclawTool tool)

@@ -1065,18 +1065,19 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             {
                 var toolContext = CreatePerToolExecutionContext(executionContext);
 
-                // Mirror the main session pipeline: validate the ORIGINAL args
-                // (so meta-value checks see the raw value), then extract meta via
-                // the shared executor seam and honor the per-call timeout hint.
-                // The sub-agent previously skipped extraction entirely, silently
-                // dropping the hint and (post spelling-tolerance) accepting a
-                // near-miss meta key it then ignored.
-                if (executor.ValidateToolCall(tc) is { } rejection)
+                // Same execution-preflight seam as the main pipeline: validate +
+                // extract in one step (the sub-agent previously skipped extraction
+                // entirely, silently dropping timeout hints). meta.Background and
+                // meta.Rationale are intentionally not consumed here — sub-agents
+                // have no background-job manager or audit logger; only the timeout
+                // hint maps onto the per-tool context via ApplyMeta.
+                var interpretation = executor.InterpretToolCall(tc);
+                if (interpretation.Rejection is { } rejection)
                     return BuildToolResult(tc, rejection.Message, toolContext, modelInputBudget);
 
-                var (meta, cleanedTc) = executor.PrepareToolCall(tc);
-                if (meta?.TimeoutHintSeconds is { } timeoutHint)
-                    toolContext.RequestedTimeoutSeconds = timeoutHint;
+                var meta = interpretation.Meta;
+                var cleanedTc = interpretation.Cleaned;
+                toolContext.ApplyMeta(meta);
 
                 try
                 {
@@ -1133,8 +1134,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         var retryContext = CreatePerToolExecutionContext(executionContext);
                         retryContext.OneTimeApprovedToolName = tc.Name;
                         retryContext.SetOneTimeApprovedPatterns(ctx.Patterns);
-                        if (meta?.TimeoutHintSeconds is { } retryTimeoutHint)
-                            retryContext.RequestedTimeoutSeconds = retryTimeoutHint;
+                        retryContext.ApplyMeta(meta);
 
                         var result = await executor.ExecuteAsync(cleanedTc, retryContext, ct);
                         return BuildToolResult(cleanedTc, result, retryContext, modelInputBudget);

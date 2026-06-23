@@ -1790,7 +1790,18 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             CanonicalizeToolCallNames(lastMessage, toolCalls, _toolRegistry);
         }
 
-        var assistantMsg = ChatMessageConverter.FromAiMessage(lastMessage);
+        // Persist tool calls exactly as the executor will interpret them (schema-aware
+        // meta extraction), so recorded history matches what actually runs — a near-miss
+        // meta key is stripped + captured in MetaJson, not left raw with an empty meta.
+        var assistantMsg = ChatMessageConverter.FromAiMessage(
+            lastMessage,
+            interpretToolCall: _toolExecutor is { } toolExec
+                ? tc =>
+                {
+                    var (meta, cleaned) = toolExec.PrepareToolCall(tc);
+                    return (meta, cleaned.Arguments);
+                }
+                : null);
         var userMsg = _state.FindLastUserMessage() ?? new SerializableChatMessage
         {
             Role = Protocol.ChatRole.User,

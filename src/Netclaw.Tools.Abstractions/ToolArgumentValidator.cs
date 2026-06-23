@@ -83,41 +83,30 @@ public static class ToolArgumentValidator
         if (recognized is null)
             return null; // schema exposes no property list — nothing to validate against
 
-        // Single pass: classify each key as a meta field, a declared param, or
-        // unknown. Native tools only (the executor skips this for MCP), so the
-        // spelling-tolerant ResolveMetaField is the right recognizer here.
+        // Classify each key as declared param, near-miss meta, or unknown. Declared
+        // params are matched first; only then is a key tested as a near-miss meta
+        // name, so the tool-agnostic resolve is safe (a declared param can never be
+        // mistaken for meta here). Meta-value validity and ambiguous double-spellings
+        // are enforced upstream in ToolCallMetaExtractor.ValidateMetaValues (which
+        // runs for every tool, native and MCP — this method is native-only).
         List<(string Key, string? Suggestion)>? unknown = null;
-        Dictionary<string, string>? metaClaims = null;
         foreach (var key in arguments.Keys)
         {
-            // Spelling-tolerant meta fields (TimeoutSeconds, Rationale, bare
-            // Timeout) resolve onto a canonical _-prefixed field; extraction and
-            // value-validation consume them the same way, so they are recognized.
-            // Schema-aware: a key that binds to a declared parameter is NOT meta
-            // (handled by the declared-param checks below). Two distinct keys
-            // mapping to one meta field would force a silent pick-one-drop-the-other
-            // at extraction — reject loudly (this returns before any unknown-key
-            // error, so ambiguity keeps priority).
-            if (ResolveMetaField(tool, key) is { } canonical)
-            {
-                metaClaims ??= new Dictionary<string, string>(StringComparer.Ordinal);
-                if (metaClaims.TryGetValue(canonical, out var firstKey)
-                    && !string.Equals(firstKey, key, StringComparison.Ordinal))
-                {
-                    return $"Error: Arguments '{firstKey}' and '{key}' for tool '{tool.Name}' both map to the meta field '{canonical}'. Supply only one. The tool was NOT executed.";
-                }
-
-                metaClaims[canonical] = key;
-                continue;
-            }
-
             if (recognized.Exact.Contains(key))
-                continue;
+                continue; // exact schema property (declared param or injected meta key)
+
+            // NormalizeKey once, reused for the declared-param and meta checks.
+            var normalized = ToolArgumentHelper.NormalizeKey(key);
 
             // Flexible recognition for declared params: binding consumes
             // case/punctuation variants of declared names.
-            var normalized = ToolArgumentHelper.NormalizeKey(key);
             if (recognized.NormalizedDeclared.ContainsKey(normalized))
+                continue;
+
+            // Not a declared param — recognize ChatGPT-style near-miss meta names
+            // (TimeoutSeconds, Rationale, bare Timeout) so they are not flagged
+            // unknown; extraction consumes them the same way.
+            if (ToolArgumentHelper.ResolveMetaField(key) is not null)
                 continue;
 
             unknown ??= [];

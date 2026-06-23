@@ -604,6 +604,36 @@ public class ChatMessageConverterTests
         return data.ToArray();
     }
 
+    [Fact]
+    public void FromAiMessage_with_interpreter_persists_schema_aware_meta()
+    {
+        var aiMsg = new AiChatMessage(AiChatRole.Assistant, new List<AIContent>
+        {
+            new FunctionCallContent("c1", "shell_execute", new Dictionary<string, object?>
+            {
+                ["Command"] = "ls",
+                ["TimeoutSeconds"] = 600 // ChatGPT-style near-miss
+            })
+        });
+
+        // With the schema-aware interpreter (what LlmSessionActor passes), the
+        // near-miss is stripped from persisted args and captured in MetaJson —
+        // so recorded history matches what the runtime actually executes.
+        var withInterp = ChatMessageConverter.FromAiMessage(aiMsg, interpretToolCall: tc =>
+            ToolCallMeta.ExtractFrom(tc.Arguments, ToolArgumentHelper.ResolveMetaField));
+        var call = Assert.Single(withInterp.ToolCalls);
+        Assert.DoesNotContain("TimeoutSeconds", call.ArgumentsJson);
+        Assert.NotNull(call.MetaJson);
+        Assert.Contains("600", call.MetaJson!);
+
+        // Without an interpreter (schema-blind default = exact), the near-miss is
+        // left raw and no meta is captured — the safe fallback for callers/replay.
+        var exact = ChatMessageConverter.FromAiMessage(aiMsg);
+        var exactCall = Assert.Single(exact.ToolCalls);
+        Assert.Contains("TimeoutSeconds", exactCall.ArgumentsJson);
+        Assert.Null(exactCall.MetaJson);
+    }
+
     private sealed class TempSessionDir : IDisposable
     {
         public string Path { get; } = System.IO.Path.Combine(

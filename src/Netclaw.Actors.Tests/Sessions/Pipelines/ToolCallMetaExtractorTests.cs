@@ -204,42 +204,64 @@ public class ToolCallMetaExtractorTests
         Assert.DoesNotContain("Timeout", (IDictionary<string, object?>)cleaned.Arguments!);
     }
 
-    // ── Exact mode (MCP tools / persistence): near-misses are NOT meta ──
+    // ── Exact resolver (persistence / schema-blind default): near-misses are NOT meta ──
+    // The executor passes a schema-aware resolver (covered via the executor + MCP tests);
+    // the default exact resolver is what persistence and schema-blind callers use.
 
     [Fact]
-    public void Extract_Exact_DoesNotConsumeNearMissNames()
+    public void Extract_ExactResolver_DoesNotConsumeNearMissNames()
     {
-        // MCP servers define arbitrary schemas; a real param named Timeout/
-        // TimeoutSeconds must be forwarded untouched, not hijacked as meta.
         var args = new Dictionary<string, object?>
         {
             ["Command"] = "ls",
             ["TimeoutSeconds"] = 1200,
             ["Timeout"] = 600
         };
-        var tc = new FunctionCallContent("call-1", "some_mcp_tool", args);
+        var tc = new FunctionCallContent("call-1", "shell_execute", args);
 
-        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc);
+        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc); // default = exact resolver
 
         Assert.Null(meta);
-        Assert.Same(tc, cleaned); // args forwarded as-is, near-miss keys retained
+        Assert.Same(tc, cleaned); // near-miss keys retained, nothing stripped
     }
 
     [Fact]
-    public void Extract_Exact_StillConsumesCanonicalMetaKeys()
+    public void Extract_ExactResolver_StillConsumesCanonicalMetaKeys()
     {
-        // The injected canonical meta keys are honored in exact mode too.
         var args = new Dictionary<string, object?>
         {
             ["Command"] = "ls",
             ["_timeout_seconds"] = 300
         };
-        var tc = new FunctionCallContent("call-1", "some_mcp_tool", args);
+        var tc = new FunctionCallContent("call-1", "shell_execute", args);
 
-        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc);
+        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc); // default = exact resolver
 
         Assert.NotNull(meta);
         Assert.Equal(300, meta!.TimeoutHintSeconds);
         Assert.DoesNotContain("_timeout_seconds", (IDictionary<string, object?>)cleaned.Arguments!);
+    }
+
+    [Fact]
+    public void Extract_BindsEveryCanonicalMetaField()
+    {
+        // Guards ExtractFrom's `default:` throw against drift: every name in
+        // MetaFieldNames must have a matching extraction case, so a future meta
+        // field added without one fails here at CI time, not at runtime.
+        foreach (var name in ToolCallMeta.MetaFieldNames)
+        {
+            object? value = name switch
+            {
+                "_timeout_seconds" => 30,
+                "_background" => true,
+                _ => "because"
+            };
+            var args = new Dictionary<string, object?> { ["Command"] = "ls", [name] = value };
+            var tc = new FunctionCallContent("call-1", "shell_execute", args);
+
+            var (meta, _) = ToolCallMetaExtractor.Extract(tc);
+
+            Assert.NotNull(meta); // recognized + bound, no default-throw
+        }
     }
 }

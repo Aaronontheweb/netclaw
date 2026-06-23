@@ -116,7 +116,18 @@ public static class ChatMessageConverter
         return [.. messages.Select(m => ToAiMessage(m, sessionDir, logger, toolNameResolver))];
     }
 
-    public static SerializableChatMessage FromAiMessage(AiChatMessage msg, string? sessionDir = null)
+    /// <param name="interpretToolCall">
+    /// Optional schema-aware interpreter (the executor's <c>PrepareToolCall</c>) used to
+    /// extract meta + strip meta keys per tool call. When supplied, persisted history
+    /// matches what the runtime actually executed (e.g. a near-miss <c>TimeoutSeconds</c>
+    /// is stripped and captured in <c>MetaJson</c>); when null, falls back to exact
+    /// <see cref="ExtractMeta"/> — the safe, schema-blind default for callers without an
+    /// executor (tests, replay).
+    /// </param>
+    public static SerializableChatMessage FromAiMessage(
+        AiChatMessage msg,
+        string? sessionDir = null,
+        Func<FunctionCallContent, (ToolCallMeta? Meta, IDictionary<string, object?>? CleanArgs)>? interpretToolCall = null)
     {
         var role = msg.Role == AiChatRole.User ? ChatRole.User
             : msg.Role == AiChatRole.Assistant ? ChatRole.Assistant
@@ -142,7 +153,9 @@ public static class ChatMessageConverter
                     break;
 
                 case FunctionCallContent toolCall:
-                    var (meta, cleanArgs) = ExtractMeta(toolCall.Arguments);
+                    var (meta, cleanArgs) = interpretToolCall is not null
+                        ? interpretToolCall(toolCall)
+                        : ExtractMeta(toolCall.Arguments);
                     toolCalls.Add(new SerializableToolCall
                     {
                         CallId = new Netclaw.Tools.ToolCallId(toolCall.CallId),

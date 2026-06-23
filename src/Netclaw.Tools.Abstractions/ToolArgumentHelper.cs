@@ -119,17 +119,6 @@ public static class ToolArgumentHelper
     }
 
     /// <summary>
-    /// Resolves an LLM-supplied argument key to the canonical per-call meta field
-    /// it addresses (<c>_rationale</c>/<c>_timeout_seconds</c>/<c>_background</c>),
-    /// or <c>null</c> when the key is not a meta field. Recognition is punctuation-
-    /// and case-insensitive (<see cref="NormalizeKey"/>), so ChatGPT-style names
-    /// like <c>TimeoutSeconds</c> or <c>Rationale</c> land on the same field as the
-    /// underscore-prefixed schema names; a small near-miss table covers shortened
-    /// forms. Applied ONLY to native first-party tools (where MetaFieldResolutionTests
-    /// proves no declared parameter collides) — the executor resolves MCP calls
-    /// exact-match so a third-party server parameter is never hijacked as meta.
-    /// </summary>
-    /// <summary>
     /// Spelling-tolerant resolution of an argument key to its canonical meta field
     /// (<c>_rationale</c>/<c>_timeout_seconds</c>/<c>_background</c>), or null. This
     /// is tool-agnostic and does NOT account for a tool that declares a real
