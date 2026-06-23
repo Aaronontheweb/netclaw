@@ -18,7 +18,7 @@ using Termina.Reactive;
 
 namespace Netclaw.Cli.Tui.Config;
 
-internal sealed record SkillFeedReachabilityResult(bool Success, string Message, bool RequiresAuth = false);
+internal sealed record SkillFeedReachabilityResult(bool Success, string Message, bool RequiresAuth = false, int? SkillCount = null);
 
 internal interface ISkillFeedReachabilityProbe
 {
@@ -35,7 +35,10 @@ internal sealed class SkillFeedReachabilityProbe : ISkillFeedReachabilityProbe
     {
         try
         {
-            var timeout = TimeSpan.FromSeconds(Math.Clamp(timeoutSeconds, 1, 10));
+            // Ceiling raised to 60s so the background Rescan all count refresh can honor a feed's configured
+            // timeout (daemon default 30s); interactive add/test callers cap their own input at 10s for snappy
+            // feedback (see StartBackgroundProbe).
+            var timeout = TimeSpan.FromSeconds(Math.Clamp(timeoutSeconds, 1, 60));
             // Link the caller's token to the per-probe timeout so a superseded/abandoned probe
             // (caller cancels via ct) and a slow server (timeout) both unwind the same way.
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -51,7 +54,15 @@ internal sealed class SkillFeedReachabilityProbe : ISkillFeedReachabilityProbe
 
             using var response = await client.SendAsync(request, cts.Token);
             if (response.IsSuccessStatusCode)
-                return new SkillFeedReachabilityResult(true, "Skill feed discovery endpoint is reachable.");
+            {
+                var skillCount = await CountSkillsAsync(response, cts.Token);
+                // "advertised", not "available/loaded": this is the count the server publishes in its index;
+                // the daemon may load fewer after content-scan / hash / version filtering.
+                var message = skillCount is { } n
+                    ? $"Skill feed reachable — {n} skill{(n == 1 ? "" : "s")} advertised."
+                    : "Skill feed discovery endpoint is reachable.";
+                return new SkillFeedReachabilityResult(true, message, SkillCount: skillCount);
+            }
 
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
                 return new SkillFeedReachabilityResult(false, $"Skill feed authentication failed with HTTP {(int)response.StatusCode}.", RequiresAuth: true);
@@ -68,6 +79,41 @@ internal sealed class SkillFeedReachabilityProbe : ISkillFeedReachabilityProbe
         {
             // Network/parse/timeout error (NOT caller cancellation): a real, reportable failure.
             return new SkillFeedReachabilityResult(false, $"Skill feed probe failed: {ex.Message}");
+        }
+    }
+
+    // The discovery index is the RFC agent-skills index ({ "skills": [...] }); count its entries so the
+    // operator sees how many skills the server actually serves. Best-effort: reachability already succeeded,
+    // so a malformed/slow body just leaves the count unknown (null) rather than failing the probe.
+    private static async Task<int?> CountSkillsAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        try
+        {
+            var json = await response.Content.ReadAsStringAsync(ct);
+            return CountSkillsInIndexJson(json);
+        }
+        catch (Exception ex) when (ex is IOException or HttpRequestException or OperationCanceledException)
+        {
+            return null;
+        }
+    }
+
+    // Count the entries in the RFC agent-skills index ({ "skills": [...] }). Returns null for a body that
+    // is not a JSON object with a "skills" array, so a malformed feed leaves the count unknown, not zero.
+    internal static int? CountSkillsInIndexJson(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                   && doc.RootElement.TryGetProperty("skills", out var skills)
+                   && skills.ValueKind == JsonValueKind.Array
+                ? skills.GetArrayLength()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
         }
     }
 }
@@ -181,12 +227,23 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
 {
     private const int DefaultFeedTimeoutSeconds = 30;
 
+    // Interactive add/test probes cap their wait here so reachability feedback stays snappy even for a slow
+    // server; the background Rescan all count refresh deliberately uses the feed's full configured timeout.
+    private const int InteractiveProbeTimeoutSeconds = 10;
+
     private readonly NetclawPaths _paths;
     private readonly ISkillFeedReachabilityProbe _probe;
     private readonly StringComparer _nameComparer = StringComparer.OrdinalIgnoreCase;
     private CancellationTokenSource? _probeCts;
     private Task? _probeTask;
     private SkillFeedReachabilityResult? _pendingRemoteProbeResult;
+    // Off-loop refresh (Rescan all) of per-server skill counts, cached by source name for the inventory row
+    // Detail. ConcurrentDictionary because thread-pool probe continuations write it while the loop thread
+    // reads it during render; OrdinalIgnoreCase to match the source-name identity used everywhere else.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, int> _remoteSkillCounts =
+        new(StringComparer.OrdinalIgnoreCase);
+    private CancellationTokenSource? _countRefreshCts;
+    private Task? _countRefreshTask;
     private string? _lastProbeFingerprint;
     private List<SkillSourceDisplay> _sources = [];
     private SkillSourceKind? _selectedKind;
@@ -197,6 +254,7 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
     private SkillSourceAuthMode _pendingRemoteAuthMode;
     private string? _pendingRemoteApiKey;
     private string? _pendingRemoteProbeMessage;
+    private bool _pendingRemoteProbeMessageIsSuccess;
     private int _pendingRemoteTimeoutSeconds = DefaultFeedTimeoutSeconds;
     private SkillSourceDetailAction? _editingAction;
     private SkillSourcesScreen? _validationEditScreen;
@@ -577,6 +635,8 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
         // resulting OperationCanceledException, so there is no unobserved exception to worry about.
         _probeCts?.Cancel();
         _probeCts?.Dispose();
+        _countRefreshCts?.Cancel();
+        _countRefreshCts?.Dispose();
         Screen.Dispose();
         SelectedRow.Dispose();
         Draft.Dispose();
@@ -590,6 +650,19 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
     // Exposes the in-flight off-loop reachability probe so tests can await it deterministically
     // (no Task.Delay) instead of racing the thread-pool continuation.
     internal Task? PendingProbe => _probeTask;
+
+    // Title for the name-review step. Auto-advance drops the operator here without a confirming keypress, so
+    // carry the probe's result line (e.g. "Skill feed reachable — 53 skills advertised.") onto this screen —
+    // the way the init wizard shows "Found N skills" — instead of letting that confirmation vanish.
+    internal string AddRemoteNameTitle =>
+        string.IsNullOrWhiteSpace(_pendingRemoteProbeMessage)
+            ? "Review remote skill server source."
+            : _pendingRemoteProbeMessage!;
+
+    // True only when the carried title is a reachable confirmation (so the page renders it success-green).
+    // A save-anyway failure also lands here carrying its message, but must NOT read as success.
+    internal bool AddRemoteNameTitleIsSuccess =>
+        !string.IsNullOrWhiteSpace(_pendingRemoteProbeMessage) && _pendingRemoteProbeMessageIsSuccess;
 
     // Kicks off a reachability probe OFF the single-threaded TUI loop so a slow/unreachable feed
     // never freezes input. The synchronous setup (status + redraw) runs on the loop thread; the
@@ -607,10 +680,16 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
         _probeCts = new CancellationTokenSource();
         SetStatus(testingMessage, ConfigStatusTone.Neutral);
         RequestRedraw();
-        _probeTask = RunProbeAsync(url, apiKey, timeoutSeconds, _probeCts.Token, onResult);
+        // Interactive probe: cap the wait so add/test feedback stays snappy even for a slow server. The
+        // background Rescan all count refresh calls ExecuteProbeAsync directly with the feed's full timeout.
+        _probeTask = ExecuteProbeAsync(
+            url, apiKey, Math.Min(timeoutSeconds, InteractiveProbeTimeoutSeconds), _probeCts.Token, onResult);
     }
 
-    private async Task RunProbeAsync(
+    // Shared off-loop probe execution for both the interactive add/test probe and the Rescan all count
+    // refresh: run the probe, drop quietly if superseded/cancelled, otherwise hand the result to onResult and
+    // redraw. onResult MUST be status/field-only (never navigation) — it may run on a thread-pool thread.
+    private async Task ExecuteProbeAsync(
         string url,
         string? apiKey,
         int timeoutSeconds,
@@ -630,7 +709,7 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
         if (ct.IsCancellationRequested)
             return;
 
-        onResult(result); // MUST be status-only (Status/fields), never navigation
+        onResult(result);
         RequestRedraw();
     }
 
@@ -1210,7 +1289,8 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
             return;
         }
 
-        // Phase 1: a new URL/token — kick off the off-loop probe. The continuation is status-only.
+        // Phase 1: a new URL/token — kick off the off-loop probe. The continuation is status-only EXCEPT it
+        // marshals the success advance onto the loop thread (navigation is never safe off-loop).
         _lastProbeFingerprint = fingerprint;
         _pendingRemoteProbeResult = null;
         StartBackgroundProbe(
@@ -1222,14 +1302,48 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
             {
                 _pendingRemoteProbeResult = r;
                 _pendingRemoteProbeMessage = r.Message;
+                _pendingRemoteProbeMessageIsSuccess = r.Success;
+
+                if (r.Success)
+                {
+                    // A reachable feed needs no decision, so advance straight to the name step like the init
+                    // wizard rather than making the operator press Enter again. Navigation must run on the
+                    // loop thread; marshal it there via InvokeAsync (this continuation runs off-loop). The
+                    // marshaled AutoAdvanceAfterProbeSuccess re-checks that nothing changed in flight, and the
+                    // ct skips the advance if a newer probe or a dispose has superseded this one. In tests the
+                    // unbound InvokeAsync runs inline, so the advance lands within the awaited probe task.
+                    SetStatus(r.Message, ConfigStatusTone.Success);
+                    var ct = _probeCts?.Token ?? CancellationToken.None;
+                    _ = InvokeAsync(() => AutoAdvanceAfterProbeSuccess(fingerprint), ct);
+                    return;
+                }
+
+                // Failures still pause for a deliberate keypress: a 401 needs the operator to add a bearer
+                // token, and an unreachable feed needs an explicit "save anyway" decision.
                 SetStatus(
-                    r.Success
-                        ? $"{r.Message} Press Enter to continue."
-                        : r.RequiresAuth && _pendingRemoteAuthMode != SkillSourceAuthMode.BearerToken
-                            ? $"{r.Message} Press Enter to add a bearer token."
-                            : $"{r.Message} Press Enter to save anyway.",
-                    r.Success ? ConfigStatusTone.Success : ConfigStatusTone.Warning);
+                    r.RequiresAuth && _pendingRemoteAuthMode != SkillSourceAuthMode.BearerToken
+                        ? $"{r.Message} Press Enter to add a bearer token."
+                        : $"{r.Message} Press Enter to save anyway.",
+                    ConfigStatusTone.Warning);
             });
+    }
+
+    // Loop-thread continuation of a successful add-server probe: advance to the name step. Re-checks that the
+    // operator did not edit the URL/token or leave the URL screen while the probe was in flight, so a stale
+    // marshaled call can never hijack navigation. The phase-2 success branch above is the fallback for the
+    // rare race where the operator presses Enter before this marshaled advance reaches the loop.
+    private void AutoAdvanceAfterProbeSuccess(string fingerprint)
+    {
+        // A probe is launched from either the URL screen or (after a 401) the token screen; advance only if
+        // still on one of those — if the operator backed out of the add flow, the marshaled call is stale.
+        if (Screen.Value is not (SkillSourcesScreen.AddRemoteUrl or SkillSourcesScreen.AddRemoteToken)
+            || _lastProbeFingerprint != fingerprint
+            || _pendingRemoteProbeResult is not { Success: true }
+            || _pendingRemoteUrl is null)
+            return;
+
+        _pendingRemoteProbeResult = null;
+        ShowTextScreen(SkillSourcesScreen.AddRemoteName, MakeUniqueName(SuggestNameFromUrl(_pendingRemoteUrl)));
     }
 
     private void SaveNewRemoteSource()
@@ -1747,8 +1861,95 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
     {
         ReloadSources();
         var localCount = _sources.Count(s => s.Kind == SkillSourceKind.LocalFolder);
-        var remoteCount = _sources.Count(s => s.Kind == SkillSourceKind.RemoteSkillServer);
-        SetStatus($"Rescanned {localCount} local folder(s) and {remoteCount} skill server(s).", ConfigStatusTone.Success);
+        RefreshRemoteSkillCounts($"Rescanned {localCount} local folder(s).");
+    }
+
+    // Exposes the in-flight Rescan-all count refresh so tests can await it deterministically (no Task.Delay).
+    // Always a Task once Rescan all has run (Task.CompletedTask when nothing was probed), never null after.
+    internal Task? PendingCountRefresh => _countRefreshTask;
+
+    // Refresh cached skill counts for every ENABLED remote server OFF the loop (triggered by Rescan all). Each
+    // probe runs on the thread pool (ExecuteProbeAsync — the same off-loop discipline as the single add/test
+    // probe) and writes its count into the thread-safe cache. Owns the Rescan all status: the in-progress line
+    // is posted BEFORE the summary task is launched, so a synchronously-completing probe's final status (via
+    // SummarizeRemoteCountsAsync) lands last instead of being overwritten by a "Refreshing…" line.
+    private void RefreshRemoteSkillCounts(string localSummary)
+    {
+        _countRefreshCts?.Cancel();
+        _countRefreshCts?.Dispose();
+        _countRefreshCts = new CancellationTokenSource();
+        var ct = _countRefreshCts.Token;
+
+        var probes = new List<Task<bool>>();
+        var credentialFailures = 0;
+        if (TryLoadSkillFeeds(out var feeds))
+        {
+            // Disabled feeds contribute nothing to the running daemon, so don't probe or badge them.
+            foreach (var source in _sources.Where(static s => s.Kind == SkillSourceKind.RemoteSkillServer && s.Enabled))
+            {
+                var feed = FindRemoteSource(feeds, source.Name);
+                if (feed is null)
+                    continue;
+
+                // A stored token that will not decrypt must NOT silently degrade to an anonymous probe — that
+                // would hide the credential failure and send an unauthenticated request to a server the operator
+                // configured a token for. Skip the feed and surface the failure through the Rescan all status.
+                if (!TryGetFeedApiKeyPlaintext(feed, out var apiKey, out _))
+                {
+                    credentialFailures++;
+                    continue;
+                }
+
+                probes.Add(ProbeAndCacheSkillCountAsync(source.Name, feed.Url, apiKey, feed.TimeoutSeconds, ct));
+            }
+        }
+
+        var summary = localSummary;
+        if (credentialFailures > 0)
+            summary += $" {credentialFailures} server(s) skipped — stored token could not be decrypted.";
+
+        if (probes.Count > 0)
+            SetStatus(
+                $"{summary} Refreshing {probes.Count} skill server count(s)…",
+                credentialFailures > 0 ? ConfigStatusTone.Warning : ConfigStatusTone.Neutral);
+        else
+            SetStatus(summary, credentialFailures > 0 ? ConfigStatusTone.Warning : ConfigStatusTone.Success);
+
+        _countRefreshTask = probes.Count > 0 ? SummarizeRemoteCountsAsync(probes, ct) : Task.CompletedTask;
+    }
+
+    // Probe one server with the feed's full configured timeout and cache its advertised count. Returns true
+    // only if the server actually reported a count, so RescanAll can report how many responded.
+    private async Task<bool> ProbeAndCacheSkillCountAsync(string name, string url, string? apiKey, int timeoutSeconds, CancellationToken ct)
+    {
+        var reported = false;
+        await ExecuteProbeAsync(url, apiKey, timeoutSeconds, ct, result =>
+        {
+            if (result.SkillCount is not { } count)
+                return;
+
+            _remoteSkillCounts[name] = count;
+            reported = true;
+        });
+        return reported;
+    }
+
+    // Once every count probe has settled, report how many servers actually responded so an all-failed refresh
+    // does not read as success. Off-loop; the ct guard drops the update if the refresh was superseded/disposed.
+    private async Task SummarizeRemoteCountsAsync(List<Task<bool>> probes, CancellationToken ct)
+    {
+        var outcomes = await Task.WhenAll(probes);
+        if (ct.IsCancellationRequested)
+            return;
+
+        var reported = outcomes.Count(static r => r);
+        var total = outcomes.Length;
+        if (reported == total)
+            SetStatus($"Updated skill counts for {total} skill server(s).", ConfigStatusTone.Success);
+        else
+            SetStatus(
+                $"Updated skill counts for {reported} of {total} skill server(s); {total - reported} did not respond.",
+                ConfigStatusTone.Warning);
     }
 
     private IReadOnlyList<SkillSourcesInventoryRow> BuildInventoryRows()
@@ -1767,7 +1968,7 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
 
         rows.Add(new SkillSourcesInventoryRow(SkillSourcesInventoryAction.AddLocalFolder, null, null, "+ Add local folder", "Scan a directory on this machine.", ConfigStatusTone.Neutral));
         rows.Add(new SkillSourcesInventoryRow(SkillSourcesInventoryAction.AddSkillServer, null, null, "+ Add skill server", "Connect to a remote skill feed.", ConfigStatusTone.Neutral));
-        rows.Add(new SkillSourcesInventoryRow(SkillSourcesInventoryAction.RescanAll, null, null, "Rescan all", "Refresh local source status.", ConfigStatusTone.Neutral));
+        rows.Add(new SkillSourcesInventoryRow(SkillSourcesInventoryAction.RescanAll, null, null, "Rescan all", "Refresh local status and remote skill counts.", ConfigStatusTone.Neutral));
         rows.Add(new SkillSourcesInventoryRow(SkillSourcesInventoryAction.Done, null, null, "Done", "Return to Settings Areas.", ConfigStatusTone.Neutral));
         return rows;
     }
@@ -1822,6 +2023,10 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
             var external = ConfigFileHelper.LoadSection<ExternalSkillsConfig>(root, "ExternalSkills");
             var feeds = LoadSkillFeedsSection(root);
             _sources = BuildSources(external, feeds).ToList();
+            // A reload means a source's identity or config may have changed (rename, URL change, remove,
+            // enable/disable) — any of which invalidates a cached remote skill count. Drop the cache so a
+            // stale or misattributed count cannot survive the change; the next Rescan all repopulates it.
+            _remoteSkillCounts.Clear();
             Version.Value++;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
@@ -2109,13 +2314,17 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
         return $"[{enabled}] {FormatDisplayName(source.Name)}";
     }
 
-    private static string FormatSourceDetail(SkillSourceDisplay source)
+    private string FormatSourceDetail(SkillSourceDisplay source)
     {
         if (source.Kind == SkillSourceKind.LocalFolder)
             return $"{TruncateMiddle(source.Location, 58)}  |  {source.StatusText}";
 
         var auth = source.HasApiKey ? "Token configured" : "No auth";
-        return $"{TruncateMiddle(HostOrLocation(source.Location), 42)}  |  {auth}";
+        var detail = $"{TruncateMiddle(HostOrLocation(source.Location), 42)}  |  {auth}";
+        // "advertised" = the count the server publishes; the daemon may load fewer after scan/hash filtering.
+        if (_remoteSkillCounts.TryGetValue(source.Name, out var count))
+            detail += $"  |  {count} advertised";
+        return detail;
     }
 
     private static string FormatDisplayName(string value)
