@@ -33,6 +33,24 @@ public interface IToolExecutor
     ToolArgumentRejection? ValidateToolCall(FunctionCallContent toolCall) => null;
 
     /// <summary>
+    /// Extracts per-call meta (<c>_rationale</c>/<c>_timeout_seconds</c>/<c>_background</c>)
+    /// and returns it alongside a tool call with the meta keys stripped. This is the
+    /// single shared "interpret a tool call" seam: BOTH the main session pipeline and
+    /// the sub-agent loop call it, so neither can drift (the sub-agent previously
+    /// skipped extraction entirely and silently dropped timeout hints).
+    /// <see cref="DispatchingToolExecutor"/> resolves near-miss meta names for native
+    /// tools and exact-match for MCP tools; the default below is exact-match so test
+    /// fakes need not implement it.
+    /// </summary>
+    (ToolCallMeta? Meta, FunctionCallContent Cleaned) PrepareToolCall(FunctionCallContent toolCall)
+    {
+        var (meta, cleanArgs) = ToolCallMeta.ExtractFrom(toolCall.Arguments);
+        return meta is null
+            ? (null, toolCall)
+            : (meta, new FunctionCallContent(toolCall.CallId, toolCall.Name, cleanArgs));
+    }
+
+    /// <summary>
     /// Return the liveness mode for the resolved tool. Unknown tools and test
     /// fakes default to opaque so callers keep the conservative wall-clock bound.
     /// </summary>

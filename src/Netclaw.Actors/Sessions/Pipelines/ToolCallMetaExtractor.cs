@@ -15,9 +15,15 @@ namespace Netclaw.Actors.Sessions.Pipelines;
 /// </summary>
 internal static class ToolCallMetaExtractor
 {
-    public static (ToolCallMeta? Meta, FunctionCallContent CleanedToolCall) Extract(FunctionCallContent tc)
+    /// <param name="resolveMeta">
+    /// Maps a key to its canonical meta field (schema-aware for the executor,
+    /// exact for persistence). Defaults to exact. See
+    /// <see cref="ToolCallMeta.ExtractFrom"/>.
+    /// </param>
+    public static (ToolCallMeta? Meta, FunctionCallContent CleanedToolCall) Extract(
+        FunctionCallContent tc, Func<string, string?>? resolveMeta = null)
     {
-        var (meta, cleanArgs) = ToolCallMeta.ExtractFrom(tc.Arguments);
+        var (meta, cleanArgs) = ToolCallMeta.ExtractFrom(tc.Arguments, resolveMeta);
         if (meta is null)
             return (null, tc);
 
@@ -30,30 +36,42 @@ internal static class ToolCallMetaExtractor
     /// the meta surface is valid; otherwise a model-facing error (the call must
     /// not execute — the agent expressed execution semantics we cannot honor, so
     /// we do not run on defaults instead). Computed pipeline-side so the
-    /// persisted <see cref="ToolCallMeta"/> type stays unchanged. Exact key
-    /// lookup mirrors <see cref="ToolCallMeta.ExtractFrom"/>.
+    /// persisted <see cref="ToolCallMeta"/> type stays unchanged. Key resolution
+    /// is spelling-tolerant via <see cref="ToolArgumentHelper.ResolveMetaField"/>,
+    /// mirroring <see cref="ToolCallMeta.ExtractFrom"/>, so a mis-named-but-invalid
+    /// value (e.g. <c>TimeoutSeconds:"abc"</c>) is rejected loudly rather than
+    /// silently dropped at extraction.
     /// </summary>
-    public static string? ValidateMetaValues(IDictionary<string, object?>? arguments)
+    public static string? ValidateMetaValues(
+        IDictionary<string, object?>? arguments, Func<string, string?>? resolveMeta = null)
     {
         if (arguments is null || arguments.Count == 0)
             return null;
+
+        resolveMeta ??= ToolCallMeta.ResolveExactMetaField;
 
         // Validity is defined as "the shared coercion accepts it" — the same
         // TryCoerce* ToolCallMeta.ExtractFrom binds through — so a value can
         // never validate here yet extract to null (or vice versa). A timeout
         // additionally must be positive, matching ExtractFrom's `> 0` guard.
-        if (arguments.TryGetValue("_timeout_seconds", out var tVal)
-            && tVal is not null and not JsonElement { ValueKind: JsonValueKind.Null }
-            && !(ToolArgumentHelper.TryCoerceInt(tVal, out var t) && t > 0))
+        // Resolution mirrors ExtractFrom (the same resolveMeta) so a near-miss
+        // that extraction would consume is the same one validated here. The error
+        // names the model's own key spelling so the correction is clear.
+        foreach (var kvp in arguments)
         {
-            return $"Error: Meta argument '_timeout_seconds' value '{ToolArgumentHelper.RenderValue(tVal)}' is not a valid positive integer. The tool was NOT executed.";
-        }
+            var canonical = resolveMeta(kvp.Key);
+            if (canonical is null
+                || kvp.Value is null or JsonElement { ValueKind: JsonValueKind.Null })
+                continue;
 
-        if (arguments.TryGetValue("_background", out var bVal)
-            && bVal is not null and not JsonElement { ValueKind: JsonValueKind.Null }
-            && !ToolArgumentHelper.TryCoerceBool(bVal, out _))
-        {
-            return $"Error: Meta argument '_background' value '{ToolArgumentHelper.RenderValue(bVal)}' is not a valid boolean. The tool was NOT executed.";
+            switch (canonical)
+            {
+                case "_timeout_seconds" when !(ToolArgumentHelper.TryCoerceInt(kvp.Value, out var t) && t > 0):
+                    return $"Error: Meta argument '{kvp.Key}' value '{ToolArgumentHelper.RenderValue(kvp.Value)}' is not a valid positive integer. The tool was NOT executed.";
+
+                case "_background" when !ToolArgumentHelper.TryCoerceBool(kvp.Value, out _):
+                    return $"Error: Meta argument '{kvp.Key}' value '{ToolArgumentHelper.RenderValue(kvp.Value)}' is not a valid boolean. The tool was NOT executed.";
+            }
         }
 
         return null;

@@ -1064,10 +1064,24 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             var tasks = toolCalls.Select(async tc =>
             {
                 var toolContext = CreatePerToolExecutionContext(executionContext);
+
+                // Mirror the main session pipeline: validate the ORIGINAL args
+                // (so meta-value checks see the raw value), then extract meta via
+                // the shared executor seam and honor the per-call timeout hint.
+                // The sub-agent previously skipped extraction entirely, silently
+                // dropping the hint and (post spelling-tolerance) accepting a
+                // near-miss meta key it then ignored.
+                if (executor.ValidateToolCall(tc) is { } rejection)
+                    return BuildToolResult(tc, rejection.Message, toolContext, modelInputBudget);
+
+                var (meta, cleanedTc) = executor.PrepareToolCall(tc);
+                if (meta?.TimeoutHintSeconds is { } timeoutHint)
+                    toolContext.RequestedTimeoutSeconds = timeoutHint;
+
                 try
                 {
-                    var result = await executor.ExecuteAsync(tc, toolContext, ct);
-                    return BuildToolResult(tc, result, toolContext, modelInputBudget);
+                    var result = await executor.ExecuteAsync(cleanedTc, toolContext, ct);
+                    return BuildToolResult(cleanedTc, result, toolContext, modelInputBudget);
                 }
                 catch (ToolApprovalRequiredException approvalEx)
                     when (approvalBridge is not null)
@@ -1119,9 +1133,11 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         var retryContext = CreatePerToolExecutionContext(executionContext);
                         retryContext.OneTimeApprovedToolName = tc.Name;
                         retryContext.SetOneTimeApprovedPatterns(ctx.Patterns);
+                        if (meta?.TimeoutHintSeconds is { } retryTimeoutHint)
+                            retryContext.RequestedTimeoutSeconds = retryTimeoutHint;
 
-                        var result = await executor.ExecuteAsync(tc, retryContext, ct);
-                        return BuildToolResult(tc, result, retryContext, modelInputBudget);
+                        var result = await executor.ExecuteAsync(cleanedTc, retryContext, ct);
+                        return BuildToolResult(cleanedTc, result, retryContext, modelInputBudget);
                     }
 
                     var reason = decision == ParentApprovalDecision.TimedOut

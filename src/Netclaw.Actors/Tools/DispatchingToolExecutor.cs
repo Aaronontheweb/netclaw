@@ -57,8 +57,14 @@ public sealed class DispatchingToolExecutor : IToolExecutor
         if (_registry.GetByName(toolCall.Name) is not { } registered)
             return null; // unknown-tool is handled separately by the execute paths
 
+        // Schema-aware meta resolution: near-miss names (TimeoutSeconds) resolve to
+        // meta, but a key that binds to the tool's OWN declared parameter wins and
+        // is forwarded — so a third-party MCP server's real `timeout` is never
+        // hijacked. Shared with PrepareToolCall so validation and extraction agree.
+        var resolveMeta = MetaResolverFor(registered);
+
         // Registry-free checks first (parse sentinel, meta values).
-        if (ValidateArguments(toolCall.Arguments) is { } rejection)
+        if (ValidateArguments(toolCall.Arguments, resolveMeta) is { } rejection)
             return rejection;
 
         // Unrecognized argument keys — native tools only; MCP servers validate
@@ -71,6 +77,19 @@ public sealed class DispatchingToolExecutor : IToolExecutor
     }
 
     /// <inheritdoc />
+    public (ToolCallMeta? Meta, FunctionCallContent Cleaned) PrepareToolCall(FunctionCallContent toolCall)
+    {
+        // Schema-aware extraction (see MetaResolverFor / ValidateToolCall). Unknown
+        // tool → exact-match default, since there is no schema to consult.
+        return _registry.GetByName(toolCall.Name) is { } registered
+            ? ToolCallMetaExtractor.Extract(toolCall, MetaResolverFor(registered))
+            : ToolCallMetaExtractor.Extract(toolCall);
+    }
+
+    private static Func<string, string?> MetaResolverFor(INetclawTool tool)
+        => key => ToolArgumentValidator.ResolveMetaField(tool, key);
+
+    /// <inheritdoc />
     public ToolLivenessMode GetLivenessMode(FunctionCallContent toolCall)
         => _registry.GetByName(toolCall.Name)?.LivenessMode ?? ToolLivenessMode.Opaque;
 
@@ -80,7 +99,8 @@ public sealed class DispatchingToolExecutor : IToolExecutor
     /// the single definition of these rules across the executor and any other
     /// pre-dispatch caller, with no registry needed.
     /// </summary>
-    public static ToolArgumentRejection? ValidateArguments(IDictionary<string, object?>? args)
+    public static ToolArgumentRejection? ValidateArguments(
+        IDictionary<string, object?>? args, Func<string, string?>? resolveMeta = null)
     {
         if (args is null || args.Count == 0)
             return null;
@@ -100,7 +120,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor
         // Present-but-invalid meta values (malformed _timeout_seconds /
         // _background) — the agent expressed execution semantics we cannot
         // honor, so reject rather than run on defaults.
-        if (ToolCallMetaExtractor.ValidateMetaValues(args) is { } metaError)
+        if (ToolCallMetaExtractor.ValidateMetaValues(args, resolveMeta) is { } metaError)
             return new ToolArgumentRejection(metaError, "invalid_meta_value");
 
         return null;

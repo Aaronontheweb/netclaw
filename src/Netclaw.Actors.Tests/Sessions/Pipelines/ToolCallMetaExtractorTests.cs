@@ -25,7 +25,7 @@ public class ToolCallMetaExtractorTests
         };
         var tc = new FunctionCallContent("call-1", "shell_execute", args);
 
-        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc);
+        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc, ToolArgumentHelper.ResolveMetaField);
 
         Assert.NotNull(meta);
         Assert.Equal("running tests", meta!.Rationale);
@@ -48,7 +48,7 @@ public class ToolCallMetaExtractorTests
         };
         var tc = new FunctionCallContent("call-1", "web_search", args);
 
-        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc);
+        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc, ToolArgumentHelper.ResolveMetaField);
 
         Assert.NotNull(meta);
         Assert.Equal("searching docs", meta!.Rationale);
@@ -65,7 +65,7 @@ public class ToolCallMetaExtractorTests
         };
         var tc = new FunctionCallContent("call-1", "shell_execute", args);
 
-        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc);
+        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc, ToolArgumentHelper.ResolveMetaField);
 
         Assert.Null(meta);
         Assert.Same(tc, cleaned);
@@ -76,7 +76,7 @@ public class ToolCallMetaExtractorTests
     {
         var tc = new FunctionCallContent("call-1", "shell_execute", null);
 
-        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc);
+        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc, ToolArgumentHelper.ResolveMetaField);
 
         Assert.Null(meta);
         Assert.Same(tc, cleaned);
@@ -91,7 +91,7 @@ public class ToolCallMetaExtractorTests
             args[prop.Name] = prop.Value;
 
         var tc = new FunctionCallContent("call-1", "shell_execute", args);
-        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc);
+        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc, ToolArgumentHelper.ResolveMetaField);
 
         Assert.NotNull(meta);
         Assert.Equal("from json", meta!.Rationale);
@@ -109,7 +109,7 @@ public class ToolCallMetaExtractorTests
         };
         var tc = new FunctionCallContent("call-1", "shell_execute", args);
 
-        var (meta, _) = ToolCallMetaExtractor.Extract(tc);
+        var (meta, _) = ToolCallMetaExtractor.Extract(tc, ToolArgumentHelper.ResolveMetaField);
 
         // Zero timeout is not meaningful — should not produce meta
         Assert.Null(meta);
@@ -133,7 +133,7 @@ public class ToolCallMetaExtractorTests
         };
         var tc = new FunctionCallContent("call-1", "shell_execute", args);
 
-        var (meta, _) = ToolCallMetaExtractor.Extract(tc);
+        var (meta, _) = ToolCallMetaExtractor.Extract(tc, ToolArgumentHelper.ResolveMetaField);
 
         Assert.NotNull(meta);
         Assert.False(meta!.Background);
@@ -150,9 +150,96 @@ public class ToolCallMetaExtractorTests
         };
         var tc = new FunctionCallContent("call-1", "shell_execute", args);
 
-        var (meta, _) = ToolCallMetaExtractor.Extract(tc);
+        var (meta, _) = ToolCallMetaExtractor.Extract(tc, ToolArgumentHelper.ResolveMetaField);
 
         Assert.NotNull(meta);
         Assert.False(meta!.Background);
+    }
+
+    // ── ChatGPT-style meta naming (Qwen) is consumed, not dropped ──
+
+    [Fact]
+    public void Extract_MisnamedMetaFields_ConsumedAndStripped()
+    {
+        // The names Qwen emits: underscore dropped, capitalized, and the
+        // shortened "Timeout". All resolve onto the canonical fields and are
+        // removed from the args the tool binder sees.
+        var args = new Dictionary<string, object?>
+        {
+            ["Command"] = "dotnet test",
+            ["Rationale"] = "running tests",
+            ["TimeoutSeconds"] = "1200",
+            ["Background"] = true
+        };
+        var tc = new FunctionCallContent("call-1", "shell_execute", args);
+
+        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc, ToolArgumentHelper.ResolveMetaField);
+
+        Assert.NotNull(meta);
+        Assert.Equal("running tests", meta!.Rationale);
+        Assert.Equal(1200, meta.TimeoutHintSeconds);
+        Assert.True(meta.Background);
+
+        var cleanArgs = (IDictionary<string, object?>)cleaned.Arguments!;
+        Assert.Contains("Command", cleanArgs);
+        Assert.DoesNotContain("Rationale", cleanArgs);
+        Assert.DoesNotContain("TimeoutSeconds", cleanArgs);
+        Assert.DoesNotContain("Background", cleanArgs);
+    }
+
+    [Fact]
+    public void Extract_BareTimeout_ResolvesToTimeoutHint()
+    {
+        var args = new Dictionary<string, object?>
+        {
+            ["Command"] = "sleep 5",
+            ["Timeout"] = 600
+        };
+        var tc = new FunctionCallContent("call-1", "shell_execute", args);
+
+        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc, ToolArgumentHelper.ResolveMetaField);
+
+        Assert.NotNull(meta);
+        Assert.Equal(600, meta!.TimeoutHintSeconds);
+        Assert.DoesNotContain("Timeout", (IDictionary<string, object?>)cleaned.Arguments!);
+    }
+
+    // ── Exact mode (MCP tools / persistence): near-misses are NOT meta ──
+
+    [Fact]
+    public void Extract_Exact_DoesNotConsumeNearMissNames()
+    {
+        // MCP servers define arbitrary schemas; a real param named Timeout/
+        // TimeoutSeconds must be forwarded untouched, not hijacked as meta.
+        var args = new Dictionary<string, object?>
+        {
+            ["Command"] = "ls",
+            ["TimeoutSeconds"] = 1200,
+            ["Timeout"] = 600
+        };
+        var tc = new FunctionCallContent("call-1", "some_mcp_tool", args);
+
+        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc);
+
+        Assert.Null(meta);
+        Assert.Same(tc, cleaned); // args forwarded as-is, near-miss keys retained
+    }
+
+    [Fact]
+    public void Extract_Exact_StillConsumesCanonicalMetaKeys()
+    {
+        // The injected canonical meta keys are honored in exact mode too.
+        var args = new Dictionary<string, object?>
+        {
+            ["Command"] = "ls",
+            ["_timeout_seconds"] = 300
+        };
+        var tc = new FunctionCallContent("call-1", "some_mcp_tool", args);
+
+        var (meta, cleaned) = ToolCallMetaExtractor.Extract(tc);
+
+        Assert.NotNull(meta);
+        Assert.Equal(300, meta!.TimeoutHintSeconds);
+        Assert.DoesNotContain("_timeout_seconds", (IDictionary<string, object?>)cleaned.Arguments!);
     }
 }

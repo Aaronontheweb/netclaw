@@ -230,7 +230,7 @@ internal static class SessionToolExecutionPipeline
             }, [], [], [], []);
         }
 
-        var (meta, cleanedTc) = ToolCallMetaExtractor.Extract(tc);
+        var (meta, cleanedTc) = executor.PrepareToolCall(tc);
         tc = cleanedTc;
 
         // The agent's per-call timeout hint is honored as requested; when absent
