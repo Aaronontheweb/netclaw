@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Microsoft.Extensions.DependencyInjection;
+using Netclaw.Configuration;
 using Netclaw.Configuration.Http;
 using Netclaw.Providers.Anthropic;
 using Netclaw.Providers.GitHubCopilot;
@@ -40,6 +41,11 @@ public static class LlmProviderServiceExtensions
                 sp.GetRequiredService<IHttpClientFactory>().CreateClient("OAuthDeviceFlow"),
                 sp.GetService<TimeProvider>()));
         services.AddSingleton<DeviceFlowServiceFactory>();
+        services.AddSingleton(sp => new ProviderOAuthTokenRefreshService(
+            sp.GetRequiredService<NetclawPaths>(),
+            sp.GetRequiredService<DeviceFlowServiceFactory>(),
+            sp.GetService<IOperationalNotificationSink>(),
+            sp.GetService<TimeProvider>()));
 
         // Register daemon-specific plugins
         services.AddSingleton<OllamaProviderPlugin>();
