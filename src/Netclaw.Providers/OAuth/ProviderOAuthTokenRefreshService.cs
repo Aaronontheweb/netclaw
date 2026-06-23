@@ -35,6 +35,8 @@ public sealed class ProviderOAuthTokenRefreshService(
         if (!NeedsRefresh(entry.OAuthTokenExpiry))
             return accessToken;
 
+        // Coalesce concurrent refreshes for the same configured provider so a
+        // burst of requests does not spend the same refresh token multiple times.
         var refreshGate = _refreshLocks.GetOrAdd(providerName, _ => new SemaphoreSlim(1, 1));
         await refreshGate.WaitAsync(ct);
         try

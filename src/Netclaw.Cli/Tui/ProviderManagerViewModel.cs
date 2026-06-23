@@ -780,6 +780,8 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         ProviderDisplayItem item,
         CancellationToken ct)
     {
+        // Only persisted providers have a stable config key for refresh writes;
+        // pending add/fix entries must stay on the no-clobber probe path.
         if (item is { Entry: not null, ConfiguredName: not null }
             && _probe is IConfiguredProviderProbe configuredProbe)
         {
