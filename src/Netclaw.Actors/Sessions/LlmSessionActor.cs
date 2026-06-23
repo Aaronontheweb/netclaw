@@ -4163,7 +4163,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         // Rebuild the FunctionCallContent batch from the persisted assistant
         // message — tool arguments are durably stored in SerializableToolCall.
-        var aiMessage = ChatMessageConverter.ToAiMessage(assistantMsg);
+        // reinjectMeta re-applies the persisted per-call hints (timeout/background/
+        // rationale) that were stripped into MetaJson at persistence, so a re-driven
+        // call honors them instead of falling back to defaults.
+        var aiMessage = ChatMessageConverter.ToAiMessage(assistantMsg, reinjectMeta: true);
         var toolCalls = aiMessage.Contents
             .OfType<FunctionCallContent>()
             .Where(tc => !ParkedToolBatchHistory.HasToolResult(_state.History, tc.CallId)

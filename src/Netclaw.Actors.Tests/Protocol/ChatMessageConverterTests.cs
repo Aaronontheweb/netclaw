@@ -634,6 +634,38 @@ public class ChatMessageConverterTests
         Assert.Null(exactCall.MetaJson);
     }
 
+    [Fact]
+    public void ToAiMessage_reinjectMeta_restores_hint_for_redrive_but_not_outbound()
+    {
+        // Persist a near-miss call: the meta key is stripped into MetaJson.
+        var persisted = ChatMessageConverter.FromAiMessage(
+            new AiChatMessage(AiChatRole.Assistant, new List<AIContent>
+            {
+                new FunctionCallContent("c1", "shell_execute", new Dictionary<string, object?>
+                {
+                    ["Command"] = "long-task",
+                    ["TimeoutSeconds"] = 1800
+                })
+            }),
+            interpretToolCall: tc => ToolCallMeta.ExtractFrom(tc.Arguments, ToolArgumentHelper.ResolveMetaField));
+        var stored = Assert.Single(persisted.ToolCalls);
+        Assert.DoesNotContain("TimeoutSeconds", stored.ArgumentsJson);
+
+        // Re-drive reconstruction re-injects the canonical key, so extraction
+        // reapplies the 1800s hint on re-dispatch (regression guard for the
+        // previously-dropped hint on post-approval re-drive).
+        var redriven = ChatMessageConverter.ToAiMessage(persisted, reinjectMeta: true);
+        var redrivenCall = redriven.Contents.OfType<FunctionCallContent>().Single();
+        Assert.True(redrivenCall.Arguments!.ContainsKey("_timeout_seconds"));
+        var (meta, _) = ToolCallMeta.ExtractFrom(redrivenCall.Arguments, ToolArgumentHelper.ResolveMetaField);
+        Assert.Equal(1800, meta?.TimeoutHintSeconds);
+
+        // Outbound provider history (the default) must NOT carry meta keys.
+        var outbound = ChatMessageConverter.ToAiMessage(persisted);
+        var outboundCall = outbound.Contents.OfType<FunctionCallContent>().Single();
+        Assert.False(outboundCall.Arguments?.ContainsKey("_timeout_seconds") ?? false);
+    }
+
     private sealed class TempSessionDir : IDisposable
     {
         public string Path { get; } = System.IO.Path.Combine(
