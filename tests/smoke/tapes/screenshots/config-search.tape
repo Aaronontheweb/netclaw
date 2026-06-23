@@ -22,20 +22,30 @@ Down 5
 Enter
 
 # ─── Frame 1: Provider selection ───────────────────────────────────────────
+# SelectBackendForEditing is synchronous. Two anchors are required: the title
+# confirms the screen loaded, and the DuckDuckGo description confirms the
+# cursor is on row 1 (DuckDuckGo). Without the second anchor, a Down key
+# leaked from the "Down 5" Settings navigation can move the cursor to Brave
+# before the screenshot fires, capturing the wrong row.
 Wait+Screen@10s /Choose the backend Netclaw uses for web search/
-Sleep 1s
+Wait+Screen@5s /DuckDuckGo works without setup/
 Screenshot "/tmp/shot-config-search-selection.png"
-Sleep 1s
 
 # ─── Frame 2: Brave entry state ────────────────────────────────────────────
+# SelectBackendForEditing("brave") is synchronous — Wait+Screen is sufficient.
 Down
 Enter
 Wait+Screen@10s /Brave Search requires an API key/
-Sleep 1s
 Screenshot "/tmp/shot-config-search-brave-entry.png"
-Sleep 1s
 
 # ─── Frame 3: Saved state ──────────────────────────────────────────────────
+# SaveWithoutProbeOverride cascades multiple ReactiveProperty notifications
+# and a ReloadPersistedDraft disk read before the frame settles. A single
+# Wait+Screen on the success text is not enough — a second anchor on the
+# key-binding bar text guarantees both CurrentScreen==Saved and
+# ActiveDialog==None have committed to a stable rendered frame.
+# "[Enter] Settings Areas" is emitted by BuildKeyBindings only in that state
+# (SearchConfigEditorPage.cs line 212).
 Escape
 Down
 Enter
@@ -46,9 +56,8 @@ Wait+Screen@10s /Search Validation Warning/
 Down 2
 Enter
 Wait+Screen@10s /validated and saved/
-Sleep 1s
+Wait+Screen@5s /\[Enter\] Settings Areas/
 Screenshot "/tmp/shot-config-search-saved.png"
-Sleep 1s
 
 Ctrl+Q
 Wait+Screen@10s /TAPE\$/
