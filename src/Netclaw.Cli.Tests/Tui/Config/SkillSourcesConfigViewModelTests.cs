@@ -26,6 +26,110 @@ public sealed class SkillSourcesConfigViewModelTests : IDisposable
 
     public void Dispose() => _dir.Dispose();
 
+    [Theory]
+    [InlineData("{\"skills\":[{\"name\":\"a\"},{\"name\":\"b\"},{\"name\":\"c\"}]}", 3)]
+    [InlineData("{\"skills\":[]}", 0)]
+    [InlineData("{\"feedType\":\"system\"}", null)] // reachable index, but no skills array
+    [InlineData("not json at all", null)]           // malformed body
+    [InlineData("[1,2,3]", null)]                    // non-object root
+    public void CountSkillsInIndexJson_returns_skill_count_or_null_when_unknown(string json, int? expected)
+        => Assert.Equal(expected, SkillFeedReachabilityProbe.CountSkillsInIndexJson(json));
+
+    [Fact]
+    public async Task Rescan_all_probes_remote_servers_and_shows_skill_counts_on_the_inventory_row()
+    {
+        File.WriteAllText(
+            _paths.NetclawConfigPath,
+            "{\"configVersion\":1,\"SkillFeeds\":{\"Feeds\":[{\"Name\":\"custom-feed\",\"Url\":\"https://feed.example.test\",\"Enabled\":true}]}}");
+        using var vm = new SkillSourcesConfigViewModel(_paths, new FakeSkillFeedProbe(true, skillCount: 7));
+
+        TriggerRescanAll(vm);
+        await vm.PendingCountRefresh!;
+
+        var remoteRow = vm.InventoryRows.Single(static row => row.SourceKind == SkillSourceKind.RemoteSkillServer);
+        Assert.Contains("7 advertised", remoteRow.Detail);
+    }
+
+    [Fact]
+    public async Task Rescan_all_does_not_badge_disabled_remote_servers()
+    {
+        File.WriteAllText(
+            _paths.NetclawConfigPath,
+            "{\"configVersion\":1,\"SkillFeeds\":{\"Feeds\":[{\"Name\":\"custom-feed\",\"Url\":\"https://feed.example.test\",\"Enabled\":false}]}}");
+        using var vm = new SkillSourcesConfigViewModel(_paths, new FakeSkillFeedProbe(true, skillCount: 7));
+
+        TriggerRescanAll(vm);
+        if (vm.PendingCountRefresh is { } refresh)
+            await refresh;
+
+        var remoteRow = vm.InventoryRows.Single(static row => row.SourceKind == SkillSourceKind.RemoteSkillServer);
+        Assert.DoesNotContain("advertised", remoteRow.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Rescan_all_invalidates_a_cached_count_when_the_server_is_disabled()
+    {
+        File.WriteAllText(
+            _paths.NetclawConfigPath,
+            "{\"configVersion\":1,\"SkillFeeds\":{\"Feeds\":[{\"Name\":\"custom-feed\",\"Url\":\"https://feed.example.test\",\"Enabled\":true}]}}");
+        using var vm = new SkillSourcesConfigViewModel(_paths, new FakeSkillFeedProbe(true, skillCount: 7));
+
+        TriggerRescanAll(vm);
+        await vm.PendingCountRefresh!;
+        Assert.Contains("7 advertised", vm.InventoryRows.Single(static r => r.SourceKind == SkillSourceKind.RemoteSkillServer).Detail);
+
+        // Disable the feed in config, then rescan: the previously cached "7 skills" must not survive.
+        File.WriteAllText(
+            _paths.NetclawConfigPath,
+            "{\"configVersion\":1,\"SkillFeeds\":{\"Feeds\":[{\"Name\":\"custom-feed\",\"Url\":\"https://feed.example.test\",\"Enabled\":false}]}}");
+        TriggerRescanAll(vm);
+        if (vm.PendingCountRefresh is { } refresh)
+            await refresh;
+
+        Assert.DoesNotContain(
+            "advertised",
+            vm.InventoryRows.Single(static r => r.SourceKind == SkillSourceKind.RemoteSkillServer).Detail,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Rescan_all_skips_and_warns_when_a_stored_token_cannot_be_decrypted()
+    {
+        File.WriteAllText(
+            _paths.NetclawConfigPath,
+            "{\"configVersion\":1,\"SkillFeeds\":{\"Feeds\":[{\"Name\":\"custom-feed\",\"Url\":\"https://feed.example.test\",\"ApiKey\":\"ENC:not-valid-for-this-keyring\",\"Enabled\":true}]}}");
+        using var vm = new SkillSourcesConfigViewModel(_paths, new FakeSkillFeedProbe(true, skillCount: 7));
+
+        TriggerRescanAll(vm);
+        if (vm.PendingCountRefresh is { } refresh)
+            await refresh;
+
+        var remoteRow = vm.InventoryRows.Single(static row => row.SourceKind == SkillSourceKind.RemoteSkillServer);
+        Assert.DoesNotContain("advertised", remoteRow.Detail, StringComparison.OrdinalIgnoreCase); // not probed unauthenticated
+        Assert.Equal(ConfigStatusTone.Warning, vm.Status.Value.Tone);
+        Assert.Contains("could not be decrypted", vm.Status.Value.Text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Rescan_all_warns_when_a_remote_server_does_not_respond()
+    {
+        File.WriteAllText(
+            _paths.NetclawConfigPath,
+            "{\"configVersion\":1,\"SkillFeeds\":{\"Feeds\":[{\"Name\":\"custom-feed\",\"Url\":\"https://feed.example.test\",\"Enabled\":true}]}}");
+        using var vm = new SkillSourcesConfigViewModel(_paths, new FakeSkillFeedProbe(false));
+
+        TriggerRescanAll(vm);
+        await vm.PendingCountRefresh!;
+
+        // An unreachable server must not read as a green success, and must leave no badge.
+        Assert.Equal(ConfigStatusTone.Warning, vm.Status.Value.Tone);
+        Assert.Contains("did not respond", vm.Status.Value.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "advertised",
+            vm.InventoryRows.Single(static r => r.SourceKind == SkillSourceKind.RemoteSkillServer).Detail,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void Skill_sources_dashboard_entry_routes_to_real_editor()
     {
@@ -123,8 +227,7 @@ public sealed class SkillSourcesConfigViewModelTests : IDisposable
         vm.ActivateSelected(); // RequiresAuth -> token field
         vm.AppendText("secret-token");
         vm.ActivateSelected();
-        await vm.PendingProbe!;
-        vm.ActivateSelected(); // success -> name review
+        await vm.PendingProbe!; // success auto-advances to name review (no second Enter)
         ReplaceDraft(vm, "custom-feed");
 
         // Make the DataProtection keys directory unusable (a file, not a directory) so the commit's
@@ -237,12 +340,31 @@ public sealed class SkillSourcesConfigViewModelTests : IDisposable
 
         vm.ActivateSelected();              // phase 2: save anyway -> name review
         Assert.Equal(SkillSourcesScreen.AddRemoteName, vm.Screen.Value);
+        Assert.False(vm.AddRemoteNameTitleIsSuccess); // a save-anyway failure must not render success-green
         ReplaceDraft(vm, "custom-feed");
         vm.ActivateSelected();
 
         var feed = SingleFeedSection();
         Assert.Equal("https://skills.example.test", feed["Url"]);
         Assert.Null(feed["ApiKey"]);
+    }
+
+    [Fact]
+    public async Task Reachable_skill_server_auto_advances_to_name_without_a_second_enter()
+    {
+        using var vm = new SkillSourcesConfigViewModel(_paths, new FakeSkillFeedProbe(true, skillCount: 53));
+
+        BeginAddRemoteServer(vm);
+        vm.AppendText("https://skills.example.test");
+        vm.ActivateSelected();   // single Enter kicks off the probe
+        await vm.PendingProbe!;  // a reachable feed advances on its own — no second Enter
+
+        Assert.Equal(SkillSourcesScreen.AddRemoteName, vm.Screen.Value);
+        // The probe's reachable confirmation is carried onto the name screen (not lost to the auto-advance),
+        // the way the init wizard shows "Found N skills". The fake probe reports "reachable"; the real probe
+        // formats the advertised count into this same message.
+        Assert.Contains("reachable", vm.AddRemoteNameTitle, StringComparison.OrdinalIgnoreCase);
+        Assert.True(vm.AddRemoteNameTitleIsSuccess); // drives the success-green header on the name screen
     }
 
     [Fact]
@@ -624,10 +746,10 @@ public sealed class SkillSourcesConfigViewModelTests : IDisposable
         Assert.Equal(SkillSourcesScreen.AddRemoteUrl, vm.Screen.Value);
     }
 
-    // Drives the probe-driven add flow for an auth-gated server. The reachability probe now runs
-    // OFF the loop, so each probe is two-phase: the first ActivateSelected kicks it off (await
-    // PendingProbe), the second ActivateSelected acts on the completed result (reveal token / advance
-    // to name). The vm must be constructed with a requiresAuth FakeSkillFeedProbe.
+    // Drives the probe-driven add flow for an auth-gated server. The reachability probe runs OFF the loop.
+    // A FAILURE (401) is two-phase: the first ActivateSelected kicks off the probe (await PendingProbe), the
+    // second acts on the result (reveal the token field). A SUCCESS auto-advances to the name step on its own
+    // — no second keypress — so after the token re-probe we only await. Construct vm with a requiresAuth probe.
     private static async Task AddRemoteServer(SkillSourcesConfigViewModel vm, string url, string token, string name)
     {
         BeginAddRemoteServer(vm);
@@ -637,9 +759,8 @@ public sealed class SkillSourcesConfigViewModelTests : IDisposable
         vm.ActivateSelected();              // phase 2: RequiresAuth -> reveal token field
         Assert.Equal(SkillSourcesScreen.AddRemoteToken, vm.Screen.Value);
         vm.AppendText(token);
-        vm.ActivateSelected();              // phase 1: re-probe with token -> success
+        vm.ActivateSelected();              // re-probe with token -> success auto-advances to name review
         await vm.PendingProbe!;
-        vm.ActivateSelected();              // phase 2: success -> advance to name review
         Assert.Equal(SkillSourcesScreen.AddRemoteName, vm.Screen.Value);
         ReplaceDraft(vm, name);
         vm.ActivateSelected();
@@ -716,7 +837,17 @@ public sealed class SkillSourcesConfigViewModelTests : IDisposable
     private string Decrypt(string encrypted)
         => SecretsProtection.CreateProtector(_paths).Unprotect(encrypted);
 
-    private sealed class FakeSkillFeedProbe(bool success, bool requiresAuth = false, bool failWithToken = false)
+    private static void TriggerRescanAll(SkillSourcesConfigViewModel vm)
+    {
+        var rescanIndex = vm.InventoryRows
+            .Select(static (row, index) => (row, index))
+            .Single(static entry => entry.row.Action == SkillSourcesInventoryAction.RescanAll)
+            .index;
+        vm.SelectedRow.Value = rescanIndex;
+        vm.ActivateSelected();
+    }
+
+    private sealed class FakeSkillFeedProbe(bool success, bool requiresAuth = false, bool failWithToken = false, int? skillCount = null)
         : ISkillFeedReachabilityProbe
     {
         // When set, ProbeAsync blocks on this gate before returning so tests can stage an in-flight
@@ -739,11 +870,11 @@ public sealed class SkillSourcesConfigViewModelTests : IDisposable
 
                 return failWithToken
                     ? new SkillFeedReachabilityResult(false, "unreachable")
-                    : new SkillFeedReachabilityResult(true, "reachable");
+                    : new SkillFeedReachabilityResult(true, "reachable", SkillCount: skillCount);
             }
 
             return success
-                ? new SkillFeedReachabilityResult(true, "reachable")
+                ? new SkillFeedReachabilityResult(true, "reachable", SkillCount: skillCount)
                 : new SkillFeedReachabilityResult(false, "unreachable");
         }
     }
