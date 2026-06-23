@@ -44,3 +44,16 @@ public interface IProviderProbe
         string providerType, string? endpoint, string? credential,
         AuthMethod authMethod, CancellationToken ct = default);
 }
+
+/// <summary>
+/// Probes a provider entry that is already persisted under a known config key.
+/// Implementations may use <paramref name="providerName"/> to update persisted
+/// runtime metadata, such as refreshed OAuth credentials.
+/// </summary>
+public interface IConfiguredProviderProbe
+{
+    Task<ProviderProbeResult> ProbeConfiguredAsync(
+        string providerName,
+        ProviderEntry entry,
+        CancellationToken ct = default);
+}
