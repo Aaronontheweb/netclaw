@@ -105,6 +105,19 @@ Where a fact is re-declared across facets, share a canonical payload or project 
 `TurnBroadcast`/`CompactionBroadcast` carry a strict subset of their event — the concrete first win.
 Do not merge forms that legitimately differ; this is a reduction pass, not a forced unification.
 
+**D6 outcome (post-implementation).** The hypothesized event↔broadcast/output duplication mostly
+did not exist in live code:
+- `TurnBroadcast`/`CompactionBroadcast` turned out to be **dead** (full serialization scaffolding,
+  zero producer/consumer) and were **removed** outright — a larger reduction than a projection
+  factory would have given.
+- `SessionTitleOutput` is built from raw strings, not projected from `SessionTitleSet` — no
+  duplication to collapse.
+- The realized de-dup is the **`ApprovalCandidate` type collapse** (the event's nested
+  `ApprovalCandidateRecord` and `Netclaw.Security.ApprovalCandidate` were identical → unified).
+- The fuller `ToolApprovalDetails` shared-payload merge was **dropped**: its only benefit was
+  consolidation, and it would couple a persisted security/audit event to a render payload across
+  ~40 approval-flow sites with no behavioral gain. The audit and render facets legitimately differ.
+
 **D7 — Sequence session-first.**
 Session is riskiest (most persisted events + the manifest table) and highest value. Migrate it first,
 prove the round-trip, then apply the now-validated mechanical pattern to the smaller protocols.

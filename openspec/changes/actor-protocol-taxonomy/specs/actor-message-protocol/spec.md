@@ -49,9 +49,9 @@ routing identity interface `IWith{Entity}Id`:
 - `I{Entity}Response` — an Ask reply carrying the entity id.
 
 Every message record in `{Entity}Protocol` MUST implement exactly one of these category markers,
-**except** outbound notification facets — the session `SessionOutput` subscriber stream and
-pub/sub broadcast messages (`ISessionBroadcast`) — which are governed by their own requirements
-below. There SHALL be no global `ICommand`/`IEvent`/`IQuery` base shared across entities.
+**except** the session `SessionOutput` subscriber-stream facet, which is governed by its own
+requirement below. There SHALL be no global `ICommand`/`IEvent`/`IQuery` base shared across
+entities.
 
 #### Scenario: Each message declares its category
 
@@ -102,18 +102,6 @@ record set; an output is a presentation projection, not a journal entry.
 - **WHEN** a `SessionOutput` subtype is published to subscribers
 - **THEN** it is not written to the journal and is not registered in the serializer manifest table
 
-### Requirement: Outbound broadcast facet
-
-A pub/sub broadcast message MUST implement a dedicated `I{Entity}Broadcast` marker that extends
-`INetclawSerializableMessage`. Broadcasts are emitted to other nodes/adapters via DistributedPubSub
-and cross the wire, but they SHALL NOT be journaled. They carry the entity's routing id for
-addressing but are not routed through the sharding extractor.
-
-#### Scenario: Broadcast is serializable but not journaled
-
-- **WHEN** the session publishes `TurnBroadcast` or `CompactionBroadcast`
-- **THEN** it implements `ISessionBroadcast` (serializable) and is delivered via pub/sub, never written to the session journal
-
 ### Requirement: Consistent Ask-reply responses
 
 Actors that reply to an Ask SHALL return a type implementing their entity's `I{Entity}Response`
@@ -133,10 +121,10 @@ output, those facets MUST share a single canonical payload record or derive one 
 via an explicit projection. Facets that legitimately differ — a persisted form versus a filtered
 wire form — MAY retain distinct shapes, but equivalent fields MUST be reduced rather than repeated.
 
-#### Scenario: Broadcast derives from its event
+#### Scenario: Facets reference one canonical type
 
-- **WHEN** a turn is recorded and a turn broadcast is published
-- **THEN** the broadcast references the same canonical reply payload as the persisted event (or is projected from it), rather than redeclaring `SessionId` + reply + timestamp independently
+- **WHEN** the persisted approval event and the approval render output both express their candidate set
+- **THEN** they reference a single shared `ApprovalCandidate` type rather than each defining its own identical record
 
 ### Requirement: Wire compatibility under reorganization
 
