@@ -158,29 +158,6 @@ public sealed class SerializationRoundTripTests : TestKit
     }
 
     [Fact]
-    public void TurnBroadcast_round_trips()
-    {
-        var ts = new DateTimeOffset(2026, 2, 21, 10, 1, 5, TimeSpan.Zero);
-        var original = new TurnBroadcast
-        {
-            SessionId = new SessionId("C99999/1708531200.000100"),
-            AssistantReply = new SerializableChatMessage
-            {
-                Role = ChatRole.Assistant,
-                Content = "Here is your answer."
-            },
-            BroadcastAtMs = ts.ToUnixTimeMilliseconds()
-        };
-
-        var result = RoundTrip(original);
-
-        Assert.Equal(original.SessionId, result.SessionId);
-        Assert.Equal(ChatRole.Assistant, result.AssistantReply.Role);
-        Assert.Equal("Here is your answer.", result.AssistantReply.Content);
-        Assert.Equal(original.BroadcastAtMs, result.BroadcastAtMs);
-    }
-
-    [Fact]
     public void SerializableChatMessage_round_trips_with_media_references()
     {
         var original = new SerializableChatMessage
@@ -294,24 +271,6 @@ public sealed class SerializationRoundTripTests : TestKit
 
         Assert.Null(result.ProjectDirectory);
         Assert.Single(result.RecentFiles);
-    }
-
-    [Fact]
-    public void CompactionBroadcast_round_trips()
-    {
-        var ts = new DateTimeOffset(2026, 2, 21, 11, 0, 1, TimeSpan.Zero);
-        var original = new CompactionBroadcast
-        {
-            SessionId = new SessionId("C99999/1708531200.000100"),
-            Summary = "Context compacted after 42 turns.",
-            CompactedAtMs = ts.ToUnixTimeMilliseconds()
-        };
-
-        var result = RoundTrip(original);
-
-        Assert.Equal(original.SessionId, result.SessionId);
-        Assert.Equal(original.Summary, result.Summary);
-        Assert.Equal(original.CompactedAtMs, result.CompactedAtMs);
     }
 
     [Fact]

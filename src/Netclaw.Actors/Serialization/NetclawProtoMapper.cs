@@ -36,8 +36,6 @@ internal static class NetclawProtoMapper
         ToolBatchAbandoned v => ToProto(v),
         SessionBackgroundJobsReaped v => ToProto(v),
         SessionSnapshot v => ToProto(v),
-        TurnBroadcast v => ToProto(v),
-        CompactionBroadcast v => ToProto(v),
         WorkingContext v => ToProto(v),
         ReminderId v => ToProto(v),
         ReminderDelivery v => ToProto(v),
@@ -550,38 +548,6 @@ internal static class NetclawProtoMapper
         SenderId = new SenderId(proto.SenderId),
         TimestampMs = proto.TimestampMs,
         AuthorityAtInclusion = proto.AuthorityAtInclusion
-    };
-
-    // ── TurnBroadcast ──
-
-    internal static Proto.TurnBroadcastProto ToProto(TurnBroadcast evt) => new()
-    {
-        SessionId = ToProto(evt.SessionId),
-        AssistantReply = ToProto(evt.AssistantReply),
-        BroadcastAtMs = evt.BroadcastAtMs
-    };
-
-    internal static TurnBroadcast FromProto(Proto.TurnBroadcastProto proto) => new()
-    {
-        SessionId = FromProto(proto.SessionId),
-        AssistantReply = FromProto(proto.AssistantReply),
-        BroadcastAtMs = proto.BroadcastAtMs
-    };
-
-    // ── CompactionBroadcast ──
-
-    internal static Proto.CompactionBroadcastProto ToProto(CompactionBroadcast evt) => new()
-    {
-        SessionId = ToProto(evt.SessionId),
-        Summary = evt.Summary,
-        CompactedAtMs = evt.CompactedAtMs
-    };
-
-    internal static CompactionBroadcast FromProto(Proto.CompactionBroadcastProto proto) => new()
-    {
-        SessionId = FromProto(proto.SessionId),
-        Summary = proto.Summary,
-        CompactedAtMs = proto.CompactedAtMs
     };
 
     // ── WorkingContext ──

@@ -12,16 +12,16 @@ namespace Netclaw.Actors.Sessions;
 /// <summary>
 /// The session entity's <b>external</b> message contract — every message that
 /// crosses the session actor boundary: commands and queries it receives,
-/// responses, outputs, and broadcasts it sends, and events it persists.
+/// responses and outputs it sends, and events it persists.
 /// Internal self-messages the actor tells itself to drive its own state machine
 /// (e.g. <c>LlmResponseReceived</c>, <c>ProcessingWatchdogExpired</c>) are
 /// actor-private plumbing and intentionally live with the actor implementation,
 /// NOT in this protocol class.
 ///
 /// Split into partial files by category (<c>.Commands</c>, <c>.Events</c>,
-/// <c>.Responses</c>, <c>.Broadcasts</c>, <c>.Outputs</c>) to keep each file
-/// readable; the logical type is one <see cref="SessionProtocol"/> nesting all
-/// external message types (accessed as <c>SessionProtocol.TurnRecorded</c>).
+/// <c>.Responses</c>, <c>.Outputs</c>) to keep each file readable; the logical
+/// type is one <see cref="SessionProtocol"/> nesting all external message types
+/// (accessed as <c>SessionProtocol.TurnRecorded</c>).
 /// </summary>
 public static partial class SessionProtocol
 {
@@ -55,14 +55,5 @@ public static partial class SessionProtocol
     public interface ISessionResponse : INoSerializationVerificationNeeded
     {
         SessionId SessionId { get; }
-    }
-
-    /// <summary>
-    /// Marker for an outbound pub/sub notification published after a session
-    /// state change. Serializable (crosses the pub/sub boundary) but NOT
-    /// journaled — distinct from <see cref="ISessionEvent"/>.
-    /// </summary>
-    public interface ISessionBroadcast : IWithSessionId, INetclawSerializableMessage
-    {
     }
 }
