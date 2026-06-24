@@ -12,6 +12,7 @@ using Netclaw.Configuration;
 using Netclaw.Tools;
 using Xunit;
 
+using static Netclaw.Actors.Jobs.BackgroundJobProtocol;
 namespace Netclaw.Actors.Tests.Jobs;
 
 public sealed class CheckBackgroundJobToolTests(ITestOutputHelper output) : TestKit(output: output)

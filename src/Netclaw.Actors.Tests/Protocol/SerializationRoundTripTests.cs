@@ -14,6 +14,7 @@ using Netclaw.Actors.Reminders;
 using Netclaw.Actors.Sessions;
 using Netclaw.Tools;
 using Xunit;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Tests.Protocol;
 
@@ -782,8 +783,8 @@ public sealed class SerializationRoundTripTests : TestKit
             OptionKeys = [ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.ApproveEverywhere, ApprovalOptionKeys.Deny],
             Candidates =
             [
-                new ToolApprovalRequested.ApprovalCandidateRecord { Verb = "git", Directory = "/home/user/project" },
-                new ToolApprovalRequested.ApprovalCandidateRecord { Verb = "ls", Directory = null }
+                new Netclaw.Security.ApprovalCandidate("git", "/home/user/project"),
+                new Netclaw.Security.ApprovalCandidate("ls", null)
             ],
             TurnContext = new TurnContextRecord
             {

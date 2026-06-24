@@ -20,6 +20,7 @@ using Netclaw.Configuration;
 using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
 using Xunit;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Tests.Sessions;
 

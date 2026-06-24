@@ -13,7 +13,9 @@ using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
 using Netclaw.Tests.Utilities;
 using Xunit;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
+using static Netclaw.Actors.Jobs.BackgroundJobProtocol;
 namespace Netclaw.Actors.Tests.Jobs;
 
 [Collection(BackgroundJobProcessCollection.Name)]

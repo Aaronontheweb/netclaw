@@ -16,6 +16,7 @@ using Netclaw.Configuration;
 using Netclaw.Daemon.Security;
 using Netclaw.Tools;
 
+using static Netclaw.Actors.Reminders.ReminderProtocol;
 namespace Netclaw.Daemon.Reminders;
 
 public static class ReminderEndpointRouteBuilderExtensions

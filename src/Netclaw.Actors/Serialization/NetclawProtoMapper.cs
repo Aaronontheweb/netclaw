@@ -13,6 +13,7 @@ using Netclaw.Actors.Reminders;
 using Netclaw.Actors.Sessions;
 using Netclaw.Media;
 using Proto = Netclaw.Actors.Serialization.Proto;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Serialization;
 
@@ -356,7 +357,7 @@ internal static class NetclawProtoMapper
     };
 
     private static Proto.ToolApprovalRequestedProto.Types.ApprovalCandidateProto ToApprovalCandidateProto(
-        ToolApprovalRequested.ApprovalCandidateRecord c)
+        Netclaw.Security.ApprovalCandidate c)
     {
         var proto = new Proto.ToolApprovalRequestedProto.Types.ApprovalCandidateProto
         {
@@ -367,12 +368,9 @@ internal static class NetclawProtoMapper
         return proto;
     }
 
-    private static ToolApprovalRequested.ApprovalCandidateRecord FromApprovalCandidateProto(
-        Proto.ToolApprovalRequestedProto.Types.ApprovalCandidateProto proto) => new()
-    {
-        Verb = proto.Verb,
-        Directory = proto.HasDirectory ? proto.Directory : null
-    };
+    private static Netclaw.Security.ApprovalCandidate FromApprovalCandidateProto(
+        Proto.ToolApprovalRequestedProto.Types.ApprovalCandidateProto proto) =>
+        new(proto.Verb, proto.HasDirectory ? proto.Directory : null);
 
     private static Proto.ToolApprovalRequestedProto.Types.TurnContextRecordProto ToProto(TurnContextRecord record)
     {
