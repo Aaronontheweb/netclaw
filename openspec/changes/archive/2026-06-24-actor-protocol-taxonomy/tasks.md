@@ -53,5 +53,5 @@
 ## 8. Sync & archive
 
 - [x] 8.1 `/opsx-verify` the implementation against the spec/design. — DONE: all 9 spec requirements evidenced in code; build + full suite green; no critical issues.
-- [ ] 8.2 `/opsx-sync` the `actor-message-protocol` delta into `openspec/specs/`.
-- [ ] 8.3 `/opsx-archive` the change.
+- [x] 8.2 `/opsx-sync` — created `openspec/specs/actor-message-protocol/spec.md` (9 requirements). — DONE.
+- [x] 8.3 `/opsx-archive` the change. — DONE.
