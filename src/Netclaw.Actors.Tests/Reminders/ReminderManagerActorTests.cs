@@ -17,8 +17,8 @@ using Netclaw.Actors.Tests.Hosting;
 using Netclaw.Configuration;
 using Xunit;
 using static Netclaw.Actors.Sessions.SessionProtocol;
-
 using static Netclaw.Actors.Reminders.ReminderProtocol;
+
 namespace Netclaw.Actors.Tests.Reminders;
 
 public class ReminderManagerActorTests : TestKit

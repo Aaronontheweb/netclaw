@@ -13,8 +13,8 @@ using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Sessions;
 using Netclaw.Configuration;
 using Xunit;
-
 using static Netclaw.Actors.Protocol.ModelCapabilityProtocol;
+
 namespace Netclaw.Actors.Tests.Sessions;
 
 public class ModelCapabilityActorTests : TestKit

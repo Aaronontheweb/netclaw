@@ -346,36 +346,6 @@ public sealed record ReminderStateResponse(
 public sealed record ReminderListResponse(IReadOnlyList<ReminderInfo> Reminders) : IReminderResponse, INoSerializationVerificationNeeded;
 public sealed record GetReminderResponse(ReminderInfo? Reminder) : IReminderResponse, INoSerializationVerificationNeeded;
 
-}
-
-public sealed record ReminderInfo(
-    ReminderId Id,
-    string Title,
-    string Instructions,
-    ReminderDelivery Delivery,
-    bool DeliveryRequired,
-    string? DeliveryInstructions,
-    ReminderSchedule Schedule,
-    DateTimeOffset? NextFire,
-    bool Enabled,
-    string? AgentDefinitionId,
-    TrustAudience? Audience,
-    DateTimeOffset? ExpiresAt = null) : INoSerializationVerificationNeeded;
-
-// ── Internal messages ──
-
-/// <summary>
-/// Sent by <see cref="ReminderExecutionActor"/> to parent when execution completes.
-/// </summary>
-internal sealed record ReminderExecutionCompleted(
-    Guid ExecutionId,
-    ReminderId Id,
-    bool Success,
-    string? ErrorMessage = null) : INoSerializationVerificationNeeded;
-
-public static partial class ReminderProtocol
-{
-
 // ===== Delivery / Health =====
 
 /// <summary>
@@ -435,6 +405,31 @@ public sealed record ReminderHealthResponse(
     int FailedCount) : IReminderResponse, INoSerializationVerificationNeeded;
 
 }
+
+public sealed record ReminderInfo(
+    ReminderId Id,
+    string Title,
+    string Instructions,
+    ReminderDelivery Delivery,
+    bool DeliveryRequired,
+    string? DeliveryInstructions,
+    ReminderSchedule Schedule,
+    DateTimeOffset? NextFire,
+    bool Enabled,
+    string? AgentDefinitionId,
+    TrustAudience? Audience,
+    DateTimeOffset? ExpiresAt = null) : INoSerializationVerificationNeeded;
+
+// ── Internal messages ──
+
+/// <summary>
+/// Sent by <see cref="ReminderExecutionActor"/> to parent when execution completes.
+/// </summary>
+internal sealed record ReminderExecutionCompleted(
+    Guid ExecutionId,
+    ReminderId Id,
+    bool Success,
+    string? ErrorMessage = null) : INoSerializationVerificationNeeded;
 
 // ── Execution history ──
 

@@ -15,8 +15,8 @@ using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
 using Xunit;
 using static Netclaw.Actors.Sessions.SessionProtocol;
-
 using static Netclaw.Actors.Jobs.BackgroundJobProtocol;
+
 namespace Netclaw.Actors.Tests.Jobs;
 
 /// <summary>

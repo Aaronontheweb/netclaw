@@ -9,8 +9,8 @@ using Akka.Event;
 using Akka.Reminders;
 using Netclaw.Actors.Channels;
 using Netclaw.Configuration;
-
 using static Netclaw.Actors.Reminders.ReminderProtocol;
+
 namespace Netclaw.Actors.Reminders;
 
 /// <summary>

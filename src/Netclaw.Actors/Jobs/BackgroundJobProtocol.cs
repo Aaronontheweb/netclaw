@@ -151,6 +151,20 @@ public sealed record BackgroundJobStatusResponse : IBackgroundJobResponse
 
 public sealed record BackgroundJobCancelResponse(BackgroundJobId JobId, bool Found) : IBackgroundJobResponse;
 
+// ===== Health =====
+
+/// <summary>Ping sent to <see cref="BackgroundJobManagerActor"/> to confirm it is ready (PreStart + startup reconciliation complete).</summary>
+public sealed record GetBackgroundJobManagerHealth : IBackgroundJobQuery, INoSerializationVerificationNeeded
+{
+    public static readonly GetBackgroundJobManagerHealth Instance = new();
+    private GetBackgroundJobManagerHealth() { }
+}
+
+/// <summary>Response from <see cref="GetBackgroundJobManagerHealth"/> with current runtime counters.</summary>
+public sealed record BackgroundJobManagerHealthResponse(
+    int ActiveJobCount,
+    int QueuedJobCount) : IBackgroundJobResponse, INoSerializationVerificationNeeded;
+
 }
 
 // ── Internal messages ──
@@ -208,23 +222,4 @@ public sealed record BackgroundJobDefinition
     [JsonIgnore]
     public DateTimeOffset? CompletedAt =>
         CompletedAtMs is not null ? DateTimeOffset.FromUnixTimeMilliseconds(CompletedAtMs.Value) : null;
-}
-
-public static partial class BackgroundJobProtocol
-{
-
-// ===== Health =====
-
-/// <summary>Ping sent to <see cref="BackgroundJobManagerActor"/> to confirm it is ready (PreStart + startup reconciliation complete).</summary>
-public sealed record GetBackgroundJobManagerHealth : IBackgroundJobQuery, INoSerializationVerificationNeeded
-{
-    public static readonly GetBackgroundJobManagerHealth Instance = new();
-    private GetBackgroundJobManagerHealth() { }
-}
-
-/// <summary>Response from <see cref="GetBackgroundJobManagerHealth"/> with current runtime counters.</summary>
-public sealed record BackgroundJobManagerHealthResponse(
-    int ActiveJobCount,
-    int QueuedJobCount) : IBackgroundJobResponse, INoSerializationVerificationNeeded;
-
 }

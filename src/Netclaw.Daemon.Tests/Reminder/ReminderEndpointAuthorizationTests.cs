@@ -26,8 +26,8 @@ using Netclaw.Daemon.Reminders;
 using Netclaw.Daemon.Security;
 using Netclaw.Tests.Utilities;
 using Xunit;
-
 using static Netclaw.Actors.Reminders.ReminderProtocol;
+
 namespace Netclaw.Daemon.Tests.Reminder;
 
 public sealed class ReminderEndpointAuthorizationTests : IAsyncDisposable

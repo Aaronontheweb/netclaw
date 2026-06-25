@@ -16,8 +16,8 @@ using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Tools;
 using Xunit;
-
 using static Netclaw.Actors.Jobs.BackgroundJobProtocol;
+
 namespace Netclaw.Actors.Tests.Sessions.Pipelines;
 
 public sealed class BackgroundRoutingTests(ITestOutputHelper output) : TestKit(output: output)

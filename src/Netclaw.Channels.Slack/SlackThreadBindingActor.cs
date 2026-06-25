@@ -21,8 +21,8 @@ using Netclaw.Security;
 using Netclaw.Tools;
 using SlackNet.Blocks;
 using static Netclaw.Actors.Sessions.SessionProtocol;
-
 using static Netclaw.Actors.Reminders.ReminderProtocol;
+
 namespace Netclaw.Channels.Slack;
 
 internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTimers

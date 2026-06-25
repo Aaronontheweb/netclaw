@@ -7,8 +7,8 @@ using System.ComponentModel;
 using Akka.Actor;
 using Netclaw.Configuration;
 using Netclaw.Tools;
-
 using static Netclaw.Actors.Reminders.ReminderProtocol;
+
 namespace Netclaw.Actors.Reminders;
 
 /// <summary>

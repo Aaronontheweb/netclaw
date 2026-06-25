@@ -7,8 +7,8 @@ using Akka.Actor;
 using Akka.Event;
 using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
-
 using static Netclaw.Actors.Protocol.ModelCapabilityProtocol;
+
 namespace Netclaw.Actors.Sessions;
 
 /// <summary>

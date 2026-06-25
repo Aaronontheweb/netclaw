@@ -8,8 +8,8 @@ using Netclaw.Actors.Reminders;
 using Netclaw.Configuration;
 using Netclaw.Tools;
 using Xunit;
-
 using static Netclaw.Actors.Reminders.ReminderProtocol;
+
 namespace Netclaw.Daemon.Tests.Reminder;
 
 public sealed class ReminderTargetResolutionPathTests : IDisposable

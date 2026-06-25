@@ -14,8 +14,8 @@ using Netclaw.Channels.Telemetry;
 using Netclaw.Configuration;
 using Netclaw.Daemon.Services;
 using Netclaw.Daemon.Webhooks;
-
 using static Netclaw.Actors.Reminders.ReminderProtocol;
+
 namespace Netclaw.Daemon.Gateway;
 
 internal sealed class DaemonStatsService(

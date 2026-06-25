@@ -20,8 +20,8 @@ using Netclaw.Security;
 using Netclaw.Tools;
 using IOPath = System.IO.Path;
 using static Netclaw.Actors.Sessions.SessionProtocol;
-
 using static Netclaw.Actors.Reminders.ReminderProtocol;
+
 namespace Netclaw.Channels.Discord;
 
 internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWithTimers

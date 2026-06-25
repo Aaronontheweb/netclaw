@@ -11,8 +11,8 @@ using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
-
 using static Netclaw.Actors.SubAgents.SubAgentProtocol;
+
 namespace Netclaw.Actors.SubAgents;
 
 /// <summary>

@@ -18,8 +18,8 @@ using Netclaw.Configuration;
 using Netclaw.Security;
 using Xunit;
 using static Netclaw.Actors.Sessions.SessionProtocol;
-
 using static Netclaw.Actors.Reminders.ReminderProtocol;
+
 namespace Netclaw.Actors.Tests.Channels.Contracts;
 
 public abstract class SessionBindingContractTests : TestKit

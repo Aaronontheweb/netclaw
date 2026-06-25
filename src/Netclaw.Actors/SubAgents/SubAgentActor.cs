@@ -21,8 +21,8 @@ using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
 using AiChatMessage = Microsoft.Extensions.AI.ChatMessage;
-
 using static Netclaw.Actors.SubAgents.SubAgentProtocol;
+
 namespace Netclaw.Actors.SubAgents;
 
 /// <summary>
