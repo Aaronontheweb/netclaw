@@ -545,7 +545,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
             _toolExecutionWatchdogState = ToolExecutionWatchdogState.WaitingForParentApproval;
             _pendingApprovalWaits++;
-            EmitActivity("awaiting human approval", suspendsInactivityWatchdog: true);
+            EmitActivity("awaiting human approval");
         });
 
         Receive<SubAgentApprovalWaitCompleted>(_ =>
@@ -768,15 +768,12 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     /// <see cref="SubAgentStreamPing"/> handler already logs that liveness at Debug —
     /// logging it here too would emit one Info line per streamed delta.
     /// </summary>
-    private void EmitActivity(string phase, bool suspendsInactivityWatchdog = false, bool log = true)
+    private void EmitActivity(string phase, bool log = true)
     {
         if (log)
             _log.Info("SubAgent [{AgentName}] {Phase}", _definition.Name, phase);
 
-        _activitySink?.TryWrite(new ToolActivityUpdate(phase)
-        {
-            SuspendsInactivityWatchdog = suspendsInactivityWatchdog
-        });
+        _activitySink?.TryWrite(new ToolActivityUpdate(phase));
     }
 
     /// <summary>
