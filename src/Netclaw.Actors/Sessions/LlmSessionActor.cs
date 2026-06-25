@@ -2237,9 +2237,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _deliveryRetry.Clear();
         _turn.Source = cmd.Source;
         BindTurnTelemetry(cmd.Source);
+        // _turn.TurnId is non-null after Bind (it generates one from the message id
+        // or IdGen when the source carries none), so reuse it rather than forking a
+        // second id-generation path here.
         _turn.TurnContext = TurnContext.FromMessageSource(
             _sessionId,
-            _turn.TurnId ?? new Protocol.TurnId(IdGen.ShortId()),
+            _turn.TurnId!.Value,
             cmd.Source);
         _turn.TrustContext = _trustContextDeriver?.DeriveFromTurnContext(_turn.TurnContext);
         PersistAdoptedContextIfNeeded(cmd.Source);
