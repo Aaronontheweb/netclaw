@@ -85,8 +85,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // Media loaded by tools for model-visible inspection during a streamed tool
     // batch; drained into a system nudge when the batch completes.
     private readonly ModelInputMediaBuffer _mediaBuffer = new();
-    private MessageSource? _currentTurnSource;
-    private TurnContext? _currentTurnContext;
+    // "What turn is active and where did it come from": source, derived
+    // turn/trust context, recalled memories, and diagnostic correlation identity.
+    private readonly CurrentTurnScope _turn = new();
     private bool _processingStateActive;
     private readonly ToolRegistry? _fullRegistry;
     private readonly ToolAccessPolicy? _toolAccessPolicy;
@@ -153,13 +154,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // (the generous prefill budget before the first token vs the tighter inter-delta
     // budget after).
     private bool _anyContentStreamed;
-
-    // Per-turn diagnostic correlation (ephemeral)
-    private Protocol.TurnId? _activeTurnId;
-    private string? _activeMessageId;
-    private Channels.ChannelType? _activeChannelType;
-    private AutomaticRecallResult? _activeRecall;
-    private EffectiveTrustContext? _currentTrustContext;
 
     // Startup context layers: injected on first LLM call, re-injected after compaction
     private bool _startupContextInjected;
@@ -837,7 +831,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             EnqueueCheckpointFireAndForget(new MemoryCheckpointRequest(
                 SessionId: _sessionId,
-                TurnId: _activeTurnId,
+                TurnId: _turn.TurnId,
                 TriggerType: Memory.CheckpointTriggerType.SubagentFindings,
                 Priority: 80,
                 Payload: SessionMemoryCheckpointFactory.ForSubAgentFinding(
@@ -1023,7 +1017,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (msg.Proposals.Count > 0 && _curationActor is not null
             && CurrentTurnAudience() != TrustAudience.Public && _memoryConfig.Enabled)
         {
-            if (ShouldSkipMemoryCurationForThirdPartyAdoptedContext(_currentTurnContext, _currentTurnSource))
+            if (ShouldSkipMemoryCurationForThirdPartyAdoptedContext(_turn.TurnContext, _turn.Source))
             {
                 TurnLog().Info("memory_curation_skipped third-party adopted-context present; waiting for explicit elevation");
                 if (stopAfterAcceptedProposalPersistence)
@@ -1235,7 +1229,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             EnqueueCheckpointFireAndForget(new MemoryCheckpointRequest(
                 SessionId: _sessionId,
-                TurnId: _activeTurnId,
+                TurnId: _turn.TurnId,
                 TriggerType: Memory.CheckpointTriggerType.CompactionBoundary,
                 Priority: 90,
                 Payload: SessionMemoryCheckpointFactory.ForCompactionBoundary(
@@ -1992,7 +1986,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _activeToolExecutionCts = new CancellationTokenSource();
         var toolExecutionCt = _activeToolExecutionCts.Token;
 
-        _ = SessionToolExecutionPipeline.ExecuteToolsAsync(executor, toolCalls, sessionId, _currentTurnSource, auditLogger, tp, sessionDir, maxInlineToolResultChars, toolExecutionTimeout, self, emitSubAgentOutput, spawnChildActor,
+        _ = SessionToolExecutionPipeline.ExecuteToolsAsync(executor, toolCalls, sessionId, _turn.Source, auditLogger, tp, sessionDir, maxInlineToolResultChars, toolExecutionTimeout, self, emitSubAgentOutput, spawnChildActor,
             approvalChannel: _approvalChannel,
             emitApprovalRequest: request => self.Tell(request),
             approvalTimeout: Timeout.InfiniteTimeSpan,
@@ -2003,7 +1997,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             modelInputModalities: _model.InputModalities,
             oneTimeApprovalPreSeed: oneTimeApprovalPreSeed,
             decisionOverride: decisionOverride,
-            turnContext: _currentTurnContext,
+            turnContext: _turn.TurnContext,
             ct: toolExecutionCt);
     }
 
@@ -2036,8 +2030,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             },
             AssistantReply = reply,
             RecordedAtMs = NowMs(),
-            SourceReminderId = _currentTurnSource?.ReminderId,
-            SourceBackgroundJobId = _currentTurnSource?.BackgroundJobId
+            SourceReminderId = _turn.Source?.ReminderId,
+            SourceBackgroundJobId = _turn.Source?.BackgroundJobId
         };
 
         Persist(turnEvent, evt =>
@@ -2061,11 +2055,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             EmitResponseOutputs(lastMessage, usage, includeText: true, includeThinking: true);
             MaybeSnapshot();
             MaybeGenerateTitle();
-            _activeRecall = recallResult;
+            _turn.Recall = recallResult;
 
             EnqueueCheckpointFireAndForget(new MemoryCheckpointRequest(
                 SessionId: _sessionId,
-                TurnId: _activeTurnId,
+                TurnId: _turn.TurnId,
                 TriggerType: Memory.CheckpointTriggerType.TurnComplete,
                 Priority: 40,
                 Payload: SessionMemoryCheckpointFactory.ForTurnComplete(
@@ -2241,13 +2235,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private void ContinueIncomingUserMessage(SendUserMessage cmd)
     {
         _deliveryRetry.Clear();
-        _currentTurnSource = cmd.Source;
+        _turn.Source = cmd.Source;
         BindTurnTelemetry(cmd.Source);
-        _currentTurnContext = TurnContext.FromMessageSource(
+        _turn.TurnContext = TurnContext.FromMessageSource(
             _sessionId,
-            _activeTurnId ?? new Protocol.TurnId(IdGen.ShortId()),
+            _turn.TurnId ?? new Protocol.TurnId(IdGen.ShortId()),
             cmd.Source);
-        _currentTrustContext = _trustContextDeriver?.DeriveFromTurnContext(_currentTurnContext);
+        _turn.TrustContext = _trustContextDeriver?.DeriveFromTurnContext(_turn.TurnContext);
         PersistAdoptedContextIfNeeded(cmd.Source);
 
         // Sessions created from Slack/Discord start without transport-derived
@@ -2634,10 +2628,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 recallQuery,
                 _state,
                 _sessionId,
-                _currentTurnSource,
+                _turn.Source,
                 _memoryRecallCoordinator,
                 _memoryConfig.Enabled,
-                turnContext: _currentTurnContext);
+                turnContext: _turn.TurnContext);
             recallSw.Stop();
 
             resolved = _recallManager.ApplyProgressiveRecall(resolved, _log);
@@ -2681,7 +2675,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             // (llama.cpp, vLLM, OpenAI, Ollama, ...) extend the cache prefix
             // through this content on every subsequent turn instead of
             // re-tokenizing it from scratch.
-            _activeRecall = _recallManager.TurnRecallCache;
+            _turn.Recall = _recallManager.TurnRecallCache;
             var volatileBlock = SessionMessageAssembler.BuildVolatileContextBlock(new ContextAssemblyInput(
                 State: _state,
                 ContextLayers: _contextLayers,
@@ -2692,7 +2686,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SessionId: _sessionId,
                 SessionsBasePath: _sessionsBasePath,
                 FileReadGranted: HasFileReadGranted(),
-                ActiveRecall: _activeRecall,
+                ActiveRecall: _turn.Recall,
                 Audience: CurrentTurnAudience(),
                 SkillHint: BuildSkillHint()));
             if (!string.IsNullOrEmpty(volatileBlock))
@@ -2701,7 +2695,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             }
         }
 
-        _activeRecall = _recallManager.TurnRecallCache;
+        _turn.Recall = _recallManager.TurnRecallCache;
 
         // Build the full message list via the cache-stable assembler.
         // Static content (persisted prompt, OnceAtStart layers, [session],
@@ -2724,7 +2718,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             SessionId: _sessionId,
             SessionsBasePath: _sessionsBasePath,
             FileReadGranted: HasFileReadGranted(),
-            ActiveRecall: _activeRecall,
+            ActiveRecall: _turn.Recall,
             Audience: CurrentTurnAudience(),
             SkillHint: skillHint,
             // Canonical names live in history (post-PR follow-up); the
@@ -2758,16 +2752,16 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
 
     private TrustAudience CurrentTurnAudience()
-        => _currentTurnContext?.Audience
-           ?? _currentTurnSource?.Audience
+        => _turn.TurnContext?.Audience
+           ?? _turn.Source?.Audience
            ?? SecurityPolicyDefaults.ResolveAudienceFromSessionId(_sessionId.Value);
 
     private string CurrentMemoryAudience()
-        => (_currentTurnContext?.Audience ?? _currentTurnSource?.Audience ?? TrustAudience.Public).ToWireValue();
+        => (_turn.TurnContext?.Audience ?? _turn.Source?.Audience ?? TrustAudience.Public).ToWireValue();
 
     private string CurrentMemoryBoundary()
-        => _currentTurnContext?.Boundary.Value
-           ?? _currentTurnSource?.Boundary.Value
+        => _turn.TurnContext?.Boundary.Value
+           ?? _turn.Source?.Boundary.Value
            ?? SecurityPolicyDefaults.ResolveBoundaryFromSessionId(_sessionId.Value, CurrentTurnAudience()).Value;
 
     private IReadOnlyList<AITool> ResolveExposedToolsForCurrentTurn()
@@ -2776,7 +2770,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (_toolAccessPolicy is null || _fullRegistry is null || availableTools.Count == 0)
             return availableTools;
 
-        return _toolAccessPolicy.FilterExposedTools(availableTools, _fullRegistry, _currentTrustContext);
+        return _toolAccessPolicy.FilterExposedTools(availableTools, _fullRegistry, _turn.TrustContext);
     }
 
     /// <summary>
@@ -2793,7 +2787,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         var registration = _fullRegistry.GetRegistrationByToolName(SetWorkingDirectoryTool.ToolName);
         return registration is not null
-               && _toolAccessPolicy.IsToolExposed(registration, _currentTrustContext);
+               && _toolAccessPolicy.IsToolExposed(registration, _turn.TrustContext);
     }
 
 
@@ -2838,7 +2832,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                     SessionId = _sessionId,
                     TurnNumber = new TurnNumber(_state.TurnCount),
                     Outcome = TurnOutcome.Skipped,
-                    SourceReminderId = _currentTurnSource?.ReminderId
+                    SourceReminderId = _turn.Source?.ReminderId
                 });
                 TryReplyAck();
                 return true;
@@ -2864,7 +2858,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             SessionId = _sessionId,
             TurnNumber = new TurnNumber(_state.TurnCount),
             Outcome = TurnOutcome.Skipped,
-            SourceReminderId = _currentTurnSource?.ReminderId
+            SourceReminderId = _turn.Source?.ReminderId
         });
         TryReplyAck();
         return true;
@@ -2891,7 +2885,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SessionId = _sessionId,
                 TurnNumber = new TurnNumber(_state.TurnCount),
                 Outcome = TurnOutcome.Skipped,
-                SourceReminderId = _currentTurnSource?.ReminderId
+                SourceReminderId = _turn.Source?.ReminderId
             });
             TryReplyAck();
             return true;
@@ -2928,7 +2922,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SessionId = _sessionId,
                 TurnNumber = new TurnNumber(_state.TurnCount),
                 Outcome = TurnOutcome.Skipped,
-                SourceReminderId = _currentTurnSource?.ReminderId
+                SourceReminderId = _turn.Source?.ReminderId
             });
             TryReplyAck();
             return true;
@@ -2948,7 +2942,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SessionId = _sessionId,
                 TurnNumber = new TurnNumber(_state.TurnCount),
                 Outcome = TurnOutcome.Skipped,
-                SourceReminderId = _currentTurnSource?.ReminderId
+                SourceReminderId = _turn.Source?.ReminderId
             });
             TryReplyAck();
             return true;
@@ -2965,7 +2959,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SessionId = _sessionId,
                 TurnNumber = new TurnNumber(_state.TurnCount),
                 Outcome = TurnOutcome.Skipped,
-                SourceReminderId = _currentTurnSource?.ReminderId
+                SourceReminderId = _turn.Source?.ReminderId
             });
             TryReplyAck();
             return true;
@@ -2990,7 +2984,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SessionId = _sessionId,
                 TurnNumber = new TurnNumber(_state.TurnCount),
                 Outcome = TurnOutcome.Skipped,
-                SourceReminderId = _currentTurnSource?.ReminderId
+                SourceReminderId = _turn.Source?.ReminderId
             });
             TryReplyAck();
             return true;
@@ -3023,10 +3017,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             var context = new ToolExecutionContext(_sessionId.Value, GetSessionDirectory())
             {
                 // No active turn context/source carries no trust context — fall closed.
-                Audience = _currentTurnContext?.Audience ?? _currentTurnSource?.Audience ?? TrustAudience.Public,
-                Boundary = _currentTurnContext?.Boundary ?? _currentTurnSource?.Boundary,
-                ChannelType = _currentTurnContext?.ChannelType?.ToWireValue()
-                              ?? (_currentTurnSource is null ? null : _currentTurnSource.ChannelType.ToWireValue()),
+                Audience = _turn.TurnContext?.Audience ?? _turn.Source?.Audience ?? TrustAudience.Public,
+                Boundary = _turn.TurnContext?.Boundary ?? _turn.Source?.Boundary,
+                ChannelType = _turn.TurnContext?.ChannelType?.ToWireValue()
+                              ?? (_turn.Source is null ? null : _turn.Source.ChannelType.ToWireValue()),
                 ProjectDirectory = _state.WorkingContext.ProjectDirectory,
                 SupportsInteractiveApproval = false,
             };
@@ -3091,8 +3085,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 Content = msg.Result.Output
             },
             RecordedAtMs = NowMs(),
-            SourceReminderId = _currentTurnSource?.ReminderId,
-            SourceBackgroundJobId = _currentTurnSource?.BackgroundJobId
+            SourceReminderId = _turn.Source?.ReminderId,
+            SourceBackgroundJobId = _turn.Source?.BackgroundJobId
         };
 
         Persist(turnEvent, evt =>
@@ -3123,7 +3117,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SessionId = _sessionId,
                 TurnNumber = new TurnNumber(_state.TurnCount),
                 Outcome = TurnOutcome.Completed,
-                SourceReminderId = _currentTurnSource?.ReminderId
+                SourceReminderId = _turn.Source?.ReminderId
             });
 
             MaybeSnapshot();
@@ -3181,7 +3175,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         var registration = _fullRegistry.GetRegistrationByToolName(toolName);
         if (registration is null) return false;
 
-        if (_toolAccessPolicy is not null && !_toolAccessPolicy.IsToolExposed(registration, _currentTrustContext))
+        if (_toolAccessPolicy is not null && !_toolAccessPolicy.IsToolExposed(registration, _turn.TrustContext))
             return false;
 
         var tool = registration.Tool;
@@ -3277,11 +3271,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             ToolName = msg.ToolName.Value,
             Patterns = msg.Patterns,
             CandidateVerbs = msg.CandidateVerbs,
-            Audience = _currentTurnContext?.Audience ?? CurrentTurnAudience(),
-            Boundary = _currentTurnContext?.Boundary ?? _currentTurnSource?.Boundary,
-            ChannelType = _currentTurnContext?.ChannelType?.ToWireValue() ?? _currentTurnSource?.ChannelType.ToWireValue(),
-            SupportsInteractiveApproval = _currentTurnContext?.SupportsInteractiveApproval
-                                          ?? _currentTurnSource?.ChannelType.SupportsInteractiveApproval(),
+            Audience = _turn.TurnContext?.Audience ?? CurrentTurnAudience(),
+            Boundary = _turn.TurnContext?.Boundary ?? _turn.Source?.Boundary,
+            ChannelType = _turn.TurnContext?.ChannelType?.ToWireValue() ?? _turn.Source?.ChannelType.ToWireValue(),
+            SupportsInteractiveApproval = _turn.TurnContext?.SupportsInteractiveApproval
+                                          ?? _turn.Source?.ChannelType.SupportsInteractiveApproval(),
             RequesterSenderId = msg.RequesterSenderId,
             RequesterPrincipal = msg.RequesterPrincipal,
             HasThirdPartyAdoptedContext = msg.HasThirdPartyAdoptedContext,
@@ -3289,7 +3283,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             Cwd = msg.Cwd,
             OptionKeys = msg.Options.Select(o => o.Key.Value).ToArray(),
             Candidates = msg.Candidates,
-            TurnContext = _currentTurnContext?.ToRecord(),
+            TurnContext = _turn.TurnContext?.ToRecord(),
             RequestedAtMs = NowMs()
         };
 
@@ -3341,7 +3335,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // Restore the parked turn context so a later re-drive authorizes the
         // approval at the audience/boundary the request was originally made under.
         if (persistApprovalState && turnContext is not null)
-            _currentTurnContext = turnContext;
+            _turn.TurnContext = turnContext;
         else if (persistApprovalState && restoreFailure is not null)
             _log.Warning(
                 "Approval request {CallId} could not restore turn context: {Reason}",
@@ -3349,7 +3343,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 restoreFailure);
     }
 
-    private void ClearCurrentTurnContext() => _currentTurnContext = null;
+    private void ClearCurrentTurnContext() => _turn.TurnContext = null;
 
     private void ApplyToolApprovalResolved(ToolApprovalResolved evt)
     {
@@ -3464,7 +3458,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             SessionId = _sessionId,
             TurnNumber = new TurnNumber(_state.TurnCount),
-            SourceReminderId = _currentTurnSource?.ReminderId
+            SourceReminderId = _turn.Source?.ReminderId
         });
     }
 
@@ -4063,7 +4057,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     /// assistant message in history whose tool calls have no later tool result,
     /// transitions to <see cref="SessionPhase.Processing"/>, and dispatches it
     /// under the parked turn's persisted trust context. After cold recovery
-    /// <see cref="_currentTurnSource"/> is null, so the persisted trust fields
+    /// <see cref="CurrentTurnScope.Source"/> is null, so the persisted trust fields
     /// are what keep the re-driven call faithful to the original turn.
     /// </summary>
     private bool RedriveToolBatchForApproval(
@@ -4115,8 +4109,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             return false;
         }
 
-        _currentTurnContext = turnContext;
-        _currentTrustContext = _trustContextDeriver?.DeriveFromTurnContext(turnContext);
+        _turn.TurnContext = turnContext;
+        _turn.TrustContext = _trustContextDeriver?.DeriveFromTurnContext(turnContext);
         BindTurnTelemetry(turnContext);
 
         TransitionTo(SessionPhase.Processing);
@@ -4163,8 +4157,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void FailCurrentTurn(string errorMessage, Exception cause, ErrorCategory category = ErrorCategory.Unknown)
     {
-        _inFlightDedup.CompleteReminder(_currentTurnSource?.ReminderId);
-        _inFlightDedup.CompleteBackgroundJob(_currentTurnSource?.BackgroundJobId);
+        _inFlightDedup.CompleteReminder(_turn.Source?.ReminderId);
+        _inFlightDedup.CompleteBackgroundJob(_turn.Source?.BackgroundJobId);
         CancelAndDisposeToolExecutionCts();
         _deliveryRetry.Clear();
         _pendingToolInteractions.Clear();
@@ -4193,7 +4187,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             SessionId = _sessionId,
             TurnNumber = new TurnNumber(_state.TurnCount),
             Outcome = TurnOutcome.Failed,
-            SourceReminderId = _currentTurnSource?.ReminderId
+            SourceReminderId = _turn.Source?.ReminderId
         });
 
         DrainBufferedMessagesOrBecomeReady();
@@ -4327,7 +4321,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             EnqueueCheckpointFireAndForget(new MemoryCheckpointRequest(
                 SessionId: _sessionId,
-                TurnId: _activeTurnId,
+                TurnId: _turn.TurnId,
                 TriggerType: Memory.CheckpointTriggerType.SubagentFindings,
                 Priority: 80,
                 Payload: SessionMemoryCheckpointFactory.ForSubAgentFinding(
@@ -4567,45 +4561,38 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void BindTurnTelemetry(MessageSource? source)
     {
-        var sourceMessageId = source?.MessageId;
-        _activeMessageId = sourceMessageId;
-        _activeTurnId = source?.TurnId
-            ?? new Protocol.TurnId(sourceMessageId ?? IdGen.ShortId());
-        _activeChannelType = source?.ChannelType;
-
-        CrashContextSnapshot.Update(
-            _sessionId.Value,
-            _activeTurnId?.Value,
-            _activeMessageId,
-            _activeChannelType?.ToWireValue(),
-            _timeProvider.GetUtcNow());
+        _turn.Bind(source);
+        PublishCrashContext();
     }
 
     private void BindTurnTelemetry(TurnContext context)
     {
-        _activeMessageId = null;
-        _activeTurnId = context.TurnId;
-        _activeChannelType = context.ChannelType;
-
-        CrashContextSnapshot.Update(
-            _sessionId.Value,
-            _activeTurnId?.Value,
-            _activeMessageId,
-            _activeChannelType?.ToWireValue(),
-            _timeProvider.GetUtcNow());
+        _turn.Bind(context);
+        PublishCrashContext();
     }
+
+    // Process-wide best-effort breadcrumb so crash handlers can name the
+    // in-flight turn. Uses actor-owned session id and clock, so it stays here
+    // rather than on the scope.
+    private void PublishCrashContext()
+        => CrashContextSnapshot.Update(
+            _sessionId.Value,
+            _turn.TurnId?.Value,
+            _turn.MessageId,
+            _turn.ChannelType?.ToWireValue(),
+            _timeProvider.GetUtcNow());
 
     private ILoggingAdapter TurnLog()
     {
         var log = _log;
 
-        if (_activeTurnId is { Value: { Length: > 0 } turnIdValue })
+        if (_turn.TurnId is { Value: { Length: > 0 } turnIdValue })
             log = log.WithContext("TurnId", turnIdValue);
 
-        if (!string.IsNullOrWhiteSpace(_activeMessageId))
-            log = log.WithContext("MessageId", _activeMessageId);
+        if (!string.IsNullOrWhiteSpace(_turn.MessageId))
+            log = log.WithContext("MessageId", _turn.MessageId);
 
-        if (_activeChannelType is { } act)
+        if (_turn.ChannelType is { } act)
             log = log.WithContext("ChannelType", act.ToWireValue());
 
         return log;
