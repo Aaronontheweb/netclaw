@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Cli.Daemon;
 using Netclaw.Configuration;
 using R3;
 using Termina.Reactive;
@@ -43,6 +44,7 @@ public sealed class InitExistingInstallViewModel : ReactiveViewModel
         ResetScope,
         ResetConfirm1,
         ResetConfirm2,
+        Progress,
     }
 
     public enum ResetScopeKind
@@ -55,11 +57,16 @@ public sealed class InitExistingInstallViewModel : ReactiveViewModel
 
     private readonly NetclawPaths _paths;
     private readonly InitNavigationState _navigationState;
+    private readonly DaemonManager _daemonManager;
 
-    public InitExistingInstallViewModel(NetclawPaths paths, InitNavigationState navigationState)
+    public InitExistingInstallViewModel(
+        NetclawPaths paths,
+        InitNavigationState navigationState,
+        DaemonManager daemonManager)
     {
         _paths = paths;
         _navigationState = navigationState;
+        _daemonManager = daemonManager;
     }
 
     /// <summary>Route the wizard launches for "Redo identity setup".</summary>
@@ -77,6 +84,14 @@ public sealed class InitExistingInstallViewModel : ReactiveViewModel
 
     private ResetScopeKind _scope = ResetScopeKind.SetupOnly;
     public ResetScopeKind Scope => _scope;
+
+    // ── Progress-screen state ──
+
+    private readonly List<bool> _completedSteps = [];
+    public IReadOnlyList<bool> CompletedSteps => _completedSteps;
+
+    public ReactiveProperty<int> CurrentProgressStep { get; } = new(-1);
+    public ReactiveProperty<string> ProgressMessage { get; } = new("");
 
     public static readonly IReadOnlyList<MenuItem> MenuItems =
     [
@@ -199,11 +214,42 @@ public sealed class InitExistingInstallViewModel : ReactiveViewModel
             return;
         }
 
-        PerformReset();
+        StartResetProgress();
     }
 
-    private void PerformReset()
+    private void StartResetProgress()
     {
+        CurrentPhase.Value = Phase.Progress;
+        _completedSteps.Clear();
+        _completedSteps.Add(false); // Stopping daemon
+        _completedSteps.Add(false); // Deleting data
+        _completedSteps.Add(false); // Complete
+        CurrentProgressStep.Value = 0;
+        ProgressMessage.Value = "Stopping daemon…";
+        RequestRedraw();
+        _ = RunResetAsync();
+    }
+
+    private async Task RunResetAsync()
+    {
+        // Step 1: Stop the daemon so file handles are released
+        try
+        {
+            await _daemonManager.StopAsync("factory-reset");
+        }
+        catch
+        {
+            // Best-effort: daemon may not be running or may be managed externally.
+        }
+
+        _completedSteps[0] = true;
+        CurrentProgressStep.Value = 1;
+        ProgressMessage.Value = _scope == ResetScopeKind.Full
+            ? "Deleting all data…"
+            : "Deleting setup files…";
+        RequestRedraw();
+
+        // Step 2: Delete the directories
         try
         {
             if (_scope == ResetScopeKind.Full)
@@ -212,9 +258,6 @@ public sealed class InitExistingInstallViewModel : ReactiveViewModel
             }
             else
             {
-                // Setup-only: remove what the bootstrap wizard writes (config + secrets +
-                // identity), preserving memory, sessions, and skills. SecretsPath lives
-                // under ConfigDirectory, so deleting it covers secrets too.
                 DeleteDirectory(_paths.ConfigDirectory);
                 DeleteDirectory(_paths.IdentityDirectory);
                 DeleteDirectory(_paths.SoulDirectory);
@@ -222,12 +265,17 @@ public sealed class InitExistingInstallViewModel : ReactiveViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            StatusMessage.Value = $"Reset failed: {ex.Message}";
+            ProgressMessage.Value = $"Reset failed: {ex.Message}";
             RequestRedraw();
             return;
         }
 
-        // Fresh setup from the top.
+        // Step 3: Mark complete and navigate to fresh wizard
+        _completedSteps[2] = true;
+        CurrentProgressStep.Value = 2;
+        ProgressMessage.Value = "Purge complete";
+        RequestRedraw();
+        await Task.Delay(600); // Brief pause so the user sees the completion checkmark
         Navigate?.Invoke(WizardRoute);
     }
 
@@ -254,6 +302,9 @@ public sealed class InitExistingInstallViewModel : ReactiveViewModel
             case Phase.ResetConfirm2:
                 EnterPhase(Phase.ResetConfirm1);
                 break;
+            case Phase.Progress:
+                // Don't allow backing out of progress — it's running.
+                break;
         }
     }
 
@@ -273,6 +324,8 @@ public sealed class InitExistingInstallViewModel : ReactiveViewModel
         CurrentPhase.Dispose();
         SelectedIndex.Dispose();
         StatusMessage.Dispose();
+        CurrentProgressStep.Dispose();
+        ProgressMessage.Dispose();
         base.Dispose();
     }
 }
