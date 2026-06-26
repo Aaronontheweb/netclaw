@@ -44,6 +44,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     private readonly ReminderDefinitionStore _definitionStore;
     private readonly ReminderHistoryStore _historyStore;
     private readonly IOperationalNotificationSink _notificationSink;
+    private readonly IReminderChannelNotifier _channelNotifier;
     private readonly ILoggingAdapter _log;
 
     private IReminderClient? _client;
@@ -51,6 +52,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     private readonly ActiveExecutionTracker _activeExecutions = new();
     private readonly Queue<ReminderId> _deferredQueue = new();
     private readonly Dictionary<ReminderId, int> _failureCounts = [];
+    private readonly Dictionary<ReminderId, int> _skipCounts = [];
 
     public ReminderManagerActor(
         ISessionPipeline pipeline,
@@ -59,7 +61,8 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         TimeProvider timeProvider,
         ReminderDefinitionStore definitionStore,
         ReminderHistoryStore historyStore,
-        IOperationalNotificationSink notificationSink)
+        IOperationalNotificationSink notificationSink,
+        IReminderChannelNotifier channelNotifier)
     {
         _pipeline = pipeline;
         _defaults = defaults;
@@ -68,6 +71,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         _definitionStore = definitionStore;
         _historyStore = historyStore;
         _notificationSink = notificationSink;
+        _channelNotifier = channelNotifier;
         _log = Context.GetLogger();
 
         ReceiveAsync<SaveReminderCommand>(HandleSaveAsync);
@@ -83,6 +87,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
 
         ReceiveAsync<ReconcileReminders>(_ => HandleReconcileAsync());
         Receive<GetReminderHealthQuery>(_ => HandleGetHealth());
+        ReceiveAsync<GetReminderStatusQuery>(HandleGetStatusAsync);
     }
 
     protected override void PreStart()
@@ -417,6 +422,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         await CancelScheduleOnlyAsync(id);
 
         _failureCounts.Remove(id);
+        _skipCounts.Remove(id);
         RemoveFromDeferredQueue(id);
 
         _log.Info("Disabled reminder '{0}'", id.Value);
@@ -433,6 +439,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         _definitionStore.Delete(id);
         await CancelScheduleOnlyAsync(id);
         _failureCounts.Remove(id);
+        _skipCounts.Remove(id);
         RemoveFromDeferredQueue(id);
 
         try
@@ -576,8 +583,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
 
         if (_activeExecutions.IsExecuting(reminderId))
         {
-            _log.Warning("reminder_skipped_duplicate_execution reminder_id={0} title={1}",
-                reminderId.Value, definition.Title);
+            RecordSkippedDuplicate(reminderId, definition.Title, "scheduled");
             await _client!.AckAsync(envelope);
             return;
         }
@@ -621,6 +627,44 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         }
     }
 
+    /// <summary>
+    /// Records a skipped fire (a fire that arrived while a prior execution of the
+    /// same reminder was still running). Counted in-memory since daemon start and
+    /// surfaced by <c>netclaw reminder status</c> so the silent-skip pattern from
+    /// #1492/#1494 (49 skips in a day, unnoticed) is now visible to operators.
+    /// </summary>
+    private void RecordSkippedDuplicate(ReminderId reminderId, string title, string source)
+    {
+        var count = _skipCounts.GetValueOrDefault(reminderId) + 1;
+        _skipCounts[reminderId] = count;
+        _log.Warning(
+            "reminder_skipped_duplicate_execution reminder_id={0} title={1} source={2} skip_count={3}",
+            reminderId.Value, title, source, count);
+    }
+
+    /// <summary>
+    /// Posts an operator-facing failure notice to a reminder's destination
+    /// channel. Only Channel-delivery reminders have such a channel; CurrentSession
+    /// and None failures are surfaced via the operational alert sink instead. The
+    /// notifier is fire-and-forget — never blocks or throws into the manager.
+    /// </summary>
+    private void PostFailureNoticeToChannel(ReminderDefinition? definition, string text)
+    {
+        if (definition is not { Delivery.Kind: DeliveryKind.Channel })
+            return;
+
+        var target = ReminderExecutionActor.ResolveChannelDeliveryTarget(definition);
+        if (target is null)
+        {
+            _log.Warning(
+                "Reminder '{0}' failed but its channel delivery target could not be resolved; no channel notice posted.",
+                definition.Id.Value);
+            return;
+        }
+
+        _channelNotifier.NotifyFailure(target, text);
+    }
+
     private async Task HandleExecutionCompletedAsync(ReminderExecutionCompleted completed)
     {
         if (!_activeExecutions.Remove(completed.Id))
@@ -659,6 +703,15 @@ public sealed partial class ReminderManagerActor : ReceiveActor
                     ["error"] = completed.ErrorMessage ?? "unknown",
                 }));
 
+            // Surface the failure where the operator expects this reminder's
+            // output: its destination channel. Bounded by the auto-disable
+            // threshold below, so a permanently-broken reminder posts at most
+            // FailurePauseThreshold notices plus the disabled notice — not the
+            // unbounded skip stream that #1494 also makes visible via status.
+            PostFailureNoticeToChannel(
+                definition,
+                $"Reminder \"{title}\" failed: {completed.ErrorMessage ?? "unknown error"}");
+
             if (count >= FailurePauseThreshold)
             {
                 _log.Warning("Reminder '{0}' hit failure threshold ({1}), disabling",
@@ -678,6 +731,11 @@ public sealed partial class ReminderManagerActor : ReceiveActor
                         ["title"] = title,
                         ["failureCount"] = count.ToString(),
                     }));
+
+                PostFailureNoticeToChannel(
+                    definition,
+                    $"Reminder \"{title}\" was automatically disabled after {count} consecutive failures. " +
+                    $"Last error: {completed.ErrorMessage ?? "unknown error"}");
 
                 await DisableReminderInternalAsync(completed.Id);
                 _failureCounts.Remove(completed.Id);
@@ -806,8 +864,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
 
             if (_activeExecutions.IsExecuting(nextId))
             {
-                _log.Warning("reminder_skipped_duplicate_execution reminder_id={0} title={1} source=deferred_queue",
-                    nextId.Value, definition.Title);
+                RecordSkippedDuplicate(nextId, definition.Title, "deferred_queue");
                 continue;
             }
 
@@ -987,6 +1044,43 @@ public sealed partial class ReminderManagerActor : ReceiveActor
             scheduledCount,
             _activeExecutions.Count,
             _failureCounts.Count));
+    }
+
+    private async Task HandleGetStatusAsync(GetReminderStatusQuery query)
+    {
+        var replyTo = Sender;
+        try
+        {
+            var definition = _definitionStore.Get(query.Id);
+            if (definition is null)
+            {
+                replyTo.Tell(NotFoundStatus(query.Id));
+                return;
+            }
+
+            var schedules = await ListScheduledRemindersAsync();
+            var history = await _historyStore.ReadAsync(query.Id, 10);
+
+            replyTo.Tell(new ReminderStatusResponse(
+                query.Id,
+                Found: true,
+                Enabled: definition.Enabled,
+                Executing: _activeExecutions.IsExecuting(query.Id),
+                NextFire: schedules.GetValueOrDefault(query.Id.Value),
+                ConsecutiveFailures: _failureCounts.GetValueOrDefault(query.Id),
+                SkippedDuplicates: _skipCounts.GetValueOrDefault(query.Id),
+                RecentHistory: history));
+        }
+        catch (Exception ex)
+        {
+            _log.Error(ex, "Error getting status for reminder '{0}'", query.Id.Value);
+            replyTo.Tell(NotFoundStatus(query.Id));
+        }
+
+        static ReminderStatusResponse NotFoundStatus(ReminderId id) => new(
+            id, Found: false, Enabled: false, Executing: false,
+            NextFire: null, ConsecutiveFailures: 0, SkippedDuplicates: 0,
+            RecentHistory: []);
     }
 
     private sealed record ScheduleAttempt(bool IsSuccess, DateTimeOffset? NextFire, string? ErrorMessage) : INoSerializationVerificationNeeded
