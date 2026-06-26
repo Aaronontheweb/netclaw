@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Tui;
 using Netclaw.Configuration;
 using Netclaw.Tests.Utilities;
@@ -32,7 +33,11 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
 
     public void Dispose() => _dir.Dispose();
 
-    private InitExistingInstallViewModel Create() => new(_paths, _nav);
+    private InitExistingInstallViewModel Create()
+    {
+        var daemonManager = new DaemonManager(_paths, TimeProvider.System, new FakeSupervisor(supervised: true));
+        return new(_paths, _nav, daemonManager);
+    }
 
     private static void Select(InitExistingInstallViewModel vm, int index)
     {
@@ -153,5 +158,10 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
         Assert.Equal(Phase.ResetScope, vm.CurrentPhase.Value);
         vm.GoBack();
         Assert.Equal(Phase.Menu, vm.CurrentPhase.Value);
+    }
+
+    private sealed class FakeSupervisor(bool supervised) : IContainerSupervisor
+    {
+        public bool IsExternallySupervised => supervised;
     }
 }
