@@ -323,7 +323,9 @@ public static class ReminderEndpointRouteBuilderExtensions
                 Id: status.Id.Value,
                 Enabled: status.Enabled,
                 Executing: status.Executing,
-                NextFire: SetReminderTool.FormatTimestamp(status.NextFire),
+                // Pass null through (FormatTimestamp renders null as the literal
+                // "unknown"); the CLI shows "not scheduled" for an absent next fire.
+                NextFire: status.NextFire is null ? null : SetReminderTool.FormatTimestamp(status.NextFire),
                 ConsecutiveFailures: status.ConsecutiveFailures,
                 SkippedDuplicates: status.SkippedDuplicates,
                 RecentHistory: status.RecentHistory));

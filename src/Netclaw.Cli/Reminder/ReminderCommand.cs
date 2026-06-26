@@ -590,7 +590,7 @@ internal static class ReminderCommand
             Console.WriteLine($"Reminder:            {status.Id}");
             Console.WriteLine($"Enabled:             {status.Enabled}");
             Console.WriteLine($"Executing now:       {status.Executing}");
-            Console.WriteLine($"Next fire:           {status.NextFire ?? "—"}");
+            Console.WriteLine($"Next fire:           {status.NextFire ?? "not scheduled"}");
             Console.WriteLine($"Consecutive fails:   {status.ConsecutiveFailures}");
             Console.WriteLine($"Skipped (duplicate): {status.SkippedDuplicates}");
 
@@ -601,8 +601,10 @@ internal static class ReminderCommand
             }
             else
             {
-                Console.WriteLine("Recent history:");
-                foreach (var r in history.Take(5))
+                Console.WriteLine("Recent history (newest first):");
+                // History arrives oldest-first; reverse so the most recent runs
+                // (the ones an operator diagnosing a failure cares about) lead.
+                foreach (var r in history.Reverse())
                 {
                     var outcome = r.Success ? "ok" : "failed";
                     var err = string.IsNullOrEmpty(r.ErrorMessage) ? "" : $" — {r.ErrorMessage}";

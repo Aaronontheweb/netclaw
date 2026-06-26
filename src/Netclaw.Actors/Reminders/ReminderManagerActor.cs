@@ -37,6 +37,9 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     /// </summary>
     internal const int FailurePauseThreshold = 5;
 
+    /// <summary>Recent run records returned by the per-reminder status query.</summary>
+    internal const int RecentHistoryCount = 5;
+
     private readonly ISessionPipeline _pipeline;
     private readonly EffectivePolicyDefaults _defaults;
     private readonly SchedulingConfig _schedulingConfig;
@@ -704,13 +707,17 @@ public sealed partial class ReminderManagerActor : ReceiveActor
                 }));
 
             // Surface the failure where the operator expects this reminder's
-            // output: its destination channel. Bounded by the auto-disable
-            // threshold below, so a permanently-broken reminder posts at most
-            // FailurePauseThreshold notices plus the disabled notice — not the
-            // unbounded skip stream that #1494 also makes visible via status.
-            PostFailureNoticeToChannel(
-                definition,
-                $"Reminder \"{title}\" failed: {completed.ErrorMessage ?? "unknown error"}");
+            // output: its destination channel. Only below the threshold — on the
+            // threshold-hitting failure the disabled notice below already carries
+            // the last error, so posting both would double the noise on the most
+            // important event. Bounded overall by the threshold, never the
+            // unbounded skip stream that #1494 makes visible via status instead.
+            if (count < FailurePauseThreshold)
+            {
+                PostFailureNoticeToChannel(
+                    definition,
+                    $"Reminder \"{title}\" failed: {completed.ErrorMessage ?? "unknown error"}");
+            }
 
             if (count >= FailurePauseThreshold)
             {
@@ -1054,33 +1061,40 @@ public sealed partial class ReminderManagerActor : ReceiveActor
             var definition = _definitionStore.Get(query.Id);
             if (definition is null)
             {
-                replyTo.Tell(NotFoundStatus(query.Id));
+                replyTo.Tell(new ReminderStatusResponse(
+                    query.Id, Found: false, Enabled: false, Executing: false,
+                    NextFire: null, ConsecutiveFailures: 0, SkippedDuplicates: 0,
+                    RecentHistory: []));
                 return;
             }
 
-            var schedules = await ListScheduledRemindersAsync();
-            var history = await _historyStore.ReadAsync(query.Id, 10);
+            // Two independent backend reads — run them concurrently so the
+            // query's latency is max(schedule, history) instead of their sum.
+            // Neither touches actor state until both complete.
+            var schedulesTask = ListScheduledRemindersAsync();
+            var historyTask = _historyStore.ReadAsync(query.Id, RecentHistoryCount);
+            await Task.WhenAll(schedulesTask, historyTask);
 
             replyTo.Tell(new ReminderStatusResponse(
                 query.Id,
                 Found: true,
                 Enabled: definition.Enabled,
                 Executing: _activeExecutions.IsExecuting(query.Id),
-                NextFire: schedules.GetValueOrDefault(query.Id.Value),
+                NextFire: schedulesTask.Result.GetValueOrDefault(query.Id.Value),
                 ConsecutiveFailures: _failureCounts.GetValueOrDefault(query.Id),
                 SkippedDuplicates: _skipCounts.GetValueOrDefault(query.Id),
-                RecentHistory: history));
+                RecentHistory: historyTask.Result));
         }
         catch (Exception ex)
         {
+            // The definition existed, so this is a transient read failure — NOT a
+            // missing reminder. Faulting the Ask surfaces a real error (the
+            // endpoint maps it to 5xx); replying not-found here would tell the
+            // operator a wedged reminder was deleted, the silent fallback this
+            // very feature exists to expose.
             _log.Error(ex, "Error getting status for reminder '{0}'", query.Id.Value);
-            replyTo.Tell(NotFoundStatus(query.Id));
+            replyTo.Tell(new Status.Failure(ex));
         }
-
-        static ReminderStatusResponse NotFoundStatus(ReminderId id) => new(
-            id, Found: false, Enabled: false, Executing: false,
-            NextFire: null, ConsecutiveFailures: 0, SkippedDuplicates: 0,
-            RecentHistory: []);
     }
 
     private sealed record ScheduleAttempt(bool IsSuccess, DateTimeOffset? NextFire, string? ErrorMessage) : INoSerializationVerificationNeeded
