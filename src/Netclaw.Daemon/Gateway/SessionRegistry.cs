@@ -13,6 +13,8 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
+using Netclaw.Tools;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Daemon.Gateway;
 
@@ -229,7 +231,12 @@ public sealed class SessionRegistry
                 SourceKind = new SourceKind("signalr")
             },
             Contents = [new TextContent(text)],
-            ReceivedAt = _timeProvider.GetUtcNow()
+            ReceivedAt = _timeProvider.GetUtcNow(),
+            DefaultDeliveryTarget = new ChannelDeliveryTargetInfo(
+                ChannelType.Tui.ToWireValue(),
+                "local_session",
+                attachedSessionId.Value,
+                attachedSessionId.Value)
         };
 
         var gateway = await _gatewayProvider.GetAsync();

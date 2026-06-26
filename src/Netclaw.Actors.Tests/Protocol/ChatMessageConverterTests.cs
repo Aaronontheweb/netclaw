@@ -7,6 +7,7 @@ using Microsoft.Extensions.AI;
 using Netclaw.Actors.Protocol;
 using Netclaw.Media;
 using Netclaw.Tools;
+using SkiaSharp;
 using Xunit;
 using AiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 using AiChatRole = Microsoft.Extensions.AI.ChatRole;
@@ -276,7 +277,8 @@ public class ChatMessageConverterTests
     public void FromAiMessage_writes_DataContent_to_session_dir_and_produces_media_reference()
     {
         using var tempDir = new TempSessionDir();
-        var imageBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }; // PNG header
+        // Real PNG, small enough to pass through the egress normalizer unchanged.
+        var imageBytes = SmallPng();
         var contents = new List<AIContent>
         {
             new TextContent("Check this image"),
@@ -340,13 +342,14 @@ public class ChatMessageConverterTests
     public void Full_media_round_trip_through_converter()
     {
         using var tempDir = new TempSessionDir();
-        var imageBytes = new byte[] { 0x47, 0x49, 0x46, 0x38, 0x39, 0x61 }; // GIF89a header
+        // Real PNG, small enough to pass through the egress normalizer unchanged.
+        var imageBytes = SmallPng();
 
         // Step 1: AI message with DataContent → SerializableChatMessage
         var originalAi = new AiChatMessage(AiChatRole.User,
         [
-            new TextContent("Here is a gif"),
-            new DataContent(imageBytes, "image/gif")
+            new TextContent("Here is an image"),
+            new DataContent(imageBytes, "image/png")
         ]);
         var serializable = ChatMessageConverter.FromAiMessage(originalAi, sessionDir: tempDir.Path);
         Assert.Single(serializable.MediaReferences);
@@ -355,10 +358,31 @@ public class ChatMessageConverterTests
         var reconstructed = ChatMessageConverter.ToAiMessage(serializable, sessionDir: tempDir.Path);
 
         var text = Assert.Single(reconstructed.Contents.OfType<TextContent>());
-        Assert.Equal("Here is a gif", text.Text);
+        Assert.Equal("Here is an image", text.Text);
         var data = Assert.Single(reconstructed.Contents.OfType<DataContent>());
-        Assert.Equal("image/gif", data.MediaType);
+        Assert.Equal("image/png", data.MediaType);
         Assert.Equal(imageBytes, data.Data.ToArray());
+    }
+
+    [Fact]
+    public void FromAiMessage_appends_omitted_note_when_image_is_dropped()
+    {
+        using var tempDir = new TempSessionDir();
+        // Undecodable "image": the egress normalizer drops it. The chat path must
+        // surface a visible note instead of silently losing the attachment.
+        var garbage = new byte[1024];
+        new Random(5).NextBytes(garbage);
+        var ai = new AiChatMessage(AiChatRole.User,
+        [
+            new TextContent("Look at this"),
+            new DataContent(garbage, "image/png")
+        ]);
+
+        var msg = ChatMessageConverter.FromAiMessage(ai, sessionDir: tempDir.Path);
+
+        Assert.Empty(msg.MediaReferences); // not persisted, never shipped raw
+        Assert.Contains("Look at this", msg.Content); // original text preserved
+        Assert.Contains("[image omitted:", msg.Content); // omission surfaced
     }
 
     [Fact]
@@ -568,6 +592,80 @@ public class ChatMessageConverterTests
     }
 
     /// <summary>Disposable temp directory for session media tests.</summary>
+    // A real, decodable PNG small enough that the egress image normalizer passes it
+    // through byte-for-byte (so media round-trip assertions still hold).
+    private static byte[] SmallPng(int size = 16)
+    {
+        using var bitmap = new SKBitmap(new SKImageInfo(size, size, SKColorType.Rgba8888, SKAlphaType.Opaque));
+        using (var canvas = new SKCanvas(bitmap))
+            canvas.Clear(SKColors.CornflowerBlue);
+        using var image = SKImage.FromBitmap(bitmap);
+        using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+        return data.ToArray();
+    }
+
+    [Fact]
+    public void FromAiMessage_with_interpreter_persists_schema_aware_meta()
+    {
+        var aiMsg = new AiChatMessage(AiChatRole.Assistant, new List<AIContent>
+        {
+            new FunctionCallContent("c1", "shell_execute", new Dictionary<string, object?>
+            {
+                ["Command"] = "ls",
+                ["TimeoutSeconds"] = 600 // ChatGPT-style near-miss
+            })
+        });
+
+        // With the schema-aware interpreter (what LlmSessionActor passes), the
+        // near-miss is stripped from persisted args and captured in MetaJson —
+        // so recorded history matches what the runtime actually executes.
+        var withInterp = ChatMessageConverter.FromAiMessage(aiMsg, interpretToolCall: tc =>
+            ToolCallMeta.ExtractFrom(tc.Arguments, ToolArgumentHelper.ResolveMetaField));
+        var call = Assert.Single(withInterp.ToolCalls);
+        Assert.DoesNotContain("TimeoutSeconds", call.ArgumentsJson);
+        Assert.NotNull(call.MetaJson);
+        Assert.Contains("600", call.MetaJson!);
+
+        // Without an interpreter (schema-blind default = exact), the near-miss is
+        // left raw and no meta is captured — the safe fallback for callers/replay.
+        var exact = ChatMessageConverter.FromAiMessage(aiMsg);
+        var exactCall = Assert.Single(exact.ToolCalls);
+        Assert.Contains("TimeoutSeconds", exactCall.ArgumentsJson);
+        Assert.Null(exactCall.MetaJson);
+    }
+
+    [Fact]
+    public void ToAiMessage_reinjectMeta_restores_hint_for_redrive_but_not_outbound()
+    {
+        // Persist a near-miss call: the meta key is stripped into MetaJson.
+        var persisted = ChatMessageConverter.FromAiMessage(
+            new AiChatMessage(AiChatRole.Assistant, new List<AIContent>
+            {
+                new FunctionCallContent("c1", "shell_execute", new Dictionary<string, object?>
+                {
+                    ["Command"] = "long-task",
+                    ["TimeoutSeconds"] = 1800
+                })
+            }),
+            interpretToolCall: tc => ToolCallMeta.ExtractFrom(tc.Arguments, ToolArgumentHelper.ResolveMetaField));
+        var stored = Assert.Single(persisted.ToolCalls);
+        Assert.DoesNotContain("TimeoutSeconds", stored.ArgumentsJson);
+
+        // Re-drive reconstruction re-injects the canonical key, so extraction
+        // reapplies the 1800s hint on re-dispatch (regression guard for the
+        // previously-dropped hint on post-approval re-drive).
+        var redriven = ChatMessageConverter.ToAiMessage(persisted, reinjectMeta: true);
+        var redrivenCall = redriven.Contents.OfType<FunctionCallContent>().Single();
+        Assert.True(redrivenCall.Arguments!.ContainsKey("_timeout_seconds"));
+        var (meta, _) = ToolCallMeta.ExtractFrom(redrivenCall.Arguments, ToolArgumentHelper.ResolveMetaField);
+        Assert.Equal(1800, meta?.TimeoutHintSeconds);
+
+        // Outbound provider history (the default) must NOT carry meta keys.
+        var outbound = ChatMessageConverter.ToAiMessage(persisted);
+        var outboundCall = outbound.Contents.OfType<FunctionCallContent>().Single();
+        Assert.False(outboundCall.Arguments?.ContainsKey("_timeout_seconds") ?? false);
+    }
+
     private sealed class TempSessionDir : IDisposable
     {
         public string Path { get; } = System.IO.Path.Combine(

@@ -8,6 +8,7 @@ using System.Text.Json;
 using Netclaw.Cli.Daemon;
 using Netclaw.Configuration;
 using Netclaw.Providers;
+using Netclaw.Providers.GitHubCopilot;
 using Netclaw.Providers.OAuth;
 using Netclaw.Tools;
 using R3;
@@ -104,11 +105,13 @@ public sealed class OAuthFlowCoordinator : IDisposable
     /// Returns a <see cref="CancellationToken"/> that fires when the flow ends.
     /// </summary>
     public CancellationToken StartDeviceFlow(
-        string providerType, Action<OAuthDeviceFlowResult>? onSuccess = null)
+        string providerType,
+        Action<OAuthDeviceFlowResult>? onSuccess = null,
+        ProviderEntry? entry = null)
     {
         Cancel();
         _cts = new CancellationTokenSource();
-        Completion = RunDeviceFlowAsync(providerType, onSuccess, _cts.Token);
+        Completion = RunDeviceFlowAsync(providerType, onSuccess, entry, _cts.Token);
         return _cts.Token;
     }
 
@@ -203,6 +206,8 @@ public sealed class OAuthFlowCoordinator : IDisposable
                     ? atProp.GetString() : null;
                 var refreshToken = statusResponse.TryGetProperty("refreshToken", out var rtProp)
                     ? rtProp.GetString() : null;
+                var accountId = statusResponse.TryGetProperty("accountId", out var accountIdProp)
+                    ? accountIdProp.GetString() : null;
                 var expiresAt = statusResponse.TryGetProperty("expiresAt", out var expProp)
                     ? expProp.GetString() : null;
 
@@ -211,7 +216,8 @@ public sealed class OAuthFlowCoordinator : IDisposable
                     return new OAuthDeviceFlowResult(
                         new SensitiveString(accessToken),
                         refreshToken is not null ? new SensitiveString(refreshToken) : null,
-                        expiresAt is not null ? DateTimeOffset.Parse(expiresAt) : null);
+                        expiresAt is not null ? DateTimeOffset.Parse(expiresAt) : null,
+                        accountId is not null ? new SensitiveString(accountId) : null);
                 }
 
                 return null;
@@ -356,7 +362,10 @@ public sealed class OAuthFlowCoordinator : IDisposable
     // ── Device authorization flow (RFC 8628) ─────────────────────────
 
     private async Task RunDeviceFlowAsync(
-        string providerType, Action<OAuthDeviceFlowResult>? onSuccess, CancellationToken ct)
+        string providerType,
+        Action<OAuthDeviceFlowResult>? onSuccess,
+        ProviderEntry? entry,
+        CancellationToken ct)
     {
         if (_deviceFlowFactory is null)
         {
@@ -367,7 +376,19 @@ public sealed class OAuthFlowCoordinator : IDisposable
         }
 
         var descriptor = _registry.Get(providerType);
-        var oauth = descriptor.Auth.GetOAuthConfig();
+        OAuthAuth? oauth;
+        try
+        {
+            oauth = ResolveOAuthConfig(providerType, descriptor, entry);
+        }
+        catch (InvalidOperationException ex)
+        {
+            ErrorMessage = ex.Message;
+            FlowState.Value = DeviceFlowState.Error;
+            _requestRedraw();
+            return;
+        }
+
         if (oauth is null || oauth.DeviceEndpoint is null)
         {
             ErrorMessage = "Provider does not support OAuth device flow.";
@@ -438,5 +459,29 @@ public sealed class OAuthFlowCoordinator : IDisposable
         {
             Cancel();
         }
+    }
+
+    private static OAuthAuth? ResolveOAuthConfig(
+        string providerType,
+        IProviderDescriptor descriptor,
+        ProviderEntry? entry)
+    {
+        if (!string.Equals(providerType, "github-copilot", StringComparison.OrdinalIgnoreCase))
+            return descriptor.Auth.GetOAuthConfig();
+
+        if (entry is not null)
+            return GitHubCopilotDescriptor.CreateOAuthAuth(entry);
+
+        if (!GitHubCopilotAuthResolver.TryResolveSetupOptions(
+                gitHubHost: null,
+                gitHubApiBase: null,
+                includeAmbientEnvironment: true,
+                out var setupOptions,
+                out var error))
+        {
+            throw new InvalidOperationException(error);
+        }
+
+        return GitHubCopilotDescriptor.CreateOAuthAuth(setupOptions);
     }
 }

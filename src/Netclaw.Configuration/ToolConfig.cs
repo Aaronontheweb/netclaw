@@ -11,14 +11,18 @@ namespace Netclaw.Configuration;
 public sealed class ToolConfig
 {
     public ShellExecutionMode? ShellMode { get; set; }
-    public int ShellTimeoutSeconds { get; set; } = 60;
-    public int MaxOutputChars { get; set; } = 32_000;
 
     /// <summary>
-    /// Maximum per-call timeout in seconds that the LLM can request via <c>_timeout_seconds</c>.
-    /// Values above this ceiling are clamped. Default 600s (10 minutes).
+    /// The capture ceiling: the maximum characters of tool output captured (in
+    /// bounded memory) to become the spill body written to a session file. It is
+    /// NOT the inline budget — <c>SessionTuning.MaxInlineToolResultChars</c> (<c>N</c>)
+    /// owns what the model sees inline. Output beyond this ceiling is drained-and-
+    /// discarded (the source keeps draining so a live child never deadlocks) and the
+    /// spill is a head+tail view. Sized so the spill is useful while staying
+    /// redactable in a single in-memory pass.
     /// </summary>
-    public int MaxToolTimeoutSeconds { get; set; } = 600;
+    public int MaxOutputChars { get; set; } = 256_000;
+
     public ToolAudienceProfiles AudienceProfiles { get; set; } = new();
     public WebFetchConfig WebFetch { get; set; } = new();
 

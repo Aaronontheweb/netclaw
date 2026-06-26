@@ -16,6 +16,8 @@ The system SHALL default to OpenRouter during first-run setup.
 ### Requirement: Multi-provider support
 
 The system SHALL support selecting one provider profile from a supported set.
+Supported provider type keys SHALL include `ollama`, `openai-compatible`,
+`openrouter`, `openai`, `anthropic`, `github-copilot`, and `veniceai`.
 All provider interactions SHALL use the Microsoft.Extensions.AI `IChatClient`
 abstraction layer, ensuring provider-agnostic model access throughout the
 application.
@@ -27,7 +29,8 @@ and `OutputModalities` fields populated from provider responses.
 #### Scenario: Switch provider
 
 - **GIVEN** OpenRouter is configured
-- **WHEN** operator selects Anthropic, OpenAI, or Ollama profile
+- **WHEN** operator selects Anthropic, OpenAI, Ollama, OpenAI-compatible,
+  OpenRouter, GitHub Copilot, or Venice.ai profile
 - **THEN** runtime uses selected provider through the `IChatClient` interface
   after validation
 
@@ -53,6 +56,16 @@ and `OutputModalities` fields populated from provider responses.
 - **THEN** the returned `DiscoveredModel` records SHALL include
   `InputModalities` and `OutputModalities` populated from
   `architecture.input_modalities` and `architecture.output_modalities`
+
+#### Scenario: OpenAI-compatible discovery includes backend context metadata
+
+- **GIVEN** an OpenAI-compatible provider is configured
+- **WHEN** model discovery runs via `ProviderProbe`
+- **THEN** the returned `DiscoveredModel` records SHALL include context-window
+  metadata when the backend exposes a known field shape, including vLLM
+  `max_model_len`, DwarfStar/ds4 `context_length` or
+  `top_provider.context_length`, and llama.cpp `meta.n_ctx` or
+  `meta.n_ctx_train`
 
 ### Requirement: Optional live smoke provider checks
 
@@ -219,6 +232,18 @@ memory only and never persisted to disk. The long-lived GitHub OAuth token
 SHALL be persisted via the existing `ProviderEntry.OAuthAccessToken` field
 in the secrets store.
 
+For GitHub Enterprise-backed Copilot entries, the provider MAY persist
+non-secret host settings under `ProviderEntry.VendorOptions` as
+`GitHubHost` and `GitHubApiBase`. When present, `GitHubHost` SHALL be used
+to derive the device authorization endpoint at `/login/device/code` and the
+OAuth token endpoint at `/login/oauth/access_token`; `GitHubApiBase` SHALL
+be used to derive `/copilot_internal/v2/token`. Runtime provider resolution
+SHALL use only the persisted provider entry, not ambient `GH_HOST`,
+`GITHUB_API_URL`, or related GitHub environment variables, so existing public
+GitHub Copilot entries keep the public endpoints unless explicitly
+reconfigured. Chat completion and model discovery requests SHALL continue to
+use `ProviderEntry.Endpoint`, defaulting to `https://api.githubcopilot.com`.
+
 Each request to `api.githubcopilot.com` SHALL carry these headers in
 addition to the standard `Content-Type` and `Accept`:
 
@@ -244,6 +269,18 @@ selectable" rather than implicitly non-chat.
   user code and verification URI
 - **AND** on successful authorization the GitHub OAuth token is persisted
   to the secrets store under the operator-chosen provider name
+
+#### Scenario: Operator configures GitHub Enterprise Copilot
+
+- **GIVEN** the operator runs `netclaw provider add <name> github-copilot --auth oauth-device --github-host <host>`
+- **WHEN** OAuth authorization succeeds
+- **THEN** the provider entry SHALL persist `VendorOptions.GitHubHost` and
+  `VendorOptions.GitHubApiBase` when those resolved values are not the public
+  GitHub defaults
+- **AND** the device flow and OAuth token exchange SHALL use the resolved
+  GitHub Enterprise host settings
+- **AND** Copilot chat/model requests SHALL use the provider entry's
+  `Endpoint` value
 
 #### Scenario: Chat completion against Copilot
 
@@ -318,4 +355,3 @@ by Copilot with `HTTP 400 "Authorization header is badly formatted"`.
 - **THEN** the SDK's credential auth policy emits the exchanged Copilot token,
   not the placeholder, because the shared credential was updated before the auth
   policy ran
-

@@ -14,6 +14,8 @@ using Netclaw.Configuration;
 using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
 using Xunit;
+using static Netclaw.Actors.Sessions.SessionProtocol;
+using static Netclaw.Actors.Jobs.BackgroundJobProtocol;
 
 namespace Netclaw.Actors.Tests.Jobs;
 
@@ -23,6 +25,7 @@ namespace Netclaw.Actors.Tests.Jobs;
 /// delivery via gateway resolution. Follows the same anchor pattern as
 /// <see cref="Reminders.ReminderManagerActorTests.Mode_B_reminder_dispatches_to_resolved_gateway_and_completes_on_CommandAck"/>.
 /// </summary>
+[Collection(BackgroundJobProcessCollection.Name)]
 public class BackgroundJobIntegrationTests : TestKit
 {
     private readonly DisposableTempDir _dir = new();
@@ -53,9 +56,10 @@ public class BackgroundJobIntegrationTests : TestKit
 
     private IActorRef GetManager() => ActorRegistry.For(Sys).Get<BackgroundJobManagerActorKey>();
 
-    private StartBackgroundJob MakeStartCommand(string command, ChannelType channelType = ChannelType.Slack) => new()
+    private StartBackgroundJob MakeStartCommand(string command, ChannelType channelType = ChannelType.Slack, string? workingDirectory = null) => new()
     {
         Command = command,
+        WorkingDirectory = workingDirectory,
         SessionId = new SessionId("C0123ABC/1712000000.000001"),
         Rationale = "integration test",
         Audience = TrustAudience.Personal,
@@ -94,7 +98,7 @@ public class BackgroundJobIntegrationTests : TestKit
         Assert.Equal(PrincipalClassification.VerifiedAutomation, delivered.Source.Principal);
         Assert.Equal("background-job", delivered.Source.Provenance.SourceKind?.Value);
         Assert.NotNull(delivered.Source.BackgroundJobId);
-        Assert.StartsWith("bg-job:", delivered.Source.BackgroundJobId);
+        Assert.StartsWith("bg-job:", delivered.Source.BackgroundJobId!.Value.Value);
 
         await AwaitAssertAsync(() =>
         {
@@ -102,6 +106,42 @@ public class BackgroundJobIntegrationTests : TestKit
             Assert.NotNull(def);
             Assert.Equal(BackgroundJobStatus.Completed, def!.Status);
             Assert.NotNull(def.CompletedAtMs);
+            return Task.CompletedTask;
+        }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task BackgroundJob_WithMissingWorkingDirectory_FailsWithHelpfulError()
+    {
+        // #1286: a non-existent working directory must fail loudly with the mkdir remedy
+        // instead of an opaque "Failed to start: ..." from Process.Start.
+        var manager = GetManager();
+
+        var gatewayProbe = CreateTestProbe("fake-slack-gateway-missing-cwd");
+        var autoAckRef = Sys.ActorOf(
+            Props.Create(() => new AutoAckTrustedGateway(gatewayProbe.Ref)),
+            "auto-ack-slack-gateway-missing-cwd");
+        ActorRegistry.For(Sys).Register<SlackGatewayActorKey>(autoAckRef);
+
+        var missingDir = Path.Combine(_dir.Path, "does", "not", "exist");
+
+        var started = await manager.Ask<BackgroundJobStarted>(
+            MakeStartCommand("echo hi", workingDirectory: missingDir),
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+
+        var delivered = await gatewayProbe.ExpectMsgAsync<DeliverTrustedSessionTurn>(
+            TimeSpan.FromSeconds(15), cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Contains("does not exist", delivered.Content);
+        Assert.Contains("mkdir", delivered.Content);
+        Assert.Contains("failed", delivered.Content.ToLowerInvariant());
+
+        await AwaitAssertAsync(() =>
+        {
+            var def = _store.Get(started.JobId);
+            Assert.NotNull(def);
+            Assert.Equal(BackgroundJobStatus.Failed, def!.Status);
             return Task.CompletedTask;
         }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
     }

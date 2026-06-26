@@ -6,6 +6,8 @@
 using System.Collections.Immutable;
 using Netclaw.Actors.Jobs;
 using Netclaw.Actors.Protocol;
+using Netclaw.Actors.Reminders;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Sessions;
 
@@ -69,8 +71,8 @@ public sealed record SessionState
     /// boundaries are an explicitly accepted tradeoff; see
     /// <c>reminder-session-reentry</c> design doc D2.
     /// </summary>
-    public IImmutableSet<string> ProcessedReminderIds { get; init; } =
-        ImmutableHashSet<string>.Empty;
+    public IImmutableSet<ReminderId> ProcessedReminderIds { get; init; } =
+        ImmutableHashSet<ReminderId>.Empty;
 
     /// <summary>
     /// Background jobs this session is waiting on. Persisted to snapshot
@@ -87,30 +89,50 @@ public sealed record SessionState
     /// Same pattern as <see cref="ProcessedReminderIds"/> — not persisted to
     /// snapshot, rebuilds from event replay.
     /// </summary>
-    public IImmutableSet<string> ProcessedBackgroundJobIds { get; init; } =
-        ImmutableHashSet<string>.Empty;
+    public IImmutableSet<BackgroundJobId> ProcessedBackgroundJobIds { get; init; } =
+        ImmutableHashSet<BackgroundJobId>.Empty;
 
     // ── Event application (pure functions) ──
 
     public SessionState Apply(TurnRecorded evt)
     {
         var processedReminders = ProcessedReminderIds;
-        if (!string.IsNullOrEmpty(evt.SourceReminderId))
-            processedReminders = processedReminders.Add(evt.SourceReminderId);
+        if (evt.SourceReminderId is { } reminderId && !string.IsNullOrEmpty(reminderId.Value))
+            processedReminders = processedReminders.Add(reminderId);
 
-        var processedJobs = ProcessedBackgroundJobIds;
-        var activeJobs = ActiveBackgroundJobs;
-        if (!string.IsNullOrEmpty(evt.SourceBackgroundJobId))
-        {
-            processedJobs = processedJobs.Add(evt.SourceBackgroundJobId);
-            activeJobs = activeJobs.Remove(evt.SourceBackgroundJobId);
-        }
-
-        return this with
+        // Background-job dedup/remove/prune is delegated to the single shared
+        // helper so the replay path here and the live turn-completion path in
+        // LlmSessionActor cannot drift.
+        return (this with
         {
             History = History.Add(evt.UserMessage).Add(evt.AssistantReply),
             TurnCount = TurnCount + 1,
-            ProcessedReminderIds = processedReminders,
+            ProcessedReminderIds = processedReminders
+        }).CompleteTurnBackgroundJobBookkeeping(evt.SourceBackgroundJobId);
+    }
+
+    /// <summary>
+    /// Single source of truth for per-turn background-job bookkeeping, shared by
+    /// the replay path (<see cref="Apply(TurnRecorded)"/>) and the live
+    /// turn-completion path (LlmSessionActor): dedup-records a delivery turn's
+    /// job ID, removes the delivered entry, and prunes reaped entries that were
+    /// surfaced in this turn's context block (so the agent learns of a reap
+    /// exactly once instead of on every turn forever).
+    /// </summary>
+    public SessionState CompleteTurnBackgroundJobBookkeeping(BackgroundJobId? sourceBackgroundJobId)
+    {
+        var processedJobs = ProcessedBackgroundJobIds;
+        var activeJobs = ActiveBackgroundJobs;
+        if (sourceBackgroundJobId is { } jobId && !string.IsNullOrEmpty(jobId.Value))
+        {
+            processedJobs = processedJobs.Add(jobId);
+            activeJobs = activeJobs.Remove(jobId.Value);
+        }
+
+        activeJobs = PruneReaped(activeJobs);
+
+        return this with
+        {
             ProcessedBackgroundJobIds = processedJobs,
             ActiveBackgroundJobs = activeJobs
         };
@@ -120,6 +142,9 @@ public sealed record SessionState
     {
         return this with { Title = evt.Title };
     }
+
+    public SessionState Apply(SessionBackgroundJobsReaped evt)
+        => MarkAllBackgroundJobsReaped(evt.ReapedAtMs);
 
     public SessionState Apply(AdoptedContextRecorded evt)
     {
@@ -180,6 +205,38 @@ public sealed record SessionState
         };
     }
 
+    /// <summary>
+    /// Marks every tracked job as reaped (killed at session passivation). The
+    /// marked state is captured by the passivation snapshot so the next
+    /// rehydration surfaces the reap to the agent exactly once.
+    /// </summary>
+    public SessionState MarkAllBackgroundJobsReaped(long reapedAtMs)
+    {
+        if (ActiveBackgroundJobs.IsEmpty)
+            return this;
+
+        var marked = ActiveBackgroundJobs;
+        foreach (var (key, job) in marked)
+        {
+            if (job.ReapedAtMs is null)
+                marked = marked.SetItem(key, job with { ReapedAtMs = reapedAtMs });
+        }
+
+        return this with { ActiveBackgroundJobs = marked };
+    }
+
+    private static ImmutableDictionary<string, ActiveJobInfo> PruneReaped(
+        ImmutableDictionary<string, ActiveJobInfo> activeJobs)
+    {
+        foreach (var (key, job) in activeJobs)
+        {
+            if (job.ReapedAtMs is not null)
+                activeJobs = activeJobs.Remove(key);
+        }
+
+        return activeJobs;
+    }
+
     // ── Command helpers ──
 
     /// <summary>
@@ -188,8 +245,12 @@ public sealed record SessionState
     /// </summary>
     public SessionState AddUserMessage(string content, IReadOnlyList<SerializableMediaReference>? mediaReferences = null)
     {
+        // Snapshot the caller's list: SerializableChatMessage is immutable and must
+        // own its media references, so a caller that reuses/clears its list after
+        // this call cannot retroactively empty the persisted message (see
+        // BuildNudgeMessage for the concrete hazard this guards against).
         var msg = mediaReferences is { Count: > 0 }
-            ? new SerializableChatMessage { Role = ChatRole.User, Content = content, MediaReferences = mediaReferences }
+            ? new SerializableChatMessage { Role = ChatRole.User, Content = content, MediaReferences = [.. mediaReferences] }
             : new SerializableChatMessage { Role = ChatRole.User, Content = content };
 
         return this with { History = History.Add(msg) };
@@ -275,7 +336,14 @@ public sealed record SessionState
             {
                 Role = ChatRole.User,
                 Content = $"{SystemNudgePrefix} {nudge}]",
-                MediaReferences = mediaReferences
+                // Snapshot, never alias. The model-input media nudge is built from
+                // the caller's media accumulator (ModelInputMediaBuffer.DrainSnapshot),
+                // which reuses/empties its backing list across batches.
+                // SerializableChatMessage is an immutable persistence type that must
+                // own its media list — without this copy the caller's reuse could
+                // empty the nudge's attachments before the next LLM call hydrates
+                // them, so a tool-loaded image would silently never reach the model.
+                MediaReferences = [.. mediaReferences]
             }
             : new() { Role = ChatRole.User, Content = $"{SystemNudgePrefix} {nudge}]" };
 

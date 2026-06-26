@@ -46,6 +46,14 @@ public sealed record DaemonConfig
     public bool DisableSelfUpdate { get; init; }
 
     /// <summary>
+    /// Release channel the update check follows. <see cref="Netclaw.Configuration.UpdateChannel.Stable"/>
+    /// (default) only ever sees stable releases; <see cref="Netclaw.Configuration.UpdateChannel.Beta"/>
+    /// opts into prereleases (and rolls onto a stable release once it supersedes a beta).
+    /// Stable clients are never offered a prerelease.
+    /// </summary>
+    public UpdateChannel UpdateChannel { get; init; } = UpdateChannel.Stable;
+
+    /// <summary>
     /// Explicitly trusted reverse-proxy source addresses or CIDR ranges. Only used when
     /// <see cref="ExposureMode"/> is <see cref="Netclaw.Configuration.ExposureMode.ReverseProxy"/>.
     /// </summary>
@@ -72,6 +80,7 @@ public sealed record DaemonConfig
         var modeStr = section["ExposureMode"];
         var mode = ParseExposureMode(modeStr);
         var disableSelfUpdate = section.GetValue<bool?>("DisableSelfUpdate") ?? false;
+        var updateChannel = ParseUpdateChannel(section["UpdateChannel"]);
         var trustedProxies = section.GetSection("TrustedProxies").Get<string[]>() ?? [];
         var skipTunnelProcessCheck = section.GetValue<bool?>("SkipTunnelProcessCheck") ?? false;
 
@@ -81,9 +90,51 @@ public sealed record DaemonConfig
             Port = port,
             ExposureMode = mode,
             DisableSelfUpdate = disableSelfUpdate,
+            UpdateChannel = updateChannel,
             TrustedProxies = trustedProxies,
             SkipTunnelProcessCheck = skipTunnelProcessCheck
         };
+    }
+
+    /// <summary>
+    /// Parses an <see cref="UpdateChannel"/> from a config string value.
+    /// Returns <see cref="UpdateChannel.Stable"/> for null/empty input; throws on an
+    /// unknown value rather than silently defaulting (a typo'd channel should fail loudly).
+    /// </summary>
+    public static UpdateChannel ParseUpdateChannel(string? value)
+    {
+        // Config binding treats null/empty as the default; only a non-empty,
+        // unrecognized value is a typo worth failing on.
+        if (string.IsNullOrWhiteSpace(value))
+            return UpdateChannel.Stable;
+
+        if (TryParseUpdateChannel(value, out var channel))
+            return channel;
+
+        throw new InvalidOperationException(
+            $"Unknown UpdateChannel value: '{value.Trim()}'. Valid values: stable, beta.");
+    }
+
+    /// <summary>
+    /// Tries to parse an <see cref="UpdateChannel"/> from a string. Returns false for
+    /// null, whitespace, or any value other than <c>stable</c>/<c>beta</c> so callers
+    /// (e.g. CLI argument parsing) can fail loudly instead of silently defaulting.
+    /// Inverse of <see cref="UpdateChannelExtensions.ToWireValue"/>.
+    /// </summary>
+    public static bool TryParseUpdateChannel(string? value, out UpdateChannel channel)
+    {
+        switch (value?.Trim().ToLowerInvariant())
+        {
+            case "stable":
+                channel = UpdateChannel.Stable;
+                return true;
+            case "beta":
+                channel = UpdateChannel.Beta;
+                return true;
+            default:
+                channel = UpdateChannel.Stable;
+                return false;
+        }
     }
 
     /// <summary>
@@ -284,3 +335,37 @@ public static class DaemonExposureValidator
 public sealed record DaemonExposureValidationIssue(string Message, string Remediation, bool IsTrustedProxyIssue = false);
 
 public sealed record ParsedTrustedProxy(string RawValue, IPAddress Address, int? PrefixLength);
+
+/// <summary>
+/// Release channel the update check follows. Bound from <c>Daemon.UpdateChannel</c>.
+/// </summary>
+public enum UpdateChannel
+{
+    /// <summary>Stable releases only (default). Never offered a prerelease.</summary>
+    Stable,
+
+    /// <summary>
+    /// Opt into prereleases. Resolves to the newest of {stable, prerelease}, so a
+    /// stable release that supersedes a beta is still offered.
+    /// </summary>
+    Beta,
+}
+
+/// <summary>
+/// Extension helpers for <see cref="UpdateChannel"/>.
+/// </summary>
+public static class UpdateChannelExtensions
+{
+    /// <summary>
+    /// Returns the lowercase wire value expected by the JSON schema. Defined as an
+    /// explicit mapping rather than <c>ToString().ToLowerInvariant()</c> so the
+    /// persisted config values stay stable even if the enum identifiers are renamed.
+    /// Inverse of <see cref="DaemonConfig.ParseUpdateChannel(string)"/>.
+    /// </summary>
+    public static string ToWireValue(this UpdateChannel channel) => channel switch
+    {
+        UpdateChannel.Stable => "stable",
+        UpdateChannel.Beta => "beta",
+        _ => throw new ArgumentOutOfRangeException(nameof(channel), channel, $"Unknown UpdateChannel value: {channel}")
+    };
+}

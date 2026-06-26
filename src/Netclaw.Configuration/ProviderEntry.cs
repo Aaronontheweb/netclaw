@@ -23,6 +23,7 @@ public sealed class ProviderEntry
     public SensitiveString? ApiKey { get; set; }
     public SensitiveString? OAuthAccessToken { get; set; }
     public SensitiveString? OAuthRefreshToken { get; set; }
+    public SensitiveString? OAuthAccountId { get; set; }
     public DateTimeOffset? OAuthTokenExpiry { get; set; }
 
     /// <summary>
@@ -37,4 +38,7 @@ public sealed class ProviderEntry
     /// <see cref="ProviderConfigurationLoader"/>.
     /// </remarks>
     public JsonObject? VendorOptions { get; internal set; }
+
+    public void SetVendorOptions(JsonObject? vendorOptions) =>
+        VendorOptions = vendorOptions;
 }

@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System.IO.Compression;
 using System.Security.Cryptography;
+using Netclaw.Cli.Config;
 using Netclaw.Cli.Daemon;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Feeds;
@@ -17,6 +18,8 @@ namespace Netclaw.Cli.Update;
 internal static class UpdateCommand
 {
     internal static Func<HttpMessageHandler>? TestHttpMessageHandlerFactory { get; set; }
+    internal static Func<NetclawPaths, IDaemonProcessLifecycle>? TestDaemonProcessManagerFactory { get; set; }
+    internal static Func<SystemdUserService>? TestSystemdUserServiceFactory { get; set; }
 
     internal static bool ShouldRunStartupUpdateCheck(string mode, string[] args)
     {
@@ -47,10 +50,11 @@ internal static class UpdateCommand
         }
     }
 
-    public static async Task<int> RunAsync(string[] args, NetclawPaths paths, bool selfUpdateDisabled = false)
+    public static async Task<int> RunAsync(string[] args, NetclawPaths paths, bool selfUpdateDisabled = false, UpdateChannel channel = UpdateChannel.Stable)
     {
         var checkOnly = false;
         var force = false;
+        UpdateChannel? channelOverride = null;
 
         for (var i = 1; i < args.Length; i++)
         {
@@ -62,6 +66,21 @@ internal static class UpdateCommand
                 case "--force":
                     force = true;
                     break;
+                case "--channel":
+                    if (i + 1 >= args.Length)
+                    {
+                        Console.Error.WriteLine("--channel requires a value: stable or beta.");
+                        WriteHelp();
+                        return 1;
+                    }
+                    if (!DaemonConfig.TryParseUpdateChannel(args[++i], out var parsedChannel))
+                    {
+                        Console.Error.WriteLine($"Unknown channel: '{args[i]}'. Valid values: stable, beta.");
+                        WriteHelp();
+                        return 1;
+                    }
+                    channelOverride = parsedChannel;
+                    break;
                 case "-h" or "--help" or "help":
                     WriteHelp();
                     return 0;
@@ -72,7 +91,36 @@ internal static class UpdateCommand
             }
         }
 
-        var currentVersion = BuildInfo.Version;
+        // Specifying --channel selects the channel this run evaluates against.
+        // Outside of --check it also switches the channel: the value is written
+        // back to netclaw.json so the daemon's background check and future runs
+        // follow it. --check is a read-only verb, so it previews the requested
+        // channel without persisting anything.
+        if (channelOverride is { } overrideChannel)
+        {
+            channel = overrideChannel;
+
+            if (checkOnly)
+            {
+                Console.WriteLine($"Checking '{channel.ToWireValue()}' channel (run without --check to switch).");
+            }
+            else
+            {
+                try
+                {
+                    PersistChannel(paths, channel);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error: could not save update channel to {paths.NetclawConfigPath}: {ex.Message}");
+                    return 1;
+                }
+
+                Console.WriteLine($"Update channel set to '{channel.ToWireValue()}' ({paths.NetclawConfigPath}).");
+            }
+        }
+
+        var currentVersion = BuildInfo.FullVersion;
 
         using var httpClient = TestHttpMessageHandlerFactory is { } createHandler
             ? new HttpClient(createHandler())
@@ -99,7 +147,7 @@ internal static class UpdateCommand
             return 1;
         }
 
-        var result = UpdateCheckService.EvaluateManifest(fetchResult.Manifest!, currentVersion);
+        var result = UpdateCheckService.EvaluateManifest(fetchResult.Manifest!, currentVersion, channel);
 
         if (!result.IsUpdateAvailable)
         {
@@ -179,18 +227,21 @@ internal static class UpdateCommand
             }
 
             // Check if daemon is running (we'll need to restart it)
-            var manager = new DaemonManager(paths, TimeProvider.System);
+            var manager = CreateDaemonProcessManager(paths);
+            var systemdService = CreateSystemdUserService();
             var daemonStatus = manager.GetStatus();
-            var daemonWasRunning = daemonStatus.IsRunning;
+            var stopResult = UpdateDaemonStopResult.Succeeded(
+                UpdateDaemonOwner.None,
+                daemonStatus.Message);
 
-            if (daemonWasRunning)
+            if (daemonStatus.IsRunning)
             {
                 Console.Write("Stopping daemon...");
-                var stopResult = await manager.StopAsync("update");
+                stopResult = await StopDaemonForUpdateAsync(manager, systemdService, daemonStatus);
                 if (!stopResult.Success)
                 {
                     Console.WriteLine($" failed: {stopResult.Message}");
-                    Console.WriteLine("Update aborted. Stop the daemon manually and retry with --force.");
+                    Console.WriteLine("Update aborted. Stop the daemon manually, fix service state, and retry.");
                     return 1;
                 }
                 Console.WriteLine(" done.");
@@ -234,11 +285,18 @@ internal static class UpdateCommand
             Console.WriteLine(" done.");
 
             // Restart daemon if it was running
-            if (daemonWasRunning)
+            if (stopResult.ShouldRestart)
             {
                 Console.Write("Restarting daemon...");
-                var startResult = manager.Start();
-                Console.WriteLine(startResult.Success ? " done." : $" {startResult.Message}");
+                var startResult = await StartDaemonAfterUpdateAsync(stopResult.Owner, manager, systemdService);
+                if (!startResult.Success)
+                {
+                    Console.WriteLine($" failed: {startResult.Message}");
+                    Console.WriteLine("Update installed, but daemon restart failed. Start the daemon manually and check `netclaw status`.");
+                    return 1;
+                }
+
+                Console.WriteLine(" done.");
             }
 
             // Clean up backup files
@@ -261,6 +319,101 @@ internal static class UpdateCommand
             try { Directory.Delete(tempDir, recursive: true); }
             catch (Exception ex) { Console.Error.WriteLine($"warn: temp cleanup failed: {ex.Message}"); }
         }
+    }
+
+    internal static async Task<UpdateDaemonStopResult> StopDaemonForUpdateAsync(
+        IDaemonProcessLifecycle manager,
+        SystemdUserService systemdService,
+        DaemonStatus? daemonStatus = null)
+    {
+        daemonStatus ??= manager.GetStatus();
+        if (!daemonStatus.IsRunning)
+        {
+            return UpdateDaemonStopResult.Succeeded(
+                UpdateDaemonOwner.None,
+                daemonStatus.Message);
+        }
+
+        var systemdOwnership = await systemdService.GetOwnershipAsync();
+        switch (systemdOwnership.Kind)
+        {
+            case SystemdUserServiceOwnershipKind.Unknown:
+                return UpdateDaemonStopResult.Failed(
+                    UpdateDaemonOwner.None,
+                    $"Could not determine whether systemd owns the daemon lifecycle: {systemdOwnership.Message}");
+
+            case SystemdUserServiceOwnershipKind.Managed:
+            {
+                var systemdStop = await systemdService.StopAsync();
+                if (!systemdStop.Success)
+                {
+                    return UpdateDaemonStopResult.Failed(
+                        UpdateDaemonOwner.SystemdUserService,
+                        $"systemd stop failed: {systemdStop.Message}");
+                }
+
+                var remainingStatus = manager.GetStatus();
+                if (remainingStatus.IsRunning)
+                {
+                    var detachedStop = await manager.StopAsync("update");
+                    if (!detachedStop.Success)
+                    {
+                        return UpdateDaemonStopResult.Failed(
+                            UpdateDaemonOwner.SystemdUserService,
+                            "systemd service stopped, but a detached daemon is still running and "
+                            + $"could not be stopped: {detachedStop.Message}");
+                    }
+                }
+
+                return UpdateDaemonStopResult.Succeeded(
+                    UpdateDaemonOwner.SystemdUserService,
+                    systemdStop.Message);
+            }
+
+            case SystemdUserServiceOwnershipKind.Unmanaged:
+            default:
+            {
+                var detachedStop = await manager.StopAsync("update");
+                return detachedStop.Success
+                    ? UpdateDaemonStopResult.Succeeded(UpdateDaemonOwner.DetachedProcess, detachedStop.Message)
+                    : UpdateDaemonStopResult.Failed(UpdateDaemonOwner.DetachedProcess, detachedStop.Message);
+            }
+        }
+    }
+
+    internal static async Task<DaemonResult> StartDaemonAfterUpdateAsync(
+        UpdateDaemonOwner owner,
+        IDaemonProcessLifecycle manager,
+        SystemdUserService systemdService)
+    {
+        return owner switch
+        {
+            UpdateDaemonOwner.None => new DaemonResult(true, "Daemon was not running."),
+            UpdateDaemonOwner.SystemdUserService => await systemdService.StartAsync(),
+            UpdateDaemonOwner.DetachedProcess => manager.Start(),
+            _ => new DaemonResult(false, $"Unknown daemon lifecycle owner: {owner}.")
+        };
+    }
+
+    private static IDaemonProcessLifecycle CreateDaemonProcessManager(NetclawPaths paths)
+    {
+        return TestDaemonProcessManagerFactory?.Invoke(paths)
+            ?? new DaemonProcessLifecycle(new DaemonManager(paths, TimeProvider.System));
+    }
+
+    private static SystemdUserService CreateSystemdUserService()
+    {
+        return TestSystemdUserServiceFactory?.Invoke()
+            ?? new SystemdUserService();
+    }
+
+    private sealed class DaemonProcessLifecycle(DaemonManager manager) : IDaemonProcessLifecycle
+    {
+        public DaemonStatus GetStatus() => manager.GetStatus();
+
+        public Task<DaemonResult> StopAsync(string reason) => manager.StopAsync(reason);
+
+        public DaemonResult Start() => manager.Start();
     }
 
     private static async Task<bool> DownloadAndVerifyAsync(
@@ -370,6 +523,19 @@ internal static class UpdateCommand
         }
     }
 
+    /// <summary>
+    /// Persists the chosen update channel to <c>Daemon.UpdateChannel</c> in
+    /// netclaw.json, preserving every other field. Writes the canonical wire
+    /// value (<c>stable</c>/<c>beta</c>) so the on-disk config stays schema-valid.
+    /// </summary>
+    private static void PersistChannel(NetclawPaths paths, UpdateChannel channel)
+    {
+        var config = ConfigFileHelper.LoadJsonDict(paths.NetclawConfigPath);
+        var daemon = ConfigFileHelper.GetOrCreateSection(config, "Daemon");
+        daemon["UpdateChannel"] = channel.ToWireValue();
+        ConfigFileHelper.WriteConfigFile(paths.NetclawConfigPath, config);
+    }
+
     internal static void WriteHelp()
     {
         Console.WriteLine("Usage: netclaw update [options]");
@@ -377,8 +543,9 @@ internal static class UpdateCommand
         Console.WriteLine("Check for and install Netclaw updates.");
         Console.WriteLine();
         Console.WriteLine("Options:");
-        Console.WriteLine("  --check    Check for updates without installing");
-        Console.WriteLine("  --force    Skip confirmation prompt");
+        Console.WriteLine("  --check              Check for updates without installing");
+        Console.WriteLine("  --force              Skip confirmation prompt");
+        Console.WriteLine("  --channel <name>     Switch the release channel (saved to netclaw.json): stable or beta");
     }
 
     /// <summary>
@@ -394,14 +561,14 @@ internal static class UpdateCommand
     /// notification in a static buffer if an update is available; emitted by
     /// <see cref="EmitPendingNoticeIfReady"/> when the program is about to exit.
     /// </summary>
-    internal static async Task BackgroundUpdateCheckAsync(bool selfUpdateDisabled = false)
+    internal static async Task BackgroundUpdateCheckAsync(bool selfUpdateDisabled = false, UpdateChannel channel = UpdateChannel.Stable)
     {
         try
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
             using var httpClient = new HttpClient();
             var result = await UpdateCheckService.CheckForUpdateAsync(
-                httpClient, BuildInfo.Version, cts.Token);
+                httpClient, BuildInfo.FullVersion, cts.Token, channel);
 
             if (result.IsUpdateAvailable)
             {
@@ -434,4 +601,34 @@ internal static class UpdateCommand
         if (notice is not null)
             Console.Error.WriteLine(notice);
     }
+}
+
+internal interface IDaemonProcessLifecycle
+{
+    DaemonStatus GetStatus();
+
+    Task<DaemonResult> StopAsync(string reason);
+
+    DaemonResult Start();
+}
+
+internal enum UpdateDaemonOwner
+{
+    None,
+    DetachedProcess,
+    SystemdUserService
+}
+
+internal sealed record UpdateDaemonStopResult(
+    bool Success,
+    UpdateDaemonOwner Owner,
+    string Message)
+{
+    public bool ShouldRestart => Success && Owner is not UpdateDaemonOwner.None;
+
+    public static UpdateDaemonStopResult Succeeded(UpdateDaemonOwner owner, string message) =>
+        new(true, owner, message);
+
+    public static UpdateDaemonStopResult Failed(UpdateDaemonOwner owner, string message) =>
+        new(false, owner, message);
 }

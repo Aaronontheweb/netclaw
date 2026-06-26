@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="McpToolPermissionsPageTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -298,6 +298,46 @@ public sealed class McpToolPermissionsPageTests : IDisposable
         await app.RunAsync(cts.Token);
 
         Assert.NotEqual(wasBefore, vm.IsServerAllowedForSelectedAudience());
+    }
+
+    [Fact]
+    public async Task ToolGrid_ManyTools_HeaderRowsNotOverwrittenByScrollContent()
+    {
+        // Regression test for issue #1424: ScrollableContainerNode.Render now correctly
+        // respects bounds, so it no longer overwrites header rows when many tools are
+        // displayed. The PanelNode workaround was removed in issue #1427.
+        var (terminal, app, vm) = CreateHeadlessApp(out var input);
+
+        // 15 tools: on a 40-row terminal the tool list starts at row ~10 without the
+        // bug fix; with the bug it writes at row 0 and overwrites every header row.
+        var tools = Enumerable.Range(1, 15).Select(i => $"tool-{i:00}").ToList();
+        vm.InitializeForTests(new McpServerName("notion"), tools);
+        vm.SetSelectedAudienceForTests(TrustAudience.Personal);
+
+        input.EnqueueKey(ConsoleKey.Q, false, false, true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+
+        Assert.True(terminal.Contains("MCP Permissions"),
+            $"Expected page header. Screen:\n{terminal}");
+        Assert.True(terminal.Contains("Audience"),
+            $"Expected 'Audience' row not overwritten by tool list. Screen:\n{terminal}");
+        Assert.True(terminal.Contains("Server default"),
+            $"Expected 'Server default' row not overwritten by tool list. Screen:\n{terminal}");
+    }
+
+    [Fact]
+    public async Task Loading_Escape_QuitsInsteadOfStalling()
+    {
+        var (_, app, vm) = CreateHeadlessApp(out var input);
+
+        input.EnqueueKey(ConsoleKey.Escape);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+
+        Assert.Equal(ToolPermissionsState.Loading, vm.CurrentState.Value);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

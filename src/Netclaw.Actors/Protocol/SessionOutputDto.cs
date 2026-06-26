@@ -3,6 +3,8 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using static Netclaw.Actors.Sessions.SessionProtocol;
+
 namespace Netclaw.Actors.Protocol;
 
 /// <summary>
@@ -25,6 +27,7 @@ public static class SessionOutputTypes
     public const string File = "file";
     public const string SubAgent = "subagent";
     public const string BufferFlush = "buffer_flush";
+    public const string ProcessingState = "processing_state";
     public const string Compaction = "compaction";
     public const string SessionJoined = "session_joined";
     public const string ToolInteraction = "tool_interaction";
@@ -86,6 +89,10 @@ public sealed record SessionOutputDto
     public string? ErrorDetail { get; init; }
     public string? ErrorCorrelationId { get; init; }
     public string? ErrorCategory { get; init; }
+
+    // Processing State
+    public bool? IsProcessing { get; init; }
+    public bool? ProcessingStateRequired { get; init; }
 
     // Compaction
     public int? MessagesBefore { get; init; }

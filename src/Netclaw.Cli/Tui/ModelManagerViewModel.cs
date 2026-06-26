@@ -32,12 +32,20 @@ public enum ModelManagerState
 public sealed class ModelManagerViewModel : ReactiveViewModel
 {
     private const int MaxDisplayedModels = 30;
-    private static readonly TimeSpan ProbeHardTimeout = TimeSpan.FromSeconds(20);
 
     private readonly NetclawPaths _paths;
     private readonly IProviderProbe _probe;
     private readonly ProviderDescriptorRegistry? _registry;
     private CancellationTokenSource? _probeCts;
+
+    internal Action<string>? RouteRequested { get; set; }
+
+    /// <summary>
+    /// True when this manager is hosted inside <c>netclaw config</c> (reached from the dashboard).
+    /// Set by the embedded host registration; left false for the standalone <c>netclaw model</c>
+    /// host. Controls whether backing out past the root navigates to the dashboard or exits the app.
+    /// </summary>
+    internal bool IsEmbeddedInConfig { get; set; }
 
     public ReactiveProperty<ModelManagerState> CurrentState { get; } = new(ModelManagerState.RoleOverview);
     public ReactiveProperty<string> StatusMessage { get; } = new("");
@@ -67,11 +75,12 @@ public sealed class ModelManagerViewModel : ReactiveViewModel
     internal Task? ProbeCompletion { get; private set; }
 
     public ModelManagerViewModel(NetclawPaths paths, IProviderProbe probe,
-        ProviderDescriptorRegistry? registry = null)
+        ProviderDescriptorRegistry? registry = null, EmbeddedConfigHostMarker? embeddedHost = null)
     {
         _paths = paths;
         _probe = probe;
         _registry = registry;
+        IsEmbeddedInConfig = embeddedHost is not null;
     }
 
     public override void OnActivated()
@@ -164,21 +173,26 @@ public sealed class ModelManagerViewModel : ReactiveViewModel
             _ => SelectedRole
         };
 
-        var provenance = ManualModelEntry
+        var discoveredModel = ManualModelEntry
+            ? null
+            : DiscoveredModels.FirstOrDefault(model =>
+                string.Equals(model.ModelId.Value, SelectedModelId, StringComparison.OrdinalIgnoreCase));
+        var provenance = discoveredModel is null
             ? ModelDiscoverySource.Manual
-            : ModelDiscoverySource.Live;
+            : string.IsNullOrWhiteSpace(ProbeResult.Value?.ErrorMessage)
+                ? ModelDiscoverySource.Live
+                : ModelDiscoverySource.Defaults;
 
         var (config, _) = ConfigFileHelper.LoadConfigFiles(_paths);
         var modelsSection = ConfigFileHelper.GetOrCreateSection(config, "Models");
 
-        var modelEntry = new Dictionary<string, object>
-        {
-            ["Provider"] = SelectedProvider,
-            ["ModelId"] = SelectedModelId,
-            ["Provenance"] = provenance.ToString()
-        };
-
-        modelsSection[roleKey] = modelEntry;
+        modelsSection[roleKey] = ModelEntryWriter.BuildModelEntry(
+            SelectedProvider,
+            SelectedModelId,
+            provenance,
+            discoveredModel?.ContextWindowTokens,
+            discoveredModel?.InputModalities,
+            discoveredModel?.OutputModalities);
         ConfigFileHelper.WriteConfigFile(_paths.NetclawConfigPath, config);
 
         Refresh();
@@ -252,10 +266,23 @@ public sealed class ModelManagerViewModel : ReactiveViewModel
                     ClearAssignmentState();
                     CurrentState.Value = ModelManagerState.RoleOverview;
                     NotifyStateChanged();
-                }
+            }
                 break;
             default:
-                Shutdown();
+                if (IsEmbeddedInConfig)
+                {
+                    // Embedded in `netclaw config`: return to the dashboard. We must NOT Shutdown
+                    // here — Shutdown cancels the run loop's token before the queued navigation is
+                    // processed, dropping the nav and quitting the entire config app.
+                    RouteRequested?.Invoke("/config");
+                    Navigate?.Invoke("/config");
+                }
+                else
+                {
+                    // Standalone `netclaw model`: backing out past the root exits the app.
+                    Shutdown();
+                }
+
                 break;
         }
     }
@@ -301,6 +328,8 @@ public sealed class ModelManagerViewModel : ReactiveViewModel
         var stopwatch = Stopwatch.StartNew();
         Exception? probeException = null;
 
+        ManualModelEntry = false;
+        SelectedModelId = null;
         IsProbing.Value = true;
         ProbeResult.Value = null;
         ProbeElapsedSeconds.Value = 0;
@@ -320,8 +349,11 @@ public sealed class ModelManagerViewModel : ReactiveViewModel
         var result = new ProviderProbeResult(false, "Validation failed before probe completed.", []);
         try
         {
+            // Whole-probe wall-clock (covers pre-request work like OAuth token exchange);
+            // ProbeTimeouts.InteractiveWallClock stays above the descriptor's per-request
+            // deadline so it never truncates a legitimately slow self-hosted probe (#1292).
             result = await _probe.ProbeAsync(provider.Entry, ct)
-                .WaitAsync(ProbeHardTimeout, ct);
+                .WaitAsync(ProbeTimeouts.InteractiveWallClock, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -330,7 +362,7 @@ public sealed class ModelManagerViewModel : ReactiveViewModel
         catch (TimeoutException)
         {
             result = new ProviderProbeResult(false,
-                $"Validation timed out after {(int)ProbeHardTimeout.TotalSeconds} seconds. Check network connectivity and try again.", []);
+                $"Validation timed out after {(int)ProbeTimeouts.InteractiveWallClock.TotalSeconds} seconds. Check network connectivity and try again.", []);
         }
         catch (Exception ex)
         {

@@ -6,8 +6,10 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
+using Microsoft.Extensions.Logging;
 using Netclaw.Configuration;
 using Netclaw.Tools;
+using static Netclaw.Actors.SubAgents.SubAgentProtocol;
 
 namespace Netclaw.Actors.SubAgents;
 
@@ -20,7 +22,8 @@ namespace Netclaw.Actors.SubAgents;
     "Delegate a task to a specialist subagent. "
     + "The subagent runs autonomously with its own tools and returns a result. "
     + "Use the discovery context layer to see available subagents.",
-    Grant = "builtin")]
+    Grant = "builtin",
+    Liveness = ToolLivenessMode.SelfMonitoring)]
 public sealed partial class SpawnAgentTool : NetclawTool<SpawnAgentTool.Params>
 {
     private readonly SubAgentDefinitionRegistry _registry;
@@ -28,6 +31,7 @@ public sealed partial class SpawnAgentTool : NetclawTool<SpawnAgentTool.Params>
     private readonly NetclawPaths _paths;
     private readonly SubAgentConfig _subAgentConfig;
     private readonly FileSubAgentDefinitionLoader? _loader;
+    private readonly ILogger<SpawnAgentTool>? _logger;
 
     public record Params(
         [property: Description("Name of the subagent to invoke (see available-subagents in context)")]
@@ -43,13 +47,15 @@ public sealed partial class SpawnAgentTool : NetclawTool<SpawnAgentTool.Params>
 
     public SpawnAgentTool(SubAgentDefinitionRegistry registry, SubAgentSpawner spawner, NetclawPaths paths,
         SubAgentConfig? subAgentConfig = null,
-        FileSubAgentDefinitionLoader? loader = null)
+        FileSubAgentDefinitionLoader? loader = null,
+        ILogger<SpawnAgentTool>? logger = null)
     {
         _registry = registry;
         _spawner = spawner;
         _paths = paths;
         _subAgentConfig = subAgentConfig ?? new SubAgentConfig();
         _loader = loader;
+        _logger = logger;
     }
 
     protected override Task<string> ExecuteAsync(Params args, CancellationToken ct)
@@ -66,9 +72,11 @@ public sealed partial class SpawnAgentTool : NetclawTool<SpawnAgentTool.Params>
     }
 
     /// <summary>
-    /// Streaming entry point: the sub-agent's liveness/progress activity is
-    /// surfaced as the tool call's stream, so the parent's per-call watchdog
-    /// keeps a long-but-healthy delegated run alive.
+    /// Streaming entry point: the sub-agent's liveness/progress activity is surfaced
+    /// as the tool call's stream for visibility. The parent applies NO watchdog to
+    /// this call — spawn_agent is self-monitoring, so the sub-agent owns its own
+    /// liveness and the parent simply drains the stream to its terminal item (see
+    /// <c>SessionToolExecutionPipeline</c>).
     /// </summary>
     public override async IAsyncEnumerable<ToolCallUpdate> ExecuteStreamAsync(
         IDictionary<string, object?>? arguments,
@@ -115,10 +123,22 @@ public sealed partial class SpawnAgentTool : NetclawTool<SpawnAgentTool.Params>
     /// </summary>
     private (string? Error, SubAgentProfile? Profile) Resolve(Params args, ToolExecutionContext context)
     {
+        // Rejections here return a (sometimes deliberately opaque) error string to
+        // the model. Mirror the real reason to the session transcript under the
+        // parent session scope so an operator can tell *why* a spawn was refused —
+        // the "This tool is not available." string hides the audience-vs-disabled
+        // distinction from the model on purpose.
+        using var diagnosticsScope = SessionDiagnosticsContext.Push(context.SessionId);
+
         // Defense-in-depth: block subagent spawning for Public audience or when
         // the subagent subsystem is disabled.
         if (context.Audience == TrustAudience.Public || !_subAgentConfig.Enabled)
+        {
+            _logger?.LogWarning(
+                "spawn_agent refused (agent={Agent}, audience={Audience}, subsystemEnabled={Enabled})",
+                args.Agent, context.Audience, _subAgentConfig.Enabled);
             return ("Error: This tool is not available.", null);
+        }
 
         if (string.IsNullOrWhiteSpace(args.Agent))
             return ("Error: 'agent' parameter is required.", null);
@@ -132,6 +152,9 @@ public sealed partial class SpawnAgentTool : NetclawTool<SpawnAgentTool.Params>
         if (profile is null || profile.Visibility != SubAgentVisibility.UserFacing)
         {
             var available = _registry.GetUserFacing();
+            _logger?.LogWarning(
+                "spawn_agent refused: agent '{Agent}' not found or not user-facing (availableCount={Count})",
+                args.Agent, available.Count);
             if (available.Count == 0)
                 return ($"Error: No subagents are available. Agent '{args.Agent}' not found. Author one at {_paths.AgentsDirectory}/*.md or define a skill with metadata.subagent once #661 lands.", null);
 

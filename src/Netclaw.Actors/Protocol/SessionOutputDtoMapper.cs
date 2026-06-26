@@ -3,7 +3,9 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Actors.Reminders;
 using Netclaw.Media;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Protocol;
 
@@ -90,7 +92,7 @@ public static class SessionOutputDtoMapper
             TimestampMs = msg.TimestampMs,
             TurnNumber = msg.TurnNumber,
             TurnOutcome = msg.Outcome.ToString().ToLowerInvariant(),
-            SourceReminderId = msg.SourceReminderId
+            SourceReminderId = msg.SourceReminderId?.Value
         },
 
         SessionTitleOutput msg => new SessionOutputDto
@@ -142,6 +144,15 @@ public static class SessionOutputDtoMapper
             Type = SessionOutputTypes.BufferFlush,
             SessionId = msg.SessionId.Value,
             TimestampMs = msg.TimestampMs
+        },
+
+        ProcessingStateOutput msg => new SessionOutputDto
+        {
+            Type = SessionOutputTypes.ProcessingState,
+            SessionId = msg.SessionId.Value,
+            TimestampMs = msg.TimestampMs,
+            IsProcessing = msg.IsProcessing,
+            ProcessingStateRequired = msg.IsRequired
         },
 
         CompactionOutput msg => new SessionOutputDto
@@ -258,7 +269,7 @@ public static class SessionOutputDtoMapper
                 Outcome = Enum.TryParse<TurnOutcome>(dto.TurnOutcome, ignoreCase: true, out var outcome)
                     ? outcome
                     : TurnOutcome.Completed,
-                SourceReminderId = dto.SourceReminderId
+                SourceReminderId = dto.SourceReminderId is null ? null : new ReminderId(dto.SourceReminderId)
             },
             SessionOutputTypes.SessionTitle => new SessionTitleOutput(dto.Title ?? string.Empty)
             {
@@ -302,6 +313,12 @@ public static class SessionOutputDtoMapper
             {
                 SessionId = sessionId,
                 TimestampMs = dto.TimestampMs
+            },
+            SessionOutputTypes.ProcessingState => new ProcessingStateOutput(dto.IsProcessing ?? false)
+            {
+                SessionId = sessionId,
+                TimestampMs = dto.TimestampMs,
+                IsRequired = dto.ProcessingStateRequired ?? false
             },
             SessionOutputTypes.Compaction => new CompactionOutput
             {

@@ -5,6 +5,9 @@
 // -----------------------------------------------------------------------
 using System.ClientModel.Primitives;
 using System.Text.Json.Nodes;
+using System.ClientModel;
+using Netclaw.Configuration;
+using Netclaw.Providers.OAuth;
 
 namespace Netclaw.Providers.OpenAi;
 
@@ -14,35 +17,87 @@ namespace Netclaw.Providers.OpenAi;
 /// <remarks>
 /// The Codex backend has stricter validation than <c>api.openai.com</c>:
 /// <list type="bullet">
-///   <item>Requires <c>ChatGPT-Account-Id</c> header (extracted from JWT)</item>
+///   <item>Requires <c>ChatGPT-Account-Id</c> header from OpenAI OAuth metadata</item>
 ///   <item>Requires <c>"store": false</c> in the request body</item>
 ///   <item>Requires <c>"instructions"</c> to be present (even if empty)</item>
 ///   <item>Rejects system messages in <c>"input"</c> — must be in <c>"instructions"</c></item>
 ///   <item>Rejects <c>"strict": null</c> in tool definitions (must be omitted or boolean)</item>
 /// </list>
 /// </remarks>
-internal sealed class OpenAiCodexRequestPolicy(string? accountId) : PipelinePolicy
+internal sealed class OpenAiCodexRequestPolicy : PipelinePolicy
 {
+    private readonly string? _fixedAccountId;
+    private readonly ProviderEntry? _entry;
+    private readonly string? _providerName;
+    private readonly OAuthAuth? _oauth;
+    private readonly ApiKeyCredential? _credential;
+    private readonly ProviderOAuthTokenRefreshService? _tokenRefreshService;
+
+    public OpenAiCodexRequestPolicy(string accountId)
+    {
+        _fixedAccountId = accountId;
+    }
+
+    public OpenAiCodexRequestPolicy(
+        string providerName,
+        ProviderEntry entry,
+        OAuthAuth oauth,
+        ApiKeyCredential credential,
+        ProviderOAuthTokenRefreshService tokenRefreshService)
+    {
+        _providerName = providerName;
+        _entry = entry;
+        _oauth = oauth;
+        _credential = credential;
+        _tokenRefreshService = tokenRefreshService;
+    }
+
     public override void Process(
         PipelineMessage message, IReadOnlyList<PipelinePolicy> pipeline, int currentIndex)
     {
-        Modify(message);
+        if (_tokenRefreshService is not null)
+        {
+            throw new NotSupportedException(
+                "OpenAI OAuth token refresh requires the async pipeline. Use the OpenAI SDK's async chat methods.");
+        }
+
+        Modify(message, ResolveAccountId());
         ProcessNext(message, pipeline, currentIndex);
     }
 
     public override async ValueTask ProcessAsync(
         PipelineMessage message, IReadOnlyList<PipelinePolicy> pipeline, int currentIndex)
     {
-        Modify(message);
+        if (_tokenRefreshService is not null)
+        {
+            var token = await _tokenRefreshService.GetValidAccessTokenAsync(
+                _providerName!,
+                _entry!,
+                _oauth!,
+                message.CancellationToken);
+            _credential!.Update(token.Value);
+        }
+
+        Modify(message, ResolveAccountId());
         await ProcessNextAsync(message, pipeline, currentIndex);
     }
 
-    private void Modify(PipelineMessage message)
+    private string ResolveAccountId()
     {
-        // Inject ChatGPT-Account-Id header (extracted from JWT by JwtAccountIdExtractor).
-        // Set even when the body is empty/non-JSON; the header is always required.
-        if (accountId is not null)
-            message.Request.Headers.Set("ChatGPT-Account-Id", accountId);
+        if (_fixedAccountId is not null)
+            return _fixedAccountId;
+
+        return JwtAccountIdExtractor.ResolveAccountId(_entry!)
+               ?? throw new InvalidOperationException(
+                   $"OpenAI OAuth credential for provider '{_providerName}' is missing ChatGPT account ID. "
+                   + $"Re-authenticate with 'netclaw provider fix {_providerName}'.");
+    }
+
+    private static void Modify(PipelineMessage message, string accountId)
+    {
+        // Set even when the body is empty/non-JSON; the Codex backend requires
+        // this OAuth workspace selector on every request.
+        message.Request.Headers.Set("ChatGPT-Account-Id", accountId);
 
         PipelineRequestBodyEditor.EditJsonBody(message, obj =>
         {

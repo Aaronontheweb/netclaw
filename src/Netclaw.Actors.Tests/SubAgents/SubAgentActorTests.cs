@@ -21,6 +21,7 @@ using Netclaw.Security;
 using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
 using Xunit;
+using static Netclaw.Actors.SubAgents.SubAgentProtocol;
 
 namespace Netclaw.Actors.Tests.SubAgents;
 
@@ -185,6 +186,39 @@ public class SubAgentActorTests : TestKit
         Assert.Contains("headless, non-interactive worker", fakeClient.LastReceivedMessages[0].Text);
         Assert.Contains("Do not ask the user clarifying questions", fakeClient.LastReceivedMessages[0].Text);
         Assert.Contains("Parent-mediated tool approval", fakeClient.LastReceivedMessages[0].Text);
+    }
+
+    [Fact]
+    public async Task System_prompt_layers_operating_rules_before_project_role_and_headless_contract()
+    {
+        var fakeClient = new FakeChatClient();
+        var definition = CreateDefinition() with
+        {
+            OperatingRules = "Operating rules: never invent runtime facts.",
+            ProjectInstructions = "Project rules: prefer C#.",
+            SystemPrompt = "You are a test agent.\n\n[Skill Overlay]\nUse focused analysis."
+        };
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient));
+
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent { Task = "Do the thing.", Timeout = TimeSpan.FromSeconds(5), Audience = TrustAudience.Personal },
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success);
+        Assert.NotNull(fakeClient.LastReceivedMessages);
+        var systemPrompt = fakeClient.LastReceivedMessages!.Single(m => m.Role == ChatRole.System).Text;
+
+        AssertPromptOrder(
+            systemPrompt,
+            "Operating rules: never invent runtime facts.",
+            "Project rules: prefer C#.",
+            "You are a test agent.",
+            "[Skill Overlay]",
+            "[Subagent Execution Contract]");
+        Assert.EndsWith(
+            "Always end by emitting a final output for the parent session.",
+            systemPrompt.TrimEnd(),
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -663,7 +697,7 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
-    public async Task SubAgent_approval_wait_activity_suspends_parent_tool_watchdog()
+    public async Task SubAgent_surfaces_approval_wait_and_resolution_to_parent_stream()
     {
         var fakeTool = new FakeNetclawTool("shell_execute", "ok");
         var policy = CreateApprovalRequiredPolicy();
@@ -694,19 +728,21 @@ public class SubAgentActorTests : TestKit
             },
             ApprovalAskTimeout, TestContext.Current.CancellationToken);
 
+        // The sub-agent surfaces its approval state to the parent stream so the run
+        // stays visible while a human is in the loop. (Pausing the parent watchdog
+        // is no longer a flag on the activity — the parent no longer wall-clock-
+        // supervises a self-monitoring sub-agent.)
         await approvalBridge.EnteredApprovalWait.WaitAsync(TestContext.Current.CancellationToken);
-        var waitingActivity = await ReadActivityAsync(
+        await ReadActivityAsync(
             activityChannel.Reader,
             "awaiting human approval",
             TestContext.Current.CancellationToken);
-        Assert.True(waitingActivity.SuspendsInactivityWatchdog);
 
         releaseSignal.SetResult(ParentApprovalDecision.ApprovedOnce);
-        var resolvedActivity = await ReadActivityAsync(
+        await ReadActivityAsync(
             activityChannel.Reader,
             "approval resolved",
             TestContext.Current.CancellationToken);
-        Assert.False(resolvedActivity.SuspendsInactivityWatchdog);
 
         var result = await runTask;
         Assert.True(result.Success, $"Expected success but got: {result.Output}");
@@ -915,6 +951,18 @@ public class SubAgentActorTests : TestKit
             .SelectMany(m => m.Contents.OfType<FunctionResultContent>())
             .Single(r => r.CallId == callId)
             .Result?.ToString();
+    }
+
+    private static void AssertPromptOrder(string prompt, params string[] markers)
+    {
+        var previousIndex = -1;
+        foreach (var marker in markers)
+        {
+            var index = prompt.IndexOf(marker, StringComparison.Ordinal);
+            Assert.True(index >= 0, $"Expected prompt to contain marker: {marker}");
+            Assert.True(index > previousIndex, $"Expected marker '{marker}' to appear after the previous marker.");
+            previousIndex = index;
+        }
     }
 
     private static async Task<ToolActivityUpdate> ReadActivityAsync(
@@ -1318,11 +1366,9 @@ public class SubAgentActorTests : TestKit
         public void Dispose() { }
     }
 
-    private static readonly byte[] FakePngBytes =
-    [
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52
-    ];
+    // Real PNG: the egress normalizer decodes every model-input image, so a
+    // fake magic-byte stub would now be dropped. Small enough to pass through.
+    private static readonly byte[] FakePngBytes = TestImages.SmallPng();
 }
 
 /// <summary>

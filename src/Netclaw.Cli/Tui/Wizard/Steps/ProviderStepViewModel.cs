@@ -4,11 +4,18 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Diagnostics;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Microsoft.Extensions.DependencyInjection;
 using Netclaw.Cli.Config;
+using Netclaw.Cli.Daemon;
+using Netclaw.Cli.Json;
 using Netclaw.Cli.Tui;
+using Netclaw.Cli.Tui.Sections;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Secrets;
 using Netclaw.Providers;
+using Netclaw.Providers.GitHubCopilot;
 using Netclaw.Providers.OAuth;
 using R3;
 
@@ -19,10 +26,8 @@ namespace Netclaw.Cli.Tui.Wizard.Steps;
 /// Sub-steps: 0=provider selection, 1=auth method, 2=credentials, 3=validation,
 /// 4=model selection, 5=OAuth device flow, 6=OAuth browser flow.
 /// </summary>
-public sealed class ProviderStepViewModel : IWizardStepViewModel
+public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
 {
-    private static readonly TimeSpan ProbeHardTimeout = TimeSpan.FromSeconds(20);
-
     private readonly IProviderProbe _probe;
     private readonly ProviderDescriptorRegistry _registry;
     private readonly DeviceFlowServiceFactory? _oauthFactory;
@@ -36,23 +41,31 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
     public ProviderStepViewModel(
         ProviderDescriptorRegistry registry,
         IProviderProbe probe,
-        DeviceFlowServiceFactory? oauthFactory = null)
+        DeviceFlowServiceFactory? oauthFactory = null,
+        DaemonApi? daemonApi = null)
     {
         _registry = registry;
         _probe = probe;
         _oauthFactory = oauthFactory;
-        OAuth = new OAuthFlowCoordinator(registry, oauthFactory, null, () => { });
+        OAuth = new OAuthFlowCoordinator(registry, oauthFactory, daemonApi, () => { });
     }
 
     public string StepId => WizardStepIds.Provider;
     public string DisplayTitle => "LLM Provider";
+    public string SectionId => StepId;
+    public string DisplayName => DisplayTitle;
+    public string? Category => null;
+    public bool ShowInMenu => false;
+    public IReadOnlyList<string> RelevantDoctorChecks => ["Config Schema", "Context Window"];
 
     // ── State ──
     public string? SelectedProviderType { get; set; }
     public AuthMethod SelectedAuthMethod { get; set; } = AuthMethod.None;
     public string? ApiKeyInput { get; set; }
     public string? EndpointInput { get; set; }
+    public IReadOnlyDictionary<string, object?>? VendorOptions { get; set; }
     public string? SelectedModelId { get; set; }
+    public bool HasStoredCredential { get; private set; }
     public List<DiscoveredModel> DiscoveredModels { get; } = [];
     public OAuthFlowCoordinator OAuth { get; }
     public ProviderDescriptorRegistry Registry => _registry;
@@ -61,7 +74,6 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
     public ReactiveProperty<bool> IsProbing { get; } = new(false);
     public ReactiveProperty<ProviderProbeResult?> ProbeResult { get; } = new(null);
     public ReactiveProperty<int> ProbeElapsedSeconds { get; } = new(0);
-    public ReactiveProperty<int> SpinnerTick { get; } = new(0);
 
     public bool IsApplicable(WizardContext context) => true;
 
@@ -136,6 +148,7 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
     public void OnEnter(WizardContext context, NavigationDirection direction)
     {
         _context = context;
+        PrefillFromExistingConfig(context);
         if (direction == NavigationDirection.Back)
             _currentSubStep = _highWaterSubStep;
     }
@@ -152,28 +165,22 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
 
     public void CancelProbe()
     {
-        if (_probeCts is not null)
-        {
-            _probeCts.Cancel();
-            _probeCts.Dispose();
-            _probeCts = null;
-        }
+        // Atomically take ownership of the active CTS so a concurrently-completing probe's finally
+        // cannot also cancel/dispose it (double dispose, or cancelling a newer probe's live CTS).
+        var cts = Interlocked.Exchange(ref _probeCts, null);
+        cts?.Cancel();
+        cts?.Dispose();
     }
 
     internal Task? ProbeCompletion { get; private set; }
 
     internal async Task ProbeProviderAsync()
     {
-        _probeCts = new CancellationTokenSource();
-        var ct = _probeCts.Token;
+        var cts = new CancellationTokenSource();
+        _probeCts = cts;
+        var ct = cts.Token;
         var providerType = SelectedProviderType ?? "unknown";
-        var credential = ApiKeyInput;
-        if (string.IsNullOrWhiteSpace(credential)
-            && SelectedAuthMethod is AuthMethod.OAuthDevice or AuthMethod.OAuthPkce
-            && OAuth.Result is not null)
-        {
-            credential = OAuth.Result.AccessToken.Value;
-        }
+        var probeEntry = BuildProbeEntry(providerType);
 
         IsProbing.Value = true;
         ProbeResult.Value = null;
@@ -184,13 +191,15 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
         var result = new ProviderProbeResult(false, "Validation failed before probe completed.", []);
         try
         {
-            result = await _probe.ProbeAsync(
-                    providerType,
-                    EndpointInput,
-                    credential,
-                    SelectedAuthMethod,
-                    ct)
-                .WaitAsync(ProbeHardTimeout, ct);
+            // Outer wall-clock for the WHOLE probe. The descriptor's own per-request
+            // deadline covers only the /models call; it does NOT cover pre-request work
+            // such as OAuth token exchange, which would otherwise be bounded only by the
+            // HttpClient default (~100s). This budget is deliberately larger than the
+            // descriptor's self-hosted deadline (see ProbeTimeouts.InteractiveWallClock)
+            // so it bounds a hung token exchange without truncating a legitimately slow
+            // self-hosted /models probe — the truncation that was the heart of #1292.
+            result = await _probe.ProbeAsync(probeEntry, ct)
+                .WaitAsync(ProbeTimeouts.InteractiveWallClock, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -199,7 +208,8 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
         catch (TimeoutException)
         {
             result = new ProviderProbeResult(false,
-                $"Validation timed out after {(int)ProbeHardTimeout.TotalSeconds} seconds.", []);
+                $"Validation timed out after {(int)ProbeTimeouts.InteractiveWallClock.TotalSeconds} seconds — "
+                + "the provider did not respond. Check connectivity and try again.", []);
         }
         catch (Exception ex)
         {
@@ -207,7 +217,14 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
         }
         finally
         {
-            CancelProbe();
+            // Tear down only THIS probe's CTS, and only if it is still the active one. A newer probe
+            // (StartProbe → CancelProbe) may have already replaced and disposed it; claiming the field
+            // atomically stops this finally from cancelling/disposing the newer probe's live CTS.
+            if (Interlocked.CompareExchange(ref _probeCts, null, cts) == cts)
+            {
+                cts.Cancel();
+                cts.Dispose();
+            }
         }
 
         DiscoveredModels.Clear();
@@ -218,19 +235,50 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
         ProbeResult.Value = result;
     }
 
+    // Drives only the cosmetic "(Ns)" elapsed counter now that the spinner glyph
+    // self-animates via SpinnerNode; a 1 Hz tick is all that's needed.
     private async Task RunProbeTimerAsync(CancellationToken ct)
     {
-        var tickCount = 0;
         while (!ct.IsCancellationRequested)
         {
-            try { await Task.Delay(120, ct); }
+            try { await Task.Delay(1000, ct); }
             catch (OperationCanceledException) { return; }
 
-            tickCount++;
-            SpinnerTick.Value = tickCount;
-            if (tickCount % 8 == 0)
-                ProbeElapsedSeconds.Value++;
+            ProbeElapsedSeconds.Value++;
         }
+    }
+
+    private ProviderEntry BuildProbeEntry(string providerType)
+    {
+        var entry = new ProviderEntry
+        {
+            Type = providerType,
+            Endpoint = EndpointInput ?? "",
+            AuthMethod = SelectedAuthMethod
+        };
+
+        if (SelectedAuthMethod is AuthMethod.OAuthDevice or AuthMethod.OAuthPkce)
+        {
+            var result = OAuth.Result;
+            var credential = ApiKeyInput;
+            if (string.IsNullOrWhiteSpace(credential))
+                credential = result?.AccessToken.Value;
+
+            entry.OAuthAccessToken = !string.IsNullOrWhiteSpace(credential)
+                ? new SensitiveString(credential)
+                : null;
+            entry.OAuthRefreshToken = result?.RefreshToken;
+            entry.OAuthTokenExpiry = result?.ExpiresAt;
+            entry.OAuthAccountId = result?.AccountId;
+        }
+        else if (!string.IsNullOrWhiteSpace(ApiKeyInput))
+        {
+            entry.ApiKey = new SensitiveString(ApiKeyInput);
+        }
+
+        entry.SetVendorOptions(ToJsonObject(VendorOptions));
+
+        return entry;
     }
 
     // ── OAuth ──
@@ -238,13 +286,47 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
     public void StartOAuthFlow()
     {
         if (SelectedProviderType is null) return;
+        if (!TryBuildOAuthFlowEntry(out var oauthEntry, out var error))
+        {
+            ProbeResult.Value = new ProviderProbeResult(false, error, []);
+            return;
+        }
+
         ProbeElapsedSeconds.Value = 0;
         var ct = OAuth.StartDeviceFlow(SelectedProviderType, result =>
         {
             ApiKeyInput = result.AccessToken.Value;
             StartProbe();
-        });
+        }, oauthEntry);
         _ = RunProbeTimerAsync(ct);
+    }
+
+    private bool TryBuildOAuthFlowEntry(out ProviderEntry? entry, out string error)
+    {
+        entry = null;
+        error = string.Empty;
+        if (!string.Equals(SelectedProviderType, "github-copilot", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (!GitHubCopilotAuthResolver.TryResolveSetupOptions(
+                gitHubHost: null,
+                gitHubApiBase: null,
+                includeAmbientEnvironment: true,
+                out var setupOptions,
+                out var setupError))
+        {
+            error = setupError ?? "GitHub Copilot enterprise host settings are invalid.";
+            return false;
+        }
+
+        VendorOptions = GitHubCopilotAuthResolver.ToVendorOptions(setupOptions);
+        entry = new ProviderEntry
+        {
+            Type = "github-copilot",
+            AuthMethod = AuthMethod.OAuthDevice,
+        };
+        entry.SetVendorOptions(ToJsonObject(VendorOptions));
+        return true;
     }
 
     public void StartBrowserOAuthFlow()
@@ -269,6 +351,7 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
         SelectedAuthMethod = AuthMethod.None;
         ApiKeyInput = null;
         EndpointInput = null;
+        VendorOptions = null;
         ProbeResult.Value = null;
         ProbeElapsedSeconds.Value = 0;
         SelectedModelId = null;
@@ -291,13 +374,21 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
                 ? EndpointInput
                 : _registry.TryGet(providerName, out var desc) && desc.Auth is EndpointOnlyAuth
                     ? desc.DefaultEndpoint
-                    : null
+                    : null,
+            VendorOptions = VendorOptions,
         };
+
+        var selectedModel = DiscoveredModels.FirstOrDefault(model =>
+            string.Equals(model.ModelId.Value, SelectedModelId, StringComparison.OrdinalIgnoreCase));
 
         builder.Model = new ModelConfigSection
         {
             Provider = providerName,
-            ModelId = SelectedModelId
+            ModelId = SelectedModelId,
+            ContextWindow = selectedModel?.ContextWindowTokens,
+            Provenance = selectedModel is null ? ModelDiscoverySource.Manual : ModelDiscoverySource.Live,
+            InputModalities = selectedModel?.InputModalities,
+            OutputModalities = selectedModel?.OutputModalities,
         };
     }
 
@@ -326,8 +417,10 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
             EndpointInput,
             OAuth.Result,
             ApiKeyInput,
-            _registry,
-            SensitiveStringTypeConverter.Protector);
+            registry: _registry,
+            // Protector for this config's keys directory, not the process-wide static service locator.
+            protector: SecretsProtection.CreateProtector(paths),
+            vendorOptions: VendorOptions);
     }
 
     public Task ContributeHealthChecksAsync(HealthCheckRunner runner, CancellationToken ct)
@@ -348,6 +441,181 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
         return Task.CompletedTask;
     }
 
+    public SectionStatus GetStatus(WizardContext context)
+        => !string.IsNullOrWhiteSpace(SelectedProviderType) || ConfigFileHelper.PathPresent(context.ExistingConfig ?? [], "Providers")
+            ? SectionStatus.Configured
+            : SectionStatus.NotConfigured;
+
+    public string Summary(WizardContext context)
+    {
+        var providerType = SelectedProviderType ?? ReadExistingProviderType(context);
+        var modelId = SelectedModelId ?? ReadExistingModelId(context);
+        if (string.IsNullOrWhiteSpace(providerType))
+            return "Not configured";
+
+        return string.IsNullOrWhiteSpace(modelId) ? providerType : $"{providerType} / {modelId}";
+    }
+
+    public IWizardStepViewModel CreateEditor(IServiceProvider services)
+        => ActivatorUtilities.CreateInstance<ProviderStepViewModel>(services);
+
+    public SectionContribution BuildContribution(IWizardStepViewModel editor)
+    {
+        var vm = (ProviderStepViewModel)editor;
+        if (string.IsNullOrWhiteSpace(vm.SelectedProviderType))
+            return SectionContribution.Empty;
+
+        var providerType = vm.SelectedProviderType.ToLowerInvariant();
+        var fieldActions = new List<SectionFieldAction>
+        {
+            new("Providers", SectionFieldActionKind.Set, BuildProvidersDictionary(vm, providerType)),
+            new("Models.Main.Provider", SectionFieldActionKind.Set, providerType)
+        };
+
+        if (string.IsNullOrWhiteSpace(vm.SelectedModelId))
+            fieldActions.Add(new SectionFieldAction("Models.Main.ModelId", SectionFieldActionKind.Delete));
+        else
+            fieldActions.Add(new SectionFieldAction("Models.Main.ModelId", SectionFieldActionKind.Set, vm.SelectedModelId));
+
+        var secretPath = $"Providers.{providerType}";
+        var secretActions = new List<SectionSecretAction>();
+        if (!string.IsNullOrWhiteSpace(vm.ApiKeyInput))
+        {
+            secretActions.Add(new SectionSecretAction($"{secretPath}.ApiKey", SectionSecretActionKind.Set,
+                new SensitiveString(vm.ApiKeyInput)));
+        }
+        else if (vm.HasStoredCredential)
+        {
+            secretActions.Add(new SectionSecretAction(secretPath, SectionSecretActionKind.Preserve));
+        }
+
+        return new SectionContribution(fieldActions, secretActions);
+    }
+
+    private void PrefillFromExistingConfig(WizardContext context)
+    {
+        if (context.ExistingConfig is null)
+            return;
+
+        var providerType = ReadExistingProviderType(context);
+        if (string.IsNullOrWhiteSpace(providerType))
+            return;
+
+        SelectedProviderType ??= providerType;
+        SelectedModelId ??= ReadExistingModelId(context);
+
+        if (ConfigFileHelper.TryGetPathValue(context.ExistingConfig, $"Providers.{providerType}.Endpoint", out var endpoint)
+            && endpoint is string endpointText)
+        {
+            EndpointInput ??= endpointText;
+        }
+
+        if (TryReadExistingVendorOptions(context, providerType, out var vendorOptions))
+            VendorOptions ??= vendorOptions;
+
+        if (ConfigFileHelper.TryGetPathValue(context.ExistingConfig, $"Providers.{providerType}.AuthMethod", out var authMethod)
+            && authMethod is string authMethodText
+            && Enum.TryParse<AuthMethod>(authMethodText, ignoreCase: true, out var parsed))
+        {
+            SelectedAuthMethod = parsed;
+        }
+
+        HasStoredCredential = ConfigFileHelper.SecretPresent(context.Paths, $"Providers.{providerType}.ApiKey")
+            || ConfigFileHelper.SecretPresent(context.Paths, $"Providers.{providerType}.OAuthAccessToken");
+    }
+
+    private static string? ReadExistingProviderType(WizardContext context)
+    {
+        if (context.ExistingConfig is null
+            || !ConfigFileHelper.TryGetPathValue(context.ExistingConfig, "Models.Main.Provider", out var provider)
+            || provider is not string providerText)
+        {
+            return null;
+        }
+
+        return providerText;
+    }
+
+    private static string? ReadExistingModelId(WizardContext context)
+        => context.ExistingConfig is not null
+           && ConfigFileHelper.TryGetPathValue(context.ExistingConfig, "Models.Main.ModelId", out var model)
+            ? model as string
+            : null;
+
+    private Dictionary<string, object> BuildProvidersDictionary(ProviderStepViewModel vm, string providerType)
+    {
+        var providerEntry = new Dictionary<string, object>
+        {
+            [providerType] = BuildProviderEntry(vm, providerType)
+        };
+
+        if (_context?.ExistingConfig is not null
+            && ConfigFileHelper.TryGetPathValue(_context.ExistingConfig, "Providers", out var existing)
+            && existing is Dictionary<string, object> existingProviders)
+        {
+            foreach (var (key, value) in existingProviders)
+            {
+                if (!providerEntry.ContainsKey(key))
+                    providerEntry[key] = value;
+            }
+        }
+
+        return providerEntry;
+    }
+
+    private Dictionary<string, object> BuildProviderEntry(ProviderStepViewModel vm, string providerType)
+    {
+        var entry = new Dictionary<string, object>
+        {
+            ["Type"] = providerType
+        };
+
+        if (vm.SelectedAuthMethod != AuthMethod.None)
+            entry["AuthMethod"] = vm.SelectedAuthMethod.ToString();
+
+        var endpoint = !string.IsNullOrWhiteSpace(vm.EndpointInput)
+            ? vm.EndpointInput
+            : _registry.TryGet(providerType, out var descriptor) && descriptor.Auth is EndpointOnlyAuth
+                ? descriptor.DefaultEndpoint
+                : null;
+
+        if (!string.IsNullOrWhiteSpace(endpoint))
+            entry["Endpoint"] = endpoint;
+
+        if (vm.VendorOptions is not null && vm.VendorOptions.Count > 0)
+            entry["VendorOptions"] = vm.VendorOptions;
+
+        return entry;
+    }
+
+    private static bool TryReadExistingVendorOptions(
+        WizardContext context,
+        string providerType,
+        out IReadOnlyDictionary<string, object?>? vendorOptions)
+    {
+        vendorOptions = null;
+        if (context.ExistingConfig is null
+            || !ConfigFileHelper.TryGetPathValue(context.ExistingConfig, $"Providers.{providerType}.VendorOptions", out var raw)
+            || raw is null)
+        {
+            return false;
+        }
+
+        var json = raw is JsonElement element
+            ? element.GetRawText()
+            : JsonSerializer.Serialize(raw, JsonDefaults.ConfigFile);
+        vendorOptions = JsonSerializer.Deserialize<Dictionary<string, object?>>(json, JsonDefaults.ConfigRead);
+        return vendorOptions is not null;
+    }
+
+    private static JsonObject? ToJsonObject(IReadOnlyDictionary<string, object?>? vendorOptions)
+    {
+        if (vendorOptions is null || vendorOptions.Count == 0)
+            return null;
+
+        return JsonNode.Parse(JsonSerializer.Serialize(vendorOptions, JsonDefaults.ConfigFile))?.AsObject();
+    }
+
     public void Dispose()
     {
         CancelProbe();
@@ -355,6 +623,5 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel
         IsProbing.Dispose();
         ProbeResult.Dispose();
         ProbeElapsedSeconds.Dispose();
-        SpinnerTick.Dispose();
     }
 }

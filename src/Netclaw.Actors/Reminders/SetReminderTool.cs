@@ -9,6 +9,7 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
 using Netclaw.Tools;
+using static Netclaw.Actors.Reminders.ReminderProtocol;
 
 namespace Netclaw.Actors.Reminders;
 
@@ -192,7 +193,8 @@ public sealed partial class SetReminderTool : NetclawTool<SetReminderTool.Params
                 {
                     Kind = DeliveryKind.Channel,
                     Transport = transport,
-                    Address = resolution.ResolvedId
+                    Address = resolution.ResolvedId,
+                    Target = BuildDeliveryTarget(transport, resolution)
                 };
                 break;
             }
@@ -321,6 +323,39 @@ public sealed partial class SetReminderTool : NetclawTool<SetReminderTool.Params
         >= 1 when interval.TotalMinutes % 60 == 0 => $"{interval.TotalHours:F0}h",
         _ => $"{interval.TotalMinutes:F0}m"
     };
+
+    private static ChannelDeliveryTargetInfo BuildDeliveryTarget(
+        string transport,
+        ReminderTargetResolution resolution)
+    {
+        var destinationKind = resolution.Kind == ReminderTargetKind.User
+            ? "direct_message"
+            : "destination";
+
+        return new ChannelDeliveryTargetInfo(
+            transport,
+            destinationKind,
+            NormalizeDeliveryTargetId(transport, resolution),
+            resolution.ResolvedId);
+    }
+
+    private static string NormalizeDeliveryTargetId(string transport, ReminderTargetResolution resolution)
+    {
+        var resolvedId = resolution.ResolvedId
+            ?? throw new InvalidOperationException("Cannot build a delivery target from an empty reminder target resolution.");
+
+        if (!string.Equals(transport, "mattermost", StringComparison.OrdinalIgnoreCase))
+            return resolvedId;
+
+        return resolution.Kind switch
+        {
+            ReminderTargetKind.Channel when resolvedId.StartsWith("channel:", StringComparison.OrdinalIgnoreCase)
+                => resolvedId[8..],
+            ReminderTargetKind.User when resolvedId.StartsWith('@')
+                => resolvedId[1..],
+            _ => resolvedId
+        };
+    }
 
     public static string FormatTimestamp(DateTimeOffset? nextFire)
     {

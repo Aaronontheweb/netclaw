@@ -199,6 +199,11 @@ the actor system cleanly.
 `netclaw daemon status` checks the PID file and verifies the process is alive.
 Reports: running/stopped, PID, uptime, port, number of active sessions.
 
+`netclaw update` preserves the daemon's lifecycle owner. If the Linux systemd
+user unit is active or enabled, update stops and starts `netclaw.service` via
+`systemctl --user` instead of spawning a detached daemon. If no systemd user
+unit owns the daemon, update uses the direct detached process lifecycle.
+
 ### Crash interception and evidence
 
 The daemon installs process-level exception handlers at startup for:
@@ -392,13 +397,15 @@ Recommended production deployment:
 ```bash
 docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v ~/.netclaw:/root/.netclaw \
+  -v ~/.netclaw:/home/netclaw/.netclaw \
   -p 127.0.0.1:5199:5199 \
   netclaw-daemon
 ```
 
 - Docker socket mount enables host container management
-- Config volume persists across container restarts
+- Config volume persists across container restarts. The image entrypoint repairs
+  writable bind-mount ownership to the dedicated `netclaw` runtime UID before
+  starting the daemon.
 - Port binding on loopback only (SEC-005 default)
 - Container includes Docker CLI, git, and other management tools
 - Only the daemon runs in Docker — the CLI runs on the host and connects

@@ -96,6 +96,55 @@ public sealed class DaemonConfigTests
         Assert.Equal(ExposureMode.Local, DaemonConfig.ParseExposureMode(value));
     }
 
+    [Theory]
+    [InlineData("stable", UpdateChannel.Stable)]
+    [InlineData("beta", UpdateChannel.Beta)]
+    [InlineData("BETA", UpdateChannel.Beta)]
+    public void ParseUpdateChannel_parses_known_values(string value, UpdateChannel expected)
+    {
+        Assert.Equal(expected, DaemonConfig.ParseUpdateChannel(value));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void ParseUpdateChannel_returns_stable_for_null_or_empty(string? value)
+    {
+        Assert.Equal(UpdateChannel.Stable, DaemonConfig.ParseUpdateChannel(value));
+    }
+
+    [Fact]
+    public void ParseUpdateChannel_throws_on_unknown_value()
+    {
+        Assert.Throws<InvalidOperationException>(
+            () => DaemonConfig.ParseUpdateChannel("nightly"));
+    }
+
+    [Theory]
+    [InlineData("stable", true, UpdateChannel.Stable)]
+    [InlineData("BETA", true, UpdateChannel.Beta)]
+    // Unlike ParseUpdateChannel, the Try variant rejects null/empty so CLI
+    // callers fail loudly on `--channel ""` instead of silently defaulting.
+    [InlineData(null, false, UpdateChannel.Stable)]
+    [InlineData("", false, UpdateChannel.Stable)]
+    [InlineData("nightly", false, UpdateChannel.Stable)]
+    public void TryParseUpdateChannel_rejects_empty_and_unknown(string? value, bool expectedOk, UpdateChannel expected)
+    {
+        Assert.Equal(expectedOk, DaemonConfig.TryParseUpdateChannel(value, out var channel));
+        Assert.Equal(expected, channel);
+    }
+
+    [Theory]
+    [InlineData(UpdateChannel.Stable, "stable")]
+    [InlineData(UpdateChannel.Beta, "beta")]
+    public void ToWireValue_returns_schema_value_and_round_trips(UpdateChannel channel, string expected)
+    {
+        // Wire values are pinned independently of enum member names so a future
+        // rename can't silently change the persisted config string.
+        Assert.Equal(expected, channel.ToWireValue());
+        Assert.Equal(channel, DaemonConfig.ParseUpdateChannel(channel.ToWireValue()));
+    }
+
     [Fact]
     public void BindFromConfiguration_reads_DisableSelfUpdate_true()
     {

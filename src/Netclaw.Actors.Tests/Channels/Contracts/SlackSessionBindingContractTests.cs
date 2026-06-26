@@ -16,6 +16,7 @@ using Netclaw.Channels.Slack;
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Xunit;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Tests.Channels.Contracts;
 
@@ -81,6 +82,9 @@ public sealed class SlackSessionBindingContractTests(ITestOutputHelper output)
 
     protected override void SetReplyClientThrows(Exception ex)
         => _replyClient.ThrowOnPost = ex;
+
+    protected override void SetReplyClientThrowsOnce(Exception ex)
+        => _replyClient.ThrowOnceOnPost = ex;
 
     protected override void ClearReplyClientThrows()
         => _replyClient.ThrowOnPost = null;
@@ -343,7 +347,7 @@ public sealed class SlackSessionBindingContractTests(ITestOutputHelper output)
         var pipeline = new RecordingSessionPipeline(_ => [])
         {
             ResponseFactory = (_, _) =>
-                Task.FromResult<ICommandReply>(CommandNack.For(sid, ApprovalNackReasons.WrongRequester))
+                Task.FromResult<ISessionResponse>(CommandNack.For(sid, ApprovalNackReasons.WrongRequester))
         };
         var actor = CreateBindingActor(sid, pipeline, detector);
 
@@ -382,7 +386,7 @@ public sealed class SlackSessionBindingContractTests(ITestOutputHelper output)
         var pipeline = new RecordingSessionPipeline(_ => [])
         {
             ResponseFactory = (_, _) =>
-                Task.FromResult<ICommandReply>(CommandNack.For(sid, "no_pending_call"))
+                Task.FromResult<ISessionResponse>(CommandNack.For(sid, "no_pending_call"))
         };
         var actor = CreateBindingActor(sid, pipeline, detector);
 

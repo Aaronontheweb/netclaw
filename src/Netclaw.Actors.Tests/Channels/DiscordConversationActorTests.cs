@@ -11,11 +11,13 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
+using Netclaw.Actors.Reminders;
 using Netclaw.Actors.Tests.Channels.TestHelpers;
 using Netclaw.Channels.Discord;
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Xunit;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Tests.Channels;
 
@@ -482,6 +484,8 @@ public sealed class DiscordConversationActorTests(ITestOutputHelper output) : Te
         IDiscordReplyClient? replyClient = null,
         Func<SessionId, DiscordChannelId, DiscordReplyChannelId, DiscordThreadOrMessageId, DiscordMessageId?, DiscordGatewayDependencies, Props>? sessionPropsFactory = null)
     {
+        var resolvedReplyClient = replyClient ?? new UnconfiguredDiscordReplyClient();
+
         return new DiscordGatewayDependencies(
             Pipeline: null!,
             IngressGate: ingressGate,
@@ -493,7 +497,8 @@ public sealed class DiscordConversationActorTests(ITestOutputHelper output) : Te
                 AllowedChannelIds = ["ch-1"]
             },
             DefaultChannelId: null,
-            ReplyClient: replyClient ?? new UnconfiguredDiscordReplyClient(),
+            ChannelRegistry: TestChannelRegistries.DiscordWithProcessingRenderer(resolvedReplyClient),
+            ReplyClient: resolvedReplyClient,
             ContentScanner: new NullContentScanner(),
             AudienceProfiles: TestDiscordGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestDiscordGatewayDeps.DefaultVisionCapableModel,
@@ -539,6 +544,6 @@ public sealed class DiscordConversationActorTests(ITestOutputHelper output) : Te
         {
             SourceKind = new Netclaw.Actors.Channels.SourceKind("reminder")
         },
-        ReminderId = "rem-1"
+        ReminderId = new ReminderId("rem-1")
     };
 }

@@ -5,7 +5,9 @@
 // -----------------------------------------------------------------------
 using Akka.Actor;
 using Microsoft.Extensions.AI;
+using Netclaw.Actors.Reminders;
 using Netclaw.Configuration;
+using Netclaw.Tools;
 
 namespace Netclaw.Actors.Channels;
 
@@ -82,6 +84,18 @@ public sealed record ChannelInput
     public string? ExecutableText { get; init; }
 
     /// <summary>
+    /// Default output target for channel-originated input. Null for trigger
+    /// sources unless they explicitly route back through a real channel.
+    /// </summary>
+    public ChannelDeliveryTargetInfo? DefaultDeliveryTarget { get; init; }
+
+    /// <summary>
+    /// Explicit output target selected by trigger-originated input when external
+    /// output is expected.
+    /// </summary>
+    public ChannelDeliveryTargetInfo? RequestedDeliveryTarget { get; init; }
+
+    /// <summary>
     /// True when the turn contains quoted adopted thread context ahead of the current
     /// executable message.
     /// </summary>
@@ -128,7 +142,7 @@ public sealed record ChannelInput
     /// <see cref="MessageSource.ReminderId"/> by
     /// <see cref="MessageSourceFactory"/>. Null for regular inbound ingress.
     /// </summary>
-    public string? ReminderId { get; init; }
+    public ReminderId? ReminderId { get; init; }
 
     /// <summary>
     /// Ephemeral ack reply target. Set by channel leaf actors when handling

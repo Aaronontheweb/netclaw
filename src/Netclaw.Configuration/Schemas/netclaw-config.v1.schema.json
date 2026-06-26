@@ -287,15 +287,11 @@
           "type": ["string", "null"],
           "enum": ["Off", "SandboxOnly", "HostAllowed", null]
         },
-        "ShellTimeoutSeconds": {
-          "type": "integer",
-          "minimum": 1,
-          "default": 60
-        },
         "MaxOutputChars": {
           "type": "integer",
           "minimum": 1,
-          "default": 32000
+          "default": 256000,
+          "description": "Capture ceiling for tool output: the maximum characters captured in bounded memory to become the full-output spill file written under the session directory when a result exceeds the inline budget. This is NOT what the model sees inline — that is Session.Tuning.MaxInlineToolResultChars (plus any per-tool override). Output beyond this ceiling is discarded while the source keeps draining (so a live child process never deadlocks), and the spill is a head+tail view."
         },
         "AudienceProfiles": {
           "$ref": "#/$defs/ToolAudienceProfiles"
@@ -322,12 +318,6 @@
           "items": { "type": "string" },
           "default": [],
           "description": "Additional shell command patterns to add to the hard deny list. Verb-chain prefixes that are categorically blocked and cannot be approved."
-        },
-        "MaxToolTimeoutSeconds": {
-          "type": "integer",
-          "minimum": 1,
-          "default": 600,
-          "description": "Maximum per-call timeout in seconds that the LLM can request via _timeout_seconds meta field. Values above this ceiling are clamped."
         }
       },
       "additionalProperties": false
@@ -652,6 +642,15 @@
           "type": "boolean",
           "default": false,
           "description": "When true, in-place binary self-update via 'netclaw update' is blocked. Update availability checks still run. Intended for container deployments where the image tag is the version."
+        },
+        "UpdateChannel": {
+          "type": "string",
+          "enum": [
+            "stable",
+            "beta"
+          ],
+          "default": "stable",
+          "description": "Release channel the update check follows. 'stable' (default) only sees stable releases; 'beta' opts into prereleases and rolls onto a stable release once it supersedes a beta. Stable clients are never offered a prerelease."
         }
       },
       "additionalProperties": false
@@ -839,7 +838,7 @@
         "ContextWindow": { "type": "integer", "description": "Effective runtime context window in tokens. When set, clamps the detected provider value." },
         "Provenance": {
           "type": ["string", "null"],
-          "description": "Optional model provenance marker (e.g. AutoDetected, Manual)."
+          "description": "Optional model provenance marker (Live, Defaults, or Manual)."
         },
         "InputModalities": {
           "type": "string",

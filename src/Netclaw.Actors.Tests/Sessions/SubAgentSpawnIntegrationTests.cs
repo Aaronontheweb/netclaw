@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Protocol;
+using Netclaw.Actors.Reminders;
 using Netclaw.Actors.Skills;
 using Netclaw.Actors.SubAgents;
 using Netclaw.Actors.Sessions;
@@ -19,12 +20,14 @@ using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
 using Xunit;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Tests.Sessions;
 
 public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
 {
     private const string MainIdentityMarker = "You are a test assistant with subagent support.";
+    private const string OperatingRulesMarker = "[embedded agents] Sub-agents inherit operating rules.";
     private const string AgentsLayerMarker = "[agents] This marker should never appear in routed subagent calls.";
 
     private readonly RecordingRoleChatClientProvider _clientProvider = new();
@@ -37,6 +40,7 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
 
     protected override void ConfigureSessionServices(IServiceCollection services)
     {
+        var promptProvider = new TestSystemPromptProvider(MainIdentityMarker, OperatingRulesMarker);
         services.AddSingleton<IChatClientProvider>(_clientProvider);
         services.AddSingleton(new ModelCapabilities
         {
@@ -52,7 +56,7 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
                 TitleGenerationInterval = 0,
             }
         });
-        services.AddSingleton<ISystemPromptProvider>(new StaticSystemPromptProvider(MainIdentityMarker));
+        services.AddSingleton<ISystemPromptProvider>(promptProvider);
         services.AddSingleton<IReadOnlyList<IContextLayerProvider>>(
         [
             new StaticContextLayerProvider(AgentsLayerMarker, ContextLayerTiming.OnceAtStart)
@@ -173,7 +177,7 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
             registry,
             toolAccessPolicy,
             approvalService: null,
-            new StaticSystemPromptProvider(MainIdentityMarker),
+            promptProvider,
             Microsoft.Extensions.Logging.Abstractions.NullLogger<SubAgentSpawner>.Instance);
 
         registry.Register(new SpawnAgentTool(subAgentRegistry, spawner, subAgentPaths));
@@ -252,6 +256,7 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
         var subagentCall = Assert.Single(_clientProvider.Compaction.ReceivedMessages);
         Assert.Contains(subagentCall, m =>
             m.Role == Microsoft.Extensions.AI.ChatRole.System
+            && m.Text.Contains(OperatingRulesMarker, StringComparison.Ordinal)
             && m.Text.Contains("You are a summarizer.", StringComparison.Ordinal)
             && m.Text.Contains("headless, non-interactive worker", StringComparison.Ordinal));
         Assert.Contains(subagentCall, m =>
@@ -286,7 +291,12 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
                 "shell_execute",
                 new Dictionary<string, object?>
                 {
-                    ["Command"] = "git push origin main"
+                    ["Command"] = "git push origin main",
+                    // Per-call timeout hint on the sub-agent path: the sub-agent
+                    // loop must extract this via the shared executor seam and apply
+                    // it to the tool context (it previously skipped extraction and
+                    // silently dropped the hint).
+                    ["_timeout_seconds"] = 1800
                 })
         ];
 
@@ -326,7 +336,7 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
         Assert.Equal(source.Principal, request.RequesterPrincipal);
         Assert.Contains(request.Options, o => o.Key.Value == ApprovalOptionKeys.ApproveOnce);
 
-        var approvalReply = await sessionManager.Ask<ICommandReply>(new ToolInteractionResponse
+        var approvalReply = await sessionManager.Ask<ISessionResponse>(new ToolInteractionResponse
         {
             SessionId = sessionId,
             CallId = request.CallId,
@@ -348,6 +358,10 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
         Assert.NotNull(_recordingShellTool);
         Assert.True(_recordingShellTool!.WasCalled);
         Assert.Equal(TrustAudience.Personal, _recordingShellTool.LastContext?.Audience);
+
+        // The sub-agent extracted the meta timeout hint and applied it to the
+        // tool context (regression guard for the previously-dropped hint).
+        Assert.Equal(1800, _recordingShellTool.LastContext?.RequestedTimeoutSeconds);
     }
 
     [Fact]
@@ -412,7 +426,7 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
         }, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
         await subscriberB.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
 
-        var reply = await sessionManager.Ask<ICommandReply>(new ToolInteractionResponse
+        var reply = await sessionManager.Ask<ISessionResponse>(new ToolInteractionResponse
         {
             SessionId = sessionId,
             CallId = request.CallId,
@@ -733,7 +747,7 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
             Principal = PrincipalClassification.VerifiedAutomation,
             Provenance = new SourceProvenance(TransportAuthenticity.LocalProcess, PayloadTaint.Trusted),
             ReceivedAt = DateTimeOffset.UtcNow,
-            ReminderId = reminderId
+            ReminderId = reminderId is null ? null : new ReminderId(reminderId)
         };
     }
 
@@ -824,5 +838,15 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
         public ContextLayerTiming Timing => timing;
 
         public string GetContextLayer(TrustAudience audience) => content;
+    }
+
+    private sealed class TestSystemPromptProvider(string systemPrompt, string operatingRules) : ISystemPromptProvider
+    {
+        public string GetSystemPrompt(TrustAudience audience, string? projectDirectory = null) => systemPrompt;
+
+        public string? GetProjectInstructions(TrustAudience audience, string? projectDirectory) => null;
+
+        public string? GetOperatingRules(TrustAudience audience)
+            => audience == TrustAudience.Public ? null : operatingRules;
     }
 }

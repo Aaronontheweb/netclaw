@@ -1,37 +1,50 @@
 ## Purpose
 
 Define operator-facing CLI surface area for Netclaw: the `netclaw init` wizard,
-the `netclaw doctor` diagnostic, and the `netclaw approvals` command for
-managing persistent tool approvals.
+the `netclaw doctor` diagnostic, the `netclaw config` settings surface, and the
+`netclaw approvals` command for managing persistent tool approvals.
 ## Requirements
-### Requirement: Init wizard approval mode selection
+### Requirement: Config command surface
 
-The `netclaw init` wizard SHALL ask about shell approval mode when configuring
-each audience profile that has shell access enabled. The wizard SHALL present
-three options: Approval (recommended default), Unrestricted (HostAllowed with
-no approval), and Off (shell disabled). The selected mode SHALL be written to
-the audience profile's `ApprovalPolicy` in `netclaw.json`. For Personal,
-selecting Approval SHALL explicitly write
+The CLI SHALL expose `netclaw config` as a top-level command. The command
+SHALL operate on local config files and SHALL behave per the
+`netclaw-config-command` capability.
+
+If no config exists, `netclaw config` SHALL print a plain message directing
+the operator to `netclaw init` and exit non-zero without launching Termina.
+
+#### Scenario: Help text describes config as post-install settings surface
+
+- **WHEN** the operator runs `netclaw config --help`
+- **THEN** the command exits zero
+- **AND** help text describes `netclaw config` as the main post-install
+  settings surface
+- **AND** help text references `netclaw init` as the bootstrap companion
+
+#### Scenario: No-args invocation launches dashboard on configured install
+
+- **GIVEN** `netclaw.json` exists
+- **WHEN** the operator runs `netclaw config`
+- **THEN** the domain-oriented dashboard launches
+
+#### Scenario: Missing install refuses with plain message
+
+- **GIVEN** `netclaw.json` does not exist
+- **WHEN** the operator runs `netclaw config`
+- **THEN** stderr contains ``No configuration found. Run `netclaw init` first.``
+- **AND** the command exits non-zero
+- **AND** no partial TUI starts
+
+### Requirement: Personal shell approval defaults are explicit
+
+When bootstrap selects `Personal` posture, the written config SHALL make the
+recommended shell approval default explicit by writing
 `Tools.AudienceProfiles.Personal.ApprovalPolicy.ToolOverrides.shell_execute = "approval"`
-rather than relying on runtime audience defaults.
+rather than relying on runtime-only implicit defaults.
 
-#### Scenario: Init wizard prompts for Personal shell mode
+#### Scenario: Personal bootstrap writes explicit shell approval default
 
-- **GIVEN** the user is running `netclaw init`
-- **WHEN** the wizard configures the Personal audience profile
-- **AND** shell mode is not Off
-- **THEN** the wizard asks: "Shell approval mode for Personal?"
-- **AND** offers Approval (default), Unrestricted, and Off
-
-#### Scenario: Init wizard skips approval for audiences with shell off
-
-- **GIVEN** the user is running `netclaw init`
-- **WHEN** the wizard configures an audience with shell mode Off
-- **THEN** the wizard does NOT ask about approval mode for that audience
-
-#### Scenario: Selection written to config
-
-- **GIVEN** the user selects "Approval" for Personal audience
+- **GIVEN** the operator completes `netclaw init` with `Personal` posture
 - **WHEN** the wizard writes the config
 - **THEN** `netclaw.json` includes
   `Tools.AudienceProfiles.Personal.ApprovalPolicy.ToolOverrides.shell_execute = "approval"`
@@ -278,4 +291,54 @@ SHALL remain a superset of the previous shape: existing `verb` and
 - **WHEN** the approvals list page renders
 - **THEN** each row shows the grant's relative creation time alongside
   its scope label
+### Requirement: CLI derives local control-plane endpoint from daemon bind config
 
+When no explicit daemon endpoint override exists, the CLI SHALL derive a usable local control-plane endpoint from `Daemon.Host` and `Daemon.Port` in daemon configuration instead of always falling back to `http://127.0.0.1:5199`.
+
+If the daemon bind host is an unspecified wildcard listen address such as `0.0.0.0`, `::`, or `[::]`, the CLI SHALL normalize it to a connectable loopback host for local control-plane use.
+
+#### Scenario: Explicit environment override still wins
+
+- **GIVEN** `NETCLAW_DAEMON_ENDPOINT` is set
+- **WHEN** the CLI resolves the daemon endpoint
+- **THEN** it uses the environment override
+
+#### Scenario: Client config override wins over daemon bind fallback
+
+- **GIVEN** no environment override is set
+- **AND** the client config file contains a daemon endpoint
+- **WHEN** the CLI resolves the daemon endpoint
+- **THEN** it uses the client config endpoint
+
+#### Scenario: Daemon bind config provides fallback endpoint
+
+- **GIVEN** no environment override or client endpoint override exists
+- **AND** daemon config contains `Host = "10.0.0.20"` and `Port = 6200`
+- **WHEN** the CLI resolves the daemon endpoint
+- **THEN** it returns `http://10.0.0.20:6200`
+
+#### Scenario: Wildcard bind is normalized for local control-plane use
+
+- **GIVEN** no environment override or client endpoint override exists
+- **AND** daemon config contains `Host = "0.0.0.0"` and `Port = 5199`
+- **WHEN** the CLI resolves the daemon endpoint
+- **THEN** it returns `http://127.0.0.1:5199`
+
+### Requirement: Daemon-host CLI auth decision uses effective exposure requirements
+
+The daemon-host CLI SHALL decide whether to attach a bearer token based on whether the resolved endpoint requires remote authentication, not only on whether the endpoint host is loopback.
+
+#### Scenario: Reverse-proxy loopback control-plane endpoint attaches token
+
+- **GIVEN** the resolved endpoint is `http://127.0.0.1:5199`
+- **AND** daemon config exposure mode is `reverse-proxy`
+- **AND** a device token exists locally
+- **WHEN** the CLI builds its daemon connection
+- **THEN** it attaches the bearer token
+
+#### Scenario: Local-mode loopback control-plane endpoint skips token
+
+- **GIVEN** the resolved endpoint is `http://127.0.0.1:5199`
+- **AND** daemon config exposure mode is `local`
+- **WHEN** the CLI builds its daemon connection
+- **THEN** it does not attach a bearer token by default

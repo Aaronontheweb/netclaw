@@ -8,10 +8,12 @@ using Google.Protobuf;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Jobs;
 using Netclaw.Actors.Protocol;
+using Netclaw.Tools;
 using Netclaw.Actors.Reminders;
 using Netclaw.Actors.Sessions;
 using Netclaw.Media;
 using Proto = Netclaw.Actors.Serialization.Proto;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Serialization;
 
@@ -32,9 +34,8 @@ internal static class NetclawProtoMapper
         ToolApprovalRequested v => ToProto(v),
         ToolApprovalResolved v => ToProto(v),
         ToolBatchAbandoned v => ToProto(v),
+        SessionBackgroundJobsReaped v => ToProto(v),
         SessionSnapshot v => ToProto(v),
-        TurnBroadcast v => ToProto(v),
-        CompactionBroadcast v => ToProto(v),
         WorkingContext v => ToProto(v),
         ReminderId v => ToProto(v),
         ReminderDelivery v => ToProto(v),
@@ -158,10 +159,12 @@ internal static class NetclawProtoMapper
             AssistantReply = ToProto(evt.AssistantReply),
             RecordedAtMs = evt.RecordedAtMs
         };
-        if (evt.SourceReminderId is not null)
-            proto.SourceReminderId = evt.SourceReminderId;
-        if (evt.SourceBackgroundJobId is not null)
-            proto.SourceBackgroundJobId = evt.SourceBackgroundJobId;
+        // Value objects map to the existing string proto fields, so the on-disk
+        // form is byte-identical to the pre-value-object representation.
+        if (evt.SourceReminderId is { } reminderId)
+            proto.SourceReminderId = reminderId.Value;
+        if (evt.SourceBackgroundJobId is { } backgroundJobId)
+            proto.SourceBackgroundJobId = backgroundJobId.Value;
         return proto;
     }
 
@@ -171,8 +174,8 @@ internal static class NetclawProtoMapper
         UserMessage = FromProto(proto.UserMessage),
         AssistantReply = FromProto(proto.AssistantReply),
         RecordedAtMs = proto.RecordedAtMs,
-        SourceReminderId = proto.HasSourceReminderId ? proto.SourceReminderId : null,
-        SourceBackgroundJobId = proto.HasSourceBackgroundJobId ? proto.SourceBackgroundJobId : null
+        SourceReminderId = proto.HasSourceReminderId ? new ReminderId(proto.SourceReminderId) : (ReminderId?)null,
+        SourceBackgroundJobId = proto.HasSourceBackgroundJobId ? new BackgroundJobId(proto.SourceBackgroundJobId) : (BackgroundJobId?)null
     };
 
     // ── SessionTitleSet ──
@@ -341,8 +344,20 @@ internal static class NetclawProtoMapper
         AbandonedAtMs = proto.AbandonedAtMs
     };
 
+    internal static Proto.SessionBackgroundJobsReapedProto ToProto(SessionBackgroundJobsReaped evt) => new()
+    {
+        SessionId = ToProto(evt.SessionId),
+        ReapedAtMs = evt.ReapedAtMs
+    };
+
+    internal static SessionBackgroundJobsReaped FromProto(Proto.SessionBackgroundJobsReapedProto proto) => new()
+    {
+        SessionId = FromProto(proto.SessionId),
+        ReapedAtMs = proto.ReapedAtMs
+    };
+
     private static Proto.ToolApprovalRequestedProto.Types.ApprovalCandidateProto ToApprovalCandidateProto(
-        ToolApprovalRequested.ApprovalCandidateRecord c)
+        Netclaw.Security.ApprovalCandidate c)
     {
         var proto = new Proto.ToolApprovalRequestedProto.Types.ApprovalCandidateProto
         {
@@ -353,12 +368,9 @@ internal static class NetclawProtoMapper
         return proto;
     }
 
-    private static ToolApprovalRequested.ApprovalCandidateRecord FromApprovalCandidateProto(
-        Proto.ToolApprovalRequestedProto.Types.ApprovalCandidateProto proto) => new()
-    {
-        Verb = proto.Verb,
-        Directory = proto.HasDirectory ? proto.Directory : null
-    };
+    private static Netclaw.Security.ApprovalCandidate FromApprovalCandidateProto(
+        Proto.ToolApprovalRequestedProto.Types.ApprovalCandidateProto proto) =>
+        new(proto.Verb, proto.HasDirectory ? proto.Directory : null);
 
     private static Proto.ToolApprovalRequestedProto.Types.TurnContextRecordProto ToProto(TurnContextRecord record)
     {
@@ -386,7 +398,28 @@ internal static class NetclawProtoMapper
             proto.SourceScope = record.SourceScope;
         if (record.SourceKind is not null)
             proto.SourceKind = record.SourceKind;
+        if (record.DefaultDeliveryTarget is not null)
+            proto.DefaultDeliveryTarget = ToProto(record.DefaultDeliveryTarget);
+        if (record.RequestedDeliveryTarget is not null)
+            proto.RequestedDeliveryTarget = ToProto(record.RequestedDeliveryTarget);
         proto.AdoptedSpeakerIds.AddRange(record.AdoptedSpeakerIds);
+        return proto;
+    }
+
+    private static Proto.ToolApprovalRequestedProto.Types.TurnContextRecordProto.Types.ChannelDeliveryTargetRecordProto ToProto(
+        ChannelDeliveryTargetInfo target)
+    {
+        var proto = new Proto.ToolApprovalRequestedProto.Types.TurnContextRecordProto.Types.ChannelDeliveryTargetRecordProto
+        {
+            ChannelKey = target.ChannelKey,
+            DestinationKind = target.DestinationKind,
+            DestinationId = target.DestinationId
+        };
+
+        if (target.DestinationDisplayName is not null)
+            proto.DestinationDisplayName = target.DestinationDisplayName;
+        if (target.ThreadOrRootId is not null)
+            proto.ThreadOrRootId = target.ThreadOrRootId;
         return proto;
     }
 
@@ -406,11 +439,22 @@ internal static class NetclawProtoMapper
             PayloadTaint = (Configuration.PayloadTaint)proto.PayloadTaint,
             SourceScope = proto.HasSourceScope ? proto.SourceScope : null,
             SourceKind = proto.HasSourceKind ? proto.SourceKind : null,
+            DefaultDeliveryTarget = proto.DefaultDeliveryTarget is null ? null : FromProto(proto.DefaultDeliveryTarget),
+            RequestedDeliveryTarget = proto.RequestedDeliveryTarget is null ? null : FromProto(proto.RequestedDeliveryTarget),
             HasAdoptedContext = proto.HasAdoptedContext,
             HasThirdPartyAdoptedContext = proto.HasThirdPartyAdoptedContext,
             AdoptedSpeakerIds = proto.AdoptedSpeakerIds.ToArray(),
             SupportsInteractiveApproval = proto.SupportsInteractiveApproval
         };
+
+    private static ChannelDeliveryTargetInfo FromProto(
+        Proto.ToolApprovalRequestedProto.Types.TurnContextRecordProto.Types.ChannelDeliveryTargetRecordProto proto)
+        => new(
+            proto.ChannelKey,
+            proto.DestinationKind,
+            proto.DestinationId,
+            proto.HasDestinationDisplayName ? proto.DestinationDisplayName : null,
+            proto.HasThreadOrRootId ? proto.ThreadOrRootId : null);
 
     // ── SessionSnapshot ──
 
@@ -508,38 +552,6 @@ internal static class NetclawProtoMapper
         AuthorityAtInclusion = proto.AuthorityAtInclusion
     };
 
-    // ── TurnBroadcast ──
-
-    internal static Proto.TurnBroadcastProto ToProto(TurnBroadcast evt) => new()
-    {
-        SessionId = ToProto(evt.SessionId),
-        AssistantReply = ToProto(evt.AssistantReply),
-        BroadcastAtMs = evt.BroadcastAtMs
-    };
-
-    internal static TurnBroadcast FromProto(Proto.TurnBroadcastProto proto) => new()
-    {
-        SessionId = FromProto(proto.SessionId),
-        AssistantReply = FromProto(proto.AssistantReply),
-        BroadcastAtMs = proto.BroadcastAtMs
-    };
-
-    // ── CompactionBroadcast ──
-
-    internal static Proto.CompactionBroadcastProto ToProto(CompactionBroadcast evt) => new()
-    {
-        SessionId = ToProto(evt.SessionId),
-        Summary = evt.Summary,
-        CompactedAtMs = evt.CompactedAtMs
-    };
-
-    internal static CompactionBroadcast FromProto(Proto.CompactionBroadcastProto proto) => new()
-    {
-        SessionId = FromProto(proto.SessionId),
-        Summary = proto.Summary,
-        CompactedAtMs = proto.CompactedAtMs
-    };
-
     // ── WorkingContext ──
 
     internal static Proto.WorkingContextProto ToProto(WorkingContext wc)
@@ -573,6 +585,8 @@ internal static class NetclawProtoMapper
             proto.SessionId = rd.SessionId;
         if (rd.OriginChannelType is not null)
             proto.OriginChannelType = (Proto.ChannelType)(int)rd.OriginChannelType.Value;
+        if (rd.Target is not null)
+            proto.Target = ToChannelDeliveryTargetProto(rd.Target);
         return proto;
     }
 
@@ -582,8 +596,33 @@ internal static class NetclawProtoMapper
         Transport = proto.HasTransport ? proto.Transport : null,
         Address = proto.HasAddress ? proto.Address : null,
         SessionId = proto.HasSessionId ? proto.SessionId : null,
-        OriginChannelType = proto.HasOriginChannelType ? (ChannelType)(int)proto.OriginChannelType : null
+        OriginChannelType = proto.HasOriginChannelType ? (ChannelType)(int)proto.OriginChannelType : null,
+        Target = proto.Target is not null ? FromChannelDeliveryTargetProto(proto.Target) : null
     };
+
+    private static Proto.ChannelDeliveryTargetProto ToChannelDeliveryTargetProto(ChannelDeliveryTargetInfo target)
+    {
+        var proto = new Proto.ChannelDeliveryTargetProto
+        {
+            ChannelKey = target.ChannelKey,
+            DestinationKind = target.DestinationKind,
+            DestinationId = target.DestinationId
+        };
+
+        if (target.DestinationDisplayName is not null)
+            proto.DestinationDisplayName = target.DestinationDisplayName;
+        if (target.ThreadOrRootId is not null)
+            proto.ThreadOrRootId = target.ThreadOrRootId;
+        return proto;
+    }
+
+    private static ChannelDeliveryTargetInfo FromChannelDeliveryTargetProto(Proto.ChannelDeliveryTargetProto proto)
+        => new(
+            proto.ChannelKey,
+            proto.DestinationKind,
+            proto.DestinationId,
+            proto.HasDestinationDisplayName ? proto.DestinationDisplayName : null,
+            proto.HasThreadOrRootId ? proto.ThreadOrRootId : null);
 
     // ── ReminderSchedule ──
 
@@ -773,7 +812,9 @@ internal static class NetclawProtoMapper
         Rationale = job.Rationale,
         StartedAtMs = job.StartedAtMs,
         Audience = (Proto.TrustAudience)(int)job.Audience,
-        Boundary = job.Boundary.Value
+        Boundary = job.Boundary.Value,
+        ReapedAtMs = job.ReapedAtMs ?? 0,
+        OutputLogPath = job.OutputLogPath ?? string.Empty
     };
 
     internal static ActiveJobInfo FromProto(Proto.ActiveJobInfoProto proto) => new()
@@ -788,6 +829,8 @@ internal static class NetclawProtoMapper
         // legacy-restricted boundary rather than throwing on construction.
         Boundary = string.IsNullOrEmpty(proto.Boundary)
             ? Configuration.TrustBoundary.LegacyRestricted
-            : new Configuration.TrustBoundary(proto.Boundary)
+            : new Configuration.TrustBoundary(proto.Boundary),
+        ReapedAtMs = proto.ReapedAtMs == 0 ? null : proto.ReapedAtMs,
+        OutputLogPath = string.IsNullOrEmpty(proto.OutputLogPath) ? null : proto.OutputLogPath
     };
 }

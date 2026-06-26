@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="SubAgentSpawner.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -11,6 +11,7 @@ using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
+using static Netclaw.Actors.SubAgents.SubAgentProtocol;
 
 namespace Netclaw.Actors.SubAgents;
 
@@ -66,6 +67,16 @@ public sealed class SubAgentSpawner
         string? systemPromptOverlay = null,
         ChannelWriter<ToolActivityUpdate>? activitySink = null)
     {
+        // Session-scoped breadcrumbs: the sub-agent's own actor logs go through
+        // Akka's async logger bridge, where the diagnostics AsyncLocal is gone, so
+        // they never reach session.log. These parent-side lines run synchronously
+        // under the parent session scope, so the spawn lifecycle (request → outcome,
+        // including every early rejection) is always visible in the session transcript.
+        using var diagnosticsScope = SessionDiagnosticsContext.Push(context.SessionId);
+        _logger.LogInformation(
+            "SubAgent [{AgentName}] spawn requested (taskChars={TaskChars})",
+            profile.Name, task.Length);
+
         if (context.SpawnChildActor is null)
         {
             _logger.LogWarning("SubAgent [{AgentName}] cannot spawn — no session context available", profile.Name);
@@ -100,7 +111,8 @@ public sealed class SubAgentSpawner
             Tools = tools,
             ModelRole = profile.ModelRole,
             EmitStructuredFindings = profile.EmitStructuredFindings,
-            ProjectInstructions = ResolveProjectInstructions(context)
+            ProjectInstructions = ResolveProjectInstructions(context),
+            OperatingRules = ResolveOperatingRules(context)
         };
 
         var runId = Guid.NewGuid().ToString("N");
@@ -131,7 +143,36 @@ public sealed class SubAgentSpawner
             _approvalService,
             SubAgentMaxToolIterations);
         var actorName = $"subagent-{definition.Name}-{runId}";
-        var subAgent = (IActorRef)await context.SpawnChildActor(props, actorName, ct);
+        IActorRef subAgent;
+        try
+        {
+            subAgent = (IActorRef)await context.SpawnChildActor(props, actorName, ct);
+        }
+        catch (Exception ex)
+        {
+            // The child actor was never created (session actor ActorOf failed or the
+            // spawn ask timed out). Record it to the session transcript before the
+            // exception propagates to the tool pipeline.
+            _logger.LogError(
+                ex, "SubAgent [{AgentName}] failed to spawn child actor (runId={RunId})",
+                profile.Name, runId);
+            // Balance the IsStarted=true notification above: the non-streaming path
+            // (activitySink is null) relies solely on OnSubAgentActivity, so without
+            // a terminal event the session UI shows a sub-agent stuck in "Started".
+            context.OnSubAgentActivity?.Invoke(new SubAgentNotificationInfo
+            {
+                RunId = runId,
+                AgentName = definition.Name.Value,
+                IsStarted = false,
+                Success = false
+            });
+            activitySink?.TryComplete();
+            throw;
+        }
+
+        _logger.LogInformation(
+            "SubAgent [{AgentName}] child actor spawned (runId={RunId}); dispatching RunSubAgent",
+            profile.Name, runId);
 
         var sw = Stopwatch.StartNew();
         try
@@ -148,15 +189,19 @@ public sealed class SubAgentSpawner
                     Audience = context.Audience,
                     Boundary = context.Boundary,
                     ChannelType = context.ChannelType,
+                    DefaultDeliveryTarget = context.DefaultDeliveryTarget,
+                    RequestedDeliveryTarget = context.RequestedDeliveryTarget,
                     ModelInputModalities = context.ModelInputModalities,
                     ParentSessionDirectory = context.SessionDirectory,
                     ParentProjectDirectory = context.ProjectDirectory,
                     ParentCwd = context.ResolveShellCwd(null),
                     Cancellation = ct,
                     ApprovalBridge = context.ApprovalBridge,
-                    // Null for non-streaming callers such as routed skills and
-                    // the legacy ExecuteAsync path. Streaming spawn_agent calls
-                    // pass a real sink so parent tool liveness sees progress.
+                    // Null for non-streaming callers such as routed skills and the
+                    // legacy ExecuteAsync path; the sub-agent surfaces its progress
+                    // through its own session-correlated logs regardless. Streaming
+                    // spawn_agent calls pass a real sink so the parent tool's
+                    // liveness watchdog sees progress.
                     ActivitySink = activitySink
                 },
                 // No Ask timeout: a healthy run is bounded by the sub-agent's own
@@ -166,9 +211,9 @@ public sealed class SubAgentSpawner
                 // including keepalives) and the no-progress deadline (keepalives but
                 // no real tokens for NoProgressTimeoutSeconds). ct — the spawning
                 // tool call's token — only adds parent-turn / user cancellation on
-                // top; note the parent's own per-call watchdog does NOT bound a
-                // keepalive wedge, because the sub-agent emits liveness activity on
-                // every keepalive, which refreshes it.
+                // top; once streaming spawn_agent has emitted its first activity,
+                // the parent no longer applies an inter-item watchdog. Keepalive
+                // wedges are bounded by the sub-agent's own no-progress watchdog.
                 timeout: Timeout.InfiniteTimeSpan,
                 cancellationToken: ct);
 
@@ -185,8 +230,8 @@ public sealed class SubAgentSpawner
             });
 
             _logger.LogInformation(
-                "SubAgent [{AgentName}] completed (success={Success}, duration={Duration}ms)",
-                profile.Name, result.Success, sw.ElapsedMilliseconds);
+                "SubAgent [{AgentName}] completed (runId={RunId}, success={Success}, duration={Duration}ms)",
+                profile.Name, runId, result.Success, sw.ElapsedMilliseconds);
 
             return result;
         }
@@ -205,7 +250,7 @@ public sealed class SubAgentSpawner
                 Duration = sw.Elapsed
             });
 
-            _logger.LogError(ex, "SubAgent [{AgentName}] spawn failed", profile.Name);
+            _logger.LogError(ex, "SubAgent [{AgentName}] run failed (runId={RunId})", profile.Name, runId);
             return new SubAgentResult
             {
                 Success = false,
@@ -235,7 +280,10 @@ public sealed class SubAgentSpawner
             }
             else
             {
-                _logger.LogDebug(
+                // Log at INFO so tool denials are visible in production logs.
+                // Sub-agents without certain tools may be unable to complete
+                // their tasks, and this information is important for debugging.
+                _logger.LogInformation(
                     "SubAgent [{AgentName}] tool '{ToolName}' denied by SubAgentToolPolicy",
                     profile.Name, tool.Name);
             }
@@ -267,5 +315,15 @@ public sealed class SubAgentSpawner
             return null;
 
         return _promptProvider.GetProjectInstructions(context.Audience, context.ProjectDirectory);
+    }
+
+    private string? ResolveOperatingRules(ToolExecutionContext context)
+    {
+        // Sub-agents inherit the embedded AGENTS.md operating rules from the
+        // parent session's trust audience. This gives them the same safety,
+        // grounding, and policy constraints as main agents (Resource Hard Deny,
+        // search citation policy, grounding rules, "I don't know" policy, etc.)
+        // without exposing personal identity layers (SOUL.md, TOOLING.md).
+        return _promptProvider.GetOperatingRules(context.Audience);
     }
 }

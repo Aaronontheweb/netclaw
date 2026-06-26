@@ -14,7 +14,8 @@ namespace Netclaw.Providers;
 /// </summary>
 internal static class ProbeHelpers
 {
-    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);
+    // Probe timeout budgets live in the shared ProbeTimeouts type so the providers
+    // layer and the interactive CLI/TUI callers cannot drift apart (see #1292).
 
     /// <summary>
     /// Parses the OpenAI-style model listing response (used by OpenRouter, Anthropic, OpenAI).
@@ -57,6 +58,29 @@ internal static class ProbeHelpers
             : null;
     }
 
+    internal static int? TryReadPositiveInt32(JsonElement element, string propertyName)
+    {
+        // Context-window metadata uses 0 as an unset sentinel in some provider APIs
+        // (notably llama.cpp router-mode /props). Runtime context windows must be
+        // positive, so callers parsing context limits should treat non-positive
+        // values as unknown and let later detection/defaulting fill the value.
+        return TryReadInt32(element, propertyName) is > 0 and var value
+            ? value
+            : null;
+    }
+
+    internal static int? TryReadPositiveInt32OrFallbackWhenMissing(
+        JsonElement element, string propertyName, string fallbackPropertyName)
+    {
+        // n_ctx is the effective runtime context. If a provider reports it as 0,
+        // it is explicitly unknown; do not promote n_ctx_train as if it were the
+        // runtime limit, because that can overstate the configured capacity.
+        if (element.ValueKind == JsonValueKind.Object && element.TryGetProperty(propertyName, out _))
+            return TryReadPositiveInt32(element, propertyName);
+
+        return TryReadPositiveInt32(element, fallbackPropertyName);
+    }
+
     /// <summary>
     /// Common probe execution: builds URL, sends request with timeout,
     /// handles errors, and delegates parsing to the caller.
@@ -69,18 +93,25 @@ internal static class ProbeHelpers
         string? entryEndpoint,
         Action<HttpRequestMessage> configureRequest,
         Func<string, ProviderProbeResult> parseResponse,
-        CancellationToken ct)
+        CancellationToken ct,
+        TimeSpan? timeout = null)
     {
+        var effectiveTimeout = timeout ?? ProbeTimeouts.Default;
+
+        // Resolved up front so it is in scope for the timeout message below — a probe
+        // that black-holes against a wrong/blank endpoint (e.g. a self-hosted provider
+        // that fell back to the localhost default) should name that endpoint instead
+        // of failing anonymously.
+        var baseUrl = string.IsNullOrWhiteSpace(entryEndpoint)
+            ? defaultEndpoint
+            : entryEndpoint.TrimEnd('/');
+        var url = $"{baseUrl}{modelListingPath}";
+
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(ProbeTimeout);
+        timeoutCts.CancelAfter(effectiveTimeout);
 
         try
         {
-            var baseUrl = string.IsNullOrWhiteSpace(entryEndpoint)
-                ? defaultEndpoint
-                : entryEndpoint.TrimEnd('/');
-            var url = $"{baseUrl}{modelListingPath}";
-
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             configureRequest(request);
 
@@ -98,7 +129,9 @@ internal static class ProbeHelpers
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             return new ProviderProbeResult(false,
-                "Connection timed out after 10 seconds. Check that the endpoint is reachable.", []);
+                $"No response from {baseUrl} after {(int)effectiveTimeout.TotalSeconds}s. "
+                + "The server may be slow, loading a model, or unreachable — "
+                + "confirm it is up, then try again.", []);
         }
         catch (OperationCanceledException)
         {

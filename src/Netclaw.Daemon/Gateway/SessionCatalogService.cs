@@ -9,6 +9,7 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Telemetry;
 using Netclaw.Configuration;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Daemon.Gateway;
 
@@ -234,9 +235,11 @@ public sealed class SessionCatalogService : ISessionLifecycleObserver
     /// <summary>
     /// List recent sessions, ordered by last activity descending.
     /// </summary>
-    public List<SessionCatalogEntry> ListRecent(int limit = 50)
+    public List<SessionCatalogEntry> ListRecent(int limit = 50, int offset = 0)
     {
         var entries = new List<SessionCatalogEntry>();
+        limit = Math.Clamp(limit, 1, 100);
+        offset = Math.Max(0, offset);
 
         try
         {
@@ -253,8 +256,10 @@ public sealed class SessionCatalogService : ISessionLifecycleObserver
                 FROM sessions
                 ORDER BY last_activity DESC
                 LIMIT $limit
+                OFFSET $offset
                 """;
             cmd.Parameters.AddWithValue("$limit", limit);
+            cmd.Parameters.AddWithValue("$offset", offset);
 
             using var reader = cmd.ExecuteReader();
             while (reader.Read())

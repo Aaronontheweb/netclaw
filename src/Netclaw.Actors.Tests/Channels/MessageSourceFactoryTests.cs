@@ -8,7 +8,9 @@ using Akka.Hosting;
 using Akka.Hosting.TestKit;
 using Microsoft.Extensions.AI;
 using Netclaw.Actors.Channels;
+using Netclaw.Actors.Reminders;
 using Netclaw.Configuration;
+using Netclaw.Tools;
 using Xunit;
 
 namespace Netclaw.Actors.Tests.Channels;
@@ -27,7 +29,9 @@ public sealed class MessageSourceFactoryTests : TestKit
         string? reminderId = null,
         IActorRef? ackTarget = null,
         bool hasThirdParty = false,
-        IReadOnlyList<string>? adoptedSpeakerIds = null)
+        IReadOnlyList<string>? adoptedSpeakerIds = null,
+        ChannelDeliveryTargetInfo? defaultDeliveryTarget = null,
+        ChannelDeliveryTargetInfo? requestedDeliveryTarget = null)
         => new()
         {
             SenderId = new Netclaw.Actors.Protocol.SenderId("user-1"),
@@ -38,8 +42,10 @@ public sealed class MessageSourceFactoryTests : TestKit
                 ?? new SourceProvenance(TransportAuthenticity.Verified, PayloadTaint.Public),
             Contents = [new TextContent("hello")],
             ReceivedAt = DateTimeOffset.UtcNow,
-            ReminderId = reminderId,
+            ReminderId = reminderId is null ? null : new ReminderId(reminderId),
             AckTarget = ackTarget,
+            DefaultDeliveryTarget = defaultDeliveryTarget,
+            RequestedDeliveryTarget = requestedDeliveryTarget,
             HasThirdPartyAdoptedContext = hasThirdParty,
             AdoptedSpeakerIds = adoptedSpeakerIds ?? [],
         };
@@ -91,8 +97,33 @@ public sealed class MessageSourceFactoryTests : TestKit
         var result = MessageSourceFactory.Create(
             input, new SessionPipelineOptions { ChannelType = ChannelType.Slack }, new Netclaw.Actors.Protocol.TurnId("turn-1"));
 
-        Assert.Equal("check-pr:1712000000000", result.ReminderId);
+        Assert.Equal(new ReminderId("check-pr:1712000000000"), result.ReminderId);
         Assert.Same(probe.Ref, result.AckTarget);
+    }
+
+    [Fact]
+    public void Create_propagates_delivery_targets_from_ChannelInput()
+    {
+        var defaultTarget = new ChannelDeliveryTargetInfo(
+            "slack",
+            "destination",
+            "C1234567890",
+            "#alerts",
+            "1700000000.000001");
+        var requestedTarget = new ChannelDeliveryTargetInfo(
+            "mattermost",
+            "direct_message",
+            "user1234567890123456789012",
+            "@alice");
+
+        var result = MessageSourceFactory.Create(
+            BuildInput(defaultDeliveryTarget: defaultTarget, requestedDeliveryTarget: requestedTarget),
+            new SessionPipelineOptions { ChannelType = ChannelType.Slack },
+            new Netclaw.Actors.Protocol.TurnId("turn-1"));
+
+        Assert.Equal(defaultTarget, result.DefaultDeliveryTarget);
+        Assert.Equal(requestedTarget, result.RequestedDeliveryTarget);
+        Assert.Equal(requestedTarget, result.EffectiveDeliveryTarget);
     }
 
     [Fact]

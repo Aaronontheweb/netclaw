@@ -10,6 +10,7 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
 using Netclaw.Tools;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Daemon.Webhooks;
 
@@ -22,7 +23,7 @@ internal sealed class WebhookExecutionActor : ReceiveActor
     private readonly DateTimeOffset _dispatchedAt;
 
     private readonly SessionPipelineHandle _handle;
-    private static readonly ToolName NotificationTool = new("send_slack_message");
+    private static readonly ToolName NotificationTool = new("send_channel_message");
     private readonly ExecutionOutputAccumulator _accumulator = new(NotificationTool);
     private bool _completed;
 
@@ -100,7 +101,8 @@ internal sealed class WebhookExecutionActor : ReceiveActor
                     SourceScope = new SourceScope(_invocation.Route.Name)
                 },
                 Contents = [new TextContent(WebhookPayloadFormatter.Format(_invocation))],
-                ReceivedAt = _invocation.ReceivedAt
+                ReceivedAt = _invocation.ReceivedAt,
+                RequestedDeliveryTarget = _invocation.Route.BuildNotificationDeliveryTarget()
             });
 
             inputQueue.Complete();

@@ -14,7 +14,9 @@ using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Reminders;
 using Netclaw.Configuration;
 using Netclaw.Tests.Utilities;
+using Netclaw.Tools;
 using Xunit;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Tests.Reminders;
 
@@ -93,8 +95,8 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
             {
                 SessionId = sessionId,
                 CallId = new Netclaw.Tools.ToolCallId("call-1"),
-                ToolName = new Netclaw.Tools.ToolName("send_slack_message"),
-                Result = "Error parsing arguments for tool 'send_slack_message': Required parameter 'Message' is missing or empty."
+                ToolName = new Netclaw.Tools.ToolName("send_channel_message"),
+                Result = "Error: 'text' parameter is required."
             },
             new TurnCompleted { SessionId = sessionId, TurnNumber = new Netclaw.Actors.Protocol.TurnNumber(1) }
         ]);
@@ -109,7 +111,7 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
 
         Assert.False(completed.Success);
         Assert.Equal("notify-fail-test", completed.Id.Value);
-        Assert.Contains("Required parameter 'Message'", completed.ErrorMessage);
+        Assert.Contains("'text' parameter is required", completed.ErrorMessage);
     }
 
     [Fact]
@@ -121,7 +123,7 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
             {
                 SessionId = sessionId,
                 CallId = new Netclaw.Tools.ToolCallId("call-2"),
-                ToolName = new Netclaw.Tools.ToolName("send_slack_message"),
+                ToolName = new Netclaw.Tools.ToolName("send_channel_message"),
                 Result = "Message sent to channel C1. Thread: C1/1234567890.000001"
             },
             new TurnCompleted { SessionId = sessionId, TurnNumber = new Netclaw.Actors.Protocol.TurnNumber(1) }
@@ -195,7 +197,7 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
             {
                 SessionId = sessionId,
                 CallId = new Netclaw.Tools.ToolCallId("call-err"),
-                ToolName = new Netclaw.Tools.ToolName("send_slack_message"),
+                ToolName = new Netclaw.Tools.ToolName("send_channel_message"),
                 Result = "Error: channel not found"
             },
             new TurnCompleted { SessionId = sessionId, TurnNumber = new Netclaw.Actors.Protocol.TurnNumber(1) }
@@ -236,6 +238,44 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
         Assert.NotNull(pipeline.CapturedOptions);
         Assert.True(pipeline.CapturedOptions!.Filter.HasFlag(OutputFilter.TextStreaming));
         Assert.True(pipeline.CapturedOptions!.Filter.HasFlag(OutputFilter.ToolCalls));
+    }
+
+    [Fact]
+    public async Task Mode_A_wedged_session_is_failed_by_stall_backstop_releasing_the_guard()
+    {
+        // #1492 regression: a Channel-delivery (Mode A) reminder whose session
+        // wedges — stops producing output without ever emitting TurnCompleted or
+        // Error — used to hold the duplicate-execution guard forever (the actor
+        // had no execution ceiling). The stall backstop must conclude it as a
+        // failure so the parent clears _activeExecutions and the next fire runs.
+        var originalTimeout = ReminderExecutionActor.ExecutionStallTimeout;
+        ReminderExecutionActor.ExecutionStallTimeout = TimeSpan.FromMilliseconds(250);
+        try
+        {
+            // Emits one non-terminal output, then goes silent forever — no
+            // TurnCompleted/Error ever arrives.
+            var pipeline = new ScriptedSessionPipeline(sessionId =>
+            [
+                new TextOutput("Working on it...") { SessionId = sessionId }
+            ]);
+
+            var definition = CreateDefinition("mode-a-stall");
+            var probe = CreateTestProbe();
+            Sys.ActorOf(
+                Props.Create(() => new ParentProxy(probe.Ref, definition, pipeline, _historyStore)),
+                "exec-mode-a-stall");
+
+            var completed = await probe.ExpectMsgAsync<ReminderExecutionCompleted>(
+                TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+            Assert.False(completed.Success);
+            Assert.Equal("mode-a-stall", completed.Id.Value);
+            Assert.Contains("stalled", completed.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            ReminderExecutionActor.ExecutionStallTimeout = originalTimeout;
+        }
     }
 
     private static ReminderDefinition CreateDefinition(string id)
@@ -301,8 +341,8 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
         public Task SendFeedbackAsync(IWithSessionId feedback, CancellationToken ct = default) =>
             Task.CompletedTask;
 
-        public Task<ICommandReply> SendFeedbackAndWaitAsync(IWithSessionId feedback, CancellationToken ct = default) =>
-            Task.FromResult<ICommandReply>(CommandAck.For(feedback.SessionId));
+        public Task<ISessionResponse> SendFeedbackAndWaitAsync(IWithSessionId feedback, CancellationToken ct = default) =>
+            Task.FromResult<ISessionResponse>(CommandAck.For(feedback.SessionId));
     }
 
     private sealed class ScriptedSessionPipeline(
@@ -349,8 +389,8 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
         public Task SendFeedbackAsync(IWithSessionId feedback, CancellationToken ct = default) =>
             Task.CompletedTask;
 
-        public Task<ICommandReply> SendFeedbackAndWaitAsync(IWithSessionId feedback, CancellationToken ct = default) =>
-            Task.FromResult<ICommandReply>(CommandAck.For(feedback.SessionId));
+        public Task<ISessionResponse> SendFeedbackAndWaitAsync(IWithSessionId feedback, CancellationToken ct = default) =>
+            Task.FromResult<ISessionResponse>(CommandAck.For(feedback.SessionId));
     }
 
     // ── Audience resolution tests ─────────────────────────────────────────────
@@ -377,6 +417,43 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
 
         var input = await pipeline.InputCaptured.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.Equal(TrustAudience.Personal, input.Audience);
+    }
+
+    [Fact]
+    public async Task Channel_delivery_execution_carries_requested_delivery_target()
+    {
+        var pipeline = new ScriptedSessionPipeline(sessionId =>
+        [
+            new TurnCompleted { SessionId = sessionId, TurnNumber = new Netclaw.Actors.Protocol.TurnNumber(1) }
+        ]);
+
+        var target = new ChannelDeliveryTargetInfo(
+            "slack",
+            "destination",
+            "C1234567890",
+            "#alerts");
+        var definition = CreateDefinition("delivery-target") with
+        {
+            Delivery = new ReminderDelivery
+            {
+                Kind = DeliveryKind.Channel,
+                Transport = "slack",
+                Address = "C1234567890",
+                Target = target
+            },
+            DeliveryInstructions = string.Empty,
+            DeliveryRequired = false
+        };
+        var probe = CreateTestProbe();
+        Sys.ActorOf(
+            Props.Create(() => new ParentProxy(probe.Ref, definition, pipeline, _historyStore)),
+            "exec-delivery-target");
+
+        await probe.ExpectMsgAsync<ReminderExecutionCompleted>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        var input = await pipeline.InputCaptured.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.Equal(target, input.RequestedDeliveryTarget);
+        Assert.Null(input.DefaultDeliveryTarget);
     }
 
     // Note: Execution_fails_when_definition_audience_missing was removed in issue #994.
@@ -443,7 +520,7 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
             new TurnCompleted { SessionId = sessionId, TurnNumber = new Netclaw.Actors.Protocol.TurnNumber(1) }
         ]);
 
-        // Use Kind = None so success is not gated on send_slack_message
+        // Use Kind = None so success is not gated on send_channel_message
         var definition = CreateDefinition("history-success-test") with
         {
             Delivery = new ReminderDelivery { Kind = DeliveryKind.None }

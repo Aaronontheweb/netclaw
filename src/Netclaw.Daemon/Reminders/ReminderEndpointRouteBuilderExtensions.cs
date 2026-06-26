@@ -15,6 +15,7 @@ using Netclaw.Actors.Reminders;
 using Netclaw.Configuration;
 using Netclaw.Daemon.Security;
 using Netclaw.Tools;
+using static Netclaw.Actors.Reminders.ReminderProtocol;
 
 namespace Netclaw.Daemon.Reminders;
 
@@ -32,7 +33,7 @@ public static class ReminderEndpointRouteBuilderExtensions
         {
             var manager = await actor.GetAsync(ct);
             var response = await manager.Ask<ReminderListResponse>(
-                new ListRemindersCommand(IncludeDisabled: false), TimeSpan.FromSeconds(10), ct);
+                new ListRemindersCommand(), TimeSpan.FromSeconds(10), ct);
             var projected = response.Reminders.Select(r => new ReminderSummaryDto(
                 Id: r.Id.Value,
                 Title: r.Title,
@@ -46,7 +47,7 @@ public static class ReminderEndpointRouteBuilderExtensions
             return TypedResults.Ok(projected);
         })
         .WithName("ListReminders")
-        .WithSummary("List all active reminders.");
+        .WithSummary("List all reminders.");
 
         reminders.MapPost("", async ValueTask<Results<Ok<ReminderMessageResponse>, BadRequest<ReminderErrorResponse>, ProblemHttpResult>> (
             CreateReminderRequest request,
@@ -306,6 +307,32 @@ public static class ReminderEndpointRouteBuilderExtensions
         .WithName("GetReminderHistory")
         .WithSummary("Get recent fire history for a reminder.");
 
+        reminders.MapGet("/{id}/status", async ValueTask<Results<Ok<ReminderStatusDto>, NotFound<ReminderErrorResponse>>> (
+            string id,
+            IRequiredActor<ReminderManagerActorKey> actor,
+            CancellationToken ct) =>
+        {
+            var manager = await actor.GetAsync(ct);
+            var status = await manager.Ask<ReminderStatusResponse>(
+                new GetReminderStatusQuery(new ReminderId(id)), TimeSpan.FromSeconds(10), ct);
+
+            if (!status.Found)
+                return TypedResults.NotFound(new ReminderErrorResponse($"Reminder '{id}' not found."));
+
+            return TypedResults.Ok(new ReminderStatusDto(
+                Id: status.Id.Value,
+                Enabled: status.Enabled,
+                Executing: status.Executing,
+                // Pass null through (FormatTimestamp renders null as the literal
+                // "unknown"); the CLI shows "not scheduled" for an absent next fire.
+                NextFire: status.NextFire is null ? null : SetReminderTool.FormatTimestamp(status.NextFire),
+                ConsecutiveFailures: status.ConsecutiveFailures,
+                SkippedDuplicates: status.SkippedDuplicates,
+                RecentHistory: status.RecentHistory));
+        })
+        .WithName("GetReminderStatus")
+        .WithSummary("Get per-reminder operational status: in-flight, consecutive failures, skipped fires, recent history.");
+
         return app;
     }
 
@@ -379,6 +406,16 @@ internal sealed record ReminderDetailDto(
     bool DeliveryRequired,
     string? DeliveryInstructions,
     string? Audience);
+
+/// <summary>Per-reminder operational status projection (see <c>GET /{id}/status</c>).</summary>
+internal sealed record ReminderStatusDto(
+    string Id,
+    bool Enabled,
+    bool Executing,
+    string? NextFire,
+    int ConsecutiveFailures,
+    int SkippedDuplicates,
+    IReadOnlyList<HistoryRecord> RecentHistory);
 
 /// <summary>Acknowledgement carrying a human-readable message.</summary>
 internal sealed record ReminderMessageResponse(string Message);

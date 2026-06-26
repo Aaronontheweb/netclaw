@@ -11,7 +11,7 @@ namespace Netclaw.Cli.Tests.Tui;
 /// Test double for <see cref="IProviderProbe"/> that returns canned results
 /// without making real HTTP calls.
 /// </summary>
-public sealed class FakeProviderProbe : IProviderProbe
+public sealed class FakeProviderProbe : IProviderProbe, IConfiguredProviderProbe
 {
     /// <summary>
     /// Per-type results for concurrent probing scenarios.
@@ -23,6 +23,11 @@ public sealed class FakeProviderProbe : IProviderProbe
     /// Tracks which provider types were probed, in order.
     /// </summary>
     public List<string> ProbedTypes { get; } = [];
+
+    /// <summary>
+    /// Tracks provider names passed through the configured-provider probe path.
+    /// </summary>
+    public List<string> ConfiguredProviderNames { get; } = [];
 
     /// <summary>
     /// The fallback result to return when no per-type result is configured.
@@ -56,7 +61,14 @@ public sealed class FakeProviderProbe : IProviderProbe
     /// </summary>
     public string? LastApiKey { get; private set; }
 
-    public Task<ProviderProbeResult> ProbeAsync(
+    /// <summary>
+    /// Optional gate. When set, <see cref="ProbeAsync(string, string?, string?, CancellationToken)"/>
+    /// blocks (observing the cancellation token) until the gate is completed — used to stage
+    /// in-flight probes for cancellation/concurrency tests. Null (default) returns immediately.
+    /// </summary>
+    public TaskCompletionSource? Gate { get; set; }
+
+    public async Task<ProviderProbeResult> ProbeAsync(
         string providerType, string? endpoint, string? apiKey,
         CancellationToken ct = default)
     {
@@ -65,14 +77,15 @@ public sealed class FakeProviderProbe : IProviderProbe
         LastApiKey = apiKey;
         ProbedTypes.Add(providerType);
 
-        if (ExceptionToThrow is not null)
-            return Task.FromException<ProviderProbeResult>(ExceptionToThrow);
+        if (Gate is not null)
+            await Gate.Task.WaitAsync(ct);
 
-        var result = TypeResults.TryGetValue(providerType, out var typeResult)
+        if (ExceptionToThrow is not null)
+            throw ExceptionToThrow;
+
+        return TypeResults.TryGetValue(providerType, out var typeResult)
             ? typeResult
             : NextResult;
-
-        return Task.FromResult(result);
     }
 
     public Task<ProviderProbeResult> ProbeAsync(
@@ -86,5 +99,14 @@ public sealed class FakeProviderProbe : IProviderProbe
         AuthMethod authMethod, CancellationToken ct = default)
     {
         return ProbeAsync(providerType, endpoint, credential, ct);
+    }
+
+    public Task<ProviderProbeResult> ProbeConfiguredAsync(
+        string providerName,
+        ProviderEntry entry,
+        CancellationToken ct = default)
+    {
+        ConfiguredProviderNames.Add(providerName);
+        return ProbeAsync(entry, ct);
     }
 }

@@ -8,6 +8,7 @@ using System.Text.Json.Serialization;
 using Akka.Actor;
 using Netclaw.Actors.Serialization;
 using Netclaw.Configuration;
+using Netclaw.Tools;
 
 namespace Netclaw.Actors.Reminders;
 
@@ -83,6 +84,14 @@ public sealed record ReminderDelivery : INetclawSerializableMessage
     public string? Address { get; init; }
 
     /// <summary>
+    /// Resolved standard channel delivery target for Channel delivery. Older
+    /// persisted reminders may only have <see cref="Transport"/> and
+    /// <see cref="Address"/>; execution still handles those fields but new
+    /// reminders store this explicit target for trigger-source routing checks.
+    /// </summary>
+    public ChannelDeliveryTargetInfo? Target { get; init; }
+
+    /// <summary>
     /// Session ID for CurrentSession delivery. Null for Channel and None.
     /// </summary>
     public string? SessionId { get; init; }
@@ -95,16 +104,11 @@ public sealed record ReminderDelivery : INetclawSerializableMessage
     public Channels.ChannelType? OriginChannelType { get; init; }
 
     /// <summary>
-    /// Gets the notification tool name for Channel delivery based on the transport.
-    /// Returns null for non-Channel delivery kinds or unknown transports.
+    /// Gets the notification tool name for Channel delivery.
+    /// Returns null for non-Channel delivery kinds.
     /// </summary>
     public string? GetNotificationToolName() => Kind == DeliveryKind.Channel
-        ? Transport?.ToLowerInvariant() switch
-        {
-            "slack" => "send_slack_message",
-            "discord" => "send_discord_message",
-            _ => null
-        }
+        ? "send_channel_message"
         : null;
 }
 
@@ -180,7 +184,7 @@ public sealed record ReminderDefinition
     /// When true, a missed delivery fails the execution and emits
     /// <see cref="OperationalAlert.ReminderExecutionFailed"/>. For
     /// <see cref="DeliveryKind.CurrentSession"/>, this gates envelope ack
-    /// on the <see cref="ReminderDeliveryObserved"/> signal. For
+    /// on the <see cref="ReminderDeliveryResult"/> signal. For
     /// <see cref="DeliveryKind.Channel"/>, this gates success on the
     /// notification tool being called. Ignored for <see cref="DeliveryKind.None"/>.
     /// </summary>
@@ -274,12 +278,27 @@ public enum ReminderSaveError
     Internal
 }
 
-// ── Commands ──
+/// <summary>
+/// External message contract for <see cref="ReminderManagerActor"/>.
+/// </summary>
+public static partial class ReminderProtocol
+{
+
+/// <summary>Marker for reminder commands.</summary>
+public interface IReminderCommand;
+
+/// <summary>Marker for reminder queries.</summary>
+public interface IReminderQuery;
+
+/// <summary>Marker for reminder responses.</summary>
+public interface IReminderResponse;
+
+// ===== Commands =====
 
 public sealed record SaveReminderCommand(
     ReminderDefinition Definition,
     ReminderWriteMode WriteMode = ReminderWriteMode.CreateOnly,
-    ReminderAudienceAuthorizationContext? Authorization = null) : INoSerializationVerificationNeeded;
+    ReminderAudienceAuthorizationContext? Authorization = null) : IReminderCommand, INoSerializationVerificationNeeded;
 
 public sealed record ReminderAudienceAuthorizationContext(
     TrustAudience? SourceAudience,
@@ -289,19 +308,22 @@ public sealed record ReminderAudienceAuthorizationContext(
 /// Disables a reminder and cancels any active schedule. The definition file
 /// is preserved on disk so history and configuration remain available for diagnosis.
 /// </summary>
-public sealed record CancelReminderCommand(ReminderId Id) : INoSerializationVerificationNeeded;
+public sealed record CancelReminderCommand(ReminderId Id) : IReminderCommand, INoSerializationVerificationNeeded;
 
 /// <summary>
 /// Permanently deletes a reminder definition, its schedule, and history from disk.
 /// Not exposed as an LLM tool — use via CLI (<c>netclaw reminder delete</c>) or HTTP API.
 /// </summary>
-public sealed record DeleteReminderCommand(ReminderId Id) : INoSerializationVerificationNeeded;
-public sealed record DisableReminderCommand(ReminderId Id) : INoSerializationVerificationNeeded;
-public sealed record EnableReminderCommand(ReminderId Id) : INoSerializationVerificationNeeded;
-public sealed record ListRemindersCommand(bool IncludeDisabled = true) : INoSerializationVerificationNeeded;
-public sealed record GetReminderCommand(ReminderId Id) : INoSerializationVerificationNeeded;
+public sealed record DeleteReminderCommand(ReminderId Id) : IReminderCommand, INoSerializationVerificationNeeded;
+public sealed record DisableReminderCommand(ReminderId Id) : IReminderCommand, INoSerializationVerificationNeeded;
+public sealed record EnableReminderCommand(ReminderId Id) : IReminderCommand, INoSerializationVerificationNeeded;
+public sealed record ListRemindersCommand(bool IncludeDisabled = true) : IReminderQuery, INoSerializationVerificationNeeded;
 
-// ── Responses ──
+// ===== Queries =====
+
+public sealed record GetReminderCommand(ReminderId Id) : IReminderQuery, INoSerializationVerificationNeeded;
+
+// ===== Responses =====
 
 public sealed record ReminderSavedResponse(
     ReminderId Id,
@@ -309,20 +331,104 @@ public sealed record ReminderSavedResponse(
     bool Success,
     DateTimeOffset? NextFire,
     ReminderSaveError Error = ReminderSaveError.None,
-    string? ErrorMessage = null) : INoSerializationVerificationNeeded;
+    string? ErrorMessage = null) : IReminderResponse, INoSerializationVerificationNeeded;
 
-public sealed record ReminderCancelledResponse(ReminderId Id, bool Found) : INoSerializationVerificationNeeded;
-public sealed record ReminderDeletedResponse(ReminderId Id, bool Found) : INoSerializationVerificationNeeded;
+public sealed record ReminderCancelledResponse(ReminderId Id, bool Found) : IReminderResponse, INoSerializationVerificationNeeded;
+public sealed record ReminderDeletedResponse(ReminderId Id, bool Found) : IReminderResponse, INoSerializationVerificationNeeded;
 
 public sealed record ReminderStateResponse(
     ReminderId Id,
     bool Found,
     bool Enabled,
     DateTimeOffset? NextFire = null,
-    string? ErrorMessage = null) : INoSerializationVerificationNeeded;
+    string? ErrorMessage = null) : IReminderResponse, INoSerializationVerificationNeeded;
 
-public sealed record ReminderListResponse(IReadOnlyList<ReminderInfo> Reminders) : INoSerializationVerificationNeeded;
-public sealed record GetReminderResponse(ReminderInfo? Reminder) : INoSerializationVerificationNeeded;
+public sealed record ReminderListResponse(IReadOnlyList<ReminderInfo> Reminders) : IReminderResponse, INoSerializationVerificationNeeded;
+public sealed record GetReminderResponse(ReminderInfo? Reminder) : IReminderResponse, INoSerializationVerificationNeeded;
+
+// ===== Delivery / Health =====
+
+/// <summary>
+/// Point-to-point delivery outcome sent by a channel binding actor directly
+/// back to the dispatching <see cref="ReminderExecutionActor"/> (carried as
+/// <see cref="Channels.MessageSource.DeliveryObserver"/> on the originating
+/// <c>DeliverTrustedSessionTurn</c>) when a reminder-sourced turn completes.
+/// Used for <see cref="DeliveryKind.CurrentSession"/> with
+/// <see cref="ReminderDefinition.DeliveryRequired"/> = true to gate envelope
+/// ack on whether the assistant reply actually reached the channel.
+/// <para>
+/// Unlike the prior EventStream-broadcast observation, this signal reports
+/// <see cref="Delivered"/> = false on a failed post, so the execution actor
+/// can report failure immediately (triggering Akka.Reminders redelivery)
+/// instead of waiting out the backstop timeout.
+/// </para>
+/// </summary>
+/// <param name="ReminderDeliveryKey">
+/// Composite key in format "{reminderId}:{fireTimestampMs}".
+/// </param>
+/// <param name="ChannelType">
+/// The channel that attempted the delivery.
+/// </param>
+/// <param name="Delivered">
+/// True when the assistant reply was posted to the channel; false when the
+/// turn completed without a successful post.
+/// </param>
+/// <param name="FailureReason">
+/// Optional human-readable reason when <see cref="Delivered"/> is false.
+/// </param>
+/// <param name="ObservedAtMs">
+/// Optional timestamp when the outbound delivery outcome was observed.
+/// </param>
+public sealed record ReminderDeliveryResult(
+    ReminderId ReminderDeliveryKey,
+    Channels.ChannelType ChannelType,
+    bool Delivered,
+    string? FailureReason = null,
+    long? ObservedAtMs = null) : IReminderResponse, INoSerializationVerificationNeeded;
+
+// ===== Health query =====
+
+/// <summary>
+/// Query sent to <see cref="ReminderManagerActor"/> to obtain current health counters.
+/// </summary>
+public sealed record GetReminderHealthQuery : IReminderQuery, INoSerializationVerificationNeeded
+{
+    public static readonly GetReminderHealthQuery Instance = new();
+}
+
+/// <summary>
+/// Response from <see cref="GetReminderHealthQuery"/> with current runtime counters.
+/// </summary>
+public sealed record ReminderHealthResponse(
+    int ScheduledCount,
+    int ActiveExecutions,
+    int FailedCount) : IReminderResponse, INoSerializationVerificationNeeded;
+
+/// <summary>
+/// Query sent to <see cref="ReminderManagerActor"/> for the per-reminder
+/// operational status surfaced by <c>netclaw reminder status &lt;id&gt;</c>.
+/// </summary>
+public sealed record GetReminderStatusQuery(ReminderId Id) : IReminderQuery, INoSerializationVerificationNeeded;
+
+/// <summary>
+/// Response to <see cref="GetReminderStatusQuery"/>: per-reminder health for an
+/// operator — whether the reminder exists/is enabled, whether an execution is in
+/// flight right now, when it next fires, the consecutive-failure and
+/// skipped-duplicate counts (in-memory since daemon start), and recent run
+/// history. Lets <c>netclaw reminder status</c> answer "is this reminder healthy
+/// or is it silently failing/skipping?" — the gap that hid #1492.
+/// </summary>
+public sealed record ReminderStatusResponse(
+    ReminderId Id,
+    bool Found,
+    bool Enabled,
+    bool Executing,
+    DateTimeOffset? NextFire,
+    int ConsecutiveFailures,
+    int SkippedDuplicates,
+    IReadOnlyList<HistoryRecord> RecentHistory) : IReminderResponse, INoSerializationVerificationNeeded;
+
+}
 
 public sealed record ReminderInfo(
     ReminderId Id,
@@ -348,46 +454,6 @@ internal sealed record ReminderExecutionCompleted(
     ReminderId Id,
     bool Success,
     string? ErrorMessage = null) : INoSerializationVerificationNeeded;
-
-/// <summary>
-/// Signal emitted by the outbound channel pipeline when a reminder-sourced
-/// turn's assistant reply actually flows out through the channel's subscriber
-/// sink (e.g., Slack post API returns 200). Used by
-/// <see cref="ReminderExecutionActor"/> for <see cref="DeliveryKind.CurrentSession"/>
-/// with <see cref="ReminderDefinition.DeliveryRequired"/> = true to gate
-/// envelope ack on actual delivery observation.
-/// </summary>
-/// <param name="ReminderDeliveryKey">
-/// Composite key in format "{reminderId}:{fireTimestampMs}".
-/// </param>
-/// <param name="ChannelType">
-/// The channel through which the delivery was observed.
-/// </param>
-/// <param name="ObservedAtMs">
-/// Optional timestamp when the outbound delivery was observed.
-/// </param>
-public sealed record ReminderDeliveryObserved(
-    string ReminderDeliveryKey,
-    Channels.ChannelType ChannelType,
-    long? ObservedAtMs = null) : INoSerializationVerificationNeeded;
-
-// ── Health query ──
-
-/// <summary>
-/// Query sent to <see cref="ReminderManagerActor"/> to obtain current health counters.
-/// </summary>
-public sealed record GetReminderHealthQuery : INoSerializationVerificationNeeded
-{
-    public static readonly GetReminderHealthQuery Instance = new();
-}
-
-/// <summary>
-/// Response from <see cref="GetReminderHealthQuery"/> with current runtime counters.
-/// </summary>
-public sealed record ReminderHealthResponse(
-    int ScheduledCount,
-    int ActiveExecutions,
-    int FailedCount) : INoSerializationVerificationNeeded;
 
 // ── Execution history ──
 

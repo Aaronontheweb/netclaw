@@ -24,7 +24,6 @@ namespace Netclaw.Cli.Tui;
 /// </summary>
 public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
 {
-    private static readonly string[] SpinnerFrames = ["\u280b", "\u2819", "\u2838", "\u2834", "\u2826", "\u2807"];
     private readonly IClipboardService? _clipboardService;
 
     public ProviderManagerPage(IClipboardService? clipboardService = null)
@@ -56,22 +55,14 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
 
     public override ILayoutNode BuildLayout()
     {
-        return Layouts.Vertical()
-            .WithChild(
-                new PanelNode()
-                    .WithTitle("Provider Manager")
-                    .WithBorder(BorderStyle.Rounded)
-                    .WithBorderColor(Color.Cyan)
-                    .WithContent(BuildInnerLayout())
-                    .Fill());
+        return NetclawTuiChrome.BuildPageFrame("Provider Manager", BuildInnerLayout());
     }
 
     private ILayoutNode BuildInnerLayout()
     {
         return Layouts.Vertical()
             .WithSpacing(1)
-            .WithChild(BuildContent())
-            .WithChild(Layouts.Empty().Fill())
+            .WithChild(BuildContent().Fill())
             .WithChild(BuildStatusBar())
             .WithChild(BuildKeyBindings());
     }
@@ -108,22 +99,9 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
             .Subscribe(_ => _contentNode.Invalidate())
             .DisposeWith(Subscriptions);
 
-        // Animate spinners during loading, validation, and OAuth flows
-        ViewModel.SpinnerTick
-            .Subscribe(_ =>
-            {
-                _contentNode.Invalidate();
-                ViewModel.RequestRedraw();
-            })
-            .DisposeWith(Subscriptions);
-
-        ViewModel.EagerProbeElapsedSeconds
-            .Subscribe(_ =>
-            {
-                _contentNode.Invalidate();
-                ViewModel.RequestRedraw();
-            })
-            .DisposeWith(Subscriptions);
+        // Spinners during loading/validation/OAuth self-animate via SpinnerNode
+        // (see SpinnerViews) and propagate their own redraws up the layout tree —
+        // no per-surface tick subscription required.
 
         return _contentNode;
     }
@@ -135,11 +113,9 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
         // validation feedback immediately.
         return ViewModel.ErrorMessage
             .CombineLatest(ViewModel.StatusMessage, (err, status) => (err, status))
-            .Select(t => (ILayoutNode)(!string.IsNullOrWhiteSpace(t.err)
-                ? new TextNode($"  {t.err}").WithForeground(Color.Red)
-                : !string.IsNullOrWhiteSpace(t.status)
-                    ? new TextNode($"  {t.status}").WithForeground(Color.Green)
-                    : Layouts.Empty()))
+            .Select(t => !string.IsNullOrWhiteSpace(t.err)
+                ? NetclawTuiChrome.BuildStatusLine(t.err, Color.Red)
+                : NetclawTuiChrome.BuildStatusLine(t.status, Color.Green))
             .AsLayout()
             .Height(1);
     }
@@ -154,7 +130,11 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                     ProviderManagerState.Loading =>
                         " Checking providers...  [Ctrl+Q] Quit",
                     ProviderManagerState.List =>
-                        " [\u2191/\u2193] Navigate  [Enter] Select  [Esc] Quit  [Ctrl+Q] Quit",
+                        // Embedded in `netclaw config`, Esc backs out to the dashboard (Navigate("/config"));
+                        // standalone `netclaw provider`, it exits. Match the footer to the real behavior.
+                        ViewModel.IsEmbeddedInConfig
+                            ? " [\u2191/\u2193] Navigate  [Enter] Select  [Esc] Back  [Ctrl+Q] Quit"
+                            : " [\u2191/\u2193] Navigate  [Enter] Select  [Esc] Quit  [Ctrl+Q] Quit",
                     ProviderManagerState.AddSelectType =>
                         " [\u2191/\u2193] Navigate  [Enter] Select  [Esc] Back  [Ctrl+Q] Quit",
                     ProviderManagerState.AddName =>
@@ -166,13 +146,13 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                     ProviderManagerState.RemoveConfirm =>
                         " [Enter] Confirm  [Esc] Cancel  [Ctrl+Q] Quit",
                     ProviderManagerState.AddComplete =>
-                        " [Enter] Save  [Esc] Cancel  [Ctrl+Q] Quit",
+                        " [Enter] Continue  [Esc] Back  [Ctrl+Q] Quit",
                     ProviderManagerState.AddOAuthDeviceFlow =>
                         " [Esc] Cancel  [Ctrl+Q] Quit",
                     _ =>
                         " [\u2191/\u2193] Navigate  [Enter] Next  [Esc] Back  [Ctrl+Q] Quit"
                 };
-                return (ILayoutNode)new TextNode(text).WithForeground(Color.BrightBlack);
+                return (ILayoutNode)NetclawTuiChrome.BuildKeyHintLine(text);
             })
             .AsLayout()
             .Height(1);
@@ -184,30 +164,25 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
 
     private ILayoutNode BuildLoadingView()
     {
-        var elapsed = ViewModel.EagerProbeElapsedSeconds.Value;
-        var frame = SpinnerFrames[elapsed % SpinnerFrames.Length];
-
         var children = Layouts.Vertical();
-        children.WithChild(new TextNode($"  {frame} Checking configured providers...")
-            .WithForeground(Color.Yellow));
+        children.WithChild(SpinnerViews.Labeled("Checking configured providers...", Color.Yellow));
         children.WithChild(new TextNode("").Height(1));
 
         foreach (var item in ViewModel.DisplayProviders)
         {
             if (!item.IsConfigured) continue;
 
-            var (statusChar, color) = item.Health switch
-            {
-                ProviderHealthStatus.Healthy => ("\u2713", Color.Green),
-                ProviderHealthStatus.Unhealthy => ("\u26a0", Color.Red),
-                _ => (SpinnerFrames[elapsed % SpinnerFrames.Length], Color.Yellow)
-            };
-
             var label = item.ConfiguredName is not null
                 ? $"{item.ConfiguredName} ({item.DisplayName})"
                 : item.DisplayName;
-            children.WithChild(new TextNode($"  {statusChar} {label}")
-                .WithForeground(color));
+
+            // Still-probing providers get a live spinner; completed ones a glyph.
+            children.WithChild(item.Health switch
+            {
+                ProviderHealthStatus.Healthy => (ILayoutNode)new TextNode($"  \u2713 {label}").WithForeground(Color.Green),
+                ProviderHealthStatus.Unhealthy => new TextNode($"  \u26a0 {label}").WithForeground(Color.Red),
+                _ => SpinnerViews.Labeled(label, Color.Yellow)
+            });
         }
 
         return children;
@@ -272,7 +247,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
         return Layouts.Vertical()
             .WithChild(new TextNode($"  {"",2}{"Provider",-36} {"Auth",-12} Endpoint")
                 .WithForeground(Color.White).Bold())
-            .WithChild(_providerList);
+            .WithChild(_providerList.WithFillHeight());
     }
 
     private ILayoutNode BuildAddSelectTypeView()
@@ -339,12 +314,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
             })
             .DisposeWith(_stepSubs);
 
-        children.WithChild(new PanelNode()
-            .WithTitle("Name")
-            .WithBorder(BorderStyle.Rounded)
-            .WithBorderColor(Color.Gray)
-            .WithContent(_nameInput)
-            .Height(3));
+        children.WithChild(NetclawTuiChrome.BuildTextInputPanel(_nameInput, "Name"));
 
         children.WithChild(new TextNode("").Height(1));
         children.WithChild(new TextNode("  This is how the provider appears in `netclaw provider list`")
@@ -412,12 +382,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                 })
                 .DisposeWith(_stepSubs);
 
-            children.WithChild(new PanelNode()
-                .WithTitle("API Key")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_apiKeyInput)
-                .Height(3));
+            children.WithChild(NetclawTuiChrome.BuildTextInputPanel(_apiKeyInput, "API Key"));
 
             if (descriptor.Auth.GetApiKeyGuidanceUrl() is { } guidanceUrl)
             {
@@ -445,12 +410,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                 })
                 .DisposeWith(_stepSubs);
 
-            children.WithChild(new PanelNode()
-                .WithTitle("Endpoint")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_endpointInput)
-                .Height(3));
+            children.WithChild(NetclawTuiChrome.BuildTextInputPanel(_endpointInput, "Endpoint"));
 
             children.WithChild(new TextNode("").Height(1));
             children.WithChild(new TextNode($"  {descriptor.DisplayName} runs locally. No authentication required.")
@@ -480,9 +440,6 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
             case DeviceFlowState.WaitingForUser:
             case DeviceFlowState.Polling:
             {
-                var elapsed = ViewModel.ProbeElapsedSeconds.Value;
-                var frame = SpinnerFrames[elapsed % SpinnerFrames.Length];
-
                 // Prefer verification_uri_complete (RFC 8628 §3.3.1, with user
                 // code embedded) so [O] opens a one-click-complete URL.
                 var displayUri = ViewModel.OAuth.VerificationUriComplete ?? ViewModel.OAuth.VerificationUri;
@@ -516,8 +473,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                     children.WithChild(new TextNode("").Height(1));
                 }
 
-                children.WithChild(new TextNode($"  {frame} Waiting for authorization...")
-                    .WithForeground(Color.Yellow));
+                children.WithChild(SpinnerViews.Labeled("Waiting for authorization...", Color.Yellow));
                 break;
             }
 
@@ -553,8 +509,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
             ViewModel.OAuth.FlowState.Value,
             ViewModel.OAuth.BrowserOpenFailed,
             ViewModel.OAuth.VerificationUri,
-            ViewModel.SpinnerTick.Value,
-            ViewModel.ProbeElapsedSeconds.Value,
+            ViewModel.ProbeElapsedSeconds,
             ViewModel.OAuth.ErrorMessage,
             _clipboardService,
             ref _redirectUrlInput,
@@ -574,15 +529,13 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
 
     private ILayoutNode BuildValidatingView()
     {
-        var elapsed = ViewModel.ProbeElapsedSeconds.Value;
-        var frame = SpinnerFrames[elapsed % SpinnerFrames.Length];
         var result = ViewModel.ProbeResult.Value;
 
         if (ViewModel.IsProbing.Value)
         {
             return Layouts.Vertical()
-                .WithChild(new TextNode($"  {frame} Validating connection... ({elapsed}s)")
-                    .WithForeground(Color.Yellow));
+                .WithChild(SpinnerViews.WithElapsed(
+                    "Validating connection...", Color.Yellow, ViewModel.ProbeElapsedSeconds));
         }
 
         if (result is { Success: true })
@@ -597,7 +550,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
             return Layouts.Vertical()
                 .WithChild(new TextNode($"  \u2714 Connection successful! ({result.Models.Count} models found)")
                     .WithForeground(Color.Green))
-                .WithChild(new TextNode("  Press [Enter] to save, [Esc] to cancel.")
+                .WithChild(new TextNode("  Provider saved. Press [Enter] to continue.")
                     .WithForeground(Color.Gray));
         }
 
@@ -612,7 +565,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
     {
         var result = ViewModel.ProbeResult.Value;
         return Layouts.Vertical()
-            .WithChild(new TextNode($"  \u2714 Provider '{ViewModel.NewProviderName}' ready to save")
+            .WithChild(new TextNode($"  \u2714 Provider '{ViewModel.NewProviderName}' added")
                 .WithForeground(Color.Green))
             .WithChild(new TextNode($"    Type: {ViewModel.Registry.Get(ViewModel.NewProviderType ?? "unknown").DisplayName}")
                 .WithForeground(Color.White))
@@ -621,7 +574,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
             .WithChild(new TextNode($"    Models: {result?.Models.Count ?? 0} discovered")
                 .WithForeground(Color.White))
             .WithChild(new TextNode("").Height(1))
-            .WithChild(new TextNode("  Press [Enter] to save, [Esc] to cancel.")
+            .WithChild(new TextNode("  Press [Enter] to return to the provider list.")
                 .WithForeground(Color.Gray));
     }
 
@@ -682,12 +635,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
             .Subscribe(text => ViewModel.ConfirmRename(text))
             .DisposeWith(_stepSubs);
 
-        children.WithChild(new PanelNode()
-            .WithTitle("New name")
-            .WithBorder(BorderStyle.Rounded)
-            .WithBorderColor(Color.Gray)
-            .WithContent(_renameInput)
-            .Height(3));
+        children.WithChild(NetclawTuiChrome.BuildTextInputPanel(_renameInput, "New name"));
 
         children.WithChild(new TextNode("").Height(1));
         children.WithChild(new TextNode("  Renames the provider and cascades the change to any model")
@@ -763,12 +711,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                 })
                 .DisposeWith(_stepSubs);
 
-            children.WithChild(new PanelNode()
-                .WithTitle("Endpoint")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_endpointInput)
-                .Height(3));
+            children.WithChild(NetclawTuiChrome.BuildTextInputPanel(_endpointInput, "Endpoint"));
         }
         else
         {
@@ -790,12 +733,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                 })
                 .DisposeWith(_stepSubs);
 
-            children.WithChild(new PanelNode()
-                .WithTitle("API Key")
-                .WithBorder(BorderStyle.Rounded)
-                .WithBorderColor(Color.Gray)
-                .WithContent(_apiKeyInput)
-                .Height(3));
+            children.WithChild(NetclawTuiChrome.BuildTextInputPanel(_apiKeyInput, "API Key"));
 
             if (descriptor.Auth.GetApiKeyGuidanceUrl() is { } guidanceUrl)
             {

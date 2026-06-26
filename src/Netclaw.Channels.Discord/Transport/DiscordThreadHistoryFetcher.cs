@@ -14,6 +14,7 @@ using Netclaw.Channels;
 using Netclaw.Configuration;
 using Netclaw.Media;
 using Netclaw.Security;
+using Netclaw.Tools;
 
 namespace Netclaw.Channels.Discord.Transport;
 
@@ -237,7 +238,13 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
                 SourceScope = new SourceScope(threadChannelId.ToString())
             },
             Contents = contents,
-            ReceivedAt = message.Timestamp
+            ReceivedAt = message.Timestamp,
+            DefaultDeliveryTarget = new ChannelDeliveryTargetInfo(
+                Netclaw.Actors.Channels.ChannelType.Discord.ToWireValue(),
+                "destination",
+                channelId.Value,
+                channelId.Value,
+                threadChannelId.ToString(CultureInfo.InvariantCulture))
         };
     }
 
@@ -401,7 +408,7 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         var channel = client.GetChannel(threadChannelId) as IMessageChannel;
         if (channel is null)
         {
-            logger.LogWarning("Discord channel {ChannelId} not found or is not a message channel", threadChannelId);
+            logger.LogWarning("Channel {ChannelId} not found or is not a message channel", threadChannelId);
             return [];
         }
 

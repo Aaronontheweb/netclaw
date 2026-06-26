@@ -132,6 +132,14 @@ message ToolApprovalRequestedProto {
   }
 
   message TurnContextRecordProto {
+    message ChannelDeliveryTargetRecordProto {
+      string channel_key = 1;
+      string destination_kind = 2;
+      string destination_id = 3;
+      optional string destination_display_name = 4;
+      optional string thread_or_root_id = 5;
+    }
+
     SessionIdProto session_id = 1;
     string turn_id = 2;
     TrustAudience audience = 3;
@@ -147,6 +155,8 @@ message ToolApprovalRequestedProto {
     bool has_third_party_adopted_context = 13;
     repeated string adopted_speaker_ids = 14;
     bool supports_interactive_approval = 15;
+    ChannelDeliveryTargetRecordProto default_delivery_target = 16;
+    ChannelDeliveryTargetRecordProto requested_delivery_target = 17;
   }
 
   SessionIdProto session_id = 1;
@@ -182,6 +192,11 @@ message ToolBatchAbandonedProto {
   int64 abandoned_at_ms = 3;
 }
 
+message SessionBackgroundJobsReapedProto {
+  SessionIdProto session_id = 1;
+  int64 reaped_at_ms = 2;
+}
+
 // ── Adopted context ──
 
 message AdoptedContextRecordedProto {
@@ -215,6 +230,9 @@ message ActiveJobInfoProto {
   int64 started_at_ms = 4;
   TrustAudience audience = 5;
   string boundary = 6;
+  // 0 = not reaped (proto3 cannot express absence for scalars).
+  int64 reaped_at_ms = 7;
+  string output_log_path = 8;
 }
 
 message SessionSnapshotProto {
@@ -249,25 +267,21 @@ message SessionSnapshotProto {
   reserved 9;
 }
 
-// ── Broadcasts ──
-
-message TurnBroadcastProto {
-  SessionIdProto session_id = 1;
-  SerializableChatMessageProto assistant_reply = 2;
-  int64 broadcast_at_ms = 3;
-}
-
-message CompactionBroadcastProto {
-  SessionIdProto session_id = 1;
-  string summary = 2;
-  int64 compacted_at_ms = 3;
-}
-
 // ── Session state ──
 
 message WorkingContextProto {
   repeated string recent_files = 1;
   optional string project_directory = 2;
+}
+
+// ── Channel delivery target (top-level, reusable) ──
+
+message ChannelDeliveryTargetProto {
+  string channel_key = 1;
+  string destination_kind = 2;
+  string destination_id = 3;
+  optional string destination_display_name = 4;
+  optional string thread_or_root_id = 5;
 }
 
 // ── Reminders ──
@@ -278,6 +292,7 @@ message ReminderDeliveryProto {
   optional string address = 3;
   optional string session_id = 4;
   optional ChannelType origin_channel_type = 5;
+  optional ChannelDeliveryTargetProto target = 6;
 }
 
 message ReminderScheduleProto {

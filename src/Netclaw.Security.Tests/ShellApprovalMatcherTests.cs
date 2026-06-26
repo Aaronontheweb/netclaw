@@ -25,6 +25,17 @@ public sealed class ShellApprovalMatcherTests
     private static ApprovalEntry Verb(string verb) => new(verb) { Directory = null };
     private static ApprovalEntry InDir(string verb, string dir) => new(verb) { Directory = dir };
 
+    /// <summary>
+    /// xunit.v3 <c>SkipUnless</c> hook for POSIX-only tests. The v2
+    /// matcher falls through to the legacy <c>ShellTokenizer</c> path
+    /// on Windows (ShellSyntaxTree is bash-only), so tests that pin
+    /// BashParser cwd attribution / <c>arg.Resolved</c> canonicalization
+    /// don't apply. Marking them <c>[Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]</c>
+    /// produces a proper "Skipped" entry in the test log on Windows
+    /// runners instead of hiding the gap behind an early-return.
+    /// </summary>
+    public static bool IsPosix => !OperatingSystem.IsWindows();
+
     [Fact]
     public void ExtractPatterns_simple_command()
     {
@@ -86,6 +97,95 @@ public sealed class ShellApprovalMatcherTests
             Args("cat /home/user/.netclaw/logs/crash.log"));
         Assert.Single(verbs);
         Assert.Equal("cat", verbs[0]);
+    }
+
+    // ---- Call-specific value normalization (digit-bearing tokens) ----
+    // ShellSyntaxTree's greedy verb walk (SPEC §6.1) folds lowercase-leading
+    // value tokens into the verb chain (`git tag v0.4.2`, `git show aa211dcb`)
+    // but stops at digit-leading ones (`0.4.2` lands in Args, verb stays
+    // `git tag`). Both are call-specific values, so the matcher trims trailing
+    // digit-bearing non-flag, non-path tokens off the chain on the gate path
+    // (ExtractCandidateVerbs / IsApproved) AND the persisted-pattern path
+    // (ExtractPatterns), so the same intent yields one stable verb. Regression
+    // for the v0.4.2-vs-0.4.2 approval divergence.
+
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    [InlineData("git tag v0.4.2")]
+    [InlineData("git tag 0.4.2")]
+    [InlineData("git tag 1.0.0-beta.3")]
+    [InlineData("git tag v2.0")]
+    public void ExtractCandidateVerbs_strips_trailing_value_token(string command)
+    {
+        var verbs = _matcher.ExtractCandidateVerbs(new ToolName("shell_execute"), Args(command));
+        Assert.Single(verbs);
+        Assert.Equal("git tag", verbs[0]);
+    }
+
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    [InlineData("git tag v0.4.2")]
+    [InlineData("git tag 0.4.2")]
+    public void ExtractPatterns_strips_trailing_value_token(string command)
+    {
+        // The persisted grant (ExtractPatterns) must normalize to the same
+        // `git tag` the gate compares, so a freshly-granted version generalizes
+        // across versions instead of pinning to the one that was approved.
+        var patterns = _matcher.ExtractPatterns(new ToolName("shell_execute"), Args(command));
+        Assert.Single(patterns);
+        Assert.Equal("git tag", patterns[0]);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    public void ExtractPatterns_digit_bearing_operand_terminates_pattern()
+    {
+        // Digit-bearing operands (`test123`) are call-specific values and
+        // terminate the pattern; flags before the value are retained.
+        var patterns = _matcher.ExtractPatterns(
+            new ToolName("shell_execute"),
+            Args("docker run --name test123 --port=8080"));
+        Assert.Single(patterns);
+        Assert.Equal("docker run --name", patterns[0]);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    public void IsApproved_git_tag_grant_matches_both_version_forms()
+    {
+        // The exact production scenario: a standing `git tag` (anywhere) grant
+        // auto-approved `git tag 0.4.2` but `git tag v0.4.2` re-prompted,
+        // because the `v`-prefixed version folded into the verb chain.
+        var approved = new[] { Verb("git tag") };
+
+        Assert.True(_matcher.IsApproved(
+            new ToolName("shell_execute"), Args("git tag v0.4.2"), approved, cwd: "/repo"));
+        Assert.True(_matcher.IsApproved(
+            new ToolName("shell_execute"), Args("git tag 0.4.2"), approved, cwd: "/repo"));
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    public void IsApproved_tag_then_push_compound_matches_standing_grants()
+    {
+        // Full session command: `git tag <v> && git push origin <v>` under
+        // standing `git tag` + `git push origin` grants.
+        var approved = new[] { Verb("git tag"), Verb("git push origin") };
+
+        Assert.True(_matcher.IsApproved(
+            new ToolName("shell_execute"),
+            Args("git tag v0.4.2 && git push origin v0.4.2"),
+            approved,
+            cwd: "/repo"));
+    }
+
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    [InlineData("git checkout v2", "git checkout")]               // digit-bearing ref is a value
+    [InlineData("git show 1234abcd", "git show")]                 // digit-leading SHA lands in Args
+    [InlineData("git show aa211dcb", "git show")]                 // alpha-leading SHA folds into chain, then trims
+    [InlineData("git log v0.4.1..dev", "git log")]                // range ref is a value
+    [InlineData("git push origin main", "git push origin main")]  // all-alpha operands are unclassifiable by shape -> preserved
+    [InlineData("aws s3 ls", "aws s3 ls")]                        // mid-chain digit token is not trailing -> untouched
+    public void ExtractCandidateVerbs_trims_digit_bearing_tokens_trailing_only(string command, string expected)
+    {
+        var verbs = _matcher.ExtractCandidateVerbs(new ToolName("shell_execute"), Args(command));
+        Assert.Single(verbs);
+        Assert.Equal(expected, verbs[0]);
     }
 
     [Fact]
@@ -175,6 +275,144 @@ public sealed class ShellApprovalMatcherTests
         Assert.Equal("git push origin main", display);
     }
 
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    public void ExtractPatterns_multiline_quoted_arg_terminates_pattern_at_flag()
+    {
+        // Issue #1402: the multi-line message body is call-specific content,
+        // not approvable intent — the stored pattern stops at the flag so a
+        // later invocation with a different body still matches.
+        var patterns = _matcher.ExtractPatterns(new ToolName("shell_execute"),
+            Args("freshdesk ticket reply --message \"Hi,\nWe've rolled out a fix. Please verify.\""));
+
+        Assert.Single(patterns);
+        Assert.Equal("freshdesk ticket reply --message", patterns[0]);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    public void ExtractPatterns_multiline_quoted_arg_after_digit_id_terminates_at_id()
+    {
+        // The digit-bearing 605 terminates the walk before --message is
+        // reached (IsCallSpecificValueToken), so the multi-line blob never
+        // enters the pattern — pins issue #1402's exact command shape.
+        var patterns = _matcher.ExtractPatterns(new ToolName("shell_execute"),
+            Args("freshdesk ticket reply 605 --message \"Hi,\nWe've rolled out a fix. Please verify.\""));
+
+        Assert.Single(patterns);
+        Assert.Equal("freshdesk ticket reply", patterns[0]);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    public void FormatForDisplay_summarizes_multiline_quoted_arg()
+    {
+        // Issue #1402: channel renderers embed DisplayText in single-line
+        // code fences — the multi-line body renders as a size summary.
+        var display = _matcher.FormatForDisplay(new ToolName("shell_execute"),
+            Args("freshdesk ticket reply 605 --message \"Hi,\nWe've rolled out a fix. Please verify.\""));
+
+        Assert.DoesNotContain('\n', display);
+        Assert.Equal("freshdesk ticket reply 605 --message (2 lines, 42 chars)", display);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    public void FormatForDisplay_renders_newline_separated_statements_with_explicit_separator()
+    {
+        // Bare-newline statement separators render as "; " so the one-line
+        // display doesn't visually merge two statements into one command.
+        var display = _matcher.FormatForDisplay(new ToolName("shell_execute"),
+            Args("git fetch\ngit status"));
+
+        Assert.Equal("git fetch; git status", display);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    public void FormatForDisplay_heredoc_falls_back_to_flattened_raw_command()
+    {
+        // The parser drops heredoc bodies from the tree (only the <<EOF
+        // marker survives as a redirect target), so a tree reconstruction
+        // would hide the executable payload from the approver. Heredoc
+        // commands fall back to the flattened raw command instead.
+        var display = _matcher.FormatForDisplay(new ToolName("shell_execute"),
+            Args("bash <<EOF\nrm -rf /tmp/x\nEOF"));
+
+        Assert.DoesNotContain('\n', display);
+        Assert.Equal("bash <<EOF rm -rf /tmp/x EOF", display);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    public void ExtractPatterns_redirect_target_with_line_break_terminates_pattern()
+    {
+        // A quoted redirect target carrying an embedded newline must not
+        // reach the stored pattern — quote-aware normalization would
+        // otherwise preserve the break verbatim (`echo hi >> $LOGDIR\nfile`).
+        var patterns = _matcher.ExtractPatterns(new ToolName("shell_execute"),
+            Args("echo hi >> \"$LOGDIR\nfile\""));
+
+        Assert.Single(patterns);
+        Assert.DoesNotContain('\n', patterns[0]);
+        Assert.Equal("echo hi", patterns[0]);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    public void ExtractPatterns_carriage_return_arg_terminates_pattern_at_flag()
+    {
+        // A lone CR (no LF) is a line break too: in a terminal-rendered
+        // prompt it returns the cursor to column 0, so it must terminate
+        // the pattern walk exactly like LF.
+        var patterns = _matcher.ExtractPatterns(new ToolName("shell_execute"),
+            Args("freshdesk ticket reply --message \"Hi,\rEvil\""));
+
+        Assert.Single(patterns);
+        Assert.DoesNotContain('\r', patterns[0]);
+        Assert.Equal("freshdesk ticket reply --message", patterns[0]);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    public void FormatForDisplay_carriage_return_arg_is_summarized()
+    {
+        var display = _matcher.FormatForDisplay(new ToolName("shell_execute"),
+            Args("freshdesk ticket reply --message \"Hi,\rEvil\""));
+
+        Assert.DoesNotContain('\r', display);
+        Assert.DoesNotContain('\n', display);
+        Assert.Equal("freshdesk ticket reply --message (2 lines, 8 chars)", display);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    public void FormatForDisplay_summarizes_multiline_redirect_target()
+    {
+        var display = _matcher.FormatForDisplay(new ToolName("shell_execute"),
+            Args("echo hi >> \"$LOGDIR\nfile\""));
+
+        Assert.DoesNotContain('\n', display);
+        Assert.Equal("echo hi >> (2 lines, 12 chars)", display);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    public void FormatForDisplay_subshell_falls_back_to_flattened_raw_command()
+    {
+        // Subshell grouping doesn't survive the parser's flat clause list —
+        // a reconstruction would misstate which statements the pipe applies
+        // to. The fallback keeps the parens the user typed.
+        var display = _matcher.FormatForDisplay(new ToolName("shell_execute"),
+            Args("(git fetch\ngit status) | tee log"));
+
+        Assert.DoesNotContain('\n', display);
+        Assert.Equal("(git fetch git status) | tee log", display);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]
+    public void FormatForDisplay_subshell_with_multiline_arg_stays_single_line()
+    {
+        // Regression guard: the clause after a closed subshell carries
+        // CompoundOperator.None, which previously threw inside the display
+        // walk and silently fell back to the unsummarized raw command.
+        var display = _matcher.FormatForDisplay(new ToolName("shell_execute"),
+            Args("(echo hi)\nfreshdesk ticket reply --message \"Hi,\nbody\""));
+
+        Assert.DoesNotContain('\n', display);
+        Assert.Equal("(echo hi) freshdesk ticket reply --message \"Hi, body\"", display);
+    }
+
     [Fact]
     public void IsMessy_true_for_bash_control_flow()
     {
@@ -204,6 +442,82 @@ public sealed class ShellApprovalMatcherTests
             approved,
             cwd: null));
     }
+
+    // ---------------------------------------------------------------- integer positional arguments
+    // Issue #1331: bare integers (ticket IDs, port numbers, timeouts) must NOT
+    // be baked into the approval verb chain. Every unique integer previously
+    // created a distinct approval entry, forcing users to approve each one
+    // separately. The AST correctly strips integers from VerbChain (IsVerbLikeToken
+    // requires [a-z] start), but the display/pattern extraction path uses raw
+    // whitespace tokenization — which MUST also exclude bare integers.
+
+    [Fact]
+    public void ExtractPatterns_strips_bare_integer_positional_arguments()
+    {
+        // BashParser is bash-only, so on Windows the matcher falls through to
+        // the legacy ShellTokenizer path. This test exercises the POSIX path.
+        // Windows skips with a pass to keep the test active (no Slopwatch SW001).
+        if (OperatingSystem.IsWindows()) return;
+
+        // The approval pattern for `freshdesk ticket get 123` should be
+        // `freshdesk ticket get` — NOT `freshdesk ticket get 123`.
+        var patterns = _matcher.ExtractPatterns(
+            new ToolName("shell_execute"),
+            Args("freshdesk ticket get 123"));
+
+        Assert.Single(patterns);
+        Assert.Equal("freshdesk ticket get", patterns[0]);
+    }
+
+    [Fact]
+    public void ExtractPatterns_tolerates_different_integer_values()
+    {
+        // Two invocations with different integers should produce the same
+        // pattern — approval granted for one integer-valued command should
+        // cover all integer values of the same verb chain.
+        if (OperatingSystem.IsWindows()) return;
+
+        var patterns1 = _matcher.ExtractPatterns(
+            new ToolName("shell_execute"),
+            Args("nc host 8080"));
+        var patterns2 = _matcher.ExtractPatterns(
+            new ToolName("shell_execute"),
+            Args("nc host 9090"));
+
+        Assert.Single(patterns1);
+        Assert.Single(patterns2);
+        Assert.Equal(patterns1[0], patterns2[0]);
+        Assert.Equal("nc host", patterns1[0]);
+    }
+
+    [Fact]
+    public void ExtractPatterns_strips_timeout_integer()
+    {
+        // `timeout 30 curl` — the 30 is a timeout value, not a verb component.
+        if (OperatingSystem.IsWindows()) return;
+
+        var patterns = _matcher.ExtractPatterns(
+            new ToolName("shell_execute"),
+            Args("timeout 30 curl http://example.com"));
+
+        Assert.Single(patterns);
+        Assert.Equal("timeout", patterns[0]);
+    }
+
+    [Fact]
+    public void ExtractCandidateVerbs_strips_bare_integer_positional_arguments()
+    {
+        // Candidate verbs must NOT include bare integer arguments.
+        if (OperatingSystem.IsWindows()) return;
+
+        var verbs = _matcher.ExtractCandidateVerbs(
+            new ToolName("shell_execute"),
+            Args("freshdesk ticket get 123"));
+
+        Assert.Single(verbs);
+        Assert.Equal("freshdesk ticket get", verbs[0]);
+        Assert.DoesNotContain("123", verbs);
+    }
 }
 
 /// <summary>
@@ -222,7 +536,7 @@ public sealed class ShellApprovalMatcherPathExtractionTests
     /// matcher falls through to the legacy <c>ShellTokenizer</c> path
     /// on Windows (ShellSyntaxTree is bash-only), so tests that pin
     /// BashParser cwd attribution / <c>arg.Resolved</c> canonicalization
-    /// don't apply. Marking them <c>[Fact(SkipUnless = nameof(IsPosix))]</c>
+    /// don't apply. Marking them <c>[Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only — matcher routes through BashParser on POSIX")]</c>
     /// produces a proper "Skipped" entry in the test log on Windows
     /// runners instead of hiding the gap behind an early-return.
     /// </summary>

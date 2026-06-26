@@ -12,6 +12,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
 using Netclaw.Configuration;
+using Netclaw.Providers.OAuth;
 
 namespace Netclaw.Providers.GitHubCopilot;
 
@@ -27,10 +28,12 @@ namespace Netclaw.Providers.GitHubCopilot;
 /// only in this in-memory cache. The long-lived GitHub OAuth token is the
 /// only credential that hits the secrets store.
 /// </remarks>
-public sealed class CopilotTokenExchanger(HttpClient httpClient, TimeProvider? timeProvider = null)
+public sealed class CopilotTokenExchanger(
+    HttpClient httpClient,
+    TimeProvider? timeProvider = null,
+    ProviderOAuthTokenRefreshService? tokenRefreshService = null)
 {
-    private static readonly Uri TokenEndpoint =
-        new("https://api.github.com/copilot_internal/v2/token");
+    private const string ComponentName = "copilot-token";
 
     // Refresh slightly before the server-reported expiry so chat calls in
     // flight when the cache turns over still see a valid bearer token.
@@ -58,7 +61,35 @@ public sealed class CopilotTokenExchanger(HttpClient httpClient, TimeProvider? t
         var oauthToken = entry.OAuthAccessToken.RequireValid(
             "GitHub OAuth access token (re-run 'netclaw provider add <name> github-copilot --auth oauth-device')");
 
-        var slot = slots.GetOrAdd(HashKey(oauthToken.Value), _ => new CacheSlot());
+        return await GetTokenAsync(oauthToken, GitHubCopilotAuthResolver.Resolve(entry).CopilotTokenExchangeEndpoint, ct);
+    }
+
+    /// <summary>
+    /// Returns a valid Copilot API token after first refreshing the persisted
+    /// GitHub OAuth credential when its configured expiry is inside the refresh
+    /// buffer.
+    /// </summary>
+    public async Task<string> GetTokenAsync(
+        string providerName,
+        ProviderEntry entry,
+        OAuthAuth oauth,
+        CancellationToken ct = default)
+    {
+        if (tokenRefreshService is null)
+            return await GetTokenAsync(entry, ct);
+
+        var oauthToken = await tokenRefreshService.GetValidAccessTokenAsync(
+            providerName,
+            entry,
+            oauth,
+            ct);
+
+        return await GetTokenAsync(oauthToken, GitHubCopilotAuthResolver.Resolve(entry).CopilotTokenExchangeEndpoint, ct);
+    }
+
+    private async Task<string> GetTokenAsync(SensitiveString oauthToken, Uri tokenEndpoint, CancellationToken ct)
+    {
+        var slot = slots.GetOrAdd(HashKey(oauthToken.Value, tokenEndpoint), _ => new CacheSlot());
 
         if (IsFresh(slot.Token))
             return slot.Token!.Token;
@@ -71,7 +102,7 @@ public sealed class CopilotTokenExchanger(HttpClient httpClient, TimeProvider? t
             if (IsFresh(slot.Token))
                 return slot.Token!.Token;
 
-            var fresh = await ExchangeAsync(oauthToken.Value, ct);
+            var fresh = await ExchangeAsync(oauthToken.Value, tokenEndpoint, ct);
             slot.Token = fresh;
             return fresh.Token;
         }
@@ -84,9 +115,9 @@ public sealed class CopilotTokenExchanger(HttpClient httpClient, TimeProvider? t
     private bool IsFresh(CachedToken? cached) =>
         cached is { } c && c.ExpiresAt - RefreshBuffer > time.GetUtcNow();
 
-    private async Task<CachedToken> ExchangeAsync(string oauthToken, CancellationToken ct)
+    private async Task<CachedToken> ExchangeAsync(string oauthToken, Uri tokenEndpoint, CancellationToken ct)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, TokenEndpoint);
+        using var request = new HttpRequestMessage(HttpMethod.Get, tokenEndpoint);
 
         // The exchange endpoint requires the full editor-integration header
         // contract — Copilot-Integration-Id is what tells GitHub's gateway
@@ -97,10 +128,14 @@ public sealed class CopilotTokenExchanger(HttpClient httpClient, TimeProvider? t
         // integration." Cross-checked against CodeAlta's CopilotDirectAuth
         // and the Neovim Copilot plugin source; both send the same set.
         //
-        // User-Agent is intentionally NOT set here — the named HttpClient
-        // ("CopilotTokenExchange") runs through NetclawHeadersHandler, which
-        // stamps the canonical UA + X-Netclaw-Component. Setting it here
-        // would win over the handler and clobber the shared identity.
+        // Stamp the same identity the DI HttpClient handler uses. CLI one-shot
+        // paths can construct this exchanger with a raw HttpClient, and GitHub
+        // rejects this endpoint outright when User-Agent is absent.
+        if (!request.Headers.Contains("User-Agent"))
+            request.Headers.TryAddWithoutValidation("User-Agent", NetclawUserAgent.Value);
+        if (!request.Headers.Contains(NetclawUserAgent.ComponentHeader))
+            request.Headers.TryAddWithoutValidation(NetclawUserAgent.ComponentHeader, ComponentName);
+
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", oauthToken);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.TryAddWithoutValidation("Editor-Version", $"Netclaw/{BuildInfo.Version}");
@@ -117,13 +152,13 @@ public sealed class CopilotTokenExchanger(HttpClient httpClient, TimeProvider? t
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException(
-                $"GitHub Copilot token exchange failed at {TokenEndpoint} with "
+                $"GitHub Copilot token exchange failed at {tokenEndpoint} with "
                 + $"HTTP {(int)response.StatusCode}: {Truncate(body)}");
         }
 
         var parsed = JsonSerializer.Deserialize<TokenResponse>(body)
             ?? throw new InvalidOperationException(
-                $"Empty token response from {TokenEndpoint}.");
+                $"Empty token response from {tokenEndpoint}.");
 
         // System.Text.Json doesn't enforce required-ness on positional record
         // parameters by default, so a {} response would deserialize to
@@ -140,14 +175,14 @@ public sealed class CopilotTokenExchanger(HttpClient httpClient, TimeProvider? t
         if (string.IsNullOrWhiteSpace(parsed.Token))
         {
             throw new InvalidOperationException(
-                $"GitHub Copilot token exchange at {TokenEndpoint} returned a "
+                $"GitHub Copilot token exchange at {tokenEndpoint} returned a "
                 + "payload with no 'token' field.");
         }
 
         if (parsed.ExpiresAt <= 0)
         {
             throw new InvalidOperationException(
-                $"GitHub Copilot token exchange at {TokenEndpoint} returned an "
+                $"GitHub Copilot token exchange at {tokenEndpoint} returned an "
                 + $"invalid 'expires_at' value ({parsed.ExpiresAt}).");
         }
 
@@ -159,9 +194,9 @@ public sealed class CopilotTokenExchanger(HttpClient httpClient, TimeProvider? t
     private static string Truncate(string body) =>
         body.Length > 512 ? body[..512] + "…" : body;
 
-    private static string HashKey(string token)
+    private static string HashKey(string token, Uri tokenEndpoint)
     {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(token));
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{tokenEndpoint}\n{token}"));
         return Convert.ToHexString(bytes);
     }
 

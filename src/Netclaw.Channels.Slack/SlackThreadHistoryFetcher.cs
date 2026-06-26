@@ -11,6 +11,7 @@ using Netclaw.Channels;
 using Netclaw.Configuration;
 using Netclaw.Media;
 using Netclaw.Security;
+using Netclaw.Tools;
 using SlackNet;
 using SlackNet.WebApi;
 
@@ -103,7 +104,7 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
         }
         catch (SlackException ex)
         {
-            _logger.LogWarning(ex, "Slack API error fetching thread history for {SessionId}: {Error}", sessionId.Value, ex.ErrorCode);
+            _logger.LogWarning(ex, "API error fetching thread history for {SessionId}: {Error}", sessionId.Value, ex.ErrorCode);
             return [];
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -181,6 +182,7 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
                     message,
                     senderId,
                     channelId,
+                    threadTs,
                     trustResult.Audience,
                     trustResult.Principal,
                     attachmentPolicy,
@@ -207,6 +209,7 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
         SlackNet.Events.MessageEvent message,
         string senderId,
         SlackChannelId channelId,
+        SlackThreadTs threadTs,
         TrustAudience audience,
         PrincipalClassification principal,
         ChannelAttachmentPolicy attachmentPolicy,
@@ -276,7 +279,13 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
                 SourceScope = new SourceScope(channelId.Value)
             },
             Contents = contents,
-            ReceivedAt = receivedAt
+            ReceivedAt = receivedAt,
+            DefaultDeliveryTarget = new ChannelDeliveryTargetInfo(
+                Netclaw.Actors.Channels.ChannelType.Slack.ToWireValue(),
+                "destination",
+                channelId.Value,
+                channelId.Value,
+                threadTs.Value)
         };
     }
 

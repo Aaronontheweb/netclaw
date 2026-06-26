@@ -14,7 +14,7 @@ namespace Netclaw.Actors.Tests.Tools;
 
 public class ShellToolTests
 {
-    private readonly ShellTool _tool = new(new ToolConfig());
+    private readonly ShellTool _tool = new(new ToolConfig(), new ToolPathPolicy([]), new ShellCommandPolicy());
 
     [Fact]
     public async Task Execute_echo_returns_output()
@@ -48,10 +48,15 @@ public class ShellToolTests
     [Fact]
     public async Task Timeout_kills_long_running_process()
     {
-        var tool = new ShellTool(new ToolConfig { ShellTimeoutSeconds = 1 });
+        var tool = new ShellTool(new ToolConfig(), new ToolPathPolicy([]), new ShellCommandPolicy());
         var args = ToolInput.Create("Command", "sleep 100");
+        var context = new ToolExecutionContext("test/thread", Path.GetTempPath())
+        {
+            Audience = TrustAudience.Personal,
+            RequestedTimeoutSeconds = 1
+        };
 
-        var result = await tool.ExecuteAsync(args, CancellationToken.None);
+        var result = await tool.ExecuteAsync(args, context, CancellationToken.None);
 
         Assert.Contains("timed out", result);
     }
@@ -59,7 +64,7 @@ public class ShellToolTests
     [Fact]
     public async Task Requested_timeout_overrides_default_timeout()
     {
-        var tool = new ShellTool(new ToolConfig { ShellTimeoutSeconds = 1 });
+        var tool = new ShellTool(new ToolConfig(), new ToolPathPolicy([]), new ShellCommandPolicy());
         var args = ToolInput.Create("Command", "sleep 1");
         var context = new ToolExecutionContext("test/thread", Path.GetTempPath())
         {
@@ -82,7 +87,7 @@ public class ShellToolTests
         // exception. On Unix the command also spawns a background child that
         // inherits stdout/stderr; if the tree kill regresses, that child keeps
         // the pipe write-ends open and the test never completes.
-        var tool = new ShellTool(new ToolConfig { ShellTimeoutSeconds = 100 });
+        var tool = new ShellTool(new ToolConfig(), new ToolPathPolicy([]), new ShellCommandPolicy());
         var command = OperatingSystem.IsWindows()
             ? "ping 127.0.0.1 -n 120 > nul"
             : "sleep 120 & wait";
@@ -100,18 +105,20 @@ public class ShellToolTests
     }
 
     [Fact]
-    public async Task Output_truncation_applies()
+    public async Task ShellTool_returns_raw_combined_output_without_spilling()
     {
-        var tool = new ShellTool(new ToolConfig { MaxOutputChars = 50 });
-        // Generate output longer than 50 chars — use cross-platform command
-        var command = OperatingSystem.IsWindows()
-            ? "python -c \"print('x' * 200)\""
-            : "printf 'x%.0s' {1..200}";
-        var args = ToolInput.Create("Command", command);
+        // ShellTool only returns its (bounded) raw output now — redaction and the
+        // inline-budget bound + spill happen centrally in DispatchingToolExecutor
+        // (covered by DispatchingToolExecutorTests). `echo` is a builtin on both
+        // bash and cmd.exe; a long literal is deterministic on stdout.
+        var tool = new ShellTool(new ToolConfig(), new ToolPathPolicy([]), new ShellCommandPolicy());
+        var args = ToolInput.Create("Command", $"echo {new string('x', 200)}");
 
         var result = await tool.ExecuteAsync(args, CancellationToken.None);
 
-        Assert.Contains("[output truncated]", result);
+        Assert.Contains("Exit code: 0", result);
+        Assert.Contains(new string('x', 200), result); // full output, not yet windowed/spilled
+        Assert.DoesNotContain("saved to", result);      // ShellTool itself does not spill
     }
 
     [Fact]
@@ -276,6 +283,72 @@ public class ShellToolTests
         }
     }
 
+    // ── Working directory must exist (#1286): fail loudly with the mkdir remedy ──
+    // instead of letting Process.Start surface an opaque, platform-specific error.
+
+    [Fact]
+    public async Task Missing_explicit_working_directory_returns_helpful_error()
+    {
+        var missingDir = Path.GetFullPath(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
+        var args = ToolInput.Create("Command", "echo hi", "WorkingDirectory", missingDir);
+
+        var result = await _tool.ExecuteAsync(args, CancellationToken.None);
+
+        Assert.Contains("does not exist", result);
+        Assert.Contains(missingDir, result);
+        Assert.Contains("mkdir", result);
+        // The process must never start with a missing cwd...
+        Assert.DoesNotContain("Exit code", result);
+        // ...and the tool must not silently create the directory either.
+        Assert.False(Directory.Exists(missingDir));
+    }
+
+    [Fact]
+    public async Task Working_directory_that_is_a_file_returns_not_a_directory_error()
+    {
+        var filePath = Path.GetFullPath(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
+        File.WriteAllText(filePath, "not a dir");
+        try
+        {
+            var args = ToolInput.Create("Command", "echo hi", "WorkingDirectory", filePath);
+
+            var result = await _tool.ExecuteAsync(args, CancellationToken.None);
+
+            Assert.Contains("is a file, not a directory", result);
+            Assert.Contains(filePath, result);
+            Assert.DoesNotContain("Exit code", result);
+        }
+        finally
+        {
+            if (File.Exists(filePath)) File.Delete(filePath);
+        }
+    }
+
+    [Fact]
+    public async Task Missing_project_directory_returns_helpful_error()
+    {
+        // No explicit arg, so the resolution chain falls back to ProjectDirectory —
+        // proving the existence guard covers the fallback paths, not just explicit args.
+        var sessionDir = Path.GetFullPath(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
+        var missingProjectDir = Path.GetFullPath(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
+        Directory.CreateDirectory(sessionDir);
+        try
+        {
+            var context = new ToolExecutionContext("session-1", sessionDir) { Audience = TrustAudience.Personal, ProjectDirectory = missingProjectDir };
+            var args = ToolInput.Create("Command", "echo hi");
+
+            var result = await _tool.ExecuteAsync(args, context, CancellationToken.None);
+
+            Assert.Contains("does not exist", result);
+            Assert.Contains(missingProjectDir, result);
+            Assert.DoesNotContain("Exit code", result);
+        }
+        finally
+        {
+            if (Directory.Exists(sessionDir)) Directory.Delete(sessionDir, recursive: true);
+        }
+    }
+
     [Fact]
     public async Task Null_arguments_returns_error()
     {
@@ -305,7 +378,7 @@ public class ShellToolTests
     {
         var secretsPath = "/home/user/.netclaw/config/secrets.json";
         var policy = new ToolPathPolicy([secretsPath]);
-        var tool = new ShellTool(new ToolConfig(), policy);
+        var tool = new ShellTool(new ToolConfig(), policy, new ShellCommandPolicy());
 
         var args = ToolInput.Create("Command", $"cat {secretsPath}");
 
@@ -315,23 +388,13 @@ public class ShellToolTests
         Assert.Contains("Access denied", result);
     }
 
-    [Fact]
-    public async Task Execute_redacts_secret_like_output()
-    {
-        var args = ToolInput.Create("Command", "echo API_KEY=secret123");
-
-        var result = await _tool.ExecuteAsync(args, CancellationToken.None);
-
-        Assert.Contains("API_KEY=***REDACTED***", result);
-        Assert.DoesNotContain("secret123", result);
-    }
 
     [Fact]
     public async Task High_risk_glob_on_netclaw_config_is_blocked()
     {
         var secretsPath = "/home/user/.netclaw/config/secrets.json";
         var policy = new ToolPathPolicy([secretsPath]);
-        var tool = new ShellTool(new ToolConfig(), policy);
+        var tool = new ShellTool(new ToolConfig(), policy, new ShellCommandPolicy());
 
         var args = ToolInput.Create("Command", "cat ~/.netclaw/config/*.json");
 
@@ -345,7 +408,7 @@ public class ShellToolTests
     public async Task Hard_deny_blocks_daemon_stop()
     {
         var commandPolicy = new ShellCommandPolicy();
-        var tool = new ShellTool(new ToolConfig(), commandPolicy: commandPolicy);
+        var tool = new ShellTool(new ToolConfig(), new ToolPathPolicy([]), commandPolicy);
 
         var args = ToolInput.Create("Command", "netclaw daemon stop");
         var result = await tool.ExecuteAsync(args, CancellationToken.None);
@@ -357,7 +420,7 @@ public class ShellToolTests
     public async Task Hard_deny_blocks_kill_command()
     {
         var commandPolicy = new ShellCommandPolicy();
-        var tool = new ShellTool(new ToolConfig(), commandPolicy: commandPolicy);
+        var tool = new ShellTool(new ToolConfig(), new ToolPathPolicy([]), commandPolicy);
 
         var args = ToolInput.Create("Command", "kill -9 12345");
         var result = await tool.ExecuteAsync(args, CancellationToken.None);

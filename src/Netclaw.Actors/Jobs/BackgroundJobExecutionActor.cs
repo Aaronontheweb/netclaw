@@ -4,10 +4,10 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Diagnostics;
-using System.Text;
 using Akka.Actor;
 using Akka.Event;
 using Netclaw.Security;
+using static Netclaw.Actors.Jobs.BackgroundJobProtocol;
 
 namespace Netclaw.Actors.Jobs;
 
@@ -57,6 +57,22 @@ public sealed class BackgroundJobExecutionActor : ReceiveActor
     {
         _timeoutHandle?.Cancel();
         KillProcess();
+
+        // Release the OS process handle + the wait handle WaitForExitAsync
+        // allocates. Without this they linger until finalization; over a
+        // long-lived daemon that starts many jobs (the intended workload),
+        // that leaks kernel handles. Best-effort: the capture Task may still
+        // hold the streams on a kill/timeout path and throw ObjectDisposedException,
+        // which its own catch swallows.
+        try
+        {
+            _process?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            _log.Warning("Failed to dispose process for job {JobId}: {Error}",
+                _definition.Id, ex.Message);
+        }
     }
 
     private void SpawnProcess()
@@ -84,7 +100,31 @@ public sealed class BackgroundJobExecutionActor : ReceiveActor
         }
 
         if (!string.IsNullOrWhiteSpace(_definition.WorkingDirectory))
+        {
+            // ProcessStartInfo.WorkingDirectory must point at an existing directory or
+            // Process.Start throws an opaque, platform-specific error that surfaces as a
+            // cryptic "Failed to start: ...". Report the missing directory with the mkdir
+            // remedy so the agent creates it instead of retry-looping on the opaque error.
+            if (!Directory.Exists(_definition.WorkingDirectory))
+            {
+                if (File.Exists(_definition.WorkingDirectory))
+                {
+                    ReportCompletion(BackgroundJobStatus.Failed, -1,
+                        $"Working directory '{_definition.WorkingDirectory}' is a file, not a directory.");
+                    return;
+                }
+
+                var mkdirHint = isWindows
+                    ? $"mkdir \"{_definition.WorkingDirectory}\""
+                    : $"mkdir -p \"{_definition.WorkingDirectory}\"";
+                ReportCompletion(BackgroundJobStatus.Failed, -1,
+                    $"Working directory '{_definition.WorkingDirectory}' does not exist. "
+                    + $"Create it first, e.g.: {mkdirHint}");
+                return;
+            }
+
             psi.WorkingDirectory = _definition.WorkingDirectory;
+        }
 
         _process = Process.Start(psi);
         if (_process is null)
@@ -107,43 +147,54 @@ public sealed class BackgroundJobExecutionActor : ReceiveActor
 
         var self = Self;
         var process = _process;
+        var outputLogPath = _outputLogPath;
         Task.Run(async () =>
         {
-            var outputBuilder = new StringBuilder();
+            // Stream-to-disk capture: a background job is a detached process with
+            // no completion expectation (a dev server may never exit), so output
+            // must hit the log as it is produced — not at exit. The log itself is
+            // rotation-bounded; the pumps keep draining past any write failure so
+            // the child never deadlocks on a full pipe.
+            var outputLog = new JobOutputLog(outputLogPath);
             try
             {
-                var stdoutTask = process.StandardOutput.ReadToEndAsync();
-                var stderrTask = process.StandardError.ReadToEndAsync();
+                var stdoutPump = PumpToLogAsync(process.StandardOutput, outputLog, isStderr: false);
+                var stderrPump = PumpToLogAsync(process.StandardError, outputLog, isStderr: true);
 
-                var stdout = await stdoutTask;
-                var stderr = await stderrTask;
+                await Task.WhenAll(stdoutPump, stderrPump);
                 await process.WaitForExitAsync();
+                await outputLog.DisposeAsync();
 
-                outputBuilder.Append(stdout);
-                if (!string.IsNullOrEmpty(stderr))
-                {
-                    outputBuilder.AppendLine();
-                    outputBuilder.Append("STDERR:\n");
-                    outputBuilder.Append(stderr);
-                }
+                var (tail, _) = JobOutputLog.ReadTail(
+                    outputLogPath, BackgroundJobManagerActor.MaxOutputTailChars);
 
-                var fullOutput = SecretOutputRedactor.Redact(outputBuilder.ToString());
+                // Re-redact the assembled multi-line tail before it is delivered
+                // to the session/LLM. The on-disk log is redacted per line, which
+                // misses secrets that span line boundaries (e.g. a PEM block); a
+                // pass over the joined tail catches those before they reach the model.
+                tail = SecretOutputRedactor.Redact(tail);
 
-                try
-                {
-                    await File.WriteAllTextAsync(_outputLogPath, fullOutput);
-                }
-                catch // slopwatch-ignore: SW003 best-effort log write — output still delivered via actor message
-                {
-                }
+                if (outputLog.Rotated)
+                    tail += $"\n[earlier output rotated to {outputLog.RotatedPath}]";
+                if (outputLog.WriteFailure is not null)
+                    tail += $"\n[output capture failed mid-run: {outputLog.WriteFailure} — the log is incomplete]";
 
-                self.Tell(new ProcessExited(process.ExitCode, fullOutput));
+                self.Tell(new ProcessExited(process.ExitCode, tail));
             }
             catch (Exception ex)
             {
+                await outputLog.DisposeAsync();
                 self.Tell(new ProcessExited(-1, $"Error capturing output: {ex.Message}"));
             }
         });
+    }
+
+    private static async Task PumpToLogAsync(StreamReader reader, JobOutputLog outputLog, bool isStderr)
+    {
+        while (await reader.ReadLineAsync() is { } line)
+        {
+            await outputLog.WriteLineAsync(line, isStderr);
+        }
     }
 
     private void HandleProcessExited(ProcessExited msg)

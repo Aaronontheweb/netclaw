@@ -79,6 +79,26 @@ it, as the highest-priority detection source.
 - **AND** map array values (`"text"`, `"image"`, `"audio"`, `"video"`) to
   corresponding `ModelModality` flags
 
+#### Scenario: OpenAI-compatible backend strategy detection
+
+- **GIVEN** a model is configured on an `openai-compatible` provider
+- **WHEN** capabilities are resolved for that model
+- **THEN** the system SHALL probe `/v1/models` and the optional llama.cpp
+  `/props` endpoint
+- **AND** dispatch the probe to the first matching backend strategy in priority
+  order: DwarfStar/ds4, vLLM, llama.cpp, generic OpenAI-compatible
+
+#### Scenario: DwarfStar ds4 context detection
+
+- **GIVEN** an OpenAI-compatible `/v1/models` entry for the configured model
+  has `owned_by: "ds4.c"`
+- **WHEN** capabilities are resolved for that model
+- **THEN** the DwarfStar/ds4 strategy SHALL match before broader backend
+  heuristics
+- **AND** context window SHALL be read from top-level `context_length`, falling
+  back to `top_provider.context_length`
+- **AND** input and output modalities SHALL resolve to `Text`
+
 ### Requirement: OpenRouter oracle for cross-provider lookup
 
 The system SHALL use OpenRouter's public `GET /api/v1/models` endpoint as a
@@ -172,9 +192,6 @@ with logged warnings.
 - **AND** log a warning with the model ID and failure reasons
 - **AND** the session SHALL proceed normally with text-only behavior
 
-<!-- Delta from 2026-03-25 refactor-llm-session-actor -->
-## MODIFIED Requirements
-
 ### Requirement: Model capability resolution produces standalone ModelCapabilities
 
 The model capability detection pipeline SHALL produce a `ModelCapabilities` record
@@ -208,25 +225,3 @@ instead take `ModelCapabilities` as a dependency.
 - **WHEN** the service is constructed
 - **THEN** it takes `ModelCapabilities` as a dependency (not `SessionConfig`)
 - **AND** reads `ModelId`, `InputModalities`, and `OutputModalities` from it
-
-### Requirement: Singleton capability cache actor
-
-The system SHALL maintain a singleton `ModelCapabilityActor` registered in the
-`ActorRegistry`. The actor SHALL maintain an in-memory cache of model
-capabilities keyed by model ID. Other actors SHALL query capabilities via
-`Ask<ModelCapabilities>` using a `GetModelCapabilities` message containing the
-model ID.
-
-#### Scenario: First query triggers lookup
-
-- **GIVEN** the capability cache has no entry for model `anthropic/claude-sonnet-4`
-- **WHEN** an actor sends `GetModelCapabilities("anthropic/claude-sonnet-4")`
-- **THEN** the actor SHALL resolve capabilities from the detection hierarchy
-- **AND** cache the result
-- **AND** respond with `ModelCapabilities` containing the resolved modalities
-
-#### Scenario: Cached query returns immediately
-
-- **GIVEN** the capability cache has an entry for model `qwen3:30b`
-- **WHEN** an actor sends `GetModelCapabilities("qwen3:30b")`
-- **THEN** the actor SHALL respond from cache without external API calls

@@ -16,19 +16,25 @@ using Netclaw.Configuration;
 using Netclaw.Media;
 using Netclaw.Security;
 using Netclaw.Tools;
+using static Netclaw.Actors.Sessions.SessionProtocol;
+using static Netclaw.Actors.Jobs.BackgroundJobProtocol;
 
 namespace Netclaw.Actors.Sessions.Pipelines;
 
 /// <summary>
 /// Result of a single tool call execution, including the serialized message,
 /// file attachments, and any sub-agent activity.
+/// <paramref name="StartedBackgroundJob"/> is set when the call was routed to
+/// background execution, so the session actor can track the job in
+/// <c>SessionState.ActiveBackgroundJobs</c>.
 /// </summary>
 internal sealed record ToolCallResult(
     SerializableChatMessage Message,
     IReadOnlyList<SerializableMediaReference> ModelInputMediaReferences,
     IReadOnlyList<FileAttachmentInfo> FileAttachments,
     IReadOnlyList<CompletedSubAgentRun> CompletedSubAgentRuns,
-    IReadOnlyList<AcceptedSubAgentFinding> AcceptedSubAgentFindings);
+    IReadOnlyList<AcceptedSubAgentFinding> AcceptedSubAgentFindings,
+    Jobs.ActiveJobInfo? StartedBackgroundJob = null);
 
 internal sealed record ModelInputMaterializationResult(
     IReadOnlyList<SerializableMediaReference> MediaReferences,
@@ -83,9 +89,7 @@ internal static class SessionToolExecutionPipeline
         IApprovalChannel? approvalChannel = null,
         Action<ToolInteractionRequestDispatch>? emitApprovalRequest = null,
         TimeSpan? approvalTimeout = null,
-        int maxToolTimeoutSeconds = 600,
         ILogger? logger = null,
-        int shellTimeoutSeconds = 60,
         IActorRef? backgroundJobManager = null,
         string? projectDirectory = null,
         bool setWorkingDirectoryAvailable = false,
@@ -121,9 +125,7 @@ internal static class SessionToolExecutionPipeline
                     approvalChannel,
                     emitApprovalRequest,
                     approvalTimeout ?? Timeout.InfiniteTimeSpan,
-                    maxToolTimeoutSeconds,
                     logger,
-                    shellTimeoutSeconds,
                     backgroundJobManager,
                     projectDirectory,
                     setWorkingDirectoryAvailable,
@@ -157,7 +159,8 @@ internal static class SessionToolExecutionPipeline
                 ModelInputMediaReferences = modelInputMediaReferences,
                 FileAttachments = fileAttachments,
                 CompletedSubAgentRuns = [.. results.SelectMany(r => r.CompletedSubAgentRuns)],
-                AcceptedSubAgentFindings = [.. results.SelectMany(r => r.AcceptedSubAgentFindings)]
+                AcceptedSubAgentFindings = [.. results.SelectMany(r => r.AcceptedSubAgentFindings)],
+                StartedBackgroundJobs = [.. results.Where(r => r.StartedBackgroundJob is not null).Select(r => r.StartedBackgroundJob!)]
             });
         }
         catch (TimeoutException ex)
@@ -166,6 +169,9 @@ internal static class SessionToolExecutionPipeline
         }
         catch (OperationCanceledException ex)
         {
+            // The tool-execution token is cancelled both by caller (turn/user) supersede
+            // and by the session's own timeout watchdog; surface either as a failed
+            // batch (the watchdog message is the authoritative one).
             self.Tell(new ToolExecutionFailed
             {
                 Cause = new TimeoutException(
@@ -195,9 +201,7 @@ internal static class SessionToolExecutionPipeline
         IApprovalChannel? approvalChannel = null,
         Action<ToolInteractionRequestDispatch>? emitApprovalRequest = null,
         TimeSpan? approvalTimeout = null,
-        int maxToolTimeoutSeconds = 600,
         ILogger? logger = null,
-        int shellTimeoutSeconds = 60,
         IActorRef? backgroundJobManager = null,
         string? projectDirectory = null,
         bool setWorkingDirectoryAvailable = false,
@@ -207,14 +211,38 @@ internal static class SessionToolExecutionPipeline
         TurnContext? turnContext = null,
         ModelInputBatchBudget? modelInputBudget = null)
     {
-        var (meta, cleanedTc) = ToolCallMetaExtractor.Extract(tc);
-        tc = cleanedTc;
-
-        if (meta?.TimeoutHintSeconds is not null)
+        // Single execution-preflight seam, shared with the sub-agent path via
+        // IToolExecutor.InterpretToolCall: validate the ORIGINAL arguments (parse
+        // sentinel, invalid/ambiguous meta values, unrecognized keys) and, on
+        // success, extract meta + strip meta keys. Rejecting here — rather than
+        // letting ExecuteAsync return the rejection string — is what lets the denial
+        // be audited as Allowed=false instead of being misreported as executed.
+        var interpretation = executor.InterpretToolCall(tc);
+        if (interpretation.Rejection is { } rejection)
         {
-            timeout = ToolCallMetaExtractor.ComputeEffectiveTimeout(
-                meta.TimeoutHintSeconds, timeout, maxToolTimeoutSeconds);
+            auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, TimeSpan.Zero, meta: null) with
+            {
+                Allowed = false,
+                DenyReason = rejection.DenyReason
+            });
+
+            return new ToolCallResult(new SerializableChatMessage
+            {
+                Role = Protocol.ChatRole.Tool,
+                Content = rejection.Message,
+                ToolCallId = new ToolCallId(tc.CallId),
+                Name = tc.Name
+            }, [], [], [], []);
         }
+
+        var meta = interpretation.Meta;
+        tc = interpretation.Cleaned;
+
+        // The agent's per-call timeout hint is honored as requested; when absent
+        // the inherited default (SessionConfig.ToolExecutionTimeout) applies.
+        // ExtractFrom only yields a positive hint, so there is nothing to clamp.
+        if (meta?.TimeoutHintSeconds is { } hintSeconds)
+            timeout = TimeSpan.FromSeconds(hintSeconds);
 
         var sw = Stopwatch.StartNew();
         string resultText;
@@ -225,7 +253,8 @@ internal static class SessionToolExecutionPipeline
             spawnChildActor,
             projectDirectory,
             turnContext,
-            modelInputModalities);
+            modelInputModalities,
+            maxInlineToolResultChars);
         context.RequestedTimeoutSeconds = (int)timeout.TotalSeconds;
 
         // Re-drive of an ApprovedOnce approval: the user already clicked
@@ -343,7 +372,7 @@ internal static class SessionToolExecutionPipeline
                 var deniedMessage = new SerializableChatMessage
                 {
                     Role = Protocol.ChatRole.Tool,
-                    Content = ClampToolResult(resultText, maxInlineToolResultChars),
+                    Content = resultText,
                     ToolCallId = new ToolCallId(tc.CallId),
                     Name = tc.Name
                 };
@@ -375,7 +404,11 @@ internal static class SessionToolExecutionPipeline
                         tc, sessionId, source, auditLogger, timeProvider,
                         turnContext,
                         meta, backgroundJobManager,
-                        meta.TimeoutHintSeconds ?? shellTimeoutSeconds,
+                        // Honor the agent's requested timeout; when absent, no
+                        // kill timer is armed — a background job is a detached
+                        // process with no completion expectation, reaped by its
+                        // own exit, cancellation, or session passivation.
+                        meta.TimeoutHintSeconds ?? 0,
                         sw.Elapsed, logger,
                         context.AppliedApprovalDecision,
                         context.AppliedApprovalPattern);
@@ -409,7 +442,7 @@ internal static class SessionToolExecutionPipeline
                 return new ToolCallResult(new SerializableChatMessage
                 {
                     Role = Protocol.ChatRole.Tool,
-                    Content = ClampToolResult(resultText, maxInlineToolResultChars),
+                    Content = resultText,
                     ToolCallId = new ToolCallId(tc.CallId),
                     Name = tc.Name
                 }, [], context.FileAttachments, completedRuns, acceptedFindings);
@@ -475,7 +508,11 @@ internal static class SessionToolExecutionPipeline
                         tc, sessionId, source, auditLogger, timeProvider,
                         turnContext,
                         meta, backgroundJobManager,
-                        meta.TimeoutHintSeconds ?? shellTimeoutSeconds,
+                        // Honor the agent's requested timeout; when absent, no
+                        // kill timer is armed — a background job is a detached
+                        // process with no completion expectation, reaped by its
+                        // own exit, cancellation, or session passivation.
+                        meta.TimeoutHintSeconds ?? 0,
                         sw.Elapsed, logger,
                         decision.ToString(),
                         string.Join(", ", ctx.Patterns));
@@ -549,6 +586,14 @@ internal static class SessionToolExecutionPipeline
                 DenyReason = ex.DenyReason
             });
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Caller (turn/user) cancellation is not a tool failure. Self-monitoring
+            // tools are bounded only by ct, so this is the normal cancel path; let it
+            // propagate so the turn aborts cleanly instead of feeding the model an
+            // "Error executing tool: The operation was canceled." result.
+            throw;
+        }
         catch (Exception ex)
         {
             sw.Stop();
@@ -563,7 +608,9 @@ internal static class SessionToolExecutionPipeline
 
         modelInputBudget ??= new ModelInputBatchBudget(MaxModelInputBatchBytes);
         var modelInputMaterialization = MaterializeModelInputFiles(context, sessionDir, logger, modelInputBudget);
-        resultText = ClampToolResult(resultText, maxInlineToolResultChars);
+        // No inline clamp here: DispatchingToolExecutor already bounds every tool
+        // result to the inline budget N (and spills the overflow). Clamping again
+        // would re-window the already-windowed+steered result.
         if (modelInputMaterialization.RequestedCount > modelInputMaterialization.MediaReferences.Count)
             resultText = AppendModelInputHandoffWarning(
                 resultText,
@@ -599,17 +646,37 @@ internal static class SessionToolExecutionPipeline
 
         try
         {
-            // Consumed as a stream under a per-call inactivity watchdog. A
-            // non-streaming tool emits only the terminal item, so a flat budget
-            // is equivalent to the former timeout; inactivity throws
-            // TimeoutException, which the caller turns into a per-tool error.
-            return await StreamingToolWatchdog.ConsumeAsync(
-                executor.ExecuteStreamAsync(toolCall, context, cancellationToken),
-                toolCall.Name,
-                ToolWatchdogBudget.Flat(timeout),
-                timeProvider,
-                onActivity: null,
-                cancellationToken);
+            var stream = executor.ExecuteStreamAsync(toolCall, context, cancellationToken);
+
+            // Self-monitoring tools (spawn_agent) own their liveness end to end and
+            // always drive their stream to a terminal item, so the parent does not
+            // supervise them at all — it drains to that terminal item under caller
+            // (turn/user) cancellation only. For spawn_agent the terminal item is
+            // produced by SpawnAgentTool's stream, which completes when SpawnAsync
+            // returns; SpawnAsync's finally unconditionally completes the activity
+            // channel, and SubAgentActor.PostStop guarantees the reply that lets
+            // SpawnAsync return even on a crash. (Note: PostStop alone only unblocks
+            // the spawner Ask — the terminal stream item depends on that finally
+            // running.)
+            if (executor.GetLivenessMode(toolCall) == ToolLivenessMode.SelfMonitoring)
+                return await DrainToCompletionAsync(stream, toolCall.Name, cancellationToken);
+
+            // Opaque tools are bounded by one wall-clock budget. A TimeProvider-driven
+            // timeout token (no hand-rolled timer, no volatile) cancels the drain when the
+            // budget elapses; it is per call, so a slow tool times out without affecting
+            // its siblings.
+            using var budgetCts = new CancellationTokenSource(timeout, timeProvider);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, budgetCts.Token);
+            try
+            {
+                return await DrainToCompletionAsync(stream, toolCall.Name, linkedCts.Token);
+            }
+            catch (OperationCanceledException)
+                when (budgetCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException(
+                    $"Tool '{toolCall.Name}' exceeded execution budget of {timeout.TotalSeconds:F0}s and was stopped.");
+            }
         }
         finally
         {
@@ -626,6 +693,26 @@ internal static class SessionToolExecutionPipeline
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Drains a tool's stream to its terminal completion item under the supplied
+    /// cancellation token. Self-monitoring tools pass the caller (turn/user) token
+    /// directly — they own their liveness; opaque tools pass a token also linked to a
+    /// wall-clock budget. A stream that ends without a completion item violates the
+    /// tool-call contract and fails loudly.
+    /// </summary>
+    private static async Task<string> DrainToCompletionAsync(
+        IAsyncEnumerable<ToolCallUpdate> stream, string toolName, CancellationToken cancellationToken)
+    {
+        await foreach (var update in stream.WithCancellation(cancellationToken))
+        {
+            if (update is ToolCompletedUpdate completed)
+                return completed.Result;
+        }
+
+        throw new InvalidOperationException(
+            $"Tool '{toolName}' stream ended without a completion item.");
     }
 
     private static bool SetsEqual(IReadOnlySet<string> left, IReadOnlySet<string> right)
@@ -761,8 +848,11 @@ internal static class SessionToolExecutionPipeline
                 ApprovalPattern = approvalPattern
             });
 
-            var resultText = $"Background job {started.JobId.Value} submitted. " +
-                             "Use check_background_job to monitor progress or cancel.";
+            var logPathHint = started.OutputLogPath is not null
+                ? $" Output streams to {started.OutputLogPath} while the job runs — file_read/grep it to monitor."
+                : string.Empty;
+            var resultText = $"Background job {started.JobId.Value} submitted.{logPathHint} " +
+                             "Use check_background_job to check status or cancel.";
             var resultMessage = new SerializableChatMessage
             {
                 Role = Protocol.ChatRole.Tool,
@@ -770,7 +860,17 @@ internal static class SessionToolExecutionPipeline
                 ToolCallId = new ToolCallId(tc.CallId),
                 Name = tc.Name
             };
-            return new ToolCallResult(resultMessage, [], [], [], []);
+            var jobInfo = new Jobs.ActiveJobInfo
+            {
+                JobId = started.JobId,
+                Command = command,
+                Rationale = startCmd.Rationale,
+                StartedAtMs = timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
+                Audience = audience.Value,
+                Boundary = boundary.Value,
+                OutputLogPath = started.OutputLogPath
+            };
+            return new ToolCallResult(resultMessage, [], [], [], [], jobInfo);
         }
         catch (Exception ex)
         {
@@ -879,12 +979,33 @@ internal static class SessionToolExecutionPipeline
                     continue;
                 }
 
-                refs.Add(SessionMediaStore.CopyFile(
+                var mediaRef = SessionMediaStore.CopyFile(
                     file.FilePath,
                     sessionDir,
                     mimeType,
                     mediaModality,
-                    info.Length));
+                    info.Length);
+                if (mediaRef is null)
+                {
+                    // Image could not be bounded under the egress caps. Release its
+                    // reservation and skip; the RequestedCount > MediaReferences.Count
+                    // gap drives the model-input handoff warning, so this is not silent.
+                    batchBudget.Release(reservedBytes);
+                    reservedBytes = 0;
+                    logger?.LogWarning("Model input image could not be bounded, skipping: {Path}", file.FilePath);
+                    continue;
+                }
+
+                // The budget reserved the SOURCE size; the persisted image was resized
+                // smaller, so release the headroom back to the batch — otherwise a batch
+                // of large-but-downscalable images would be rejected on source size even
+                // though the bounded artifacts easily fit.
+                var overReserved = reservedBytes - mediaRef.FileSizeBytes;
+                if (overReserved > 0)
+                    batchBudget.Release(overReserved);
+                reservedBytes = 0;
+
+                refs.Add(mediaRef);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -928,7 +1049,8 @@ internal static class SessionToolExecutionPipeline
         Func<object, string, CancellationToken, Task<object>> spawnChildActor,
         string? projectDirectory,
         TurnContext? turnContext,
-        ModelModality modelInputModalities)
+        ModelModality modelInputModalities,
+        int maxInlineToolResultChars)
     {
         // A turn with no authority context carries no trust context — fall closed
         // to the most-restrictive audience. The default is resolved once, here,
@@ -936,10 +1058,15 @@ internal static class SessionToolExecutionPipeline
         var context = new ToolExecutionContext(sessionId.Value, sessionDir)
         {
             Audience = turnContext?.Audience ?? source?.Audience ?? TrustAudience.Public,
+            // The session content budget; DispatchingToolExecutor uses it (or a
+            // tool's own override) to bound results and spill the overflow.
+            MaxInlineToolResultChars = maxInlineToolResultChars,
         };
         context.Boundary = turnContext?.Boundary ?? source?.Boundary;
         context.ChannelType = turnContext?.ChannelType?.ToWireValue()
                               ?? (source is null ? null : source.ChannelType.ToWireValue());
+        context.DefaultDeliveryTarget = turnContext?.DefaultDeliveryTarget ?? source?.DefaultDeliveryTarget;
+        context.RequestedDeliveryTarget = turnContext?.RequestedDeliveryTarget ?? source?.RequestedDeliveryTarget;
         context.SupportsInteractiveApproval = turnContext?.SupportsInteractiveApproval
                                                ?? source?.ChannelType.SupportsInteractiveApproval();
         context.ModelInputModalities = modelInputModalities;
@@ -972,19 +1099,6 @@ internal static class SessionToolExecutionPipeline
         Rationale = meta?.Rationale,
         TimeoutHintSeconds = meta?.TimeoutHintSeconds
     };
-
-    /// <summary>
-    /// Truncates a tool result to fit within the configured inline character limit.
-    /// </summary>
-    public static string ClampToolResult(string resultText, int maxInlineToolResultChars)
-    {
-        if (maxInlineToolResultChars <= 0 || resultText.Length <= maxInlineToolResultChars)
-            return resultText;
-
-        var omittedChars = resultText.Length - maxInlineToolResultChars;
-        return resultText[..maxInlineToolResultChars]
-               + $"\n[tool result truncated: omitted {omittedChars} chars to protect context window]";
-    }
 
     /// <summary>
     /// Returns a one-line agent-facing hint pointing at <c>set_working_directory</c>

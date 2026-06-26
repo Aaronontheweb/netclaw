@@ -29,8 +29,30 @@ public abstract class LlmSessionTestBase : TestKit
     /// </summary>
     protected virtual bool VerifySerialization => false;
 
+    /// <summary>
+    /// Derived watchdog/timer tests override this to run the ActorSystem on
+    /// <see cref="Akka.TestKit.TestScheduler"/>, so scheduled work — including the
+    /// processing watchdog's <c>ITimerScheduler</c> timers — fires only on an
+    /// explicit <see cref="AdvanceScheduler"/>, making timeouts deterministic
+    /// instead of racing the wall clock against threadpool scheduling.
+    /// </summary>
+    protected virtual bool UseTestScheduler => false;
+
+    /// <summary>
+    /// Moves virtual scheduler time forward, synchronously delivering any
+    /// scheduler items (e.g. the processing watchdog timeout) that fall due.
+    /// Only valid when <see cref="UseTestScheduler"/> is true.
+    /// </summary>
+    protected void AdvanceScheduler(TimeSpan offset) =>
+        ((Akka.TestKit.TestScheduler)Sys.Scheduler).Advance(offset);
+
     protected sealed override void ConfigureAkka(AkkaConfigurationBuilder builder, IServiceProvider provider)
     {
+        if (UseTestScheduler)
+            builder.AddHocon(
+                "akka.scheduler.implementation = \"Akka.TestKit.TestScheduler, Akka.TestKit\"",
+                HoconAddMode.Prepend);
+
         builder
             .WithInMemoryJournal()
             .WithInMemorySnapshotStore()
@@ -45,6 +67,13 @@ public abstract class LlmSessionTestBase : TestKit
     protected sealed override void ConfigureServices(HostBuilderContext context, IServiceCollection services)
     {
         services.AddSingleton<IModelCapabilityResolver>(new FakeCapabilityResolver());
+        // Mirror production DI (Daemon Program.cs): WithNetclawActors() constructs
+        // BackgroundJobManagerActor and ReminderManagerActor via the DI resolver,
+        // which need TimeProvider. Without it those actors die with
+        // ActorInitializationException at startup — harmless for most session
+        // tests but a steady source of restart churn across the shared threadpool
+        // that destabilizes real-process integration tests running in parallel.
+        services.AddSingleton(TimeProvider.System);
         services.AddTestNetclawPaths();
         services.AddSingleton(SecurityPolicyDefaults.Resolve(null));
         services.AddSingleton<BackgroundJobDefinitionStore>();
@@ -56,6 +85,7 @@ public abstract class LlmSessionTestBase : TestKit
         services.AddSingleton<ReminderDefinitionStore>();
         services.AddSingleton<ReminderHistoryStore>();
         services.AddSingleton<IOperationalNotificationSink>(NullNotificationSink.Instance);
+        services.AddSingleton<IReminderChannelNotifier>(NullReminderChannelNotifier.Instance);
         ConfigureSessionServices(services);
         services.AddLlmSessionCompositeRecords();
     }

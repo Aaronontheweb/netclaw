@@ -50,8 +50,9 @@ public sealed class GitHubCopilotProviderPlugin(
         // token) on every call. The "placeholder" is overwritten before the
         // first request goes out.
         var credential = new ApiKeyCredential("placeholder");
+        var oauth = GitHubCopilotDescriptor.CreateOAuthAuth(entry);
         options.AddPolicy(
-            new CopilotRequestPolicy(tokenExchanger, entry, credential),
+            new CopilotRequestPolicy(tokenExchanger, entry, credential, model.Provider, oauth),
             PipelinePosition.PerCall);
 
         var client = new OpenAIClient(credential, options);

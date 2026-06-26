@@ -44,6 +44,33 @@ public interface INetclawTool
     /// <summary>ACL grant category for policy filtering.</summary>
     string GrantCategory { get; }
 
+    /// <summary>
+    /// Indicates who owns stall detection for this tool. Most tools are opaque:
+    /// the parent tool pipeline applies one wall-clock budget. Self-monitoring
+    /// tools, such as <c>spawn_agent</c>, report their own terminal failure when
+    /// their internal watchdogs detect a stall.
+    /// </summary>
+    ToolLivenessMode LivenessMode => ToolLivenessMode.Opaque;
+
+    /// <summary>
+    /// Inline character budget for this tool's result before the dispatcher
+    /// windows it (head+tail) and spills the full output to a session file with a
+    /// steer. <c>0</c> means "use the session content budget"
+    /// (<c>SessionTuning.MaxInlineToolResultChars</c>) — the default for content
+    /// tools whose output the model needs to read. Verbose tools (e.g. shell)
+    /// override this to a small value so their noisy output is bounded aggressively.
+    /// </summary>
+    int InlineOutputBudgetChars => 0;
+
+    /// <summary>
+    /// When <c>true</c>, the dispatcher skips <see cref="Netclaw.Security.SecretOutputRedactor"/>
+    /// on the result returned to the model. The spill file (if any) is still redacted.
+    /// Set this on tools whose output the model may need to write back verbatim
+    /// (e.g. file_read) — redacting their output corrupts the content on a
+    /// read-modify-write cycle.
+    /// </summary>
+    bool SuppressOutputRedaction => false;
+
     /// <summary>JSON Schema describing the tool's parameters.</summary>
     JsonElement ParameterSchema { get; }
 
@@ -71,7 +98,7 @@ public interface INetclawTool
     /// one terminal <see cref="ToolCompletedUpdate"/>. The default implementation
     /// runs the non-streaming context overload and yields its result as a single
     /// completion item, so tools that do not stream behave identically. Long-
-    /// running tools override this to emit liveness/progress while they work.
+    /// running tools override this to emit live activity while they work.
     /// </summary>
     async IAsyncEnumerable<ToolCallUpdate> ExecuteStreamAsync(
         IDictionary<string, object?>? arguments,

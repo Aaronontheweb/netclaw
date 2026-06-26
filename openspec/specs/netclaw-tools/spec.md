@@ -67,10 +67,15 @@ subscribers. The pipeline SHALL NOT block other tool calls in the same batch.
 
 The system SHALL provide a shell execution tool that runs commands as the
 Netclaw process user context. Stdin SHALL be closed (no interactive commands).
-Execution SHALL enforce a configurable timeout (default: 60 seconds). Output
-SHALL be truncated to a configurable limit. Before execution, the shell tool
-SHALL check the hard deny list via `ShellCommandPolicy`. Hard-denied commands
-SHALL be rejected before `ToolPathPolicy` path checks.
+Execution SHALL enforce a configurable timeout (default: 60 seconds). The tool
+SHALL drain stdout and stderr in bounded memory (each to the capture ceiling
+`ToolConfig.MaxOutputChars`) and return the combined output bounded to the
+ceiling — it does NOT itself window, redact, or spill (the central
+`bounded-tool-output` mechanism does, after redaction). `shell_execute` SHALL
+declare a small verbose inline budget (`InlineOutputBudgetChars`) so its skimmable
+output is bounded aggressively. Before execution, the shell tool SHALL check the
+hard deny list via `ShellCommandPolicy`; hard-denied commands SHALL be rejected
+before `ToolPathPolicy` path checks.
 
 #### Scenario: Execute command and return output
 
@@ -94,12 +99,14 @@ SHALL be rejected before `ToolPathPolicy` path checks.
 - **THEN** the process is terminated
 - **AND** the tool returns a timeout error message to the LLM
 
-#### Scenario: Output truncated to limit
+#### Scenario: Combined output bounded by the capture ceiling
 
-- **GIVEN** a shell command produces output exceeding the configured limit
+- **GIVEN** a shell command writes large output to both stdout and stderr
 - **WHEN** the output is captured
-- **THEN** the output is truncated to the configured character limit
-- **AND** a truncation indicator is appended
+- **THEN** the returned combined output is bounded by `MaxOutputChars` (one shared
+  ceiling, not a per-stream cap)
+- **AND** the dispatcher applies the inline budget + spill + steer on top
+  (per `bounded-tool-output`)
 
 #### Scenario: Stdin closed prevents interactive commands
 
@@ -229,4 +236,166 @@ present in the media catalog.
 - **AND** the URL path does not include a usable extension
 - **WHEN** `web_fetch` saves the response
 - **THEN** it chooses `.pdf` from the media catalog
+
+### Requirement: Web fetch format is validated
+
+The `web_fetch` tool SHALL validate the `Format` argument against the supported
+set (absent, `"raw"`, `"text"`). Any other value SHALL reject the call with a
+tool-result error naming the supplied value and the supported set. The tool
+SHALL NOT silently fall back to raw mode for an unsupported format value.
+
+#### Scenario: Unsupported format value rejects
+
+- **GIVEN** a `web_fetch` call with `"Format": "markdown"`
+- **WHEN** arguments are validated
+- **THEN** the call is rejected with an error naming `"markdown"` and the
+  supported values `raw` and `text`
+- **AND** no HTTP request is made
+
+#### Scenario: Supported formats behave unchanged
+
+- **GIVEN** a `web_fetch` call with `"Format": "text"` (or `Format` absent)
+- **WHEN** the fetch executes
+- **THEN** behavior is identical to current behavior
+
+### Requirement: Web fetch response-cap truncation is surfaced
+
+The `web_fetch` result SHALL include a notice stating the content was
+truncated at the cap whenever a fetched response body reaches the
+response-byte cap. The captured byte count alone SHALL NOT be the only signal.
+
+#### Scenario: Body larger than the cap carries a truncation notice
+
+- **GIVEN** a URL whose response body exceeds the 5 MB response cap
+- **WHEN** `web_fetch` returns its summary
+- **THEN** the result includes a notice that content was truncated at 5 MB
+
+#### Scenario: Body under the cap carries no truncation notice
+
+- **GIVEN** a URL whose response body is under the response cap
+- **WHEN** `web_fetch` returns its summary
+- **THEN** no truncation notice is present
+
+### Requirement: Webhook listing honors its filter argument
+
+The `list_webhooks` tool SHALL honor its schema-advertised `Filter` argument:
+`"active"` (the default) SHALL return only enabled webhooks, `"all"` SHALL
+return every webhook, and any other value SHALL reject the call naming the
+supported values. The applied filter SHALL be echoed in the result.
+
+#### Scenario: Active filter excludes disabled webhooks
+
+- **GIVEN** two registered webhooks, one enabled and one disabled
+- **AND** a `list_webhooks` call with `"Filter": "active"` (or `Filter` absent)
+- **WHEN** the tool executes
+- **THEN** only the enabled webhook is listed
+- **AND** the result states the `active` filter was applied
+
+#### Scenario: All filter includes disabled webhooks
+
+- **GIVEN** two registered webhooks, one enabled and one disabled
+- **AND** a `list_webhooks` call with `"Filter": "all"`
+- **WHEN** the tool executes
+- **THEN** both webhooks are listed with their enabled state
+- **AND** the result states the `all` filter was applied
+
+#### Scenario: Unknown filter value rejects
+
+- **GIVEN** a `list_webhooks` call with `"Filter": "enabled"`
+- **WHEN** arguments are validated
+- **THEN** the call is rejected naming the supported values `active` and `all`
+
+### Requirement: File read tool
+
+The system SHALL provide a `file_read` first-party tool that authorizes the
+requested path through the audience-scoped read-file policy before inspecting or
+reading bytes. Text-like files SHALL return decoded text for UTF-8, UTF-16/UTF-32
+Unicode, and common Windows-1252 text files using the existing offset/limit and
+output-truncation behavior.
+
+For non-text files, `file_read` SHALL NOT return raw binary content. It SHALL
+detect the file category using the canonical attachment taxonomy where possible
+and return structured metadata plus an explicit next-step message.
+
+Images SHALL be eligible for model-visible handoff only when the active model's
+input modalities include image support. The handoff SHALL use session media
+references and the existing `DataContent` rehydration path, not binary content in
+the tool-result string. Streaming tool-result persistence SHALL retain the media
+references needed to recreate the handoff nudge during recovery.
+
+PDF extraction, OCR, audio transcription, and video keyframe extraction SHALL NOT
+be built into `file_read`.
+
+#### Scenario: Text file read preserves existing behavior
+
+- **GIVEN** a readable text file using UTF-8, UTF-16/UTF-32 Unicode, or Windows-1252
+- **WHEN** the agent invokes `file_read` with optional offset and limit values
+- **THEN** the tool returns text content with the existing line pagination and
+  truncation behavior
+
+#### Scenario: Image read on image-capable model becomes model-visible
+
+- **GIVEN** a readable PNG file
+- **AND** the active model supports image input
+- **WHEN** the agent invokes `file_read`
+- **THEN** the tool returns metadata indicating the image was loaded for visual
+  inspection
+- **AND** the next LLM call includes the image through a session media reference
+
+#### Scenario: Sub-agent image read can become model-visible
+
+- **GIVEN** a sub-agent uses `file_read` on a readable PNG file
+- **AND** the sub-agent's selected model supports image input
+- **WHEN** the tool result is returned to the sub-agent loop
+- **THEN** the next sub-agent LLM call includes the image through a session media
+  reference
+
+#### Scenario: Image read on text-only model returns modality guidance
+
+- **GIVEN** a readable PNG file
+- **AND** the active model does not support image input
+- **WHEN** the agent invokes `file_read`
+- **THEN** the tool returns metadata and the canonical image modality-gap note
+- **AND** no media reference is added to the next LLM call
+
+#### Scenario: PDF read does not extract text
+
+- **GIVEN** a readable PDF file
+- **WHEN** the agent invokes `file_read`
+- **THEN** the tool returns metadata identifying the file as a PDF
+- **AND** the result says native PDF extraction is not built into `file_read`
+- **AND** no raw PDF bytes are returned
+
+#### Scenario: Unsupported binary read returns explicit guidance
+
+- **GIVEN** a readable archive, audio file, video file, binary document, or
+  unknown binary file
+- **WHEN** the agent invokes `file_read`
+- **THEN** the tool returns metadata and explicit unsupported-format guidance
+- **AND** no raw bytes are returned
+
+### Requirement: File read tool bounds its read for memory safety
+
+The `file_read` tool's default (no `offset`/`limit`) path SHALL read a bounded
+head of the file (up to `ToolConfig.MaxOutputChars`) and stop — it SHALL NOT read
+the entire file into memory before truncating. The existing line-range
+(`offset`/`limit`) path SHALL remain bounded. `file_read` SHALL NOT redact its
+result itself; the central `DispatchingToolExecutor` redaction covers it. The
+inline bound + spill (if any) is applied centrally per `bounded-tool-output`;
+`file_read` is a content tool and uses the session content budget.
+
+#### Scenario: Large file is read in bounded memory
+
+- **WHEN** the agent reads a file larger than the capture ceiling with no
+  `offset`/`limit`
+- **THEN** the tool reads only a bounded head and does not materialize the whole
+  file in memory
+- **AND** it appends a steer to read a specific range (`offset`/`limit`) or `grep`
+
+#### Scenario: Secrets in a read file are redacted by the dispatcher
+
+- **GIVEN** a file contains a secret-bearing value (e.g. an API key)
+- **WHEN** the agent reads the file
+- **THEN** the result returned to the model has the secret redacted (by the
+  central dispatcher redaction)
 

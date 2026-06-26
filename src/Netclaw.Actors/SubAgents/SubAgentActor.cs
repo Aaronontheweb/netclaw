@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="SubAgentActor.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -21,6 +21,7 @@ using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
 using AiChatMessage = Microsoft.Extensions.AI.ChatMessage;
+using static Netclaw.Actors.SubAgents.SubAgentProtocol;
 
 namespace Netclaw.Actors.SubAgents;
 
@@ -36,6 +37,7 @@ namespace Netclaw.Actors.SubAgents;
 public sealed class SubAgentActor : ReceiveActor, IWithTimers
 {
     internal const int DefaultMaxToolIterations = 30;
+
     private const string EmptyResponseMarker = "(no response)";
     private const string MalformedFinalOutputMessage = "Subagent produced malformed final output: it emitted unexecuted tool calls as text. This was not a timeout.";
     private const string MalformedFinalOutputNudge =
@@ -63,9 +65,14 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private readonly int _maxToolIterations;
     private readonly ToolRegistry _toolRegistry;
     private IReadOnlyList<AITool> _aiTools = [];
-    private readonly ILoggingAdapter _log;
+    private ILoggingAdapter _log;
     private readonly MemoryPolicyEvaluator _policyEvaluator = new();
     private readonly TurnStateTracker _turnState = new();
+
+    // Stopwatch tracking the total wall-clock duration of the sub-agent run.
+    // Used for the summary log on completion (ProcessingWatchdog is only a
+    // timer scheduler — it doesn't track elapsed time itself).
+    private readonly Stopwatch _runStopwatch = Stopwatch.StartNew();
 
     // Conversation state (not persisted — ephemeral)
     private readonly List<AiChatMessage> _history = [];
@@ -235,6 +242,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             };
             _toolExecutionContext.Boundary = msg.Boundary;
             _toolExecutionContext.ChannelType = msg.ChannelType;
+            _toolExecutionContext.DefaultDeliveryTarget = msg.DefaultDeliveryTarget;
+            _toolExecutionContext.RequestedDeliveryTarget = msg.RequestedDeliveryTarget;
             _toolExecutionContext.ModelInputModalities = msg.ModelInputModalities;
             _toolExecutionContext.ProjectDirectory = msg.ParentProjectDirectory;
             _toolExecutionContext.SupportsInteractiveApproval = _approvalBridge is not null;
@@ -243,6 +252,22 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             _externalCts = new CancellationTokenSource();
             var self = Self; // Capture before callback — Self requires active actor context
             _externalCancellationRegistration = msg.Cancellation.Register(() => self.Tell(SubAgentCancelled.Instance));
+
+            // Enrich the logger so every sub-agent log line correlates back to the
+            // parent session (SessionId) and to this specific sub-agent run
+            // (SubSessionId), and is plainly attributable to the sub-agent. scopeId is
+            // "{parentSessionId}/subagent/{name}/{runId}"; NormalizeSessionId strips the
+            // "/subagent/..." suffix to recover the parent. SessionId matches the key the
+            // session/channel actors already use (see SessionLoggingScope), so sub-agent
+            // and parent logs share one filterable attribute; SubSessionId isolates a
+            // single run within that session.
+            var parentSessionId = SessionDiagnosticsContext.NormalizeSessionId(scopeId);
+            var enrichedLog = Context.GetLogger();
+            if (!string.IsNullOrWhiteSpace(parentSessionId))
+                enrichedLog = enrichedLog.WithContext("SessionId", parentSessionId);
+            if (!string.IsNullOrWhiteSpace(scopeId))
+                enrichedLog = enrichedLog.WithContext("SubSessionId", scopeId);
+            _log = enrichedLog;
 
             // The run is bounded by a two-phase inactivity watchdog re-armed on
             // every progress event (LLM response, tool batch, streaming delta,
@@ -315,14 +340,16 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
             if (analysis.Kind is LlmResponseKind.ThinkingOnly or LlmResponseKind.Empty)
             {
-                switch (_turnState.EvaluateEmptyResponse(analysis.Kind))
+                var truncated = response.FinishReason == ChatFinishReason.Length;
+                switch (_turnState.EvaluateEmptyResponse(analysis.Kind, truncated))
                 {
                     case EmptyResponseAction.Retry retry:
                         _log.Warning(
-                            "SubAgent [{AgentName}] produced {Kind} response ({ThinkingChars} reasoning chars) — retrying with nudge",
+                            "SubAgent [{AgentName}] produced {Kind} response ({ThinkingChars} reasoning chars, truncated={Truncated}) — retrying with nudge",
                             _definition.Name,
                             analysis.Kind,
-                            analysis.ThinkingChars);
+                            analysis.ThinkingChars,
+                            truncated);
                         AddSystemNudge(retry.NudgeText);
                         FireLlmCall();
                         return;
@@ -518,7 +545,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
             _toolExecutionWatchdogState = ToolExecutionWatchdogState.WaitingForParentApproval;
             _pendingApprovalWaits++;
-            EmitActivity("awaiting human approval", suspendsInactivityWatchdog: true);
+            EmitActivity("awaiting human approval");
         });
 
         Receive<SubAgentApprovalWaitCompleted>(_ =>
@@ -573,7 +600,9 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 _interDeltaBudget,
                 Timers);
 
-            EmitActivity("the model is responding");
+            // log: false — the SubAgentStreamPing handler above already logs this
+            // liveness at Debug; an Info line per streamed delta would flood Seq.
+            EmitActivity("the model is responding", log: false);
         });
     }
 
@@ -590,6 +619,12 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 ? JsonSerializer.Serialize(toolCall.Arguments)
                 : null;
             _turnState.TrackToolCall(toolCall.Name, argsJson);
+
+            // Log tool START event so tool execution spans are visible in Seq
+            // (previously only tool results were logged, making it impossible to
+            // correlate tool start with tool end when tools take a long time).
+            _log.Info("SubAgent [{AgentName}] tool start callId={ToolCallId} name={ToolName}",
+                _definition.Name, toolCall.CallId ?? "unknown", toolCall.Name);
         }
 
         var toolNames = string.Join(", ", toolCalls.Select(tc => tc.Name));
@@ -684,6 +719,15 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         _log.Info("SubAgent [{AgentName}] completed (success={Success}, output={OutputLength} chars, iterations={Iterations})",
             _definition.Name, success, output.Length, _turnState.ToolIterationCount);
 
+        // Log cumulative stats for observability — total LLM calls, tool usage, etc.
+        // This gives operators a single summary line for sub-agent duration analysis.
+        _log.Info(
+            "SubAgent [{AgentName}] summary: success={Success}, totalToolCalls={TotalToolCalls}, "
+            + "iterations={Iterations}, duration={Duration}s",
+            _definition.Name, success, _turnState.ToolCallCount,
+            _turnState.ToolIterationCount,
+            _runStopwatch.Elapsed.TotalSeconds);
+
         var findings = success && _definition.EmitStructuredFindings
             ? BuildFindings(output, _toolExecutionContext.SessionId)
             : [];
@@ -716,12 +760,21 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private void RestartWatchdog(TimeSpan budget)
         => _watchdog.Start(ProcessingWatchdog.LlmCall, budget, Timers);
 
-    /// <summary>Emit a liveness/progress item to the spawning tool's stream, if any.</summary>
-    private void EmitActivity(string phase, bool suspendsInactivityWatchdog = false)
-        => _activitySink?.TryWrite(new ToolActivityUpdate(phase)
-        {
-            SuspendsInactivityWatchdog = suspendsInactivityWatchdog
-        });
+    /// <summary>
+    /// Emit a liveness/progress item to the spawning tool's stream (if any) and log
+    /// the phase so it is visible in Seq even on non-streaming spawn paths (where
+    /// <see cref="_activitySink"/> is null), correlated by SessionId/SubSessionId.
+    /// The per-delta streaming ping passes <paramref name="log"/> = false because the
+    /// <see cref="SubAgentStreamPing"/> handler already logs that liveness at Debug —
+    /// logging it here too would emit one Info line per streamed delta.
+    /// </summary>
+    private void EmitActivity(string phase, bool log = true)
+    {
+        if (log)
+            _log.Info("SubAgent [{AgentName}] {Phase}", _definition.Name, phase);
+
+        _activitySink?.TryWrite(new ToolActivityUpdate(phase));
+    }
 
     /// <summary>
     /// Record forward progress in the tool loop / post-approval: re-baseline the
@@ -1009,10 +1062,25 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             var tasks = toolCalls.Select(async tc =>
             {
                 var toolContext = CreatePerToolExecutionContext(executionContext);
+
+                // Same execution-preflight seam as the main pipeline: validate +
+                // extract in one step (the sub-agent previously skipped extraction
+                // entirely, silently dropping timeout hints). meta.Background and
+                // meta.Rationale are intentionally not consumed here — sub-agents
+                // have no background-job manager or audit logger; only the timeout
+                // hint maps onto the per-tool context via ApplyMeta.
+                var interpretation = executor.InterpretToolCall(tc);
+                if (interpretation.Rejection is { } rejection)
+                    return BuildToolResult(tc, rejection.Message, toolContext, modelInputBudget);
+
+                var meta = interpretation.Meta;
+                var cleanedTc = interpretation.Cleaned;
+                toolContext.ApplyMeta(meta);
+
                 try
                 {
-                    var result = await executor.ExecuteAsync(tc, toolContext, ct);
-                    return BuildToolResult(tc, result, toolContext, modelInputBudget);
+                    var result = await executor.ExecuteAsync(cleanedTc, toolContext, ct);
+                    return BuildToolResult(cleanedTc, result, toolContext, modelInputBudget);
                 }
                 catch (ToolApprovalRequiredException approvalEx)
                     when (approvalBridge is not null)
@@ -1064,9 +1132,10 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         var retryContext = CreatePerToolExecutionContext(executionContext);
                         retryContext.OneTimeApprovedToolName = tc.Name;
                         retryContext.SetOneTimeApprovedPatterns(ctx.Patterns);
+                        retryContext.ApplyMeta(meta);
 
-                        var result = await executor.ExecuteAsync(tc, retryContext, ct);
-                        return BuildToolResult(tc, result, retryContext, modelInputBudget);
+                        var result = await executor.ExecuteAsync(cleanedTc, retryContext, ct);
+                        return BuildToolResult(cleanedTc, result, retryContext, modelInputBudget);
                     }
 
                     var reason = decision == ParentApprovalDecision.TimedOut
@@ -1122,6 +1191,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             Boundary = source.Boundary,
             RequestedTimeoutSeconds = source.RequestedTimeoutSeconds,
             ChannelType = source.ChannelType,
+            DefaultDeliveryTarget = source.DefaultDeliveryTarget,
+            RequestedDeliveryTarget = source.RequestedDeliveryTarget,
             ModelInputModalities = source.ModelInputModalities,
             ProjectDirectory = source.ProjectDirectory,
             InheritedCwd = source.InheritedCwd,
@@ -1179,11 +1250,20 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     private static string BuildSystemPrompt(SubAgentDefinition definition)
     {
-        var basePrompt = string.IsNullOrWhiteSpace(definition.ProjectInstructions)
-            ? definition.SystemPrompt
-            : SystemPromptAssembler.Assemble(agents: definition.SystemPrompt, projectInstructions: definition.ProjectInstructions);
+        // Assemble the identity stack that sub-agents inherit from the parent session:
+        // 1. Embedded AGENTS.md (operating rules, safety, grounding constraints)
+        // 2. Project instructions (workspace/domain context from the parent's working directory)
+        var basePrompt = SystemPromptAssembler.Assemble(
+            agents: definition.OperatingRules,
+            projectInstructions: definition.ProjectInstructions);
 
-        return string.Concat(basePrompt.TrimEnd(), "\n\n", HeadlessExecutionContract);
+        // Append the sub-agent's own system prompt (markdown body + optional skill overlay)
+        var rolePrompt = string.IsNullOrWhiteSpace(basePrompt)
+            ? definition.SystemPrompt
+            : string.Concat(basePrompt.TrimEnd(), "\n\n", definition.SystemPrompt);
+
+        // Append the headless execution contract — always at the bottom
+        return string.Concat(rolePrompt.TrimEnd(), "\n\n", HeadlessExecutionContract);
     }
 
     private sealed class SubAgentCancelled

@@ -66,8 +66,9 @@ public abstract partial class NetclawTool<TParams> : INetclawTool where TParams 
     /// <summary>
     /// Execute the tool as a stream of <see cref="ToolCallUpdate"/> items. The
     /// default yields the non-streaming result as a single terminal completion
-    /// item. Long-running tools override this to emit liveness/progress while
-    /// they work, which keeps the caller's per-call watchdog alive.
+    /// item. Long-running tools override this to emit live activity while they
+    /// work; whether that activity affects parent liveness depends on
+    /// <see cref="LivenessMode"/>.
     /// </summary>
     /// <remarks>
     /// Declared <c>virtual</c> rather than left to the
@@ -122,6 +123,18 @@ public abstract partial class NetclawTool<TParams> : INetclawTool where TParams 
     public abstract string Description { get; }
     public abstract string GrantCategory { get; }
     public abstract JsonElement ParameterSchema { get; }
+
+    /// <summary>
+    /// Inline output budget; <c>0</c> = use the session content budget. First-party
+    /// tools override this to opt into a smaller (verbose) budget.
+    /// </summary>
+    public virtual int InlineOutputBudgetChars => 0;
+
+    /// <inheritdoc />
+    public virtual ToolLivenessMode LivenessMode => ToolLivenessMode.Opaque;
+
+    /// <inheritdoc />
+    public virtual bool SuppressOutputRedaction => false;
 
     /// <summary>
     /// Deserialize raw LLM arguments into the typed params record.

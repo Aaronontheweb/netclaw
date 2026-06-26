@@ -19,6 +19,8 @@ using Netclaw.Media;
 using Netclaw.Security;
 using Netclaw.Tools;
 using IOPath = System.IO.Path;
+using static Netclaw.Actors.Sessions.SessionProtocol;
+using static Netclaw.Actors.Reminders.ReminderProtocol;
 
 namespace Netclaw.Channels.Mattermost;
 
@@ -62,6 +64,17 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
     private static readonly object ReinitializeTimerKey = new();
     private static readonly TimeSpan IdlePassivationTimeout = TimeSpan.FromHours(1);
     private bool _deliveredThisTurn;
+    // True when a content post/upload this turn was attempted but failed (the
+    // model produced output, the transport rejected it). Distinct from "nothing
+    // was produced" — it suppresses the empty-turn fallback so a failed post
+    // isn't followed by a misleading "I didn't manage to produce a reply".
+    private bool _postFailedThisTurn;
+    // Reply targets for in-flight reminder delivery confirmations, keyed by
+    // reminder delivery key. Captured from DeliverTrustedSessionTurn; each is
+    // told a ReminderDeliveryResult on its turn's TurnCompleted and removed.
+    // Keyed (not a single field) because multiple reminders can target the
+    // same session concurrently — a single field would be clobbered.
+    private readonly Dictionary<ReminderId, IActorRef> _reminderDeliveryObservers = new();
     private TurnNumber _turnNumber;
     private string? _cursorPostId;
     private string? _pendingCursorPostId;
@@ -212,13 +225,19 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                 ? "completed"
                 : $"faulted: {msg.Cause.Message}";
 
-            _log.Warning("Mattermost output stream terminated ({Reason}); reinitializing pipeline", reason);
+            _log.Warning("Output stream terminated ({Reason}); reinitializing pipeline", reason);
             Self.Tell(new ReinitializePipeline(reason));
         });
 
         CommandAsync<ReinitializePipeline>(async msg =>
         {
             _deliveredThisTurn = false;
+            _postFailedThisTurn = false;
+            // A reinit aborts any in-flight reminder turn before its
+            // TurnCompleted. Report those as not-delivered now so the
+            // execution actor redelivers immediately instead of stalling
+            // until the backstop timeout.
+            FailPendingReminderDeliveries($"Mattermost pipeline reinitialized: {msg.Reason}");
             await _handle.ReinitializeAsync(
                 msg.Reason,
                 () => Timers.StartSingleTimer(
@@ -231,11 +250,11 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         {
             if (_pendingApprovalRequests.Count > 0)
             {
-                _log.Info("Mattermost session idle but {0} approval(s) pending; deferring passivation", _pendingApprovalRequests.Count);
+                _log.Info("Session idle but {0} approval(s) pending; deferring passivation", _pendingApprovalRequests.Count);
                 return;
             }
 
-            _log.Info("Mattermost session idle for 1 hour, passivating");
+            _log.Info("Session idle for 1 hour, passivating");
             Context.Stop(Self);
         });
 
@@ -307,7 +326,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         var writer = _handle.InputQueue;
         if (writer is null)
         {
-            _log.Warning("Mattermost input queue is not initialized; dropping inbound message");
+            _log.Warning("Input queue is not initialized; dropping inbound message");
             return;
         }
 
@@ -338,7 +357,8 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             Provenance = message.Provenance,
             Contents = liveContents,
             ReceivedAt = message.ReceivedAt,
-            ExecutableText = message.Text
+            ExecutableText = message.Text,
+            DefaultDeliveryTarget = BuildDefaultDeliveryTarget()
         };
 
         if (_hydrationPending && IsAuthorizedSender(message.SenderId.Value))
@@ -360,12 +380,12 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         }
         catch (OperationCanceledException)
         {
-            _log.Warning("Timed out enqueueing Mattermost message for session {0}", _sessionId.Value);
+            _log.Warning("Timed out enqueueing message for session {0}", _sessionId.Value);
             Self.Tell(new ReinitializePipeline("input queue write timeout"));
         }
         catch (ChannelClosedException)
         {
-            _log.Warning("Mattermost input queue closed for session {0}", _sessionId.Value);
+            _log.Warning("Input queue closed for session {0}", _sessionId.Value);
             Self.Tell(new ReinitializePipeline("input queue closed"));
         }
     }
@@ -497,7 +517,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         var writer = _handle.InputQueue;
         if (writer is null)
         {
-            _log.Warning("Mattermost input queue is not initialized; skipping hydration backfill");
+            _log.Warning("Input queue is not initialized; skipping hydration backfill");
             return;
         }
 
@@ -515,7 +535,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             }
 
             _log.Info(
-                "mattermost_hydration_backfill_enqueued trigger={TriggerMessageId} adoptedCount={AdoptedCount} session={Session}",
+                "hydration_backfill_enqueued trigger={TriggerMessageId} adoptedCount={AdoptedCount} session={Session}",
                 triggerInput.MessageId, adoptedContext.Count, _sessionId.Value);
             ChannelTelemetry.For(ChannelType.Mattermost).RecordMessageEnqueued();
         }
@@ -597,7 +617,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             return baseInput;
 
         _log.Info(
-            "mattermost_deferred_hydration_adopted gapCount={GapCount} trigger={TriggerMessageId} session={Session}",
+            "deferred_hydration_adopted gapCount={GapCount} trigger={TriggerMessageId} session={Session}",
             classified.Gap.Count,
             baseInput.MessageId,
             _sessionId.Value);
@@ -727,7 +747,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             return false;
         }
 
-        ICommandReply feedbackResult;
+        ISessionResponse feedbackResult;
         try
         {
             using var feedbackCts = new CancellationTokenSource(OperationTimeout);
@@ -831,7 +851,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             return;
         }
 
-        ICommandReply feedbackResult;
+        ISessionResponse feedbackResult;
         using var feedbackCts = new CancellationTokenSource(OperationTimeout);
         try
         {
@@ -864,7 +884,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                 break;
 
             default:
-                // Unreachable: ICommandReply is implemented only by CommandAck
+                // Unreachable: ISessionResponse is implemented only by CommandAck
                 // and CommandNack. Kept as a defensive guard so an unexpected
                 // future implementer surfaces a structured Nack instead of an
                 // unobservable null reference.
@@ -996,7 +1016,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         var writer = _handle.InputQueue;
         if (writer is null)
         {
-            _log.Warning("Mattermost input queue is not initialized; rejecting Mode B reminder");
+            _log.Warning("Input queue is not initialized; rejecting Mode B reminder");
             ackTarget.Tell(CommandNack.For(_sessionId, "Mattermost session pipeline not initialized"));
             return;
         }
@@ -1012,9 +1032,20 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
             Provenance = message.Source.Provenance,
             Contents = [new TextContent(message.Content)],
             ReceivedAt = _dependencies.TimeProvider.GetUtcNow(),
+            DefaultDeliveryTarget = BuildDefaultDeliveryTarget(),
+            RequestedDeliveryTarget = message.Source.RequestedDeliveryTarget,
             ReminderId = message.Source.ReminderId,
             AckTarget = ackTarget
         };
+
+        // Only delivery-gated (DeliveryRequired) reminders carry a
+        // DeliveryObserver. Key it by the per-fire reminder delivery id so a
+        // second concurrent reminder to this session can't overwrite the
+        // first's observer before its turn reaches TurnCompleted.
+        if (message.Source.DeliveryObserver is { } deliveryObserver
+            && message.Source.ReminderId is { } reminderKey
+            && !string.IsNullOrWhiteSpace(reminderKey.Value))
+            _reminderDeliveryObservers[reminderKey] = deliveryObserver;
 
         try
         {
@@ -1031,12 +1062,20 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         }
         catch (ChannelClosedException)
         {
-            _log.Warning("Mattermost input queue closed; rejecting Mode B reminder for session {0}", _sessionId.Value);
+            _log.Warning("Input queue closed; rejecting Mode B reminder for session {0}", _sessionId.Value);
             ackTarget.Tell(CommandNack.For(_sessionId, "Pipeline input queue closed"));
         }
     }
 
     private enum ApprovalLookupResult { Matched, WrongRequester, NotFound }
+
+    private ChannelDeliveryTargetInfo BuildDefaultDeliveryTarget()
+        => new(
+            ChannelType.Mattermost.ToWireValue(),
+            "destination",
+            _channelId.Value,
+            _channelId.Value,
+            _rootPostId.Value);
 
     private (ApprovalLookupResult Result, PendingApprovalRequest? Pending) ResolvePendingRequest(
         MattermostUserId senderId, ToolCallId? callId)
@@ -1067,18 +1106,24 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         switch (msg.Output)
         {
             case TextOutput textOutput:
-                await SafeReplyAsync(textOutput.Text);
-                _deliveredThisTurn = true;
+                if (await SafeReplyAsync(textOutput.Text))
+                    _deliveredThisTurn = true;
+                else
+                    _postFailedThisTurn = true;
                 break;
 
             case ErrorOutput error:
-                await SafeReplyAsync($":warning: {error.Message}");
-                _deliveredThisTurn = true;
+                if (await SafeReplyAsync($":warning: {error.Message}"))
+                    _deliveredThisTurn = true;
+                else
+                    _postFailedThisTurn = true;
                 break;
 
             case FileOutput file:
-                await SafeReplyAsync($":paperclip: Produced file `{file.FileName}` ({file.MimeType}).");
-                _deliveredThisTurn = true;
+                if (await SafeUploadFileAsync(file))
+                    _deliveredThisTurn = true;
+                else
+                    _postFailedThisTurn = true;
                 break;
 
             case ToolInteractionRequest request when string.Equals(request.Kind, "approval", StringComparison.OrdinalIgnoreCase):
@@ -1121,15 +1166,24 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                     AdvanceCursor(pendingCursor);
                 _pendingCursorPostId = null;
 
-                if (!string.IsNullOrWhiteSpace(completed.SourceReminderId) && _deliveredThisTurn)
+                if (completed.SourceReminderId is { } sourceReminderKey
+                    && !string.IsNullOrWhiteSpace(sourceReminderKey.Value)
+                    && _reminderDeliveryObservers.Remove(sourceReminderKey, out var reminderObserver))
                 {
-                    Context.System.EventStream.Publish(new ReminderDeliveryObserved(
-                        completed.SourceReminderId,
+                    reminderObserver.Tell(new ReminderDeliveryResult(
+                        sourceReminderKey,
                         ChannelType.Mattermost,
-                        completed.TimestampMs));
+                        Delivered: _deliveredThisTurn,
+                        FailureReason: _deliveredThisTurn ? null : "Mattermost post did not succeed",
+                        ObservedAtMs: completed.TimestampMs));
                 }
 
-                if (!_deliveredThisTurn)
+                // Only post the empty-turn fallback when the turn genuinely
+                // produced nothing. A failed post already notified the session
+                // (SafeReplyAsync -> NotifyDeliveryFailedAsync); posting "I
+                // didn't manage to produce a reply" on top would be misleading
+                // (a reply WAS produced) and double up with the redelivered one.
+                if (!_deliveredThisTurn && !_postFailedThisTurn)
                     await SafeReplyAsync(EmptyTurnFallbackText);
 
                 _turnNumber = completed.TurnNumber;
@@ -1147,6 +1201,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                 }
                 _pendingApprovalRequests.Clear();
                 _deliveredThisTurn = false;
+                _postFailedThisTurn = false;
                 break;
         }
     }
@@ -1223,7 +1278,13 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         }
     }
 
-    private async Task SafeReplyAsync(string text)
+    /// <summary>
+    /// Posts <paramref name="text"/> (chunked) to Mattermost. Returns true only
+    /// when every chunk posted successfully; false if any chunk failed (after
+    /// notifying the session of the delivery failure). Callers that gate
+    /// reminder delivery confirmation on real delivery must honor the result.
+    /// </summary>
+    private async Task<bool> SafeReplyAsync(string text)
     {
         var chunks = ChunkMessage(text);
         foreach (var chunk in chunks)
@@ -1242,19 +1303,86 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                 _log.Warning(ex, "Failed posting Mattermost reply for session {0}", _sessionId.Value);
                 ChannelTelemetry.For(ChannelType.Mattermost).RecordReplyFailed(duration);
                 await NotifyDeliveryFailedAsync(DeliveryFailureKind.TransportFailure, ex.Message);
-                return;
+                return false;
             }
         }
+
+        return true;
     }
 
     private MattermostPostMessage BuildPostMessage(
         string text,
+        IReadOnlyList<string>? fileIds = null,
         IReadOnlyList<MattermostAttachment>? attachments = null)
         => new(
             ChannelId: _channelId,
             Text: text,
             RootPostId: _rootPostId.IsEmpty ? null : new MattermostPostId(_rootPostId.Value),
+            FileIds: fileIds,
             Attachments: attachments);
+
+    private async Task<bool> SafeUploadFileAsync(FileOutput file)
+    {
+        var startedAt = _dependencies.TimeProvider.GetTimestamp();
+        try
+        {
+            if (!File.Exists(file.FilePath))
+            {
+                _log.Warning("File not found for upload: {Path}", file.FilePath);
+                await NotifyDeliveryFailedAsync(DeliveryFailureKind.Unknown, $"File not found for upload: {file.FilePath}");
+                return false;
+            }
+
+            using var uploadCts = new CancellationTokenSource(OperationTimeout);
+            var fileId = await _dependencies.ReplyClient.UploadFileAsync(
+                _channelId,
+                file.FilePath,
+                file.FileName,
+                uploadCts.Token);
+
+            using var postCts = new CancellationTokenSource(OperationTimeout);
+            var postMessage = BuildPostMessage($":paperclip: {file.FileName}", fileIds: [fileId]);
+            await _dependencies.ReplyClient.PostReplyAsync(postMessage, postCts.Token);
+
+            var duration = _dependencies.TimeProvider.GetElapsedTime(startedAt).TotalMilliseconds;
+            ChannelTelemetry.For(ChannelType.Mattermost).RecordReplyPosted(duration);
+            _log.Info("Uploaded file to Mattermost thread: {FileName}", file.FileName);
+            return true;
+        }
+        catch (OperationCanceledException ex)
+        {
+            var duration = _dependencies.TimeProvider.GetElapsedTime(startedAt).TotalMilliseconds;
+            _log.Error(ex, "Timed out uploading file {FileName} to Mattermost thread", file.FileName);
+            ChannelTelemetry.For(ChannelType.Mattermost).RecordReplyFailed(duration);
+            await NotifyDeliveryFailedAsync(DeliveryFailureKind.TransportFailure, ex.Message);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            var duration = _dependencies.TimeProvider.GetElapsedTime(startedAt).TotalMilliseconds;
+            _log.Error(ex, "Failed to upload file {FileName} to Mattermost thread", file.FileName);
+            ChannelTelemetry.For(ChannelType.Mattermost).RecordReplyFailed(duration);
+            await NotifyDeliveryFailedAsync(DeliveryFailureKind.TransportFailure, ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Tells every in-flight reminder observer that delivery did not happen,
+    /// then clears them. Called when a turn can no longer reach TurnCompleted
+    /// (e.g. pipeline reinit), so the execution actor fails fast and redelivers
+    /// rather than waiting out its backstop timeout.
+    /// </summary>
+    private void FailPendingReminderDeliveries(string reason)
+    {
+        if (_reminderDeliveryObservers.Count == 0)
+            return;
+
+        foreach (var (key, observer) in _reminderDeliveryObservers)
+            observer.Tell(new ReminderDeliveryResult(key, ChannelType.Mattermost, Delivered: false, FailureReason: reason));
+
+        _reminderDeliveryObservers.Clear();
+    }
 
     private async Task NotifyDeliveryFailedAsync(DeliveryFailureKind failureKind, string errorMessage)
     {
@@ -1329,7 +1457,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         if (files.Count > policy.MaxFilesPerMessage)
         {
             _log.Warning(
-                "mattermost_attachments_rejected count={Count} limit={Limit} audience={Audience} reason=too-many-files",
+                "attachments_rejected count={Count} limit={Limit} audience={Audience} reason=too-many-files",
                 files.Count,
                 policy.MaxFilesPerMessage,
                 audience);
@@ -1459,7 +1587,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
     {
         if (_cursorPostId is not null && string.CompareOrdinal(candidatePostId, _cursorPostId) <= 0)
         {
-            _log.Debug("Mattermost session cursor did not advance session={Session} postId={PostId}",
+            _log.Debug("Session cursor did not advance session={Session} postId={PostId}",
                 _sessionId.Value, candidatePostId);
             return;
         }

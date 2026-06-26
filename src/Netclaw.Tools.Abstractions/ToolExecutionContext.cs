@@ -92,7 +92,36 @@ public sealed class ToolExecutionContext
     /// </summary>
     public int? RequestedTimeoutSeconds { get; set; }
 
+    /// <summary>
+    /// Applies a per-call <see cref="ToolCallMeta"/> hint to this context — the one
+    /// definition of "meta hint → context" shared by the pipeline and sub-agent so the
+    /// timeout hint can't be dropped by a path that forgets to apply it. Currently
+    /// only the timeout hint maps onto the context; an absent hint leaves the
+    /// inherited default in place.
+    /// </summary>
+    public void ApplyMeta(ToolCallMeta? meta)
+    {
+        if (meta?.TimeoutHintSeconds is { } timeoutSeconds)
+            RequestedTimeoutSeconds = timeoutSeconds;
+    }
+
+
     public string? ChannelType { get; set; }
+
+    /// <summary>
+    /// Delivery target inherited from channel-originated input. Trigger sources
+    /// must not rely on this because they are not output channels.
+    /// </summary>
+    public ChannelDeliveryTargetInfo? DefaultDeliveryTarget { get; set; }
+
+    /// <summary>
+    /// Explicit delivery target selected by a trigger source such as a reminder
+    /// or webhook route when it expects external output.
+    /// </summary>
+    public ChannelDeliveryTargetInfo? RequestedDeliveryTarget { get; set; }
+
+    public ChannelDeliveryTargetInfo? EffectiveDeliveryTarget
+        => RequestedDeliveryTarget ?? DefaultDeliveryTarget;
 
     /// <summary>
     /// Whether the originating channel supports interactive approval prompts.
@@ -164,6 +193,17 @@ public sealed class ToolExecutionContext
     /// Created lazily on first access.
     /// </summary>
     public string? SessionDirectory { get; }
+
+    /// <summary>
+    /// The session <i>content</i> inline budget
+    /// (<c>SessionTuning.MaxInlineToolResultChars</c>), surfaced here so
+    /// <c>DispatchingToolExecutor</c> can bound a tool result and spill the
+    /// overflow to <c>{SessionDirectory}/tool-calls/{callId}.log</c>. The dispatcher
+    /// uses a tool's own <c>InlineOutputBudgetChars</c> override when set (verbose
+    /// tools), else this content budget. Zero when unset (the dispatcher falls back
+    /// to its built-in content default).
+    /// </summary>
+    public int MaxInlineToolResultChars { get; init; }
 
     /// <summary>
     /// Resolved absolute working directory for the in-flight tool call. Set

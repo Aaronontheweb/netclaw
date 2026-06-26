@@ -11,11 +11,13 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
+using Netclaw.Actors.Reminders;
 using Netclaw.Actors.Tests.Channels.TestHelpers;
 using Netclaw.Channels.Discord;
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Xunit;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Tests.Channels;
 
@@ -250,7 +252,7 @@ public sealed class DiscordGatewayActorTests(ITestOutputHelper output) : TestKit
                 {
                     SourceKind = new Netclaw.Actors.Channels.SourceKind("reminder")
                 },
-                ReminderId = "rem-1"
+                ReminderId = new ReminderId("rem-1")
             });
 
         gateway.Tell(turn);
@@ -284,7 +286,7 @@ public sealed class DiscordGatewayActorTests(ITestOutputHelper output) : TestKit
                 {
                     SourceKind = new Netclaw.Actors.Channels.SourceKind("reminder")
                 },
-                ReminderId = "rem-1"
+                ReminderId = new ReminderId("rem-1")
             });
 
         gateway.Tell(turn, TestActor);
@@ -297,6 +299,8 @@ public sealed class DiscordGatewayActorTests(ITestOutputHelper output) : TestKit
         DiscordChannelOptions? options = null,
         Func<DiscordChannelId, DiscordGatewayDependencies, Props>? conversationPropsFactory = null)
     {
+        var replyClient = new UnconfiguredDiscordReplyClient();
+
         return new DiscordGatewayDependencies(
             Pipeline: null!,
             IngressGate: null,
@@ -307,7 +311,8 @@ public sealed class DiscordGatewayActorTests(ITestOutputHelper output) : TestKit
                 AllowedChannelIds = ["ch-7"]
             },
             DefaultChannelId: null,
-            ReplyClient: new UnconfiguredDiscordReplyClient(),
+            ChannelRegistry: TestChannelRegistries.DiscordWithProcessingRenderer(replyClient),
+            ReplyClient: replyClient,
             ContentScanner: new NullContentScanner(),
             AudienceProfiles: TestDiscordGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestDiscordGatewayDeps.DefaultVisionCapableModel,

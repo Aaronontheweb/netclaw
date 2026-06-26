@@ -11,11 +11,13 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
+using Netclaw.Actors.Reminders;
 using Netclaw.Actors.Tests.Channels.TestHelpers;
 using Netclaw.Channels.Mattermost;
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Xunit;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Tests.Channels;
 
@@ -572,6 +574,6 @@ public sealed class MattermostConversationActorTests(ITestOutputHelper output) :
         {
             SourceKind = new SourceKind("reminder")
         },
-        ReminderId = "rem-1"
+        ReminderId = new ReminderId("rem-1")
     };
 }

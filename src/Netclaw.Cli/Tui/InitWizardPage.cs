@@ -91,18 +91,6 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
             })
             .DisposeWith(Subscriptions);
 
-        // Provider step: animate spinner on validation/OAuth sub-steps
-        ViewModel.ProviderStep.SpinnerTick
-            .Subscribe(_ =>
-            {
-                if (ViewModel.Orchestrator.CurrentStep is ProviderStepViewModel { CurrentSubStep: 3 or 5 or 6 })
-                {
-                    _stepContentNode?.Invalidate();
-                    ViewModel.RequestRedraw();
-                }
-            })
-            .DisposeWith(Subscriptions);
-
         // Provider step: OAuth flow state changes
         ViewModel.ProviderStep.OAuth.FlowState
             .Subscribe(state =>
@@ -237,11 +225,15 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
     private LayoutNode BuildKeyBindings()
     {
         return Observable.CombineLatest(ViewModel.Orchestrator.CurrentStepIndex, ViewModel.IsComplete,
-                (_, complete) =>
+                ViewModel.HealthCheckStep.Succeeded,
+                (_, complete, succeeded) =>
                 {
                     if (complete)
+                    {
+                        var doneLabel = succeeded ? "Launch netclaw chat" : "Exit";
                         return (ILayoutNode)new TextNode(
-                            " [Enter] Exit  [Ctrl+Q] Quit").WithForeground(Color.BrightBlack);
+                            $" [Enter] {doneLabel}  [Ctrl+Q] Quit").WithForeground(Color.BrightBlack);
+                    }
 
                     var backLabel = ViewModel.Orchestrator.CurrentStepIndex.Value == 0 ? "Quit" : "Back";
                     return (ILayoutNode)new TextNode(
@@ -362,13 +354,23 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
             }
         }
 
-        // Health check step: Enter triggers the check or exits
+        // Health check step: Enter triggers the check. On completion a clean bootstrap
+        // auto-launches `netclaw chat` (HealthCheckStepViewModel calls LaunchChat itself),
+        // so the success branch here is only a fallback; warnings/failures stay on the
+        // summary and Enter exits.
         if (currentStep is HealthCheckStepViewModel healthVm && keyInfo.Key == ConsoleKey.Enter)
         {
             if (healthVm.IsComplete.Value)
-                ViewModel.RequestQuit();
+            {
+                if (healthVm.Succeeded.Value)
+                    healthVm.LaunchChat();
+                else
+                    ViewModel.RequestQuit();
+            }
             else
+            {
                 ViewModel.GoNext();
+            }
             return;
         }
 
@@ -399,6 +401,7 @@ public sealed class InitWizardPage : ReactivePage<InitWizardViewModel>
             InvalidateHelp = () => _helpTextNode?.Invalidate(),
             AdvanceStep = () => ViewModel.GoNext(),
             RequestRedraw = ViewModel.RequestRedraw,
+            SetStatusMessage = message => ViewModel.Context.StatusMessage.Value = message,
         };
     }
 

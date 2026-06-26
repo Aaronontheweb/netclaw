@@ -20,6 +20,8 @@ using Netclaw.Media;
 using Netclaw.Security;
 using Netclaw.Tools;
 using SlackNet.Blocks;
+using static Netclaw.Actors.Sessions.SessionProtocol;
+using static Netclaw.Actors.Reminders.ReminderProtocol;
 
 namespace Netclaw.Channels.Slack;
 
@@ -38,6 +40,12 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
     private bool _postedThisTurn;
     private bool _uploadedFileThisTurn;
     private PostResult? _lastFailedPost;
+    // Reply targets for in-flight reminder delivery confirmations, keyed by
+    // reminder delivery key. Captured from DeliverTrustedSessionTurn; each is
+    // told a ReminderDeliveryResult on its turn's TurnCompleted and removed.
+    // Keyed (not a single field) because multiple reminders can target the
+    // same session concurrently — a single field would be clobbered.
+    private readonly Dictionary<ReminderId, IActorRef> _reminderDeliveryObservers = new();
     private readonly List<PendingApprovalRequest> _pendingApprovalRequests = [];
 
     // Gates the text-approval cold path (TryHandleColdTextApprovalResponseAsync).
@@ -98,10 +106,10 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         Recover<CursorAdvanced>(ApplyCursorAdvanced);
         Recover<PendingApprovalPromptTracked>(ApplyPendingApprovalPromptTracked);
         Recover<PendingApprovalPromptCleared>(ApplyPendingApprovalPromptCleared);
-        // After journal replay completes, queue a one-shot hydration. The
-        // self-tell lands in the mailbox after InitializePipeline (from
-        // PreStart), so the actor finishes pipeline init first, then
-        // transitions into Hydrating and processes PerformHydration.
+        // After journal replay completes, queue a one-shot hydration. Recovery
+        // can beat pipeline initialization on slower dispatchers; Initializing
+        // unstashes after switching to Hydrating so the hydration trigger cannot
+        // strand the actor in startup.
         Recover<RecoveryCompleted>(_ => Self.Tell(PerformHydration.Instance));
 
         Initializing();
@@ -138,10 +146,10 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             {
                 await EnsureInitializedAsync();
                 Become(Hydrating);
-                // Do NOT UnstashAll here. PerformHydration is already in the
-                // mailbox (sent from the RecoveryCompleted handler) and will be
-                // processed next by the Hydrating behavior. Stashed live
-                // inbounds stay stashed until Hydrating transitions to Active.
+                // RecoveryCompleted can be stashed while pipeline initialization
+                // is still running. Move it into Hydrating; live inbounds are
+                // re-stashed there until hydration finishes.
+                Stash.UnstashAll();
             }
             catch (Exception ex)
             {
@@ -194,7 +202,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
                 ? "completed"
                 : $"faulted: {msg.Cause.Message}";
 
-            _log.Warning("Slack output stream terminated ({Reason}); reinitializing pipeline", reason);
+            _log.Warning("Output stream terminated ({Reason}); reinitializing pipeline", reason);
             Self.Tell(new ReinitializePipeline(reason));
         });
         CommandAsync<ReinitializePipeline>(async msg => await ReinitializePipelineAsync(msg.Reason));
@@ -202,11 +210,11 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         {
             if (_pendingApprovalRequests.Count > 0)
             {
-                _log.Info("Slack thread idle but {0} approval(s) are pending; deferring passivation", _pendingApprovalRequests.Count);
+                _log.Info("Thread idle but {0} approval(s) are pending; deferring passivation", _pendingApprovalRequests.Count);
                 return;
             }
 
-            _log.Info("Slack thread idle for 1 hour, passivating");
+            _log.Info("Thread idle for 1 hour, passivating");
             RunTask(async () =>
             {
                 await _handle.DrainAsync();
@@ -250,7 +258,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         var writer = _handle.InputQueue;
         if (writer is null)
         {
-            _log.Warning("Slack thread input queue is not initialized; rejecting Mode B reminder");
+            _log.Warning("Thread input queue is not initialized; rejecting Mode B reminder");
             ackTarget.Tell(CommandNack.For(_sessionId, "Slack thread pipeline not initialized"));
             return;
         }
@@ -266,9 +274,20 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             Provenance = message.Source.Provenance,
             Contents = [new TextContent(message.Content)],
             ReceivedAt = _dependencies.TimeProvider.GetUtcNow(),
+            DefaultDeliveryTarget = BuildDefaultDeliveryTarget(),
+            RequestedDeliveryTarget = message.Source.RequestedDeliveryTarget,
             ReminderId = message.Source.ReminderId,
             AckTarget = ackTarget
         };
+
+        // Only delivery-gated (DeliveryRequired) reminders carry a
+        // DeliveryObserver. Key it by the per-fire reminder delivery id so a
+        // second concurrent reminder to this session can't overwrite the
+        // first's observer before its turn reaches TurnCompleted.
+        if (message.Source.DeliveryObserver is { } deliveryObserver
+            && message.Source.ReminderId is { } reminderKey
+            && !string.IsNullOrWhiteSpace(reminderKey.Value))
+            _reminderDeliveryObservers[reminderKey] = deliveryObserver;
 
         try
         {
@@ -285,7 +304,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         }
         catch (ChannelClosedException)
         {
-            _log.Warning("Slack thread input queue closed; rejecting Mode B reminder for session {0}", _sessionId.Value);
+            _log.Warning("Thread input queue closed; rejecting Mode B reminder for session {0}", _sessionId.Value);
             ackTarget.Tell(CommandNack.For(_sessionId, "Pipeline input queue closed"));
         }
     }
@@ -300,7 +319,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
 
         try
         {
-            inboundLog.Info("slack_turn_received textChars={TextLength} fileCount={FileCount}",
+            inboundLog.Info("turn_received textChars={TextLength} fileCount={FileCount}",
                 message.Text?.Length ?? 0,
                 message.Files?.Count ?? 0);
 
@@ -365,7 +384,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             var writer = _handle.InputQueue;
             if (writer is null)
             {
-                _log.Warning("Slack thread input queue is not initialized; dropping inbound message");
+                _log.Warning("Thread input queue is not initialized; dropping inbound message");
                 return;
             }
 
@@ -404,27 +423,27 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             }
             catch (OperationCanceledException ex)
             {
-                _log.Warning(ex, "Timed out enqueueing Slack message for session {0}", _sessionId.Value);
+                _log.Warning(ex, "Timed out enqueueing message for session {0}", _sessionId.Value);
                 Self.Tell(new ReinitializePipeline("input queue write timeout"));
                 return;
             }
             catch (ChannelClosedException ex)
             {
-                _log.Warning(ex, "Slack thread input queue closed for session {0}", _sessionId.Value);
+                _log.Warning(ex, "Thread input queue closed for session {0}", _sessionId.Value);
                 Self.Tell(new ReinitializePipeline("input queue write failed"));
                 return;
             }
 
-            inboundLog.Info("slack_turn_enqueued contentItems={ContentCount}", input.Contents.Count);
+            inboundLog.Info("turn_enqueued contentItems={ContentCount}", input.Contents.Count);
             ChannelTelemetry.For(ChannelType.Slack).RecordMessageEnqueued();
         }
         catch (OperationCanceledException ex)
         {
-            inboundLog.Warning(ex, "slack_turn_enqueue_timeout");
+            inboundLog.Warning(ex, "turn_enqueue_timeout");
         }
         catch (Exception ex)
         {
-            inboundLog.Error(ex, "slack_turn_enqueue_failed");
+            inboundLog.Error(ex, "turn_enqueue_failed");
         }
     }
 
@@ -465,7 +484,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         if (files.Count > policy.MaxFilesPerMessage)
         {
             _log.Warning(
-                "slack_attachments_rejected count={Count} limit={Limit} audience={Audience} reason=too-many-files",
+                "attachments_rejected count={Count} limit={Limit} audience={Audience} reason=too-many-files",
                 files.Count,
                 policy.MaxFilesPerMessage,
                 audience);
@@ -599,11 +618,20 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             Provenance = triggeringMessage.Provenance,
             Contents = liveContents,
             ReceivedAt = triggeringMessage.ReceivedAt,
-            ExecutableText = triggeringMessage.Text
+            ExecutableText = triggeringMessage.Text,
+            DefaultDeliveryTarget = BuildDefaultDeliveryTarget()
         };
 
         return new InboundBuildResult(baseInput, false);
     }
+
+    private ChannelDeliveryTargetInfo BuildDefaultDeliveryTarget()
+        => new(
+            ChannelType.Slack.ToWireValue(),
+            "destination",
+            _channelId.Value,
+            _channelId.Value,
+            _threadTs.Value);
 
     /// <summary>
     /// One-shot thread history hydration. Runs once per actor lifetime, in the
@@ -729,7 +757,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         var writer = _handle.InputQueue;
         if (writer is null)
         {
-            _log.Warning("Slack input queue is not initialized; skipping hydration backfill");
+            _log.Warning("Input queue is not initialized; skipping hydration backfill");
             return;
         }
 
@@ -746,7 +774,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             }
 
             _log.Info(
-                "slack_hydration_backfill_enqueued trigger={TriggerMessageId} adoptedCount={AdoptedCount}",
+                "hydration_backfill_enqueued trigger={TriggerMessageId} adoptedCount={AdoptedCount}",
                 triggerInput.MessageId,
                 adoptedContext.Count);
             ChannelTelemetry.For(ChannelType.Slack).RecordMessageEnqueued();
@@ -918,7 +946,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
 
         var mergedInput = MergeAdoptedContext(baseResult.Input, classified.Gap, cursor);
         _log.Info(
-            "slack_deferred_hydration_adopted gapCount={GapCount} trigger={TriggerMessageId}",
+            "deferred_hydration_adopted gapCount={GapCount} trigger={TriggerMessageId}",
             classified.Gap.Count,
             baseResult.Input.MessageId);
 
@@ -929,7 +957,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
     {
         if (_cursorTs is { } c && candidateTs.CompareTo(c) <= 0)
         {
-            _log.Debug("Slack thread cursor did not advance stream={StreamKey} ts={Ts}", _sessionId.Value, candidateTs.Value);
+            _log.Debug("Thread cursor did not advance stream={StreamKey} ts={Ts}", _sessionId.Value, candidateTs.Value);
             return;
         }
 
@@ -989,6 +1017,16 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
     private async Task ReinitializePipelineAsync(string reason)
     {
         _pendingCursorTs = null;
+        // Reset per-turn delivery flags: a reinit aborts the in-flight turn,
+        // and a stale _postedThisTurn=true would otherwise leak into the next
+        // turn and falsely report a later reminder as delivered.
+        _postedThisTurn = false;
+        _uploadedFileThisTurn = false;
+        _lastFailedPost = null;
+        // Report any in-flight reminder turn as not-delivered now so the
+        // execution actor redelivers immediately rather than stalling until
+        // the backstop timeout.
+        FailPendingReminderDeliveries($"Slack pipeline reinitialized: {reason}");
         await _handle.ReinitializeAsync(
             reason,
             () => Timers.StartSingleTimer(
@@ -1075,12 +1113,17 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
                     AdvanceCursor(pendingTs);
                 _pendingCursorTs = null;
 
-                if (!string.IsNullOrWhiteSpace(completed.SourceReminderId) && (_postedThisTurn || _uploadedFileThisTurn))
+                if (completed.SourceReminderId is { } sourceReminderKey
+                    && !string.IsNullOrWhiteSpace(sourceReminderKey.Value)
+                    && _reminderDeliveryObservers.Remove(sourceReminderKey, out var reminderObserver))
                 {
-                    Context.System.EventStream.Publish(new ReminderDeliveryObserved(
-                        completed.SourceReminderId,
+                    var delivered = _postedThisTurn || _uploadedFileThisTurn;
+                    reminderObserver.Tell(new ReminderDeliveryResult(
+                        sourceReminderKey,
                         ChannelType.Slack,
-                        _dependencies.TimeProvider.GetUtcNow().ToUnixTimeMilliseconds()));
+                        Delivered: delivered,
+                        FailureReason: delivered ? null : "Slack post did not succeed",
+                        ObservedAtMs: _dependencies.TimeProvider.GetUtcNow().ToUnixTimeMilliseconds()));
                 }
 
                 if (!_postedThisTurn && !_uploadedFileThisTurn)
@@ -1273,7 +1316,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         // already-resolved banner — both surfaced by the #939 code review. The
         // session is the authority on whether the call is still pending and
         // whether the sender is allowed. Only redraw on CommandAck.
-        ICommandReply feedbackResult;
+        ISessionResponse feedbackResult;
         try
         {
             using var feedbackCts = new CancellationTokenSource(OperationTimeout);
@@ -1311,7 +1354,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
                 break;
 
             default:
-                // ICommandReply is sealed-by-convention to Ack/Nack. Defensive guard.
+                // ISessionResponse is sealed-by-convention to Ack/Nack. Defensive guard.
                 _log.Warning(
                     "Slack approval response for call {CallId} returned unexpected feedback result {ResultType}",
                     message.CallId,
@@ -1403,7 +1446,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         }
         catch (SlackMessageDeliveryException ex)
         {
-            _log.Warning("Slack delivery rejected for session {SessionId} error={ErrorCode} kind={FailureKind}",
+            _log.Warning("Delivery rejected for session {SessionId} error={ErrorCode} kind={FailureKind}",
                 _sessionId.Value, ex.ErrorCode ?? "unknown", ex.FailureKind);
             ChannelTelemetry.For(ChannelType.Slack).RecordReplyRejected(ex.ErrorCode);
             return new PostResult(ex.Message, ex.FailureKind);
@@ -1414,6 +1457,23 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             ChannelTelemetry.For(ChannelType.Slack).RecordReplyFailed(_dependencies.TimeProvider.GetElapsedTime(startedAt).TotalMilliseconds);
             return new PostResult(ex.Message, DeliveryFailureKind.Unknown);
         }
+    }
+
+    /// <summary>
+    /// Tells every in-flight reminder observer that delivery did not happen,
+    /// then clears them. Called when a turn can no longer reach TurnCompleted
+    /// (e.g. pipeline reinit), so the execution actor fails fast and redelivers
+    /// rather than waiting out its backstop timeout.
+    /// </summary>
+    private void FailPendingReminderDeliveries(string reason)
+    {
+        if (_reminderDeliveryObservers.Count == 0)
+            return;
+
+        foreach (var (key, observer) in _reminderDeliveryObservers)
+            observer.Tell(new ReminderDeliveryResult(key, ChannelType.Slack, Delivered: false, FailureReason: reason));
+
+        _reminderDeliveryObservers.Clear();
     }
 
     private async Task NotifyDeliveryFailedAsync(Actors.Protocol.TurnNumber turnNumber, DeliveryFailureKind failureKind, string errorMessage)
@@ -1591,7 +1651,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         }
         catch (SlackMessageDeliveryException ex)
         {
-            _log.Warning("Slack delivery rejected for file upload {FileName} session={SessionId} error={ErrorCode} kind={FailureKind}",
+            _log.Warning("Delivery rejected for file upload {FileName} session={SessionId} error={ErrorCode} kind={FailureKind}",
                 file.FileName, _sessionId.Value, ex.ErrorCode ?? "unknown", ex.FailureKind);
             ChannelTelemetry.For(ChannelType.Slack).RecordReplyRejected(ex.ErrorCode);
             return new PostResult(ex.Message, ex.FailureKind);

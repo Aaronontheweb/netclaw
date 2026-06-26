@@ -20,6 +20,7 @@ Read first:
 
 - `PROJECT_CONTEXT.md`
 - `TOOLING.md`
+- `IMPLEMENTATION_PLAN.md`
 - `docs/prd/README.md`
 - `.opencode/skills/netclaw-*/SKILL.md`
 - `.claude/skills/ralph-*.md`
@@ -88,13 +89,39 @@ task checkboxes in `openspec/changes/*/tasks.md` during RALPH iterations.
 
 Before coding a capability, discover in this order:
 
-1. matching PRD in `docs/prd/`
-2. matching engineering spec in `docs/spec/`
-3. matching OpenSpec capability in `openspec/specs/`
-4. active change plan in `openspec/changes/<name>/`
+1. active task in `IMPLEMENTATION_PLAN.md`
+2. matching PRD in `docs/prd/`
+3. matching engineering spec in `docs/spec/`
+4. matching OpenSpec capability in `openspec/specs/`
+5. active change plan in `openspec/changes/<name>/`
 
 If planning and implementation artifacts conflict, fix planning artifacts first.
 If discovery artifacts conflict with each other, update them before implementing.
+
+## Cross-Boundary Contract Rule
+
+When a change writes data consumed by another subsystem, identify the consumer
+before implementation and verify the producer emits the consumer's canonical
+representation. This applies to config editors, persistence records, actor
+messages, protocol payloads, tool schemas, and security policy inputs.
+
+For configuration changes, tests must prove both:
+
+- invalid or unresolved values are rejected before persistence
+- persisted values match what runtime ACL/routing/startup code expects
+
+Do not treat UI-level save success or schema validity as sufficient when runtime
+behavior depends on provider IDs, canonical names, permissions, or security
+policy keys.
+
+## Automation Floor
+
+Recent regressions define mandatory automated proof classes. TUI text input must
+have headless typed-key coverage and native smoke coverage for critical flows.
+Dynamic validation must have fake-failure tests proving save is blocked before
+persistence. Legacy/new config paradigm changes must have load/round-trip tests
+from the old shape to the runtime-consumed shape. Human manual testing is a
+last-mile confidence check, not a substitute for these gates.
 
 ## Configuration Schema Sync Rule
 
@@ -111,6 +138,25 @@ auto-fix common schema validation errors. To ensure smooth upgrades for existing
   integers) so the resolver can coerce stale numeric values.
 - When **removing** a property, no special action is needed — the resolver detects and
   removes properties disallowed by `additionalProperties: false`.
+
+## Release Channel Rule
+
+Releases are cut by pushing a git tag (full procedure: `CONTRIBUTING.md` → Releasing).
+Two conventions the release version gate enforces — violate them and the release fails:
+
+- The tag MUST match `Directory.Build.props`: `<VersionPrefix>` for a stable tag,
+  `<VersionPrefix>` + `<VersionSuffix>` for a prerelease.
+- Prerelease tags MUST use the **dotted** `beta.N` form (`0.23.0-beta.1`, never `beta1`).
+  A mixed identifier like `beta1` is one opaque token that SemVer orders lexically, so
+  `beta10` would rank below `beta2` — in the C# comparator *and* the manifest generator.
+
+A tag with a `-` is a prerelease: it becomes a GitHub prerelease and only advances the
+Docker `:beta` tag and the manifest `latestPrerelease`. A stable tag moves `:latest`,
+`:major.minor`, and the manifest `latest`. The C# `SemVer` comparator and the bash
+generator's `feeds/scripts/semver_key.py` are two implementations of one precedence rule
+kept in lockstep by a shared fixture (`feeds/scripts/semver-order.txt`) — change both
+(and the fixture) together if precedence ever changes. Never hand-edit the release
+manifest or installer feed.
 
 ## Universal Quality Bar
 
@@ -131,11 +177,35 @@ auto-fix common schema validation errors. To ensure smooth upgrades for existing
   `TimeProvider.System` in production. Standardize on `DateTimeOffset`, not
   `DateTime`. Usage: `_timeProvider.GetUtcNow()` returns `DateTimeOffset`,
   `.ToUnixTimeMilliseconds()` for persistence timestamps.
+- **Reuse before you add — look for existing constructs before creating new
+  ones.** Before introducing a new config knob, constructor parameter, field,
+  interface, or helper, check what already carries the data you need — especially
+  what is *already flowing through the seam you're editing* (the execution
+  context, an injected policy, an existing `*Paths`/`*Config` type). A new
+  construct that parallels an existing one is a defect: it duplicates state,
+  drifts from the original, and forces plumbing (threading a value through N
+  constructors) that the existing path already solved. Anchor the design on the
+  data already present at the call site; if you find yourself adding plumbing to
+  feed a new construct, stop — the value is usually already reachable. Adding a
+  new construct is justified only when no existing one fits and you can name why.
 - **NEVER add implicit conversions to/from primitive types on value objects.**
   Value objects exist to prevent accidental misuse — an implicit conversion back
   to the primitive defeats the purpose. Use `.Value` for explicit access and
   explicit casts where truly needed. If a value object can silently become a
   string, it provides no more safety than a raw string.
+- **Optional/nullable parameters are rare by default — make dependencies
+  required.** A constructor or method parameter should be optional (nullable or
+  defaulted) only when its absence is a genuine, intended runtime state the
+  callee handles explicitly (a real feature toggle: "no search backend
+  configured" → no web-search tool). NEVER add an optional parameter for
+  backward/source compatibility or to avoid updating call sites — update the
+  call sites instead. This is acute for security-relevant dependencies (path
+  roots, deny-list / access / command policies): a nullable security dependency
+  consumed with `?.` (`_policy?.IsDenied(p) == true`, `if (_policy is not null)`)
+  means a null silently **disables the check** — exactly how trust-zone and
+  privilege-escalation bugs hide. Require it so the type system guarantees it is
+  always present; if it is unconditionally constructed in production, there is no
+  justification for letting it be null.
 - **Comments: skip noise, keep signal.** Don't narrate what code does when
   identifiers already say it (`// increment counter`). Do write comments
   that help a human reviewer scanning in isolation: security gate

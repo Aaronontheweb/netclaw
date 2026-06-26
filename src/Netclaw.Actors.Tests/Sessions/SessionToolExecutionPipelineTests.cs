@@ -10,6 +10,7 @@ using Akka.Hosting.TestKit;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Time.Testing;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Sessions;
@@ -19,6 +20,7 @@ using Netclaw.Configuration;
 using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
 using Xunit;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Tests.Sessions;
 
@@ -332,15 +334,15 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
             spawnChildActor: static (_, _, _) => Task.FromResult<object>(new object()),
             ct: TestContext.Current.CancellationToken);
 
-        // Real-time: the slow tool's per-call watchdog trips ~1-2s in (1s budget
-        // plus the 1s poll interval). The ceiling stays tight so a regression —
-        // a watchdog that never fires — surfaces fast rather than hanging.
+        // Real-time: the slow tool's per-call budget token trips ~1s in (the 1s
+        // wall-clock budget). The ceiling stays tight so a regression — a budget
+        // that never fires — surfaces fast rather than hanging.
         var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
             TimeSpan.FromSeconds(8),
             cancellationToken: TestContext.Current.CancellationToken);
         await pipelineTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
-        // Each call has its own watchdog: the stalled one is timed out
+        // Each call has its own budget token: the stalled one is timed out
         // independently, the healthy one returns, and the batch is not failed
         // wholesale — both produce a tool-result message.
         Assert.Equal(2, completed.ToolResults.Count);
@@ -348,7 +350,152 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
         var slow = completed.ToolResults.Single(r => r.Name == "slow_tool");
         Assert.Equal("fast_tool-ok", fast.Content);
         Assert.Contains("slow_tool", slow.Content);
-        Assert.Contains("no activity", slow.Content);
+        Assert.Contains("exceeded execution budget", slow.Content);
+    }
+
+    [Fact]
+    public async Task Opaque_tool_stream_without_a_completion_item_surfaces_an_error()
+    {
+        var executor = new ParallelStreamingExecutor();
+        var probe = CreateTestProbe("no-completion-probe");
+
+        var pipelineTask = SessionToolExecutionPipeline.ExecuteToolsAsync(
+            executor,
+            [new FunctionCallContent("call-nc", "no_completion_tool", new Dictionary<string, object?>())],
+            new SessionId("D1/no-completion-test"),
+            source: null,
+            auditLogger: null,
+            timeProvider: TimeProvider.System,
+            sessionDir: Path.GetTempPath(),
+            maxInlineToolResultChars: 4096,
+            timeout: TimeSpan.FromSeconds(5),
+            self: probe.Ref,
+            emitSubAgentOutput: _ => { },
+            spawnChildActor: static (_, _, _) => Task.FromResult<object>(new object()),
+            ct: TestContext.Current.CancellationToken);
+
+        var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
+            TimeSpan.FromSeconds(3),
+            cancellationToken: TestContext.Current.CancellationToken);
+        await pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+
+        // A stream that ends without a completion item fails loudly as a per-tool
+        // error result — not a hang, not a wholesale batch failure.
+        var result = Assert.Single(completed.ToolResults);
+        Assert.Equal("no_completion_tool", result.Name);
+        Assert.Contains("without a completion item", result.Content);
+    }
+
+    [Fact]
+    public async Task Opaque_streaming_output_does_not_extend_tool_wall_clock_budget()
+    {
+        var time = new FakeTimeProvider();
+        var executor = new ChattyOpaqueExecutor();
+        var probe = CreateTestProbe("opaque-wall-clock-probe");
+
+        var pipelineTask = SessionToolExecutionPipeline.ExecuteToolsAsync(
+            executor,
+            [new FunctionCallContent("call-chatty", "chatty_tool", new Dictionary<string, object?>())],
+            new SessionId("D1/opaque-wall-clock-test"),
+            source: null,
+            auditLogger: null,
+            timeProvider: time,
+            sessionDir: Path.GetTempPath(),
+            maxInlineToolResultChars: 4096,
+            timeout: TimeSpan.FromSeconds(1),
+            self: probe.Ref,
+            emitSubAgentOutput: _ => { },
+            spawnChildActor: static (_, _, _) => Task.FromResult<object>(new object()),
+            ct: TestContext.Current.CancellationToken);
+
+        await executor.ActivitySeen.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+        time.Advance(TimeSpan.FromSeconds(2));
+
+        var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
+            TimeSpan.FromSeconds(3),
+            cancellationToken: TestContext.Current.CancellationToken);
+        await pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+
+        var result = Assert.Single(completed.ToolResults);
+        Assert.Equal("chatty_tool", result.Name);
+        Assert.Contains("exceeded execution budget", result.Content);
+    }
+
+    [Fact]
+    public async Task Self_monitoring_tool_runs_to_completion_without_a_parent_timeout()
+    {
+        // Self-monitoring tools are drained with NO parent watchdog — there is no
+        // clock on this path at all. The run is bounded only by its own completion
+        // (here) or caller cancellation (next test); the pipeline never times it out.
+        var executor = new SelfMonitoringStreamingExecutor();
+        var probe = CreateTestProbe("self-monitoring-probe");
+
+        var pipelineTask = SessionToolExecutionPipeline.ExecuteToolsAsync(
+            executor,
+            [new FunctionCallContent("call-self", "spawn_agent", new Dictionary<string, object?>())],
+            new SessionId("D1/self-monitoring-test"),
+            source: null,
+            auditLogger: null,
+            timeProvider: TimeProvider.System,
+            sessionDir: Path.GetTempPath(),
+            maxInlineToolResultChars: 4096,
+            timeout: TimeSpan.FromSeconds(1),
+            self: probe.Ref,
+            emitSubAgentOutput: _ => { },
+            spawnChildActor: static (_, _, _) => Task.FromResult<object>(new object()),
+            ct: TestContext.Current.CancellationToken);
+
+        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+        // Nothing has completed it and there is no timer to trip, so it stays running.
+        Assert.False(pipelineTask.IsCompleted);
+
+        executor.Complete("self-ok");
+
+        var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
+            TimeSpan.FromSeconds(3),
+            cancellationToken: TestContext.Current.CancellationToken);
+        await pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+
+        var result = Assert.Single(completed.ToolResults);
+        Assert.Equal("self-ok", result.Content);
+    }
+
+    [Fact]
+    public async Task Self_monitoring_tool_is_bounded_only_by_caller_cancellation()
+    {
+        // A self-monitoring tool that never completes is ended ONLY by caller (turn/
+        // user) cancellation — no parent watchdog exists. The cancel must surface as a
+        // failed batch (ToolExecutionFailed), NOT as a tool-result error fed back to the
+        // model as if the sub-agent had failed.
+        var executor = new SelfMonitoringStreamingExecutor();
+        var probe = CreateTestProbe("self-monitoring-cancel-probe");
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+
+        var pipelineTask = SessionToolExecutionPipeline.ExecuteToolsAsync(
+            executor,
+            [new FunctionCallContent("call-self", "spawn_agent", new Dictionary<string, object?>())],
+            new SessionId("D1/self-monitoring-cancel-test"),
+            source: null,
+            auditLogger: null,
+            timeProvider: TimeProvider.System,
+            sessionDir: Path.GetTempPath(),
+            maxInlineToolResultChars: 4096,
+            timeout: TimeSpan.FromSeconds(1),
+            self: probe.Ref,
+            emitSubAgentOutput: _ => { },
+            spawnChildActor: static (_, _, _) => Task.FromResult<object>(new object()),
+            ct: cts.Token);
+
+        await executor.Started.Task.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+        Assert.False(pipelineTask.IsCompleted); // never completes on its own
+
+        cts.Cancel();
+
+        var failed = await probe.ExpectMsgAsync<ToolExecutionFailed>(
+            TimeSpan.FromSeconds(3),
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.IsType<TimeoutException>(failed.Cause);
+        await pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
     }
 
     [Fact]
@@ -574,12 +721,69 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
         {
             if (toolCall.Name == "slow_tool")
             {
-                // Never produces an item — the per-call watchdog must time it out.
+                // Never produces an item — the per-call budget must time it out.
                 await TestStreamingHelpers.ParkUntilCancelledAsync(ct);
+            }
+
+            if (toolCall.Name == "no_completion_tool")
+            {
+                // Yields activity but no completion item — violates the tool-call
+                // contract; the pipeline must surface a loud error, not hang.
+                await Task.Yield();
+                yield return new ToolActivityUpdate("working");
+                yield break;
             }
 
             await Task.Yield();
             yield return new ToolCompletedUpdate($"{toolCall.Name}-ok");
+        }
+    }
+
+    private sealed class ChattyOpaqueExecutor : IToolExecutor
+    {
+        public TaskCompletionSource ActivitySeen { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task AuthorizeAsync(FunctionCallContent toolCall, ToolExecutionContext? context = null, CancellationToken ct = default)
+            => Task.CompletedTask;
+
+        public Task<string> ExecuteAsync(FunctionCallContent toolCall, ToolExecutionContext? context = null, CancellationToken ct = default)
+            => throw new NotSupportedException("ChattyOpaqueExecutor is streaming-only.");
+
+        public async IAsyncEnumerable<ToolCallUpdate> ExecuteStreamAsync(
+            FunctionCallContent toolCall,
+            ToolExecutionContext? context = null,
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            ActivitySeen.TrySetResult();
+            yield return new ToolActivityUpdate("stdout", ".");
+            await TestStreamingHelpers.ParkUntilCancelledAsync(ct);
+        }
+    }
+
+    private sealed class SelfMonitoringStreamingExecutor : IToolExecutor
+    {
+        private readonly TaskCompletionSource<string> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public ToolLivenessMode GetLivenessMode(FunctionCallContent toolCall) => ToolLivenessMode.SelfMonitoring;
+
+        public Task AuthorizeAsync(FunctionCallContent toolCall, ToolExecutionContext? context = null, CancellationToken ct = default)
+            => Task.CompletedTask;
+
+        public Task<string> ExecuteAsync(FunctionCallContent toolCall, ToolExecutionContext? context = null, CancellationToken ct = default)
+            => throw new NotSupportedException("SelfMonitoringStreamingExecutor is streaming-only.");
+
+        public void Complete(string result) => _completion.TrySetResult(result);
+
+        public async IAsyncEnumerable<ToolCallUpdate> ExecuteStreamAsync(
+            FunctionCallContent toolCall,
+            ToolExecutionContext? context = null,
+            [EnumeratorCancellation] CancellationToken ct = default)
+        {
+            Started.TrySetResult();
+            yield return new ToolActivityUpdate("calling the model");
+            yield return new ToolCompletedUpdate(await _completion.Task.WaitAsync(ct));
         }
     }
 
@@ -595,11 +799,9 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
         }
     }
 
-    private static readonly byte[] FakePngBytes =
-    [
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52
-    ];
+    // Real PNG: the egress normalizer decodes every model-input image, so a
+    // fake magic-byte stub would now be dropped. Small enough to pass through.
+    private static readonly byte[] FakePngBytes = TestImages.SmallPng();
 
     private static readonly byte[] FakePdfBytes = "%PDF-1.7\nfake body\n%%EOF"u8.ToArray();
 

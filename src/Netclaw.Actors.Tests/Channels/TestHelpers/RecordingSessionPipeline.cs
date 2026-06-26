@@ -11,6 +11,7 @@ using Akka.Streams.Dsl;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
+using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Tests.Channels.TestHelpers;
 
@@ -20,6 +21,9 @@ public sealed class RecordingSessionPipeline : ISessionPipeline
     private readonly List<IWithSessionId> _recordedFeedback = [];
     private readonly Func<SessionId, IReadOnlyList<SessionOutput>> _outputFactory;
     private readonly bool _reactive;
+    private readonly TaskCompletionSource<SessionPipelineOptions> _created = new(
+        TaskCreationOptions.RunContinuationsAsynchronously);
+    private SessionPipelineOptions? _capturedOptions;
 
     /// <summary>
     /// Creates a recording pipeline.
@@ -45,14 +49,15 @@ public sealed class RecordingSessionPipeline : ISessionPipeline
         _reactive = reactive;
     }
 
-    public SessionPipelineOptions? CapturedOptions { get; private set; }
+    public SessionPipelineOptions? CapturedOptions => Volatile.Read(ref _capturedOptions);
+    public Task<SessionPipelineOptions> Created => _created.Task;
     public IReadOnlyList<IWithSessionId> RecordedFeedback
     {
         get { lock (_feedbackLock) return _recordedFeedback.ToList(); }
     }
 
     public ConcurrentQueue<ChannelInput> CapturedInputs { get; } = new();
-    public Func<IWithSessionId, CancellationToken, Task<ICommandReply>>? ResponseFactory { get; set; }
+    public Func<IWithSessionId, CancellationToken, Task<ISessionResponse>>? ResponseFactory { get; set; }
 
     public Task<MaterializedSession> CreateAsync(
         SessionId sessionId,
@@ -60,7 +65,8 @@ public sealed class RecordingSessionPipeline : ISessionPipeline
         IMaterializer? materializer = null,
         CancellationToken cancellationToken = default)
     {
-        CapturedOptions = options;
+        Volatile.Write(ref _capturedOptions, options);
+        _created.TrySetResult(options);
 
         var killSwitch = KillSwitches.Shared($"recording-{sessionId.Value}");
         var outputs = _outputFactory(sessionId).ToList();
@@ -129,11 +135,11 @@ public sealed class RecordingSessionPipeline : ISessionPipeline
         return Task.CompletedTask;
     }
 
-    public Task<ICommandReply> SendFeedbackAndWaitAsync(IWithSessionId feedback, CancellationToken ct = default)
+    public Task<ISessionResponse> SendFeedbackAndWaitAsync(IWithSessionId feedback, CancellationToken ct = default)
     {
         lock (_feedbackLock) _recordedFeedback.Add(feedback);
         var response = ResponseFactory?.Invoke(feedback, ct)
-            ?? Task.FromResult<ICommandReply>(CommandAck.For(feedback.SessionId));
+            ?? Task.FromResult<ISessionResponse>(CommandAck.For(feedback.SessionId));
         return response;
     }
 }
