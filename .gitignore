@@ -451,3 +451,4 @@ phase*-mattermost-*.png
 
 # macOS Finder metadata
 .DS_Store
+netclaw-worktrees/
