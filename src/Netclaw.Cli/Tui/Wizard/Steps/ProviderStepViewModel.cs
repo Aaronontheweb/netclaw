@@ -4,9 +4,12 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Diagnostics;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
 using Netclaw.Cli.Config;
 using Netclaw.Cli.Daemon;
+using Netclaw.Cli.Json;
 using Netclaw.Cli.Tui;
 using Netclaw.Cli.Tui.Sections;
 using Netclaw.Configuration;
@@ -20,7 +23,8 @@ namespace Netclaw.Cli.Tui.Wizard.Steps;
 /// <summary>
 /// Wizard step for selecting and configuring the LLM provider.
 /// Sub-steps: 0=provider selection, 1=auth method, 2=credentials, 3=validation,
-/// 4=model selection, 5=OAuth device flow, 6=OAuth browser flow.
+/// 4=model selection, 5=OAuth device flow, 6=OAuth browser flow,
+/// 7=GitHub Copilot host mode, 8=GitHub Enterprise host, 9=GitHub Enterprise API base.
 /// </summary>
 public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
 {
@@ -59,6 +63,10 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
     public AuthMethod SelectedAuthMethod { get; set; } = AuthMethod.None;
     public string? ApiKeyInput { get; set; }
     public string? EndpointInput { get; set; }
+    public IReadOnlyDictionary<string, object?>? VendorOptions { get; set; }
+    public GitHubCopilotAuthHostMode GitHubCopilotHostMode { get; set; } = GitHubCopilotAuthHostMode.GitHubCom;
+    public string? GitHubCopilotHostInput { get; set; }
+    public string? GitHubCopilotApiBaseInput { get; set; }
     public string? SelectedModelId { get; set; }
     public bool HasStoredCredential { get; private set; }
     public List<DiscoveredModel> DiscoveredModels { get; } = [];
@@ -84,6 +92,9 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
         4 => "  Select the model to use for conversations.",
         5 => "  Complete the authorization in your browser.",
         6 => "  Complete the authorization in your browser.",
+        7 => "  Choose whether GitHub Copilot should authenticate through GitHub.com or GitHub Enterprise.",
+        8 => "  Enter the GitHub Enterprise web host used for OAuth.",
+        9 => "  Enter the GitHub Enterprise API base, or leave blank to use the derived default.",
         _ => ""
     };
 
@@ -94,9 +105,11 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
     public void SetSubStep(int step)
     {
         _currentSubStep = step;
-        if (step > _highWaterSubStep)
+        if (IsResumeSubStep(step) && step > _highWaterSubStep)
             _highWaterSubStep = step;
     }
+
+    private static bool IsResumeSubStep(int step) => step is >= 0 and <= 4;
 
     public bool TryAdvance()
     {
@@ -116,14 +129,29 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
         {
             case 5: // OAuth device flow → auth selection
                 OAuth.Cancel();
-                _currentSubStep = 1;
+                _currentSubStep = GitHubCopilotSetupFlow.IsGitHubCopilot(SelectedProviderType) ? 7 : 1;
                 return true;
             case 6: // OAuth browser flow → auth selection
                 OAuth.Cancel();
                 _currentSubStep = 1;
                 return true;
+            case 7: // GitHub Copilot host mode → auth selection
+                _currentSubStep = 1;
+                return true;
+            case 8: // GitHub Enterprise host → host mode
+                _currentSubStep = 7;
+                return true;
+            case 9: // GitHub Enterprise API base → GitHub Enterprise host
+                _currentSubStep = 8;
+                return true;
             case 4: // Model selection → credentials
-                _currentSubStep = 2;
+                _currentSubStep = SelectedAuthMethod switch
+                {
+                    AuthMethod.OAuthDevice when GitHubCopilotSetupFlow.IsGitHubCopilot(SelectedProviderType) => 7,
+                    AuthMethod.OAuthDevice => 5,
+                    AuthMethod.OAuthPkce => 6,
+                    _ => 2,
+                };
                 return true;
             case 3: // Validation → back to correct input
                 CancelProbe();
@@ -271,6 +299,8 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
             entry.ApiKey = new SensitiveString(ApiKeyInput);
         }
 
+        entry.SetVendorOptions(ToJsonObject(VendorOptions));
+
         return entry;
     }
 
@@ -279,13 +309,98 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
     public void StartOAuthFlow()
     {
         if (SelectedProviderType is null) return;
+        if (!TryBuildOAuthFlowEntry(out var oauthEntry, out var error))
+        {
+            ProbeResult.Value = new ProviderProbeResult(false, error, []);
+            return;
+        }
+
         ProbeElapsedSeconds.Value = 0;
         var ct = OAuth.StartDeviceFlow(SelectedProviderType, result =>
         {
             ApiKeyInput = result.AccessToken.Value;
             StartProbe();
-        });
+        }, oauthEntry);
         _ = RunProbeTimerAsync(ct);
+    }
+
+    public void SelectGitHubCopilotAuthHost(GitHubCopilotAuthHostMode mode)
+    {
+        GitHubCopilotHostMode = mode;
+
+        if (mode == GitHubCopilotAuthHostMode.GitHubCom)
+        {
+            GitHubCopilotHostInput = null;
+            GitHubCopilotApiBaseInput = null;
+            VendorOptions = null;
+            SetSubStep(5);
+            StartOAuthFlow();
+            return;
+        }
+
+        SetSubStep(8);
+    }
+
+    public bool TrySetGitHubCopilotEnterpriseHost(string? gitHubHost, out string error)
+    {
+        var previousHost = GitHubCopilotHostInput;
+        var trimmedHost = gitHubHost?.Trim();
+        if (string.IsNullOrWhiteSpace(trimmedHost))
+        {
+            error = "GitHub Enterprise host is required.";
+            return false;
+        }
+
+        if (!GitHubCopilotSetupFlow.TryResolveEnterpriseVendorOptions(
+                trimmedHost,
+                gitHubApiBase: null,
+                out _,
+                out error))
+        {
+            return false;
+        }
+
+        GitHubCopilotHostInput = trimmedHost;
+        if (!string.Equals(previousHost, trimmedHost, StringComparison.Ordinal))
+        {
+            GitHubCopilotApiBaseInput = null;
+            VendorOptions = null;
+        }
+
+        error = string.Empty;
+        return true;
+    }
+
+    public bool TryStartGitHubCopilotEnterpriseOAuth(string? gitHubApiBase, out string error)
+    {
+        GitHubCopilotApiBaseInput = string.IsNullOrWhiteSpace(gitHubApiBase)
+            ? null
+            : gitHubApiBase.Trim();
+
+        if (!GitHubCopilotSetupFlow.TryResolveEnterpriseVendorOptions(
+                GitHubCopilotHostInput,
+                GitHubCopilotApiBaseInput,
+                out var vendorOptions,
+                out error))
+        {
+            return false;
+        }
+
+        VendorOptions = vendorOptions;
+        SetSubStep(5);
+        StartOAuthFlow();
+        return true;
+    }
+
+    private bool TryBuildOAuthFlowEntry(out ProviderEntry? entry, out string error)
+    {
+        entry = null;
+        error = string.Empty;
+        if (!GitHubCopilotSetupFlow.IsGitHubCopilot(SelectedProviderType))
+            return true;
+
+        entry = GitHubCopilotSetupFlow.BuildOAuthEntry(VendorOptions);
+        return true;
     }
 
     public void StartBrowserOAuthFlow()
@@ -310,6 +425,10 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
         SelectedAuthMethod = AuthMethod.None;
         ApiKeyInput = null;
         EndpointInput = null;
+        VendorOptions = null;
+        GitHubCopilotHostMode = GitHubCopilotAuthHostMode.GitHubCom;
+        GitHubCopilotHostInput = null;
+        GitHubCopilotApiBaseInput = null;
         ProbeResult.Value = null;
         ProbeElapsedSeconds.Value = 0;
         SelectedModelId = null;
@@ -332,7 +451,8 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
                 ? EndpointInput
                 : _registry.TryGet(providerName, out var desc) && desc.Auth is EndpointOnlyAuth
                     ? desc.DefaultEndpoint
-                    : null
+                    : null,
+            VendorOptions = VendorOptions,
         };
 
         var selectedModel = DiscoveredModels.FirstOrDefault(model =>
@@ -374,9 +494,10 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
             EndpointInput,
             OAuth.Result,
             ApiKeyInput,
-            _registry,
+            registry: _registry,
             // Protector for this config's keys directory, not the process-wide static service locator.
-            SecretsProtection.CreateProtector(paths));
+            protector: SecretsProtection.CreateProtector(paths),
+            vendorOptions: VendorOptions);
     }
 
     public Task ContributeHealthChecksAsync(HealthCheckRunner runner, CancellationToken ct)
@@ -466,6 +587,9 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
             EndpointInput ??= endpointText;
         }
 
+        if (TryReadExistingVendorOptions(context, providerType, out var vendorOptions))
+            VendorOptions ??= vendorOptions;
+
         if (ConfigFileHelper.TryGetPathValue(context.ExistingConfig, $"Providers.{providerType}.AuthMethod", out var authMethod)
             && authMethod is string authMethodText
             && Enum.TryParse<AuthMethod>(authMethodText, ignoreCase: true, out var parsed))
@@ -535,7 +659,38 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
         if (!string.IsNullOrWhiteSpace(endpoint))
             entry["Endpoint"] = endpoint;
 
+        if (vm.VendorOptions is not null && vm.VendorOptions.Count > 0)
+            entry["VendorOptions"] = vm.VendorOptions;
+
         return entry;
+    }
+
+    private static bool TryReadExistingVendorOptions(
+        WizardContext context,
+        string providerType,
+        out IReadOnlyDictionary<string, object?>? vendorOptions)
+    {
+        vendorOptions = null;
+        if (context.ExistingConfig is null
+            || !ConfigFileHelper.TryGetPathValue(context.ExistingConfig, $"Providers.{providerType}.VendorOptions", out var raw)
+            || raw is null)
+        {
+            return false;
+        }
+
+        var json = raw is JsonElement element
+            ? element.GetRawText()
+            : JsonSerializer.Serialize(raw, JsonDefaults.ConfigFile);
+        vendorOptions = JsonSerializer.Deserialize<Dictionary<string, object?>>(json, JsonDefaults.ConfigRead);
+        return vendorOptions is not null;
+    }
+
+    private static JsonObject? ToJsonObject(IReadOnlyDictionary<string, object?>? vendorOptions)
+    {
+        if (vendorOptions is null || vendorOptions.Count == 0)
+            return null;
+
+        return JsonNode.Parse(JsonSerializer.Serialize(vendorOptions, JsonDefaults.ConfigFile))?.AsObject();
     }
 
     public void Dispose()
