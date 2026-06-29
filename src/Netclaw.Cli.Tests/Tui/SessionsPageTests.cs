@@ -26,12 +26,21 @@ namespace Netclaw.Cli.Tests.Tui;
 /// <summary>
 /// Regression tests for <see cref="SessionsPage"/> / <see cref="SessionsViewModel"/>.
 ///
-/// Guards the two-way selection binding for the scrollable session list: the page
-/// renders the list via <c>SelectionListNode</c> with <c>.WithHighlightedIndex()</c>
-/// (a one-way bind FROM the ViewModel), while the ViewModel owns Up/Down/Enter key
-/// handling and drives <see cref="SessionsViewModel.SelectedIndex"/>. If arrow keys
-/// stop reaching the ViewModel (e.g. the list node swallows them), selection silently
-/// sticks at index 0 and Enter always resumes the first session — the bug this guards.
+/// Guards the input wiring for the scrollable session list. The list is rendered as a
+/// focusable <c>SelectionListNode</c> with <c>.WithHighlightedIndex()</c> (a one-way bind
+/// FROM the ViewModel). Because the node is focusable, Termina's focus manager would route
+/// arrows + Enter straight into it (its <c>HandleInput</c> consumes them), so the page MUST
+/// claim those keys in <see cref="SessionsPage.HandlePageInput"/> — which Termina dispatches
+/// before the focus manager — and forward them to <see cref="SessionsViewModel.HandleKey"/>.
+/// Remove that override and these tests fail: arrows no longer reach the ViewModel,
+/// <see cref="SessionsViewModel.SelectedIndex"/> sticks at 0, and Enter always resumes the
+/// first session — the original bug.
+///
+/// Scope note: these drive input through the real <c>HandlePageInput</c> path, so they guard
+/// the page→ViewModel wiring. They do NOT reproduce the focus-manager-eats-input condition
+/// itself — that needs a populated list that has actually been handed focus in a live
+/// terminal, which the headless harness does not do during input processing (it was the
+/// blind spot that let the bug ship). Native/manual coverage owns that last mile.
 ///
 /// Resume state is observed via the shared <see cref="ChatNavigationState"/>, which is
 /// what the ViewModel actually writes (<c>ResumeSessionId</c> lives there, not on the
