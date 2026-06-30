@@ -67,6 +67,19 @@ daemon rejects manual runs when scheduling is disabled, the reminder is missing
 or disabled, the recurring reminder has expired, the same reminder is already
 executing, or the global reminder execution limit is full.
 
+After creating a reminder, decide whether to offer an immediate validation run:
+
+- **Offer it for complex reminders** — shell commands, subagents, external APIs,
+  channel delivery, state/dedup files, or anything requiring pre-approved verbs.
+  Ask plainly: "This reminder has a few moving parts. Want me to run it once now
+  with `netclaw reminder run <id>` so we can catch approval, path, or delivery
+  problems before the scheduled fire?"
+- **Skip it for trivial reminders** — simple conversational check-backs or
+  reminders with no tool use, no side effects, and no external delivery risk.
+- **Do not call it a simulated dry run.** `netclaw reminder run <id>` performs a
+  real execution through the reminder pipeline. Warn the user if the reminder may
+  post to a channel, write files, call external services, or mutate state.
+
 Reminders that hit 5 consecutive execution failures are auto-disabled with a
 `ReminderAutoDisabled` critical alert. The definition stays on disk so the
 operator can diagnose and re-enable after fixing the root cause.

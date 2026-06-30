@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.24.0"
+  version: "2.24.1"
 ---
 
 # Netclaw Operations
@@ -52,7 +52,9 @@ it needs first with `netclaw approvals trust-verb <verb>`. Background shell: set
 `_background: true` on `shell_execute` (max 5 concurrent; cancel servers/watchers
 when done; background jobs are killed when the session passivates).
 Operators can run an enabled reminder immediately with `netclaw reminder run <id>`;
-this requires the daemon and does not change the reminder's schedule.
+this requires the daemon and does not change the reminder's schedule. After
+creating a complex reminder, offer a manual validation run first; skip the prompt
+for trivial check-backs.
 
 Full detail — delivery contract, proactive channel messaging, approval scoping,
 job lifecycle — is in
