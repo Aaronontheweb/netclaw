@@ -51,6 +51,8 @@ that fires unattended cannot answer approval prompts, so pre-approve any shell v
 it needs first with `netclaw approvals trust-verb <verb>`. Background shell: set
 `_background: true` on `shell_execute` (max 5 concurrent; cancel servers/watchers
 when done; background jobs are killed when the session passivates).
+Operators can run an enabled reminder immediately with `netclaw reminder run <id>`;
+this requires the daemon and does not change the reminder's schedule.
 
 Full detail — delivery contract, proactive channel messaging, approval scoping,
 job lifecycle — is in

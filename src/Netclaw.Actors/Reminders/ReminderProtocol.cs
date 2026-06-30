@@ -278,6 +278,24 @@ public enum ReminderSaveError
     Internal
 }
 
+public enum ReminderExecutionSource
+{
+    Scheduled = 0,
+    Manual = 1
+}
+
+public enum ReminderRunNowError
+{
+    None,
+    SchedulingDisabled,
+    NotFound,
+    Disabled,
+    Expired,
+    AlreadyExecuting,
+    Busy,
+    Internal
+}
+
 /// <summary>
 /// External message contract for <see cref="ReminderManagerActor"/>.
 /// </summary>
@@ -317,6 +335,7 @@ public sealed record CancelReminderCommand(ReminderId Id) : IReminderCommand, IN
 public sealed record DeleteReminderCommand(ReminderId Id) : IReminderCommand, INoSerializationVerificationNeeded;
 public sealed record DisableReminderCommand(ReminderId Id) : IReminderCommand, INoSerializationVerificationNeeded;
 public sealed record EnableReminderCommand(ReminderId Id) : IReminderCommand, INoSerializationVerificationNeeded;
+public sealed record RunReminderNowCommand(ReminderId Id) : IReminderCommand, INoSerializationVerificationNeeded;
 public sealed record ListRemindersCommand(bool IncludeDisabled = true) : IReminderQuery, INoSerializationVerificationNeeded;
 
 // ===== Queries =====
@@ -341,6 +360,12 @@ public sealed record ReminderStateResponse(
     bool Found,
     bool Enabled,
     DateTimeOffset? NextFire = null,
+    string? ErrorMessage = null) : IReminderResponse, INoSerializationVerificationNeeded;
+
+public sealed record ReminderRunNowResponse(
+    ReminderId Id,
+    bool Accepted,
+    ReminderRunNowError Error = ReminderRunNowError.None,
     string? ErrorMessage = null) : IReminderResponse, INoSerializationVerificationNeeded;
 
 public sealed record ReminderListResponse(IReadOnlyList<ReminderInfo> Reminders) : IReminderResponse, INoSerializationVerificationNeeded;
@@ -453,6 +478,7 @@ internal sealed record ReminderExecutionCompleted(
     Guid ExecutionId,
     ReminderId Id,
     bool Success,
+    ReminderExecutionSource Source,
     string? ErrorMessage = null) : INoSerializationVerificationNeeded;
 
 // ── Execution history ──
@@ -466,4 +492,5 @@ public sealed record HistoryRecord(
     bool Success,
     long DurationMs,
     string SessionId,
-    string? ErrorMessage);
+    string? ErrorMessage,
+    ReminderExecutionSource Source = ReminderExecutionSource.Scheduled);

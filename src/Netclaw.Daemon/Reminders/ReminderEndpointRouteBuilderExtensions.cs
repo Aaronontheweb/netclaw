@@ -255,6 +255,41 @@ public static class ReminderEndpointRouteBuilderExtensions
         .WithName("EnableReminder")
         .WithSummary("Re-enable a previously disabled reminder.");
 
+        reminders.MapPost("/{id}/run", async ValueTask<Results<Ok<ReminderRunResponse>, NotFound<ReminderErrorResponse>, BadRequest<ReminderErrorResponse>, ProblemHttpResult>> (
+            string id,
+            IRequiredActor<ReminderManagerActorKey> actor,
+            ClaimsPrincipalMapper mapper,
+            HttpContext httpContext,
+            CancellationToken ct) =>
+        {
+            var authorization = ResolveReminderAuthorizationContext(mapper, httpContext);
+            if (authorization?.SourceAudience is null)
+                return TypedResults.Problem(
+                    detail: "Running a reminder requires Operator authority.",
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            var manager = await actor.GetAsync(ct);
+            var response = await manager.Ask<ReminderRunNowResponse>(
+                new RunReminderNowCommand(new ReminderId(id)),
+                TimeSpan.FromSeconds(10),
+                ct);
+
+            if (response.Accepted)
+            {
+                return TypedResults.Ok(new ReminderRunResponse(
+                    id,
+                    Started: true,
+                    Message: $"Reminder '{id}' run started."));
+            }
+
+            var error = response.ErrorMessage ?? $"Reminder '{id}' could not be run.";
+            return response.Error == ReminderRunNowError.NotFound
+                ? TypedResults.NotFound(new ReminderErrorResponse(error))
+                : TypedResults.BadRequest(new ReminderErrorResponse(error));
+        })
+        .WithName("RunReminderNow")
+        .WithSummary("Immediately run an enabled reminder without changing its schedule (requires Operator authority).");
+
         reminders.MapGet("/{id}", async ValueTask<Results<Ok<ReminderDetailDto>, NotFound<ReminderErrorResponse>>> (
             string id,
             IRequiredActor<ReminderManagerActorKey> actor,
@@ -440,6 +475,9 @@ internal sealed record ReminderDisableResponse(string Id, bool Enabled, string M
 
 /// <summary>State of a reminder after an enable request.</summary>
 internal sealed record ReminderEnableResponse(string Id, bool Enabled, DateTimeOffset? NextFire, string Message);
+
+/// <summary>State of a reminder after a manual run request.</summary>
+internal sealed record ReminderRunResponse(string Id, bool Started, string Message);
 
 /// <summary>Failure detail for a rejected enable request.</summary>
 internal sealed record ReminderEnableErrorResponse(string? Error, string Id, bool Enabled);

@@ -54,6 +54,19 @@ netclaw reminder cancel <id>     # disable, keep definition
 netclaw reminder delete <id>     # permanent delete + history
 ```
 
+To run an enabled reminder immediately without changing its schedule, use:
+
+```
+netclaw reminder run <id>
+```
+
+Manual runs go through the same execution pipeline and write normal history with
+`source=manual`, but they do not reschedule cron reminders, consume one-shot
+occurrences, or count toward scheduled consecutive-failure auto-disable. The
+daemon rejects manual runs when scheduling is disabled, the reminder is missing
+or disabled, the recurring reminder has expired, the same reminder is already
+executing, or the global reminder execution limit is full.
+
 Reminders that hit 5 consecutive execution failures are auto-disabled with a
 `ReminderAutoDisabled` critical alert. The definition stays on disk so the
 operator can diagnose and re-enable after fixing the root cause.
