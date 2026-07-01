@@ -48,8 +48,14 @@ Type "netclaw daemon start"
 Enter
 Wait+Screen@20s /TAPE\$/
 
-# Allow time for the daemon to spawn the stdio MCP process and index tools.
-Sleep 5s
+# Poll until the daemon reports smoke-math as fully connected with 3 tools.
+# Replaces the former fixed Sleep 5s: we wait for the actual CLI signal
+# rather than guessing. `netclaw mcp list` queries the daemon's cached
+# server state; "connected (3 tools)" means the stdio handshake and tool
+# indexing are complete. The Wait+Screen@60s is a safety net for a hard hang.
+Type "until netclaw mcp list 2>/dev/null | grep -q 'connected (3 tools)'; do sleep 2; done"
+Enter
+Wait+Screen@60s /TAPE\$/
 Show
 
 # ─── Launch the TUI ──────────────────────────────────────────────────
