@@ -538,6 +538,50 @@ public class FileSubAgentDefinitionLoaderTests : IDisposable
     }
 
     [Fact]
+    public void LoadAll_with_feed_config_ignores_disabled_and_removed_managed_feeds()
+    {
+        WriteManagedAgent("enabled", "enabled-agent.md", """
+            ---
+            name: enabled-agent
+            description: Enabled managed agent
+            ---
+
+            Enabled body.
+            """);
+        WriteManagedAgent("disabled", "disabled-agent.md", """
+            ---
+            name: disabled-agent
+            description: Disabled managed agent
+            ---
+
+            Disabled body.
+            """);
+        WriteManagedAgent("removed", "removed-agent.md", """
+            ---
+            name: removed-agent
+            description: Removed managed agent
+            ---
+
+            Removed body.
+            """);
+
+        var feedsConfig = new SkillFeedsConfig
+        {
+            Feeds =
+            {
+                new SkillFeedSource { Name = "enabled", Enabled = true },
+                new SkillFeedSource { Name = "disabled", Enabled = false }
+            }
+        };
+        var loader = new FileSubAgentDefinitionLoader(_paths, NullLogger<FileSubAgentDefinitionLoader>.Instance, feedsConfig);
+
+        var results = loader.LoadAll();
+
+        var profile = Assert.Single(results);
+        Assert.Equal("enabled-agent", profile.Name);
+    }
+
+    [Fact]
     public void RefreshIfChanged_detects_managed_server_feed_agent_edits()
     {
         var path = WriteManagedAgent("team", "managed.md", """

@@ -202,6 +202,57 @@ public sealed class ServerFeedSkillSyncServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SyncOnce_invalid_native_artifact_keeps_existing_managed_subagents_and_skips_prune()
+    {
+        var agentDir = _paths.ServerFeedAgentDirectory("team");
+        Directory.CreateDirectory(agentDir);
+        var oldContent = AgentMarkdown("code-reviewer", "Old reviewer", "Old body.");
+        File.WriteAllText(Path.Combine(agentDir, "code-reviewer.md"), oldContent);
+        File.WriteAllText(Path.Combine(agentDir, "stale-agent.md"), AgentMarkdown("stale-agent", "Stale", "Stale body."));
+
+        SkillSyncHelpers.WriteSyncState(_paths.ServerFeedAgentSyncStatePath("team"), new SkillSyncState
+        {
+            Skills =
+            {
+                ["code-reviewer"] = new SyncedSkillState
+                {
+                    Version = "0.9.0",
+                    Sha256 = SkillSyncHelpers.ComputeSha256(oldContent)
+                },
+                ["stale-agent"] = new SyncedSkillState
+                {
+                    Version = "0.9.0",
+                    Sha256 = "stale"
+                }
+            }
+        });
+
+        var invalidContent = """
+            ---
+            name: code-reviewer
+            tools: [file_read]
+            ---
+
+            Missing a description, so the runtime loader would reject this artifact.
+            """;
+        var digest = SkillSyncHelpers.ComputeSha256(invalidContent);
+
+        var handler = new FakeHttpMessageHandler();
+        AddEmptyRfcIndex(handler);
+        AddNativeSubAgentResponses(handler, "code-reviewer", "1.0.0", invalidContent, digest);
+
+        var service = CreateService(handler);
+        await service.SyncOnceAsync(CancellationToken.None);
+
+        Assert.Equal(oldContent, File.ReadAllText(Path.Combine(agentDir, "code-reviewer.md")));
+        Assert.True(File.Exists(Path.Combine(agentDir, "stale-agent.md")));
+
+        var state = ReadAgentSyncState();
+        Assert.True(state.Skills.ContainsKey("stale-agent"));
+        Assert.Equal("0.9.0", state.Skills["code-reviewer"].Version);
+    }
+
+    [Fact]
     public async Task SyncOnce_successful_sidecar_prunes_only_removed_managed_subagents()
     {
         var agentDir = _paths.ServerFeedAgentDirectory("team");

@@ -196,6 +196,8 @@ public sealed class FileSubAgentDefinitionLoader
                 if (seen.Add(feed.Name))
                     yield return feed.Name;
             }
+
+            yield break;
         }
 
         foreach (var dir in Directory.GetDirectories(_serverFeedAgentsDirectory)
@@ -238,35 +240,40 @@ public sealed class FileSubAgentDefinitionLoader
             return null;
         }
 
+        return TryParseDefinition(filePath, content, _logger);
+    }
+
+    public static SubAgentProfile? TryParseDefinition(string sourcePath, string content, ILogger logger)
+    {
         var frontmatter = SubAgentMarkdownParser.ExtractFrontmatter(content);
         if (frontmatter is null)
         {
-            _logger.LogWarning(
+            logger.LogWarning(
                 "Agent definition at {Path} has missing or unparseable YAML frontmatter — skipping",
-                filePath);
+                sourcePath);
             return null;
         }
 
         if (string.IsNullOrWhiteSpace(frontmatter.Name))
         {
-            _logger.LogWarning("Agent definition at {Path} has no 'name' in frontmatter — skipping", filePath);
+            logger.LogWarning("Agent definition at {Path} has no 'name' in frontmatter — skipping", sourcePath);
             return null;
         }
 
         if (string.IsNullOrWhiteSpace(frontmatter.Description))
         {
-            _logger.LogWarning(
+            logger.LogWarning(
                 "Agent '{Name}' at {Path} has no 'description' in frontmatter — skipping",
-                frontmatter.Name, filePath);
+                frontmatter.Name, sourcePath);
             return null;
         }
 
         var systemPrompt = SubAgentMarkdownParser.ExtractBody(content);
         if (string.IsNullOrWhiteSpace(systemPrompt))
         {
-            _logger.LogWarning(
+            logger.LogWarning(
                 "Agent '{Name}' at {Path} has an empty system prompt body — skipping",
-                frontmatter.Name, filePath);
+                frontmatter.Name, sourcePath);
             return null;
         }
 
@@ -276,17 +283,17 @@ public sealed class FileSubAgentDefinitionLoader
 
         if (!TryParseModelRole(frontmatter.ModelRole, out var modelRole))
         {
-            _logger.LogWarning(
+            logger.LogWarning(
                 "Agent '{Name}' at {Path} has invalid modelRole '{Value}' (expected Main or Compaction) — skipping",
-                frontmatter.Name, filePath, frontmatter.ModelRole);
+                frontmatter.Name, sourcePath, frontmatter.ModelRole);
             return null;
         }
 
         if (!TryParseVisibility(frontmatter.Visibility, out var visibility))
         {
-            _logger.LogWarning(
+            logger.LogWarning(
                 "Agent '{Name}' at {Path} has invalid visibility '{Value}' (expected user-facing or internal) — skipping",
-                frontmatter.Name, filePath, frontmatter.Visibility);
+                frontmatter.Name, sourcePath, frontmatter.Visibility);
             return null;
         }
 
@@ -296,17 +303,17 @@ public sealed class FileSubAgentDefinitionLoader
         // documented ceiling — the frontmatter path bypasses schema validation.
         if (frontmatter.TimeoutSeconds is { } timeoutSeconds && timeoutSeconds is < 5 or > 600)
         {
-            _logger.LogWarning(
+            logger.LogWarning(
                 "Agent '{Name}' at {Path} has invalid timeoutSeconds {Value} (expected 5–600) — skipping",
-                frontmatter.Name, filePath, timeoutSeconds);
+                frontmatter.Name, sourcePath, timeoutSeconds);
             return null;
         }
 
         if (frontmatter.PrefillTimeoutSeconds is { } prefillSeconds && prefillSeconds is < 5 or > 3600)
         {
-            _logger.LogWarning(
+            logger.LogWarning(
                 "Agent '{Name}' at {Path} has invalid prefillTimeoutSeconds {Value} (expected 5–3600) — skipping",
-                frontmatter.Name, filePath, prefillSeconds);
+                frontmatter.Name, sourcePath, prefillSeconds);
             return null;
         }
 

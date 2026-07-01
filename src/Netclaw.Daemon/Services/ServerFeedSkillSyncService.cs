@@ -514,7 +514,8 @@ internal sealed class ServerFeedSkillSyncService : BackgroundService
             }
 
             var digestHex = NormalizeDigest(detail.Digest);
-            var targetPath = Path.Combine(feedDir, $"{item.Name}.md");
+            var targetFileName = $"{item.Name}.md";
+            var targetPath = Path.Combine(feedDir, targetFileName);
             if (syncState.Skills.TryGetValue(item.Name, out var existing)
                 && existing.Version == detail.Version
                 && string.Equals(existing.Sha256, digestHex, StringComparison.OrdinalIgnoreCase)
@@ -534,17 +535,20 @@ internal sealed class ServerFeedSkillSyncService : BackgroundService
             }
 
             var content = Encoding.UTF8.GetString(stream.ToArray());
-            var frontmatter = SubAgentMarkdownParser.ExtractFrontmatter(content);
-            if (!string.Equals(frontmatter?.Name, item.Name, StringComparison.Ordinal))
+            var profile = FileSubAgentDefinitionLoader.TryParseDefinition(targetPath, content, _logger);
+            if (profile is null)
+                return NativeSubAgentSyncResult.Failed;
+
+            if (!string.Equals(profile.Name, item.Name, StringComparison.Ordinal))
             {
                 _logger.LogWarning(
                     "Rejected native sub-agent '{AgentName}' from feed '{FeedName}': artifact frontmatter name was '{FrontmatterName}'",
-                    item.Name, feed.Name, frontmatter?.Name ?? "<missing>");
+                    item.Name, feed.Name, profile.Name);
                 return NativeSubAgentSyncResult.Failed;
             }
 
             await SkillSyncHelpers.ReplaceTextFileAsync(
-                feedDir, $"{item.Name}.md", content, cancellationToken);
+                feedDir, targetFileName, content, cancellationToken);
 
             syncState.Skills[item.Name] = new SyncedSkillState
             {
