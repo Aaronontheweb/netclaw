@@ -37,6 +37,15 @@ public class FileSubAgentDefinitionLoaderTests : IDisposable
         return path;
     }
 
+    private string WriteManagedAgent(string feedName, string fileName, string content)
+    {
+        var dir = _paths.ServerFeedAgentDirectory(feedName);
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, fileName);
+        File.WriteAllText(path, content);
+        return path;
+    }
+
     [Fact]
     public void LoadAll_logs_warning_when_agents_directory_is_missing()
     {
@@ -431,6 +440,131 @@ public class FileSubAgentDefinitionLoaderTests : IDisposable
 
         Assert.True(_loader.RefreshIfChanged(out var refreshed));
         Assert.Empty(refreshed);
+    }
+
+    [Fact]
+    public void LoadAll_loads_managed_server_feed_agents_when_no_local_conflict_exists()
+    {
+        WriteManagedAgent("team", "code-reviewer.md", """
+            ---
+            name: code-reviewer
+            description: Managed reviewer
+            tools: [file_read]
+            ---
+
+            Managed body.
+            """);
+
+        var results = _loader.LoadAll();
+
+        var profile = Assert.Single(results);
+        Assert.Equal("code-reviewer", profile.Name);
+        Assert.Equal("Managed reviewer", profile.Description);
+        Assert.Contains("Managed body.", profile.SystemPrompt);
+    }
+
+    [Fact]
+    public void LoadAll_local_agent_shadows_managed_server_feed_agent()
+    {
+        WriteAgent("code-reviewer.md", """
+            ---
+            name: code-reviewer
+            description: Local reviewer
+            tools: [file_read]
+            ---
+
+            Local body.
+            """);
+        WriteManagedAgent("team", "code-reviewer.md", """
+            ---
+            name: code-reviewer
+            description: Managed reviewer
+            tools: [web_search]
+            ---
+
+            Managed body.
+            """);
+
+        var results = _loader.LoadAll();
+
+        var profile = Assert.Single(results);
+        Assert.Equal("Local reviewer", profile.Description);
+        Assert.Contains("Local body.", profile.SystemPrompt);
+        Assert.Contains(_logger.Warnings, w =>
+            w.Contains(".server-feeds", StringComparison.Ordinal)
+            && w.Contains("duplicate name", StringComparison.OrdinalIgnoreCase)
+            && w.Contains("code-reviewer", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LoadAll_uses_configured_feed_order_for_managed_duplicates()
+    {
+        WriteManagedAgent("team-b", "reviewer.md", """
+            ---
+            name: reviewer
+            description: Team B reviewer
+            ---
+
+            Team B body.
+            """);
+        WriteManagedAgent("team-a", "reviewer.md", """
+            ---
+            name: reviewer
+            description: Team A reviewer
+            ---
+
+            Team A body.
+            """);
+
+        var feedsConfig = new SkillFeedsConfig
+        {
+            Feeds =
+            [
+                new SkillFeedSource { Name = "team-b" },
+                new SkillFeedSource { Name = "team-a" }
+            ]
+        };
+        var logger = new ListLogger<FileSubAgentDefinitionLoader>();
+        var loader = new FileSubAgentDefinitionLoader(_paths, logger, feedsConfig);
+
+        var results = loader.LoadAll();
+
+        var profile = Assert.Single(results);
+        Assert.Equal("Team B reviewer", profile.Description);
+        Assert.Contains(logger.Warnings, w =>
+            w.Contains("team-a", StringComparison.Ordinal)
+            && w.Contains("duplicate name", StringComparison.OrdinalIgnoreCase)
+            && w.Contains("reviewer", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void RefreshIfChanged_detects_managed_server_feed_agent_edits()
+    {
+        var path = WriteManagedAgent("team", "managed.md", """
+            ---
+            name: managed
+            description: First managed description
+            ---
+
+            First managed body.
+            """);
+
+        var first = _loader.LoadAll();
+        Assert.Equal("First managed description", Assert.Single(first).Description);
+
+        File.WriteAllText(path, """
+            ---
+            name: managed
+            description: Updated managed description
+            ---
+
+            Updated managed body.
+            """);
+
+        Assert.True(_loader.RefreshIfChanged(out var refreshed));
+        var updated = Assert.Single(refreshed);
+        Assert.Equal("Updated managed description", updated.Description);
+        Assert.Contains("Updated managed body.", updated.SystemPrompt);
     }
 
     [Fact]

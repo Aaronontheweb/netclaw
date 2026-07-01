@@ -17,15 +17,23 @@ namespace Netclaw.Configuration;
 public sealed class FileSubAgentDefinitionLoader
 {
     private sealed record LoadSnapshot(string Fingerprint, IReadOnlyList<SubAgentProfile> Profiles);
+    private sealed record AgentDefinitionFile(string Path, string? FeedName);
 
     private readonly string _agentsDirectory;
+    private readonly string _serverFeedAgentsDirectory;
+    private readonly SkillFeedsConfig? _feedsConfig;
     private readonly ILogger<FileSubAgentDefinitionLoader> _logger;
     private readonly object _snapshotGate = new();
     private LoadSnapshot? _lastSnapshot;
 
-    public FileSubAgentDefinitionLoader(NetclawPaths paths, ILogger<FileSubAgentDefinitionLoader> logger)
+    public FileSubAgentDefinitionLoader(
+        NetclawPaths paths,
+        ILogger<FileSubAgentDefinitionLoader> logger,
+        SkillFeedsConfig? feedsConfig = null)
     {
         _agentsDirectory = paths.AgentsDirectory;
+        _serverFeedAgentsDirectory = paths.ServerFeedAgentsDirectory;
+        _feedsConfig = feedsConfig;
         _logger = logger;
     }
 
@@ -101,8 +109,8 @@ public sealed class FileSubAgentDefinitionLoader
             return [];
         }
 
-        var files = Directory.GetFiles(_agentsDirectory, "*.md");
-        if (files.Length == 0)
+        var files = EnumerateAgentDefinitionFiles();
+        if (files.Count == 0)
         {
             _logger.LogWarning("No agent definition files found in {Path}", _agentsDirectory);
             return [];
@@ -111,18 +119,15 @@ public sealed class FileSubAgentDefinitionLoader
         var results = new List<SubAgentProfile>();
         var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var filePath in files.OrderBy(p => p, StringComparer.Ordinal))
+        foreach (var file in files)
         {
-            var profile = TryParse(filePath);
+            var profile = TryParse(file.Path);
             if (profile is null)
                 continue;
 
             if (!seenNames.Add(profile.Name))
             {
-                _logger.LogWarning(
-                    "Agent definition at {Path} declares duplicate name '{Name}' — skipping",
-                    filePath,
-                    profile.Name);
+                LogDuplicate(file, profile.Name);
                 continue;
             }
 
@@ -143,15 +148,81 @@ public sealed class FileSubAgentDefinitionLoader
         // Length is part of the fingerprint so rapid edits within a single mtime tick
         // still register as a change. mtime alone is unreliable on low-resolution filesystems
         // and during fast successive writes.
-        var files = Directory.GetFiles(_agentsDirectory, "*.md")
-            .OrderBy(p => p, StringComparer.Ordinal)
-            .Select(path =>
+        var files = EnumerateAgentDefinitionFiles()
+            .Select(file =>
             {
+                var path = file.Path;
                 var info = new FileInfo(path);
                 return $"{path}|{info.Length}|{info.LastWriteTimeUtc.Ticks}";
             });
 
         return string.Join(";", files);
+    }
+
+    private IReadOnlyList<AgentDefinitionFile> EnumerateAgentDefinitionFiles()
+    {
+        var files = new List<AgentDefinitionFile>();
+        if (!Directory.Exists(_agentsDirectory))
+            return files;
+
+        files.AddRange(Directory.GetFiles(_agentsDirectory, "*.md", SearchOption.TopDirectoryOnly)
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .Select(path => new AgentDefinitionFile(path, FeedName: null)));
+
+        if (!Directory.Exists(_serverFeedAgentsDirectory))
+            return files;
+
+        foreach (var feedName in EnumerateManagedFeedNames())
+        {
+            var feedDir = Path.Combine(_serverFeedAgentsDirectory, feedName);
+            if (!Directory.Exists(feedDir))
+                continue;
+
+            files.AddRange(Directory.GetFiles(feedDir, "*.md", SearchOption.TopDirectoryOnly)
+                .OrderBy(p => p, StringComparer.Ordinal)
+                .Select(path => new AgentDefinitionFile(path, feedName)));
+        }
+
+        return files;
+    }
+
+    private IEnumerable<string> EnumerateManagedFeedNames()
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        if (_feedsConfig is not null)
+        {
+            foreach (var feed in _feedsConfig.Feeds.Where(f => f.Enabled))
+            {
+                if (seen.Add(feed.Name))
+                    yield return feed.Name;
+            }
+        }
+
+        foreach (var dir in Directory.GetDirectories(_serverFeedAgentsDirectory)
+                     .OrderBy(p => p, StringComparer.Ordinal))
+        {
+            var feedName = Path.GetFileName(dir);
+            if (!string.IsNullOrEmpty(feedName) && seen.Add(feedName))
+                yield return feedName;
+        }
+    }
+
+    private void LogDuplicate(AgentDefinitionFile file, string name)
+    {
+        if (file.FeedName is null)
+        {
+            _logger.LogWarning(
+                "Agent definition at {Path} declares duplicate name '{Name}' — skipping",
+                file.Path,
+                name);
+            return;
+        }
+
+        _logger.LogWarning(
+            "Managed agent definition at {Path} from feed '{FeedName}' declares duplicate name '{Name}' — skipping; earlier definition wins",
+            file.Path,
+            file.FeedName,
+            name);
     }
 
     private SubAgentProfile? TryParse(string filePath)
