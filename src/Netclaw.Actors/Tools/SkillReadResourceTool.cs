@@ -13,21 +13,14 @@ using Netclaw.Tools;
 namespace Netclaw.Actors.Tools;
 
 /// <summary>
-/// Reads a resource file from a skill's references/, scripts/, or assets/ directory.
+/// Reads a resource file from a skill directory.
 /// Scoped to the skill's directory with path traversal prevention.
 /// </summary>
 [NetclawTool("skill_read_resource",
-    "Read a resource file from a skill's references, scripts, or assets directory.",
+    "Read a resource file from a skill directory.",
     Grant = "builtin")]
 public sealed partial class SkillReadResourceTool : NetclawTool<SkillReadResourceTool.Params>
 {
-    private static readonly HashSet<string> AllowedPrefixes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "references",
-        "scripts",
-        "assets"
-    };
-
     private readonly SkillRegistry _skillRegistry;
     private readonly ISkillContentScanner _scanner;
     private readonly SkillSyncConfig _skillSyncConfig;
@@ -35,7 +28,7 @@ public sealed partial class SkillReadResourceTool : NetclawTool<SkillReadResourc
     public record Params(
         [property: Description("Name of the skill containing the resource")]
         string SkillName,
-        [property: Description("Relative path within the skill directory (e.g., 'references/checklist.md')")]
+        [property: Description("Relative path within the skill directory (e.g., 'references/checklist.md' or 'tools/check')")]
         string ResourcePath);
 
     public SkillReadResourceTool(SkillRegistry skillRegistry, ISkillContentScanner scanner,
@@ -63,23 +56,8 @@ public sealed partial class SkillReadResourceTool : NetclawTool<SkillReadResourc
         if (skill is null)
             return $"Skill '{skillName}' not found.";
 
-        var resourcePath = args.ResourcePath.Trim();
-
-        // Reject absolute paths
-        if (Path.IsPathRooted(resourcePath))
-            return "Absolute paths are not allowed. Use a relative path like 'references/doc.md'.";
-
-        // Reject path traversal
-        if (resourcePath.Contains("..", StringComparison.Ordinal))
-            return "Path traversal ('..') is not allowed.";
-
-        // Normalize separators
-        resourcePath = resourcePath.Replace('\\', '/');
-
-        // Must start with an allowed prefix
-        var firstSegment = resourcePath.Split('/')[0];
-        if (!AllowedPrefixes.Contains(firstSegment))
-            return $"Resource path must start with one of: {string.Join(", ", AllowedPrefixes)}. Got '{firstSegment}'.";
+        if (!TryNormalizeResourcePath(args.ResourcePath, out var resourcePath, out var pathError))
+            return pathError;
 
         // Resolve the full path and verify it's within the skill directory
         var fullPath = Path.GetFullPath(Path.Combine(skill.SkillDirectory, resourcePath));
@@ -121,6 +99,47 @@ public sealed partial class SkillReadResourceTool : NetclawTool<SkillReadResourc
         {
             return $"Failed to read resource: {ex.Message}";
         }
+    }
+
+    private static bool TryNormalizeResourcePath(string? path, out string normalized, out string error)
+    {
+        normalized = string.Empty;
+        error = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            error = "ResourcePath is required.";
+            return false;
+        }
+
+        if (Path.IsPathRooted(path))
+        {
+            error = "Absolute paths are not allowed. Use a relative path like 'references/doc.md'.";
+            return false;
+        }
+
+        normalized = path.Trim().Replace('\\', '/');
+        if (normalized.Length == 0 || normalized.StartsWith('/') || normalized.EndsWith('/'))
+        {
+            error = "Resource path must be a relative file path inside the skill directory.";
+            return false;
+        }
+
+        var segments = normalized.Split('/');
+        if (segments.Any(static segment => segment.Length == 0 || segment is "." or ".."))
+        {
+            error = "Resource path cannot contain empty, '.', or '..' segments.";
+            return false;
+        }
+
+        normalized = string.Join('/', segments);
+        if (string.Equals(normalized, "SKILL.md", StringComparison.OrdinalIgnoreCase))
+        {
+            error = "Use skill_load to read SKILL.md; resource paths must refer to additional files.";
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>
