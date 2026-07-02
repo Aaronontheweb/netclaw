@@ -10,11 +10,11 @@ using Netclaw.Configuration;
 namespace Netclaw.Providers.GitHubCopilot;
 
 /// <summary>
-/// Pipeline policy for <c>api.githubcopilot.com</c>. On every outbound
-/// request it resolves a fresh Copilot API token via
-/// <see cref="CopilotTokenExchanger"/> (cached, with a 2-minute refresh
-/// buffer) and adds the three custom headers the Copilot API rejects
-/// requests without.
+/// Pipeline policy for the Copilot chat API. On every outbound request it
+/// resolves a fresh Copilot API token via <see cref="CopilotTokenExchanger"/>
+/// (cached, with a 2-minute refresh buffer), routes the request to the host the
+/// token is valid at (the exchange's <c>endpoints.api</c>), and adds the three
+/// custom headers the Copilot API rejects requests without.
 /// </summary>
 /// <remarks>
 /// The Authorization header is NOT set here. The OpenAI SDK's own
@@ -36,6 +36,7 @@ internal sealed class CopilotRequestPolicy(
     CopilotTokenExchanger exchanger,
     ProviderEntry entry,
     ApiKeyCredential credential,
+    bool followTokenHost,
     string? providerName = null,
     OAuthAuth? oauth = null)
     : PipelinePolicy
@@ -65,9 +66,55 @@ internal sealed class CopilotRequestPolicy(
 
         // Refresh the credential the SDK's auth policy reads downstream, so it
         // emits "Authorization: Bearer {token}" with our short-lived token.
-        credential.Update(token);
+        credential.Update(token.Token.Value);
+        RouteToCopilotApiHost(message, token.ApiBase);
         ApplyCopilotHeaders(message);
         await ProcessNextAsync(message, pipeline, currentIndex);
+    }
+
+    // The chat host must follow the token, not the statically-configured provider
+    // endpoint. The token exchange reports (in endpoints.api) the host its token
+    // is valid at; for GitHub Enterprise Cloud data residency that's a
+    // tenant-specific api.<subdomain>.ghe.com, and a token minted there is
+    // rejected with HTTP 400 at the public api.githubcopilot.com the OpenAI SDK
+    // client is otherwise configured with (issue #1550). We rebase onto the
+    // token's origin AND any base path it carries, then re-append the SDK-built
+    // path and query (/chat/completions?api-version=...). endpoints.api is a bare
+    // origin today, so the base path is normally empty — but prepending it keeps
+    // this consistent with the probe (which appends /models to the same base),
+    // so both paths agree if GitHub ever returns a path-bearing endpoints.api.
+    //
+    // followTokenHost is false when the operator deliberately pointed the entry
+    // at a custom host (e.g. a corporate proxy); we respect that override and
+    // never silently reroute their traffic to the token's host.
+    private void RouteToCopilotApiHost(PipelineMessage message, Uri? apiBase)
+    {
+        // Operator pinned a custom endpoint — use it verbatim, ignore the token's host.
+        if (!followTokenHost)
+            return;
+
+        // We are meant to follow the token's host but the exchange reported none
+        // (missing or non-HTTPS endpoints.api). Do NOT guess a host — sending an
+        // auth token to a host it may not be valid at is exactly issue #1550. Fail
+        // loudly rather than silently fall back to the configured default.
+        if (apiBase is null)
+            throw new InvalidOperationException(
+                "GitHub Copilot token exchange did not return a usable API host "
+                + "(endpoints.api). Refusing to route chat/completions to a guessed "
+                + "host — re-authenticate the provider, or set an explicit endpoint "
+                + "to override the Copilot API host.");
+
+        if (message.Request.Uri is not { } current)
+            return;
+
+        var basePath = apiBase.AbsolutePath.TrimEnd('/');
+        message.Request.Uri = new UriBuilder(current)
+        {
+            Scheme = apiBase.Scheme,
+            Host = apiBase.Host,
+            Port = apiBase.IsDefaultPort ? -1 : apiBase.Port,
+            Path = basePath + current.AbsolutePath,
+        }.Uri;
     }
 
     private static void ApplyCopilotHeaders(PipelineMessage message)

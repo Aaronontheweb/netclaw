@@ -128,10 +128,11 @@ internal static class ProbeHelpers
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
+            // Timeout, not caller cancellation: the endpoint may just be slow.
             return new ProviderProbeResult(false,
                 $"No response from {baseUrl} after {(int)effectiveTimeout.TotalSeconds}s. "
                 + "The server may be slow, loading a model, or unreachable — "
-                + "confirm it is up, then try again.", []);
+                + "confirm it is up, then try again.", []) { Transient = true };
         }
         catch (OperationCanceledException)
         {
@@ -139,6 +140,10 @@ internal static class ProbeHelpers
         }
         catch (HttpRequestException ex)
         {
+            // A connection failure (DNS, refused, TLS) means the endpoint is
+            // unreachable — a configuration problem a retry won't fix, and one a
+            // provider must not mask (issue #1550: an unreachable GHE tenant host
+            // must surface at setup, not report healthy and fail on first use).
             return new ProviderProbeResult(false, $"Connection failed: {ex.Message}", []);
         }
     }
@@ -171,7 +176,15 @@ internal static class ProbeHelpers
                 $"{providerName} returned HTTP {(int)statusCode}."
         };
 
-        return new ProviderProbeResult(false, message, []);
+        // Request-timeout, 5xx, and rate limiting are worth a retry; auth and
+        // other 4xx errors (incl. 404 "not found" at the token's own API host)
+        // signal a real misconfiguration the operator has to fix.
+        var transient = statusCode is HttpStatusCode.RequestTimeout
+            or HttpStatusCode.TooManyRequests
+            or HttpStatusCode.InternalServerError or HttpStatusCode.BadGateway
+            or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout;
+
+        return new ProviderProbeResult(false, message, []) { Transient = transient };
     }
 
     /// <summary>

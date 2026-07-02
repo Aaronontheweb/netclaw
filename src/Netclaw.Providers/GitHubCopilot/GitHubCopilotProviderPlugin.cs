@@ -12,10 +12,11 @@ using OpenAI;
 namespace Netclaw.Providers.GitHubCopilot;
 
 /// <summary>
-/// Daemon-side plugin for GitHub Copilot. Routes chat completions through
-/// the OpenAI SDK pointed at <c>api.githubcopilot.com/chat/completions</c>
-/// with <see cref="CopilotRequestPolicy"/> handling token refresh and the
-/// three Copilot-specific headers.
+/// Daemon-side plugin for GitHub Copilot. Routes chat completions through the
+/// OpenAI SDK, with <see cref="CopilotRequestPolicy"/> handling token refresh,
+/// the three Copilot-specific headers, and directing the request to the host the
+/// token is valid at (<c>endpoints.api</c> — the public host for standard
+/// accounts, a tenant host for GHE data residency).
 /// </summary>
 public sealed class GitHubCopilotProviderPlugin(
     GitHubCopilotDescriptor descriptor,
@@ -51,8 +52,13 @@ public sealed class GitHubCopilotProviderPlugin(
         // first request goes out.
         var credential = new ApiKeyCredential("placeholder");
         var oauth = GitHubCopilotDescriptor.CreateOAuthAuth(entry);
+
+        // When the operator left the endpoint on the public default, let the chat
+        // host follow the token's endpoints.api (required for GHE data residency,
+        // issue #1550). A deliberate custom endpoint (e.g. a proxy) is respected.
+        var followTokenHost = !GitHubCopilotDescriptor.HasCustomEndpointOverride(entry.Endpoint);
         options.AddPolicy(
-            new CopilotRequestPolicy(tokenExchanger, entry, credential, model.Provider, oauth),
+            new CopilotRequestPolicy(tokenExchanger, entry, credential, followTokenHost, model.Provider, oauth),
             PipelinePosition.PerCall);
 
         var client = new OpenAIClient(credential, options);
