@@ -117,12 +117,16 @@ public sealed class ProviderOAuthRefreshingProbeTests
                     refresh_token = "refresh-ghe-new",
                     expires_in = 3600,
                 }),
+                // A GHE data-residency token exchange reports the tenant Copilot
+                // host in endpoints.api; the probe must follow it there, not the
+                // public api.githubcopilot.com (issue #1550).
                 "https://ghe.example.com/api/v3/copilot_internal/v2/token" => FakeHttpMessageHandler.JsonResponse(new
                 {
                     token = "copilot-ghe",
                     expires_at = now.AddMinutes(30).ToUnixTimeSeconds(),
+                    endpoints = new { api = "https://api.ghe.example.com" },
                 }),
-                "https://api.githubcopilot.com/models" => new HttpResponseMessage(HttpStatusCode.OK)
+                "https://api.ghe.example.com/models" => new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent(
                         """
@@ -155,7 +159,7 @@ public sealed class ProviderOAuthRefreshingProbeTests
         Assert.Equal([
             "https://ghe.example.com/login/oauth/access_token",
             "https://ghe.example.com/api/v3/copilot_internal/v2/token",
-            "https://api.githubcopilot.com/models",
+            "https://api.ghe.example.com/models",
         ], requestUris);
     }
 

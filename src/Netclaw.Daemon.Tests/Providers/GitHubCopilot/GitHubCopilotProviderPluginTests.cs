@@ -118,7 +118,7 @@ public sealed class GitHubCopilotProviderPluginTests
             };
         });
 
-        var exchanger = ExchangerReturning("copilot-real", apiBase: null);
+        var exchanger = ExchangerReturning("copilot-real", apiBase: "https://api.githubcopilot.com");
         var descriptor = new GitHubCopilotDescriptor(new HttpClient(), exchanger);
         var plugin = new GitHubCopilotProviderPlugin(descriptor, exchanger)
         {

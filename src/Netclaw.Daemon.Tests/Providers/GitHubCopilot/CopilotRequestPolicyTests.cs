@@ -52,8 +52,8 @@ public sealed class CopilotRequestPolicyTests
     public async Task ProcessAsync_AppliesThreeCopilotHeaders()
     {
         var policy = new CopilotRequestPolicy(
-            ExchangerReturning("copilot-bearer", apiBase: null), OAuthEntry(), new ApiKeyCredential("placeholder"),
-            followTokenHost: true);
+            ExchangerReturning("copilot-bearer", apiBase: "https://api.githubcopilot.com"),
+            OAuthEntry(), new ApiKeyCredential("placeholder"), followTokenHost: true);
 
         var clientPipeline = ClientPipeline.Create(new ClientPipelineOptions());
         using var message = clientPipeline.CreateMessage();
@@ -92,7 +92,8 @@ public sealed class CopilotRequestPolicyTests
         // end-to-end in GitHubCopilotProviderPluginTests).
         var credential = new ApiKeyCredential("placeholder");
         var policy = new CopilotRequestPolicy(
-            ExchangerReturning("copilot-real", apiBase: null), OAuthEntry(), credential, followTokenHost: true);
+            ExchangerReturning("copilot-real", apiBase: "https://api.githubcopilot.com"),
+            OAuthEntry(), credential, followTokenHost: true);
 
         var clientPipeline = ClientPipeline.Create(new ClientPipelineOptions());
         using var message = clientPipeline.CreateMessage();
@@ -157,10 +158,12 @@ public sealed class CopilotRequestPolicyTests
     }
 
     [Fact]
-    public async Task ProcessAsync_NoApiBase_LeavesRequestHostUnchanged()
+    public async Task ProcessAsync_NoApiHostWhileFollowingToken_ThrowsInsteadOfGuessing()
     {
-        // Standard github.com flow: the exchange reports no endpoints.api, so the
-        // request must stay on the host the SDK client was configured with.
+        // We are meant to follow the token's host but the exchange reported no
+        // endpoints.api. The old code silently kept the configured public host —
+        // exactly how a GHE token reached the wrong host in issue #1550. Refuse to
+        // guess: fail loudly rather than send the token somewhere it may not be valid.
         var policy = new CopilotRequestPolicy(
             ExchangerReturning("copilot-standard", apiBase: null), OAuthEntry(), new ApiKeyCredential("placeholder"),
             followTokenHost: true);
@@ -170,11 +173,14 @@ public sealed class CopilotRequestPolicyTests
         message.Request.Method = "POST";
         message.Request.Uri = new Uri("https://api.githubcopilot.com/chat/completions");
 
-        IReadOnlyList<PipelinePolicy> pipeline = [policy, new TerminalCapturingPolicy(() => { })];
+        var terminalReached = false;
+        IReadOnlyList<PipelinePolicy> pipeline = [policy, new TerminalCapturingPolicy(() => terminalReached = true)];
 
-        await policy.ProcessAsync(message, pipeline, 0);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await policy.ProcessAsync(message, pipeline, 0));
 
-        Assert.Equal("https://api.githubcopilot.com/chat/completions", message.Request.Uri!.ToString());
+        Assert.Contains("endpoints.api", ex.Message);
+        Assert.False(terminalReached, "the request must not be sent when no host is known");
     }
 
     [Fact]
@@ -206,8 +212,8 @@ public sealed class CopilotRequestPolicyTests
         // The OpenAI SDK uses the async pipeline for chat completions; the sync
         // overload is only hit by misconfigured callers and we fail loudly.
         var policy = new CopilotRequestPolicy(
-            ExchangerReturning("copilot-bearer", apiBase: null), OAuthEntry(), new ApiKeyCredential("placeholder"),
-            followTokenHost: true);
+            ExchangerReturning("copilot-bearer", apiBase: "https://api.githubcopilot.com"),
+            OAuthEntry(), new ApiKeyCredential("placeholder"), followTokenHost: true);
 
         var clientPipeline = ClientPipeline.Create(new ClientPipelineOptions());
         using var message = clientPipeline.CreateMessage();

@@ -89,7 +89,22 @@ internal sealed class CopilotRequestPolicy(
     // never silently reroute their traffic to the token's host.
     private void RouteToCopilotApiHost(PipelineMessage message, Uri? apiBase)
     {
-        if (!followTokenHost || apiBase is null || message.Request.Uri is not { } current)
+        // Operator pinned a custom endpoint — use it verbatim, ignore the token's host.
+        if (!followTokenHost)
+            return;
+
+        // We are meant to follow the token's host but the exchange reported none
+        // (missing or non-HTTPS endpoints.api). Do NOT guess a host — sending an
+        // auth token to a host it may not be valid at is exactly issue #1550. Fail
+        // loudly rather than silently fall back to the configured default.
+        if (apiBase is null)
+            throw new InvalidOperationException(
+                "GitHub Copilot token exchange did not return a usable API host "
+                + "(endpoints.api). Refusing to route chat/completions to a guessed "
+                + "host — re-authenticate the provider, or set an explicit endpoint "
+                + "to override the Copilot API host.");
+
+        if (message.Request.Uri is not { } current)
             return;
 
         var basePath = apiBase.AbsolutePath.TrimEnd('/');

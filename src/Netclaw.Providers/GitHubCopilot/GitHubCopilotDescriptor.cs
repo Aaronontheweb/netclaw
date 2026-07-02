@@ -122,12 +122,27 @@ public sealed class GitHubCopilotDescriptor(
         // Probe /models at the host the token is valid at (endpoints.api). For
         // GHE data residency this is the tenant host, not api.githubcopilot.com;
         // probing the wrong host is what let a broken GHE provider report healthy
-        // at setup (issue #1550). A deliberate custom endpoint override wins; a
-        // null endpoints.api (standard github.com flow) falls back to the
-        // configured/default endpoint.
-        var probeEndpoint = HasCustomEndpointOverride(entry.Endpoint)
-            ? entry.Endpoint
-            : copilot.ApiBase?.ToString() ?? entry.Endpoint;
+        // at setup (issue #1550). A deliberate custom endpoint override wins. If
+        // we are meant to follow the token's host but the exchange reported none,
+        // surface that — never silently probe a guessed default host.
+        string probeEndpoint;
+        if (HasCustomEndpointOverride(entry.Endpoint))
+        {
+            probeEndpoint = entry.Endpoint!;
+        }
+        else if (copilot.ApiBase is { } apiBase)
+        {
+            probeEndpoint = apiBase.ToString();
+        }
+        else
+        {
+            return new ProviderProbeResult(false,
+                "GitHub Copilot token exchange did not return an API host "
+                + "(endpoints.api); cannot determine where to reach the Copilot API. "
+                + "Re-authenticate the provider, or set an explicit endpoint to "
+                + "override the host.",
+                []);
+        }
 
         var modelsResult = await ProbeHelpers.ExecuteProbeAsync(
             httpClient,

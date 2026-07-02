@@ -35,10 +35,14 @@ public sealed class GitHubCopilotDescriptorTests
                 "application/json"),
         };
 
+    // A realistic token exchange response: GitHub always reports the API host in
+    // endpoints.api. For a standard account that host is api.githubcopilot.com,
+    // which keeps ModelsUrl below correct.
     private static HttpResponseMessage TokenOk() => Json(new
     {
         token = "copilot-api-token",
         expires_at = DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds(),
+        endpoints = new { api = "https://api.githubcopilot.com" },
     });
 
     [Fact]
@@ -125,6 +129,38 @@ public sealed class GitHubCopilotDescriptorTests
 
         Assert.False(result.Success);
         Assert.DoesNotContain("curated fallback", result.ErrorMessage ?? string.Empty);
+        Assert.Empty(result.Models);
+    }
+
+    [Fact]
+    public async Task Probe_NoApiHostWhileFollowingToken_SurfacesFailure()
+    {
+        // The exchange succeeds but reports no endpoints.api. We must not silently
+        // probe the public default (issue #1550) — surface the anomaly. The
+        // /models handler returns success on purpose: if the code wrongly fell
+        // back to api.githubcopilot.com the probe would pass, so asserting failure
+        // proves we did not guess a host.
+        var handler = new FakeHttpMessageHandler(request =>
+            request.RequestUri!.ToString() == TokenExchangeUrl
+                ? Json(new
+                {
+                    token = "copilot-api-token",
+                    expires_at = DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds(),
+                })
+                : Json(new
+                {
+                    data = new[] { new { id = "gpt-4o", capabilities = new { type = "chat" } } },
+                }));
+
+        var httpClient = new HttpClient(handler);
+        var descriptor = new GitHubCopilotDescriptor(httpClient,
+            new CopilotTokenExchanger(httpClient));
+
+        var result = await descriptor.ProbeAsync(OAuthEntry(),
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Contains("endpoints.api", result.ErrorMessage);
         Assert.Empty(result.Models);
     }
 
