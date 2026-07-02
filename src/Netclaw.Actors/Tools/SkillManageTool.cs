@@ -209,8 +209,8 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         var targetPath = skill.FilePath;
         if (!string.IsNullOrWhiteSpace(args.FilePath))
         {
-            if (!TryNormalizeResourcePath(args.FilePath, out var normalizedPath, out var fileError))
-                return fileError;
+            if (!SkillResourcePath.TryNormalize(args.FilePath, out var normalizedPath, out var fileError))
+                return SkillResourcePath.FormatManageError(fileError);
             targetPath = Path.Combine(skill.SkillDirectory, normalizedPath);
         }
 
@@ -316,8 +316,8 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         var readOnlyError = GuardReadOnly(skill, "write files in");
         if (readOnlyError is not null) return readOnlyError;
 
-        if (!TryNormalizeResourcePath(args.FilePath, out var normalizedPath, out var fileError))
-            return fileError;
+        if (!SkillResourcePath.TryNormalize(args.FilePath, out var normalizedPath, out var fileError))
+            return SkillResourcePath.FormatManageError(fileError);
 
         var fullPath = Path.GetFullPath(Path.Combine(skill.SkillDirectory, normalizedPath));
         if (!PathUtility.IsWithinRoot(fullPath, skill.SkillDirectory))
@@ -358,8 +358,8 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         var readOnlyError = GuardReadOnly(skill, "remove files from");
         if (readOnlyError is not null) return readOnlyError;
 
-        if (!TryNormalizeResourcePath(args.FilePath, out var normalizedPath, out var fileError))
-            return fileError;
+        if (!SkillResourcePath.TryNormalize(args.FilePath, out var normalizedPath, out var fileError))
+            return SkillResourcePath.FormatManageError(fileError);
 
         var fullPath = Path.GetFullPath(Path.Combine(skill.SkillDirectory, normalizedPath));
         if (!PathUtility.IsWithinRoot(fullPath, skill.SkillDirectory))
@@ -436,47 +436,6 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         }
 
         return null;
-    }
-
-    private static bool TryNormalizeResourcePath(string? path, out string normalized, out string error)
-    {
-        normalized = string.Empty;
-        error = string.Empty;
-
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            error = "FilePath is required.";
-            return false;
-        }
-
-        if (Path.IsPathRooted(path))
-        {
-            error = "Absolute paths are not allowed.";
-            return false;
-        }
-
-        normalized = path.Trim().Replace('\\', '/');
-        if (normalized.Length == 0 || normalized.StartsWith('/') || normalized.EndsWith('/'))
-        {
-            error = "FilePath must be a relative file path inside the skill directory.";
-            return false;
-        }
-
-        var segments = normalized.Split('/');
-        if (segments.Any(static segment => segment.Length == 0 || segment is "." or ".."))
-        {
-            error = "FilePath cannot contain empty, '.', or '..' segments.";
-            return false;
-        }
-
-        normalized = string.Join('/', segments);
-        if (string.Equals(normalized, "SKILL.md", StringComparison.OrdinalIgnoreCase))
-        {
-            error = "Use create or edit to update SKILL.md; file operations are for additional resources.";
-            return false;
-        }
-
-        return true;
     }
 
     private string? GuardReadOnly(SkillEntry skill, string verb)

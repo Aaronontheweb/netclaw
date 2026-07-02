@@ -56,8 +56,8 @@ public sealed partial class SkillReadResourceTool : NetclawTool<SkillReadResourc
         if (skill is null)
             return $"Skill '{skillName}' not found.";
 
-        if (!TryNormalizeResourcePath(args.ResourcePath, out var resourcePath, out var pathError))
-            return pathError;
+        if (!SkillResourcePath.TryNormalize(args.ResourcePath, out var resourcePath, out var pathError))
+            return SkillResourcePath.FormatReadError(pathError);
 
         // Resolve the full path and verify it's within the skill directory
         var fullPath = Path.GetFullPath(Path.Combine(skill.SkillDirectory, resourcePath));
@@ -99,47 +99,6 @@ public sealed partial class SkillReadResourceTool : NetclawTool<SkillReadResourc
         {
             return $"Failed to read resource: {ex.Message}";
         }
-    }
-
-    private static bool TryNormalizeResourcePath(string? path, out string normalized, out string error)
-    {
-        normalized = string.Empty;
-        error = string.Empty;
-
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            error = "ResourcePath is required.";
-            return false;
-        }
-
-        if (Path.IsPathRooted(path))
-        {
-            error = "Absolute paths are not allowed. Use a relative path like 'references/doc.md'.";
-            return false;
-        }
-
-        normalized = path.Trim().Replace('\\', '/');
-        if (normalized.Length == 0 || normalized.StartsWith('/') || normalized.EndsWith('/'))
-        {
-            error = "Resource path must be a relative file path inside the skill directory.";
-            return false;
-        }
-
-        var segments = normalized.Split('/');
-        if (segments.Any(static segment => segment.Length == 0 || segment is "." or ".."))
-        {
-            error = "Resource path cannot contain empty, '.', or '..' segments.";
-            return false;
-        }
-
-        normalized = string.Join('/', segments);
-        if (string.Equals(normalized, "SKILL.md", StringComparison.OrdinalIgnoreCase))
-        {
-            error = "Use skill_load to read SKILL.md; resource paths must refer to additional files.";
-            return false;
-        }
-
-        return true;
     }
 
     /// <summary>
