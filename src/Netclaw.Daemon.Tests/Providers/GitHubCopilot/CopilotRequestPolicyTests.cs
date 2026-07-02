@@ -25,16 +25,23 @@ public sealed class CopilotRequestPolicyTests
             OAuthAccessToken = new SensitiveString(token),
         };
 
-    private static CopilotTokenExchanger ExchangerReturning(string copilotToken)
+    private static CopilotTokenExchanger ExchangerReturning(string copilotToken, string? apiBase)
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(
-                JsonSerializer.Serialize(new
-                {
-                    token = copilotToken,
-                    expires_at = DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds(),
-                }),
+                JsonSerializer.Serialize(apiBase is null
+                    ? new
+                    {
+                        token = copilotToken,
+                        expires_at = DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds(),
+                    }
+                    : (object)new
+                    {
+                        token = copilotToken,
+                        expires_at = DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds(),
+                        endpoints = new { api = apiBase },
+                    }),
                 Encoding.UTF8,
                 "application/json"),
         });
@@ -45,7 +52,8 @@ public sealed class CopilotRequestPolicyTests
     public async Task ProcessAsync_AppliesThreeCopilotHeaders()
     {
         var policy = new CopilotRequestPolicy(
-            ExchangerReturning("copilot-bearer"), OAuthEntry(), new ApiKeyCredential("placeholder"));
+            ExchangerReturning("copilot-bearer", apiBase: "https://api.githubcopilot.com"),
+            OAuthEntry(), new ApiKeyCredential("placeholder"), followTokenHost: true);
 
         var clientPipeline = ClientPipeline.Create(new ClientPipelineOptions());
         using var message = clientPipeline.CreateMessage();
@@ -84,7 +92,8 @@ public sealed class CopilotRequestPolicyTests
         // end-to-end in GitHubCopilotProviderPluginTests).
         var credential = new ApiKeyCredential("placeholder");
         var policy = new CopilotRequestPolicy(
-            ExchangerReturning("copilot-real"), OAuthEntry(), credential);
+            ExchangerReturning("copilot-real", apiBase: "https://api.githubcopilot.com"),
+            OAuthEntry(), credential, followTokenHost: true);
 
         var clientPipeline = ClientPipeline.Create(new ClientPipelineOptions());
         using var message = clientPipeline.CreateMessage();
@@ -100,13 +109,111 @@ public sealed class CopilotRequestPolicyTests
     }
 
     [Fact]
+    public async Task ProcessAsync_RoutesRequestToTokenApiHost()
+    {
+        // GHE data residency: the token is valid only at the tenant host reported
+        // in endpoints.api. The SDK client is configured with the public host, so
+        // the policy must rewrite the outgoing request's authority — otherwise the
+        // tenant token hits api.githubcopilot.com and Copilot returns HTTP 400
+        // (issue #1550). The path and query are SDK-built and must be preserved.
+        var policy = new CopilotRequestPolicy(
+            ExchangerReturning("copilot-ghe", apiBase: "https://api.tenant.ghe.com"),
+            OAuthEntry(), new ApiKeyCredential("placeholder"), followTokenHost: true);
+
+        var clientPipeline = ClientPipeline.Create(new ClientPipelineOptions());
+        using var message = clientPipeline.CreateMessage();
+        message.Request.Method = "POST";
+        message.Request.Uri = new Uri("https://api.githubcopilot.com/chat/completions?api-version=2024");
+
+        IReadOnlyList<PipelinePolicy> pipeline = [policy, new TerminalCapturingPolicy(() => { })];
+
+        await policy.ProcessAsync(message, pipeline, 0);
+
+        Assert.Equal("api.tenant.ghe.com", message.Request.Uri!.Host);
+        Assert.Equal("/chat/completions", message.Request.Uri.AbsolutePath);
+        Assert.Equal("?api-version=2024", message.Request.Uri.Query);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_ApiBaseWithPath_PrependsBasePath()
+    {
+        // Defensive/consistency: if endpoints.api ever carries a base path, chat
+        // must land on base-path + /chat/completions — matching what the /models
+        // probe builds against the same base — not silently drop the prefix.
+        var policy = new CopilotRequestPolicy(
+            ExchangerReturning("copilot-ghe", apiBase: "https://api.tenant.ghe.com/v1"),
+            OAuthEntry(), new ApiKeyCredential("placeholder"), followTokenHost: true);
+
+        var clientPipeline = ClientPipeline.Create(new ClientPipelineOptions());
+        using var message = clientPipeline.CreateMessage();
+        message.Request.Method = "POST";
+        message.Request.Uri = new Uri("https://api.githubcopilot.com/chat/completions");
+
+        IReadOnlyList<PipelinePolicy> pipeline = [policy, new TerminalCapturingPolicy(() => { })];
+
+        await policy.ProcessAsync(message, pipeline, 0);
+
+        Assert.Equal("api.tenant.ghe.com", message.Request.Uri!.Host);
+        Assert.Equal("/v1/chat/completions", message.Request.Uri.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task ProcessAsync_NoApiHostWhileFollowingToken_ThrowsInsteadOfGuessing()
+    {
+        // We are meant to follow the token's host but the exchange reported no
+        // endpoints.api. The old code silently kept the configured public host —
+        // exactly how a GHE token reached the wrong host in issue #1550. Refuse to
+        // guess: fail loudly rather than send the token somewhere it may not be valid.
+        var policy = new CopilotRequestPolicy(
+            ExchangerReturning("copilot-standard", apiBase: null), OAuthEntry(), new ApiKeyCredential("placeholder"),
+            followTokenHost: true);
+
+        var clientPipeline = ClientPipeline.Create(new ClientPipelineOptions());
+        using var message = clientPipeline.CreateMessage();
+        message.Request.Method = "POST";
+        message.Request.Uri = new Uri("https://api.githubcopilot.com/chat/completions");
+
+        var terminalReached = false;
+        IReadOnlyList<PipelinePolicy> pipeline = [policy, new TerminalCapturingPolicy(() => terminalReached = true)];
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            async () => await policy.ProcessAsync(message, pipeline, 0));
+
+        Assert.Contains("endpoints.api", ex.Message);
+        Assert.False(terminalReached, "the request must not be sent when no host is known");
+    }
+
+    [Fact]
+    public async Task ProcessAsync_CustomEndpointOverride_DoesNotFollowTokenHost()
+    {
+        // The operator deliberately pointed the entry at a proxy (followTokenHost
+        // is false). Even when the token reports an endpoints.api, we must not
+        // silently reroute their traffic away from the configured host.
+        var policy = new CopilotRequestPolicy(
+            ExchangerReturning("copilot-ghe", apiBase: "https://api.tenant.ghe.com"),
+            OAuthEntry(), new ApiKeyCredential("placeholder"), followTokenHost: false);
+
+        var clientPipeline = ClientPipeline.Create(new ClientPipelineOptions());
+        using var message = clientPipeline.CreateMessage();
+        message.Request.Method = "POST";
+        message.Request.Uri = new Uri("https://copilot-proxy.example.com/chat/completions");
+
+        IReadOnlyList<PipelinePolicy> pipeline = [policy, new TerminalCapturingPolicy(() => { })];
+
+        await policy.ProcessAsync(message, pipeline, 0);
+
+        Assert.Equal("copilot-proxy.example.com", message.Request.Uri!.Host);
+    }
+
+    [Fact]
     public void Process_Synchronous_ThrowsNotSupported()
     {
         // The sync pipeline path would require blocking on async token exchange.
         // The OpenAI SDK uses the async pipeline for chat completions; the sync
         // overload is only hit by misconfigured callers and we fail loudly.
         var policy = new CopilotRequestPolicy(
-            ExchangerReturning("copilot-bearer"), OAuthEntry(), new ApiKeyCredential("placeholder"));
+            ExchangerReturning("copilot-bearer", apiBase: "https://api.githubcopilot.com"),
+            OAuthEntry(), new ApiKeyCredential("placeholder"), followTokenHost: true);
 
         var clientPipeline = ClientPipeline.Create(new ClientPipelineOptions());
         using var message = clientPipeline.CreateMessage();

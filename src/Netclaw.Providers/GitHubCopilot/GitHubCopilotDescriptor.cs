@@ -19,10 +19,26 @@ public sealed class GitHubCopilotDescriptor(
     HttpClient httpClient, CopilotTokenExchanger tokenExchanger) : IProviderDescriptor
 {
 
+    // The public Copilot API host. Standard/individual tokens are valid here;
+    // org and GHE-data-residency tokens are valid only at the host reported in
+    // the token exchange's endpoints.api (see CopilotTokenExchanger).
+    internal const string PublicApiEndpoint = "https://api.githubcopilot.com";
+
     public string TypeKey => "github-copilot";
     public string DisplayName => "GitHub Copilot";
-    public string DefaultEndpoint => "https://api.githubcopilot.com";
+    public string DefaultEndpoint => PublicApiEndpoint;
     public string ModelListingPath => "/models";
+
+    /// <summary>
+    /// True when the operator deliberately redirected Copilot traffic to a custom
+    /// host (e.g. a corporate proxy) rather than leaving it on the public API
+    /// host. A deliberate override is always respected; otherwise the chat and
+    /// probe host follows the token's <c>endpoints.api</c>, which GHE data
+    /// residency requires (issue #1550).
+    /// </summary>
+    internal static bool HasCustomEndpointOverride(string? entryEndpoint) =>
+        !string.IsNullOrWhiteSpace(entryEndpoint)
+        && !string.Equals(entryEndpoint.TrimEnd('/'), PublicApiEndpoint, StringComparison.OrdinalIgnoreCase);
 
     public IProviderAuth Auth { get; } = CreateOAuthAuth(new GitHubCopilotAuthOptions());
 
@@ -77,10 +93,10 @@ public sealed class GitHubCopilotDescriptor(
                 []);
         }
 
-        string copilotToken;
+        CopilotToken copilot;
         try
         {
-            copilotToken = await tokenExchanger.GetTokenAsync(entry, ct);
+            copilot = await tokenExchanger.GetTokenAsync(entry, ct);
         }
         catch (CopilotAuthExpiredException)
         {
@@ -103,22 +119,54 @@ public sealed class GitHubCopilotDescriptor(
                 []);
         }
 
+        // Probe /models at the host the token is valid at (endpoints.api). For
+        // GHE data residency this is the tenant host, not api.githubcopilot.com;
+        // probing the wrong host is what let a broken GHE provider report healthy
+        // at setup (issue #1550). A deliberate custom endpoint override wins. If
+        // we are meant to follow the token's host but the exchange reported none,
+        // surface that — never silently probe a guessed default host.
+        string probeEndpoint;
+        if (HasCustomEndpointOverride(entry.Endpoint))
+        {
+            probeEndpoint = entry.Endpoint!;
+        }
+        else if (copilot.ApiBase is { } apiBase)
+        {
+            probeEndpoint = apiBase.ToString();
+        }
+        else
+        {
+            return new ProviderProbeResult(false,
+                "GitHub Copilot token exchange did not return an API host "
+                + "(endpoints.api); cannot determine where to reach the Copilot API. "
+                + "Re-authenticate the provider, or set an explicit endpoint to "
+                + "override the host.",
+                []);
+        }
+
         var modelsResult = await ProbeHelpers.ExecuteProbeAsync(
             httpClient,
             "GitHub Copilot",
             DefaultEndpoint,
             ModelListingPath,
-            entry.Endpoint,
-            ApplyCopilotRequestHeaders(copilotToken),
+            probeEndpoint,
+            ApplyCopilotRequestHeaders(copilot.Token.Value),
             ParseCopilotModels,
             ct);
 
         if (!modelsResult.Success)
         {
-            return new ProviderProbeResult(true,
-                $"GitHub Copilot /models unreachable ({modelsResult.ErrorMessage}); "
-                + "using curated fallback list.",
-                CuratedModels);
+            // A transient /models hiccup (timeout, 5xx, rate limit) shouldn't
+            // leave the model picker empty, so fall back to the curated list. But
+            // auth/client errors (revoked token, wrong tenant, bad request) are
+            // real misconfigurations: surface them here so the operator fixes
+            // setup instead of hitting the failure on the first chat (issue #1550).
+            return modelsResult.Transient
+                ? new ProviderProbeResult(true,
+                    $"GitHub Copilot /models unreachable ({modelsResult.ErrorMessage}); "
+                    + "using curated fallback list.",
+                    CuratedModels)
+                : modelsResult;
         }
 
         return modelsResult;

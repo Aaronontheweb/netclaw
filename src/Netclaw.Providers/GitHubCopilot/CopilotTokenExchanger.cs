@@ -17,6 +17,17 @@ using Netclaw.Providers.OAuth;
 namespace Netclaw.Providers.GitHubCopilot;
 
 /// <summary>
+/// A short-lived Copilot API bearer token together with the chat/completions
+/// host it is valid at, as reported by the token exchange in its
+/// <c>endpoints.api</c> field. <see cref="ApiBase"/> is null when the exchange
+/// response did not include a usable HTTPS host, in which case callers keep
+/// their configured provider endpoint. The bearer is a live ~30-minute
+/// credential, so it is a <see cref="SensitiveString"/> — the record's default
+/// <c>ToString</c> redacts it, and access requires an explicit <c>.Value</c>.
+/// </summary>
+public sealed record CopilotToken(SensitiveString Token, Uri? ApiBase);
+
+/// <summary>
 /// Exchanges a long-lived GitHub OAuth token for a short-lived (~30 min)
 /// Copilot API token, caching the result per OAuth-token identity. The cache
 /// key is a SHA-256 hash of the OAuth token so multiple Copilot accounts can
@@ -55,7 +66,7 @@ public sealed class CopilotTokenExchanger(
     /// <exception cref="CopilotAuthExpiredException">
     /// The GitHub OAuth token was rejected (HTTP 401).
     /// </exception>
-    public async Task<string> GetTokenAsync(
+    public async Task<CopilotToken> GetTokenAsync(
         ProviderEntry entry, CancellationToken ct = default)
     {
         var oauthToken = entry.OAuthAccessToken.RequireValid(
@@ -69,7 +80,7 @@ public sealed class CopilotTokenExchanger(
     /// GitHub OAuth credential when its configured expiry is inside the refresh
     /// buffer.
     /// </summary>
-    public async Task<string> GetTokenAsync(
+    public async Task<CopilotToken> GetTokenAsync(
         string providerName,
         ProviderEntry entry,
         OAuthAuth oauth,
@@ -87,12 +98,12 @@ public sealed class CopilotTokenExchanger(
         return await GetTokenAsync(oauthToken, GitHubCopilotAuthResolver.Resolve(entry).CopilotTokenExchangeEndpoint, ct);
     }
 
-    private async Task<string> GetTokenAsync(SensitiveString oauthToken, Uri tokenEndpoint, CancellationToken ct)
+    private async Task<CopilotToken> GetTokenAsync(SensitiveString oauthToken, Uri tokenEndpoint, CancellationToken ct)
     {
         var slot = slots.GetOrAdd(HashKey(oauthToken.Value, tokenEndpoint), _ => new CacheSlot());
 
         if (IsFresh(slot.Token))
-            return slot.Token!.Token;
+            return slot.Token!.ToCopilotToken();
 
         await slot.Lock.WaitAsync(ct);
         try
@@ -100,11 +111,11 @@ public sealed class CopilotTokenExchanger(
             // Re-check under the lock — a previous caller may have refreshed
             // while we were waiting.
             if (IsFresh(slot.Token))
-                return slot.Token!.Token;
+                return slot.Token!.ToCopilotToken();
 
             var fresh = await ExchangeAsync(oauthToken.Value, tokenEndpoint, ct);
             slot.Token = fresh;
-            return fresh.Token;
+            return fresh.ToCopilotToken();
         }
         finally
         {
@@ -188,8 +199,25 @@ public sealed class CopilotTokenExchanger(
 
         return new CachedToken(
             parsed.Token,
-            DateTimeOffset.FromUnixTimeSeconds(parsed.ExpiresAt));
+            DateTimeOffset.FromUnixTimeSeconds(parsed.ExpiresAt),
+            ResolveApiBase(parsed.Endpoints?.Api));
     }
+
+    // The token response reports, in endpoints.api, the Copilot API host its
+    // short-lived token is actually valid at: api.githubcopilot.com for
+    // standard/individual accounts, api.business|enterprise.githubcopilot.com
+    // for orgs, and a tenant-specific api.<subdomain>.ghe.com for GitHub
+    // Enterprise Cloud data residency. The chat/completions request MUST target
+    // this host — a data-residency token sent to the public host is rejected
+    // with HTTP 400 (issue #1550). Require an absolute HTTPS URI so a malformed
+    // field can never redirect authenticated traffic to a plaintext or
+    // attacker-shaped host; null lets the caller keep its configured endpoint.
+    private static Uri? ResolveApiBase(string? api) =>
+        !string.IsNullOrWhiteSpace(api)
+        && Uri.TryCreate(api, UriKind.Absolute, out var uri)
+        && uri.Scheme == Uri.UriSchemeHttps
+            ? uri
+            : null;
 
     private static string Truncate(string body) =>
         body.Length > 512 ? body[..512] + "…" : body;
@@ -200,7 +228,10 @@ public sealed class CopilotTokenExchanger(
         return Convert.ToHexString(bytes);
     }
 
-    private sealed record CachedToken(string Token, DateTimeOffset ExpiresAt);
+    private sealed record CachedToken(string Token, DateTimeOffset ExpiresAt, Uri? ApiBase)
+    {
+        public CopilotToken ToCopilotToken() => new(new SensitiveString(Token), ApiBase);
+    }
 
     // Volatile so the lock-free fast-path read in GetTokenAsync sees the
     // store from a previous caller's refresh without acquiring the lock.
@@ -219,5 +250,9 @@ public sealed class CopilotTokenExchanger(
 
     private sealed record TokenResponse(
         [property: JsonPropertyName("token")] string Token,
-        [property: JsonPropertyName("expires_at")] long ExpiresAt);
+        [property: JsonPropertyName("expires_at")] long ExpiresAt,
+        [property: JsonPropertyName("endpoints")] TokenEndpoints? Endpoints);
+
+    private sealed record TokenEndpoints(
+        [property: JsonPropertyName("api")] string? Api);
 }

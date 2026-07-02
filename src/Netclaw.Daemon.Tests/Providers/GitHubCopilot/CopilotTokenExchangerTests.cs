@@ -50,11 +50,13 @@ public sealed class CopilotTokenExchangerTests
             OAuthTokenExpiry = now.AddMinutes(-1),
         };
 
-    private static HttpResponseMessage TokenResponse(string token, long expiresAt) =>
+    private static HttpResponseMessage TokenResponse(string token, long expiresAt, string? apiBase = null) =>
         new(HttpStatusCode.OK)
         {
             Content = new StringContent(
-                JsonSerializer.Serialize(new { token, expires_at = expiresAt }),
+                JsonSerializer.Serialize(apiBase is null
+                    ? new { token, expires_at = expiresAt }
+                    : (object)new { token, expires_at = expiresAt, endpoints = new { api = apiBase } }),
                 Encoding.UTF8,
                 "application/json"),
         };
@@ -74,8 +76,76 @@ public sealed class CopilotTokenExchangerTests
         var token = await exchanger.GetTokenAsync(EntryWithOAuth("oauth-1"),
             TestContext.Current.CancellationToken);
 
-        Assert.Equal("copilot-token-1", token);
+        Assert.Equal("copilot-token-1", token.Token.Value);
         Assert.Equal(1, callCount);
+    }
+
+    [Fact]
+    public async Task GetToken_ParsesEndpointsApiFromResponse()
+    {
+        // GHE data residency mints a token that is only valid at the tenant host
+        // reported in endpoints.api. Callers route chat/completions there instead
+        // of the public api.githubcopilot.com (issue #1550).
+        var handler = new FakeHttpMessageHandler(_ =>
+            TokenResponse("copilot-ghe",
+                DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds(),
+                apiBase: "https://api.tenant.ghe.com"));
+        var exchanger = new CopilotTokenExchanger(new HttpClient(handler));
+
+        var token = await exchanger.GetTokenAsync(EntryWithOAuth("oauth-1"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("copilot-ghe", token.Token.Value);
+        Assert.Equal(new Uri("https://api.tenant.ghe.com"), token.ApiBase);
+    }
+
+    [Fact]
+    public async Task GetToken_NoEndpoints_ApiBaseNull()
+    {
+        var handler = new FakeHttpMessageHandler(_ =>
+            TokenResponse("copilot-standard",
+                DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds()));
+        var exchanger = new CopilotTokenExchanger(new HttpClient(handler));
+
+        var token = await exchanger.GetTokenAsync(EntryWithOAuth("oauth-1"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal("copilot-standard", token.Token.Value);
+        Assert.Null(token.ApiBase);
+    }
+
+    [Fact]
+    public async Task GetToken_ToString_DoesNotLeakBearer()
+    {
+        // The bearer is a live ~30-min credential: the CopilotToken record must
+        // not print it if the object is ever logged or interpolated.
+        var handler = new FakeHttpMessageHandler(_ =>
+            TokenResponse("super-secret-bearer",
+                DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds()));
+        var exchanger = new CopilotTokenExchanger(new HttpClient(handler));
+
+        var token = await exchanger.GetTokenAsync(EntryWithOAuth("oauth-1"),
+            TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain("super-secret-bearer", token.ToString());
+        Assert.Equal("super-secret-bearer", token.Token.Value);
+    }
+
+    [Fact]
+    public async Task GetToken_NonHttpsEndpointsApi_Ignored()
+    {
+        // A malformed / plaintext endpoints.api must never redirect authenticated
+        // traffic off HTTPS; the caller keeps its configured endpoint instead.
+        var handler = new FakeHttpMessageHandler(_ =>
+            TokenResponse("copilot-1",
+                DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds(),
+                apiBase: "http://api.tenant.ghe.com"));
+        var exchanger = new CopilotTokenExchanger(new HttpClient(handler));
+
+        var token = await exchanger.GetTokenAsync(EntryWithOAuth("oauth-1"),
+            TestContext.Current.CancellationToken);
+
+        Assert.Null(token.ApiBase);
     }
 
     [Fact]
@@ -114,7 +184,7 @@ public sealed class CopilotTokenExchangerTests
             PublicOAuth,
             TestContext.Current.CancellationToken);
 
-        Assert.Equal("copilot-token", token);
+        Assert.Equal("copilot-token", token.Token.Value);
         Assert.Equal("oauth-new", entry.OAuthAccessToken!.Value);
         Assert.Equal("refresh-new", entry.OAuthRefreshToken!.Value);
         Assert.Equal(now.AddHours(1), entry.OAuthTokenExpiry);
@@ -193,7 +263,7 @@ public sealed class CopilotTokenExchangerTests
         time.Advance(TimeSpan.FromMinutes(advanceMinutes));
         var token = await exchanger.GetTokenAsync(entry, TestContext.Current.CancellationToken);
 
-        Assert.Equal(expectedToken, token);
+        Assert.Equal(expectedToken, token.Token.Value);
         Assert.Equal(expectedCalls, callCount);
     }
 
@@ -329,7 +399,7 @@ public sealed class CopilotTokenExchangerTests
 
         var token = await exchanger.GetTokenAsync(entry, TestContext.Current.CancellationToken);
 
-        Assert.Equal("copilot-ghe", token);
+        Assert.Equal("copilot-ghe", token.Token.Value);
         Assert.Equal("https://ghe.example.com/api/v3/copilot_internal/v2/token",
             captured!.RequestUri!.ToString());
         Assert.Equal("Bearer gho_ghe", captured.Headers.Authorization!.ToString());

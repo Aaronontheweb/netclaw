@@ -35,10 +35,14 @@ public sealed class GitHubCopilotDescriptorTests
                 "application/json"),
         };
 
+    // A realistic token exchange response: GitHub always reports the API host in
+    // endpoints.api. For a standard account that host is api.githubcopilot.com,
+    // which keeps ModelsUrl below correct.
     private static HttpResponseMessage TokenOk() => Json(new
     {
         token = "copilot-api-token",
         expires_at = DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds(),
+        endpoints = new { api = "https://api.githubcopilot.com" },
     });
 
     [Fact]
@@ -100,6 +104,166 @@ public sealed class GitHubCopilotDescriptorTests
         Assert.NotNull(result.ErrorMessage);
         Assert.Contains("curated fallback", result.ErrorMessage);
         Assert.Equal(GitHubCopilotDescriptor.CuratedModels.Length, result.Models.Count);
+    }
+
+    [Fact]
+    public async Task Probe_AuthError_SurfacesFailureInsteadOfCuratedFallback()
+    {
+        // A 401 on /models means the token/tenant is wrong — a real
+        // misconfiguration that must surface at `provider add`, not be masked by
+        // the curated list only to fail on the first chat (issue #1550).
+        var handler = new FakeHttpMessageHandler(request =>
+            request.RequestUri!.ToString() switch
+            {
+                TokenExchangeUrl => TokenOk(),
+                ModelsUrl => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+                _ => new HttpResponseMessage(HttpStatusCode.NotFound),
+            });
+
+        var httpClient = new HttpClient(handler);
+        var descriptor = new GitHubCopilotDescriptor(httpClient,
+            new CopilotTokenExchanger(httpClient));
+
+        var result = await descriptor.ProbeAsync(OAuthEntry(),
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.DoesNotContain("curated fallback", result.ErrorMessage ?? string.Empty);
+        Assert.Empty(result.Models);
+    }
+
+    [Fact]
+    public async Task Probe_NoApiHostWhileFollowingToken_SurfacesFailure()
+    {
+        // The exchange succeeds but reports no endpoints.api. We must not silently
+        // probe the public default (issue #1550) — surface the anomaly. The
+        // /models handler returns success on purpose: if the code wrongly fell
+        // back to api.githubcopilot.com the probe would pass, so asserting failure
+        // proves we did not guess a host.
+        var handler = new FakeHttpMessageHandler(request =>
+            request.RequestUri!.ToString() == TokenExchangeUrl
+                ? Json(new
+                {
+                    token = "copilot-api-token",
+                    expires_at = DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds(),
+                })
+                : Json(new
+                {
+                    data = new[] { new { id = "gpt-4o", capabilities = new { type = "chat" } } },
+                }));
+
+        var httpClient = new HttpClient(handler);
+        var descriptor = new GitHubCopilotDescriptor(httpClient,
+            new CopilotTokenExchanger(httpClient));
+
+        var result = await descriptor.ProbeAsync(OAuthEntry(),
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Contains("endpoints.api", result.ErrorMessage);
+        Assert.Empty(result.Models);
+    }
+
+    [Fact]
+    public async Task Probe_ConnectionFailureToTokenHost_SurfacesFailure()
+    {
+        // An unreachable tenant host (endpoints.api) must surface at setup, not be
+        // masked by the curated fallback — otherwise the provider reports healthy
+        // and only fails on the first chat, the exact symptom of issue #1550.
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            if (request.RequestUri!.ToString() == TokenExchangeUrl)
+                return Json(new
+                {
+                    token = "copilot-api-token",
+                    expires_at = DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds(),
+                    endpoints = new { api = "https://api.unreachable.ghe.com" },
+                });
+
+            throw new HttpRequestException("No such host is known.");
+        });
+
+        var httpClient = new HttpClient(handler);
+        var descriptor = new GitHubCopilotDescriptor(httpClient,
+            new CopilotTokenExchanger(httpClient));
+
+        var result = await descriptor.ProbeAsync(OAuthEntry(),
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.DoesNotContain("curated fallback", result.ErrorMessage ?? string.Empty);
+        Assert.Empty(result.Models);
+    }
+
+    [Fact]
+    public async Task Probe_ProbesModelsAtTokenApiHost()
+    {
+        // GHE data residency: /models must be probed at the tenant host reported
+        // in endpoints.api, not the public api.githubcopilot.com (issue #1550).
+        string? probedModelsUrl = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            var url = request.RequestUri!.ToString();
+            if (url == TokenExchangeUrl)
+                return Json(new
+                {
+                    token = "copilot-api-token",
+                    expires_at = DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds(),
+                    endpoints = new { api = "https://api.tenant.ghe.com" },
+                });
+
+            probedModelsUrl = url;
+            return Json(new
+            {
+                data = new[] { new { id = "gpt-4o", capabilities = new { type = "chat" } } },
+            });
+        });
+
+        var httpClient = new HttpClient(handler);
+        var descriptor = new GitHubCopilotDescriptor(httpClient,
+            new CopilotTokenExchanger(httpClient));
+
+        var result = await descriptor.ProbeAsync(OAuthEntry(),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success);
+        Assert.Equal("https://api.tenant.ghe.com/models", probedModelsUrl);
+    }
+
+    [Fact]
+    public async Task Probe_CustomEndpointOverride_ProbesConfiguredHostNotTokenApi()
+    {
+        // A deliberate proxy override must win over the token's endpoints.api on
+        // the probe path too, matching the chat path.
+        string? probedModelsUrl = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            var url = request.RequestUri!.ToString();
+            if (url == TokenExchangeUrl)
+                return Json(new
+                {
+                    token = "copilot-api-token",
+                    expires_at = DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds(),
+                    endpoints = new { api = "https://api.tenant.ghe.com" },
+                });
+
+            probedModelsUrl = url;
+            return Json(new
+            {
+                data = new[] { new { id = "gpt-4o", capabilities = new { type = "chat" } } },
+            });
+        });
+
+        var httpClient = new HttpClient(handler);
+        var descriptor = new GitHubCopilotDescriptor(httpClient,
+            new CopilotTokenExchanger(httpClient));
+        var entry = OAuthEntry();
+        entry.Endpoint = "https://copilot-proxy.example.com";
+
+        var result = await descriptor.ProbeAsync(entry, TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success);
+        Assert.Equal("https://copilot-proxy.example.com/models", probedModelsUrl);
     }
 
     [Fact]
