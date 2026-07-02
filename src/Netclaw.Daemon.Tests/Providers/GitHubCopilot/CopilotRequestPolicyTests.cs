@@ -25,7 +25,7 @@ public sealed class CopilotRequestPolicyTests
             OAuthAccessToken = new SensitiveString(token),
         };
 
-    private static CopilotTokenExchanger ExchangerReturning(string copilotToken, string? apiBase = null)
+    private static CopilotTokenExchanger ExchangerReturning(string copilotToken, string? apiBase)
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -52,7 +52,7 @@ public sealed class CopilotRequestPolicyTests
     public async Task ProcessAsync_AppliesThreeCopilotHeaders()
     {
         var policy = new CopilotRequestPolicy(
-            ExchangerReturning("copilot-bearer"), OAuthEntry(), new ApiKeyCredential("placeholder"),
+            ExchangerReturning("copilot-bearer", apiBase: null), OAuthEntry(), new ApiKeyCredential("placeholder"),
             followTokenHost: true);
 
         var clientPipeline = ClientPipeline.Create(new ClientPipelineOptions());
@@ -92,7 +92,7 @@ public sealed class CopilotRequestPolicyTests
         // end-to-end in GitHubCopilotProviderPluginTests).
         var credential = new ApiKeyCredential("placeholder");
         var policy = new CopilotRequestPolicy(
-            ExchangerReturning("copilot-real"), OAuthEntry(), credential, followTokenHost: true);
+            ExchangerReturning("copilot-real", apiBase: null), OAuthEntry(), credential, followTokenHost: true);
 
         var clientPipeline = ClientPipeline.Create(new ClientPipelineOptions());
         using var message = clientPipeline.CreateMessage();
@@ -162,7 +162,7 @@ public sealed class CopilotRequestPolicyTests
         // Standard github.com flow: the exchange reports no endpoints.api, so the
         // request must stay on the host the SDK client was configured with.
         var policy = new CopilotRequestPolicy(
-            ExchangerReturning("copilot-standard"), OAuthEntry(), new ApiKeyCredential("placeholder"),
+            ExchangerReturning("copilot-standard", apiBase: null), OAuthEntry(), new ApiKeyCredential("placeholder"),
             followTokenHost: true);
 
         var clientPipeline = ClientPipeline.Create(new ClientPipelineOptions());
@@ -206,7 +206,7 @@ public sealed class CopilotRequestPolicyTests
         // The OpenAI SDK uses the async pipeline for chat completions; the sync
         // overload is only hit by misconfigured callers and we fail loudly.
         var policy = new CopilotRequestPolicy(
-            ExchangerReturning("copilot-bearer"), OAuthEntry(), new ApiKeyCredential("placeholder"),
+            ExchangerReturning("copilot-bearer", apiBase: null), OAuthEntry(), new ApiKeyCredential("placeholder"),
             followTokenHost: true);
 
         var clientPipeline = ClientPipeline.Create(new ClientPipelineOptions());

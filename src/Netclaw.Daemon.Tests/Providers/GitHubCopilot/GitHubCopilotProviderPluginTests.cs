@@ -17,7 +17,7 @@ namespace Netclaw.Daemon.Tests.Providers.GitHubCopilot;
 
 public sealed class GitHubCopilotProviderPluginTests
 {
-    private static CopilotTokenExchanger ExchangerReturning(string copilotToken, string? apiBase = null)
+    private static CopilotTokenExchanger ExchangerReturning(string copilotToken, string? apiBase)
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -40,7 +40,7 @@ public sealed class GitHubCopilotProviderPluginTests
         return new CopilotTokenExchanger(new HttpClient(handler));
     }
 
-    private static CopilotTokenExchanger NewExchanger() => ExchangerReturning("copilot-token");
+    private static CopilotTokenExchanger NewExchanger() => ExchangerReturning("copilot-token", apiBase: null);
 
     private static GitHubCopilotProviderPlugin NewPlugin()
     {
@@ -118,7 +118,7 @@ public sealed class GitHubCopilotProviderPluginTests
             };
         });
 
-        var exchanger = ExchangerReturning("copilot-real");
+        var exchanger = ExchangerReturning("copilot-real", apiBase: null);
         var descriptor = new GitHubCopilotDescriptor(new HttpClient(), exchanger);
         var plugin = new GitHubCopilotProviderPlugin(descriptor, exchanger)
         {
