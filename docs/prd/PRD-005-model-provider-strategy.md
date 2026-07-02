@@ -6,6 +6,7 @@
 - Owner: Netclaw engineering
 - Date: 2026-02-21
 - Revised: 2026-02-21 (MEAI abstraction, primary+fallback model)
+- Revised: 2026-05-27 (No-Op chat client fallback for degraded startup)
 - Depends on: `PRD-001`, `PRD-004`
 
 ## Goal
@@ -124,6 +125,28 @@ The provider abstraction SHALL support tool/function calling through MEAI's
 built-in tool calling API. Tool definitions are registered at session startup
 based on policy grants.
 
+### Degraded startup (No-Op chat client)
+
+If provider/model configuration validation reports **no provider configured**
+(e.g., empty `Providers` section, missing or incomplete `Models:Main`, or
+`Models:Main` references an unconfigured provider), daemon startup SHALL
+succeed in a degraded mode. Bound object defaults such as
+`local-ollama/qwen3:30b` SHALL NOT count as explicit operator configuration
+unless `Models:Main:Provider` and `Models:Main:ModelId` are present in config.
+The host registers a No-Op `IChatClient` that returns a fixed banner beginning
+with `"No valid model configuration detected."` and lists the recovery commands
+(`netclaw doctor`, `netclaw init` for first-time provider/model setup,
+`netclaw model` when a provider already exists, or manual config repair). The No-Op client
+SHALL NOT contact any external service and SHALL NOT emit tool calls.
+
+Malformed provider configuration (declared provider missing required
+credentials or `Type`, schema violations, or explicit `Fallback` / `Compaction`
+roles that are incomplete or reference unconfigured providers) remains a
+**fatal** startup error — only the "no provider configured" outcome selects the
+No-Op fallback. Recovery from degraded mode requires a daemon restart; live
+config swap is out of scope. `netclaw doctor` reports the state as a
+**warn**-level "Chat Client" item.
+
 ## Non-Goals (MVP)
 
 - Automated cross-provider failover logic (beyond primary/fallback)
@@ -140,6 +163,9 @@ based on policy grants.
 5. CI validation pipeline passes with provider mocks/fakes only.
 6. Fallback model activates when primary is unreachable.
 7. Tool calling works through MEAI abstraction.
+8. Daemon starts in degraded mode with No-Op chat client when no provider
+   is configured; doctor reports the state as a warn-level item; chat turns
+   return the fixed recovery banner instead of crashing.
 
 ## Cross-References
 

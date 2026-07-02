@@ -32,6 +32,8 @@ internal sealed class DaemonRuntimeStatusService(
     ModelSelection modelSelection,
     DaemonConfig daemonConfig,
     NetclawPaths paths,
+    IChatClientProvider chatClientProvider,
+    ProviderRuntimeValidation providerValidation,
     McpClientManager? mcpClientManager = null,
     SQLiteMemoryStore? sqliteMemoryStore = null,
     IRequiredActor<ReminderManagerActorKey>? reminderManagerActor = null)
@@ -46,7 +48,8 @@ internal sealed class DaemonRuntimeStatusService(
 
         connectors.AddRange(BuildMcpStatuses());
 
-        var overall = ResolveOverallStatus(connectors);
+        var degraded = chatClientProvider.IsDegraded;
+        var overall = ResolveOverallStatus(connectors, degraded);
 
         return new DaemonRuntimeStatus.Response
         {
@@ -71,12 +74,14 @@ internal sealed class DaemonRuntimeStatusService(
             Telemetry = BuildTelemetry(),
             Model = new DaemonRuntimeStatus.Model
             {
-                ModelId = modelCapabilities.ModelId,
-                DisplayName = ModelIdNormalizer.GetDisplayName(modelCapabilities.ModelId),
-                Provider = modelSelection.Main.Provider,
-                InputModalities = modelCapabilities.InputModalities.ToString(),
-                OutputModalities = modelCapabilities.OutputModalities.ToString(),
-                ContextWindow = modelCapabilities.ContextWindowTokens
+                ModelId = degraded ? string.Empty : modelCapabilities.ModelId,
+                DisplayName = degraded ? null : ModelIdNormalizer.GetDisplayName(modelCapabilities.ModelId),
+                Provider = degraded ? string.Empty : modelSelection.Main.Provider,
+                InputModalities = degraded ? string.Empty : modelCapabilities.InputModalities.ToString(),
+                OutputModalities = degraded ? string.Empty : modelCapabilities.OutputModalities.ToString(),
+                ContextWindow = degraded ? 0 : modelCapabilities.ContextWindowTokens,
+                Degraded = degraded,
+                DegradedReason = degraded ? providerValidation?.Reason : null,
             },
             Update = BuildUpdateStatus(),
             Memory = await BuildMemoryStatusAsync(cancellationToken),
@@ -324,8 +329,16 @@ internal sealed class DaemonRuntimeStatusService(
         }
     }
 
-    internal static string ResolveOverallStatus(IReadOnlyList<DaemonRuntimeStatus.Connector> connectors)
+    internal static string ResolveOverallStatus(
+        IReadOnlyList<DaemonRuntimeStatus.Connector> connectors,
+        bool chatClientDegraded = false)
     {
+        // A No-Op chat client means the daemon can't actually serve model
+        // responses — surface that at the top level rather than reporting
+        // "healthy" while every chat turn returns the configuration banner.
+        if (chatClientDegraded)
+            return "degraded";
+
         if (connectors.Any(c => c.Enabled && c.Status is "disconnected" or "auth-failed" or "auth-required"))
             return "degraded";
 

@@ -127,7 +127,9 @@ Command ownership stays explicit:
 
 - `netclaw chat` — interactive agent prompt. Pure thin client connecting to the
   daemon over SignalR. Renders `SessionOutput` stream, sends `ChannelInput`.
-  Session entity key: `tui/{uuid}`. See TUI-001 wireframes.
+  Session entity key: `tui/{uuid}`. If `netclaw.json` is absent, the command
+  SHALL fail before contacting the daemon with
+  `daemon not configured - please run netclaw init`. See TUI-001 wireframes.
 
 ### TUI-Interactive Commands (Termina, offline)
 
@@ -147,9 +149,14 @@ Command ownership stays explicit:
 
 ### Diagnostics (Plain CLI, offline)
 
+- `netclaw status` — query daemon runtime health when initialized. If
+  `netclaw.json` is absent, the command SHALL fail before contacting the daemon
+  with `daemon not configured - please run netclaw init`.
 - `netclaw doctor` — validate config files, check daemon reachability, test
   provider connectivity, report system health, and flag unsafe trust-policy
-  combinations such as unrestricted `public` or `team` audience profiles
+  combinations such as unrestricted `public` or `team` audience profiles. If
+  `netclaw.json` is absent, the config-file diagnostic SHALL warn with
+  `daemon not configured - please run netclaw init`.
 
 ### Security and Policy (daemon required)
 
@@ -226,6 +233,21 @@ When trust-context policy is configured, diagnostics SHALL surface:
 - the resolved `public`, `team`, and `personal` audience-profile scopes
 - unsafe unrestricted profile combinations
 - sandbox-shell readiness when `ShellMode` resolves to `SandboxOnly`
+
+`netclaw doctor` SHALL include a **Chat Client** check that reports:
+
+- **pass** — a real provider chat client is configured.
+- **warn** — the No-Op chat client will be active because no explicit
+  `Models:Main` provider/model is configured, no providers exist, or Main points
+  to an unconfigured provider. Bound defaults do not count as configuration.
+  The daemon starts in degraded mode and chat turns return a fixed recovery
+  banner. Remediation references `netclaw init` for first-time provider/model
+  setup, `netclaw model` when a provider already exists, and manual
+  `netclaw.json` / `secrets.json` repair.
+- **fail** — provider configuration is malformed (declared provider missing
+  required credentials or `Type`, schema violation, explicit Fallback/Compaction
+  role is incomplete, or explicit Fallback/Compaction points to an unconfigured
+  provider); daemon startup will fail until resolved.
 
 ### CLI-005 Session Operations
 
