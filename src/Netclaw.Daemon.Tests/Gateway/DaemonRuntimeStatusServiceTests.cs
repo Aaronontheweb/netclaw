@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Net;
+using Microsoft.Extensions.AI;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -51,7 +52,9 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
         DaemonConfig? daemonConfig = null,
         NetclawPaths? paths = null,
         McpClientManager? mcpClientManager = null,
-        SQLiteMemoryStore? sqliteMemoryStore = null)
+        SQLiteMemoryStore? sqliteMemoryStore = null,
+        IChatClientProvider? chatClientProvider = null,
+        ProviderRuntimeValidation? providerValidation = null)
     {
         return new DaemonRuntimeStatusService(
             new DaemonStartClock(TimeProvider.System),
@@ -63,6 +66,8 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
             modelSelection ?? DefaultModelSelection,
             daemonConfig ?? new DaemonConfig(),
             paths ?? CreatePaths(),
+            chatClientProvider ?? new TestChatClientProvider(),
+            providerValidation ?? new ProviderRuntimeValidation(ProviderRuntimeStatus.Valid, null, []),
             mcpClientManager,
             sqliteMemoryStore);
     }
@@ -134,6 +139,42 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
 
         // Best effort cleanup: file handles can remain briefly open on Windows CI.
         // Leaving temp dirs behind is preferable to failing the test run.
+    }
+
+    [Fact]
+    public async Task DegradedChatClient_FlagsModelAsDegradedAndOverallAsDegraded()
+    {
+        var noOpProvider = new NoOpChatClientProvider(new[] { "github-copilot", "my-openrouter" });
+        var validation = new ProviderRuntimeValidation(
+            ProviderRuntimeStatus.NoProviderConfigured,
+            "model 'Main' references provider 'ollama-local1' which is not configured (available: ollama-local)",
+            new[] { "ollama-local" });
+
+        var service = CreateService(
+            modelCapabilities: new ModelCapabilities
+            {
+                ModelId = "qwen3:30b",
+                InputModalities = ModelModality.Text,
+                OutputModalities = ModelModality.Text,
+                ContextWindowTokens = 32_768
+            },
+            modelSelection: new ModelSelection
+            {
+                Main = new ModelReference { Provider = "local-ollama", ModelId = "qwen3:30b" }
+            },
+            chatClientProvider: noOpProvider,
+            providerValidation: validation);
+
+        var status = await service.GetStatusAsync(TestContext.Current.CancellationToken);
+
+        Assert.NotNull(status.Model);
+        Assert.True(status.Model.Degraded);
+        Assert.Equal("", status.Model.ModelId);
+        Assert.Equal("", status.Model.Provider);
+        Assert.Equal(0, status.Model.ContextWindow);
+        Assert.Null(status.Model.DisplayName);
+        Assert.Contains("ollama-local1", status.Model.DegradedReason);
+        Assert.Equal("degraded", status.Overall);
     }
 
     [Fact]
@@ -383,5 +424,10 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
         public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 
         public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class TestChatClientProvider : IChatClientProvider
+    {
+        public IChatClient GetClient(ModelRole role) => throw new NotSupportedException();
     }
 }

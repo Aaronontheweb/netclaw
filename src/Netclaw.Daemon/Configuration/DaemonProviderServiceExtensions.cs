@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="DaemonProviderServiceExtensions.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -19,16 +19,49 @@ public static class DaemonProviderServiceExtensions
 {
     /// <summary>
     /// Registers provider plugins (via Netclaw.Providers) plus the daemon-specific
-    /// plugin factory, retry policy, pipeline composition, and routing.
+    /// plugin factory, retry policy, pipeline composition, and routing. When
+    /// <paramref name="validation"/> reports
+    /// <see cref="ProviderRuntimeStatus.NoProviderConfigured"/>, the No-Op chat
+    /// client provider is registered instead so the host starts in degraded mode.
     /// </summary>
     public static IServiceCollection AddDaemonLlmProviders(
         this IServiceCollection services,
         Dictionary<string, ProviderEntry> providers,
         ModelSelection models,
+        ProviderRuntimeValidation validation,
         RetryPolicy? retryPolicy = null)
     {
-        // Register plugins and OAuth from Netclaw.Providers
+        // Register descriptors/OAuth endpoints even in degraded mode so operators
+        // can recover through provider/model setup flows without restarting first.
         services.AddLlmProviders();
+
+        if (validation.Status == ProviderRuntimeStatus.NoProviderConfigured)
+        {
+            services.AddSingleton<IChatClientProvider>(sp =>
+            {
+                var logger = sp.GetRequiredService<ILoggerFactory>()
+                    .CreateLogger("Netclaw.ChatClient");
+                logger.LogWarning(
+                    "No valid inference provider configured ({Reason}). Registering No-Op chat client. Run `netclaw doctor` for details.",
+                    validation.Reason);
+                return new NoOpChatClientProvider(validation.AvailableProviders);
+            });
+            return services;
+        }
+
+        if (validation.Status == ProviderRuntimeStatus.Invalid)
+        {
+            // Fail loudly with the validation reason rather than letting the
+            // provider plugin factory throw a raw "Provider 'X' not found"
+            // deep in the DI graph. The exception fires when
+            // IChatClientProvider is first resolved so it surfaces during the
+            // host's startup sequence, not at config-binding time.
+            services.AddSingleton<IChatClientProvider>(_ =>
+                throw new InvalidOperationException(
+                    $"Invalid inference configuration: {validation.Reason}. " +
+                    "Fix the issue in `netclaw.json` and restart the daemon. Run `netclaw doctor` for details."));
+            return services;
+        }
 
         // Raw provider client factory (raw client + vendor options per model)
         services.AddSingleton(sp =>
