@@ -17,16 +17,23 @@ namespace Netclaw.Daemon.Tests.Providers.GitHubCopilot;
 
 public sealed class GitHubCopilotProviderPluginTests
 {
-    private static CopilotTokenExchanger ExchangerReturning(string copilotToken)
+    private static CopilotTokenExchanger ExchangerReturning(string copilotToken, string? apiBase = null)
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent(
-                JsonSerializer.Serialize(new
-                {
-                    token = copilotToken,
-                    expires_at = DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds(),
-                }),
+                JsonSerializer.Serialize(apiBase is null
+                    ? new
+                    {
+                        token = copilotToken,
+                        expires_at = DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds(),
+                    }
+                    : (object)new
+                    {
+                        token = copilotToken,
+                        expires_at = DateTimeOffset.UtcNow.AddMinutes(30).ToUnixTimeSeconds(),
+                        endpoints = new { api = apiBase },
+                    }),
                 Encoding.UTF8,
                 "application/json"),
         });
@@ -132,6 +139,91 @@ public sealed class GitHubCopilotProviderPluginTests
             cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal("Bearer copilot-real", sentAuthorization);
+    }
+
+    [Fact]
+    public async Task CreateChatClient_RoutesChatToTokenApiHost()
+    {
+        // End-to-end proof for issue #1550: the entry is configured with the
+        // public endpoint (the default), but the GHE token reports a tenant host
+        // in endpoints.api. The fully-assembled request that reaches the wire
+        // must target the tenant host, not api.githubcopilot.com — otherwise
+        // Copilot rejects the tenant token with HTTP 400.
+        Uri? sentUri = null;
+        var captureHandler = new FakeHttpMessageHandler(req =>
+        {
+            sentUri = req.RequestUri;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    MinimalChatCompletionJson, Encoding.UTF8, "application/json"),
+            };
+        });
+
+        var exchanger = ExchangerReturning("copilot-ghe", apiBase: "https://api.tenant.ghe.com");
+        var descriptor = new GitHubCopilotDescriptor(new HttpClient(), exchanger);
+        var plugin = new GitHubCopilotProviderPlugin(descriptor, exchanger)
+        {
+            TransportOverride = new HttpClientPipelineTransport(new HttpClient(captureHandler)),
+        };
+
+        var entry = new ProviderEntry
+        {
+            Type = "github-copilot",
+            AuthMethod = AuthMethod.OAuthDevice,
+            OAuthAccessToken = new SensitiveString("oauth-1"),
+        };
+        var client = plugin.CreateChatClient(
+            entry, new ModelReference { Provider = "my-copilot", ModelId = "gpt-4o" });
+
+        await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")],
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.NotNull(sentUri);
+        Assert.Equal("api.tenant.ghe.com", sentUri!.Host);
+        Assert.Equal("/chat/completions", sentUri.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task CreateChatClient_CustomEndpoint_KeepsOperatorHostOverToken()
+    {
+        // A deliberate proxy override must win over the token's endpoints.api so
+        // the operator's traffic is never silently rerouted off their proxy.
+        Uri? sentUri = null;
+        var captureHandler = new FakeHttpMessageHandler(req =>
+        {
+            sentUri = req.RequestUri;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    MinimalChatCompletionJson, Encoding.UTF8, "application/json"),
+            };
+        });
+
+        var exchanger = ExchangerReturning("copilot-ghe", apiBase: "https://api.tenant.ghe.com");
+        var descriptor = new GitHubCopilotDescriptor(new HttpClient(), exchanger);
+        var plugin = new GitHubCopilotProviderPlugin(descriptor, exchanger)
+        {
+            TransportOverride = new HttpClientPipelineTransport(new HttpClient(captureHandler)),
+        };
+
+        var entry = new ProviderEntry
+        {
+            Type = "github-copilot",
+            AuthMethod = AuthMethod.OAuthDevice,
+            OAuthAccessToken = new SensitiveString("oauth-1"),
+            Endpoint = "https://copilot-proxy.example.com",
+        };
+        var client = plugin.CreateChatClient(
+            entry, new ModelReference { Provider = "my-copilot", ModelId = "gpt-4o" });
+
+        await client.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hi")],
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.NotNull(sentUri);
+        Assert.Equal("copilot-proxy.example.com", sentUri!.Host);
     }
 
     private const string MinimalChatCompletionJson =
