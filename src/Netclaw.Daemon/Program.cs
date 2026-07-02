@@ -571,8 +571,6 @@ static void ConfigureDaemonServices(
         paths.PidFilePath,
         paths.LockFilePath,
         paths.RestartManifestPath,
-        paths.SystemSkillsDirectory,
-        paths.ServerFeedsDirectory,
     };
     var toolPathPolicy = new ToolPathPolicy(writeDenyList, readDenyList, shellIndicatorList);
     services.AddSingleton(toolPathPolicy);
