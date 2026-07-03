@@ -122,6 +122,20 @@ Sleep 500ms
 Screenshot "/tmp/shot-mcp-permissions-tool-grid.png"
 
 # ─── Exit TUI ────────────────────────────────────────────────────────
+# Sleep 2s BEFORE Ctrl+Q — settle guard AFTER the Screenshot. VHS's
+# `Screenshot` does not write the PNG synchronously at this line: it hands the
+# request to the render loop, which flushes the *current* framebuffer on a
+# later tick. Ctrl+Q tears the TUI off the alternate screen buffer and restores
+# the shell transcript on the main buffer. With no gap here, that teardown can
+# win the race and VHS captures the restored transcript instead of the tool
+# grid — the exact failure in run 28682629818 (frame 1 passed on the alt
+# screen, frame 2 captured the post-Ctrl+Q main buffer). This is the ONLY
+# Screenshot in the tape immediately followed by a screen-destroying key, which
+# is why only this frame regressed. The sleep holds the tool grid on screen
+# until the deferred capture lands. Proven with a minimal `less` alt-screen
+# repro: Screenshot→immediate-q captures the main buffer; Screenshot→Sleep→q
+# captures the alt screen. Do NOT remove without re-checking that race.
+Sleep 2s
 Ctrl+Q
 Wait+Screen@10s /TAPE\$/
 
