@@ -140,7 +140,9 @@ public sealed class DoctorFixServiceTests
     public async Task RehydratesEnvFile_WhenMissing_EvenWithoutNetclawJson()
     {
         var paths = NewPaths();
-        var installDir = Path.Combine(paths.BasePath, "bin");
+        // POSIX install dir: systemd units are always POSIX-style regardless of the host OS
+        // running the test, and TryGetInstallDir parses forward-slash ExecStart accordingly.
+        const string installDir = "/opt/netclaw";
         var unitPath = WriteWiredUnit(paths, installDir);
         // No netclaw.json and no env file on disk.
 
@@ -157,7 +159,9 @@ public sealed class DoctorFixServiceTests
     public async Task RehydratesEnvFile_WhenStale_MissingInstallDir()
     {
         var paths = NewPaths();
-        var installDir = Path.Combine(paths.BasePath, "bin");
+        // POSIX install dir: systemd units are always POSIX-style regardless of the host OS
+        // running the test, and TryGetInstallDir parses forward-slash ExecStart accordingly.
+        const string installDir = "/opt/netclaw";
         var unitPath = WriteWiredUnit(paths, installDir);
         await File.WriteAllTextAsync(paths.DaemonEnvironmentFilePath, "PATH=/usr/bin\n",
             TestContext.Current.CancellationToken);
@@ -174,7 +178,9 @@ public sealed class DoctorFixServiceTests
     public async Task NoEnvFix_WhenHealthy()
     {
         var paths = NewPaths();
-        var installDir = Path.Combine(paths.BasePath, "bin");
+        // POSIX install dir: systemd units are always POSIX-style regardless of the host OS
+        // running the test, and TryGetInstallDir parses forward-slash ExecStart accordingly.
+        const string installDir = "/opt/netclaw";
         var unitPath = WriteWiredUnit(paths, installDir);
         await File.WriteAllTextAsync(
             paths.DaemonEnvironmentFilePath,
@@ -193,7 +199,9 @@ public sealed class DoctorFixServiceTests
         // Legacy unit (inline PATH, no EnvironmentFile=) is routed to reinstall by the
         // doctor check, not rehydrated here — doctor --fix does not rewrite systemd units.
         var paths = NewPaths();
-        var installDir = Path.Combine(paths.BasePath, "bin");
+        // POSIX install dir: systemd units are always POSIX-style regardless of the host OS
+        // running the test, and TryGetInstallDir parses forward-slash ExecStart accordingly.
+        const string installDir = "/opt/netclaw";
         var unitPath = WriteRawUnit(
             $"[Service]\nExecStart={installDir}/netclawd\nEnvironment=PATH=/opt/x:/usr/bin\n");
 
@@ -207,7 +215,9 @@ public sealed class DoctorFixServiceTests
     public async Task AppliesEnvFileRehydrationToDisk()
     {
         var paths = NewPaths();
-        var installDir = Path.Combine(paths.BasePath, "bin");
+        // POSIX install dir: systemd units are always POSIX-style regardless of the host OS
+        // running the test, and TryGetInstallDir parses forward-slash ExecStart accordingly.
+        const string installDir = "/opt/netclaw";
         var unitPath = WriteWiredUnit(paths, installDir);
 
         var service = new DoctorFixService(paths, unitPath, systemdEnabled: true);
@@ -225,7 +235,9 @@ public sealed class DoctorFixServiceTests
         // Operator wiped ~/.netclaw/config but left the installed service. ApplyAsync must
         // recreate the parent dir instead of throwing DirectoryNotFoundException and aborting.
         var paths = NewPaths();
-        var installDir = Path.Combine(paths.BasePath, "bin");
+        // POSIX install dir: systemd units are always POSIX-style regardless of the host OS
+        // running the test, and TryGetInstallDir parses forward-slash ExecStart accordingly.
+        const string installDir = "/opt/netclaw";
         var unitPath = WriteWiredUnit(paths, installDir);
         Directory.Delete(Path.GetDirectoryName(paths.DaemonEnvironmentFilePath)!, recursive: true);
 
@@ -261,9 +273,11 @@ public sealed class DoctorFixServiceTests
         => new(paths, Path.Combine(paths.BasePath, "unused.service"), systemdEnabled: false);
 
     private static string WriteWiredUnit(NetclawPaths paths, string installDir)
+        // Forward-slash concatenation (NOT Path.Combine): systemd ExecStart is POSIX even
+        // when the test runs on Windows, matching what TryGetInstallDir parses.
         => WriteRawUnit(DaemonManager.BuildDaemonUnitContent(
-            Path.Combine(installDir, "netclawd"),
-            Path.Combine(installDir, "netclaw"),
+            $"{installDir}/netclawd",
+            $"{installDir}/netclaw",
             paths.DaemonEnvironmentFilePath));
 
     private static string WriteRawUnit(string content)
