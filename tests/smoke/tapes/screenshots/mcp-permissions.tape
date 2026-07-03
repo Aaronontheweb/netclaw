@@ -63,11 +63,28 @@ Type "netclaw mcp permissions"
 Enter
 
 # ─── Frame 1: ServerList ─────────────────────────────────────────────
-# smoke-math should appear as "Connected, 3 tools".
-Wait+Screen@15s /smoke-math/
-Wait+Screen@5s /3 tools/
+# smoke-math should appear as "Connected, 3 tools". Do NOT anchor on
+# "smoke-math" or "3 tools" alone — both already sit in the shell
+# scrollback before the TUI ever paints:
+#   - "smoke-math" appears in the setup output above ("Added MCP server
+#     'smoke-math' (stdio)" / "...adjust approvals for 'smoke-math'.").
+#   - "3 tools" appears in this tape's own typed readiness-loop command,
+#     still visible on screen: `... grep -q 'connected (3 tools)' ...`.
+# Immediately after Enter, before the TUI switches to the alternate
+# screen buffer, Wait+Screen can match that leftover transcript text and
+# return instantly, capturing the raw shell instead of the rendered TUI
+# (README.md rule 5: anchor on the *next view*, not text that predates
+# it). Anchor on TUI-only chrome instead: "MCP Permissions" is the page
+# title from McpToolPermissionsPage.BuildHeader (proves the alt screen
+# painted), and "Connected, 3 tools" is the exact rendered server-row
+# text from McpToolPermissionsPage.BuildServerList — "{Name}  ({Status},
+# {ToolCount} tools)" with capital-C Status and a comma, which the
+# transcript's lowercase, comma-less "connected (3 tools)" never
+# produces. Neither anchor occurs anywhere in the shell transcript.
+Wait+Screen@15s /MCP Permissions/
+Wait+Screen@5s /Connected, 3 tools/
 # Sleep 3s: let the server-list frame fully settle before capturing. The
-# first match of 'smoke-math'/'3 tools' can be a transient render; the
+# first match of the anchors above can be a transient render; the
 # daemon may push a state update (re-index, status refresh) immediately
 # after the initial display. The sleep absorbs that window.
 Sleep 3s
