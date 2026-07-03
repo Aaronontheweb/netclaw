@@ -101,7 +101,7 @@ public sealed class ServerFeedSkillSyncServiceTests : IDisposable
     [Fact]
     public async Task SyncOnce_syncs_native_subagent_from_sidecar_after_empty_rfc_index()
     {
-        var agentContent = AgentMarkdown("code-reviewer", "Managed reviewer", "Review code carefully.");
+        var agentContent = AgentMarkdown("code-reviewer", "Managed reviewer", "Review code carefully. 请仔细审查代码。");
         var digest = SkillSyncHelpers.ComputeSha256(agentContent);
 
         var handler = new FakeHttpMessageHandler();
@@ -114,6 +114,7 @@ public sealed class ServerFeedSkillSyncServiceTests : IDisposable
         var agentPath = Path.Combine(_paths.ServerFeedAgentDirectory("team"), "code-reviewer.md");
         Assert.True(File.Exists(agentPath));
         Assert.Equal(agentContent, File.ReadAllText(agentPath));
+        Assert.Equal(Encoding.UTF8.GetBytes(agentContent), await File.ReadAllBytesAsync(agentPath, TestContext.Current.CancellationToken));
 
         var state = ReadAgentSyncState();
         Assert.Equal("1.0.0", state.Skills["code-reviewer"].Version);
@@ -253,6 +254,58 @@ public sealed class ServerFeedSkillSyncServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SyncOnce_invalid_utf8_native_artifact_keeps_existing_managed_subagents_and_skips_prune()
+    {
+        var agentDir = _paths.ServerFeedAgentDirectory("team");
+        Directory.CreateDirectory(agentDir);
+        var oldContent = AgentMarkdown("code-reviewer", "Old reviewer", "Old body.");
+        File.WriteAllText(Path.Combine(agentDir, "code-reviewer.md"), oldContent);
+        File.WriteAllText(Path.Combine(agentDir, "stale-agent.md"), AgentMarkdown("stale-agent", "Stale", "Stale body."));
+
+        SkillSyncHelpers.WriteSyncState(_paths.ServerFeedAgentSyncStatePath("team"), new SkillSyncState
+        {
+            Skills =
+            {
+                ["code-reviewer"] = new SyncedSkillState
+                {
+                    Version = "0.9.0",
+                    Sha256 = SkillSyncHelpers.ComputeSha256(oldContent)
+                },
+                ["stale-agent"] = new SyncedSkillState
+                {
+                    Version = "0.9.0",
+                    Sha256 = "stale"
+                }
+            }
+        });
+
+        var validPrefix = Encoding.UTF8.GetBytes("""
+            ---
+            name: code-reviewer
+            description: Managed reviewer
+            ---
+
+            Review code carefully.
+            """);
+        var invalidContent = validPrefix.Concat([byte.MaxValue]).ToArray();
+        var digest = SkillSyncHelpers.ComputeSha256(invalidContent);
+
+        var handler = new FakeHttpMessageHandler();
+        AddEmptyRfcIndex(handler);
+        AddNativeSubAgentResponses(handler, "code-reviewer", "1.0.0", invalidContent, digest);
+
+        var service = CreateService(handler);
+        await service.SyncOnceAsync(CancellationToken.None);
+
+        Assert.Equal(oldContent, File.ReadAllText(Path.Combine(agentDir, "code-reviewer.md")));
+        Assert.True(File.Exists(Path.Combine(agentDir, "stale-agent.md")));
+
+        var state = ReadAgentSyncState();
+        Assert.True(state.Skills.ContainsKey("stale-agent"));
+        Assert.Equal("0.9.0", state.Skills["code-reviewer"].Version);
+    }
+
+    [Fact]
     public async Task SyncOnce_successful_sidecar_prunes_only_removed_managed_subagents()
     {
         var agentDir = _paths.ServerFeedAgentDirectory("team");
@@ -350,6 +403,14 @@ public sealed class ServerFeedSkillSyncServiceTests : IDisposable
         string version,
         string artifactContent,
         string expectedDigest)
+        => AddNativeSubAgentResponses(handler, name, version, Encoding.UTF8.GetBytes(artifactContent), expectedDigest);
+
+    private static void AddNativeSubAgentResponses(
+        FakeHttpMessageHandler handler,
+        string name,
+        string version,
+        byte[] artifactContent,
+        string expectedDigest)
     {
         handler.AddStringResponse(
             BaseUrl + "manifest.json",
@@ -430,7 +491,7 @@ public sealed class ServerFeedSkillSyncServiceTests : IDisposable
             }
             """,
             "application/json");
-        handler.AddStringResponse(
+        handler.AddByteResponse(
             BaseUrl + $"subagents/{name}/{version}/agent.md",
             artifactContent,
             "text/markdown");

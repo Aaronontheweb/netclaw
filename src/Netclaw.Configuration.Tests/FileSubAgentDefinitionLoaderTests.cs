@@ -582,6 +582,49 @@ public class FileSubAgentDefinitionLoaderTests : IDisposable
     }
 
     [Fact]
+    public void LoadAll_with_feed_config_ignores_unsafe_managed_feed_names()
+    {
+        var escapedDir = Path.GetFullPath(Path.Combine(_paths.ServerFeedAgentsDirectory, "..", "escaped"));
+        Directory.CreateDirectory(escapedDir);
+        File.WriteAllText(Path.Combine(escapedDir, "escaped-agent.md"), """
+            ---
+            name: escaped-agent
+            description: Escaped managed agent
+            ---
+
+            Escaped body.
+            """);
+
+        WriteManagedAgent("safe-feed", "safe-agent.md", """
+            ---
+            name: safe-agent
+            description: Safe managed agent
+            ---
+
+            Safe body.
+            """);
+
+        var feedsConfig = new SkillFeedsConfig
+        {
+            Feeds =
+            {
+                new SkillFeedSource { Name = "../escaped", Enabled = true },
+                new SkillFeedSource { Name = "safe-feed", Enabled = true }
+            }
+        };
+        var logger = new ListLogger<FileSubAgentDefinitionLoader>();
+        var loader = new FileSubAgentDefinitionLoader(_paths, logger, feedsConfig);
+
+        var results = loader.LoadAll();
+
+        var profile = Assert.Single(results);
+        Assert.Equal("safe-agent", profile.Name);
+        Assert.Contains(logger.Warnings, w =>
+            w.Contains("../escaped", StringComparison.Ordinal)
+            && w.Contains("safe feed name", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void RefreshIfChanged_detects_managed_server_feed_agent_edits()
     {
         var path = WriteManagedAgent("team", "managed.md", """

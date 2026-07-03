@@ -193,6 +193,14 @@ public sealed class FileSubAgentDefinitionLoader
         {
             foreach (var feed in _feedsConfig.Feeds.Where(f => f.Enabled))
             {
+                if (!IsSafeManagedFeedName(feed.Name))
+                {
+                    _logger.LogWarning(
+                        "Ignoring managed sub-agent feed '{FeedName}' because it is not a safe feed name",
+                        feed.Name);
+                    continue;
+                }
+
                 if (seen.Add(feed.Name))
                     yield return feed.Name;
             }
@@ -207,6 +215,22 @@ public sealed class FileSubAgentDefinitionLoader
             if (!string.IsNullOrEmpty(feedName) && seen.Add(feedName))
                 yield return feedName;
         }
+    }
+
+    private static bool IsSafeManagedFeedName(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        foreach (var c in value)
+        {
+            if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')
+                continue;
+
+            return false;
+        }
+
+        return true;
     }
 
     private void LogDuplicate(AgentDefinitionFile file, string name)

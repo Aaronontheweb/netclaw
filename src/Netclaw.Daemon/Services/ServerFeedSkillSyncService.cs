@@ -534,7 +534,20 @@ internal sealed class ServerFeedSkillSyncService : BackgroundService
                 return NativeSubAgentSyncResult.Failed;
             }
 
-            var content = Encoding.UTF8.GetString(stream.ToArray());
+            var contentBytes = stream.ToArray();
+            string content;
+            try
+            {
+                content = StrictUtf8.GetString(contentBytes);
+            }
+            catch (DecoderFallbackException ex)
+            {
+                _logger.LogWarning(
+                    "Rejected native sub-agent '{AgentName}' from feed '{FeedName}': agent.md is not valid UTF-8: {Message}",
+                    item.Name, feed.Name, ex.Message);
+                return NativeSubAgentSyncResult.Failed;
+            }
+
             var profile = FileSubAgentDefinitionLoader.TryParseDefinition(targetPath, content, _logger);
             if (profile is null)
                 return NativeSubAgentSyncResult.Failed;
@@ -547,8 +560,8 @@ internal sealed class ServerFeedSkillSyncService : BackgroundService
                 return NativeSubAgentSyncResult.Failed;
             }
 
-            await SkillSyncHelpers.ReplaceTextFileAsync(
-                feedDir, targetFileName, content, cancellationToken);
+            await SkillSyncHelpers.ReplaceFileAsync(
+                feedDir, targetFileName, contentBytes, cancellationToken);
 
             syncState.Skills[item.Name] = new SyncedSkillState
             {

@@ -281,6 +281,13 @@ internal static class SkillSyncHelpers
         string fileName,
         string content,
         CancellationToken cancellationToken)
+        => await ReplaceFileAsync(parentDirectory, fileName, Encoding.UTF8.GetBytes(content), cancellationToken);
+
+    internal static async Task ReplaceFileAsync(
+        string parentDirectory,
+        string fileName,
+        byte[] content,
+        CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(parentDirectory);
 
@@ -293,7 +300,7 @@ internal static class SkillSyncHelpers
 
         try
         {
-            await File.WriteAllTextAsync(stagingPath, content, cancellationToken);
+            await File.WriteAllBytesAsync(stagingPath, content, cancellationToken);
 
             if (File.Exists(targetPath))
                 File.Move(targetPath, backupPath);
