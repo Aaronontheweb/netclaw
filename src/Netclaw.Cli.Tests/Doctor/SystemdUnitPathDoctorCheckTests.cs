@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Doctor;
 using Xunit;
 
@@ -13,7 +14,8 @@ public sealed class SystemdUnitPathDoctorCheckTests
     [Fact]
     public async Task ReturnsPass_WhenPlatformDisabled()
     {
-        var unitPath = WriteUnit("[Service]\nExecStart=/opt/netclaw/netclawd\n");
+        var (unitPath, _) = WriteUnitDir();
+        File.WriteAllText(unitPath, "[Service]\nExecStart=/opt/netclaw/netclawd\n");
         var check = new SystemdUnitPathDoctorCheck(unitPath, enabledOnThisPlatform: false);
 
         var result = await check.RunAsync(TestContext.Current.CancellationToken);
@@ -35,34 +37,62 @@ public sealed class SystemdUnitPathDoctorCheckTests
     }
 
     [Fact]
-    public async Task ReturnsWarning_WhenPathDirectiveMissing()
+    public async Task ReturnsWarning_WhenExecStartMissing()
     {
-        var unitPath = WriteUnit("""
-            [Unit]
-            Description=Netclaw Daemon
+        var (unitPath, _) = WriteUnitDir();
+        File.WriteAllText(unitPath, "[Service]\nType=simple\nEnvironmentFile=-/tmp/daemon.env\n");
+        var check = new SystemdUnitPathDoctorCheck(unitPath, enabledOnThisPlatform: true);
 
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Warning, result.Severity);
+        Assert.Contains("Could not determine the daemon install directory", result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReturnsWarning_WhenEnvironmentFileDirectiveMissing()
+    {
+        // A legacy (pre-#1544) unit with an inline Environment=PATH= and no EnvironmentFile=.
+        // Route these to reinstall, which drops the inline directive and writes the env file.
+        var (unitPath, _) = WriteUnitDir();
+        File.WriteAllText(unitPath, """
             [Service]
-            Type=simple
             ExecStart=/opt/netclaw/netclawd
-            Environment=DOTNET_ENVIRONMENT=Production
+            Environment=PATH=/opt/netclaw:/usr/bin
             """);
         var check = new SystemdUnitPathDoctorCheck(unitPath, enabledOnThisPlatform: true);
 
         var result = await check.RunAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(DoctorSeverity.Warning, result.Severity);
-        Assert.Contains("does not set PATH", result.Message, StringComparison.Ordinal);
-        Assert.Contains("daemon uninstall", result.Remediation!, StringComparison.Ordinal);
+        Assert.Contains("does not reference a PATH environment file", result.Message, StringComparison.Ordinal);
+        Assert.Contains("daemon install", result.Remediation!, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task ReturnsWarning_WhenPathMissingInstallDir()
+    public async Task ReturnsWarning_WhenEnvironmentFileMissingOnDisk()
     {
-        var unitPath = WriteUnit("""
-            [Service]
-            ExecStart=/opt/netclaw/netclawd
-            Environment=PATH=/usr/local/bin:/usr/bin:/bin
-            """);
+        var (unitPath, dir) = WriteUnitDir();
+        var envPath = Path.Combine(dir, "daemon.env"); // referenced but never written
+        File.WriteAllText(unitPath, DaemonManager.BuildDaemonUnitContent(
+            "/opt/netclaw/netclawd", "/opt/netclaw/netclaw", envPath));
+        var check = new SystemdUnitPathDoctorCheck(unitPath, enabledOnThisPlatform: true);
+
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Warning, result.Severity);
+        Assert.Contains("is missing", result.Message, StringComparison.Ordinal);
+        Assert.Contains("doctor --fix", result.Remediation!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReturnsWarning_WhenEnvPathMissingInstallDir()
+    {
+        var (unitPath, dir) = WriteUnitDir();
+        var envPath = Path.Combine(dir, "daemon.env");
+        File.WriteAllText(envPath, "PATH=/usr/local/bin:/usr/bin\n"); // no /opt/netclaw
+        File.WriteAllText(unitPath, DaemonManager.BuildDaemonUnitContent(
+            "/opt/netclaw/netclawd", "/opt/netclaw/netclaw", envPath));
         var check = new SystemdUnitPathDoctorCheck(unitPath, enabledOnThisPlatform: true);
 
         var result = await check.RunAsync(TestContext.Current.CancellationToken);
@@ -70,48 +100,40 @@ public sealed class SystemdUnitPathDoctorCheckTests
         Assert.Equal(DoctorSeverity.Warning, result.Severity);
         Assert.Contains("does not include the daemon's install directory", result.Message, StringComparison.Ordinal);
         Assert.Contains("/opt/netclaw", result.Message, StringComparison.Ordinal);
+        Assert.Contains("doctor --fix", result.Remediation!, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task ReturnsPass_WhenPathContainsInstallDir()
+    public async Task ReturnsPass_WhenWiredAndInstallDirPresent()
     {
-        var unitPath = WriteUnit("""
-            [Service]
-            ExecStart=/home/user/.local/bin/netclawd
-            Environment=PATH=/home/user/.local/bin:/usr/local/bin:/usr/bin:/bin
-            """);
+        // Producer→consumer contract: the exact artifacts install writes
+        // (env file via Render, unit via BuildDaemonUnitContent) are accepted by the check.
+        var (unitPath, dir) = WriteUnitDir();
+        const string installDir = "/home/user/.local/bin";
+        var envPath = Path.Combine(dir, "daemon.env");
+        File.WriteAllText(envPath, DaemonPathEnvironmentFile.Render(installDir, "/usr/local/bin:/usr/bin"));
+        File.WriteAllText(unitPath, DaemonManager.BuildDaemonUnitContent(
+            $"{installDir}/netclawd", $"{installDir}/netclaw", envPath));
         var check = new SystemdUnitPathDoctorCheck(unitPath, enabledOnThisPlatform: true);
 
         var result = await check.RunAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(DoctorSeverity.Pass, result.Severity);
-        Assert.Contains("/home/user/.local/bin", result.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task ReturnsWarning_WhenExecStartMissing()
-    {
-        var unitPath = WriteUnit("""
-            [Service]
-            Type=simple
-            Environment=PATH=/usr/local/bin:/usr/bin:/bin
-            """);
-        var check = new SystemdUnitPathDoctorCheck(unitPath, enabledOnThisPlatform: true);
-
-        var result = await check.RunAsync(TestContext.Current.CancellationToken);
-
-        Assert.Equal(DoctorSeverity.Warning, result.Severity);
-        Assert.Contains("missing ExecStart", result.Message, StringComparison.Ordinal);
+        Assert.Contains(installDir, result.Message, StringComparison.Ordinal);
     }
 
     [Fact]
     public async Task ParsesExecStart_StrippingArguments()
     {
-        // ExecStart with arguments — install directory is the binary's parent.
-        var unitPath = WriteUnit("""
+        var (unitPath, dir) = WriteUnitDir();
+        const string installDir = "/opt/netclaw";
+        var envPath = Path.Combine(dir, "daemon.env");
+        File.WriteAllText(envPath, DaemonPathEnvironmentFile.Render(installDir, "/usr/bin"));
+        // ExecStart carries an argument — install dir is still the binary's parent.
+        File.WriteAllText(unitPath, $"""
             [Service]
-            ExecStart=/opt/netclaw/netclawd --foreground
-            Environment=PATH=/opt/netclaw:/usr/bin
+            ExecStart={installDir}/netclawd --foreground
+            EnvironmentFile=-{envPath}
             """);
         var check = new SystemdUnitPathDoctorCheck(unitPath, enabledOnThisPlatform: true);
 
@@ -120,12 +142,10 @@ public sealed class SystemdUnitPathDoctorCheckTests
         Assert.Equal(DoctorSeverity.Pass, result.Severity);
     }
 
-    private static string WriteUnit(string content)
+    private static (string unitPath, string dir) WriteUnitDir()
     {
         var dir = Path.Combine(Path.GetTempPath(), "netclaw-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
-        var path = Path.Combine(dir, "netclaw.service");
-        File.WriteAllText(path, content);
-        return path;
+        return (Path.Combine(dir, "netclaw.service"), dir);
     }
 }
