@@ -213,8 +213,17 @@ public sealed class DoctorFixService
         }
 
         var envPath = _paths.DaemonEnvironmentFilePath;
-        if (!string.Equals(Path.GetFullPath(referencedEnvPath), Path.GetFullPath(envPath), StringComparison.Ordinal))
+        try
+        {
+            if (!string.Equals(Path.GetFullPath(referencedEnvPath), Path.GetFullPath(envPath), StringComparison.Ordinal))
+                return;
+        }
+        catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
+        {
+            // A hand-edited/malformed EnvironmentFile= value is not our managed file; skip the
+            // daemon-PATH fix rather than aborting the whole doctor --fix run on GetFullPath.
             return;
+        }
 
         string? existing = null;
         if (File.Exists(envPath))
@@ -250,7 +259,16 @@ public sealed class DoctorFixService
     public async Task ApplyAsync(DoctorFixPlan plan, CancellationToken cancellationToken = default)
     {
         foreach (var fix in plan.Fixes)
+        {
+            // Ensure the parent directory exists before writing. The daemon-PATH fix can
+            // target ~/.netclaw/config even after that directory has been removed, so a bare
+            // File.WriteAllTextAsync would throw DirectoryNotFoundException and abort the run.
+            var dir = Path.GetDirectoryName(fix.FilePath);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+
             await File.WriteAllTextAsync(fix.FilePath, fix.UpdatedText, cancellationToken);
+        }
     }
 
 }

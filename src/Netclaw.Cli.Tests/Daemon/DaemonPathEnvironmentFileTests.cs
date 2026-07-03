@@ -21,27 +21,42 @@ namespace Netclaw.Cli.Tests.Daemon;
 public sealed class DaemonPathEnvironmentFileTests
 {
     [Fact]
-    public void ComposePathValue_PrependsInstallDir()
+    public void ComposePathValue_InstallDirFirst_ThenCapture_ThenDedupedFloor()
         => Assert.Equal(
-            "/opt/netclaw:/home/u/.dotnet:/usr/bin",
+            "/opt/netclaw:/home/u/.dotnet:/usr/bin:/usr/local/bin:/bin:/usr/sbin:/sbin",
             DaemonPathEnvironmentFile.ComposePathValue("/opt/netclaw", "/home/u/.dotnet:/usr/bin"));
 
     [Fact]
-    public void ComposePathValue_EmptyCapture_YieldsInstallDirOnly()
+    public void ComposePathValue_EmptyCapture_StillHasFunctionalFloor()
     {
-        // A missing PATH on the installing shell is its own broken state — we don't
-        // paper over it with an invented default directory list.
-        Assert.Equal("/opt/netclaw", DaemonPathEnvironmentFile.ComposePathValue("/opt/netclaw", null));
-        Assert.Equal("/opt/netclaw", DaemonPathEnvironmentFile.ComposePathValue("/opt/netclaw", ""));
+        // An empty PATH on the installing shell must NOT leave the daemon with installDir
+        // alone — the system floor is always guaranteed so /bin/sh etc. still resolve.
+        const string expected = "/opt/netclaw:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+        Assert.Equal(expected, DaemonPathEnvironmentFile.ComposePathValue("/opt/netclaw", null));
+        Assert.Equal(expected, DaemonPathEnvironmentFile.ComposePathValue("/opt/netclaw", ""));
+    }
+
+    [Fact]
+    public void ComposePathValue_DropsEmptyElements()
+    {
+        // POSIX treats an empty PATH element as the current directory — an exec-hijack
+        // vector for a daemon running `bash -c` in an agent-controlled workspace.
+        var value = DaemonPathEnvironmentFile.ComposePathValue("/opt/netclaw", "/a::/b:");
+
+        Assert.DoesNotContain("::", value, StringComparison.Ordinal);
+        Assert.All(value.Split(':'), Assert.NotEmpty);
+        Assert.StartsWith("/opt/netclaw:/a:/b:", value, StringComparison.Ordinal);
     }
 
     [Fact]
     public void Render_ThenReadPathValue_RoundTrips()
     {
-        var content = DaemonPathEnvironmentFile.Render("/opt/netclaw", "/home/u/.dotnet:/usr/bin");
+        var content = DaemonPathEnvironmentFile.Render("/opt/netclaw", "/usr/bin");
 
-        Assert.Equal("PATH=/opt/netclaw:/home/u/.dotnet:/usr/bin\n", content);
-        Assert.Equal("/opt/netclaw:/home/u/.dotnet:/usr/bin", DaemonPathEnvironmentFile.ReadPathValue(content));
+        Assert.Equal("PATH=/opt/netclaw:/usr/bin:/usr/local/bin:/bin:/usr/sbin:/sbin\n", content);
+        Assert.Equal(
+            "/opt/netclaw:/usr/bin:/usr/local/bin:/bin:/usr/sbin:/sbin",
+            DaemonPathEnvironmentFile.ReadPathValue(content));
     }
 
     [Fact]

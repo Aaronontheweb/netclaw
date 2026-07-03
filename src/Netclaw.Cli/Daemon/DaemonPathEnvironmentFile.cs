@@ -26,6 +26,19 @@ internal static class DaemonPathEnvironmentFile
     internal const string PathAssignmentPrefix = "PATH=";
     internal const string ExecStartPrefix = "ExecStart=";
     internal const string EnvironmentFilePrefix = "EnvironmentFile=";
+    internal const string InlinePathPrefix = "Environment=PATH=";
+
+    /// <summary>
+    /// The set of directories that must always be resolvable for the daemon's shell tool
+    /// to function at all (a POSIX shell, coreutils, and admin <c>sbin</c> tools). This is
+    /// NOT a guess at the operator's tools — the captured operator PATH supplies those — it
+    /// is a functional floor guaranteed regardless of what the installing shell's PATH
+    /// happened to contain, so an empty or partial capture can never leave the daemon
+    /// unable to resolve <c>/bin/sh</c>, <c>ip</c>, etc. Mirrors the guarantee the old
+    /// unit-baked PATH made unconditionally.
+    /// </summary>
+    private static readonly string[] SystemPathFloor =
+        ["/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 
     /// <summary>
     /// Reads the operator's real <c>PATH</c> from the current process environment.
@@ -35,16 +48,40 @@ internal static class DaemonPathEnvironmentFile
     internal static string? CaptureCurrentPath() => Environment.GetEnvironmentVariable("PATH");
 
     /// <summary>
-    /// Composes the <c>PATH</c> value written to the environment file: the daemon's
-    /// own install directory first (so the bundled <c>netclaw</c> CLI always
-    /// resolves), followed by the captured operator <c>PATH</c>. An empty/null
-    /// captured value yields the install directory alone — if the installing shell
-    /// had no <c>PATH</c>, that is its own broken state, not something to paper over
-    /// with an invented default. Separator is the POSIX <c>':'</c> (systemd is
-    /// Linux-only).
+    /// Composes the <c>PATH</c> value written to the environment file:
+    /// <list type="number">
+    ///   <item>the daemon's own install directory first (bundled <c>netclaw</c> CLI wins);</item>
+    ///   <item>then the captured operator <c>PATH</c> (their real tool dirs — the point of #1544);</item>
+    ///   <item>then <see cref="SystemPathFloor"/>, a guaranteed functional baseline.</item>
+    /// </list>
+    /// Entries are de-duplicated (order-preserving, ordinal) and <b>empty elements are
+    /// dropped</b> — a POSIX empty <c>PATH</c> entry (from <c>::</c> or a leading/trailing
+    /// <c>:</c>, common when a dotfile does <c>PATH="$PATH:"</c>) means "current directory",
+    /// which would let a binary planted in an agent-controlled workspace shadow a system
+    /// command when the daemon runs <c>bash -c</c>. Separator is the POSIX <c>':'</c>
+    /// (systemd is Linux-only). Because the floor is always appended, an empty/unset
+    /// captured PATH still yields a fully functional PATH rather than <c>installDir</c> alone.
     /// </summary>
     internal static string ComposePathValue(string installDir, string? capturedPath)
-        => string.IsNullOrEmpty(capturedPath) ? installDir : $"{installDir}:{capturedPath}";
+    {
+        var ordered = new List<string> { installDir };
+        if (!string.IsNullOrEmpty(capturedPath))
+            ordered.AddRange(capturedPath.Split(':'));
+        ordered.AddRange(SystemPathFloor);
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var result = new List<string>(ordered.Count);
+        foreach (var entry in ordered)
+        {
+            // Drop empty elements (the CWD-resolution hazard); keep everything else verbatim.
+            if (entry.Length == 0)
+                continue;
+            if (seen.Add(entry))
+                result.Add(entry);
+        }
+
+        return string.Join(':', result);
+    }
 
     /// <summary>
     /// Renders the full environment-file content: a single <c>PATH=</c> assignment
@@ -142,6 +179,23 @@ internal static class DaemonPathEnvironmentFile
 
         environmentFilePath = value;
         return environmentFilePath.Length > 0;
+    }
+
+    /// <summary>
+    /// Extracts the value of a legacy inline <c>Environment=PATH=</c> directive (the
+    /// pre-#1544 unit shape), or <c>false</c> when absent. Used to tell a still-functional
+    /// legacy unit (inline PATH that resolves the install dir) apart from a broken one.
+    /// </summary>
+    internal static bool TryGetInlinePath(IReadOnlyList<string> unitLines, out string pathValue)
+    {
+        pathValue = string.Empty;
+
+        var directive = FindDirective(unitLines, InlinePathPrefix);
+        if (directive is null)
+            return false;
+
+        pathValue = directive[InlinePathPrefix.Length..].Trim();
+        return pathValue.Length > 0;
     }
 
     /// <summary>

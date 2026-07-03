@@ -92,15 +92,28 @@ public sealed class SystemdUnitPathDoctorCheck : IDoctorCheck
         }
 
         // Legacy/unwired unit: the pre-#1544 install baked an inline Environment=PATH= and
-        // no EnvironmentFile=. Route these to reinstall (which drops the inline directive
-        // and writes the env file) rather than doctor --fix, which only owns the env file.
+        // no EnvironmentFile=. Such a unit is still fully functional if its inline PATH
+        // resolves the install dir (e.g. after an in-place binary upgrade without reinstall),
+        // so pass with a migration nudge rather than a false alarm. Only warn when the inline
+        // PATH is missing/incomplete, and route to reinstall (doctor --fix owns only the env
+        // file, not unit rewrites).
         if (!DaemonPathEnvironmentFile.TryGetEnvironmentFilePath(lines, out var envFilePath))
         {
+            if (DaemonPathEnvironmentFile.TryGetInlinePath(lines, out var inlinePath)
+                && DaemonPathEnvironmentFile.PathContainsDirectory(inlinePath, installDir))
+            {
+                return Task.FromResult(DoctorCheckResult.Pass(
+                    CheckName,
+                    $"Legacy unit supplies PATH inline and includes {installDir}. Re-run "
+                    + "`netclaw daemon install` to migrate to the managed environment file."));
+            }
+
             return Task.FromResult(DoctorCheckResult.Warning(
                 CheckName,
-                $"Systemd unit at {unitPath} does not reference a PATH environment file "
-                + "(`EnvironmentFile=`). The daemon's shell tool will fall back to the sanitized "
-                + "systemd PATH and cannot resolve `netclaw`, `dotnet`, or `~/.local/bin` tools.",
+                $"Systemd unit at {unitPath} does not supply the daemon's shell-tool PATH "
+                + "(no `EnvironmentFile=`, and no inline PATH that includes the install "
+                + "directory). The shell tool will fall back to the sanitized systemd PATH and "
+                + "cannot resolve `netclaw`, `dotnet`, or `~/.local/bin` tools.",
                 ReinstallRemediation));
         }
 

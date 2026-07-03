@@ -50,10 +50,11 @@ public sealed class SystemdUnitPathDoctorCheckTests
     }
 
     [Fact]
-    public async Task ReturnsWarning_WhenEnvironmentFileDirectiveMissing()
+    public async Task ReturnsPass_WhenLegacyInlinePathIncludesInstallDir()
     {
-        // A legacy (pre-#1544) unit with an inline Environment=PATH= and no EnvironmentFile=.
-        // Route these to reinstall, which drops the inline directive and writes the env file.
+        // A functional legacy (pre-#1544) unit: inline Environment=PATH= that resolves the
+        // install dir (e.g. after an in-place binary upgrade without reinstall). Must NOT
+        // false-alarm; pass with a migration note.
         var (unitPath, _) = WriteUnitDir();
         File.WriteAllText(unitPath, """
             [Service]
@@ -64,8 +65,28 @@ public sealed class SystemdUnitPathDoctorCheckTests
 
         var result = await check.RunAsync(TestContext.Current.CancellationToken);
 
+        Assert.Equal(DoctorSeverity.Pass, result.Severity);
+        Assert.Contains("Legacy unit", result.Message, StringComparison.Ordinal);
+        Assert.Contains("daemon install", result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReturnsWarning_WhenLegacyUnitLacksUsablePath()
+    {
+        // Legacy unit whose inline PATH does NOT include the install dir → genuinely
+        // broken, route to reinstall.
+        var (unitPath, _) = WriteUnitDir();
+        File.WriteAllText(unitPath, """
+            [Service]
+            ExecStart=/opt/netclaw/netclawd
+            Environment=PATH=/usr/bin:/bin
+            """);
+        var check = new SystemdUnitPathDoctorCheck(unitPath, enabledOnThisPlatform: true);
+
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
         Assert.Equal(DoctorSeverity.Warning, result.Severity);
-        Assert.Contains("does not reference a PATH environment file", result.Message, StringComparison.Ordinal);
+        Assert.Contains("does not supply the daemon's shell-tool PATH", result.Message, StringComparison.Ordinal);
         Assert.Contains("daemon install", result.Remediation!, StringComparison.Ordinal);
     }
 

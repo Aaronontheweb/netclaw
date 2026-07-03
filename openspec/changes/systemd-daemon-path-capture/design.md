@@ -81,9 +81,20 @@ references it by resolved absolute path.
 
 ### D4: Install-dir is prepended to the captured PATH
 
-Provisioned value = `installDir : <captured operator PATH>`. Guarantees the bundled `netclaw` CLI
-resolves first (matching current intent) while everything the operator has follows. If the captured
-`PATH` already contains `installDir`, it still leads — duplicates are harmless to `PATH` lookup.
+Provisioned value = `installDir : <captured operator PATH> : <system floor>`, de-duplicated with
+empty elements dropped. installDir leads (bundled CLI wins), the operator's real dirs follow (the
+point of #1544), and a guaranteed floor (`/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`) is always
+appended.
+
+**The floor is not a guess at the operator's tools — it is a functional baseline** (a POSIX shell,
+coreutils, admin `sbin` tools) that the old unit-baked PATH provided unconditionally. Code review
+caught that dropping it regressed two cases the old code could never hit: an empty/unset capture
+would yield `PATH=installDir` alone (silently breaking *every* shell command, and the doctor check
+would still pass it), and a normal desktop login PATH omits `/usr/sbin`,`/sbin` (so `ip`/`iptables`
+would stop resolving). Appending the floor restores the old guarantee while keeping the captured
+operator dirs. **Empty `PATH` elements are dropped** because POSIX resolves an empty element to the
+current directory — with the daemon running `bash -c` in an agent-controlled workspace, a captured
+`::` (common from `PATH="$PATH:"` in a dotfile) would let a planted binary shadow a system command.
 
 ### D5: `doctor --fix` rehydration lives outside the config-file gate
 

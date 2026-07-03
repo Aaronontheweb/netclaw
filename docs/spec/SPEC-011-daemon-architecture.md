@@ -250,7 +250,9 @@ non-interactive environment that does not inherit the operator's login-shell
 (which can never anticipate every environment — see issue #1544), `install`
 **captures the operator's real `PATH` from its own process** (the CLI is a child
 of the operator's shell, so no shell is spawned and no dotfiles are sourced) and
-writes `PATH=<installDir>:<captured>` to `~/.netclaw/config/daemon.env`. The unit
+writes `PATH=<installDir>:<captured>:<system floor>` (de-duplicated, empty elements dropped; the
+floor `/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` keeps the shell functional even if the
+captured PATH was empty or partial) to `~/.netclaw/config/daemon.env`. The unit
 loads it via `EnvironmentFile=-…` (the `-` makes a missing file degrade tool
 resolution rather than block startup). `netclaw doctor --fix` rehydrates the file
 from the operator's current `PATH`; `SystemdUnitPathDoctorCheck` validates the

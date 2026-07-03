@@ -219,6 +219,37 @@ public sealed class DoctorFixServiceTests
         Assert.Contains(installDir, content, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task AppliesRehydration_WhenConfigDirectoryWasRemoved()
+    {
+        // Operator wiped ~/.netclaw/config but left the installed service. ApplyAsync must
+        // recreate the parent dir instead of throwing DirectoryNotFoundException and aborting.
+        var paths = NewPaths();
+        var installDir = Path.Combine(paths.BasePath, "bin");
+        var unitPath = WriteWiredUnit(paths, installDir);
+        Directory.Delete(Path.GetDirectoryName(paths.DaemonEnvironmentFilePath)!, recursive: true);
+
+        var service = new DoctorFixService(paths, unitPath, systemdEnabled: true);
+        var plan = await service.BuildPlanAsync(TestContext.Current.CancellationToken);
+        await service.ApplyAsync(plan, TestContext.Current.CancellationToken);
+
+        Assert.True(File.Exists(paths.DaemonEnvironmentFilePath));
+    }
+
+    [Fact]
+    public async Task DoesNotThrow_WhenUnitEnvironmentFilePathIsMalformed()
+    {
+        // A hand-edited unit with an invalid EnvironmentFile= value must not crash the whole
+        // doctor --fix run via Path.GetFullPath.
+        var paths = NewPaths();
+        var unitPath = WriteRawUnit("[Service]\nExecStart=/opt/netclaw/netclawd\nEnvironmentFile=-/bad\0path\n");
+
+        var service = new DoctorFixService(paths, unitPath, systemdEnabled: true);
+        var plan = await service.BuildPlanAsync(TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain(plan.Fixes, f => f.FilePath == paths.DaemonEnvironmentFilePath);
+    }
+
     private static NetclawPaths NewPaths()
     {
         var paths = new NetclawPaths(CreateTempBasePath());

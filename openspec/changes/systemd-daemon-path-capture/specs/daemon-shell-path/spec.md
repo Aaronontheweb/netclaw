@@ -9,8 +9,11 @@ a shell or source operator dotfiles to obtain the value. The captured `PATH` SHA
 the daemon via a netclaw-owned environment file referenced by the unit's `EnvironmentFile=`
 directive, and the generated unit SHALL NOT contain an inline `Environment=PATH=` directive.
 
-The provisioned `PATH` value SHALL place the daemon's own install directory first, ahead of the
-captured operator `PATH`, so the bundled `netclaw` CLI always resolves.
+The provisioned `PATH` value SHALL place the daemon's own install directory first, then the
+captured operator `PATH`, then a guaranteed system-directory floor
+(`/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`) so the daemon's shell remains functional even when
+the installing shell's `PATH` was empty or partial. Entries SHALL be de-duplicated, and empty
+`PATH` elements (which POSIX resolves to the current directory) SHALL be dropped.
 
 #### Scenario: Install captures the caller's PATH into the environment file
 
@@ -29,11 +32,14 @@ captured operator `PATH`, so the bundled `netclaw` CLI always resolves.
 
 ### Requirement: `doctor --fix` rehydrates the daemon PATH environment file
 
-`netclaw doctor --fix` SHALL rehydrate the daemon PATH environment file from the current shell's
-`PATH` when the file is missing, not referenced by the unit, or does not include the daemon's
-install directory. Rehydration SHALL run independently of whether the application config file
-(`netclaw.json`) exists. The fix SHALL write files only and SHALL surface an explicit instruction
-to run `systemctl --user restart netclaw`; it SHALL NOT restart the daemon implicitly.
+When the installed unit references the daemon PATH environment file, `netclaw doctor --fix` SHALL
+rehydrate that file from the current shell's `PATH` when it is missing or does not include the
+daemon's install directory. Rehydration SHALL run independently of whether the application config
+file (`netclaw.json`) exists. The fix SHALL write files only — creating the parent directory if it
+is absent — and SHALL surface an explicit instruction to run `systemctl --user restart netclaw`; it
+SHALL NOT restart the daemon implicitly. `doctor --fix` SHALL NOT rewrite the systemd unit: a unit
+that does not reference the environment file (a legacy inline-`PATH` unit) is a reinstall case,
+routed by the doctor check.
 
 #### Scenario: Missing environment file is recreated by the fix
 
@@ -54,9 +60,12 @@ to run `systemctl --user restart netclaw`; it SHALL NOT restart the daemon impli
 
 `SystemdUnitPathDoctorCheck` SHALL validate that the installed unit references the daemon PATH
 environment file via `EnvironmentFile=`, that the referenced file exists, and that the file's
-`PATH` includes the daemon's install directory. On any failure it SHALL return a warning whose
-remediation points the operator at `netclaw doctor --fix` (or reinstall) followed by a service
-restart. The check SHALL pass silently when no service is installed or on non-Linux platforms.
+`PATH` includes the daemon's install directory. When the referenced file is missing or omits the
+install directory, remediation SHALL point the operator at `netclaw doctor --fix` followed by a
+restart. A legacy unit that supplies its `PATH` inline (`Environment=PATH=`) SHALL pass when that
+inline `PATH` includes the install directory (with a note to migrate via reinstall), and SHALL warn
+with a reinstall remediation otherwise. The check SHALL pass silently when no service is installed
+or on non-Linux platforms.
 
 #### Scenario: Wired, present, and install-dir on PATH passes
 
@@ -64,10 +73,17 @@ restart. The check SHALL pass silently when no service is installed or on non-Li
   install directory
 - **THEN** the check passes
 
-#### Scenario: Missing EnvironmentFile directive warns
+#### Scenario: Functional legacy inline-PATH unit passes with a migration note
 
-- **WHEN** the installed unit does not reference the environment file via `EnvironmentFile=`
-- **THEN** the check returns a warning with remediation to run `netclaw doctor --fix` and restart
+- **WHEN** the installed unit has no `EnvironmentFile=` but supplies an inline `Environment=PATH=`
+  that includes the install directory
+- **THEN** the check passes and notes that re-running `netclaw daemon install` migrates it
+
+#### Scenario: Unwired or broken legacy unit warns with reinstall remediation
+
+- **WHEN** the installed unit has no `EnvironmentFile=` and no inline `PATH` that includes the
+  install directory
+- **THEN** the check returns a warning with remediation to reinstall and restart
 
 #### Scenario: Referenced environment file absent warns
 
