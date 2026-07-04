@@ -843,10 +843,10 @@ run_multi_turn_case() {
 
 # ─── Assertion Helpers ────────────────────────────────────────────────────────
 
-# All transcript greps use -a: CLI stdout contains terminal control bytes /
-# invalid UTF-8, and GNU grep in a UTF-8 locale silently skips matches on
-# lines with invalid sequences — assertions were randomly missing real
-# matches depending on where escape bytes landed (proven on run af0883b5).
+# Transcript greps use -a as cheap hardening: captured CLI output may carry
+# terminal control bytes, and -a keeps grep in text mode regardless. Note the
+# memory_identity_preference_routing flake was NOT this — it was a substring
+# bug in that assertion's pattern (see the comment there).
 
 stdout_contains() {
     grep -qia "$1" "$STDOUT_FILE" 2>/dev/null
@@ -1005,9 +1005,12 @@ assert_memory_recall_active() {
 # fact is already in durable memory rather than re-storing it — both are correct
 # routing. The hard failure we guard against is a SOUL.md (file_edit/file_write) edit.
 assert_memory_identity_preference_routing() {
+    # 'memor' not 'memory': correct responses often say "memories", and the
+    # plural drops the y — "memories" does not contain the substring "memory".
+    # Run af0883b5 rejected two behaviorally-correct runs on exactly this.
     ! stdout_tool_called 'file_edit' \
         && ! stdout_tool_called 'file_write' \
-        && { stdout_tool_called 'store_memory' || stdout_contains 'memory'; }
+        && { stdout_tool_called 'store_memory' || stdout_contains 'memor'; }
 }
 
 assert_memory_explicit_store() {
