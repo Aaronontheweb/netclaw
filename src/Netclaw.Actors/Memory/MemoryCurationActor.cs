@@ -312,12 +312,38 @@ public sealed class MemoryCurationActor : ReceiveActor, IWithUnboundedStash
             var options = new SessionScopedChatOptions
             {
                 SessionId = sessionId.Value,
-                // Headroom for reasoning models: with a tight cap a thinking model
-                // spends the whole budget on hidden reasoning and returns empty
-                // content, silently disabling this LLM tier. Non-reasoning models
-                // still stop after the bare keyword the prompt asks for, so they pay
-                // nothing extra. (Fully suppressing reasoning is a provider-level follow-up.)
-                MaxOutputTokens = 512
+                // Token cap is the THIRD line of defense, so it must never be the
+                // binding constraint. Layering: (1) reasoning suppression below is
+                // the primary fix — suppressed/non-reasoning models emit just the
+                // keyword and never approach any cap; (2) the 10s call timeout
+                // bounds wall-clock when a model ignores suppression and thinks at
+                // length. The cap only matters in the remaining window — suppression
+                // ignored but thinking finishes inside the timeout — where a tight
+                // cap truncates mid-think and reproduces the measured
+                // responseLength=0 empty-reply failure (July 2026 audit: at 512, a
+                // Qwen3.6-class model produced 0 successful curation decisions
+                // ever). Unemitted tokens cost nothing, so size this generously;
+                // it becomes the Memory.Curation.LlmMaxOutputTokens config knob in
+                // the memory-core-redesign change.
+                MaxOutputTokens = 4096,
+                // Belt: ask the serving stack not to think at all for this
+                // keyword-classification call. This expresses intent only — the raw
+                // provider-dialect field name (vLLM/llama.cpp/SGLang's
+                // chat_template_kwargs.enable_thinking, Ollama's think) is NOT this
+                // call site's business, because the model behind SessionId's
+                // provider varies per deployment and strict SDKs (official OpenAI,
+                // Anthropic) reject or ignore unknown top-level fields differently
+                // than self-hosted servers do. NetclawChatOptionKeys.SuppressReasoning
+                // is a provider-agnostic intent key; ReasoningSuppressionChatClient
+                // (Netclaw.Daemon, wrapping every chat client the daemon constructs)
+                // reads it, removes it, and maps it to the dialect the active
+                // provider plugin declares (ILlmProviderPlugin.SuppressionDialect) —
+                // or strips it with no replacement for providers with no equivalent.
+                // StripThinkBlocks in ParseResponse remains the braces.
+                AdditionalProperties = new AdditionalPropertiesDictionary
+                {
+                    [NetclawChatOptionKeys.SuppressReasoning] = true
+                }
             };
 
             var result = await StreamingResponseReader.ReadAsync(llmClient, messages, options, cts.Token);
