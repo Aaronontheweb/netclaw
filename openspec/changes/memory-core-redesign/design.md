@@ -164,6 +164,77 @@ also the Non-Goals note below on remote embedder mode as the alternative
 lever for memory-constrained fleets that don't want any in-process quality
 tradeoff at all.
 
+**Slice 4 follow-up (2026-07-05): gold-metrics quantization verdict — the
+parity gate was a proxy, and on real retrieval the proxy over-rejects.** The
+Stage A gate above compares vectors to fp32; this measurement asked the
+question the gate stands in for: does quantization change *retrieval
+outcomes* on the operator's actual gold sets? Offline eval against the real
+1,216-doc corpus clone: full-corpus cosine ranking on the real-traffic gold
+set (`gold-prod-2026-07`, 33 scored queries) and the May synthetic held-out
+split (`gold-repooled-test`, 22 scored), plus nominator twin-recall over the
+267 ratified near-dup pairs (259 positives; k=5, τ=0.86, full-corpus
+competitors) and the ratified sibling/hard-negative must-not-merge pairs.
+Embedding semantics replicated production exactly (`OnnxMemoryEmbedder`:
+tokenizer.json WordPiece lowercase, CLS pooling, L2 norm, bucket-of-8
+dynamic length, `title\nbody` composition, IntraOpNumThreads=4). Artifacts:
+the same pinned HF revision as the allowlist; `model_uint8.onnx` SHA-256
+matches the allowlisted `snowflake-arctic-embed-m-int8` entry;
+`model_fp16.onnx` SHA-256
+`7f8fcebda72ae4eec54769f42727c5c7484b271358d423bf610db7327093cb08`.
+
+| variant | MRR gold-prod (Δ) | MRR repooled-test (Δ) | recall@5 g-p / r-t (Δ) | twin-recall pair@τ0.86 → @τ′ | sibling separation | RSS steady/peak (eval harness) | corpus embed (1,216 docs) |
+|---------|------------------:|----------------------:|------------------------|------------------------------|--------------------|--------------------------------|--------------------------:|
+| fp32 (reference) | 0.2011 | 0.4665 | 0.1465 / 0.3477 | 32.8% (τ′=τ) | intact (margin 0.022) | 611 / 611 MB | 81.2 s |
+| fp16 | 0.2011 (±0.0000) | 0.4665 (±0.0000) | = / = | 32.8% → 32.8% (τ′≈0.860) | intact (≡fp32) | 948 / 951 MB | 128.0 s — **crashes at production session options** |
+| uint8 (int8 allowlist entry) | 0.2041 (+0.0030) | 0.4360 (−0.0306) | +0.0101 / −0.0341 | 23.6% → **32.0%** (τ′=0.845) | intact, margin halved (0.011) | **261 / 263 MB** | **66.3 s** |
+
+Key findings behind the table (full numbers stay local in
+`~/recall-research-local/2026-07/quant-eval/results.md` — corpus and gold
+sets are PII):
+
+- **fp16 is ruled out, hard.** ORT 1.27.0's CPU EP fails session
+  initialization on `model_fp16.onnx` at the default graph-optimization
+  level (`SimplifiedLayerNormFusion` references a missing
+  `InsertedPrecisionFreeCast` node arg) — production's `SessionOptions`
+  would crash at load. Under the only workaround (`ORT_ENABLE_EXTENDED`),
+  fp16 exactly matches fp32 quality (max pair-cosine |Δ| 1.5e-4) while
+  running 1.6× slower and using ~55% *more* RSS than fp32 (the CPU EP
+  inserts casts and keeps both precision copies live). No axis favors it.
+- **uint8 retrieval quality is within noise on real gold.** Paired
+  bootstrap (5,000 resamples): gold-prod deltas are non-negative
+  (MRR +0.0030, CI [−0.045, +0.058]); repooled-test dips ≤3.5pp with every
+  CI touching or crossing zero except nDCG@5 at [−0.0742, −0.0002]. Mixed
+  signs across sets, 22–33-query samples: no systematic ranking
+  degradation detectable — the D2 vector-parity shortfall (doc-vector
+  cosine to fp32 ≈0.974) does not surface as retrieval loss.
+- **uint8 does shift the nominator's operating point, systematically.**
+  Pair cosines compress downward (mean −0.0127, p95 |Δ| 0.035, max 0.051),
+  so at the fixed τ=0.86 twin-recall silently drops 32.8%→23.6%
+  (pair-AND, k=5). Quantile-matching fp32's pass-fraction gives
+  **τ′ = 0.845**, which restores twin-recall to 32.0% (within 0.8pp of
+  fp32). Sibling/hard-negative separation stays intact under τ′ (max
+  sibling cos 0.835 < 0.845; hard-neg max 0.770; both measured sibling
+  cosines moved *down* under uint8), but the hottest-sibling margin halves
+  (0.022 → 0.011) — re-verify if τ is ever tuned upward.
+- **Efficiency confirms the Stage A numbers** (python ORT harness vs the
+  C# bench: 611 vs 636 MB fp32, 261 vs 276 MB int8 — same shape). int8 +
+  daemon peak (397 MB) ≈ 660–675 MB against the 1 GB pod limit, vs
+  ≈1033 MB for fp32-dynamic.
+
+**Recommendation (evidence, not yet a decision-flip):** uint8 as the
+default is now supportable on real-retrieval evidence, with one mandatory
+condition — `NominatorSimilarityThreshold` must default to ~0.845 (not
+0.86) whenever the int8 model is selected, i.e. the threshold default
+becomes model-conditional. With that recalibration, every gold-metric this
+corpus can express is at or within noise of fp32, and the operator's
+1 GB-pod goal is met with >300 MB headroom instead of missed by 9 MB. If a
+model-conditional τ default is judged too much config surface, fp32-dynamic
+stands as the quality-reference default and int8 remains the documented
+opt-in — but the D2 parity-gate framing of int8 as a *retrieval-quality*
+downgrade is no longer supported by measurement; the real cost is a τ
+recalibration plus a halved sibling margin. fp16 should never be
+allowlisted for the CPU path.
+
 ### D3. Vector storage: separate `memory_embeddings` table, owned by the store
 
 `memory_embeddings(item_id, item_kind, model_id, content_hash, dims, vector
@@ -303,7 +374,11 @@ shippable as the default per the quality gate above. So Stage A gets
 meaningfully closer to the 1 GB goal (dynamic length alone, quality-neutral)
 without fully closing it; fully closing it needs either an accepted int8
 quality tradeoff (operator opt-in, already available) or the deferred remote
-embedder mode (see Non-Goals).
+embedder mode (see Non-Goals). *Update 2026-07-05*: the gold-metrics eval
+recorded under D2 ("Slice 4 follow-up") measured int8 retrieval quality at
+parity-within-noise on the real gold sets — the int8-as-default option now
+rests on a τ recalibration (0.86 → ~0.845), not a retrieval-quality
+tradeoff; see that section before treating fp32-as-default as settled.
 
 **Arena tuning (task A4), measured**: `tools/embed-latency-bench`'s `arena`
 mode ran a mixed doc-burst-then-queries workload (proper warmup, 60 doc-shaped
