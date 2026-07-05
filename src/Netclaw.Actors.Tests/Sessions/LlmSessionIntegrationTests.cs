@@ -1675,13 +1675,39 @@ internal sealed class FakeChatClient : IChatClient
 
     public int CallCount => _callCount;
 
-    public List<IReadOnlyList<ChatMessage>> ReceivedMessages { get; } = [];
-    public List<IReadOnlyList<string>> ReceivedToolNames { get; } = [];
+    // GetResponseAsync is invoked concurrently from multiple actor dispatcher / ThreadPool
+    // threads on one shared instance (main-model turn + compaction summarizer sidecar +
+    // fire-and-forget memory-extraction sidecar), while test threads enumerate and index the
+    // recorded collections. This gate serializes every append below, and the public getters
+    // return a snapshot copy taken under it. Locking the writes alone is NOT sufficient: a
+    // caller's List<T> enumeration still throws "Collection was modified" if an Add interleaves
+    // its MoveNext, so the read side must copy under the same lock. Never held across an await.
+    private readonly object _recordingGate = new();
+
+    private readonly List<IReadOnlyList<ChatMessage>> _receivedMessages = [];
+    private readonly List<IReadOnlyList<string>> _receivedToolNames = [];
+    private readonly List<ChatOptions?> _receivedOptions = [];
+
+    /// <summary>Snapshot copy taken under <see cref="_recordingGate"/> so a test can safely
+    /// enumerate / index / LINQ over it while actor threads keep appending.</summary>
+    public IReadOnlyList<IReadOnlyList<ChatMessage>> ReceivedMessages
+    {
+        get { lock (_recordingGate) { return _receivedMessages.ToArray(); } }
+    }
+
+    /// <summary>Snapshot copy taken under <see cref="_recordingGate"/>; see <see cref="ReceivedMessages"/>.</summary>
+    public IReadOnlyList<IReadOnlyList<string>> ReceivedToolNames
+    {
+        get { lock (_recordingGate) { return _receivedToolNames.ToArray(); } }
+    }
 
     /// <summary>The <see cref="ChatOptions"/> object passed on each call, so tests can
     /// assert the session actor threads a <c>SessionScopedChatOptions</c> carrier through
-    /// for per-session log correlation.</summary>
-    public List<ChatOptions?> ReceivedOptions { get; } = [];
+    /// for per-session log correlation. Snapshot copy taken under <see cref="_recordingGate"/>.</summary>
+    public IReadOnlyList<ChatOptions?> ReceivedOptions
+    {
+        get { lock (_recordingGate) { return _receivedOptions.ToArray(); } }
+    }
 
     public TimeSpan Delay { get; set; } = TimeSpan.Zero;
 
@@ -1778,16 +1804,26 @@ internal sealed class FakeChatClient : IChatClient
         ChatOptions? options = null,
         CancellationToken cancellationToken = default)
     {
-        if (PlannedExceptions.Count > 0)
-            throw PlannedExceptions.Dequeue();
-
+        // Materialize the caller's own enumerables outside the lock — they are private to this
+        // call and can be non-trivial to enumerate; only the shared-list appends need guarding.
         var messageList = messages.ToList();
-        ReceivedMessages.Add(messageList);
-        ReceivedOptions.Add(options);
-        ReceivedToolNames.Add(options?.Tools?
+        var toolNames = options?.Tools?
             .Select(t => t is AIFunction f ? f.Name : t.GetType().Name)
             .ToList()
-            ?? []);
+            ?? [];
+
+        lock (_recordingGate)
+        {
+            // Consume a planned exception before recording so a failed call is not counted
+            // (CallCount / recorded-messages contract). Every call path — main model and both
+            // sidecars — reaches this on a different thread, so the check+dequeue must be guarded.
+            if (PlannedExceptions.Count > 0)
+                throw PlannedExceptions.Dequeue();
+
+            _receivedMessages.Add(messageList);
+            _receivedOptions.Add(options);
+            _receivedToolNames.Add(toolNames);
+        }
         Interlocked.Increment(ref _callCount);
 
         if (Delay > TimeSpan.Zero)
