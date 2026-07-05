@@ -280,7 +280,7 @@ public static partial class SkillScanner
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            var skillName = Path.GetFileName(Path.GetDirectoryName(canonicalSkillFilePath)!);
+            var skillName = NormalizeSkillName(Path.GetFileName(Path.GetDirectoryName(canonicalSkillFilePath)!));
             issues.Add(new SkillScanIssue(
                 Path: canonicalSkillFilePath,
                 Kind: SkillScanIssueKind.UnreadableFile,
@@ -292,8 +292,10 @@ public static partial class SkillScanner
         var frontmatter = ExtractFrontmatter(content);
         if (frontmatter is null)
         {
-            var skillName = Path.GetFileName(Path.GetDirectoryName(canonicalSkillFilePath)!);
-            var hasFrontmatterStart = content.TrimStart('\uFEFF').StartsWith("---", StringComparison.Ordinal);
+            var skillName = NormalizeSkillName(Path.GetFileName(Path.GetDirectoryName(canonicalSkillFilePath)!));
+            // content is from File.ReadAllText, which already strips any UTF-8 BOM, so no TrimStart
+            // is needed here; BOM tolerance for direct-string callers lives in ExtractFrontmatter.
+            var hasFrontmatterStart = content.StartsWith("---", StringComparison.Ordinal);
             issues.Add(new SkillScanIssue(
                 Path: canonicalSkillFilePath,
                 Kind: hasFrontmatterStart
@@ -334,7 +336,7 @@ public static partial class SkillScanner
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            var skillName = Path.GetFileNameWithoutExtension(canonicalPath);
+            var skillName = NormalizeSkillName(Path.GetFileNameWithoutExtension(canonicalPath));
             issues.Add(new SkillScanIssue(
                 Path: canonicalPath,
                 Kind: SkillScanIssueKind.UnreadableFile,
@@ -346,10 +348,11 @@ public static partial class SkillScanner
         var frontmatter = ExtractFrontmatter(content);
         if (frontmatter is null)
         {
-            if (allowFrontmatterlessFlatFiles && !content.TrimStart('\uFEFF').StartsWith("---", StringComparison.Ordinal))
+            // content is from File.ReadAllText (BOM already stripped), so no TrimStart needed.
+            if (allowFrontmatterlessFlatFiles && !content.StartsWith("---", StringComparison.Ordinal))
                 return BuildFlatSkillEntryWithoutFrontmatter(canonicalPath, canonicalRoot, content, issues);
 
-            var skillName = Path.GetFileNameWithoutExtension(canonicalPath);
+            var skillName = NormalizeSkillName(Path.GetFileNameWithoutExtension(canonicalPath));
             issues.Add(new SkillScanIssue(
                 Path: canonicalPath,
                 Kind: SkillScanIssueKind.FlatFileMissingFrontmatter,
@@ -425,7 +428,16 @@ public static partial class SkillScanner
         if (closingIndex < 0)
             return null;
 
-        var yamlBlock = content[(content.IndexOf('\n', 0) + 1)..closingIndex];
+        // Guard degenerate blocks like "---\n---" where the opening line's newline IS the
+        // closing delimiter: the YAML body is empty, so there is nothing to deserialize.
+        // Without this, content[(firstNewline+1)..closingIndex] slices a negative-length
+        // range and throws ArgumentOutOfRangeException, which propagates out of Scan (the
+        // parse calls are unguarded) and aborts the entire skill-discovery pass.
+        var firstNewline = content.IndexOf('\n', StringComparison.Ordinal);
+        if (firstNewline < 0 || firstNewline >= closingIndex)
+            return null;
+
+        var yamlBlock = content[(firstNewline + 1)..closingIndex];
 
         try
         {
@@ -597,7 +609,9 @@ public static partial class SkillScanner
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            var skillName = Path.GetFileName(Path.GetDirectoryName(skillDirectory)!);
+            // skillDirectory is already the skill's own directory, so its leaf name IS the
+            // skill name — do not climb to the parent (that yields the container dir, e.g. "files").
+            var skillName = NormalizeSkillName(Path.GetFileName(skillDirectory));
             issues.Add(new SkillScanIssue(
                 Path: skillDirectory,
                 Kind: SkillScanIssueKind.ResourceEnumerationFailed,
