@@ -420,6 +420,41 @@
             }
           },
           "additionalProperties": false
+        },
+        "Recall": {
+          "type": "object",
+          "description": "Read-side hybrid recall settings: weighted lexical/vector fusion and the absolute cosine floor (memory-core-redesign Slice 4 Stage B).",
+          "properties": {
+            "VectorWeight": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.7,
+              "description": "Weight applied to a candidate's cosine similarity in the fused composite score."
+            },
+            "LexicalWeight": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.3,
+              "description": "Weight applied to a candidate's squashed lexical selector score in the fused composite score."
+            },
+            "MinCosineSimilarity": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.55,
+              "description": "Absolute relevance floor: when a query vector is available, any candidate below this cosine similarity is dropped before scoring. Placeholder pending Stage C calibration against the real-traffic gold set."
+            },
+            "RecencyHalfLifeDays": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3650,
+              "default": 180,
+              "description": "Half-life in days for the recency-decay multiplier applied to composite scores, floor-bounded at 0.7. Set to 0 to disable decay."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

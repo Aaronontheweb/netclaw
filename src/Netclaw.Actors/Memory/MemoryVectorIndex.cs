@@ -136,6 +136,44 @@ public sealed class MemoryVectorIndex
         return matches.Count <= k ? matches : matches.GetRange(0, k);
     }
 
+    /// <summary>
+    /// Returns the cosine similarity between <paramref name="query"/> and every id in
+    /// <paramref name="itemIds"/> that currently has an embedding in this index
+    /// (memory-core-redesign Slice 4, design D6 hybrid fusion). An id with no embedding —
+    /// never embedded, or embedded after this index's last reload — is simply absent from the
+    /// result; callers treat a missing entry as "no vector evidence for this candidate," not as
+    /// zero cosine and not as an error.
+    ///
+    /// <para>
+    /// Single pass over the snapshot scoped to the requested ids, rather than one
+    /// <see cref="TopK"/>-style scan per id: a recall turn asks this for every lexical
+    /// candidate (~15-20) in one call, so one shared scan is both simpler and cheaper than N
+    /// independent ones.
+    /// </para>
+    /// </summary>
+    public IReadOnlyDictionary<string, double> CosineForIds(IReadOnlySet<string> itemIds, ReadOnlySpan<float> query)
+    {
+        if (itemIds.Count == 0)
+            return new Dictionary<string, double>(0);
+        if (query.Length != Dimensions)
+            throw new ArgumentException($"Query vector has {query.Length} dimensions; index '{ModelId}' expects {Dimensions}.", nameof(query));
+
+        var snapshot = Volatile.Read(ref _snapshot);
+        if (snapshot.Ids.Length == 0)
+            return new Dictionary<string, double>(0);
+
+        var result = new Dictionary<string, double>(StringComparer.Ordinal);
+        for (var i = 0; i < snapshot.Ids.Length; i++)
+        {
+            if (!itemIds.Contains(snapshot.Ids[i]))
+                continue;
+            var candidate = snapshot.Vectors.AsSpan(i * Dimensions, Dimensions);
+            result[snapshot.Ids[i]] = TensorPrimitives.CosineSimilarity(query, candidate);
+        }
+
+        return result;
+    }
+
     private sealed record Snapshot(long Version, float[] Vectors, string[] Ids, string[] ItemKinds)
     {
         public static readonly Snapshot Empty = new(-1, [], [], []);

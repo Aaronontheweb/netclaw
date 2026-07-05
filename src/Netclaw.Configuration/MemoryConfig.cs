@@ -38,6 +38,12 @@ public sealed class MemoryConfig
     /// lossless merge). See <see cref="MemoryCurationConfig"/>.
     /// </summary>
     public MemoryCurationConfig Curation { get; set; } = new();
+
+    /// <summary>
+    /// Read-side hybrid recall settings (memory-core-redesign Slice 4 Stage B: weighted
+    /// fusion + absolute cosine floor). See <see cref="MemoryRecallConfig"/>.
+    /// </summary>
+    public MemoryRecallConfig Recall { get; set; } = new();
 }
 
 /// <summary>
@@ -128,4 +134,48 @@ public sealed class MemoryCurationConfig
     /// ignores reasoning suppression and thinks at length regardless of the token cap above.
     /// </summary>
     public int LlmTimeoutSeconds { get; set; } = 10;
+}
+
+/// <summary>
+/// Configuration for read-side hybrid recall: weighted lexical/vector fusion and the absolute
+/// cosine floor (memory-core-redesign Slice 4 Stage B, design D6). Consumed by
+/// <see cref="Netclaw.Actors.Sessions.SQLiteMemoryRecallCoordinator"/>. All properties are
+/// defaulted — no operator configuration is required to get hybrid recall once
+/// <see cref="MemoryEmbeddingsConfig.Enabled"/> is on; a query with no embedding available
+/// (embedder unavailable, over its sub-budget) degrades to the pre-Slice-4 lexical-only floor
+/// unchanged, regardless of these values.
+/// </summary>
+public sealed class MemoryRecallConfig
+{
+    /// <summary>
+    /// Weight applied to a candidate's cosine similarity in the fused composite score
+    /// (<c>Composite = VectorWeight*cosine + LexicalWeight*squash(selectorScore) + classPrior</c>).
+    /// </summary>
+    public double VectorWeight { get; set; } = 0.7;
+
+    /// <summary>
+    /// Weight applied to a candidate's squashed lexical selector score in the fused composite
+    /// score. See <see cref="VectorWeight"/> for the full formula.
+    /// </summary>
+    public double LexicalWeight { get; set; } = 0.3;
+
+    /// <summary>
+    /// Absolute relevance floor: when a query vector is available, any candidate — vector- or
+    /// lexical-sourced — whose cosine similarity to the query falls below this value is dropped
+    /// before scoring, regardless of composite score. Nothing surviving means nothing is
+    /// injected and the <c>[memory-recall]</c> block is omitted entirely (spec scenario
+    /// "Nothing relevant means nothing injected"). Default 0.55 is a placeholder pending Stage
+    /// C calibration against the real-traffic gold set (<c>gold-prod-2026-07</c>, design D6/task
+    /// 4.6) — do not treat this number as validated until that calibration lands.
+    /// </summary>
+    public double MinCosineSimilarity { get; set; } = 0.55;
+
+    /// <summary>
+    /// Half-life, in days, for the recency-decay multiplier applied to every candidate's
+    /// composite score (<c>max(0.7, 2^(-ageDays/RecencyHalfLifeDays))</c>), floor-bounded at 0.7
+    /// so an old-but-otherwise-strong match is downweighted, never zeroed. Age is measured from
+    /// the item's freshness/updated timestamp. Set to 0 to disable decay entirely (multiplier
+    /// always 1.0).
+    /// </summary>
+    public int RecencyHalfLifeDays { get; set; } = 180;
 }

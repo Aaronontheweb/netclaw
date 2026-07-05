@@ -990,6 +990,108 @@ public sealed class SQLiteMemoryStore
         }, ct);
     }
 
+    /// <summary>
+    /// Hydrates documents by id and applies the IDENTICAL policy predicates
+    /// <see cref="SearchByPlanAsync"/> applies to its lexical hits — recall-mode allowlist
+    /// (auto/searchable), boundary equality (with the legacy-restricted fallback), audience
+    /// membership, sensitivity exclusion (never secret), memory-class allowlist, and expiry —
+    /// so a vector-sourced candidate can never bypass a gate a lexically-discovered one would
+    /// have to clear (memory-core-redesign Slice 4, design D6, spec scenario "Vector-sourced
+    /// candidates obey policy gates"). This is a SECURITY requirement, not a convenience
+    /// method: <see cref="MemoryVectorIndex.TopK"/> returns bare ids+cosine with no policy
+    /// fields at all, so the hybrid recall coordinator (<see cref="Netclaw.Actors.Sessions.SQLiteMemoryRecallCoordinator"/>)
+    /// MUST hydrate through this method — never through a raw id lookup — before a vector hit
+    /// is allowed to reach scoring.
+    ///
+    /// <para>
+    /// Documents only: only <c>document</c> items are ever embedded
+    /// (<see cref="MemoryEmbedOnWriteCoordinator.DocumentItemKind"/> — immutable records bypass
+    /// curation and are never embedded), so a vector top-k match is always a document id. Callers
+    /// still filter defensively to the document item kind before calling this, mirroring
+    /// <see cref="MemoryCurationEvaluator"/>'s own defensive filter, rather than assuming.
+    /// </para>
+    /// </summary>
+    public async Task<IReadOnlyList<SQLiteMemoryHydratedItem>> GetRecallCandidatesByIdsAsync(
+        IReadOnlyList<string> documentIds,
+        string boundary,
+        TrustAudience audience,
+        IReadOnlyList<string> allowedMemoryClasses,
+        bool allowExpiredEvidence,
+        CancellationToken ct = default)
+    {
+        if (documentIds.Count == 0 || allowedMemoryClasses.Count == 0)
+            return [];
+
+        return await WithConnectionAsync(async (conn, ct) =>
+        {
+        var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        await using var cmd = conn.CreateCommand();
+
+        var idClauses = new List<string>();
+        for (var i = 0; i < documentIds.Count; i++)
+        {
+            idClauses.Add($"$id{i}");
+            cmd.Parameters.AddWithValue($"$id{i}", documentIds[i]);
+        }
+
+        var classClauses = new List<string>();
+        for (var i = 0; i < allowedMemoryClasses.Count; i++)
+        {
+            classClauses.Add($"$c{i}");
+            cmd.Parameters.AddWithValue($"$c{i}", allowedMemoryClasses[i]);
+        }
+
+        var allowedAudiences = MemoryPolicyEvaluator.AllowedAudienceWireValues(audience);
+        var audienceClauses = new List<string>();
+        for (var i = 0; i < allowedAudiences.Count; i++)
+        {
+            audienceClauses.Add($"$a{i}");
+            cmd.Parameters.AddWithValue($"$a{i}", allowedAudiences[i]);
+        }
+
+        cmd.CommandText = $"""
+            SELECT document_id, memory_class, title, markdown_body, aliases_json, facets_json, slots_json, boundary, audience, sensitivity, recall_mode, update_semantics, expires_at, updated_at
+            FROM memory_documents
+            WHERE document_id IN ({string.Join(",", idClauses)})
+              AND recall_mode IN ('{MemoryRecallMode.Auto.ToWireValue()}', '{MemoryRecallMode.Searchable.ToWireValue()}')
+              AND COALESCE(boundary, $legacyBoundary) = $boundary
+              AND COALESCE(audience, $fallbackAudience) IN ({string.Join(",", audienceClauses)})
+              AND sensitivity != '{MemorySensitivity.Secret.ToWireValue()}'
+              AND memory_class IN ({string.Join(",", classClauses)})
+              AND (expires_at IS NULL OR expires_at > $now OR $allowExpiredEvidence = 1);
+            """;
+        cmd.Parameters.AddWithValue("$boundary", boundary);
+        cmd.Parameters.AddWithValue("$legacyBoundary", TrustBoundary.LegacyRestrictedValue);
+        cmd.Parameters.AddWithValue("$fallbackAudience", TrustAudience.Personal.ToWireValue());
+        cmd.Parameters.AddWithValue("$now", now);
+        cmd.Parameters.AddWithValue("$allowExpiredEvidence", allowExpiredEvidence ? 1 : 0);
+
+        var output = new List<SQLiteMemoryHydratedItem>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            output.Add(new SQLiteMemoryHydratedItem(
+                Id: reader.GetString(0),
+                Kind: "document",
+                MemoryClass: reader.GetString(1),
+                Title: reader.GetString(2),
+                Content: reader.GetString(3),
+                AliasesJson: reader.IsDBNull(4) ? null : reader.GetString(4),
+                FacetsJson: reader.IsDBNull(5) ? null : reader.GetString(5),
+                SlotsJson: reader.IsDBNull(6) ? null : reader.GetString(6),
+                Boundary: reader.IsDBNull(7) ? TrustBoundary.LegacyRestrictedValue : reader.GetString(7),
+                Audience: reader.IsDBNull(8) ? TrustAudience.Personal.ToWireValue() : reader.GetString(8),
+                Sensitivity: reader.GetString(9),
+                RecallMode: reader.GetString(10),
+                UpdateSemantics: reader.GetString(11),
+                ExpiresAtMs: reader.IsDBNull(12) ? null : reader.GetInt64(12),
+                UpdatedAtMs: reader.GetInt64(13)));
+        }
+
+        return (IReadOnlyList<SQLiteMemoryHydratedItem>)output;
+        }, ct);
+    }
+
     public async Task<bool> UpdateDocumentTextAsync(string documentId, string oldText, string newText, CancellationToken ct = default)
     {
         return await WithConnectionAsync(async (conn, ct) =>
