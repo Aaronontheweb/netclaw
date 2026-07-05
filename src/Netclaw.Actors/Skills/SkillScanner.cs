@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="SkillScanner.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -280,24 +280,29 @@ public static partial class SkillScanner
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            var skillName = Path.GetFileName(Path.GetDirectoryName(canonicalSkillFilePath)!);
             issues.Add(new SkillScanIssue(
                 Path: canonicalSkillFilePath,
                 Kind: SkillScanIssueKind.UnreadableFile,
-                Message: $"Failed to read skill file: {ex.Message}"));
+                Message: $"Failed to read skill file: {ex.Message}",
+                SkillName: skillName));
             return null;
         }
 
         var frontmatter = ExtractFrontmatter(content);
         if (frontmatter is null)
         {
+            var skillName = Path.GetFileName(Path.GetDirectoryName(canonicalSkillFilePath)!);
+            var hasFrontmatterStart = content.TrimStart('\uFEFF').StartsWith("---", StringComparison.Ordinal);
             issues.Add(new SkillScanIssue(
                 Path: canonicalSkillFilePath,
-                Kind: content.StartsWith("---", StringComparison.Ordinal)
+                Kind: hasFrontmatterStart
                     ? SkillScanIssueKind.InvalidFrontmatter
                     : SkillScanIssueKind.MissingFrontmatter,
-                Message: content.StartsWith("---", StringComparison.Ordinal)
+                Message: hasFrontmatterStart
                     ? "Skill frontmatter is invalid or unparseable."
-                    : "Skill file must start with YAML frontmatter."));
+                    : "Skill file must start with YAML frontmatter.",
+                SkillName: skillName));
             return null;
         }
 
@@ -329,32 +334,27 @@ public static partial class SkillScanner
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            var skillName = Path.GetFileNameWithoutExtension(canonicalPath);
             issues.Add(new SkillScanIssue(
                 Path: canonicalPath,
                 Kind: SkillScanIssueKind.UnreadableFile,
-                Message: $"Failed to read flat skill file: {ex.Message}"));
+                Message: $"Failed to read flat skill file: {ex.Message}",
+                SkillName: skillName));
             return null;
         }
 
         var frontmatter = ExtractFrontmatter(content);
         if (frontmatter is null)
         {
-            if (allowFrontmatterlessFlatFiles && !content.StartsWith("---", StringComparison.Ordinal))
+            if (allowFrontmatterlessFlatFiles && !content.TrimStart('\uFEFF').StartsWith("---", StringComparison.Ordinal))
                 return BuildFlatSkillEntryWithoutFrontmatter(canonicalPath, canonicalRoot, content, issues);
 
+            var skillName = Path.GetFileNameWithoutExtension(canonicalPath);
             issues.Add(new SkillScanIssue(
                 Path: canonicalPath,
                 Kind: SkillScanIssueKind.FlatFileMissingFrontmatter,
-                Message: "Flat .md file found but lacks valid YAML frontmatter. Add frontmatter with name and description, or move into a skill-name/SKILL.md directory."));
-            return null;
-        }
-
-        if (string.IsNullOrWhiteSpace(frontmatter.Description))
-        {
-            issues.Add(new SkillScanIssue(
-                Path: canonicalPath,
-                Kind: SkillScanIssueKind.FlatFileNoDescription,
-                Message: "Flat .md file has frontmatter but missing description field."));
+                Message: "Flat .md file found but lacks valid YAML frontmatter. Add frontmatter with name and description, or move into a skill-name/SKILL.md directory.",
+                SkillName: skillName));
             return null;
         }
 
@@ -363,6 +363,16 @@ public static partial class SkillScanner
         var name = !string.IsNullOrWhiteSpace(frontmatter.Name)
             ? NormalizeSkillName(frontmatter.Name)
             : NormalizeSkillName(fileNameWithoutExt);
+
+        if (string.IsNullOrWhiteSpace(frontmatter.Description))
+        {
+            issues.Add(new SkillScanIssue(
+                Path: canonicalPath,
+                Kind: SkillScanIssueKind.FlatFileNoDescription,
+                Message: "Flat .md file has frontmatter but missing description field.",
+                SkillName: name));
+            return null;
+        }
 
         if (strictNameMatch && !string.IsNullOrWhiteSpace(frontmatter.Name))
         {
@@ -405,6 +415,8 @@ public static partial class SkillScanner
     /// </summary>
     public static SkillFrontmatter? ExtractFrontmatter(string content)
     {
+        // Strip UTF-8 BOM — some editors (e.g., Notepad on Windows) prepend \uFEFF
+        content = content.TrimStart('\uFEFF');
         if (!content.StartsWith("---", StringComparison.Ordinal))
             return null;
 
@@ -451,10 +463,14 @@ public static partial class SkillScanner
         // Description is required per AgentSkills.io spec
         if (string.IsNullOrWhiteSpace(fm.Description))
         {
+            var skillName = !string.IsNullOrWhiteSpace(fm.Name)
+                ? NormalizeSkillName(fm.Name)
+                : NormalizeSkillName(Path.GetFileName(skillDirectory));
             issues.Add(new SkillScanIssue(
                 Path: filePath,
                 Kind: SkillScanIssueKind.MissingDescription,
-                Message: "Skill frontmatter must include a non-empty description."));
+                Message: "Skill frontmatter must include a non-empty description.",
+                SkillName: skillName));
             return null;
         }
 
@@ -581,10 +597,12 @@ public static partial class SkillScanner
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            var skillName = Path.GetFileName(Path.GetDirectoryName(skillDirectory)!);
             issues.Add(new SkillScanIssue(
                 Path: skillDirectory,
                 Kind: SkillScanIssueKind.ResourceEnumerationFailed,
-                Message: $"Failed to enumerate resources: {ex.Message}"));
+                Message: $"Failed to enumerate resources: {ex.Message}",
+                SkillName: skillName));
             return null;
         }
 
@@ -632,10 +650,12 @@ public static partial class SkillScanner
         var description = ExtractFirstNonEmptyMarkdownLine(content);
         if (string.IsNullOrWhiteSpace(description))
         {
+            var skillName = NormalizeSkillName(Path.GetFileNameWithoutExtension(canonicalPath));
             issues.Add(new SkillScanIssue(
                 Path: canonicalPath,
                 Kind: SkillScanIssueKind.FlatFileNoDescription,
-                Message: "Flat .md file without frontmatter must contain at least one non-empty line to infer a description."));
+                Message: "Flat .md file without frontmatter must contain at least one non-empty line to infer a description.",
+                SkillName: skillName));
             return null;
         }
 
