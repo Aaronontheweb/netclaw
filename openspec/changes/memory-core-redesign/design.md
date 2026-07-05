@@ -61,6 +61,13 @@ hard latency budget (`Memory.RecallTimeoutMs`, default 300 ms).
 - Applying consolidation to any corpus as part of implementation (tooling
   ships; each apply run is an operator decision).
 - Multi-node/cluster memory; this remains single-process MVP.
+- Remote embedder mode (calling an OpenAI-compatible `/v1/embeddings`
+  endpoint instead of in-process ONNX) — deferred future path for
+  memory-constrained fleets that need embedding RAM off the daemon's own
+  pod entirely, per operator direction (Slice 4 Stage A: in-process int8
+  quantization got RAM down substantially but failed its quality gate as a
+  default — see D2/D6 — so a remote option remains the lever for fleets
+  that can't accept either the fp32 RAM cost or the int8 quality tradeoff).
 
 ## Decisions
 
@@ -91,10 +98,71 @@ daemon start when `AutoDownload=true` (atomic temp+rename download, hash
 verify, then one warm-up inference), or the operator runs
 `netclaw memory backfill-embeddings`. The ~90–140 MB artifact is never an
 embedded resource (would bloat every RID publish). Default model:
-snowflake-arctic-embed-m (~110M params, fp32 ONNX, pinned by hash — int8 is a
-future optimization, not what Stage A shipped; May-ratified), mxbai-embed-large
-335M is the allowlisted fallback. Post-PoC decision deferred: mirroring
-artifacts into the existing R2 feeds channel vs pinned upstream URLs.
+snowflake-arctic-embed-m (~110M params, fp32 ONNX, pinned by hash;
+May-ratified), mxbai-embed-large 335M is the allowlisted fallback.
+Post-PoC decision deferred: mirroring artifacts into the existing R2 feeds
+channel vs pinned upstream URLs.
+
+**Slice 4 Stage A: int8 quantization evaluated, quality gate failed, fp32
+stays the default.** The operator-set goal was RAM lean enough that enabling
+the in-process embedder is a non-decision inside a 1 GB pod. HuggingFace's
+`Snowflake/snowflake-arctic-embed-m` repo (same pinned commit
+`fc74610d18462d218e312aa986ec5c8a75a98152`) publishes several pre-quantized
+ONNX artifacts under `onnx/`: `model_fp16.onnx` (218 MB), `model_int8.onnx`
+and `model_quantized.onnx` (byte-identical to each other, 110 MB, signed
+QInt8 weights — the "s8s8" scheme), `model_uint8.onnx` (110 MB, unsigned
+QUInt8 weights — the "u8u8" scheme, a genuinely different artifact with a
+different pinned hash, not an alias), `model_q4.onnx` (149 MB, 4-bit), and
+`model_bnb4.onnx` (144 MB, bitsandbytes 4-bit). `model_uint8.onnx` was added
+to the allowlist as `snowflake-arctic-embed-m-int8`
+(SHA-256 `4cfc22160ddd52bac43697b6b84a4b29ea25a82db23841c27436dbddcfd5f88a`,
+110,084,023 bytes) — QUInt8 is ORT's portable-across-architectures dynamic
+quantization scheme (matches what
+`onnxruntime.quantization.quantize_dynamic(weight_type=QUInt8)` would produce
+locally) and avoids the accuracy/VNNI caveats ORT's own docs attach to signed
+QInt8 on non-VNNI hardware.
+
+Quality was validated against fp32, not assumed (`tools/embed-latency-bench`
+`parity` mode: 20 short queries + 20 doc-like paragraphs, per-sentence
+cosine(fp32, int8); 10 near-duplicate pairs + 5 unrelated pairs, pair-cosine
+delta). Both `model_uint8.onnx` and the signed `model_int8.onnx` sibling were
+measured (the latter as a one-off comparison, not allowlisted) — same
+shortfall, so the choice between the two 8-bit schemes was not the problem:
+
+| metric (int8 = model_uint8.onnx)              | measured  | gate    | result |
+|------------------------------------------------|-----------|---------|--------|
+| per-sentence parity, mean cosine(fp32,int8)     | 0.9829    | ≥ 0.99  | **FAIL** |
+| per-sentence parity, min cosine                | 0.9609    | —       | (informational) |
+| — short queries only (20)                       | 0.991–0.996 | —     | passes alone |
+| — doc-like paragraphs only (20)                 | 0.953–0.981 | —     | fails alone |
+| max pair-cosine delta (10 near-dup + 5 unrelated)| 0.0231    | ≤ 0.02  | **FAIL** (barely) |
+| near-dup min cosine (int8) vs unrelated max (int8) | 0.8598 vs 0.6326 | separation holds | pass |
+
+(For reference, the signed `model_int8.onnx` scored mean parity 0.9807, min
+0.9535, max pair delta 0.0191 — the pair-delta gate passes by that scheme but
+per-sentence mean parity still fails; not a better overall choice.)
+
+The failure is systematic and length-correlated, not noise: every one of the
+20 short queries (13–20 tokens) parity above 0.99; every one of the 20
+doc-like paragraphs (~440 tokens) parity below 0.99, in a tight band
+(0.953–0.981) — 8-bit quantization error compounds across the transformer's
+attention computation as sequence length grows. The nominator threshold's
+discriminative power is *not* at risk (near-dup vs unrelated separation holds
+comfortably under int8 too, so `NominatorSimilarityThreshold=0.86` would not
+need recalibration if int8 shipped), but the acceptance gate for *shipping a
+new default* is per-sentence parity, and that gate fails.
+
+Per the "no silent fallbacks" / "get the score up, don't move the goalposts"
+rule: **the default stays fp32 `snowflake-arctic-embed-m`.**
+`snowflake-arctic-embed-m-int8` remains allowlisted as an explicit,
+documented opt-in for operators who can tolerate degraded doc-embedding
+quality in exchange for RAM (see the RSS/latency table under D6 — it is not
+a non-decision, but it is an available lever). Revisiting this is future
+work: either a differently-calibrated (static, not dynamic) quantization
+method, or accepting the current tradeoff deliberately per-deployment. See
+also the Non-Goals note below on remote embedder mode as the alternative
+lever for memory-constrained fleets that don't want any in-process quality
+tradeoff at all.
 
 ### D3. Vector storage: separate `memory_embeddings` table, owned by the store
 
@@ -198,6 +266,57 @@ retrieval-quality risk. **Decision: Slice 4 adopts dynamic sequence length
 (bucket-of-8 rounding) as the query-embedding mitigation**, not int8
 quantization and not a relaxed budget — the 150 ms sub-budget holds with
 large headroom once padding is length-aware.
+
+**Slice 4 Stage A: dynamic length moved into production, RAM measured
+end-to-end.** The experiment above is no longer a bench-only parallel code
+path — `OnnxMemoryEmbedder.EmbedOne` now pads to `bucket-of-8(actual
+token count)` capped at 512 unconditionally (no flag; the parity measurement
+above proved there is no scenario where fixed-512 is preferable). This also
+answered the RAM question the fixed-512 measurement raised but didn't
+answer: how much of the ~988 MB steady RSS was the model weights vs. an ORT
+arena sized for a fixed 512-token workload. Full before/after, same
+reference box (i9-9900K, 8 logical cores; this run was on a heavily shared
+dev box — load average 85–600 during measurement, roughly 15–100× the
+Slice 2 measurement's contention, so treat absolute latency digits as
+directional and RSS as the trustworthy signal):
+
+| build                        | RSS steady | RSS peak (VmHWM) | cold load | short p50/p95 | medium p50/p95 | doc p50/p95 |
+|-------------------------------|-----------:|-----------------:|----------:|---------------:|----------------:|-------------:|
+| fp32, fixed-512 (Slice 2 baseline, pre-Stage-A) | ~988 MB | ~998 MB | ~1069 ms | 281.9/310.5 ms | 281.7/312.2 ms | 280.3/304.6 ms |
+| fp32, dynamic-length (Stage A, allowlisted alternative) | 636 MB | 636 MB | 2010 ms | 20.0/22.6 ms | 91.1/132.9 ms | 246.5/376.6 ms |
+| **int8, dynamic-length (Stage A, allowlisted opt-in, not default — see D2)** | **276 MB** | **276 MB** | **726 ms** | **9.6/11.8 ms** | **69.4/81.3 ms** | **206.6/230.3 ms** |
+
+fp32 + dynamic length alone drops steady RSS ~36% (988→636 MB) versus the
+fixed-512 baseline purely from no longer forcing every ORT arena allocation
+to a 512-token shape — a quality-neutral win that ships regardless of the
+int8 decision. The int8 build (opt-in only; D2) would additionally drop RSS
+~72% from the original baseline (988→276 MB) with faster latency across the
+board, but does not ship as the default because its measured quality parity
+against fp32 failed the acceptance gate (D2) — cold-load and steady RSS
+above are for the record, not a claim that int8 is production-recommended.
+
+**1 GB pod goal, current state**: daemon baseline measured ~265 MB RSS
+steady / ~397 MB peak. fp32-dynamic (636 MB) + daemon peak (397 MB) ≈
+1033 MB — essentially at the 1 GB line, not comfortably under it. Int8
+(276 MB) + daemon peak ≈ 673 MB would clear it with a wide margin, but isn't
+shippable as the default per the quality gate above. So Stage A gets
+meaningfully closer to the 1 GB goal (dynamic length alone, quality-neutral)
+without fully closing it; fully closing it needs either an accepted int8
+quality tradeoff (operator opt-in, already available) or the deferred remote
+embedder mode (see Non-Goals).
+
+**Arena tuning (task A4), measured**: `tools/embed-latency-bench`'s `arena`
+mode ran a mixed doc-burst-then-queries workload (proper warmup, 60 doc-shaped
++ 200 query-shaped timed samples per combination) against all four
+`SessionOptions` combinations of `EnableCpuMemArena` × `EnableMemoryPattern`
+on the int8 build. Result: ORT's defaults (both `true`) won or tied on every
+axis measured — disabling `EnableMemoryPattern` alone regressed doc-embedding
+p95 from 337 ms to 727 ms (≈2×) for a ~3% RSS saving (284→275 MB peak);
+disabling `EnableCpuMemArena` (either combination) *increased* peak RSS to
+303–312 MB while also increasing doc-embedding latency. No combination was a
+clear win at the constitution's ≤10% latency-cost bar, so **the defaults are
+kept, unmodified, with a comment recording this measurement** rather than
+exposed as a new config knob (`OnnxMemoryEmbedder.LoadAsync`).
 
 ### D7. Taxonomy rebalance: recall modes mean what they say
 
@@ -375,3 +494,26 @@ compatibility; only dead *behavior* is deleted.
   operational decision; allowlist design is unaffected).
 - Trace auto-recall weighting while fresh (small prior vs durable-fact parity)
   — decide with eval cases in Slice 5.
+- ~~Can int8 quantization become the default embedding model, and does its
+  quality hold up against fp32 (Slice 4 Stage A)?~~ **MEASURED AND
+  RESOLVED — NOT SHIPPED.** `tools/embed-latency-bench` `parity` mode
+  measured `snowflake-arctic-embed-m-int8` (HuggingFace's `model_uint8.onnx`,
+  QUInt8 dynamic quantization) against fp32 on a 40-sentence probe set +
+  15 pairs (10 near-dup, 5 unrelated): mean per-sentence cosine parity 0.9829
+  against a ≥0.99 gate (**fail**), driven entirely by doc-length content
+  (0.953–0.981) while short queries stayed ≥0.99; max pair-cosine delta
+  0.0231 against a ≤0.02 gate (**fail**, barely). The signed QInt8 sibling
+  (`model_int8.onnx`) was also measured as a cross-check — same shortfall
+  (mean parity 0.9807), so the failure is not specific to one 8-bit scheme.
+  Near-dup/unrelated separation held under int8 in both cases, so
+  `NominatorSimilarityThreshold=0.86` would not need recalibration if int8
+  ever shipped — the blocker is purely the per-sentence/pair-delta parity
+  gate. **Decision: fp32 stays the default; int8 remains an allowlisted
+  opt-in, not a non-decision default.** Open follow-up: whether a
+  statically-calibrated (not dynamic) quantization method closes the gap,
+  deferred past Stage A.
+- Remaining open question for the 1 GB pod goal: dynamic sequence length
+  alone (fp32, shipped) got RSS from ~988 MB to ~636 MB — real progress, but
+  636 MB + the ~397 MB daemon peak (≈1033 MB) is still marginally over a
+  1 GB limit. Fully closing that gap needs either an operator-accepted int8
+  opt-in or the deferred remote embedder mode (see Non-Goals).

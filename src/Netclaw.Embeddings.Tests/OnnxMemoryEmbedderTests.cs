@@ -99,4 +99,33 @@ public sealed class OnnxMemoryEmbedderTests : IAsyncLifetime
         var batch = await _embedder.EmbedBatchAsync([], TestContext.Current.CancellationToken);
         Assert.Empty(batch);
     }
+
+    [Fact]
+    public async Task EmbedAsync_handles_a_long_input_that_crosses_multiple_buckets()
+    {
+        // Slice 4 D6: production now pads to the actual tokenized length rounded up to a
+        // multiple of 8 (capped at 512), not always a fixed 512. Repeating the vocab well past
+        // one bucket exercises a bucket boundary other than the smallest one, on the real
+        // ONNX Run() path (not just the pure ComputeBucketedLength math below).
+        var longText = string.Join(' ', Enumerable.Repeat("cat sat on the mat dog running quarterly revenue grew percent", 20));
+
+        var vector = await _embedder.EmbedAsync(longText, TestContext.Current.CancellationToken);
+
+        Assert.Equal(Dimensions, vector.Length);
+        var normSquared = vector.ToArray().Sum(x => (double)x * x);
+        Assert.True(Math.Abs(normSquared - 1.0) < 1e-4, $"expected unit-length vector, got ||v||^2={normSquared}");
+    }
+
+    [Theory]
+    [InlineData(0, 8, 512, 8)]      // floor: even an empty/near-empty input still gets one bucket
+    [InlineData(1, 8, 512, 8)]
+    [InlineData(8, 8, 512, 8)]      // exact bucket boundary rounds to itself, not the next bucket
+    [InlineData(9, 8, 512, 16)]
+    [InlineData(505, 8, 512, 512)]  // rounds up to 512, exactly at the cap
+    [InlineData(512, 8, 512, 512)]  // already at the cap
+    [InlineData(600, 8, 512, 512)]  // would round past the cap; clamped instead
+    public void ComputeBucketedLength_rounds_up_and_clamps_correctly(int actualLength, int bucket, int maxTokens, int expected)
+    {
+        Assert.Equal(expected, OnnxMemoryEmbedder.ComputeBucketedLength(actualLength, bucket, maxTokens));
+    }
 }

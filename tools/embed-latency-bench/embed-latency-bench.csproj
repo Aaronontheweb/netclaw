@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Netclaw.Embeddings\Netclaw.Embeddings.csproj" />
+    <ProjectReference Include="..\..\src\Netclaw.Configuration\Netclaw.Configuration.csproj" />
   </ItemGroup>
 
 </Project>

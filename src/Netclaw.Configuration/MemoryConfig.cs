@@ -60,6 +60,18 @@ public sealed class MemoryEmbeddingsConfig
     /// <c>Netclaw.Embeddings</c>). An id absent from the allowlist is a configuration error,
     /// surfaced by the doctor check and warmup service — never a silently-accepted arbitrary
     /// model source (supply-chain boundary, design D2).
+    ///
+    /// <para>
+    /// Stays fp32 <c>snowflake-arctic-embed-m</c> (memory-core-redesign Slice 4 Stage A): a
+    /// RAM-lean <c>snowflake-arctic-embed-m-int8</c> quantized build was evaluated as the
+    /// candidate default (it is ~1/4 the disk size with a much smaller ORT arena — see
+    /// design.md D1/D2 for the RSS table), but its measured quality-parity numbers against fp32
+    /// (<c>tools/embed-latency-bench</c> parity mode) fell short of the acceptance gate on
+    /// doc-length content (mean per-sentence cosine parity ~0.98 against a ≥0.99 gate). Quality
+    /// was validated, not assumed, per the design D1/D2 constraint — and found short, so the
+    /// default stays fp32 rather than shipping a degraded default. The int8 build remains
+    /// allowlisted as an explicit opt-in for operators who can accept that tradeoff.
+    /// </para>
     /// </summary>
     public string ModelId { get; set; } = "snowflake-arctic-embed-m";
 

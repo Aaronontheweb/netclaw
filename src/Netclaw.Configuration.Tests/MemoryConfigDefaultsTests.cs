@@ -26,6 +26,11 @@ public sealed class MemoryConfigDefaultsTests
     [Fact]
     public void Embeddings_model_id_defaults_to_snowflake_arctic_embed_m()
     {
+        // memory-core-redesign Slice 4 Stage A evaluated a RAM-lean int8 build as the default
+        // candidate, but its measured quality parity against fp32 fell short of the acceptance
+        // gate on doc-length content (tools/embed-latency-bench parity mode; numbers in
+        // design.md D1/D2) — fp32 stays the default rather than shipping a degraded one. The
+        // int8 build remains allowlisted as an explicit opt-in.
         var config = new MemoryConfig();
         Assert.Equal("snowflake-arctic-embed-m", config.Embeddings.ModelId);
     }

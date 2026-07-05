@@ -234,6 +234,28 @@ public sealed class EmbeddingModelProvisionerTests : IAsyncLifetime
         Assert.All(EmbeddingModelProvisioner.Allowlist.Values, e => Assert.Equal(64, e.TokenizerSha256.Length));
     }
 
+    [Fact]
+    public void ProductionAllowlist_has_the_int8_opt_in_model_distinct_from_its_fp32_counterpart()
+    {
+        // memory-core-redesign Slice 4 Stage A: the allowlisted int8 build (opt-in only — its
+        // measured quality parity against fp32 fell short of the acceptance gate, so it is not
+        // the default) is a genuinely different artifact (different URL, different pinned hash,
+        // ~1/4 the byte size) from the fp32 entry it derives from, not an alias to the same file.
+        Assert.True(EmbeddingModelProvisioner.Allowlist.ContainsKey("snowflake-arctic-embed-m-int8"));
+        var int8Entry = EmbeddingModelProvisioner.Allowlist["snowflake-arctic-embed-m-int8"];
+        var fp32Entry = EmbeddingModelProvisioner.Allowlist["snowflake-arctic-embed-m"];
+
+        Assert.Equal(768, int8Entry.Dimensions);
+        Assert.Equal(fp32Entry.Dimensions, int8Entry.Dimensions);
+        Assert.NotEqual(fp32Entry.ModelUrl, int8Entry.ModelUrl);
+        Assert.NotEqual(fp32Entry.ModelSha256, int8Entry.ModelSha256);
+        Assert.True(int8Entry.ModelByteSize < fp32Entry.ModelByteSize / 2,
+            $"expected the int8 artifact ({int8Entry.ModelByteSize} bytes) to be well under half the fp32 artifact ({fp32Entry.ModelByteSize} bytes)");
+        // Same upstream repo/commit, same tokenizer — only the model weights are quantized.
+        Assert.Equal(fp32Entry.TokenizerUrl, int8Entry.TokenizerUrl);
+        Assert.Equal(fp32Entry.TokenizerSha256, int8Entry.TokenizerSha256);
+    }
+
     private static EmbeddingModelManifestEntry DummyEntry(string id)
         => new(id, new Uri("http://127.0.0.1:1/model.onnx"), new Uri("http://127.0.0.1:1/vocab.txt"), new string('0', 64), new string('0', 64), 8, 1);
 }

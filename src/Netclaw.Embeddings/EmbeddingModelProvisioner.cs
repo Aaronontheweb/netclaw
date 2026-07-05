@@ -51,17 +51,54 @@ public sealed class EmbeddingModelProvisioner
 {
     /// <summary>
     /// Pinned allowlist: model id → download locations, expected hashes, and dimensions.
-    /// Primary is <c>snowflake-arctic-embed-m</c> (May-2026-ratified nominator model);
-    /// <c>mxbai-embed-large-v1</c> is the allowlisted fallback. Both entries point at the
-    /// plain fp32 <c>onnx/model.onnx</c> artifact (not the int8/fp16/quantized variants also
-    /// published on HuggingFace) for correctness; a quantized variant is a future optimization,
-    /// not this stage's concern. URLs are pinned to a specific HuggingFace repo commit sha
-    /// (not <c>main</c>) so the pinned hash can never silently drift out of sync with what the
-    /// URL serves.
+    ///
+    /// <para>
+    /// <c>snowflake-arctic-embed-m</c> (plain fp32 <c>onnx/model.onnx</c>) is the default. This
+    /// is a deliberate outcome, not an oversight: memory-core-redesign Slice 4 Stage A evaluated
+    /// <c>snowflake-arctic-embed-m-int8</c> below as the RAM-lean default candidate, but its
+    /// measured quality-parity numbers (<c>tools/embed-latency-bench</c> parity mode; full
+    /// results in <c>openspec/changes/memory-core-redesign/design.md</c> D1/D2) fell short of the
+    /// acceptance gate on doc-length content — per-sentence cosine parity against fp32 averaged
+    /// ~0.98 (gate: ≥0.99 mean), driven entirely by longer documents (~0.96–0.98) while short
+    /// queries stayed ≥0.99; the same pattern held for both hosted 8-bit quantization schemes
+    /// (QUInt8 and QInt8). Shipping a degraded default was rejected per the "no silent fallbacks"
+    /// / "get the score up, don't move the goalposts" rule — quality was validated, found short,
+    /// and the fp32 default was kept rather than rationalized past the gate.
+    /// </para>
+    ///
+    /// <para>
+    /// <c>snowflake-arctic-embed-m-int8</c> remains allowlisted as an explicit, informed opt-in
+    /// for RAM-constrained operators who can tolerate the measured doc-embedding quality
+    /// reduction in exchange for ~1/4 the disk footprint and a dramatically smaller ORT arena
+    /// (design.md D1/D2 has the full RSS table). It is HuggingFace's own
+    /// <c>onnx/model_uint8.onnx</c> artifact — dynamic quantization
+    /// (<c>DynamicQuantizeLinear</c>/<c>MatMulInteger</c> nodes) with QUInt8 weights (the "u8u8"
+    /// scheme, portable across ARM64 and non-VNNI x86 without the accuracy caveats ORT's own docs
+    /// attach to the signed QInt8 "s8s8"/"u8s8" sibling artifacts <c>model_int8.onnx</c> /
+    /// <c>model_quantized.onnx</c>, which are byte-identical to each other and were also measured
+    /// — same quality shortfall, ruled out as no better). QUInt8 is also what
+    /// <c>onnxruntime.quantization.quantize_dynamic(..., weight_type=QUInt8)</c> would produce
+    /// locally; this repo uses HuggingFace's pre-built copy instead of quantizing at build time.
+    /// </para>
+    ///
+    /// <para>
+    /// <c>mxbai-embed-large-v1</c> is the allowlisted fp32 fallback model. URLs are pinned to a
+    /// specific HuggingFace repo commit sha (not <c>main</c>) so the pinned hash can never
+    /// silently drift out of sync with what the URL serves.
+    /// </para>
     /// </summary>
     public static IReadOnlyDictionary<string, EmbeddingModelManifestEntry> Allowlist { get; } =
         new Dictionary<string, EmbeddingModelManifestEntry>(StringComparer.Ordinal)
         {
+            ["snowflake-arctic-embed-m-int8"] = new EmbeddingModelManifestEntry(
+                ModelId: "snowflake-arctic-embed-m-int8",
+                ModelUrl: new Uri("https://huggingface.co/Snowflake/snowflake-arctic-embed-m/resolve/fc74610d18462d218e312aa986ec5c8a75a98152/onnx/model_uint8.onnx"),
+                TokenizerUrl: new Uri("https://huggingface.co/Snowflake/snowflake-arctic-embed-m/resolve/fc74610d18462d218e312aa986ec5c8a75a98152/vocab.txt"),
+                ModelSha256: "4cfc22160ddd52bac43697b6b84a4b29ea25a82db23841c27436dbddcfd5f88a",
+                TokenizerSha256: "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+                Dimensions: 768,
+                ModelByteSize: 110_084_023),
+
             ["snowflake-arctic-embed-m"] = new EmbeddingModelManifestEntry(
                 ModelId: "snowflake-arctic-embed-m",
                 ModelUrl: new Uri("https://huggingface.co/Snowflake/snowflake-arctic-embed-m/resolve/fc74610d18462d218e312aa986ec5c8a75a98152/onnx/model.onnx"),

@@ -18,16 +18,16 @@ namespace Netclaw.Embeddings;
 /// new instance (daemon wiring for that is Stage B).
 ///
 /// <para>
-/// <b>Pooling:</b> both allowlisted models (<see cref="EmbeddingModelProvisioner"/>'s
-/// <c>snowflake-arctic-embed-m</c> and <c>mxbai-embed-large-v1</c>) are BERT-class encoders
-/// exported with <c>add_pooling_layer=False</c> — their ONNX graphs return only
-/// <c>last_hidden_state</c> (per-token hidden states), never a pre-pooled vector. Both model
-/// cards document CLS-token pooling as the correct/default strategy for retrieval embeddings
-/// (arctic-embed-m: "use the CLS token to embed each text portion"; mxbai-embed-large-v1:
-/// "works really well with cls pooling (default)"), so this embedder always reads
-/// <c>last_hidden_state[:, 0, :]</c> — position 0 along the sequence axis — rather than mean-
-/// pooling across tokens. The result is then L2-normalized so stored cosine similarity needs
-/// no further scaling.
+/// <b>Pooling:</b> all allowlisted models (<see cref="EmbeddingModelProvisioner"/>'s
+/// <c>snowflake-arctic-embed-m</c>, <c>mxbai-embed-large-v1</c>, and the opt-in quantized
+/// <c>snowflake-arctic-embed-m-int8</c>) are BERT-class encoders exported with
+/// <c>add_pooling_layer=False</c> — their ONNX graphs return only <c>last_hidden_state</c>
+/// (per-token hidden states), never a pre-pooled vector. Both model cards document CLS-token
+/// pooling as the correct/default strategy for retrieval embeddings (arctic-embed-m: "use the
+/// CLS token to embed each text portion"; mxbai-embed-large-v1: "works really well with cls
+/// pooling (default)"), so this embedder always reads <c>last_hidden_state[:, 0, :]</c> —
+/// position 0 along the sequence axis — rather than mean-pooling across tokens. The result is
+/// then L2-normalized so stored cosine similarity needs no further scaling.
 /// </para>
 ///
 /// <para>
@@ -36,6 +36,19 @@ namespace Netclaw.Embeddings;
 /// production models' 3-input BERT signature (<c>input_ids</c>, <c>attention_mask</c>,
 /// <c>token_type_ids</c>) — the test fixture graph declares a different, smaller input set, and
 /// this embedder must work against either without a fixture-only code path.
+/// </para>
+///
+/// <para>
+/// <b>Dynamic sequence length (memory-core-redesign Slice 4 D6):</b> every input is padded only
+/// to its own tokenized length, rounded up to a multiple of <see cref="SequenceLengthBucket"/>
+/// (bucket-of-8), capped at <see cref="MaxTokens"/> — never always to a fixed 512. This is
+/// unconditional production behavior, not a flag: the Slice 2 experiment
+/// (<c>tools/embed-latency-bench</c>) measured exact cosine parity (1.000000 across a 10-sentence
+/// correctness set) between fixed-512 and bucket-of-8 padding, because the attention mask already
+/// zeroes out every padding position's contribution — fixed-512 padding was pure wasted compute,
+/// never a correctness requirement. The same measurement found short-query latency dropped
+/// ~15x (p50 281.9 ms -> 19.0 ms), so there is no scenario where fixed-512 is preferable and no
+/// reason to gate this behind configuration.
 /// </para>
 ///
 /// <para>
@@ -52,6 +65,13 @@ public sealed class OnnxMemoryEmbedder : IMemoryEmbedder, IDisposable
 {
     // Both allowlisted models cap at 512 (their tokenizer_config.json model_max_length).
     private const int MaxTokens = 512;
+
+    // Bucket-of-8 rounding for dynamic sequence length (Slice 4 D6, measured in
+    // tools/embed-latency-bench): ONNX Runtime's CPU matmul kernels are most efficient at
+    // 8-aligned dimensions, and re-using only 64 distinct bucket shapes (8, 16, ..., 512) instead
+    // of one shape per exact token count keeps ORT's per-shape memory-pattern cache (see
+    // SessionOptions below) from growing unbounded across a session's lifetime.
+    private const int SequenceLengthBucket = 8;
 
     private readonly InferenceSession _session;
     private readonly BertTokenizer _tokenizer;
@@ -109,6 +129,14 @@ public sealed class OnnxMemoryEmbedder : IMemoryEmbedder, IDisposable
     {
         ct.ThrowIfCancellationRequested();
 
+        // ORT arena/memory-pattern defaults (EnableCpuMemArena=true, EnableMemoryPattern=true)
+        // are kept as-is on purpose (memory-core-redesign Slice 4 Stage A, task A4): measured
+        // against a mixed doc-then-query workload with proper warmup, every alternative
+        // combination (arena disabled, memory pattern disabled, both disabled) was flat-out worse
+        // on this reference box — either higher peak RSS, higher doc-embedding latency, or both;
+        // disabling memory pattern in particular regressed doc-embedding p95 by roughly 2x with
+        // only a ~3% RSS saving. Full numbers: tools/embed-latency-bench `arena` mode output,
+        // recorded in design.md D1/D2. Not exposed as a knob — there was no clear win to adopt.
         using var sessionOptions = new SessionOptions { IntraOpNumThreads = intraOpNumThreads };
         var session = new InferenceSession(modelPath, sessionOptions);
 
@@ -147,18 +175,29 @@ public sealed class OnnxMemoryEmbedder : IMemoryEmbedder, IDisposable
 
     private ReadOnlyMemory<float> EmbedOne(string text)
     {
-        var inputIds = new long[MaxTokens];
-        var attentionMask = new long[MaxTokens];
-        var tokenTypeIds = new long[MaxTokens];
+        // Tokenize into full-size scratch buffers first (BertTokenizer's fixed-size-span
+        // overload), then slice down to the bucketed length actually fed to the graph — the
+        // scratch arrays never leave this method, so re-using MaxTokens-sized buffers here costs
+        // one array allocation each, not a fixed-512 inference.
+        var scratchIds = new long[MaxTokens];
+        var scratchMask = new long[MaxTokens];
+        var scratchTypes = new long[MaxTokens];
 
         // This overload writes into the caller-supplied spans instead of BertTokenizer's
         // internal reused buffers, so calling it from multiple gate-scheduled tasks
         // concurrently against the one shared _tokenizer instance is safe.
-        _tokenizer.Encode(text, inputIds, attentionMask, tokenTypeIds, MaxTokens);
+        _tokenizer.Encode(text, scratchIds, scratchMask, scratchTypes, MaxTokens);
 
-        var inputIdsTensor = new DenseTensor<long>(inputIds, [1, MaxTokens]);
-        var attentionMaskTensor = new DenseTensor<long>(attentionMask, [1, MaxTokens]);
-        var tokenTypeIdsTensor = new DenseTensor<long>(tokenTypeIds, [1, MaxTokens]);
+        var actualLength = (int)scratchMask.Sum();
+        var bucketLength = ComputeBucketedLength(actualLength, SequenceLengthBucket, MaxTokens);
+
+        var inputIds = scratchIds[..bucketLength];
+        var attentionMask = scratchMask[..bucketLength];
+        var tokenTypeIds = scratchTypes[..bucketLength];
+
+        var inputIdsTensor = new DenseTensor<long>(inputIds, [1, bucketLength]);
+        var attentionMaskTensor = new DenseTensor<long>(attentionMask, [1, bucketLength]);
+        var tokenTypeIdsTensor = new DenseTensor<long>(tokenTypeIds, [1, bucketLength]);
 
         var available = new Dictionary<string, NamedOnnxValue>(StringComparer.Ordinal)
         {
@@ -190,6 +229,19 @@ public sealed class OnnxMemoryEmbedder : IMemoryEmbedder, IDisposable
 
         NormalizeL2(vector);
         return vector;
+    }
+
+    /// <summary>
+    /// Rounds <paramref name="actualLength"/> up to the next multiple of <paramref name="bucket"/>,
+    /// with a floor of one bucket and a ceiling of <paramref name="maxTokens"/>. Pulled out as a
+    /// pure function so the bucketing arithmetic (in particular the edge cases: an empty/near-empty
+    /// input, an exact bucket boundary, and saturating at the cap) is unit-testable without needing
+    /// a loaded ONNX session.
+    /// </summary>
+    internal static int ComputeBucketedLength(int actualLength, int bucket, int maxTokens)
+    {
+        var rounded = ((actualLength + bucket - 1) / bucket) * bucket;
+        return Math.Clamp(rounded, bucket, maxTokens);
     }
 
     private static void NormalizeL2(float[] vector)

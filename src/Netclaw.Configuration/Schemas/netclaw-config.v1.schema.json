@@ -377,7 +377,7 @@
             "ModelId": {
               "type": "string",
               "default": "snowflake-arctic-embed-m",
-              "description": "Allowlisted embedding model id. An id absent from the in-code allowlist is a configuration error."
+              "description": "Allowlisted embedding model id. An id absent from the in-code allowlist is a configuration error. A quantized (int8) build is also allowlisted as an opt-in for RAM-constrained deployments, but is not the default: measured quality parity against fp32 fell short of the acceptance gate on doc-length content."
             },
             "AutoDownload": {
               "type": "boolean",
