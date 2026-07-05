@@ -207,6 +207,61 @@ public sealed class ConfigSchemaDoctorCheckTests
     }
 
     [Fact]
+    public async Task ReturnsPass_WhenMemoryRecallConfigMatchesSchemaV1()
+    {
+        var basePath = CreateTempBasePath();
+        var paths = new NetclawPaths(basePath);
+        paths.EnsureDirectoriesExist();
+
+        await File.WriteAllTextAsync(paths.NetclawConfigPath,
+            """
+            {
+              "configVersion": 1,
+              "Memory": {
+                "Enabled": true,
+                "Recall": {
+                  "VectorWeight": 0.6,
+                  "LexicalWeight": 0.4,
+                  "MinCosineSimilarity": 0.6,
+                  "RecencyHalfLifeDays": 90
+                }
+              }
+            }
+            """, TestContext.Current.CancellationToken);
+
+        var check = new ConfigSchemaDoctorCheck(paths);
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Pass, result.Severity);
+    }
+
+    [Fact]
+    public async Task ReturnsError_WhenMemoryRecallHasAnUnknownProperty()
+    {
+        var basePath = CreateTempBasePath();
+        var paths = new NetclawPaths(basePath);
+        paths.EnsureDirectoriesExist();
+
+        await File.WriteAllTextAsync(paths.NetclawConfigPath,
+            """
+            {
+              "configVersion": 1,
+              "Memory": {
+                "Recall": {
+                  "MinCosineSimilarity": 0.6,
+                  "NotARealProperty": "oops"
+                }
+              }
+            }
+            """, TestContext.Current.CancellationToken);
+
+        var check = new ConfigSchemaDoctorCheck(paths);
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Error, result.Severity);
+    }
+
+    [Fact]
     public async Task ReturnsPass_WhenReverseProxyTrustedProxiesLookValid()
     {
         var basePath = CreateTempBasePath();

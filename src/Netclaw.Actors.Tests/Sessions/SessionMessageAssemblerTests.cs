@@ -176,6 +176,20 @@ public sealed class SessionMessageAssemblerTests
     }
 
     [Fact]
+    public void BuildVolatileContextBlock_omits_memory_recall_block_when_zero_items_and_not_degraded()
+    {
+        // Hybrid recall's absolute cosine floor (memory-core-redesign Slice 4 Stage B, design
+        // D6): when nothing clears the floor, RecallAsync returns AutomaticRecallResult([])
+        // (Degraded=false, Items=[]) rather than a degraded result. This must not synthesize a
+        // block — the spec's "Nothing relevant means nothing injected" scenario requires the
+        // block to be omitted entirely (zero tokens), not emitted with an empty item list.
+        var input = MakeInput(SeedHistory("hi"), activeRecall: new AutomaticRecallResult([]));
+        var block = SessionMessageAssembler.BuildVolatileContextBlock(input);
+
+        Assert.DoesNotContain("[memory-recall]", block);
+    }
+
+    [Fact]
     public void Static_block_contains_session_id_and_attachment_hint()
     {
         var input = MakeInput(SeedHistory("hi"), activeRecall: null, fileReadGranted: true);
