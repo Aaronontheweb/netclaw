@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Runtime.InteropServices;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -19,6 +20,7 @@ public sealed class SQLiteMemoryStore
     private readonly string _connectionString;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<SQLiteMemoryStore> _logger;
+    private long _embeddingDataVersion;
 
     public SQLiteMemoryStore(string sqlitePath, TimeProvider timeProvider, ILogger<SQLiteMemoryStore>? logger = null)
     {
@@ -26,6 +28,16 @@ public sealed class SQLiteMemoryStore
         _timeProvider = timeProvider;
         _logger = logger ?? NullLogger<SQLiteMemoryStore>.Instance;
     }
+
+    /// <summary>
+    /// Process-local monotonic counter bumped whenever <c>memory_embeddings</c> rows change
+    /// (a real write in <see cref="UpsertEmbeddingAsync"/>, or a deletion via
+    /// <see cref="TombstoneDocumentAsync"/>). <see cref="MemoryVectorIndex"/> uses this to
+    /// decide when its in-memory snapshot is stale without round-tripping to SQLite. Restarts
+    /// reset it to 0, which is safe: a fresh <see cref="MemoryVectorIndex"/> always reloads on
+    /// its first call regardless of the counter's absolute value.
+    /// </summary>
+    public long EmbeddingDataVersion => Interlocked.Read(ref _embeddingDataVersion);
 
     public async Task InitializeAsync(CancellationToken ct = default)
     {
@@ -140,6 +152,20 @@ public sealed class SQLiteMemoryStore
 
             CREATE INDEX IF NOT EXISTS idx_memory_checkpoints_pending
               ON memory_checkpoints(status, priority DESC, created_at ASC);
+
+            CREATE TABLE IF NOT EXISTS memory_embeddings(
+              item_id TEXT NOT NULL,
+              item_kind TEXT NOT NULL,
+              model_id TEXT NOT NULL,
+              content_hash TEXT NOT NULL,
+              dims INTEGER NOT NULL,
+              vector BLOB NOT NULL,
+              created_at INTEGER NOT NULL,
+              PRIMARY KEY(item_id, model_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model
+              ON memory_embeddings(model_id);
             """;
 
         await using var cmd = conn.CreateCommand();
@@ -1056,7 +1082,7 @@ public sealed class SQLiteMemoryStore
 
     public async Task<bool> TombstoneDocumentAsync(string documentId, CancellationToken ct = default)
     {
-        return await WithConnectionAsync(async (conn, ct) =>
+        var (tombstoned, embeddingsDeleted) = await WithConnectionAsync(async (conn, ct) =>
         {
         await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
 
@@ -1073,13 +1099,231 @@ public sealed class SQLiteMemoryStore
         cmd.Parameters.AddWithValue("$updatedAt", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
         var affected = await cmd.ExecuteNonQueryAsync(ct);
 
+        var embeddingsDeleted = 0;
         if (affected > 0)
+        {
             await DeleteDocumentFtsAsync(conn, tx, documentId, ct);
 
+            // Vectors are derived data (design D3): a tombstoned document must not keep
+            // surfacing as a kNN neighbor, so its embedding rows are removed in the same
+            // transaction as the tombstone itself rather than left to rot.
+            await using var deleteEmbeddings = conn.CreateCommand();
+            deleteEmbeddings.Transaction = tx;
+            deleteEmbeddings.CommandText = "DELETE FROM memory_embeddings WHERE item_id = $id;";
+            deleteEmbeddings.Parameters.AddWithValue("$id", documentId);
+            embeddingsDeleted = await deleteEmbeddings.ExecuteNonQueryAsync(ct);
+        }
+
         await tx.CommitAsync(ct);
-        return affected > 0;
+        return (affected > 0, embeddingsDeleted);
+        }, ct);
+
+        if (embeddingsDeleted > 0)
+            Interlocked.Increment(ref _embeddingDataVersion);
+
+        return tombstoned;
+    }
+
+    /// <summary>
+    /// Upserts an embedding row keyed by <c>(item_id, model_id)</c>. Skips the write entirely —
+    /// no row change, no <see cref="EmbeddingDataVersion"/> bump — when the stored
+    /// <paramref name="contentHash"/> already matches, so a naive caller that re-embeds on
+    /// every write (or a backfill re-run) pays no cost when nothing changed (design D3).
+    /// Returns whether a row was actually written (false for the hash-unchanged skip) so
+    /// callers like <c>netclaw memory backfill-embeddings</c> can report accurate
+    /// embedded/skipped counts, including when a concurrent live daemon has already embedded
+    /// the same item between the caller's candidate scan and this call.
+    /// <paramref name="vector"/> is written as a little-endian float32 blob; every supported
+    /// deployment target (linux-x64, linux-arm64) is little-endian, so no byte-order handling
+    /// is needed on read.
+    /// </summary>
+    public async Task<bool> UpsertEmbeddingAsync(
+        string itemId,
+        string itemKind,
+        string modelId,
+        string contentHash,
+        ReadOnlyMemory<float> vector,
+        CancellationToken ct = default)
+    {
+        var wrote = await WithConnectionAsync(async (conn, ct) =>
+        {
+        await using var existing = conn.CreateCommand();
+        existing.CommandText = "SELECT content_hash FROM memory_embeddings WHERE item_id = $itemId AND model_id = $modelId;";
+        existing.Parameters.AddWithValue("$itemId", itemId);
+        existing.Parameters.AddWithValue("$modelId", modelId);
+        var existingHash = (string?)await existing.ExecuteScalarAsync(ct);
+
+        if (existingHash is not null && string.Equals(existingHash, contentHash, StringComparison.Ordinal))
+            return false;
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO memory_embeddings(item_id, item_kind, model_id, content_hash, dims, vector, created_at)
+            VALUES($itemId, $itemKind, $modelId, $contentHash, $dims, $vector, $createdAt)
+            ON CONFLICT(item_id, model_id) DO UPDATE SET
+              item_kind=excluded.item_kind,
+              content_hash=excluded.content_hash,
+              dims=excluded.dims,
+              vector=excluded.vector,
+              created_at=excluded.created_at;
+            """;
+        cmd.Parameters.AddWithValue("$itemId", itemId);
+        cmd.Parameters.AddWithValue("$itemKind", itemKind);
+        cmd.Parameters.AddWithValue("$modelId", modelId);
+        cmd.Parameters.AddWithValue("$contentHash", contentHash);
+        cmd.Parameters.AddWithValue("$dims", vector.Length);
+        cmd.Parameters.AddWithValue("$vector", VectorToBlob(vector.Span));
+        cmd.Parameters.AddWithValue("$createdAt", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
+        await cmd.ExecuteNonQueryAsync(ct);
+        return true;
+        }, ct);
+
+        if (wrote)
+            Interlocked.Increment(ref _embeddingDataVersion);
+
+        return wrote;
+    }
+
+    /// <summary>
+    /// All embedding rows for <paramref name="modelId"/> — the raw material
+    /// <see cref="MemoryVectorIndex"/> loads into its flat in-memory snapshot. A thin store
+    /// query rather than a similarity search: kNN math belongs in the index, not the store.
+    /// </summary>
+    public async Task<IReadOnlyList<SQLiteMemoryEmbeddingRow>> GetEmbeddingsForModelAsync(
+        string modelId,
+        CancellationToken ct = default)
+    {
+        return await WithConnectionAsync(async (conn, ct) =>
+        {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT item_id, item_kind, vector FROM memory_embeddings WHERE model_id = $modelId;";
+        cmd.Parameters.AddWithValue("$modelId", modelId);
+
+        var results = new List<SQLiteMemoryEmbeddingRow>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            var itemId = reader.GetString(0);
+            var itemKind = reader.GetString(1);
+            var blob = reader.GetFieldValue<byte[]>(2);
+            results.Add(new SQLiteMemoryEmbeddingRow(itemId, itemKind, BlobToVector(blob)));
+        }
+
+        return (IReadOnlyList<SQLiteMemoryEmbeddingRow>)results;
         }, ct);
     }
+
+    /// <summary>
+    /// Coverage diagnostics for <paramref name="modelId"/> (memory-embeddings spec: "Embedding
+    /// coverage diagnostics"). <see cref="MemoryEmbeddingCoverage.EmbeddedCurrentHashCount"/>
+    /// requires recomputing <see cref="MemoryContentHasher.ComputeHash"/> per document in
+    /// application code — SQLite has no native SHA-256 — so this method loads full document
+    /// bodies. That is an acceptable cost for a diagnostic query (doctor/status), never a
+    /// per-turn hot path, at the audited corpus scale (~1,200 documents).
+    /// </summary>
+    public async Task<MemoryEmbeddingCoverage> GetEmbeddingCoverageAsync(string modelId, CancellationToken ct = default)
+    {
+        return await WithConnectionAsync(async (conn, ct) =>
+        {
+        var documents = await LoadNonTombstonedDocumentsAsync(conn, ct);
+        var currentModelHashes = await LoadCurrentModelHashesAsync(conn, modelId, ct);
+
+        var embeddedCurrentHash = 0;
+        foreach (var doc in documents)
+        {
+            if (currentModelHashes.TryGetValue(doc.Id, out var storedHash)
+                && string.Equals(storedHash, MemoryContentHasher.ComputeHash(doc.Title, doc.Body), StringComparison.Ordinal))
+            {
+                embeddedCurrentHash++;
+            }
+        }
+
+        await using var otherModelCmd = conn.CreateCommand();
+        otherModelCmd.CommandText = "SELECT COUNT(DISTINCT item_id) FROM memory_embeddings WHERE model_id != $modelId;";
+        otherModelCmd.Parameters.AddWithValue("$modelId", modelId);
+        var otherModelCount = Convert.ToInt32(await otherModelCmd.ExecuteScalarAsync(ct));
+
+        return new MemoryEmbeddingCoverage(documents.Count, embeddedCurrentHash, otherModelCount);
+        }, ct);
+    }
+
+    /// <summary>
+    /// Documents lacking a current-model, current-hash embedding — the same "derived backfill
+    /// state" <see cref="GetEmbeddingCoverageAsync"/> counts, but returning the actual rows so
+    /// callers (the daemon warmup service's gap-repair sweep, <c>netclaw memory
+    /// backfill-embeddings</c>) can embed them. Backfill state is never tracked in a separate
+    /// progress table (design D3) — this is always a fresh LEFT-JOIN-shaped comparison against
+    /// the current model id and content hash. When <paramref name="force"/> is true, every
+    /// non-tombstoned document is returned regardless of its current embedding state (used by
+    /// <c>--force</c> backfill after a model change).
+    /// </summary>
+    public async Task<IReadOnlyList<MemoryDocumentWriteResult>> GetDocumentsNeedingEmbeddingAsync(
+        string modelId,
+        bool force = false,
+        CancellationToken ct = default)
+    {
+        return await WithConnectionAsync(async (conn, ct) =>
+        {
+        var documents = await LoadNonTombstonedDocumentsAsync(conn, ct);
+
+        if (force)
+        {
+            return (IReadOnlyList<MemoryDocumentWriteResult>)documents
+                .Select(d => new MemoryDocumentWriteResult(d.Id, d.Title, d.Body))
+                .ToList();
+        }
+
+        var currentModelHashes = await LoadCurrentModelHashesAsync(conn, modelId, ct);
+        var missing = new List<MemoryDocumentWriteResult>();
+        foreach (var doc in documents)
+        {
+            var currentHash = MemoryContentHasher.ComputeHash(doc.Title, doc.Body);
+            if (!currentModelHashes.TryGetValue(doc.Id, out var storedHash)
+                || !string.Equals(storedHash, currentHash, StringComparison.Ordinal))
+            {
+                missing.Add(new MemoryDocumentWriteResult(doc.Id, doc.Title, doc.Body));
+            }
+        }
+
+        return (IReadOnlyList<MemoryDocumentWriteResult>)missing;
+        }, ct);
+    }
+
+    private static async Task<List<(string Id, string Title, string Body)>> LoadNonTombstonedDocumentsAsync(
+        SqliteConnection conn, CancellationToken ct)
+    {
+        await using var docsCmd = conn.CreateCommand();
+        docsCmd.CommandText = $"""
+            SELECT document_id, title, markdown_body FROM memory_documents
+            WHERE update_semantics != '{MemoryUpdateSemantics.Tombstone.ToWireValue()}';
+            """;
+
+        var documents = new List<(string Id, string Title, string Body)>();
+        await using var reader = await docsCmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            documents.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2)));
+        return documents;
+    }
+
+    private static async Task<Dictionary<string, string>> LoadCurrentModelHashesAsync(
+        SqliteConnection conn, string modelId, CancellationToken ct)
+    {
+        await using var embCmd = conn.CreateCommand();
+        embCmd.CommandText = "SELECT item_id, content_hash FROM memory_embeddings WHERE model_id = $modelId;";
+        embCmd.Parameters.AddWithValue("$modelId", modelId);
+
+        var hashes = new Dictionary<string, string>(StringComparer.Ordinal);
+        await using var reader = await embCmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+            hashes[reader.GetString(0)] = reader.GetString(1);
+        return hashes;
+    }
+
+    private static byte[] VectorToBlob(ReadOnlySpan<float> vector)
+        => MemoryMarshal.AsBytes(vector).ToArray();
+
+    private static float[] BlobToVector(byte[] blob)
+        => MemoryMarshal.Cast<byte, float>(blob).ToArray();
 
     public async Task<bool> SupersedeRecordAsync(string recordId, string payloadJson, CancellationToken ct = default)
     {
@@ -1344,11 +1588,17 @@ public sealed class SQLiteMemoryStore
     /// Write a batch of curation operations without an associated checkpoint.
     /// Used by the inline curation actor path where proposals are sent directly
     /// from the session actor rather than through the checkpoint queue.
+    /// Returns the <c>memory_documents</c> rows written in this batch (never immutable
+    /// <c>memory_records</c>) so the caller can embed them post-commit
+    /// (<see cref="MemoryEmbedOnWriteCoordinator"/>, memory-core-redesign Slice 2) knowing the
+    /// final document id — which for a Create decision is only assigned inside this method.
     /// </summary>
-    public async Task ApplyInlineCurationBatchAsync(
+    public async Task<IReadOnlyList<MemoryDocumentWriteResult>> ApplyInlineCurationBatchAsync(
         IReadOnlyList<SQLiteMemoryCurationOperation> operations,
         CancellationToken ct = default)
     {
+        var written = new List<MemoryDocumentWriteResult>();
+
         await WithConnectionAsync(async (conn, ct) =>
         {
         await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
@@ -1490,6 +1740,7 @@ public sealed class SQLiteMemoryStore
             documentCmd.Parameters.AddWithValue("$createdAt", now);
             documentCmd.Parameters.AddWithValue("$updatedAt", now);
             await documentCmd.ExecuteNonQueryAsync(ct);
+            written.Add(new MemoryDocumentWriteResult(documentId, operation.Title, operation.Content));
 
             if (IsSearchableRecallMode(resolvedRecallMode))
                 await UpsertDocumentFtsAsync(conn, tx, documentId, operation.Title, operation.Content, operation.AliasesJson, operation.FacetsJson, ct);
@@ -1497,13 +1748,22 @@ public sealed class SQLiteMemoryStore
 
         await tx.CommitAsync(ct);
         }, ct);
+
+        return written;
     }
 
-    public async Task ApplyCurationBatchAsync(
+    /// <summary>
+    /// Returns the <c>memory_documents</c> rows written in this batch — see
+    /// <see cref="ApplyInlineCurationBatchAsync"/>'s remarks for why the caller needs this to
+    /// embed post-commit.
+    /// </summary>
+    public async Task<IReadOnlyList<MemoryDocumentWriteResult>> ApplyCurationBatchAsync(
         string checkpointId,
         IReadOnlyList<SQLiteMemoryCurationOperation> operations,
         CancellationToken ct = default)
     {
+        var written = new List<MemoryDocumentWriteResult>();
+
         await WithConnectionAsync(async (conn, ct) =>
         {
         await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
@@ -1648,6 +1908,7 @@ public sealed class SQLiteMemoryStore
             documentCmd.Parameters.AddWithValue("$createdAt", now);
             documentCmd.Parameters.AddWithValue("$updatedAt", now);
             await documentCmd.ExecuteNonQueryAsync(ct);
+            written.Add(new MemoryDocumentWriteResult(documentId, operation.Title, operation.Content));
 
             if (IsSearchableRecallMode(resolvedRecallMode))
                 await UpsertDocumentFtsAsync(conn, tx, documentId, operation.Title, operation.Content, operation.AliasesJson, operation.FacetsJson, ct);
@@ -1667,6 +1928,8 @@ public sealed class SQLiteMemoryStore
 
         await tx.CommitAsync(ct);
         }, ct);
+
+        return written;
     }
 
     private async Task<T> WithConnectionAsync<T>(
@@ -2025,3 +2288,24 @@ public sealed record SQLiteMemoryRelationOperation(
     string TargetCanonicalName,
     string TargetAnchorType,
     double Confidence);
+
+/// <summary>One <c>memory_embeddings</c> row, as loaded by <see cref="SQLiteMemoryStore.GetEmbeddingsForModelAsync"/>.</summary>
+public sealed record SQLiteMemoryEmbeddingRow(string ItemId, string ItemKind, ReadOnlyMemory<float> Vector);
+
+/// <summary>
+/// Coverage diagnostics for one embedding model, as returned by
+/// <see cref="SQLiteMemoryStore.GetEmbeddingCoverageAsync"/>.
+/// </summary>
+/// <param name="TotalRecallableDocuments">Non-tombstoned documents in the corpus.</param>
+/// <param name="EmbeddedCurrentHashCount">
+/// Of those, how many have an embedding row for the queried model whose stored content hash
+/// matches the document's current title/body.
+/// </param>
+/// <param name="OtherModelCount">
+/// Distinct items with an embedding row under a model id other than the one queried — a
+/// non-zero count means the corpus mixes similarity spaces and thresholds are miscalibrated.
+/// </param>
+public sealed record MemoryEmbeddingCoverage(
+    int TotalRecallableDocuments,
+    int EmbeddedCurrentHashCount,
+    int OtherModelCount);

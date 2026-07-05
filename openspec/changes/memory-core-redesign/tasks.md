@@ -12,21 +12,21 @@ constitution gates (tests, evals where mapped, schema/skill sync, slopwatch).
 
 ## 2. Embedding foundation
 
-- [ ] 2.1 Create `src/Netclaw.Embeddings` project (Microsoft.ML.OnnxRuntime CPU, FastBertTokenizer, System.Numerics.Tensors) and `IMemoryEmbedder` seam in `Netclaw.Actors/Memory`
-- [ ] 2.2 Implement `OnnxMemoryEmbedder` (single InferenceSession, bounded intra-op threads, concurrency semaphore) + `UnavailableMemoryEmbedder`
-- [ ] 2.3 Implement `EmbeddingModelProvisioner`: pinned allowlist (id → URL, size, SHA-256), atomic download, hash verification, rejection of unknown ids
-- [ ] 2.4 Add `memory_embeddings` table + `UpsertEmbeddingAsync`/`FindNearestByEmbeddingAsync`/coverage queries to `SQLiteMemoryStore.InitializeAsync` (idempotent DDL)
-- [ ] 2.5 Implement `MemoryContentHasher` (normalized title+body SHA-256) and hash-skip on re-embed
-- [ ] 2.6 Implement `MemoryVectorIndex` (per-model flat float[] brute-force cosine, store-version invalidation)
-- [ ] 2.7 `EmbeddingWarmupHostedService`: provision-or-degrade at startup, warm-up inference, gap-repair sweep; register `IMemoryEmbedder` in daemon DI
-- [ ] 2.8 Embed-on-write after both curation batch commit paths
-- [ ] 2.9 `netclaw memory backfill-embeddings [--force]` CLI command
-- [ ] 2.10 `MemoryEmbeddingDoctorCheck` (model presence/hash, coverage, mixed-model warning) + daemon status `embeddings: degraded` surface + rate-limited degradation logs
-- [ ] 2.11 Config: `Memory.Embeddings { Enabled, ModelId, AutoDownload }` + schema sync with defaults
-- [ ] 2.12 Tests: provisioner hash-rejection/unknown-id, hash-skip, gap repair, vector index invalidation, degraded stub; CI uses a tiny fixture ONNX model (no downloads in tests)
-- [ ] 2.13 **Measure ONNX int8 short-query embedding latency on reference hardware; record the number in design.md and gate Slice 4's sub-budget on it**
-- [ ] 2.14 ARM64 publish smoke leg exercising OnnxRuntime load
-- [ ] 2.15 Update `netclaw-memory` + `netclaw-operations` skills (backfill command, degraded mode); eval suite run
+- [x] 2.1 Create `src/Netclaw.Embeddings` project (Microsoft.ML.OnnxRuntime CPU, FastBertTokenizer, System.Numerics.Tensors) and `IMemoryEmbedder` seam in `Netclaw.Actors/Memory`
+- [x] 2.2 Implement `OnnxMemoryEmbedder` (single InferenceSession, bounded intra-op threads, concurrency semaphore) + `UnavailableMemoryEmbedder`
+- [x] 2.3 Implement `EmbeddingModelProvisioner`: pinned allowlist (id → URL, size, SHA-256), atomic download, hash verification, rejection of unknown ids
+- [x] 2.4 Add `memory_embeddings` table + `UpsertEmbeddingAsync`/`FindNearestByEmbeddingAsync`/coverage queries to `SQLiteMemoryStore.InitializeAsync` (idempotent DDL)
+- [x] 2.5 Implement `MemoryContentHasher` (normalized title+body SHA-256) and hash-skip on re-embed
+- [x] 2.6 Implement `MemoryVectorIndex` (per-model flat float[] brute-force cosine, store-version invalidation)
+- [x] 2.7 `EmbeddingWarmupHostedService`: provision-or-degrade at startup, warm-up inference, gap-repair sweep; register `IMemoryEmbedder` in daemon DI
+- [x] 2.8 Embed-on-write after both curation batch commit paths
+- [x] 2.9 `netclaw memory backfill-embeddings [--force]` CLI command
+- [x] 2.10 `MemoryEmbeddingDoctorCheck` (model presence/hash, coverage, mixed-model warning) + daemon status `embeddings: degraded` surface + rate-limited degradation logs
+- [x] 2.11 Config: `Memory.Embeddings { Enabled, ModelId, AutoDownload }` + schema sync with defaults
+- [x] 2.12 Tests: provisioner hash-rejection/unknown-id, hash-skip, gap repair, vector index invalidation, degraded stub; CI uses a tiny fixture ONNX model (no downloads in tests)
+- [x] 2.13 **Measure ONNX int8 short-query embedding latency on reference hardware; record the number in design.md and gate Slice 4's sub-budget on it**
+- [x] 2.14 ARM64 publish smoke leg exercising OnnxRuntime load
+- [x] 2.15 Update `netclaw-memory` + `netclaw-operations` skills (backfill command, degraded mode); eval suite run
 
 ## 3. Write-side nominate→decide + lossless merge
 
