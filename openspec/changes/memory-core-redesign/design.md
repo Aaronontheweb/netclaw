@@ -303,9 +303,10 @@ deduplicated, **all candidates passing the identical policy gates**
 correctness requirement with its own scenario. Scoring = weighted fusion
 (`VectorWeight` 0.7 × cosine + `LexicalWeight` 0.3 × squashed selector score
 + dampened class prior), then an **absolute floor**: `MinCosineSimilarity`
-(default 0.55, calibrated against the real-traffic gold set
-`gold-prod-2026-07`). Nothing above the floor → inject nothing, and the
-volatile `[memory-recall]` block is omitted entirely (zero tokens). Recency
+(model-conditional default — see the calibration below; 0.55 was the
+uncalibrated working hypothesis). Nothing above the floor → inject
+nothing, and the volatile `[memory-recall]` block is omitted entirely
+(zero tokens). Recency
 decay (`RecencyHalfLifeDays`, floor-bounded multiplier) breaks ties toward
 fresh knowledge. The quick-win char budget and `AutoRecallMaxItems` remain
 the outer bounds.
@@ -392,6 +393,53 @@ disabling `EnableCpuMemArena` (either combination) *increased* peak RSS to
 clear win at the constitution's ≤10% latency-cost bar, so **the defaults are
 kept, unmodified, with a comment recording this measurement** rather than
 exposed as a new config knob (`OnnxMemoryEmbedder.LoadAsync`).
+
+**Slice 4 follow-up (2026-07-05): `MinCosineSimilarity` recall-floor
+calibration, model-conditional.** The 0.55 default above was never
+calibrated; this measurement swept it. Reusing the fp32/uint8 embedding
+caches from the D2 gold-metrics eval, for every query in `gold-prod-2026-07`
+(93 queries: 33 with real relevant docs, 60 — 65% — with none) and
+`gold-repooled-test` (24 queries, held-out check): rank all 1,216 corpus
+docs by cosine, take the top-3 as injection candidates, sweep floor τ from
+0.30 to 0.75. Objective: maximize F0.5 of the injected set vs.
+`relevantDocIds` on gold-prod (precision-leaning, per the operator's
+"fewer, more pertinent" goal), tie-break toward higher zero-injection
+accuracy (fraction of the 60 zero-relevant queries where nothing survives
+the floor). Full sweep, method, and validation (τ=0.30 recall exactly
+reproduces D2's `recall@3`) in
+`~/recall-research-local/2026-07/quant-eval/floor-calibration.md`.
+
+| model | `MinCosineSimilarity` | F0.5 @ optimum (gold-prod) | zero-injection accuracy | mean injected |
+|-------|:---:|---:|---:|---:|
+| fp32 (`snowflake-arctic-embed-m`) | **0.68** | 0.141 (was 0.106 @ 0.55) | 13.3% (was 0%) | 2.53 |
+| uint8 (`snowflake-arctic-embed-m-int8`) | **0.67** | 0.153 (was 0.106 @ 0.55) | 16.7% (was 0%) | 2.34 |
+
+- **uint8's optimum sits 0.01 below fp32's** — inside the 0.01–0.02 band
+  the D2 pair-cosine compression finding predicts (uint8 mean signed Δ
+  vs. fp32 = −0.0127), the same shift already documented for
+  `NominatorSimilarityThreshold` (0.86 → ~0.845 under uint8). Two
+  independently calibrated absolute-cosine thresholds move the same way
+  under quantization.
+- **Sensitivity is asymmetric.** fp32's optimum is a moderate, symmetric
+  plateau (±0.01 costs ≤3% F0.5, ±0.03 costs ~29%). uint8's optimum is
+  flat below (τ=0.65–0.66 within 5%) but a genuine knife-edge above it:
+  τ=0.68, one step past the 0.67 optimum, drops F0.5 by 35% in a single
+  0.01 increment. An operator nudging uint8's floor *up* for "more
+  precision" will get less; nudging down is safe.
+- **Repooled-test sanity check passes** (no disproportionate recall
+  collapse): at fp32's 0.68, repooled-test recall is 0.259 vs. its own
+  max-achievable 0.282 (−8% relative); at uint8's 0.67, recall is 0.225
+  vs. its own max 0.270 (−17% relative) — larger but not a collapse.
+- **Caveat, not swept under the rug**: even at these optima, 83–87% of
+  genuinely nothing-relevant gold-prod queries still get *something*
+  injected. Pushing τ higher (toward the 0.75 sweep ceiling) raises
+  zero-injection accuracy to only 30–40% while gold-prod recall on
+  positive queries collapses to 0.045–0.061 (from 0.146 unfiltered) — a
+  floor high enough to fix zero-injection within this sweep would gut
+  recall on the 35% of queries where something *is* relevant. An absolute
+  cosine floor alone cannot close the zero-injection gap without a
+  complementary mechanism (e.g. a learned/LLM relevance gate); tracked as
+  an open question, not resolved here.
 
 ### D7. Taxonomy rebalance: recall modes mean what they say
 
@@ -563,8 +611,12 @@ compatibility; only dead *behavior* is deleted.
   drop meaningfully too. Int8 quantization and relaxing the sub-budget are no
   longer necessary; both remain available as future levers if traffic shifts
   toward longer queries.
-- Final `MinCosineSimilarity` default (calibrate against `gold-prod-2026-07`
-  during Slice 4; 0.55 is the working hypothesis).
+- ~~Final `MinCosineSimilarity` default (calibrate against `gold-prod-2026-07`
+  during Slice 4; 0.55 is the working hypothesis).~~ **MEASURED AND
+  RESOLVED** — see the D6 recall-floor calibration: 0.68 (fp32) / 0.67
+  (uint8), model-conditional. The residual zero-injection gap at these
+  optima (83–87% miss rate) remains open — a floor alone cannot close it
+  within the F0.5-preserving sweep range; needs a complementary mechanism.
 - Whether the R2 feeds channel should mirror model artifacts (post-PoC
   operational decision; allowlist design is unaffected).
 - Trace auto-recall weighting while fresh (small prior vs durable-fact parity)
