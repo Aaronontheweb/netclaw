@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using Netclaw.Actors.Skills;
 using Netclaw.Configuration;
+using System.Linq;
 using Xunit;
 
 namespace Netclaw.Actors.Tests.Skills;
@@ -813,4 +814,50 @@ public class SkillScannerTests : IDisposable
             # {skillName}
             """);
     }
+
+    [Fact]
+    public void ExtractFrontmatter_handles_utf8_bom()
+    {
+        // SKILL.md files saved by some editors (e.g., Notepad on Windows) include
+        // a UTF-8 BOM (\uFEFF) at the start of the file. ExtractFrontmatter should
+        // strip the BOM and still parse the frontmatter correctly.
+        var content = "\uFEFF---\nname: bom-skill\ndescription: \"A skill with BOM\"\n---\n\n# Content\n";
+
+        var result = SkillScanner.ExtractFrontmatter(content);
+
+        Assert.NotNull(result);
+        Assert.Equal("bom-skill", result.Name);
+        Assert.Equal("A skill with BOM", result.Description);
+    }
+
+    [Fact]
+    public void SkillScanIssue_populates_skill_name_for_broken_frontmatter()
+    {
+        // When a SKILL.md has invalid frontmatter, the resulting SkillScanIssue
+        // should include the SkillName (derived from the parent directory name)
+        // so that issue reporting can identify the skill by name.
+        WriteSkill("broken-frontmatter", """
+            ---
+            name: broken-frontmatter
+            description: [invalid yaml {{{
+            ---
+
+            # Broken
+            """);
+
+        var result = SkillScanner.Scan(_skillsDir);
+
+        Assert.Empty(result.AcceptedSkills); // broken frontmatter => skill rejected
+        var issuesForSkill = result.Issues
+            .Where(i => i.Path.EndsWith(Path.Combine("broken-frontmatter", "SKILL.md"), StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        Assert.NotEmpty(issuesForSkill);
+        Assert.All(issuesForSkill, i =>
+        {
+            Assert.NotNull(i.SkillName);
+            Assert.Equal("broken-frontmatter", i.SkillName);
+        });
+    }
+
 }
