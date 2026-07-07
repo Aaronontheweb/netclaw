@@ -655,6 +655,8 @@ internal static class ReminderCommand
 
             if (result.ValueKind == JsonValueKind.Object && result.TryGetProperty("error", out var err))
                 Console.Error.WriteLine($"[FAIL] {err.GetString()}");
+            else if (result.ValueKind == JsonValueKind.Object && result.TryGetProperty("detail", out var detail))
+                Console.Error.WriteLine($"[FAIL] {detail.GetString()}");
             else
                 Console.Error.WriteLine($"[FAIL] daemon returned {(int)response.StatusCode}");
             return 1;

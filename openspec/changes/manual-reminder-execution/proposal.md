@@ -60,8 +60,8 @@ None.
 
 ## Impact
 
-- **Actor protocol:** add an external `RunReminderNowCommand` and response; add
-  execution origin to the internal completion message.
+- **Actor protocol:** add an external `RunReminderNowCommand` with authorization
+  context and response; add execution origin to the internal completion message.
 - **Runtime:** `ReminderManagerActor` starts manual executions directly through
   `ReminderExecutionActor` with no Akka.Reminders envelope. Scheduled execution
   paths continue to use existing envelope ack/redelivery behavior.

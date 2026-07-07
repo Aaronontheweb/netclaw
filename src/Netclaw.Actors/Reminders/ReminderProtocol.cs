@@ -287,6 +287,7 @@ public enum ReminderExecutionSource
 public enum ReminderRunNowError
 {
     None,
+    Unauthorized,
     SchedulingDisabled,
     NotFound,
     Disabled,
@@ -335,7 +336,9 @@ public sealed record CancelReminderCommand(ReminderId Id) : IReminderCommand, IN
 public sealed record DeleteReminderCommand(ReminderId Id) : IReminderCommand, INoSerializationVerificationNeeded;
 public sealed record DisableReminderCommand(ReminderId Id) : IReminderCommand, INoSerializationVerificationNeeded;
 public sealed record EnableReminderCommand(ReminderId Id) : IReminderCommand, INoSerializationVerificationNeeded;
-public sealed record RunReminderNowCommand(ReminderId Id) : IReminderCommand, INoSerializationVerificationNeeded;
+public sealed record RunReminderNowCommand(
+    ReminderId Id,
+    ReminderAudienceAuthorizationContext? Authorization) : IReminderCommand, INoSerializationVerificationNeeded;
 public sealed record ListRemindersCommand(bool IncludeDisabled = true) : IReminderQuery, INoSerializationVerificationNeeded;
 
 // ===== Queries =====

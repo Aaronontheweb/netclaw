@@ -549,6 +549,14 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         ReminderRunNowResponse Reject(ReminderRunNowError error, string message) =>
             new(cmd.Id, Accepted: false, Error: error, ErrorMessage: message);
 
+        if (cmd.Authorization?.SourceAudience is null)
+        {
+            replyTo.Tell(Reject(
+                ReminderRunNowError.Unauthorized,
+                "Running a reminder requires Operator authority."));
+            return Task.CompletedTask;
+        }
+
         if (!_schedulingConfig.Enabled)
         {
             replyTo.Tell(Reject(

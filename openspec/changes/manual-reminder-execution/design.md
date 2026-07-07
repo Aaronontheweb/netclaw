@@ -31,9 +31,10 @@ manual diagnostic failures count as scheduled production failures.
 
 ### D1. Manual runs enter through an explicit manager command
 
-Add `RunReminderNowCommand(ReminderId)` to the external reminder actor protocol.
-The daemon endpoint sends this command to `ReminderManagerActor`; the manager
-loads the persisted definition and starts execution directly.
+Add `RunReminderNowCommand(ReminderId, Authorization)` to the external reminder
+actor protocol. The daemon endpoint sends this command to `ReminderManagerActor`;
+the manager rejects missing authorization context, loads the persisted definition,
+and starts execution directly.
 
 **Rationale:** This keeps the control-plane request inside the actor that already
 owns duplicate execution, concurrency, expiry, and definition lookup. It avoids

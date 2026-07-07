@@ -30,6 +30,9 @@ public class ReminderManagerActorTests : TestKit
 
     public ReminderManagerActorTests(ITestOutputHelper output) : base(output: output) { }
 
+    private static ReminderAudienceAuthorizationContext OperatorAuthorization() =>
+        new(TrustAudience.Team, "test-operator");
+
     protected override void ConfigureAkka(AkkaConfigurationBuilder builder, IServiceProvider provider)
     {
         builder
@@ -1144,7 +1147,7 @@ public class ReminderManagerActorTests : TestKit
         _definitionStore.Save(definition);
 
         var response = await manager.Ask<ReminderRunNowResponse>(
-            new RunReminderNowCommand(definition.Id),
+            new RunReminderNowCommand(definition.Id, OperatorAuthorization()),
             TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken);
 
@@ -1177,6 +1180,29 @@ public class ReminderManagerActorTests : TestKit
     }
 
     [Fact]
+    public async Task Run_now_rejects_missing_authorization_without_dispatch_or_history()
+    {
+        var manager = await GetManagerAsync();
+        var definition = CreateDefinition("manual-missing-auth", "Check auth");
+        _definitionStore.Save(definition);
+
+        var response = await manager.Ask<ReminderRunNowResponse>(
+            new RunReminderNowCommand(definition.Id, Authorization: null),
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+
+        Assert.False(response.Accepted);
+        Assert.Equal(ReminderRunNowError.Unauthorized, response.Error);
+        Assert.Empty(await _historyStore.ReadAsync(definition.Id, 10));
+
+        var health = await manager.Ask<ReminderHealthResponse>(
+            GetReminderHealthQuery.Instance,
+            TimeSpan.FromSeconds(3),
+            TestContext.Current.CancellationToken);
+        Assert.Equal(0, health.ActiveExecutions);
+    }
+
+    [Fact]
     public async Task Scheduled_oneshot_fire_during_manual_run_is_queued_and_runs_after_manual_completion()
     {
         var manager = await GetManagerAsync();
@@ -1190,7 +1216,7 @@ public class ReminderManagerActorTests : TestKit
         _definitionStore.Save(definition);
 
         var manual = await manager.Ask<ReminderRunNowResponse>(
-            new RunReminderNowCommand(definition.Id),
+            new RunReminderNowCommand(definition.Id, OperatorAuthorization()),
             TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken);
         Assert.True(manual.Accepted);
@@ -1241,7 +1267,7 @@ public class ReminderManagerActorTests : TestKit
 
         var missingId = new ReminderId("manual-missing");
         var missing = await manager.Ask<ReminderRunNowResponse>(
-            new RunReminderNowCommand(missingId),
+            new RunReminderNowCommand(missingId, OperatorAuthorization()),
             TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken);
         Assert.False(missing.Accepted);
@@ -1253,7 +1279,7 @@ public class ReminderManagerActorTests : TestKit
         };
         _definitionStore.Save(disabled);
         var disabledResponse = await manager.Ask<ReminderRunNowResponse>(
-            new RunReminderNowCommand(disabled.Id),
+            new RunReminderNowCommand(disabled.Id, OperatorAuthorization()),
             TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken);
         Assert.False(disabledResponse.Accepted);
@@ -1273,7 +1299,7 @@ public class ReminderManagerActorTests : TestKit
         };
         _definitionStore.Save(expired);
         var expiredResponse = await manager.Ask<ReminderRunNowResponse>(
-            new RunReminderNowCommand(expired.Id),
+            new RunReminderNowCommand(expired.Id, OperatorAuthorization()),
             TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken);
         Assert.False(expiredResponse.Accepted);
@@ -1295,7 +1321,7 @@ public class ReminderManagerActorTests : TestKit
         _definitionStore.Save(definition);
 
         var first = await manager.Ask<ReminderRunNowResponse>(
-            new RunReminderNowCommand(definition.Id),
+            new RunReminderNowCommand(definition.Id, OperatorAuthorization()),
             TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken);
         Assert.True(first.Accepted);
@@ -1304,7 +1330,7 @@ public class ReminderManagerActorTests : TestKit
             TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
 
         var second = await manager.Ask<ReminderRunNowResponse>(
-            new RunReminderNowCommand(definition.Id),
+            new RunReminderNowCommand(definition.Id, OperatorAuthorization()),
             TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken);
         Assert.False(second.Accepted);
@@ -1335,7 +1361,7 @@ public class ReminderManagerActorTests : TestKit
             _definitionStore.Save(definition);
 
             var accepted = await manager.Ask<ReminderRunNowResponse>(
-                new RunReminderNowCommand(definition.Id),
+                new RunReminderNowCommand(definition.Id, OperatorAuthorization()),
                 TimeSpan.FromSeconds(5),
                 TestContext.Current.CancellationToken);
             Assert.True(accepted.Accepted);
@@ -1349,7 +1375,7 @@ public class ReminderManagerActorTests : TestKit
         _definitionStore.Save(busyDefinition);
 
         var busy = await manager.Ask<ReminderRunNowResponse>(
-            new RunReminderNowCommand(busyDefinition.Id),
+            new RunReminderNowCommand(busyDefinition.Id, OperatorAuthorization()),
             TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken);
 
@@ -1398,7 +1424,7 @@ public class ReminderManagerActorTests : TestKit
         }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
 
         var manual = await manager.Ask<ReminderRunNowResponse>(
-            new RunReminderNowCommand(definition.Id),
+            new RunReminderNowCommand(definition.Id, OperatorAuthorization()),
             TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken);
         Assert.True(manual.Accepted);
@@ -1444,7 +1470,7 @@ public class ReminderManagerActorTests : TestKit
         ActorRegistry.For(Sys).Register<SlackGatewayActorKey>(autoAckRef);
 
         var manual = await manager.Ask<ReminderRunNowResponse>(
-            new RunReminderNowCommand(definition.Id),
+            new RunReminderNowCommand(definition.Id, OperatorAuthorization()),
             TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken);
         Assert.True(manual.Accepted);

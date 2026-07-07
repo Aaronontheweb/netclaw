@@ -430,6 +430,7 @@ public sealed class ReminderEndpointAuthorizationTests : IAsyncDisposable
         var runCmd = _testActor.ReceivedMessages.OfType<RunReminderNowCommand>().FirstOrDefault();
         Assert.NotNull(runCmd);
         Assert.Equal("run-ok", runCmd.Id.Value);
+        Assert.Equal(TrustAudience.Personal, runCmd.Authorization?.SourceAudience);
     }
 
     [Fact]
@@ -443,13 +444,58 @@ public sealed class ReminderEndpointAuthorizationTests : IAsyncDisposable
             content: null,
             TestContext.Current.CancellationToken);
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
-        Assert.Contains("disabled", body.GetProperty("error").GetString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("disabled", body.GetProperty("detail").GetString(), StringComparison.OrdinalIgnoreCase);
 
         var runCmd = _testActor.ReceivedMessages.OfType<RunReminderNowCommand>().FirstOrDefault();
         Assert.NotNull(runCmd);
         Assert.Equal("disabled-run", runCmd.Id.Value);
+        Assert.Equal(TrustAudience.Personal, runCmd.Authorization?.SourceAudience);
+    }
+
+    [Fact]
+    public async Task GET_reminders_history_returns_lowercase_source()
+    {
+        var id = new ReminderId("history-json");
+        var now = _timeProvider.GetUtcNow();
+        _definitionStore.Save(new ReminderDefinition
+        {
+            Id = id,
+            Title = "history-json",
+            Instructions = "check status",
+            Delivery = new ReminderDelivery { Kind = DeliveryKind.None },
+            Schedule = new ReminderSchedule
+            {
+                Type = ReminderScheduleType.OneShot,
+                FireAt = now.AddMinutes(5)
+            },
+            Audience = TrustAudience.Team,
+            Boundary = TrustBoundary.Team,
+            Enabled = true,
+            CreatedBy = "test",
+            CreatedAt = now,
+            UpdatedAt = now
+        });
+        await _historyStore.AppendAsync(id, new HistoryRecord(
+            FiredAt: now,
+            Success: true,
+            DurationMs: 42,
+            SessionId: "reminder/history-json/1",
+            ErrorMessage: null,
+            Source: ReminderExecutionSource.Manual));
+
+        await using var app = await CreateAppAsync(spoofLoopback: true);
+        var client = app.GetTestClient();
+
+        var response = await client.GetAsync(
+            "/api/reminders/history-json/history",
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var json = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        using var doc = JsonDocument.Parse(json);
+        Assert.Equal("manual", doc.RootElement[0].GetProperty("source").GetString());
     }
 
     // ── App factory ──

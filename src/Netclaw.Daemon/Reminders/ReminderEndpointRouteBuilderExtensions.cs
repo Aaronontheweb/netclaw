@@ -270,7 +270,7 @@ public static class ReminderEndpointRouteBuilderExtensions
 
             var manager = await actor.GetAsync(ct);
             var response = await manager.Ask<ReminderRunNowResponse>(
-                new RunReminderNowCommand(new ReminderId(id)),
+                new RunReminderNowCommand(new ReminderId(id), authorization),
                 TimeSpan.FromSeconds(10),
                 ct);
 
@@ -282,10 +282,7 @@ public static class ReminderEndpointRouteBuilderExtensions
                     Message: $"Reminder '{id}' run started."));
             }
 
-            var error = response.ErrorMessage ?? $"Reminder '{id}' could not be run.";
-            return response.Error == ReminderRunNowError.NotFound
-                ? TypedResults.NotFound(new ReminderErrorResponse(error))
-                : TypedResults.BadRequest(new ReminderErrorResponse(error));
+            return ToRunNowErrorResult(id, response);
         })
         .WithName("RunReminderNow")
         .WithSummary("Immediately run an enabled reminder without changing its schedule (requires Operator authority).");
@@ -324,7 +321,7 @@ public static class ReminderEndpointRouteBuilderExtensions
         .WithName("GetReminder")
         .WithSummary("Get a single reminder's full definition.");
 
-        reminders.MapGet("/{id}/history", async ValueTask<Results<Ok<IReadOnlyList<HistoryRecord>>, NotFound<ReminderErrorResponse>>> (
+        reminders.MapGet("/{id}/history", async ValueTask<Results<Ok<ReminderHistoryRecordDto[]>, NotFound<ReminderErrorResponse>>> (
             string id,
             int? last,
             ReminderDefinitionStore definitionStore,
@@ -336,7 +333,9 @@ public static class ReminderEndpointRouteBuilderExtensions
                 return TypedResults.NotFound(new ReminderErrorResponse($"Reminder '{id}' not found."));
 
             var maxRecords = Math.Clamp(last ?? 20, 1, 500);
-            var records = await historyStore.ReadAsync(rid, maxRecords);
+            var records = (await historyStore.ReadAsync(rid, maxRecords))
+                .Select(ToHistoryRecordDto)
+                .ToArray();
             return TypedResults.Ok(records);
         })
         .WithName("GetReminderHistory")
@@ -363,13 +362,48 @@ public static class ReminderEndpointRouteBuilderExtensions
                 NextFire: status.NextFire is null ? null : SetReminderTool.FormatTimestamp(status.NextFire),
                 ConsecutiveFailures: status.ConsecutiveFailures,
                 SkippedDuplicates: status.SkippedDuplicates,
-                RecentHistory: status.RecentHistory));
+                RecentHistory: status.RecentHistory.Select(ToHistoryRecordDto).ToArray()));
         })
         .WithName("GetReminderStatus")
         .WithSummary("Get per-reminder operational status: in-flight, consecutive failures, skipped fires, recent history.");
 
         return app;
     }
+
+    private static Results<Ok<ReminderRunResponse>, NotFound<ReminderErrorResponse>, BadRequest<ReminderErrorResponse>, ProblemHttpResult> ToRunNowErrorResult(
+        string id,
+        ReminderRunNowResponse response)
+    {
+        var error = response.ErrorMessage ?? $"Reminder '{id}' could not be run.";
+
+        return response.Error switch
+        {
+            ReminderRunNowError.NotFound => TypedResults.NotFound(new ReminderErrorResponse(error)),
+            ReminderRunNowError.Unauthorized => TypedResults.Problem(error, statusCode: StatusCodes.Status403Forbidden),
+            ReminderRunNowError.AlreadyExecuting => TypedResults.Problem(error, statusCode: StatusCodes.Status409Conflict),
+            ReminderRunNowError.Busy => TypedResults.Problem(error, statusCode: StatusCodes.Status429TooManyRequests),
+            ReminderRunNowError.Internal => TypedResults.Problem(error, statusCode: StatusCodes.Status500InternalServerError),
+            ReminderRunNowError.SchedulingDisabled or ReminderRunNowError.Disabled or ReminderRunNowError.Expired =>
+                TypedResults.Problem(error, statusCode: StatusCodes.Status409Conflict),
+            _ => TypedResults.BadRequest(new ReminderErrorResponse(error))
+        };
+    }
+
+    private static ReminderHistoryRecordDto ToHistoryRecordDto(HistoryRecord record) =>
+        new(
+            record.FiredAt,
+            record.Success,
+            record.DurationMs,
+            record.SessionId,
+            record.ErrorMessage,
+            ToHistorySource(record.Source));
+
+    private static string ToHistorySource(ReminderExecutionSource source) => source switch
+    {
+        ReminderExecutionSource.Scheduled => "scheduled",
+        ReminderExecutionSource.Manual => "manual",
+        _ => throw new ArgumentOutOfRangeException(nameof(source), source, "Unknown reminder execution source.")
+    };
 
     private static ReminderAudienceAuthorizationContext? ResolveReminderAuthorizationContext(ClaimsPrincipalMapper mapper, HttpContext httpContext)
     {
@@ -450,7 +484,16 @@ internal sealed record ReminderStatusDto(
     string? NextFire,
     int ConsecutiveFailures,
     int SkippedDuplicates,
-    IReadOnlyList<HistoryRecord> RecentHistory);
+    ReminderHistoryRecordDto[] RecentHistory);
+
+/// <summary>Wire projection of a reminder history entry.</summary>
+internal sealed record ReminderHistoryRecordDto(
+    DateTimeOffset FiredAt,
+    bool Success,
+    long DurationMs,
+    string SessionId,
+    string? ErrorMessage,
+    string Source);
 
 /// <summary>Acknowledgement carrying a human-readable message.</summary>
 internal sealed record ReminderMessageResponse(string Message);

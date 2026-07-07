@@ -64,6 +64,21 @@ public sealed class ReminderCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task Run_surfaces_daemon_problem_detail()
+    {
+        var api = CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(
+            new { detail = "Reminder 'daily-summary' is already executing." },
+            HttpStatusCode.Conflict));
+
+        var result = await CaptureConsoleAsync(() =>
+            ReminderCommand.RunAsync(["reminder", "run", "daily-summary"], api));
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Equal(string.Empty, result.Stdout);
+        Assert.Contains("already executing", result.Stderr, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Run_without_daemon_api_reports_daemon_requirement()
     {
         var result = await CaptureConsoleAsync(() =>

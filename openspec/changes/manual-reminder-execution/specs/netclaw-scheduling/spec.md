@@ -20,11 +20,11 @@ scheduled execution SHALL retain source `scheduled` and SHALL apply normal
 one-shot completion behavior.
 
 The manager SHALL reject immediate execution before dispatch when scheduling is
-disabled, the reminder does not exist, the reminder is disabled, the reminder is
-an expired recurring reminder, the same reminder is already executing, or the
-global reminder execution concurrency limit is full. Rejected immediate
-executions SHALL return a structured response with a clear reason and SHALL NOT
-append execution history.
+disabled, the request lacks operator authorization context, the reminder does
+not exist, the reminder is disabled, the reminder is an expired recurring
+reminder, the same reminder is already executing, or the global reminder
+execution concurrency limit is full. Rejected immediate executions SHALL return a
+structured response with a clear reason and SHALL NOT append execution history.
 
 Manual execution completion SHALL append normal execution history, but manual
 failure and success SHALL NOT modify the scheduled consecutive-failure counter or
@@ -61,6 +61,14 @@ trigger scheduled auto-disable behavior.
 
 - **GIVEN** a disabled reminder definition exists
 - **WHEN** an operator triggers immediate execution for that reminder
+- **THEN** the manager rejects the request before dispatch
+- **AND** no execution actor is started
+- **AND** no execution history is appended
+
+#### Scenario: Manual execution rejects missing authorization context
+
+- **GIVEN** an enabled reminder definition exists
+- **WHEN** immediate execution is requested without operator authorization context
 - **THEN** the manager rejects the request before dispatch
 - **AND** no execution actor is started
 - **AND** no execution history is appended

@@ -103,6 +103,19 @@ public class ReminderHistoryStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Append_writes_lowercase_source_wire_value()
+    {
+        await _store.AppendAsync(TestId, MakeRecord(true, source: ReminderExecutionSource.Manual));
+
+        var paths = new NetclawPaths(_dir.Path);
+        var path = Path.Combine(paths.RemindersDirectory, $"{Uri.EscapeDataString(TestId.Value)}.history.jsonl");
+        var json = await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken);
+
+        Assert.Contains("\"source\":\"manual\"", json);
+        Assert.DoesNotContain("\"source\":\"Manual\"", json);
+    }
+
+    [Fact]
     public async Task Read_defaults_legacy_record_without_source_to_scheduled()
     {
         var paths = new NetclawPaths(_dir.Path);
