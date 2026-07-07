@@ -26,6 +26,9 @@ manual diagnostic failures count as scheduled production failures.
 - No idempotency key or retry de-duplication for repeated CLI/API calls.
 - No arbitrary prompt override or one-off unsaved reminder execution.
 - No dashboard, Slack slash command, or TUI surface.
+- No unattended approval escalation. If a manual or scheduled autonomous run hits
+  an approval gate today, this change may surface that failure sooner, but it does
+  not route the prompt back to a live operator channel.
 
 ## Decisions
 
