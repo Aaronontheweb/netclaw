@@ -146,7 +146,7 @@ public sealed class ServerFeedSkillSyncServiceTests : IDisposable
             """,
             "application/json");
         handler.AddStringResponse(BaseUrl + "skills/feed-skill/1.0.0/SKILL.md", skillContent, "text/markdown");
-        handler.AddErrorResponse(BaseUrl + "manifest.json", HttpStatusCode.NotFound);
+        handler.AddErrorResponse(BaseUrl + "subagents/v1/index.json", HttpStatusCode.NotFound);
 
         var service = CreateService(handler);
         await service.SyncOnceAsync(CancellationToken.None);
@@ -412,9 +412,7 @@ public sealed class ServerFeedSkillSyncServiceTests : IDisposable
         byte[] artifactContent,
         string expectedDigest)
     {
-        // New client (0.4.0-beta.3) hits /subagents/v1/... directly — no manifest navigation
-        // The client's ResolveHref returns paths starting with "/" as-is, so hrefs in responses
-        // must be absolute paths for the client to resolve them correctly.
+        // Use absolute hrefs so the client resolves direct native index traversal correctly.
         handler.AddStringResponse(
             BaseUrl + "subagents/v1/index.json",
             """
