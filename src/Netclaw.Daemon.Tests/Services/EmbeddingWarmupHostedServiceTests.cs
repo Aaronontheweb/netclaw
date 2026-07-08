@@ -165,6 +165,68 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
         Assert.Equal("doc-needs-embedding", row.ItemId);
     }
 
+    // memory-embeddings-int8-default: proves the upgrade story when Memory.Embeddings.ModelId
+    // switches (e.g. an existing install's fp32 `snowflake-arctic-embed-m` vectors on an
+    // install that predates the int8 default flip) -- gap repair is scoped to the NEW active
+    // model id (GetDocumentsNeedingEmbeddingAsync/GetEmbeddingsForModelAsync both filter by
+    // model_id), so a document with only an old-model vector still looks "missing" under the
+    // new id and gets re-embedded automatically at the next startup, with no operator action
+    // required. The old vector is never deleted -- it just stops being the one anything reads,
+    // since MemoryVectorIndex/the curation nominator only ever load the active model's rows
+    // (see MemoryVectorIndex.LoadAsync -> GetEmbeddingsForModelAsync(ModelId)).
+    [Fact]
+    public async Task Model_id_switch_gap_repair_targets_the_new_active_model_id_and_leaves_old_vectors_in_place()
+    {
+        PrePlaceValidModelFiles();
+
+        const string LegacyModelId = "tiny-fixture-legacy";
+        const string Title = "Pre-upgrade document";
+        const string Body = "this document was embedded under the old model before the default switched";
+
+        var anchor = _store.CreateDefaultAnchor("model-switch-gap-repair-test");
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        await _store.UpsertDocumentAsync(new SQLiteMemoryDocument(
+            DocumentId: "doc-under-legacy-model",
+            Anchor: anchor,
+            MemoryClass: "durable_fact",
+            Title: Title,
+            MarkdownBody: Body,
+            AliasesJson: null,
+            FacetsJson: null,
+            SlotsJson: null,
+            UpdateSemantics: "merge-document",
+            Sensitivity: "normal",
+            RecallMode: "auto",
+            Confidence: 0.9,
+            FreshnessAtMs: now,
+            ExpiresAtMs: null,
+            CreatedAtMs: now,
+            UpdatedAtMs: now), TestContext.Current.CancellationToken);
+
+        // Simulate a pre-upgrade install: written directly (not through a real embedder) since
+        // only the model-id scoping behavior is under test here.
+        var legacyHash = MemoryContentHasher.ComputeHash(Title, Body);
+        await _store.UpsertEmbeddingAsync(
+            "doc-under-legacy-model", MemoryEmbedOnWriteCoordinator.DocumentItemKind, LegacyModelId, legacyHash,
+            new float[Dimensions], TestContext.Current.CancellationToken);
+
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
+        // Active config now points at the NEW model id (ModelId = "tiny-fixture") -- the same
+        // shape as an operator upgrading onto a new default embedding model.
+        var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true, ModelId = ModelId, AutoDownload = true } };
+        var service = CreateService(holder, memoryConfig);
+
+        await service.WarmUpAsync(TestContext.Current.CancellationToken);
+
+        var newRows = await _store.GetEmbeddingsForModelAsync(ModelId, TestContext.Current.CancellationToken);
+        var newRow = Assert.Single(newRows);
+        Assert.Equal("doc-under-legacy-model", newRow.ItemId);
+
+        // The legacy vector is left in place -- a model-id switch never deletes old rows.
+        var legacyRows = await _store.GetEmbeddingsForModelAsync(LegacyModelId, TestContext.Current.CancellationToken);
+        Assert.Single(legacyRows);
+    }
+
     // ── Relevance gate provisioning (memory-relevance-gate, design D4, task 1.4) ──
 
     [Fact]

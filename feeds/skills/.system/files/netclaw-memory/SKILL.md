@@ -3,7 +3,7 @@ name: netclaw-memory
 description: "REQUIRED when the user asks what you remember, recall, or know from past conversations, previous sessions, cross-session memory, memory classes, or memory types. Also before using memory tools: find_memories, get_memories, store_memory, update_memory."
 metadata:
   author: netclaw
-  version: "1.12.0"
+  version: "1.13.0"
 ---
 
 # Netclaw Memory
@@ -74,11 +74,12 @@ lexical-only — same candidate pool, no vector term or cosine floor.
   alone).
 - **Query prefix is automatic, per-model**: the turn query is embedded using
   whatever retrieval-query encoding the active embedding model documents —
-  for the shipped `snowflake-arctic-embed-m`, that means a fixed instruction
-  string is prepended before the query text. This is a property of the
-  model, not something you configure; document-side embeddings (stored
-  memories) are never prefixed, so this never requires re-embedding existing
-  content.
+  for the shipped default `snowflake-arctic-embed-m-int8` (and the
+  allowlisted fp32 `snowflake-arctic-embed-m` it's quantized from), that
+  means a fixed instruction string is prepended before the query text. This
+  is a property of the model, not something you configure; document-side
+  embeddings (stored memories) are never prefixed, so this never requires
+  re-embedding existing content.
 - **Absolute floor**: independent of the fused score, any candidate whose raw
   cosine similarity falls below the effective `MinCosineSimilarity` is
   dropped before ranking. If nothing clears the floor, nothing is injected —
@@ -89,7 +90,11 @@ lexical-only — same candidate pool, no vector term or cosine floor.
   `Memory.Recall.MinCosineSimilarity` (nullable) is `null` unless an operator
   explicitly overrides it — when `null`, the effective floor is whichever
   calibration is pinned to the currently active embedding model (0.24 for
-  the shipped, prefixed `snowflake-arctic-embed-m` encoding). **The numeric
+  the shipped default `snowflake-arctic-embed-m-int8` prefixed encoding;
+  also 0.24 for the allowlisted fp32 `snowflake-arctic-embed-m` prefixed
+  encoding, calibrated independently — int8 measured as a strict
+  retrieval-quality improvement over fp32 on the same gold sets, not a
+  size/latency tradeoff). **The numeric
   meaning of this value is model- and encoding-specific**: cosine
   distributions shift materially between models, and even for the same
   model between a prefixed and unprefixed encoding — an old value copied
@@ -117,6 +122,18 @@ lexical-only — same candidate pool, no vector term or cosine floor.
   should run `netclaw memory backfill-embeddings` right after turning
   embeddings on so the gap closes immediately instead of waiting for
   embed-on-write to catch up opportunistically.
+- **Upgrading onto a new default model id (e.g. the fp32→int8 default
+  flip)**: an existing install with vectors stored under the previous
+  `Memory.Embeddings.ModelId` self-heals automatically — vector coverage,
+  the curation nominator, and hybrid recall are all scoped to the *current*
+  model id, so the daemon's startup gap-repair sweep sees every document as
+  missing a current-model embedding and re-embeds the whole corpus under the
+  new id with no operator action required. The old model's vectors are never
+  deleted, just no longer read. Until gap repair finishes, recall degrades
+  to lexical-only (same self-healing, logged degradation as any other
+  coverage gap above), and `netclaw doctor` surfaces the interim
+  mixed-model state as a warning recommending `netclaw memory
+  backfill-embeddings --force` to force it immediately instead of waiting.
 
 ### Relevance Gate (cross-encoder)
 

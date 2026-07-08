@@ -115,13 +115,15 @@ public sealed class EmbeddingModelProvisioner
 {
     /// <summary>
     /// Pinned allowlist: model id → download locations, expected hashes, and dimensions.
-    /// Primary is <c>snowflake-arctic-embed-m</c> (May-2026-ratified nominator model);
-    /// <c>mxbai-embed-large-v1</c> is the allowlisted fallback. Both entries point at the
-    /// plain fp32 <c>onnx/model.onnx</c> artifact (not the int8/fp16/quantized variants also
-    /// published on HuggingFace) for correctness; a quantized variant is a future optimization,
-    /// not this stage's concern. URLs are pinned to a specific HuggingFace repo commit sha
-    /// (not <c>main</c>) so the pinned hash can never silently drift out of sync with what the
-    /// URL serves.
+    /// <c>snowflake-arctic-embed-m-int8</c> is the DEFAULT (<see cref="Netclaw.Configuration.MemoryEmbeddingsConfig.ModelId"/>);
+    /// <c>snowflake-arctic-embed-m</c> (fp32) and <c>mxbai-embed-large-v1</c> remain allowlisted
+    /// as explicit operator choices. The int8 entry is HuggingFace's static-quantized
+    /// <c>onnx/model_uint8.onnx</c> export of the same fp32 weights (NOT <c>onnx/model_int8.onnx</c>
+    /// or <c>onnx/model_quantized.onnx</c> — both exist in the same repo tree under the same byte
+    /// size but a *different* SHA-256, a distinct dynamic-quantization export; only
+    /// <c>model_uint8.onnx</c>'s hash matches what was calibrated). All URLs are pinned to a
+    /// specific HuggingFace repo commit sha (not <c>main</c>) so the pinned hash can never
+    /// silently drift out of sync with what the URL serves.
     /// </summary>
     public static IReadOnlyDictionary<string, EmbeddingModelManifestEntry> Allowlist { get; } =
         new Dictionary<string, EmbeddingModelManifestEntry>(StringComparer.Ordinal)
@@ -132,7 +134,9 @@ public sealed class EmbeddingModelProvisioner
             // query text are meant to read as one sentence, not two concatenated with no
             // separator). CalibratedMinCosineSimilarity=0.24 is the gold-prod-2026-07 sweep
             // optimum for this prefixed encoding (design.md D4; supersedes the no-prefix 0.68
-            // figure recorded in memory-core-redesign design.md D6).
+            // figure recorded in memory-core-redesign design.md D6). No longer the default model
+            // (see snowflake-arctic-embed-m-int8 below) but remains allowlisted as an explicit,
+            // higher-RAM/higher-latency choice.
             ["snowflake-arctic-embed-m"] = new EmbeddingModelManifestEntry(
                 ModelId: "snowflake-arctic-embed-m",
                 ModelUrl: new Uri("https://huggingface.co/Snowflake/snowflake-arctic-embed-m/resolve/fc74610d18462d218e312aa986ec5c8a75a98152/onnx/model.onnx"),
@@ -141,6 +145,33 @@ public sealed class EmbeddingModelProvisioner
                 TokenizerSha256: "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
                 Dimensions: 768,
                 ModelByteSize: 435_811_541,
+                QueryPrefix: "Represent this sentence for searching relevant passages: ",
+                CalibratedMinCosineSimilarity: 0.24),
+
+            // DEFAULT model (Memory.Embeddings.ModelId). Same tokenizer/vocab.txt as the fp32
+            // entry above (shared across every variant HuggingFace publishes for this repo — hash
+            // verified identical, 07eced37...038a3). ModelUrl is onnx/model_uint8.onnx at the SAME
+            // pinned commit as the fp32 entry: verified 2026-07-08 against the HF tree API that
+            // this exact path+hash+byte-size exists in Snowflake/snowflake-arctic-embed-m at
+            // fc74610d18462d218e312aa986ec5c8a75a98152, and that it matches the locally-calibrated
+            // artifact byte-for-byte (never pin a hash without confirming upstream serves it).
+            // CalibratedMinCosineSimilarity=0.24 comes from a dedicated gold-prod-2026-07 +
+            // repooled-test sweep with the SAME documented query prefix applied
+            // (arctic-int8-prefix-eval, 2026-07-08) — measured BETTER than the fp32-with-prefix
+            // entry above on every retrieval axis (F0.5 0.244 vs 0.239, recall@3 0.404 vs 0.318,
+            // zero-injection accuracy 28.3% vs 26.7%), at ~1.7x the inference speed (~12ms vs
+            // ~20ms p50 short-query on the reference box) and ~57% less steady-state embedder RSS
+            // (261 MB vs 611 MB, memory-core-redesign design.md D6's quant-eval). This is a
+            // strict improvement, not a size/quality tradeoff, which is why int8 — not fp32 — is
+            // the default.
+            ["snowflake-arctic-embed-m-int8"] = new EmbeddingModelManifestEntry(
+                ModelId: "snowflake-arctic-embed-m-int8",
+                ModelUrl: new Uri("https://huggingface.co/Snowflake/snowflake-arctic-embed-m/resolve/fc74610d18462d218e312aa986ec5c8a75a98152/onnx/model_uint8.onnx"),
+                TokenizerUrl: new Uri("https://huggingface.co/Snowflake/snowflake-arctic-embed-m/resolve/fc74610d18462d218e312aa986ec5c8a75a98152/vocab.txt"),
+                ModelSha256: "4cfc22160ddd52bac43697b6b84a4b29ea25a82db23841c27436dbddcfd5f88a",
+                TokenizerSha256: "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
+                Dimensions: 768,
+                ModelByteSize: 110_084_023,
                 QueryPrefix: "Represent this sentence for searching relevant passages: ",
                 CalibratedMinCosineSimilarity: 0.24),
 

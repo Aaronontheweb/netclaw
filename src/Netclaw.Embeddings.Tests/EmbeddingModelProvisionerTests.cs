@@ -229,11 +229,13 @@ public sealed class EmbeddingModelProvisionerTests : IAsyncLifetime
     }
 
     [Fact]
-    public void ProductionAllowlist_has_the_two_ratified_models_with_distinct_ids()
+    public void ProductionAllowlist_has_the_three_ratified_models_with_distinct_ids()
     {
         Assert.True(EmbeddingModelProvisioner.Allowlist.ContainsKey("snowflake-arctic-embed-m"));
+        Assert.True(EmbeddingModelProvisioner.Allowlist.ContainsKey("snowflake-arctic-embed-m-int8"));
         Assert.True(EmbeddingModelProvisioner.Allowlist.ContainsKey("mxbai-embed-large-v1"));
         Assert.Equal(768, EmbeddingModelProvisioner.Allowlist["snowflake-arctic-embed-m"].Dimensions);
+        Assert.Equal(768, EmbeddingModelProvisioner.Allowlist["snowflake-arctic-embed-m-int8"].Dimensions);
         Assert.Equal(1024, EmbeddingModelProvisioner.Allowlist["mxbai-embed-large-v1"].Dimensions);
         Assert.All(EmbeddingModelProvisioner.Allowlist.Values, e => Assert.Equal(64, e.ModelSha256.Length));
         Assert.All(EmbeddingModelProvisioner.Allowlist.Values, e => Assert.Equal(64, e.TokenizerSha256.Length));
@@ -251,6 +253,31 @@ public sealed class EmbeddingModelProvisionerTests : IAsyncLifetime
         var entry = EmbeddingModelProvisioner.Allowlist["snowflake-arctic-embed-m"];
         Assert.Equal("Represent this sentence for searching relevant passages: ", entry.QueryPrefix);
         Assert.Equal(0.24, entry.CalibratedMinCosineSimilarity);
+    }
+
+    [Fact]
+    public void ArcticInt8Entry_is_the_default_model_pinned_to_the_uint8_artifact_with_its_own_calibrated_floor()
+    {
+        // Pins the exact artifact this repo's default now loads: onnx/model_uint8.onnx (NOT
+        // onnx/model_int8.onnx or onnx/model_quantized.onnx — both exist in the same upstream
+        // repo tree at the same byte size but a DIFFERENT sha256, a distinct dynamic-quantization
+        // export; only model_uint8.onnx's hash matches the artifact that was actually
+        // calibrated). A future re-pin that silently swapped in either sibling file would fail
+        // this hash assertion instead of only degrading retrieval quality at runtime.
+        var entry = EmbeddingModelProvisioner.Allowlist["snowflake-arctic-embed-m-int8"];
+        Assert.Equal("snowflake-arctic-embed-m-int8", entry.ModelId);
+        Assert.Equal(768, entry.Dimensions);
+        Assert.Equal(110_084_023, entry.ModelByteSize);
+        Assert.Equal("4cfc22160ddd52bac43697b6b84a4b29ea25a82db23841c27436dbddcfd5f88a", entry.ModelSha256, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains("model_uint8.onnx", entry.ModelUrl.ToString(), StringComparison.Ordinal);
+        Assert.Equal("Represent this sentence for searching relevant passages: ", entry.QueryPrefix);
+        Assert.Equal(0.24, entry.CalibratedMinCosineSimilarity);
+
+        // Tokenizer is genuinely shared with the fp32 entry (same HF commit, same vocab.txt) —
+        // not merely coincidentally equal.
+        var fp32Entry = EmbeddingModelProvisioner.Allowlist["snowflake-arctic-embed-m"];
+        Assert.Equal(fp32Entry.TokenizerSha256, entry.TokenizerSha256, StringComparer.OrdinalIgnoreCase);
+        Assert.Equal(fp32Entry.TokenizerUrl, entry.TokenizerUrl);
     }
 
     [Fact]

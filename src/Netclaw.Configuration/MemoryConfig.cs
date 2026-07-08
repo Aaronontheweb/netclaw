@@ -66,8 +66,22 @@ public sealed class MemoryEmbeddingsConfig
     /// <c>Netclaw.Embeddings</c>). An id absent from the allowlist is a configuration error,
     /// surfaced by the doctor check and warmup service — never a silently-accepted arbitrary
     /// model source (supply-chain boundary, design D2).
+    ///
+    /// <para>
+    /// Defaults to the int8/uint8 quantized artifact (<c>snowflake-arctic-embed-m-int8</c>), not
+    /// the fp32 <c>snowflake-arctic-embed-m</c> weights it is quantized from. A dedicated
+    /// prefixed-query gold-set sweep measured int8 as a strict improvement over fp32 on every
+    /// retrieval axis (F0.5, recall@3, zero-injection accuracy — see the allowlist entry's
+    /// remarks for the numbers), not merely an acceptable size/latency tradeoff, at ~57% less
+    /// steady-state RSS and ~1.7x the inference speed. fp32 and <c>mxbai-embed-large-v1</c> stay
+    /// allowlisted as explicit operator choices. An existing install with fp32 vectors already
+    /// stored self-heals on upgrade: the daemon's gap-repair sweep (<c>EmbeddingWarmupHostedService</c>)
+    /// is scoped to the active model id, so it re-embeds the whole corpus under the new id
+    /// automatically, and <c>netclaw doctor</c> surfaces the interim mixed-model state as a
+    /// warning recommending <c>netclaw memory backfill-embeddings --force</c>.
+    /// </para>
     /// </summary>
-    public string ModelId { get; set; } = "snowflake-arctic-embed-m";
+    public string ModelId { get; set; } = "snowflake-arctic-embed-m-int8";
 
     /// <summary>
     /// When true, the daemon downloads the model artifact at startup if not already
@@ -160,10 +174,12 @@ public sealed class MemoryRecallConfig
     /// <para>
     /// <c>null</c> (default) — the effective floor follows the active embedding model's
     /// manifest-carried <c>CalibratedMinCosineSimilarity</c>
-    /// (<c>Netclaw.Embeddings.EmbeddingModelManifestEntry</c>; 0.24 for the shipped prefixed
-    /// <c>snowflake-arctic-embed-m</c> encoding — see the memory-query-prefix design doc for the
-    /// full gold-set sweep). A concrete value is an explicit operator override, independent of
-    /// which model is active.
+    /// (<c>Netclaw.Embeddings.EmbeddingModelManifestEntry</c>; 0.24 for the shipped default
+    /// <c>snowflake-arctic-embed-m-int8</c> prefixed encoding, and also 0.24 for the fp32
+    /// <c>snowflake-arctic-embed-m</c> prefixed encoding it was calibrated independently
+    /// against — see the memory-query-prefix design doc and the int8 default-model calibration
+    /// for the full gold-set sweeps). A concrete value is an explicit operator override,
+    /// independent of which model is active.
     /// </para>
     ///
     /// <para>

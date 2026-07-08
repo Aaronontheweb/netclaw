@@ -376,8 +376,8 @@
             },
             "ModelId": {
               "type": "string",
-              "default": "snowflake-arctic-embed-m",
-              "description": "Allowlisted embedding model id. An id absent from the in-code allowlist is a configuration error."
+              "default": "snowflake-arctic-embed-m-int8",
+              "description": "Allowlisted embedding model id. An id absent from the in-code allowlist is a configuration error. Defaults to the int8/uint8 quantized artifact, measured as a strict retrieval-quality improvement over the fp32 snowflake-arctic-embed-m weights it is quantized from (not merely a size/latency tradeoff), at ~57% less steady-state RSS. fp32 (snowflake-arctic-embed-m) and mxbai-embed-large-v1 remain allowlisted as explicit alternatives."
             },
             "AutoDownload": {
               "type": "boolean",
@@ -443,7 +443,7 @@
               "type": ["number", "null"],
               "minimum": 0,
               "maximum": 1,
-              "description": "Absolute relevance floor: when a query vector is available, any candidate below this cosine similarity is dropped before ranking, regardless of source. When null (default), the effective floor follows the active embedding model's manifest-carried calibration (0.24 for the shipped prefixed snowflake-arctic-embed-m encoding). The value is model- and encoding-specific — cosine distributions shift materially when a model's documented query prefix is adopted or removed, so a value pinned for one model/encoding must never be carried into another without re-running the calibration procedure."
+              "description": "Absolute relevance floor: when a query vector is available, any candidate below this cosine similarity is dropped before ranking, regardless of source. When null (default), the effective floor follows the active embedding model's manifest-carried calibration (0.24 for the shipped default snowflake-arctic-embed-m-int8 prefixed encoding; also 0.24 for the fp32 snowflake-arctic-embed-m prefixed encoding). The value is model- and encoding-specific — cosine distributions shift materially when a model's documented query prefix is adopted or removed, so a value pinned for one model/encoding must never be carried into another without re-running the calibration procedure."
             },
             "RecencyHalfLifeDays": {
               "type": "number",

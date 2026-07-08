@@ -23,11 +23,17 @@ public sealed class MemoryConfigDefaultsTests
         Assert.False(config.Embeddings.Enabled);
     }
 
+    // int8 default: a dedicated prefixed-query gold-set sweep (arctic-int8-prefix-eval)
+    // measured the int8/uint8 quantized artifact as a strict retrieval-quality improvement over
+    // the fp32 weights it is quantized from (F0.5, recall@3, and zero-injection accuracy all
+    // better, not just smaller/faster) — see EmbeddingModelProvisioner.Allowlist's remarks for
+    // the full numbers. fp32 (snowflake-arctic-embed-m) remains allowlisted as an explicit
+    // operator choice.
     [Fact]
-    public void Embeddings_model_id_defaults_to_snowflake_arctic_embed_m()
+    public void Embeddings_model_id_defaults_to_snowflake_arctic_embed_m_int8()
     {
         var config = new MemoryConfig();
-        Assert.Equal("snowflake-arctic-embed-m", config.Embeddings.ModelId);
+        Assert.Equal("snowflake-arctic-embed-m-int8", config.Embeddings.ModelId);
     }
 
     [Fact]
