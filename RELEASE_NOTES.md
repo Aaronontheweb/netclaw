@@ -1,5 +1,21 @@
 # NetClaw Release Notes
 
+## 0.25.0-alpha.onnx.2 (2026-07-08)
+
+> **Experimental feature build** (second in the memory-embeddings series). Everything here
+> is gated behind `Memory.Embeddings.Enabled`, **off by default** — without opting in,
+> behavior is identical to the mainline beta. Not published to the beta channel; install
+> only by exact pin: `NETCLAW_VERSION=0.25.0-alpha.onnx.2`.
+
+### Memory (Experimental)
+- **Hybrid semantic recall with an absolute relevance floor** — automatic pre-turn recall now unions FTS5 lexical and embedding-cosine candidates (identical policy gates for both), fuses scores with recency decay, and enforces a gold-set-calibrated minimum-similarity floor: when nothing relevant exists, nothing is injected. Zero-injection turns are normal and healthy.
+- **Cross-encoder relevance gate** — a 22 MB int8 reranker (ms-marco-MiniLM-L-6-v2, hash-pinned) scores each floor survivor against the query and drops weak matches; measured out-of-sample at 86.8% zero-injection accuracy with 98.3% recall retention. Follows `Memory.Embeddings.Enabled`; degraded mode falls back to floor-only recall, never blocks a turn.
+- **Model-documented query prefix + manifest-carried calibration** — recall queries now embed in arctic-embed's documented retrieval mode; each allowlisted model pins its prefix and calibrated floor together, and `Memory.Recall.MinCosineSimilarity` follows the active model's calibration unless explicitly overridden. Measured on the production gold set: F0.5 +73%, recall@3 2.8×, zero-injection accuracy 2.1× vs the unprefixed configuration.
+- **int8 arctic embedder is the new default model** — Snowflake's pre-quantized `model_uint8.onnx` (105 MB vs 416 MB fp32, ~1.7× faster, measurably better retrieval quality with the prefix). fp32 and mxbai remain allowlisted as explicit choices.
+
+### Upgrading from 0.25.0-alpha.onnx.1 with embeddings enabled
+- The default model id changes to `snowflake-arctic-embed-m-int8`. On first daemon start the warmup gap-repair sweep re-embeds your corpus under the new model automatically (recall degrades to lexical-only for unembedded documents until coverage completes); `netclaw memory backfill-embeddings --force` does it in one pass. Existing fp32 vectors are left in place and untouched; `netclaw doctor` will note the mixed-model rows until you re-backfill. Original memory content is never modified.
+
 ## 0.25.0-alpha.onnx.1 (2026-07-08)
 
 > **Experimental feature build.** This is a named experimental prerelease of the semantic
