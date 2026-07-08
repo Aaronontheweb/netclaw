@@ -11,6 +11,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Netclaw.Actors.Memory;
 using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
+using Netclaw.Tests.Utilities;
 using Xunit;
 using AiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 using AiChatRole = Microsoft.Extensions.AI.ChatRole;
@@ -410,9 +411,13 @@ public sealed class MemoryCurationEvaluatorParityTests : IAsyncDisposable
             "Netclaw GitHub repository at https://github.com/netclaw-dev/netclaw, private repo",
             freshnessAtMs: 2000);
 
-        // Empty stream (no yields) reproduces a provider that returns nothing parseable —
-        // TryLlmEvaluationAsync must surface curation_llm_no_decision and fall through to
-        // the same deterministic auto-resolve path the no-LLM matrix case exercises.
+        // ResponseText = null makes FakeChatClient emit its default marker text
+        // ("[fake] Response #1") rather than a truly empty response, but the marker
+        // still isn't a recognized SKIP/CREATE/UPDATE/CONSOLIDATE keyword, so
+        // CurationPromptBuilder.ParseResponse still returns no decision and
+        // TryLlmEvaluationAsync still surfaces curation_llm_no_decision and falls
+        // through to the same deterministic auto-resolve path the no-LLM matrix case
+        // exercises.
         var evaluator = new MemoryCurationEvaluator(
             _store, (ILoggingAdapter)NoLogger.Instance, new MemoryCurationConfig(), new ScriptedCurationChatClient(responseText: null));
 
