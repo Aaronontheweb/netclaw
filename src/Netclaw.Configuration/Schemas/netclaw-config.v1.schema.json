@@ -452,6 +452,23 @@
               "maximum": 3650,
               "default": 30,
               "description": "Half-life in days for the recency-decay multiplier applied to a candidate's fused score in hybrid mode, floor-bounded at 0.85."
+            },
+            "RelevanceGate": {
+              "type": "object",
+              "description": "Post-floor cross-encoder relevance gate settings (memory-relevance-gate).",
+              "properties": {
+                "Enabled": {
+                  "type": ["boolean", "null"],
+                  "description": "When null (default), the gate follows Memory.Embeddings.Enabled. An explicit true/false overrides that, independent of the embeddings switch."
+                },
+                "Threshold": {
+                  "type": ["number", "null"],
+                  "minimum": 0,
+                  "maximum": 1,
+                  "description": "When null (default), the active threshold follows the provisioned relevance model's manifest-carried calibrated threshold (S*=0.02 for ms-marco-minilm-l-6-v2). An explicit value overrides it."
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false

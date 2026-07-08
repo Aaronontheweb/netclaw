@@ -759,6 +759,18 @@ static void ConfigureDaemonServices(
         // degrade to the lexical content-term search when either is absent or the embedder is
         // unavailable.
         services.AddSingleton(new MemoryVectorIndexHolder(memoryStore));
+
+        // Post-floor relevance gate (memory-relevance-gate D4). Same holder-and-warmup pattern
+        // as MemoryEmbedderHolder above; also an optional dependency of
+        // SQLiteMemoryRecallCoordinator, which degrades to floor-only behavior when this holder's
+        // current scorer is unavailable.
+        services.AddSingleton<IReadOnlyDictionary<string, RelevanceModelManifestEntry>>(
+            EmbeddingModelProvisioner.RelevanceAllowlist);
+        services.AddSingleton(new RelevanceScorerHolder(
+            new UnavailableRelevanceScorer(
+                EmbeddingModelProvisioner.DefaultRelevanceModelId, "relevance gate warmup has not completed yet"),
+            initialCalibratedThreshold: EmbeddingModelProvisioner.RelevanceAllowlist[EmbeddingModelProvisioner.DefaultRelevanceModelId].CalibratedThreshold));
+
         services.AddSingleton<EmbeddingWarmupHostedService>();
         services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<EmbeddingWarmupHostedService>());
     }

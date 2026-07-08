@@ -56,6 +56,25 @@ namespace Netclaw.Actors.Sessions;
 /// embeddings on), Warning when embeddings are enabled but the turn still degraded (a genuine
 /// runtime anomaly worth noticing: timeout, embed failure, missing index).
 /// </para>
+///
+/// <para>
+/// <b>Post-floor relevance gate (memory-relevance-gate, design D5/D6/D8):</b> in hybrid mode
+/// only, once <see cref="ScoreHybrid"/> produces its floor survivors, a tiny cross-encoder
+/// (<c>relevanceScorerHolder</c>) scores each of the top <c>AutoRecallMaxItems</c> survivors
+/// jointly against the query — under its own <see cref="RelevanceGateSubBudgetMs"/> sub-budget,
+/// linked-CTS-nested exactly like the query-embedding sub-budget above — and drops anything
+/// below the active threshold (<see cref="MemoryRelevanceGateConfig.Threshold"/> if set,
+/// otherwise the scorer's manifest-carried <see cref="RelevanceScorerHolder.CalibratedThreshold"/>).
+/// Zero survivors after the gate reuses the SAME zero-injection path as zero survivors at the
+/// floor (a healthy empty result, not degraded) — see <see cref="TryApplyRelevanceGateAsync"/>.
+/// Gate activation follows <see cref="MemoryEmbeddingsConfig.Enabled"/> unless
+/// <see cref="MemoryRelevanceGateConfig.Enabled"/> explicitly overrides it (design D6, "one
+/// mental switch"). Every degradation reason (gate disabled, no scorer configured, scorer
+/// unavailable, sub-budget exceeded) degrades to the floor's own result unfiltered, logged via
+/// the rate-limited <c>memory_recall_gate_degraded</c> — Debug/Warning split mirrors
+/// <c>memory_recall_vector_degraded</c>'s exact reasoning, keyed off the gate's OWN resolved
+/// enablement rather than the embeddings flag directly.
+/// </para>
 /// </summary>
 public sealed class SQLiteMemoryRecallCoordinator(
     SQLiteMemoryStore store,
@@ -64,7 +83,8 @@ public sealed class SQLiteMemoryRecallCoordinator(
     TimeProvider timeProvider,
     SessionTuning? sessionTuning = null,
     MemoryEmbedderHolder? embedderHolder = null,
-    MemoryVectorIndexHolder? vectorIndexHolder = null) : IMemoryRecallCoordinator
+    MemoryVectorIndexHolder? vectorIndexHolder = null,
+    RelevanceScorerHolder? relevanceScorerHolder = null) : IMemoryRecallCoordinator
 {
     private readonly SessionTuning _sessionTuning = sessionTuning ?? new SessionTuning();
     private readonly MemoryRecallConfig _recallConfig = memoryConfig.Recall;
@@ -74,10 +94,20 @@ public sealed class SQLiteMemoryRecallCoordinator(
     // setting). Drives the Debug-vs-Warning split on the degraded log: see this class's summary.
     private readonly bool _embeddingsEnabledByConfig = memoryConfig.Embeddings.Enabled;
 
+    // memory-relevance-gate D6: "one mental switch" — Enabled=null follows Embeddings.Enabled
+    // exactly (an operator who turns on embeddings gets the gate with nothing else to flip);
+    // Enabled=true/false is an explicit override independent of the embeddings switch. Threshold
+    // resolution (config override vs. the active scorer's manifest-carried calibrated value)
+    // happens per-turn in TryApplyRelevanceGateAsync, since it depends on which model is loaded.
+    private readonly bool _relevanceGateEnabledByConfig =
+        memoryConfig.Recall.RelevanceGate.Enabled ?? memoryConfig.Embeddings.Enabled;
+    private readonly double? _relevanceGateThresholdOverride = memoryConfig.Recall.RelevanceGate.Threshold;
+
     private readonly DeterministicRetrievalRequestPlanner _deterministicPlanner = new();
     private readonly DeterministicCandidateSelector _candidateSelector = new();
     private readonly ConcurrentDictionary<string, long> _lastVectorDegradedLogMs = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, long> _lastCoverageGapLogMs = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, long> _lastGateDegradedLogMs = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Default minimum composite score a candidate must reach to survive
@@ -125,6 +155,19 @@ public sealed class SQLiteMemoryRecallCoordinator(
     /// environment.
     /// </summary>
     private const int VectorEmbedSubBudgetMs = 150;
+
+    /// <summary>
+    /// Sub-budget, in milliseconds, for the per-turn cross-encoder relevance-gate scoring call
+    /// (memory-relevance-gate design D5), applied via a CTS linked to (nested inside) the
+    /// caller's overall recall <c>ct</c> — the same nesting pattern as
+    /// <see cref="VectorEmbedSubBudgetMs"/>. Not a config knob: design D5 measured ~11ms p50 /
+    /// ~35ms p95 to score 3 pairs (quantized int8) on the reference CPU, so 60ms leaves roughly
+    /// 1.7x headroom before the sub-budget itself is hit.
+    /// </summary>
+    private const int RelevanceGateSubBudgetMs = 60;
+
+    /// <summary>Shared empty instance for turns where the gate never ran (disabled, degraded, or lexical mode).</summary>
+    private static readonly IReadOnlyDictionary<string, double> EmptyGateScores = new Dictionary<string, double>(0, StringComparer.Ordinal);
 
     /// <summary>
     /// Number of nearest-neighbor vector candidates fetched per recall turn (design D6). Sized
@@ -256,6 +299,29 @@ public sealed class SQLiteMemoryRecallCoordinator(
                         .ToArray();
                 }
 
+                // ── Post-floor relevance gate (memory-relevance-gate, design D5, tasks 2.1/2.2) ──
+                // Only ever attempted in hybrid mode — the floor's absolute cosine gate is what
+                // the gate's calibrated threshold was validated against (shoot-out protocol:
+                // "candidates = floor-passing top-3"); lexical mode has no query vector, so it
+                // already degrades the floor itself, and that degradation is what
+                // memory_recall_vector_degraded already reports — a separate gate-specific log
+                // for "we're in lexical mode" would just restate the same root cause. `gated` (not
+                // `aboveFloor`) feeds the char-budget loop below so `filteredByFloor` in the final
+                // log line keeps meaning exactly what it always has: floor-only accounting.
+                var gated = aboveFloor;
+                var droppedByGate = 0;
+                IReadOnlyDictionary<string, double> gateScores = EmptyGateScores;
+                if (mode == "hybrid" && aboveFloor.Length > 0)
+                {
+                    var gateOutcome = await TryApplyRelevanceGateAsync(request, aboveFloor, deterministicMaxItems, ct);
+                    if (gateOutcome is { } outcome)
+                    {
+                        gated = outcome.Survivors;
+                        gateScores = outcome.Scores;
+                        droppedByGate = outcome.Dropped;
+                    }
+                }
+
                 // Char budget: admit items in rank order until the next item's
                 // content would blow the per-turn budget. Whole items are
                 // dropped, never truncated — a truncated memory reads as
@@ -264,7 +330,7 @@ public sealed class SQLiteMemoryRecallCoordinator(
                 var injectedChars = 0;
                 var droppedByBudget = 0;
                 var budgeted = new List<AutomaticRecallItem>(deterministicMaxItems);
-                foreach (var x in aboveFloor)
+                foreach (var x in gated)
                 {
                     if (budgeted.Count >= deterministicMaxItems)
                         break;
@@ -287,7 +353,7 @@ public sealed class SQLiteMemoryRecallCoordinator(
                 var deterministicItems = budgeted.ToArray();
 
                 logger.LogInformation(
-                    "memory_retrieval_final session={SessionId} mode={Mode} injectedCount={InjectedCount} filteredByFloor={FilteredByFloor} appliedFloor={AppliedFloor:F3} injectedChars={InjectedChars} droppedByBudget={DroppedByBudget} items={Items}",
+                    "memory_retrieval_final session={SessionId} mode={Mode} injectedCount={InjectedCount} filteredByFloor={FilteredByFloor} appliedFloor={AppliedFloor:F3} injectedChars={InjectedChars} droppedByBudget={DroppedByBudget} droppedByGate={DroppedByGate} gateScores={GateScores} items={Items}",
                     request.SessionId,
                     mode,
                     deterministicItems.Length,
@@ -295,6 +361,8 @@ public sealed class SQLiteMemoryRecallCoordinator(
                     mode == "hybrid" ? _recallConfig.MinCosineSimilarity : minimumCompositeScore,
                     injectedChars,
                     droppedByBudget,
+                    droppedByGate,
+                    string.Join("|", gateScores.Select(kv => $"{kv.Key}={kv.Value:F3}")),
                     string.Join("|", deterministicItems.Select(i => $"{i.Id.Value}=score{i.Score:F3}")));
 
                 logger.LogDebug(
@@ -384,6 +452,86 @@ public sealed class SQLiteMemoryRecallCoordinator(
             LogVectorDegraded(request.SessionId.Value, $"embed_failed:{ex.GetType().Name}");
             return null;
         }
+    }
+
+    /// <summary>
+    /// Applies the post-floor cross-encoder relevance gate (memory-relevance-gate, design D5,
+    /// tasks 2.1/2.2) to the top <paramref name="maxItems"/> of <paramref name="aboveFloor"/> —
+    /// the floor already ordered candidates by composite score descending, so this is exactly
+    /// "the ≤AutoRecallMaxItems floor survivors" the shoot-out validated the threshold against.
+    /// Candidates ranked below that cut never reach the gate at all (they were never going to be
+    /// injected either way, since the char-budget loop already bounds injection to the same
+    /// <paramref name="maxItems"/>).
+    ///
+    /// <para>
+    /// Returns null for every degradation reason — gate disabled by config, no scorer configured,
+    /// scorer unavailable, sub-budget exceeded, or the scoring call itself throwing — mirroring
+    /// <see cref="TryEmbedQueryAsync"/>'s "never throws, null means skip" contract exactly.
+    /// Callers treat null as "inject the floor's own result unfiltered," identically regardless of
+    /// which reason produced it.
+    /// </para>
+    /// </summary>
+    private async Task<(RankedCandidate[] Survivors, IReadOnlyDictionary<string, double> Scores, int Dropped)?> TryApplyRelevanceGateAsync(
+        AutomaticRecallRequest request, RankedCandidate[] aboveFloor, int maxItems, CancellationToken ct)
+    {
+        if (!_relevanceGateEnabledByConfig)
+        {
+            LogGateDegraded(request.SessionId.Value, "gate_disabled_by_config");
+            return null;
+        }
+
+        var scorer = relevanceScorerHolder?.Current;
+        if (scorer is null)
+        {
+            LogGateDegraded(request.SessionId.Value, "no_scorer_configured");
+            return null;
+        }
+
+        if (!scorer.IsAvailable)
+        {
+            LogGateDegraded(request.SessionId.Value, "scorer_unavailable");
+            return null;
+        }
+
+        var candidatesToScore = aboveFloor.Length > maxItems ? aboveFloor[..maxItems] : aboveFloor;
+        var texts = candidatesToScore.Select(x => x.Item.Content ?? string.Empty).ToArray();
+
+        IReadOnlyList<double> scores;
+        try
+        {
+            using var gateCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            gateCts.CancelAfter(RelevanceGateSubBudgetMs);
+            scores = await scorer.ScoreAsync(request.Query, texts, gateCts.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // The sub-budget's own timer fired, not the caller's outer recall ct — degrade to
+            // floor-only rather than propagating a cancellation that would fail the whole turn.
+            LogGateDegraded(request.SessionId.Value, "sub_budget_exceeded");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            LogGateDegraded(request.SessionId.Value, $"score_failed:{ex.GetType().Name}");
+            return null;
+        }
+
+        var threshold = _relevanceGateThresholdOverride ?? relevanceScorerHolder!.CalibratedThreshold;
+        var scoreByItemId = new Dictionary<string, double>(candidatesToScore.Length, StringComparer.Ordinal);
+        var survivors = new List<RankedCandidate>(candidatesToScore.Length);
+        var dropped = 0;
+        for (var i = 0; i < candidatesToScore.Length; i++)
+        {
+            var candidate = candidatesToScore[i];
+            var score = scores[i];
+            scoreByItemId[candidate.Item.Id] = score;
+            if (score >= threshold)
+                survivors.Add(candidate);
+            else
+                dropped++;
+        }
+
+        return (survivors.ToArray(), scoreByItemId, dropped);
     }
 
     /// <summary>
@@ -572,6 +720,34 @@ public sealed class SQLiteMemoryRecallCoordinator(
             logger.LogDebug(
                 "memory_recall_coverage_gap session={SessionId} gapCandidates={GapCandidates} totalCandidates={TotalCandidates}",
                 sessionId, gapCandidateCount, totalCandidateCount);
+    }
+
+    /// <summary>
+    /// Rate-limited <c>memory_recall_gate_degraded</c> log (memory-relevance-gate, design D8,
+    /// task 2.2): at most one line per <paramref name="reason"/> per
+    /// <see cref="VectorDegradedLogCooldown"/> — the exact same cooldown pattern as
+    /// <see cref="LogVectorDegraded"/>, tracked in its own dictionary since gate degradation is a
+    /// distinct condition from vector degradation. Debug when the gate is off by config
+    /// (following <see cref="MemoryRecallConfig.RelevanceGate"/>'s resolved
+    /// <c>Enabled</c> — either it follows a disabled <c>Memory.Embeddings.Enabled</c>, or an
+    /// explicit override) — the default, intentional state, so this must not be Warning-level
+    /// spam on every turn. Warning when the gate is enabled but the turn still degraded (scorer
+    /// unavailable, sub-budget exceeded, scoring threw) — a genuine runtime condition an operator
+    /// should notice.
+    /// </summary>
+    private void LogGateDegraded(string sessionId, string reason)
+    {
+        var nowMs = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        if (_lastGateDegradedLogMs.TryGetValue(reason, out var lastMs)
+            && nowMs - lastMs < VectorDegradedLogCooldown.TotalMilliseconds)
+            return;
+
+        _lastGateDegradedLogMs[reason] = nowMs;
+
+        if (_relevanceGateEnabledByConfig)
+            logger.LogWarning("memory_recall_gate_degraded session={SessionId} reason={Reason}", sessionId, reason);
+        else
+            logger.LogDebug("memory_recall_gate_degraded session={SessionId} reason={Reason}", sessionId, reason);
     }
 
     private static int RecallRank(SQLiteMemoryHydratedItem document)

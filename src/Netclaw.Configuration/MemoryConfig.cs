@@ -169,4 +169,41 @@ public sealed class MemoryRecallConfig
     /// <c>updated_at</c> timestamp against <see cref="TimeProvider.GetUtcNow"/>.
     /// </summary>
     public double RecencyHalfLifeDays { get; set; } = 30;
+
+    /// <summary>
+    /// Post-floor cross-encoder relevance gate settings (memory-relevance-gate, design D6). See
+    /// <see cref="MemoryRelevanceGateConfig"/>.
+    /// </summary>
+    public MemoryRelevanceGateConfig RelevanceGate { get; set; } = new();
+}
+
+/// <summary>
+/// Configuration for the post-floor relevance gate (memory-relevance-gate D6): a tiny
+/// cross-encoder scores each floor-surviving candidate jointly against the query and drops
+/// anything below the active threshold. Both properties are genuinely-optional nullables (not a
+/// backward-compatibility shim) — their absence is a real, intended runtime state: "follow
+/// whatever the embeddings switch / the model's calibrated manifest value already say," so an
+/// operator who only wants "on/off" never has to discover or set a second knob.
+/// </summary>
+public sealed class MemoryRelevanceGateConfig
+{
+    /// <summary>
+    /// <c>null</c> (default) — the gate follows <see cref="MemoryEmbeddingsConfig.Enabled"/>:
+    /// an operator who turns on embeddings gets the gate with no second switch to flip.
+    /// <c>true</c>/<c>false</c> — explicit override, independent of the embeddings switch (e.g.
+    /// an operator who wants embeddings for dedup/hybrid-recall but not the extra per-turn
+    /// cross-encoder latency).
+    /// </summary>
+    public bool? Enabled { get; set; }
+
+    /// <summary>
+    /// <c>null</c> (default) — the active threshold follows the provisioned relevance model's
+    /// manifest-carried <c>CalibratedThreshold</c> (<c>RelevanceModelManifestEntry</c> in
+    /// <c>Netclaw.Embeddings</c>; S*=0.02 for the shipped <c>ms-marco-minilm-l-6-v2</c>) — the
+    /// same "config default, manifest provides the calibrated number" relationship
+    /// <see cref="MemoryRecallConfig.MinCosineSimilarity"/> already established. A concrete
+    /// value is an explicit operator override, e.g. after re-running the threshold-sweep
+    /// protocol against a different corpus or relevance model.
+    /// </summary>
+    public double? Threshold { get; set; }
 }

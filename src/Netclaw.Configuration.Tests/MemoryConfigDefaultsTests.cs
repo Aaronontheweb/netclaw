@@ -103,4 +103,20 @@ public sealed class MemoryConfigDefaultsTests
         var config = new MemoryConfig();
         Assert.Equal(30, config.Recall.RecencyHalfLifeDays);
     }
+
+    // ── MemoryRelevanceGateConfig (memory-relevance-gate, design D6) ────
+
+    [Fact]
+    public void RelevanceGate_enabled_defaults_to_null_and_follows_embeddings_enabled()
+    {
+        var config = new MemoryConfig();
+        Assert.Null(config.Recall.RelevanceGate.Enabled);
+    }
+
+    [Fact]
+    public void RelevanceGate_threshold_defaults_to_null_and_follows_the_manifest_calibrated_value()
+    {
+        var config = new MemoryConfig();
+        Assert.Null(config.Recall.RelevanceGate.Threshold);
+    }
 }

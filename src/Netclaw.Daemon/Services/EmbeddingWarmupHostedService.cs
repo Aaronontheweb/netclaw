@@ -15,23 +15,31 @@ namespace Netclaw.Daemon.Services;
 /// Provisions/loads the embedding model at daemon startup, warms it up with one inference call,
 /// then runs a gap-repair sweep over documents missing a current-model embedding
 /// (memory-core-redesign Slice 2, task 2.7). Populates <see cref="MemoryEmbedderHolder"/>, which
-/// every embed-on-write and (in later slices) recall consumer resolves at time of use.
+/// every embed-on-write and (in later slices) recall consumer resolves at time of use. Also
+/// provisions/warms the post-floor relevance-gate's cross-encoder model
+/// (memory-relevance-gate D4, task 1.4), populating <see cref="RelevanceScorerHolder"/> — a
+/// second, independent provision-or-degrade step gated by the same
+/// <c>Memory.Embeddings.Enabled</c> switch, with no gap-repair analogue (there is no per-item
+/// derived state for a scoring-only model to repair).
 ///
 /// <para>
 /// <b>Never fails startup:</b> ANY failure here (missing model with <c>AutoDownload=false</c>,
 /// download/hash failure, ONNX load failure) leaves the holder pointed at an
-/// <see cref="UnavailableMemoryEmbedder"/> carrying the failure reason, logs
-/// <c>memory_embedding_unavailable</c> at error level, and returns normally — degraded is a
-/// running state, not a startup fault (design D2, spec "Loud degradation without silent
-/// fallback"). This runs on a background thread pool task rather than blocking
-/// <see cref="StartAsync"/> so a slow/hanging download can never delay the rest of the host's
-/// startup sequence either.
+/// <see cref="UnavailableMemoryEmbedder"/> (or, for the relevance gate,
+/// <see cref="UnavailableRelevanceScorer"/>) carrying the failure reason, logs
+/// <c>memory_embedding_unavailable</c> (or <c>memory_relevance_gate_unavailable</c>) at error
+/// level, and returns normally — degraded is a running state, not a startup fault (design D2,
+/// spec "Loud degradation without silent fallback"). This runs on a background thread pool task
+/// rather than blocking <see cref="StartAsync"/> so a slow/hanging download can never delay the
+/// rest of the host's startup sequence either.
 /// </para>
 /// </summary>
 internal sealed class EmbeddingWarmupHostedService(
     EmbeddingModelProvisioner provisioner,
     SQLiteMemoryStore store,
     MemoryEmbedderHolder holder,
+    RelevanceScorerHolder relevanceScorerHolder,
+    IReadOnlyDictionary<string, RelevanceModelManifestEntry> relevanceAllowlist,
     MemoryConfig memoryConfig,
     NetclawPaths paths,
     ILogger<EmbeddingWarmupHostedService> logger) : IHostedService
@@ -93,6 +101,77 @@ internal sealed class EmbeddingWarmupHostedService(
             // the next daemon restart's sweep both retry whatever remains unembedded.
             logger.LogWarning(ex, "memory_embedding_gap_repair_failed model={ModelId}", embedder.ModelId);
         }
+
+        // Relevance gate (memory-relevance-gate, design D4, task 1.4): a second, independent
+        // provision-or-degrade step gated by the same Memory.Embeddings.Enabled switch (D6's
+        // "one mental switch" — there is no separate RelevanceGate.AutoDownload/ModelId knob).
+        // Runs regardless of whether the embedder itself just degraded above: the two models are
+        // separately lifecycled artifacts, so an embedder failure should not also prevent an
+        // attempt to provision the relevance model. No gap-repair analogue exists here — there is
+        // no per-item derived state to repair for a scoring-only model.
+        await WarmUpRelevanceGateAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Provisions and warms the relevance (cross-encoder) model, mirroring
+    /// <see cref="LoadEmbedderAsync"/>'s provision-or-degrade shape exactly. The manifest's
+    /// <c>CalibratedThreshold</c> is looked up unconditionally (success or failure) since it
+    /// describes the model id, not whether the model actually loaded — <see cref="RelevanceScorerHolder"/>
+    /// always pairs a scorer (available or not) with the correct threshold for its model id.
+    /// </summary>
+    private async Task WarmUpRelevanceGateAsync(CancellationToken ct)
+    {
+        var modelId = EmbeddingModelProvisioner.DefaultRelevanceModelId;
+        var calibratedThreshold = relevanceAllowlist.TryGetValue(modelId, out var entry)
+            ? entry.CalibratedThreshold
+            : 0.0;
+
+        try
+        {
+            var scorer = await LoadRelevanceScorerAsync(modelId, ct).ConfigureAwait(false);
+            relevanceScorerHolder.Set(scorer, calibratedThreshold);
+            logger.LogInformation("memory_relevance_gate_ready model={ModelId}", scorer.ModelId);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "memory_relevance_gate_unavailable model={ModelId} reason={Reason}", modelId, ex.Message);
+            relevanceScorerHolder.Set(new UnavailableRelevanceScorer(modelId, ex.Message), calibratedThreshold);
+        }
+    }
+
+    private async Task<IRelevanceScorer> LoadRelevanceScorerAsync(string modelId, CancellationToken ct)
+    {
+        // Keyed under the same ModelsDirectory root as embedding models (NetclawPaths.
+        // EmbeddingModelDirectory is already generalized by model id) — a distinct id string is
+        // all that's needed to avoid collisions, so no dedicated relevance-model path helper
+        // exists.
+        var modelDirectory = paths.EmbeddingModelDirectory(modelId);
+
+        ProvisionedRelevanceModel provisioned;
+        if (memoryConfig.Embeddings.AutoDownload)
+        {
+            provisioned = await provisioner.ProvisionRelevanceModelAsync(modelId, relevanceAllowlist, modelDirectory, ct)
+                .ConfigureAwait(false);
+        }
+        else
+        {
+            provisioned = await provisioner.TryLoadVerifiedRelevanceModelAsync(modelId, relevanceAllowlist, modelDirectory, ct)
+                .ConfigureAwait(false)
+                ?? throw new InvalidOperationException(
+                    $"Relevance model '{modelId}' is not provisioned (or failed hash verification) at " +
+                    $"{modelDirectory}, and Memory.Embeddings.AutoDownload is false. Provision it manually " +
+                    "or enable AutoDownload, then restart the daemon.");
+        }
+
+        var scorer = await OnnxCrossEncoderScorer.LoadAsync(provisioned.ModelPath, provisioned.VocabPath, provisioned.ModelId, ct: ct)
+            .ConfigureAwait(false);
+
+        // Warm-up inference (mirrors the embedder's own warm-up call): pays first-call ONNX
+        // session / JIT cost here rather than on the first real recall turn.
+        await scorer.ScoreAsync("netclaw relevance gate warmup query", ["netclaw relevance gate warmup candidate"], ct)
+            .ConfigureAwait(false);
+
+        return scorer;
     }
 
     private async Task<IMemoryEmbedder> LoadEmbedderAsync(string modelId, CancellationToken ct)

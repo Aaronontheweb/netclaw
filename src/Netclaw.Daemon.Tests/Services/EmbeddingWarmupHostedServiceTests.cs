@@ -27,6 +27,12 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
     private const string ModelId = "tiny-fixture";
     private const int Dimensions = 8;
 
+    // WarmUpRelevanceGateAsync hardcodes this constant as the relevance model id to provision
+    // (memory-relevance-gate: there is no config knob selecting which relevance model is
+    // active), so any fixture allowlist a test supplies must be keyed under the SAME id.
+    private const string RelevanceModelId = EmbeddingModelProvisioner.DefaultRelevanceModelId;
+    private const double RelevanceCalibratedThreshold = 0.02;
+
     private readonly string _baseDir = Path.Combine(Path.GetTempPath(), $"netclaw-embedding-warmup-tests-{Guid.NewGuid():N}");
     private NetclawPaths _paths = null!;
     private SQLiteMemoryStore _store = null!;
@@ -140,8 +146,80 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
         Assert.Equal("doc-needs-embedding", row.ItemId);
     }
 
+    // ── Relevance gate provisioning (memory-relevance-gate, design D4, task 1.4) ──
+
+    [Fact]
+    public async Task Relevance_gate_success_path_loads_the_fixture_scorer_and_pairs_the_manifest_threshold()
+    {
+        PrePlaceValidModelFiles();
+        PrePlaceValidRelevanceModelFiles();
+
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"));
+        var relevanceHolder = CreateRelevanceScorerHolder();
+        var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true, ModelId = ModelId, AutoDownload = true } };
+        var service = CreateService(holder, memoryConfig, relevanceHolder, RelevanceFixtureAllowlist());
+
+        await service.WarmUpAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(relevanceHolder.Current.IsAvailable);
+        Assert.Equal(RelevanceModelId, relevanceHolder.Current.ModelId);
+        Assert.Equal(RelevanceCalibratedThreshold, relevanceHolder.CalibratedThreshold);
+    }
+
+    [Fact]
+    public async Task Relevance_gate_degraded_path_sets_an_unavailable_scorer_when_the_model_is_missing()
+    {
+        PrePlaceValidModelFiles();
+        // No PrePlaceValidRelevanceModelFiles() call -- the relevance model directory is empty.
+
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"));
+        var relevanceHolder = CreateRelevanceScorerHolder();
+        var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true, ModelId = ModelId, AutoDownload = false } };
+        var service = CreateService(holder, memoryConfig, relevanceHolder, RelevanceFixtureAllowlist());
+
+        await service.WarmUpAsync(TestContext.Current.CancellationToken);
+
+        // The embedder itself still succeeds -- the two models are independently lifecycled.
+        Assert.True(holder.Current.IsAvailable);
+        Assert.False(relevanceHolder.Current.IsAvailable);
+        Assert.IsType<UnavailableRelevanceScorer>(relevanceHolder.Current);
+        // The manifest's calibrated threshold is still known even though the model failed to
+        // load -- it describes the model id, not whether provisioning succeeded.
+        Assert.Equal(RelevanceCalibratedThreshold, relevanceHolder.CalibratedThreshold);
+    }
+
+    [Fact]
+    public async Task Relevance_gate_disabled_config_leaves_the_relevance_holder_at_its_initial_value()
+    {
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "embeddings disabled"));
+        var initialRelevance = new UnavailableRelevanceScorer(RelevanceModelId, "embeddings disabled");
+        var relevanceHolder = new RelevanceScorerHolder(initialRelevance, initialCalibratedThreshold: 0.0);
+        var memoryConfig = new MemoryConfig { Embeddings = { Enabled = false, ModelId = ModelId } };
+        var service = CreateService(holder, memoryConfig, relevanceHolder, RelevanceFixtureAllowlist());
+
+        await service.WarmUpAsync(TestContext.Current.CancellationToken);
+
+        // Memory.Embeddings.Enabled=false short-circuits WarmUpAsync entirely -- neither model's
+        // provisioning step ever runs.
+        Assert.Same(initialRelevance, relevanceHolder.Current);
+    }
+
     private EmbeddingWarmupHostedService CreateService(MemoryEmbedderHolder holder, MemoryConfig memoryConfig)
-        => new(_provisioner, _store, holder, memoryConfig, _paths, NullLogger<EmbeddingWarmupHostedService>.Instance);
+        => CreateService(holder, memoryConfig, CreateRelevanceScorerHolder(), EmptyRelevanceAllowlist);
+
+    private EmbeddingWarmupHostedService CreateService(
+        MemoryEmbedderHolder holder,
+        MemoryConfig memoryConfig,
+        RelevanceScorerHolder relevanceScorerHolder,
+        IReadOnlyDictionary<string, RelevanceModelManifestEntry> relevanceAllowlist)
+        => new(_provisioner, _store, holder, relevanceScorerHolder, relevanceAllowlist, memoryConfig, _paths,
+            NullLogger<EmbeddingWarmupHostedService>.Instance);
+
+    private static RelevanceScorerHolder CreateRelevanceScorerHolder()
+        => new(new UnavailableRelevanceScorer(RelevanceModelId, "warmup not yet run"), initialCalibratedThreshold: 0.0);
+
+    private static readonly IReadOnlyDictionary<string, RelevanceModelManifestEntry> EmptyRelevanceAllowlist =
+        new Dictionary<string, RelevanceModelManifestEntry>();
 
     private void PrePlaceValidModelFiles()
     {
@@ -149,6 +227,32 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
         Directory.CreateDirectory(dir);
         File.Copy(Path.Combine(FixturesDir, "tiny-embedder.onnx"), Path.Combine(dir, "model.onnx"), overwrite: true);
         File.Copy(Path.Combine(FixturesDir, "tiny-vocab.txt"), Path.Combine(dir, "vocab.txt"), overwrite: true);
+    }
+
+    private void PrePlaceValidRelevanceModelFiles()
+    {
+        var dir = _paths.EmbeddingModelDirectory(RelevanceModelId);
+        Directory.CreateDirectory(dir);
+        File.Copy(Path.Combine(FixturesDir, "tiny-cross-encoder.onnx"), Path.Combine(dir, "model.onnx"), overwrite: true);
+        File.Copy(Path.Combine(FixturesDir, "tiny-cross-encoder-vocab.txt"), Path.Combine(dir, "vocab.txt"), overwrite: true);
+    }
+
+    private IReadOnlyDictionary<string, RelevanceModelManifestEntry> RelevanceFixtureAllowlist()
+    {
+        var modelBytes = File.ReadAllBytes(Path.Combine(FixturesDir, "tiny-cross-encoder.onnx"));
+        var vocabBytes = File.ReadAllBytes(Path.Combine(FixturesDir, "tiny-cross-encoder-vocab.txt"));
+
+        return new Dictionary<string, RelevanceModelManifestEntry>
+        {
+            [RelevanceModelId] = new(
+                RelevanceModelId,
+                ModelUrl: new Uri("http://127.0.0.1:1/unused-model.onnx"),
+                TokenizerUrl: new Uri("http://127.0.0.1:1/unused-vocab.txt"),
+                ModelSha256: Sha256Hex(modelBytes),
+                TokenizerSha256: Sha256Hex(vocabBytes),
+                ModelByteSize: modelBytes.Length,
+                CalibratedThreshold: RelevanceCalibratedThreshold),
+        };
     }
 
     private static string Sha256Hex(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));

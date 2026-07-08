@@ -1039,6 +1039,24 @@ assert_memory_recall_filters() {
     '
 }
 
+# memory-relevance-gate task 2.6: the automated analogue of the shoot-out's "zero-injection
+# accuracy" metric. Off-topic query against the seeded corpus (travel/color/project-alpha/
+# secret-token fixtures) must inject nothing.
+#
+# The eval container does not set Memory.Embeddings.Enabled (default false), so this case
+# exercises the pre-existing lexical-only floor, not the cross-encoder gate itself (that
+# requires an out-of-process download+provisioning step outside this harness's scope — see
+# openspec/changes/memory-relevance-gate/tasks.md task 2.6: "authoring the case is [required];
+# the eval RUN is not required here"). Asserting injectedCount=0 plus the unconditional
+# droppedByGate= field (present on every memory_retrieval_final line regardless of mode --
+# droppedByGate=0 accurately reports "nothing was dropped because nothing reached the gate")
+# keeps this case correct and meaningful in both today's lexical-only default and a future run
+# with embeddings enabled, without needing to touch the eval container's global config.
+assert_memory_relevance_gate_zero_injection() {
+    daemon_log_contains 'memory_retrieval_final.*injectedCount=0' \
+        && daemon_log_contains 'droppedByGate='
+}
+
 # Category 4: Tool Discovery & Use
 assert_tool_discovery() {
     stdout_contains '\[tool:call\] search_tools'
@@ -1528,6 +1546,9 @@ run_all() {
 
     run_case memory_recall_filters "candidate selection with score filtering" \
         "Tell me about my travel preferences"
+
+    run_case memory_relevance_gate_zero_injection "off-topic query injects nothing, gate marker logged" \
+        "What is the boiling point of tungsten in degrees Celsius?"
 
     end_category
 
