@@ -164,11 +164,12 @@ deduplicated, **all candidates passing the identical policy gates**
 correctness requirement with its own scenario. Scoring = weighted fusion
 (`VectorWeight` 0.7 × cosine + `LexicalWeight` 0.3 × squashed selector score
 + dampened class prior), then an **absolute floor**: `MinCosineSimilarity`
-(default 0.55, calibrated against the real-traffic gold set
-`gold-prod-2026-07`). Nothing above the floor → inject nothing, and the
-volatile `[memory-recall]` block is omitted entirely (zero tokens). Recency
-decay (`RecencyHalfLifeDays`, floor-bounded multiplier) breaks ties toward
-fresh knowledge. The quick-win char budget and `AutoRecallMaxItems` remain
+(default **0.68**, calibrated 2026-07-05 against the real-traffic gold set
+`gold-prod-2026-07` — calibration summary below). Nothing above the floor →
+inject nothing, and the volatile `[memory-recall]` block is omitted entirely
+(zero tokens). Recency decay (`RecencyHalfLifeDays`, floor-bounded
+multiplier) breaks ties toward fresh knowledge. The quick-win char budget and
+`AutoRecallMaxItems` remain
 the outer bounds.
 
 *Alternative considered*: RRF fusion — rejected: rank-only fusion always
@@ -198,6 +199,37 @@ retrieval-quality risk. **Decision: Slice 4 adopts dynamic sequence length
 (bucket-of-8 rounding) as the query-embedding mitigation**, not int8
 quantization and not a relaxed budget — the 150 ms sub-budget holds with
 large headroom once padding is length-aware.
+
+**Floor calibration, measured (2026-07-05, `floor_calibration.py`, task
+4.6)**: swept `MinCosineSimilarity` from 0.30 to 0.75 (step 0.01) over the
+same 1,216-doc production snapshot (2026-07-03) and the 93-query
+`gold-prod-2026-07` gold set (33 positive / 60 zero-relevant queries), using
+the fp32 ONNX production-faithful embedder replica and the cached doc/query
+vectors already validated for the quantization eval. LOAD DECISION = inject
+any of the top-3-by-cosine docs that clear the floor; objective = macro F0.5
+against `relevantDocIds`.
+
+| model | optimal τ | F0.5 @ optimum | F0.5 @ 0.55 (old default) | zero-injection acc. @ optimum | plateau shape |
+|---|---:|---:|---:|---:|---|
+| fp32 `snowflake-arctic-embed-m` (**shipped**) | **0.68** | 0.141 | 0.106 | 13.3% (8/60) | moderate, symmetric — robust to ±0.01 drift, ~29% relative F0.5 drop by ±0.03 |
+| uint8 `snowflake-arctic-embed-m-int8` (not shipped, D2) | 0.67 | 0.153 | 0.106 | 16.7% (10/60) | asymmetric knife-edge — flat below the optimum, +0.01 above it costs 35% relative F0.5 |
+
+Production ships fp32 (D2), so **0.68** is the shipped default: +33%
+relative F0.5 over the 0.55 placeholder, while mean injected count *drops*
+(3.00 → 2.53 — fewer, more pertinent items). uint8's optimum sitting 0.01
+lower matches the compression shift already measured for
+`NominatorSimilarityThreshold` (D2/D4); it remains informational only, since
+int8 is not shipped.
+
+**Caveat that must not be dropped**: even at the F0.5 optimum, **83–87% of
+genuinely nothing-relevant `gold-prod-2026-07` queries still get something
+injected** (zero-injection accuracy tops out at 13.3–16.7%). Pushing the
+floor further right buys more zero-accuracy but costs recall steeply on the
+35% of queries where something is relevant (a property of this corpus's
+embedding geometry, not a bug in the calibration). An absolute cosine floor
+alone cannot close the zero-injection gap within the F0.5-preserving range —
+that residual is tracked as the separate `memory-relevance-gate` change, not
+solved here.
 
 ### D7. Taxonomy rebalance: recall modes mean what they say
 
@@ -369,8 +401,16 @@ compatibility; only dead *behavior* is deleted.
   drop meaningfully too. Int8 quantization and relaxing the sub-budget are no
   longer necessary; both remain available as future levers if traffic shifts
   toward longer queries.
-- Final `MinCosineSimilarity` default (calibrate against `gold-prod-2026-07`
-  during Slice 4; 0.55 is the working hypothesis).
+- ~~Final `MinCosineSimilarity` default (calibrate against
+  `gold-prod-2026-07` during Slice 4; 0.55 is the working hypothesis)~~
+  **MEASURED (Slice 4 task 4.6, `floor_calibration.py`, 2026-07-05)**: fp32
+  optimum is **0.68** (F0.5 0.141 vs 0.106 at 0.55; zero-injection accuracy
+  13.3%, up from 0%; moderate, symmetric plateau, robust to ±0.01 drift).
+  Production ships fp32 (D2), so 0.68 is the shipped default — full
+  calibration summary in D6. uint8's optimum (0.67, knife-edge above the
+  peak) stays informational until int8 ships. The residual 83–87%
+  zero-injection miss rate at the optimum is not solved by the floor alone;
+  tracked under the separate `memory-relevance-gate` change.
 - Whether the R2 feeds channel should mirror model artifacts (post-PoC
   operational decision; allowlist design is unaffected).
 - Trace auto-recall weighting while fresh (small prior vs durable-fact parity)

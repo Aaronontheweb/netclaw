@@ -91,10 +91,10 @@ public sealed class MemoryConfigDefaultsTests
     }
 
     [Fact]
-    public void Recall_min_cosine_similarity_defaults_to_0_55()
+    public void Recall_min_cosine_similarity_defaults_to_0_68()
     {
         var config = new MemoryConfig();
-        Assert.Equal(0.55, config.Recall.MinCosineSimilarity);
+        Assert.Equal(0.68, config.Recall.MinCosineSimilarity);
     }
 
     [Fact]

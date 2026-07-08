@@ -154,10 +154,11 @@ public sealed class MemoryRecallConfig
     /// vector- or lexical-sourced — whose cosine similarity to the query falls below this value
     /// is dropped before ranking, regardless of fused score. Nothing surviving means nothing is
     /// injected and the <c>[memory-recall]</c> block is omitted entirely — a healthy empty
-    /// result, not a degraded one. Calibrated against the real-traffic gold set
-    /// (<c>gold-prod-2026-07</c>); see design D6.
+    /// result, not a degraded one. Calibrated (not a placeholder) against the real-traffic gold
+    /// set (<c>gold-prod-2026-07</c>, 2026-07-05): maximizes F0.5 for the shipped fp32
+    /// <c>snowflake-arctic-embed-m</c> embedder; see design D6 for the full sweep.
     /// </summary>
-    public double MinCosineSimilarity { get; set; } = 0.55;
+    public double MinCosineSimilarity { get; set; } = 0.68;
 
     /// <summary>
     /// Half-life, in days, for the recency-decay multiplier applied to a candidate's fused score

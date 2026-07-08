@@ -443,8 +443,8 @@
               "type": "number",
               "minimum": 0,
               "maximum": 1,
-              "default": 0.55,
-              "description": "Absolute relevance floor: when a query vector is available, any candidate below this cosine similarity is dropped before ranking, regardless of source."
+              "default": 0.68,
+              "description": "Absolute relevance floor: when a query vector is available, any candidate below this cosine similarity is dropped before ranking, regardless of source. Calibrated against the gold-prod-2026-07 gold set for the shipped fp32 snowflake-arctic-embed-m embedder."
             },
             "RecencyHalfLifeDays": {
               "type": "number",

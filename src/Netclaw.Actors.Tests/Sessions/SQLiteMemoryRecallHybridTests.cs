@@ -65,7 +65,7 @@ public sealed class SQLiteMemoryRecallHybridTests : IAsyncDisposable
         // Strong lexical match: title+content share every query term, so the pre-Slice-4
         // selector score alone clears the old lexical floor comfortably. Its embedding is the
         // exact opposite direction of the query vector (cosine 0.0) -- well below
-        // MinCosineSimilarity's default 0.55. The absolute floor must reject it regardless of
+        // MinCosineSimilarity's default 0.68. The absolute floor must reject it regardless of
         // how strong the lexical match is.
         await SeedDocumentAsync("doc-lexical-strong", "Grafana dashboard provisioning convention",
             "Grafana dashboard provisioning convention details for the ops team.", ct);
