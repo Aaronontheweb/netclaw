@@ -477,7 +477,12 @@ public sealed class MemoryRecallScenarioTests : IAsyncLifetime
             new MemoryConfig(),
             TimeProvider.System,
             sessionTuning: new SessionTuning(),
-            embedderHolder: new MemoryEmbedderHolder(new ScriptedEmbedder(modelId, dimensions, queryVector)),
+            // memory-query-prefix design D3: Memory.Recall.MinCosineSimilarity now defaults to
+            // null (manifest-follows), so this fixture's own P09 floor (0.68 — see the class
+            // summary's cosine geometry comment) is supplied directly as the holder's
+            // manifest-carried calibration rather than a config value.
+            embedderHolder: new MemoryEmbedderHolder(
+                new ScriptedEmbedder(modelId, dimensions, queryVector), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: 0.68),
             vectorIndexHolder: new MemoryVectorIndexHolder(_store));
 
     private static object[] Row(string id, string prompt, string[] expected, string[] forbidden, bool useHybridRecall = false)
@@ -646,10 +651,10 @@ public sealed class MemoryRecallScenarioTests : IAsyncLifetime
 
         public bool IsAvailable => true;
 
-        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, CancellationToken ct)
+        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, EmbeddingPurpose purpose, CancellationToken ct)
             => ValueTask.FromResult<ReadOnlyMemory<float>>(queryVector);
 
-        public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct)
+        public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, EmbeddingPurpose purpose, CancellationToken ct)
             => ValueTask.FromResult<IReadOnlyList<ReadOnlyMemory<float>>>(
                 texts.Select(_ => (ReadOnlyMemory<float>)queryVector).ToList());
     }

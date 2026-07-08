@@ -26,7 +26,7 @@ public sealed class UnavailableMemoryEmbedderTests
         IMemoryEmbedder embedder = new UnavailableMemoryEmbedder("snowflake-arctic-embed-m", "hash verification failed");
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            async () => await embedder.EmbedAsync("some text", CancellationToken.None));
+            async () => await embedder.EmbedAsync("some text", EmbeddingPurpose.Passage, CancellationToken.None));
 
         Assert.Contains("hash verification failed", ex.Message, StringComparison.Ordinal);
         Assert.Contains("snowflake-arctic-embed-m", ex.Message, StringComparison.Ordinal);
@@ -39,6 +39,6 @@ public sealed class UnavailableMemoryEmbedderTests
         IMemoryEmbedder embedder = new UnavailableMemoryEmbedder("snowflake-arctic-embed-m", "runtime load error");
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            async () => await embedder.EmbedBatchAsync(["a", "b"], CancellationToken.None));
+            async () => await embedder.EmbedBatchAsync(["a", "b"], EmbeddingPurpose.Passage, CancellationToken.None));
     }
 }

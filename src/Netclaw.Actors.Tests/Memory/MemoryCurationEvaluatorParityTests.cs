@@ -343,7 +343,9 @@ public sealed class MemoryCurationEvaluatorParityTests : IAsyncDisposable
             "the", "Deployment jobs wait in a queue before promotion to production.", freshnessAtMs: 2000);
 
         var embedderHolder = new MemoryEmbedderHolder(
-            new ScriptedEmbedder("test-nominator-model", dimensions: 2, [0.93f, 0.367623f]));
+            new ScriptedEmbedder("test-nominator-model", dimensions: 2, [0.93f, 0.367623f]),
+            initialQueryPrefix: "",
+            initialCalibratedMinCosineSimilarity: null);
         var vectorIndexHolder = new MemoryVectorIndexHolder(_store);
 
         var actorLike = new MemoryCurationEvaluator(
@@ -462,7 +464,9 @@ public sealed class MemoryCurationEvaluatorParityTests : IAsyncDisposable
             "sunfish-deploy-queue", "Deployment jobs wait in a queue before promotion to production.", freshnessAtMs: 2000);
 
         var embedderHolder = new MemoryEmbedderHolder(
-            new ScriptedEmbedder("test-nominator-model", dimensions: 2, [0.93f, 0.367623f]));
+            new ScriptedEmbedder("test-nominator-model", dimensions: 2, [0.93f, 0.367623f]),
+            initialQueryPrefix: "",
+            initialCalibratedMinCosineSimilarity: null);
         var vectorIndexHolder = new MemoryVectorIndexHolder(_store);
 
         var actorLike = new MemoryCurationEvaluator(
@@ -602,10 +606,10 @@ public sealed class MemoryCurationEvaluatorParityTests : IAsyncDisposable
 
         public bool IsAvailable => true;
 
-        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, CancellationToken ct)
+        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, EmbeddingPurpose purpose, CancellationToken ct)
             => ValueTask.FromResult<ReadOnlyMemory<float>>(queryVector);
 
-        public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct)
+        public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, EmbeddingPurpose purpose, CancellationToken ct)
             => ValueTask.FromResult<IReadOnlyList<ReadOnlyMemory<float>>>(
                 texts.Select(_ => (ReadOnlyMemory<float>)queryVector).ToList());
     }

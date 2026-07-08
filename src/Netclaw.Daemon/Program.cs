@@ -747,11 +747,22 @@ static void ConfigureDaemonServices(
         // EmbeddingWarmupHostedService populates it at startup (see that type's remarks for why
         // a mutable holder is required instead of constructor injection).
         services.AddHttpClient("EmbeddingModelProvisioner").AddNetclawHeaders("embedding-provisioner");
+        services.AddSingleton<IReadOnlyDictionary<string, EmbeddingModelManifestEntry>>(
+            EmbeddingModelProvisioner.Allowlist);
         services.AddSingleton(sp => new EmbeddingModelProvisioner(
             sp.GetRequiredService<IHttpClientFactory>().CreateClient("EmbeddingModelProvisioner"),
             EmbeddingModelProvisioner.Allowlist));
+
+        // Initial prefix/floor are resolved from the allowlist entry (memory-query-prefix design
+        // D2/D3) rather than hardcoded empty/null placeholders: an unknown ModelId degrades to
+        // "no prefix, no calibration" here (TryGetValue returns null) exactly like any other
+        // missing-manifest-entry condition elsewhere — the daemon still starts, and
+        // EmbeddingWarmupHostedService's own load attempt is what surfaces the loud failure.
+        EmbeddingModelProvisioner.Allowlist.TryGetValue(memoryConfig.Embeddings.ModelId, out var initialEmbeddingEntry);
         services.AddSingleton(new MemoryEmbedderHolder(
-            new UnavailableMemoryEmbedder(memoryConfig.Embeddings.ModelId, "embedding warmup has not completed yet")));
+            new UnavailableMemoryEmbedder(memoryConfig.Embeddings.ModelId, "embedding warmup has not completed yet"),
+            initialQueryPrefix: initialEmbeddingEntry?.QueryPrefix ?? string.Empty,
+            initialCalibratedMinCosineSimilarity: initialEmbeddingEntry?.CalibratedMinCosineSimilarity));
 
         // Vector index for the curation evaluator's embedding kNN nominator (memory-core-
         // redesign Slice 3 Stage B, task 3.1). Registered alongside MemoryEmbedderHolder above:

@@ -36,6 +36,12 @@ public sealed class SQLiteMemoryRecallHybridTests : IAsyncDisposable
     private const string ModelId = "hybrid-recall-test-model";
     private const int Dimensions = 2;
 
+    // memory-query-prefix design D3: the coordinator now resolves its floor from the embedder
+    // holder's manifest-carried calibration (config override falling back to it). This fixture's
+    // hand-crafted vectors only ever produce cosine 0.0 (OrthogonalVector) or 1.0 (QueryVector),
+    // so any value strictly between them preserves every existing admit/reject assertion below.
+    private const double TestFloor = 0.5;
+
     // A unit vector and its exact opposite: cosine(QueryVector, QueryVector) == 1.0,
     // cosine(QueryVector, OrthogonalVector) == 0.0. Sufficient geometry for every scenario here
     // (either "matches the query" or "shares no direction with it at all").
@@ -153,7 +159,7 @@ public sealed class SQLiteMemoryRecallHybridTests : IAsyncDisposable
             new MemoryConfig { Embeddings = new MemoryEmbeddingsConfig { Enabled = true } },
             TimeProvider.System,
             sessionTuning: new SessionTuning { DeterministicRetrievalEnabled = true },
-            embedderHolder: new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVector)),
+            embedderHolder: new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVector), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: TestFloor),
             vectorIndexHolder: new MemoryVectorIndexHolder(_store));
 
         var result = await coordinator.RecallAsync(new AutomaticRecallRequest(
@@ -192,7 +198,7 @@ public sealed class SQLiteMemoryRecallHybridTests : IAsyncDisposable
             new MemoryConfig { Embeddings = new MemoryEmbeddingsConfig { Enabled = true } },
             TimeProvider.System,
             sessionTuning: new SessionTuning { DeterministicRetrievalEnabled = true },
-            embedderHolder: new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVector)),
+            embedderHolder: new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVector), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: TestFloor),
             vectorIndexHolder: new MemoryVectorIndexHolder(_store));
 
         var result = await coordinator.RecallAsync(new AutomaticRecallRequest(
@@ -311,7 +317,7 @@ public sealed class SQLiteMemoryRecallHybridTests : IAsyncDisposable
             new MemoryConfig(),
             TimeProvider.System,
             sessionTuning: new SessionTuning { DeterministicRetrievalEnabled = true },
-            embedderHolder: new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "test: never provisioned")),
+            embedderHolder: new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "test: never provisioned"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null),
             vectorIndexHolder: new MemoryVectorIndexHolder(_store));
 
         var baselineResult = await withoutHolders.RecallAsync(request, ct);
@@ -339,7 +345,7 @@ public sealed class SQLiteMemoryRecallHybridTests : IAsyncDisposable
             new MemoryConfig { Embeddings = new MemoryEmbeddingsConfig { Enabled = false } },
             TimeProvider.System,
             sessionTuning: new SessionTuning { DeterministicRetrievalEnabled = true },
-            embedderHolder: new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup has not completed yet")),
+            embedderHolder: new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup has not completed yet"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null),
             vectorIndexHolder: new MemoryVectorIndexHolder(_store));
 
         await coordinator.RecallAsync(new AutomaticRecallRequest(
@@ -365,7 +371,7 @@ public sealed class SQLiteMemoryRecallHybridTests : IAsyncDisposable
             new MemoryConfig { Embeddings = new MemoryEmbeddingsConfig { Enabled = true } },
             TimeProvider.System,
             sessionTuning: new SessionTuning { DeterministicRetrievalEnabled = true },
-            embedderHolder: new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "model load failed")),
+            embedderHolder: new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "model load failed"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null),
             vectorIndexHolder: new MemoryVectorIndexHolder(_store));
 
         await coordinator.RecallAsync(new AutomaticRecallRequest(
@@ -377,6 +383,132 @@ public sealed class SQLiteMemoryRecallHybridTests : IAsyncDisposable
         Assert.Contains(recordingLogger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("memory_recall_vector_degraded"));
     }
 
+    // ── Floor resolution (memory-query-prefix design D3, task 2.4) ──────
+
+    [Fact]
+    public async Task Floor_resolves_from_the_active_models_manifest_calibration_when_no_override_is_configured()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _store.InitializeAsync(ct);
+
+        // Below TestFloor (0.5) -- must be rejected when the manifest calibration is the
+        // effective floor (no config override set below).
+        await SeedDocumentAsync("doc-below-manifest-floor", "Grafana dashboard provisioning convention",
+            "Grafana dashboard provisioning convention details for the ops team.", ct);
+        await _store.UpsertEmbeddingAsync(
+            "doc-below-manifest-floor", MemoryEmbedOnWriteCoordinator.DocumentItemKind, ModelId, "hash-below", OrthogonalVector, ct);
+
+        var recordingLogger = new RecordingLogger<SQLiteMemoryRecallCoordinator>();
+        var coordinator = new SQLiteMemoryRecallCoordinator(
+            _store,
+            recordingLogger,
+            new MemoryConfig { Embeddings = new MemoryEmbeddingsConfig { Enabled = true } }, // Recall.MinCosineSimilarity left null (default)
+            TimeProvider.System,
+            sessionTuning: new SessionTuning { DeterministicRetrievalEnabled = true },
+            embedderHolder: new MemoryEmbedderHolder(
+                new ScriptedEmbedder(ModelId, Dimensions, QueryVector), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: TestFloor),
+            vectorIndexHolder: new MemoryVectorIndexHolder(_store));
+
+        var result = await coordinator.RecallAsync(new AutomaticRecallRequest(
+            SessionId: (SessionId)"hybrid/floor-manifest",
+            Query: "what is our grafana dashboard provisioning convention?",
+            RecentUserMessages: ["what is our grafana dashboard provisioning convention?"],
+            MaxItems: 3), ct);
+
+        Assert.False(result.Degraded);
+        Assert.DoesNotContain(result.Items, i => i.Id.Value == "doc-below-manifest-floor");
+        Assert.Contains(recordingLogger.Entries, e =>
+            e.Message.Contains("memory_retrieval_final") &&
+            e.Message.Contains($"appliedFloor={TestFloor:F3}") &&
+            e.Message.Contains("floorSource=manifest"));
+    }
+
+    [Fact]
+    public async Task Explicit_config_override_takes_precedence_over_the_manifest_calibration()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _store.InitializeAsync(ct);
+
+        // OrthogonalVector's cosine against QueryVector is 0.0 -- below TestFloor (0.5, the
+        // manifest calibration this holder carries) but the config override below (-0.5) is low
+        // enough that it must admit the candidate instead, proving the override wins.
+        await SeedDocumentAsync("doc-override-admits", "Grafana dashboard provisioning convention",
+            "Grafana dashboard provisioning convention details for the ops team.", ct);
+        await _store.UpsertEmbeddingAsync(
+            "doc-override-admits", MemoryEmbedOnWriteCoordinator.DocumentItemKind, ModelId, "hash-override", OrthogonalVector, ct);
+
+        const double overrideFloor = -0.5;
+        var recordingLogger = new RecordingLogger<SQLiteMemoryRecallCoordinator>();
+        var coordinator = new SQLiteMemoryRecallCoordinator(
+            _store,
+            recordingLogger,
+            new MemoryConfig
+            {
+                Embeddings = new MemoryEmbeddingsConfig { Enabled = true },
+                Recall = new MemoryRecallConfig { MinCosineSimilarity = overrideFloor },
+            },
+            TimeProvider.System,
+            sessionTuning: new SessionTuning { DeterministicRetrievalEnabled = true },
+            embedderHolder: new MemoryEmbedderHolder(
+                new ScriptedEmbedder(ModelId, Dimensions, QueryVector), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: TestFloor),
+            vectorIndexHolder: new MemoryVectorIndexHolder(_store));
+
+        var result = await coordinator.RecallAsync(new AutomaticRecallRequest(
+            SessionId: (SessionId)"hybrid/floor-override",
+            Query: "what is our grafana dashboard provisioning convention?",
+            RecentUserMessages: ["what is our grafana dashboard provisioning convention?"],
+            MaxItems: 3), ct);
+
+        Assert.False(result.Degraded);
+        Assert.Contains(result.Items, i => i.Id.Value == "doc-override-admits");
+        Assert.Contains(recordingLogger.Entries, e =>
+            e.Message.Contains("memory_retrieval_final") &&
+            e.Message.Contains($"appliedFloor={overrideFloor:F3}") &&
+            e.Message.Contains("floorSource=override"));
+    }
+
+    [Fact]
+    public async Task Missing_calibration_and_no_override_degrades_to_lexical_only_with_a_distinct_reason()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _store.InitializeAsync(ct);
+
+        // A strong lexical match so the lexical-only composite floor still admits it -- proves
+        // this degraded to lexical-only rather than injecting nothing for an unrelated reason.
+        await SeedDocumentAsync("doc-missing-calibration", "Grafana dashboard provisioning convention",
+            "Grafana dashboard provisioning convention details for the ops team.", ct,
+            aliasesJson: "[\"grafana\",\"dashboard\",\"provisioning\",\"convention\"]");
+
+        var recordingLogger = new RecordingLogger<SQLiteMemoryRecallCoordinator>();
+        var coordinator = new SQLiteMemoryRecallCoordinator(
+            _store,
+            recordingLogger,
+            new MemoryConfig { Embeddings = new MemoryEmbeddingsConfig { Enabled = true } }, // Recall.MinCosineSimilarity left null (default)
+            TimeProvider.System,
+            sessionTuning: new SessionTuning { DeterministicRetrievalEnabled = true },
+            // Available embedder, but the holder carries NO calibration (mirrors the mxbai
+            // fallback entry before its own floor sweep lands) -- design D3's "prefix-without-
+            // recalibration is unrepresentable by default."
+            embedderHolder: new MemoryEmbedderHolder(
+                new ScriptedEmbedder(ModelId, Dimensions, QueryVector), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null),
+            vectorIndexHolder: new MemoryVectorIndexHolder(_store));
+
+        var result = await coordinator.RecallAsync(new AutomaticRecallRequest(
+            SessionId: (SessionId)"hybrid/missing-calibration",
+            Query: "what is our grafana dashboard provisioning convention?",
+            RecentUserMessages: ["what is our grafana dashboard provisioning convention?"],
+            MaxItems: 3), ct);
+
+        Assert.False(result.Degraded);
+        Assert.Contains(result.Items, i => i.Id.Value == "doc-missing-calibration");
+        Assert.Contains(recordingLogger.Entries, e =>
+            e.Level == LogLevel.Warning &&
+            e.Message.Contains("memory_recall_vector_degraded") &&
+            e.Message.Contains("reason=missing_calibration"));
+        Assert.Contains(recordingLogger.Entries, e =>
+            e.Message.Contains("memory_retrieval_final") && e.Message.Contains("mode=lexical"));
+    }
+
     // ── Fixtures ─────────────────────────────────────────────────────────
 
     private SQLiteMemoryRecallCoordinator BuildHybridCoordinator(TimeProvider timeProvider, ILogger<SQLiteMemoryRecallCoordinator> logger)
@@ -386,7 +518,7 @@ public sealed class SQLiteMemoryRecallHybridTests : IAsyncDisposable
             new MemoryConfig(),
             timeProvider,
             sessionTuning: new SessionTuning { DeterministicRetrievalEnabled = true },
-            embedderHolder: new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVector)),
+            embedderHolder: new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVector), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: TestFloor),
             vectorIndexHolder: new MemoryVectorIndexHolder(_store));
 
     private async Task SeedDocumentAsync(
@@ -429,10 +561,10 @@ public sealed class SQLiteMemoryRecallHybridTests : IAsyncDisposable
 
         public bool IsAvailable => true;
 
-        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, CancellationToken ct)
+        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, EmbeddingPurpose purpose, CancellationToken ct)
             => ValueTask.FromResult<ReadOnlyMemory<float>>(queryVector);
 
-        public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct)
+        public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, EmbeddingPurpose purpose, CancellationToken ct)
             => ValueTask.FromResult<IReadOnlyList<ReadOnlyMemory<float>>>(
                 texts.Select(_ => (ReadOnlyMemory<float>)queryVector).ToList());
     }

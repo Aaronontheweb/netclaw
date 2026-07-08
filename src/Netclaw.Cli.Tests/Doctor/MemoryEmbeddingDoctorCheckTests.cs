@@ -173,6 +173,9 @@ public sealed class MemoryEmbeddingDoctorCheckTests
     }
 
     internal static IReadOnlyDictionary<string, EmbeddingModelManifestEntry> FixtureAllowlist()
+        => FixtureAllowlist(calibratedMinCosineSimilarity: 0.42);
+
+    private static IReadOnlyDictionary<string, EmbeddingModelManifestEntry> FixtureAllowlist(double? calibratedMinCosineSimilarity)
     {
         var modelBytes = File.ReadAllBytes(Path.Combine(FixturesDir, "tiny-embedder.onnx"));
         var vocabBytes = File.ReadAllBytes(Path.Combine(FixturesDir, "tiny-vocab.txt"));
@@ -186,7 +189,53 @@ public sealed class MemoryEmbeddingDoctorCheckTests
                 ModelSha256: Convert.ToHexStringLower(SHA256.HashData(modelBytes)),
                 TokenizerSha256: Convert.ToHexStringLower(SHA256.HashData(vocabBytes)),
                 Dimensions: 8,
-                ModelByteSize: modelBytes.Length),
+                ModelByteSize: modelBytes.Length,
+                QueryPrefix: "search_query: ",
+                CalibratedMinCosineSimilarity: calibratedMinCosineSimilarity),
         };
+    }
+
+    // ── Effective floor + prefix reporting (memory-query-prefix design D3, task 2.3) ──
+
+    [Fact]
+    public async Task Passes_and_reports_manifest_floor_source_when_healthy_and_no_override_configured()
+    {
+        var paths = CreateTempPaths();
+        var config = WriteConfig(paths, enabled: true);
+        PrePlaceValidModelFiles(paths);
+
+        var store = new SQLiteMemoryStore(paths.MemorySqliteDbPath, TimeProvider.System);
+        await store.InitializeAsync(TestContext.Current.CancellationToken);
+        await SeedDocumentAsync(store, "doc-1", "Doc", "body");
+        var hash = MemoryContentHasher.ComputeHash("Doc", "body");
+        await store.UpsertEmbeddingAsync("doc-1", "document", ModelId, hash, new float[] { 1f }, TestContext.Current.CancellationToken);
+
+        var check = new MemoryEmbeddingDoctorCheck(paths, config, FixtureAllowlist());
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Pass, result.Severity);
+        Assert.Contains("queryPrefix=True", result.Message, StringComparison.Ordinal);
+        Assert.Contains("source=manifest", result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Warns_when_the_active_model_carries_no_retrieval_calibration_and_no_override_is_configured()
+    {
+        var paths = CreateTempPaths();
+        var config = WriteConfig(paths, enabled: true);
+        PrePlaceValidModelFiles(paths);
+
+        var store = new SQLiteMemoryStore(paths.MemorySqliteDbPath, TimeProvider.System);
+        await store.InitializeAsync(TestContext.Current.CancellationToken);
+        await SeedDocumentAsync(store, "doc-1", "Doc", "body");
+        var hash = MemoryContentHasher.ComputeHash("Doc", "body");
+        await store.UpsertEmbeddingAsync("doc-1", "document", ModelId, hash, new float[] { 1f }, TestContext.Current.CancellationToken);
+
+        // Uncalibrated entry — mirrors the mxbai fallback entry before its own floor sweep lands.
+        var check = new MemoryEmbeddingDoctorCheck(paths, config, FixtureAllowlist(calibratedMinCosineSimilarity: null));
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Warning, result.Severity);
+        Assert.Contains("hybrid recall degrades to lexical-only", result.Message, StringComparison.OrdinalIgnoreCase);
     }
 }

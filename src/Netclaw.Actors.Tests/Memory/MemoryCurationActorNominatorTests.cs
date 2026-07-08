@@ -79,7 +79,7 @@ public sealed class MemoryCurationActorNominatorTests : TestKit
             await store.UpsertEmbeddingAsync(
                 "doc-existing", MemoryEmbedOnWriteCoordinator.DocumentItemKind, ModelId, "hash-existing", ExistingVector, ct);
 
-            var embedderHolder = new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVectorAt093));
+            var embedderHolder = new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVectorAt093), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
             var vectorIndexHolder = new MemoryVectorIndexHolder(store);
             var chatClient = new RecordingCurationChatClient("CREATE");
             var clientProvider = new SingleClientProvider(chatClient);
@@ -174,10 +174,10 @@ public sealed class MemoryCurationActorNominatorTests : TestKit
 
         public bool IsAvailable => true;
 
-        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, CancellationToken ct)
+        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, EmbeddingPurpose purpose, CancellationToken ct)
             => ValueTask.FromResult<ReadOnlyMemory<float>>(queryVector);
 
-        public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct)
+        public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, EmbeddingPurpose purpose, CancellationToken ct)
             => ValueTask.FromResult<IReadOnlyList<ReadOnlyMemory<float>>>(
                 texts.Select(_ => (ReadOnlyMemory<float>)queryVector).ToList());
     }

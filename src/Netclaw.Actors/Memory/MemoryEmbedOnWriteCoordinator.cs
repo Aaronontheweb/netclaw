@@ -91,7 +91,7 @@ public static class MemoryEmbedOnWriteCoordinator
             try
             {
                 var hash = MemoryContentHasher.ComputeHash(doc.Title, doc.Body);
-                var vector = await embedder.EmbedAsync($"{doc.Title}\n{doc.Body}", ct).ConfigureAwait(false);
+                var vector = await embedder.EmbedAsync($"{doc.Title}\n{doc.Body}", EmbeddingPurpose.Passage, ct).ConfigureAwait(false);
                 await store.UpsertEmbeddingAsync(
                     doc.DocumentId, DocumentItemKind, embedder.ModelId, hash, vector, ct).ConfigureAwait(false);
             }

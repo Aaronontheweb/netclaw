@@ -440,11 +440,10 @@
               "description": "Weight applied to a candidate's squashed lexical selector score in the hybrid fusion score."
             },
             "MinCosineSimilarity": {
-              "type": "number",
+              "type": ["number", "null"],
               "minimum": 0,
               "maximum": 1,
-              "default": 0.68,
-              "description": "Absolute relevance floor: when a query vector is available, any candidate below this cosine similarity is dropped before ranking, regardless of source. Calibrated against the gold-prod-2026-07 gold set for the shipped fp32 snowflake-arctic-embed-m embedder."
+              "description": "Absolute relevance floor: when a query vector is available, any candidate below this cosine similarity is dropped before ranking, regardless of source. When null (default), the effective floor follows the active embedding model's manifest-carried calibration (0.24 for the shipped prefixed snowflake-arctic-embed-m encoding). The value is model- and encoding-specific — cosine distributions shift materially when a model's documented query prefix is adopted or removed, so a value pinned for one model/encoding must never be carried into another without re-running the calibration procedure."
             },
             "RecencyHalfLifeDays": {
               "type": "number",

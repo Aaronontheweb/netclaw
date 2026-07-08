@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Actors.Memory;
 using Xunit;
 
 namespace Netclaw.Embeddings.Tests;
@@ -19,7 +20,14 @@ public sealed class OnnxMemoryEmbedderTests : IAsyncLifetime
     private const string ModelId = "tiny-fixture";
     private const int Dimensions = 8;
 
+    // memory-query-prefix design D2/D3 fixture prefix — not a real model card string, just an
+    // exercisable prefix for OnnxMemoryEmbedderTests.QueryPrefix-specific facts below. _embedder
+    // (no prefix) covers every pre-existing fact in this file unchanged; _prefixedEmbedder is
+    // used only by the purpose-application facts.
+    private const string FixtureQueryPrefix = "search_query: ";
+
     private OnnxMemoryEmbedder _embedder = null!;
+    private OnnxMemoryEmbedder _prefixedEmbedder = null!;
 
     public async ValueTask InitializeAsync()
     {
@@ -29,12 +37,21 @@ public sealed class OnnxMemoryEmbedderTests : IAsyncLifetime
             vocabPath: Path.Combine(fixturesDir, "tiny-vocab.txt"),
             modelId: ModelId,
             dimensions: Dimensions,
+            queryPrefix: "",
+            maxConcurrency: 2);
+        _prefixedEmbedder = await OnnxMemoryEmbedder.LoadAsync(
+            modelPath: Path.Combine(fixturesDir, "tiny-embedder.onnx"),
+            vocabPath: Path.Combine(fixturesDir, "tiny-vocab.txt"),
+            modelId: ModelId,
+            dimensions: Dimensions,
+            queryPrefix: FixtureQueryPrefix,
             maxConcurrency: 2);
     }
 
     public ValueTask DisposeAsync()
     {
         _embedder.Dispose();
+        _prefixedEmbedder.Dispose();
         return ValueTask.CompletedTask;
     }
 
@@ -49,8 +66,8 @@ public sealed class OnnxMemoryEmbedderTests : IAsyncLifetime
     [Fact]
     public async Task EmbedAsync_is_deterministic_for_the_same_text()
     {
-        var v1 = await _embedder.EmbedAsync("cat sat on the mat", TestContext.Current.CancellationToken);
-        var v2 = await _embedder.EmbedAsync("cat sat on the mat", TestContext.Current.CancellationToken);
+        var v1 = await _embedder.EmbedAsync("cat sat on the mat", EmbeddingPurpose.Passage, TestContext.Current.CancellationToken);
+        var v2 = await _embedder.EmbedAsync("cat sat on the mat", EmbeddingPurpose.Passage, TestContext.Current.CancellationToken);
 
         Assert.Equal(v1.ToArray(), v2.ToArray());
     }
@@ -58,7 +75,7 @@ public sealed class OnnxMemoryEmbedderTests : IAsyncLifetime
     [Fact]
     public async Task EmbedAsync_produces_L2_normalized_vectors_of_the_declared_dimension()
     {
-        var vector = await _embedder.EmbedAsync("hello world", TestContext.Current.CancellationToken);
+        var vector = await _embedder.EmbedAsync("hello world", EmbeddingPurpose.Passage, TestContext.Current.CancellationToken);
 
         Assert.Equal(Dimensions, vector.Length);
         var normSquared = vector.ToArray().Sum(x => (double)x * x);
@@ -72,8 +89,8 @@ public sealed class OnnxMemoryEmbedderTests : IAsyncLifetime
         // every real token, not just position 0 — so different inputs must not collapse to
         // the same vector the way a naive CLS-only passthrough over an un-contextualized
         // Gather would.
-        var v1 = await _embedder.EmbedAsync("cat sat on the mat", TestContext.Current.CancellationToken);
-        var v2 = await _embedder.EmbedAsync("quarterly revenue grew", TestContext.Current.CancellationToken);
+        var v1 = await _embedder.EmbedAsync("cat sat on the mat", EmbeddingPurpose.Passage, TestContext.Current.CancellationToken);
+        var v2 = await _embedder.EmbedAsync("quarterly revenue grew", EmbeddingPurpose.Passage, TestContext.Current.CancellationToken);
 
         Assert.NotEqual(v1.ToArray(), v2.ToArray());
     }
@@ -83,12 +100,12 @@ public sealed class OnnxMemoryEmbedderTests : IAsyncLifetime
     {
         string[] texts = ["hello world", "cat sat", "dog running", "quarterly revenue grew by percent"];
 
-        var batch = await _embedder.EmbedBatchAsync(texts, TestContext.Current.CancellationToken);
+        var batch = await _embedder.EmbedBatchAsync(texts, EmbeddingPurpose.Passage, TestContext.Current.CancellationToken);
 
         Assert.Equal(texts.Length, batch.Count);
         for (var i = 0; i < texts.Length; i++)
         {
-            var single = await _embedder.EmbedAsync(texts[i], TestContext.Current.CancellationToken);
+            var single = await _embedder.EmbedAsync(texts[i], EmbeddingPurpose.Passage, TestContext.Current.CancellationToken);
             Assert.Equal(single.ToArray(), batch[i].ToArray());
         }
     }
@@ -96,7 +113,7 @@ public sealed class OnnxMemoryEmbedderTests : IAsyncLifetime
     [Fact]
     public async Task EmbedBatchAsync_of_empty_input_returns_empty()
     {
-        var batch = await _embedder.EmbedBatchAsync([], TestContext.Current.CancellationToken);
+        var batch = await _embedder.EmbedBatchAsync([], EmbeddingPurpose.Passage, TestContext.Current.CancellationToken);
         Assert.Empty(batch);
     }
 
@@ -119,8 +136,8 @@ public sealed class OnnxMemoryEmbedderTests : IAsyncLifetime
     [InlineData("the quarterly revenue report shows strong growth across every regional market segment this year")]
     public async Task EmbedAsync_with_dynamic_length_padding_is_deterministic_and_normalized(string text)
     {
-        var v1 = await _embedder.EmbedAsync(text, TestContext.Current.CancellationToken);
-        var v2 = await _embedder.EmbedAsync(text, TestContext.Current.CancellationToken);
+        var v1 = await _embedder.EmbedAsync(text, EmbeddingPurpose.Passage, TestContext.Current.CancellationToken);
+        var v2 = await _embedder.EmbedAsync(text, EmbeddingPurpose.Passage, TestContext.Current.CancellationToken);
 
         Assert.Equal(v1.ToArray(), v2.ToArray());
         Assert.Equal(Dimensions, v1.Length);
@@ -141,5 +158,69 @@ public sealed class OnnxMemoryEmbedderTests : IAsyncLifetime
     public void ComputeBucketedLength_rounds_up_to_the_nearest_bucket_of_8(int actualTokenCount, int expectedBucketLength)
     {
         Assert.Equal(expectedBucketLength, OnnxMemoryEmbedder.ComputeBucketedLength(actualTokenCount));
+    }
+
+    // ── Query prefix (memory-query-prefix design D1/D2, tasks 1.3/2.4) ──
+
+    /// <summary>
+    /// Byte-compat regression guard: this is the EXACT vector <c>OnnxMemoryEmbedder.EmbedOne</c>
+    /// produced for this text against this fixture model on the commit immediately before the
+    /// purpose-aware seam landed (captured by temporarily instrumenting the pre-change code —
+    /// see the memory-query-prefix change's task notes). Passage-purpose embedding must remain
+    /// byte-identical after adding the query-prefix seam: adopting a prefix for
+    /// <see cref="EmbeddingPurpose.RetrievalQuery"/> must never re-derive a single stored
+    /// document vector.
+    /// </summary>
+    [Fact]
+    public async Task Passage_purpose_embedding_is_byte_identical_to_the_pre_prefix_seam()
+    {
+        float[] expected =
+        [
+            0.27457318f, 0.29614678f, 0.31772035f, 0.339294f,
+            0.36086756f, 0.3824412f, 0.4040148f, 0.42558837f,
+        ];
+
+        var vector = await _embedder.EmbedAsync(
+            "Netclaw memory-query-prefix regression fixture text", EmbeddingPurpose.Passage, TestContext.Current.CancellationToken);
+
+        Assert.Equal(expected, vector.ToArray());
+    }
+
+    [Fact]
+    public async Task RetrievalQuery_purpose_applies_the_embedders_configured_prefix()
+    {
+        const string text = "Netclaw memory-query-prefix regression fixture text";
+
+        var passageVector = await _prefixedEmbedder.EmbedAsync(text, EmbeddingPurpose.Passage, TestContext.Current.CancellationToken);
+        var queryVector = await _prefixedEmbedder.EmbedAsync(text, EmbeddingPurpose.RetrievalQuery, TestContext.Current.CancellationToken);
+
+        // Same text, same embedder instance, different purpose -- the prefix is applied for
+        // RetrievalQuery only, so the two vectors must differ.
+        Assert.NotEqual(passageVector.ToArray(), queryVector.ToArray());
+    }
+
+    [Fact]
+    public async Task Passage_purpose_ignores_the_embedders_configured_prefix()
+    {
+        // _prefixedEmbedder has a real, non-empty QueryPrefix, but Passage purpose must produce
+        // the exact same vector as an embedder with NO prefix at all -- this is what keeps
+        // document-side vectors byte-identical regardless of which model's prefix is active.
+        const string text = "cat sat on the mat";
+
+        var fromUnprefixedEmbedder = await _embedder.EmbedAsync(text, EmbeddingPurpose.Passage, TestContext.Current.CancellationToken);
+        var fromPrefixedEmbedder = await _prefixedEmbedder.EmbedAsync(text, EmbeddingPurpose.Passage, TestContext.Current.CancellationToken);
+
+        Assert.Equal(fromUnprefixedEmbedder.ToArray(), fromPrefixedEmbedder.ToArray());
+    }
+
+    [Fact]
+    public async Task RetrievalQuery_purpose_is_a_no_op_when_the_embedder_has_no_configured_prefix()
+    {
+        const string text = "cat sat on the mat";
+
+        var passageVector = await _embedder.EmbedAsync(text, EmbeddingPurpose.Passage, TestContext.Current.CancellationToken);
+        var queryVector = await _embedder.EmbedAsync(text, EmbeddingPurpose.RetrievalQuery, TestContext.Current.CancellationToken);
+
+        Assert.Equal(passageVector.ToArray(), queryVector.ToArray());
     }
 }

@@ -535,7 +535,7 @@ public sealed class MemoryCurationEvaluator
         if (vectorIndex is null)
             return ([], 0);
 
-        var queryVector = await embedder.EmbedAsync($"{operation.Title}\n{operation.Content}", ct);
+        var queryVector = await embedder.EmbedAsync($"{operation.Title}\n{operation.Content}", EmbeddingPurpose.Passage, ct);
         var matches = vectorIndex.TopK(
             queryVector.Span, _curationConfig.NominatorK, _curationConfig.NominatorSimilarityThreshold);
         if (matches.Count == 0)

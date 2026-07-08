@@ -3,7 +3,7 @@ name: netclaw-memory
 description: "REQUIRED when the user asks what you remember, recall, or know from past conversations, previous sessions, cross-session memory, memory classes, or memory types. Also before using memory tools: find_memories, get_memories, store_memory, update_memory."
 metadata:
   author: netclaw
-  version: "1.11.0"
+  version: "1.12.0"
 ---
 
 # Netclaw Memory
@@ -72,21 +72,44 @@ lexical-only — same candidate pool, no vector term or cosine floor.
   **recency-decayed** (a half-life multiplier that favors fresher memories
   among otherwise similar candidates but never zeroes out an old one on age
   alone).
+- **Query prefix is automatic, per-model**: the turn query is embedded using
+  whatever retrieval-query encoding the active embedding model documents —
+  for the shipped `snowflake-arctic-embed-m`, that means a fixed instruction
+  string is prepended before the query text. This is a property of the
+  model, not something you configure; document-side embeddings (stored
+  memories) are never prefixed, so this never requires re-embedding existing
+  content.
 - **Absolute floor**: independent of the fused score, any candidate whose raw
-  cosine similarity falls below `MinCosineSimilarity` is dropped before
-  ranking. If nothing clears the floor, nothing is injected — this is a
-  correct, healthy outcome, not degraded recall. See the zero-injection note
-  above: don't editorialize about memory being broken when this happens.
-- **Defaults** (`Memory.Recall` in `netclaw.json`): `VectorWeight` 0.7,
-  `LexicalWeight` 0.3, `MinCosineSimilarity` 0.68 (calibrated against a
-  real-traffic gold set, not a placeholder), `RecencyHalfLifeDays` 30.
+  cosine similarity falls below the effective `MinCosineSimilarity` is
+  dropped before ranking. If nothing clears the floor, nothing is injected —
+  this is a correct, healthy outcome, not degraded recall. See the
+  zero-injection note above: don't editorialize about memory being broken
+  when this happens.
+- **The floor follows the active model's manifest by default.**
+  `Memory.Recall.MinCosineSimilarity` (nullable) is `null` unless an operator
+  explicitly overrides it — when `null`, the effective floor is whichever
+  calibration is pinned to the currently active embedding model (0.24 for
+  the shipped, prefixed `snowflake-arctic-embed-m` encoding). **The numeric
+  meaning of this value is model- and encoding-specific**: cosine
+  distributions shift materially between models, and even for the same
+  model between a prefixed and unprefixed encoding — an old value copied
+  from a different model/encoding combination can silently break recall
+  (measured: F0.5 = 0.0 when the pre-prefix 0.68 floor was applied to
+  prefixed queries). Only set an explicit override after re-running the
+  calibration-verification procedure against the model and encoding actually
+  active. `Memory.Recall.VectorWeight` defaults 0.7, `LexicalWeight` 0.3,
+  `RecencyHalfLifeDays` 30.
 - **Degradation is explicit and logged, not silent**: a turn whose
   query-embedding step misses its latency sub-budget (or has no embedder
   available) falls back to lexical-only scoring for that turn and logs
-  `memory_recall_vector_degraded`. A candidate with no embedding row for the
-  current model degrades to lexical-only scoring for that candidate alone
-  (rather than being excluded) and logs `memory_recall_coverage_gap`. Both
-  are self-healing, not persistent failures — see Diagnostics below.
+  `memory_recall_vector_degraded`. A model with no manifest-carried
+  retrieval calibration and no explicit `MinCosineSimilarity` override
+  degrades the same way, with reason `missing_calibration` — this is
+  expected for a newly-added or not-yet-calibrated model variant, not a
+  bug. A candidate with no embedding row for the current model degrades to
+  lexical-only scoring for that candidate alone (rather than being excluded)
+  and logs `memory_recall_coverage_gap`. All of these are self-healing or
+  intentional, not persistent failures — see Diagnostics below.
 - **Backfilling an existing corpus**: enabling `Memory.Embeddings.Enabled`
   on a deployment that already has memories does not retroactively embed
   them. Until they're embedded, recall for those documents degrades to
@@ -225,9 +248,11 @@ Useful log events:
 **Recall pipeline** (grep for `memory_retrieval` / `memory_recall`):
 - `memory_retrieval_request_plan` — query tokenization, facets, soft scopes, anchor hints
 - `memory_retrieval_candidate_selection` — all candidates with selector scores
-- `memory_retrieval_final` — floor filtering results, final injected items; also carries
-  `gateScores` (the cross-encoder score for every candidate the relevance gate scored) and
-  `droppedByGate` (count the gate dropped) when the gate ran
+- `memory_retrieval_final` — floor filtering results, final injected items; carries
+  `appliedFloor` and `floorSource` (`manifest` or `override`) so a floor mismatch is
+  diagnosable without reading config; also carries `gateScores` (the cross-encoder score for
+  every candidate the relevance gate scored) and `droppedByGate` (count the gate dropped) when
+  the gate ran
 - `turn_memory_recall` — summary event with item count and duration
 - `memory_recall_vector_degraded` — turn fell back to lexical-only recall (embedder
   unavailable, no vector index, or the query-embedding sub-budget was exceeded)
@@ -249,6 +274,13 @@ Embeddings are provisioned at daemon start when `Memory.Embeddings.Enabled` is
 - Log: `memory_embedding_unavailable`
 - Daemon status shows: `embeddings: degraded`
 - Lexical recall continues to work normally
+
+`netclaw doctor`'s Memory Embeddings check reports whether the active model
+has a query prefix (`queryPrefix=True/False`) and the effective retrieval
+floor plus its source (`floor=0.240 (source=manifest)`, or `floor=none ...`
+when the active model carries no retrieval calibration and no override is
+configured) — check this first when recall quality looks off after a model
+or config change.
 
 To repopulate existing memory vectors after enabling embeddings:
 ```

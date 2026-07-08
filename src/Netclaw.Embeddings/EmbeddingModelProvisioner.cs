@@ -20,6 +20,24 @@ namespace Netclaw.Embeddings;
 /// <param name="TokenizerSha256">Expected SHA-256 (lowercase hex) of the vocab artifact.</param>
 /// <param name="Dimensions">Embedding vector width this model produces.</param>
 /// <param name="ModelByteSize">Expected byte size of the model artifact — a cheap first check before hashing.</param>
+/// <param name="QueryPrefix">
+/// The model card's documented retrieval-query prefix (memory-query-prefix design D2), applied
+/// verbatim by <see cref="OnnxMemoryEmbedder"/> when embedding for
+/// <see cref="Netclaw.Actors.Memory.EmbeddingPurpose.RetrievalQuery"/>. Empty for a model that
+/// documents no query-side prefix. Pinned next to the model hash in the same entry so a model
+/// bump forces the author past this field too — a stale prefix silently paired with a new
+/// model's weights would degrade retrieval quality without any loud failure.
+/// </param>
+/// <param name="CalibratedMinCosineSimilarity">
+/// The absolute cosine floor calibrated for this model id in its documented retrieval-query
+/// encoding (with <see cref="QueryPrefix"/> applied) — memory-query-prefix design D3/D4: "the
+/// same manifest-carries-calibration pattern the relevance gate established with
+/// <see cref="RelevanceModelManifestEntry.CalibratedThreshold"/>." <c>null</c> means this entry
+/// has not been calibrated for retrieval: <see cref="Netclaw.Actors.Sessions.SQLiteMemoryRecallCoordinator"/>
+/// treats an active model with no calibration and no explicit
+/// <c>Memory.Recall.MinCosineSimilarity</c> override as hybrid-recall-unavailable (lexical-only,
+/// degraded log) rather than guessing a floor calibrated for a different model or encoding mode.
+/// </param>
 public sealed record EmbeddingModelManifestEntry(
     string ModelId,
     Uri ModelUrl,
@@ -27,10 +45,25 @@ public sealed record EmbeddingModelManifestEntry(
     string ModelSha256,
     string TokenizerSha256,
     int Dimensions,
-    long ModelByteSize);
+    long ModelByteSize,
+    string QueryPrefix,
+    double? CalibratedMinCosineSimilarity);
 
-/// <summary>Files placed on disk by <see cref="EmbeddingModelProvisioner.ProvisionAsync"/>, ready for <see cref="OnnxMemoryEmbedder.LoadAsync"/>.</summary>
-public sealed record ProvisionedEmbeddingModel(string ModelId, string ModelPath, string VocabPath, int Dimensions);
+/// <summary>
+/// Files placed on disk by <see cref="EmbeddingModelProvisioner.ProvisionAsync"/>, ready for
+/// <see cref="OnnxMemoryEmbedder.LoadAsync"/>. Carries the manifest entry's
+/// <see cref="EmbeddingModelManifestEntry.QueryPrefix"/> and
+/// <see cref="EmbeddingModelManifestEntry.CalibratedMinCosineSimilarity"/> alongside the
+/// provisioned files (memory-query-prefix design D2) — the same "download result also carries
+/// the model's calibration" shape as <see cref="ProvisionedRelevanceModel"/>.
+/// </summary>
+public sealed record ProvisionedEmbeddingModel(
+    string ModelId,
+    string ModelPath,
+    string VocabPath,
+    int Dimensions,
+    string QueryPrefix,
+    double? CalibratedMinCosineSimilarity);
 
 /// <summary>
 /// One entry in <see cref="EmbeddingModelProvisioner.RelevanceAllowlist"/> (memory-relevance-gate
@@ -93,6 +126,13 @@ public sealed class EmbeddingModelProvisioner
     public static IReadOnlyDictionary<string, EmbeddingModelManifestEntry> Allowlist { get; } =
         new Dictionary<string, EmbeddingModelManifestEntry>(StringComparer.Ordinal)
         {
+            // Query prefix verified 2026-07-08 against the model card at the pinned HF commit
+            // (memory-query-prefix design D2): "Represent this sentence for searching relevant
+            // passages: " (trailing space is part of the documented string — the prefix and the
+            // query text are meant to read as one sentence, not two concatenated with no
+            // separator). CalibratedMinCosineSimilarity=0.24 is the gold-prod-2026-07 sweep
+            // optimum for this prefixed encoding (design.md D4; supersedes the no-prefix 0.68
+            // figure recorded in memory-core-redesign design.md D6).
             ["snowflake-arctic-embed-m"] = new EmbeddingModelManifestEntry(
                 ModelId: "snowflake-arctic-embed-m",
                 ModelUrl: new Uri("https://huggingface.co/Snowflake/snowflake-arctic-embed-m/resolve/fc74610d18462d218e312aa986ec5c8a75a98152/onnx/model.onnx"),
@@ -100,8 +140,20 @@ public sealed class EmbeddingModelProvisioner
                 ModelSha256: "564e6c65ee0c739a486702e9e3e9b33c3f697c19c34dbe886bce9eec497ce971",
                 TokenizerSha256: "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
                 Dimensions: 768,
-                ModelByteSize: 435_811_541),
+                ModelByteSize: 435_811_541,
+                QueryPrefix: "Represent this sentence for searching relevant passages: ",
+                CalibratedMinCosineSimilarity: 0.24),
 
+            // Query prefix verified 2026-07-08 against the model card (mixedbread-ai's usage
+            // examples document the identical instruction string arctic-embed-m uses — both
+            // cards converge on the same widely-used E5-style retrieval instruction; this is
+            // NOT copy-paste drift, it is independently confirmed for this model's own card).
+            // CalibratedMinCosineSimilarity is null: this fallback entry has not been through
+            // the gold-set floor sweep, so it is deliberately uncalibrated — activating this
+            // model with no explicit Memory.Recall.MinCosineSimilarity override degrades hybrid
+            // recall to lexical-only (memory-query-prefix design D2/D3; see
+            // SQLiteMemoryRecallCoordinator's missing-calibration degraded path) rather than
+            // silently reusing a floor measured for a different model.
             ["mxbai-embed-large-v1"] = new EmbeddingModelManifestEntry(
                 ModelId: "mxbai-embed-large-v1",
                 ModelUrl: new Uri("https://huggingface.co/mixedbread-ai/mxbai-embed-large-v1/resolve/b33106f585b9ce46904ad7443a3b52b7a63e231c/onnx/model.onnx"),
@@ -109,7 +161,9 @@ public sealed class EmbeddingModelProvisioner
                 ModelSha256: "adb53ed475faa339bfad3bd2bdb7e6a30b4f47280ade9811f81bef7953f9ab77",
                 TokenizerSha256: "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3",
                 Dimensions: 1024,
-                ModelByteSize: 1_336_854_282),
+                ModelByteSize: 1_336_854_282,
+                QueryPrefix: "Represent this sentence for searching relevant passages: ",
+                CalibratedMinCosineSimilarity: null),
         };
 
     /// <summary>
@@ -197,13 +251,13 @@ public sealed class EmbeddingModelProvisioner
         if (await IsValidAsync(modelPath, entry.ModelSha256, entry.ModelByteSize, ct).ConfigureAwait(false)
             && await IsValidAsync(vocabPath, entry.TokenizerSha256, expectedByteSize: null, ct).ConfigureAwait(false))
         {
-            return new ProvisionedEmbeddingModel(modelId, modelPath, vocabPath, entry.Dimensions);
+            return new ProvisionedEmbeddingModel(modelId, modelPath, vocabPath, entry.Dimensions, entry.QueryPrefix, entry.CalibratedMinCosineSimilarity);
         }
 
         await DownloadAndVerifyAsync(entry.ModelUrl, modelPath, entry.ModelSha256, entry.ModelByteSize, ct).ConfigureAwait(false);
         await DownloadAndVerifyAsync(entry.TokenizerUrl, vocabPath, entry.TokenizerSha256, expectedByteSize: null, ct).ConfigureAwait(false);
 
-        return new ProvisionedEmbeddingModel(modelId, modelPath, vocabPath, entry.Dimensions);
+        return new ProvisionedEmbeddingModel(modelId, modelPath, vocabPath, entry.Dimensions, entry.QueryPrefix, entry.CalibratedMinCosineSimilarity);
     }
 
     /// <summary>
@@ -231,7 +285,7 @@ public sealed class EmbeddingModelProvisioner
         if (!await IsValidAsync(vocabPath, entry.TokenizerSha256, expectedByteSize: null, ct).ConfigureAwait(false))
             return null;
 
-        return new ProvisionedEmbeddingModel(modelId, modelPath, vocabPath, entry.Dimensions);
+        return new ProvisionedEmbeddingModel(modelId, modelPath, vocabPath, entry.Dimensions, entry.QueryPrefix, entry.CalibratedMinCosineSimilarity);
     }
 
     /// <summary>

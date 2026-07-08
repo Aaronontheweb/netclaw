@@ -398,7 +398,7 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
         var sqliteStore = new SQLiteMemoryStore(paths.MemorySqliteDbPath, TimeProvider.System);
         await sqliteStore.InitializeAsync(TestContext.Current.CancellationToken);
 
-        var holder = new MemoryEmbedderHolder(new FakeAvailableEmbedder("tiny-fixture"));
+        var holder = new MemoryEmbedderHolder(new FakeAvailableEmbedder("tiny-fixture"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var service = CreateService(
             paths: paths,
             sqliteMemoryStore: sqliteStore,
@@ -419,7 +419,7 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
         var sqliteStore = new SQLiteMemoryStore(paths.MemorySqliteDbPath, TimeProvider.System);
         await sqliteStore.InitializeAsync(TestContext.Current.CancellationToken);
 
-        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder("tiny-fixture", "model missing"));
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder("tiny-fixture", "model missing"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var service = CreateService(
             paths: paths,
             sqliteMemoryStore: sqliteStore,
@@ -502,10 +502,10 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
 
         public bool IsAvailable => true;
 
-        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, CancellationToken ct)
+        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, EmbeddingPurpose purpose, CancellationToken ct)
             => ValueTask.FromResult<ReadOnlyMemory<float>>(new float[Dimensions]);
 
-        public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct)
+        public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, EmbeddingPurpose purpose, CancellationToken ct)
             => ValueTask.FromResult<IReadOnlyList<ReadOnlyMemory<float>>>(texts.Select(_ => (ReadOnlyMemory<float>)new float[Dimensions]).ToList());
     }
 }

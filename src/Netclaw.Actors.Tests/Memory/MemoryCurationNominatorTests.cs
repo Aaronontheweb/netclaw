@@ -77,7 +77,7 @@ public sealed class MemoryCurationNominatorTests : IAsyncDisposable
         await SeedDocumentWithEmbeddingAsync("graphite-render-cache", "doc-existing", existingBody, freshnessAtMs: 1000, ct);
         var operation = MakeOperation("sunfish-deploy-queue", proposalContent, freshnessAtMs: 2000);
 
-        var embedderHolder = new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVectorAt093));
+        var embedderHolder = new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVectorAt093), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var vectorIndexHolder = new MemoryVectorIndexHolder(_store);
         var chatClient = new RecordingCurationChatClient("CREATE");
 
@@ -105,7 +105,7 @@ public sealed class MemoryCurationNominatorTests : IAsyncDisposable
         var operation = MakeOperation(
             "sunfish-deploy-queue", "Deployment jobs wait in a queue before promotion to production.", freshnessAtMs: 2000);
 
-        var embedderHolder = new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVectorAt093));
+        var embedderHolder = new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVectorAt093), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var vectorIndexHolder = new MemoryVectorIndexHolder(_store);
         var chatClient = new RecordingCurationChatClient("CREATE");
 
@@ -137,7 +137,7 @@ public sealed class MemoryCurationNominatorTests : IAsyncDisposable
         var operation = MakeOperation(
             "sunfish-deploy-queue", "Deployment jobs wait in a queue before promotion to production.", freshnessAtMs: 2000);
 
-        var embedderHolder = new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVectorAt093));
+        var embedderHolder = new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVectorAt093), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var vectorIndexHolder = new MemoryVectorIndexHolder(_store);
 
         // No LLM client at all — the daemon-checkpoint-worker shape today. A nominee here must
@@ -173,7 +173,7 @@ public sealed class MemoryCurationNominatorTests : IAsyncDisposable
         var operation = MakeOperation(
             "brand-new-topic", "Completely novel content nobody has proposed before.", freshnessAtMs: 1000);
 
-        var embedderHolder = new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVectorAt093));
+        var embedderHolder = new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVectorAt093), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var vectorIndexHolder = new MemoryVectorIndexHolder(_store);
         var chatClient = new RecordingCurationChatClient("CREATE");
 
@@ -206,7 +206,7 @@ public sealed class MemoryCurationNominatorTests : IAsyncDisposable
         var operation = MakeOperation("another-unrelated-subject", proposalContent, freshnessAtMs: 2000);
 
         var recordingLogger = new RecordingLogger();
-        var embedderHolder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "not provisioned"));
+        var embedderHolder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "not provisioned"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var vectorIndexHolder = new MemoryVectorIndexHolder(_store);
 
         var evaluator = new MemoryCurationEvaluator(
@@ -336,10 +336,10 @@ public sealed class MemoryCurationNominatorTests : IAsyncDisposable
 
         public bool IsAvailable => true;
 
-        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, CancellationToken ct)
+        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, EmbeddingPurpose purpose, CancellationToken ct)
             => ValueTask.FromResult<ReadOnlyMemory<float>>(queryVector);
 
-        public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct)
+        public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, EmbeddingPurpose purpose, CancellationToken ct)
             => ValueTask.FromResult<IReadOnlyList<ReadOnlyMemory<float>>>(
                 texts.Select(_ => (ReadOnlyMemory<float>)queryVector).ToList());
     }

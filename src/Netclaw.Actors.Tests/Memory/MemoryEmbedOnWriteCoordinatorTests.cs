@@ -54,7 +54,7 @@ public sealed class MemoryEmbedOnWriteCoordinatorTests : IAsyncLifetime
             CreatedAtMs: now,
             UpdatedAtMs: now), TestContext.Current.CancellationToken);
 
-        var holder = new MemoryEmbedderHolder(new FakeMemoryEmbedder("model-a", dimensions: 3));
+        var holder = new MemoryEmbedderHolder(new FakeMemoryEmbedder("model-a", dimensions: 3), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var written = new[] { new MemoryDocumentWriteResult("doc-1", "Title", "Body") };
 
         await MemoryEmbedOnWriteCoordinator.EmbedWrittenDocumentsAsync(
@@ -86,7 +86,7 @@ public sealed class MemoryEmbedOnWriteCoordinatorTests : IAsyncLifetime
     [Fact]
     public async Task Unavailable_embedder_skips_embedding_without_throwing()
     {
-        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder("model-a", "not provisioned"));
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder("model-a", "not provisioned"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var written = new[] { new MemoryDocumentWriteResult("doc-1", "Title", "Body") };
 
         await MemoryEmbedOnWriteCoordinator.EmbedWrittenDocumentsAsync(
@@ -98,7 +98,7 @@ public sealed class MemoryEmbedOnWriteCoordinatorTests : IAsyncLifetime
     [Fact]
     public async Task Embed_failure_on_one_item_is_isolated_and_does_not_throw_or_block_others()
     {
-        var holder = new MemoryEmbedderHolder(new FakeMemoryEmbedder("model-a", dimensions: 2, failOnText: "Bad\nBody"));
+        var holder = new MemoryEmbedderHolder(new FakeMemoryEmbedder("model-a", dimensions: 2, failOnText: "Bad\nBody"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var written = new[]
         {
             new MemoryDocumentWriteResult("doc-bad", "Bad", "Body"),
@@ -118,7 +118,7 @@ public sealed class MemoryEmbedOnWriteCoordinatorTests : IAsyncLifetime
     [Fact]
     public async Task Empty_written_list_is_a_no_op()
     {
-        var holder = new MemoryEmbedderHolder(new FakeMemoryEmbedder("model-a", dimensions: 2));
+        var holder = new MemoryEmbedderHolder(new FakeMemoryEmbedder("model-a", dimensions: 2), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
 
         await MemoryEmbedOnWriteCoordinator.EmbedWrittenDocumentsAsync(
             holder, _store, [], NullLogger.Instance, TestContext.Current.CancellationToken);
@@ -134,7 +134,7 @@ public sealed class MemoryEmbedOnWriteCoordinatorTests : IAsyncLifetime
 
         public bool IsAvailable => true;
 
-        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, CancellationToken ct)
+        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, EmbeddingPurpose purpose, CancellationToken ct)
         {
             if (failOnText is not null && string.Equals(text, failOnText, StringComparison.Ordinal))
                 throw new InvalidOperationException("simulated embed failure");
@@ -142,11 +142,11 @@ public sealed class MemoryEmbedOnWriteCoordinatorTests : IAsyncLifetime
             return ValueTask.FromResult<ReadOnlyMemory<float>>(new float[dimensions]);
         }
 
-        public async ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct)
+        public async ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, EmbeddingPurpose purpose, CancellationToken ct)
         {
             var results = new List<ReadOnlyMemory<float>>(texts.Count);
             foreach (var text in texts)
-                results.Add(await EmbedAsync(text, ct));
+                results.Add(await EmbedAsync(text, purpose, ct));
             return results;
         }
     }

@@ -150,15 +150,34 @@ public sealed class MemoryRecallConfig
     public double LexicalWeight { get; set; } = 0.3;
 
     /// <summary>
-    /// Absolute relevance floor (design D6): when a query vector is available, any candidate —
-    /// vector- or lexical-sourced — whose cosine similarity to the query falls below this value
-    /// is dropped before ranking, regardless of fused score. Nothing surviving means nothing is
-    /// injected and the <c>[memory-recall]</c> block is omitted entirely — a healthy empty
-    /// result, not a degraded one. Calibrated (not a placeholder) against the real-traffic gold
-    /// set (<c>gold-prod-2026-07</c>, 2026-07-05): maximizes F0.5 for the shipped fp32
-    /// <c>snowflake-arctic-embed-m</c> embedder; see design D6 for the full sweep.
+    /// Absolute relevance floor (design D6, recalibrated by memory-query-prefix design D3/D4):
+    /// when a query vector is available, any candidate — vector- or lexical-sourced — whose
+    /// cosine similarity to the query falls below this value is dropped before ranking,
+    /// regardless of fused score. Nothing surviving means nothing is injected and the
+    /// <c>[memory-recall]</c> block is omitted entirely — a healthy empty result, not a degraded
+    /// one.
+    ///
+    /// <para>
+    /// <c>null</c> (default) — the effective floor follows the active embedding model's
+    /// manifest-carried <c>CalibratedMinCosineSimilarity</c>
+    /// (<c>Netclaw.Embeddings.EmbeddingModelManifestEntry</c>; 0.24 for the shipped prefixed
+    /// <c>snowflake-arctic-embed-m</c> encoding — see the memory-query-prefix design doc for the
+    /// full gold-set sweep). A concrete value is an explicit operator override, independent of
+    /// which model is active.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>The numeric meaning of this value is model- and encoding-specific.</b> It is NOT a
+    /// portable "relevance percentage" — cosine distributions differ across models and shift
+    /// materially when a model's documented query prefix is adopted or removed (measured: 0.68
+    /// with no prefix vs. 0.24 with the prefix, for the SAME model). A value pinned for one
+    /// model/encoding and silently carried into another combination can measure catastrophically
+    /// wrong (F0.5 = 0.0 was measured for the prefixed encoding at the old no-prefix floor). Only
+    /// set this explicitly after re-running the calibration-verification procedure
+    /// (memory-relevance-gate design doc) against the model and encoding actually active.
+    /// </para>
     /// </summary>
-    public double MinCosineSimilarity { get; set; } = 0.68;
+    public double? MinCosineSimilarity { get; set; }
 
     /// <summary>
     /// Half-life, in days, for the recency-decay multiplier applied to a candidate's fused score

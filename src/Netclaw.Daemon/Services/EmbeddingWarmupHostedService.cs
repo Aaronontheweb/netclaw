@@ -39,6 +39,7 @@ internal sealed class EmbeddingWarmupHostedService(
     SQLiteMemoryStore store,
     MemoryEmbedderHolder holder,
     RelevanceScorerHolder relevanceScorerHolder,
+    IReadOnlyDictionary<string, EmbeddingModelManifestEntry> allowlist,
     IReadOnlyDictionary<string, RelevanceModelManifestEntry> relevanceAllowlist,
     MemoryConfig memoryConfig,
     NetclawPaths paths,
@@ -71,23 +72,33 @@ internal sealed class EmbeddingWarmupHostedService(
         }
 
         var modelId = memoryConfig.Embeddings.ModelId;
+
+        // Prefix/floor are looked up unconditionally (success or failure below) since they
+        // describe the model id, not whether it actually loaded (memory-query-prefix design
+        // D2/D3) -- mirrors WarmUpRelevanceGateAsync's calibratedThreshold lookup exactly.
+        allowlist.TryGetValue(modelId, out var manifestEntry);
+        var queryPrefix = manifestEntry?.QueryPrefix ?? string.Empty;
+        var calibratedMinCosineSimilarity = manifestEntry?.CalibratedMinCosineSimilarity;
+
         IMemoryEmbedder embedder;
         try
         {
-            embedder = await LoadEmbedderAsync(modelId, ct).ConfigureAwait(false);
+            embedder = await LoadEmbedderAsync(modelId, queryPrefix, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "memory_embedding_unavailable model={ModelId} reason={Reason}", modelId, ex.Message);
-            holder.Set(new UnavailableMemoryEmbedder(modelId, ex.Message));
+            holder.Set(new UnavailableMemoryEmbedder(modelId, ex.Message), queryPrefix, calibratedMinCosineSimilarity);
             return;
         }
 
-        holder.Set(embedder);
+        holder.Set(embedder, queryPrefix, calibratedMinCosineSimilarity);
         logger.LogInformation(
-            "memory_embedding_ready model={ModelId} dims={Dimensions}",
+            "memory_embedding_ready model={ModelId} dims={Dimensions} hasQueryPrefix={HasQueryPrefix} calibratedMinCosineSimilarity={CalibratedMinCosineSimilarity}",
             embedder.ModelId,
-            embedder.Dimensions);
+            embedder.Dimensions,
+            queryPrefix.Length > 0,
+            calibratedMinCosineSimilarity);
 
         try
         {
@@ -174,7 +185,7 @@ internal sealed class EmbeddingWarmupHostedService(
         return scorer;
     }
 
-    private async Task<IMemoryEmbedder> LoadEmbedderAsync(string modelId, CancellationToken ct)
+    private async Task<IMemoryEmbedder> LoadEmbedderAsync(string modelId, string queryPrefix, CancellationToken ct)
     {
         var modelDirectory = paths.EmbeddingModelDirectory(modelId);
 
@@ -200,11 +211,15 @@ internal sealed class EmbeddingWarmupHostedService(
             provisioned.VocabPath,
             provisioned.ModelId,
             provisioned.Dimensions,
+            queryPrefix,
             ct: ct).ConfigureAwait(false);
 
         // Warm-up inference (design D1/D2): pays first-call ONNX session / JIT cost here rather
-        // than on the first real memory write or recall query.
-        await embedder.EmbedAsync("netclaw embedding warmup", ct).ConfigureAwait(false);
+        // than on the first real memory write or recall query. Passage purpose: this is a
+        // generic session/JIT warm-up, not a real query, so there is nothing gained from also
+        // exercising the query-prefix path here (the first real recall turn pays that cost, well
+        // inside its own sub-budget per design D2's negligible token-count claim).
+        await embedder.EmbedAsync("netclaw embedding warmup", EmbeddingPurpose.Passage, ct).ConfigureAwait(false);
 
         return embedder;
     }
@@ -234,7 +249,7 @@ internal sealed class EmbeddingWarmupHostedService(
 
             try
             {
-                var vectors = await embedder.EmbedBatchAsync(texts, ct).ConfigureAwait(false);
+                var vectors = await embedder.EmbedBatchAsync(texts, EmbeddingPurpose.Passage, ct).ConfigureAwait(false);
                 for (var i = 0; i < batch.Length; i++)
                 {
                     var hash = MemoryContentHasher.ComputeHash(batch[i].Title, batch[i].Body);

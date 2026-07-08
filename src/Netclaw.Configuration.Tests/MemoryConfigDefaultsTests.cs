@@ -90,11 +90,14 @@ public sealed class MemoryConfigDefaultsTests
         Assert.Equal(0.3, config.Recall.LexicalWeight);
     }
 
+    // memory-query-prefix design D3: the 0.68 non-null default is superseded — the manifest now
+    // carries 0.24 for the prefixed arctic encoding, and MinCosineSimilarity defaults to null so
+    // the coordinator follows whichever model's manifest calibration is active.
     [Fact]
-    public void Recall_min_cosine_similarity_defaults_to_0_68()
+    public void Recall_min_cosine_similarity_defaults_to_null_and_follows_the_active_models_manifest_calibration()
     {
         var config = new MemoryConfig();
-        Assert.Equal(0.68, config.Recall.MinCosineSimilarity);
+        Assert.Null(config.Recall.MinCosineSimilarity);
     }
 
     [Fact]

@@ -27,6 +27,12 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
     private const string ModelId = "tiny-fixture";
     private const int Dimensions = 8;
 
+    // memory-query-prefix design D2/D3 fixture calibration -- not a real model card figure, just
+    // an exercisable prefix/floor pair so tests can assert the warmup service threads both
+    // through to the holder.
+    private const string QueryPrefix = "search_query: ";
+    private const double CalibratedMinCosineSimilarity = 0.42;
+
     // WarmUpRelevanceGateAsync hardcodes this constant as the relevance model id to provision
     // (memory-relevance-gate: there is no config knob selecting which relevance model is
     // active), so any fixture allowlist a test supplies must be keyed under the SAME id.
@@ -37,6 +43,7 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
     private NetclawPaths _paths = null!;
     private SQLiteMemoryStore _store = null!;
     private EmbeddingModelProvisioner _provisioner = null!;
+    private IReadOnlyDictionary<string, EmbeddingModelManifestEntry> _allowlist = null!;
 
     private static string FixturesDir => Path.Combine(AppContext.BaseDirectory, "Fixtures");
 
@@ -49,7 +56,7 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
 
         var modelBytes = await File.ReadAllBytesAsync(Path.Combine(FixturesDir, "tiny-embedder.onnx"));
         var vocabBytes = await File.ReadAllBytesAsync(Path.Combine(FixturesDir, "tiny-vocab.txt"));
-        var allowlist = new Dictionary<string, EmbeddingModelManifestEntry>
+        _allowlist = new Dictionary<string, EmbeddingModelManifestEntry>
         {
             [ModelId] = new(
                 ModelId,
@@ -61,9 +68,11 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
                 ModelSha256: Sha256Hex(modelBytes),
                 TokenizerSha256: Sha256Hex(vocabBytes),
                 Dimensions: Dimensions,
-                ModelByteSize: modelBytes.Length),
+                ModelByteSize: modelBytes.Length,
+                QueryPrefix: QueryPrefix,
+                CalibratedMinCosineSimilarity: CalibratedMinCosineSimilarity),
         };
-        _provisioner = new EmbeddingModelProvisioner(new HttpClient(), allowlist);
+        _provisioner = new EmbeddingModelProvisioner(new HttpClient(), _allowlist);
     }
 
     public async ValueTask DisposeAsync() => await TryDeleteDirectoryAsync(_baseDir);
@@ -72,7 +81,7 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
     public async Task Success_path_loads_the_fixture_model_with_no_network_and_populates_the_holder()
     {
         PrePlaceValidModelFiles();
-        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"));
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true, ModelId = ModelId, AutoDownload = true } };
         var service = CreateService(holder, memoryConfig);
 
@@ -81,13 +90,18 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
         Assert.True(holder.Current.IsAvailable);
         Assert.Equal(ModelId, holder.Current.ModelId);
         Assert.Equal(Dimensions, holder.Current.Dimensions);
+
+        // memory-query-prefix design D2/D3, task 1.4: the allowlist entry's QueryPrefix and
+        // CalibratedMinCosineSimilarity travel onto the holder alongside the embedder itself.
+        Assert.Equal(QueryPrefix, holder.QueryPrefix);
+        Assert.Equal(CalibratedMinCosineSimilarity, holder.CalibratedMinCosineSimilarity);
     }
 
     [Fact]
     public async Task Degraded_path_sets_an_unavailable_embedder_when_the_model_is_missing_and_autodownload_is_false()
     {
         // No PrePlaceValidModelFiles() call — the model directory is empty.
-        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"));
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true, ModelId = ModelId, AutoDownload = false } };
         var service = CreateService(holder, memoryConfig);
 
@@ -95,13 +109,18 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
 
         Assert.False(holder.Current.IsAvailable);
         Assert.IsType<UnavailableMemoryEmbedder>(holder.Current);
+        // The manifest's prefix/floor are still known even though the model failed to load --
+        // they describe the model id, not whether provisioning succeeded (mirrors the relevance
+        // gate's own degraded-path assertion).
+        Assert.Equal(QueryPrefix, holder.QueryPrefix);
+        Assert.Equal(CalibratedMinCosineSimilarity, holder.CalibratedMinCosineSimilarity);
     }
 
     [Fact]
     public async Task Disabled_config_leaves_the_holder_at_its_initial_value()
     {
         var initial = new UnavailableMemoryEmbedder(ModelId, "embeddings disabled");
-        var holder = new MemoryEmbedderHolder(initial);
+        var holder = new MemoryEmbedderHolder(initial, initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var memoryConfig = new MemoryConfig { Embeddings = { Enabled = false, ModelId = ModelId } };
         var service = CreateService(holder, memoryConfig);
 
@@ -135,7 +154,7 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
             CreatedAtMs: now,
             UpdatedAtMs: now), TestContext.Current.CancellationToken);
 
-        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"));
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true, ModelId = ModelId, AutoDownload = true } };
         var service = CreateService(holder, memoryConfig);
 
@@ -154,7 +173,7 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
         PrePlaceValidModelFiles();
         PrePlaceValidRelevanceModelFiles();
 
-        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"));
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var relevanceHolder = CreateRelevanceScorerHolder();
         var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true, ModelId = ModelId, AutoDownload = true } };
         var service = CreateService(holder, memoryConfig, relevanceHolder, RelevanceFixtureAllowlist());
@@ -172,7 +191,7 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
         PrePlaceValidModelFiles();
         // No PrePlaceValidRelevanceModelFiles() call -- the relevance model directory is empty.
 
-        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"));
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var relevanceHolder = CreateRelevanceScorerHolder();
         var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true, ModelId = ModelId, AutoDownload = false } };
         var service = CreateService(holder, memoryConfig, relevanceHolder, RelevanceFixtureAllowlist());
@@ -191,7 +210,7 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
     [Fact]
     public async Task Relevance_gate_disabled_config_leaves_the_relevance_holder_at_its_initial_value()
     {
-        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "embeddings disabled"));
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "embeddings disabled"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
         var initialRelevance = new UnavailableRelevanceScorer(RelevanceModelId, "embeddings disabled");
         var relevanceHolder = new RelevanceScorerHolder(initialRelevance, initialCalibratedThreshold: 0.0);
         var memoryConfig = new MemoryConfig { Embeddings = { Enabled = false, ModelId = ModelId } };
@@ -212,7 +231,7 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
         MemoryConfig memoryConfig,
         RelevanceScorerHolder relevanceScorerHolder,
         IReadOnlyDictionary<string, RelevanceModelManifestEntry> relevanceAllowlist)
-        => new(_provisioner, _store, holder, relevanceScorerHolder, relevanceAllowlist, memoryConfig, _paths,
+        => new(_provisioner, _store, holder, relevanceScorerHolder, _allowlist, relevanceAllowlist, memoryConfig, _paths,
             NullLogger<EmbeddingWarmupHostedService>.Instance);
 
     private static RelevanceScorerHolder CreateRelevanceScorerHolder()

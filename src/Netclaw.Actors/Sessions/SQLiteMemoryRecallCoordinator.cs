@@ -58,6 +58,25 @@ namespace Netclaw.Actors.Sessions;
 /// </para>
 ///
 /// <para>
+/// <b>Floor resolution (memory-query-prefix, design D3):</b> the query is embedded with
+/// <see cref="EmbeddingPurpose.RetrievalQuery"/> — the active model's documented query prefix,
+/// if any, is applied inside <c>OnnxMemoryEmbedder</c>, not here. The absolute cosine floor
+/// itself resolves per turn: an explicit <see cref="MemoryRecallConfig.MinCosineSimilarity"/>
+/// override always wins; otherwise the active embedder's manifest-carried
+/// <see cref="MemoryEmbedderHolder.CalibratedMinCosineSimilarity"/> applies. When BOTH are
+/// absent — a model whose retrieval mode has not been calibrated, with no operator override —
+/// hybrid recall is treated as unavailable for the turn: the query is never embedded, and the
+/// turn degrades to lexical-only with reason <c>missing_calibration</c> via the same rate-limited
+/// <c>memory_recall_vector_degraded</c> log and cooldown as every other vector-degradation
+/// reason. This is what makes "a prefixed encoding measured against a floor calibrated for a
+/// different encoding" unrepresentable by default (design D3's motivating failure: F0.5 = 0.0 was
+/// measured for the prefixed arctic encoding against the old no-prefix 0.68 floor).
+/// <c>memory_retrieval_final</c> logs the resolved <c>appliedFloor</c> and its <c>floorSource</c>
+/// (<c>manifest</c> or <c>override</c>; <c>n/a</c> in lexical mode, since the composite floor
+/// there has no per-model calibration concept).
+/// </para>
+///
+/// <para>
 /// <b>Post-floor relevance gate (memory-relevance-gate, design D5/D6/D8):</b> in hybrid mode
 /// only, once <see cref="ScoreHybrid"/> produces its floor survivors, a tiny cross-encoder
 /// (<c>relevanceScorerHolder</c>) scores each of the top <c>AutoRecallMaxItems</c> survivors
@@ -88,6 +107,12 @@ public sealed class SQLiteMemoryRecallCoordinator(
 {
     private readonly SessionTuning _sessionTuning = sessionTuning ?? new SessionTuning();
     private readonly MemoryRecallConfig _recallConfig = memoryConfig.Recall;
+
+    // memory-query-prefix design D3: null (default) follows the active embedder's
+    // manifest-carried calibration (embedderHolder.CalibratedMinCosineSimilarity, resolved per
+    // turn in TryEmbedQueryAsync since it depends on which model is loaded); an explicit value
+    // is an operator override independent of the active model.
+    private readonly double? _minCosineSimilarityOverride = memoryConfig.Recall.MinCosineSimilarity;
 
     // Read once at construction (DI-resolved MemoryConfig is effectively immutable for the
     // process's lifetime — an operator flip requires a restart, same as every other Memory.*
@@ -269,22 +294,31 @@ public sealed class SQLiteMemoryRecallCoordinator(
                 string mode;
                 RankedCandidate[] aboveFloor;
                 int totalConsidered;
+                double appliedFloor;
+                string floorSource;
 
                 // ── Vector query embedding (memory-core-redesign Slice 4, task 4.1) ──
                 // Attempted once per turn, sub-budgeted inside the caller's overall ct. ANY
-                // failure here (unavailable, missing index, sub-budget timeout, embed error)
-                // degrades to the lexical-only path below, logged but never throws.
+                // failure here (unavailable, missing index, sub-budget timeout, embed error,
+                // or — memory-query-prefix design D3 — missing retrieval calibration) degrades
+                // to the lexical-only path below, logged but never throws.
                 var embedded = await TryEmbedQueryAsync(request, ct);
 
                 if (embedded is { } hybridInput)
                 {
                     mode = "hybrid";
+                    appliedFloor = hybridInput.EffectiveFloor;
+                    floorSource = hybridInput.FloorSource;
                     (aboveFloor, totalConsidered) = await ScoreHybrid(
                         request, deterministicPlan, effectiveBoundary, scoredCandidates, hybridInput, ct);
                 }
                 else
                 {
                     mode = "lexical";
+                    // The composite floor isn't a per-model calibration — it has no
+                    // manifest/override distinction the way the hybrid cosine floor does.
+                    appliedFloor = minimumCompositeScore;
+                    floorSource = "n/a";
                     var rankedCandidates = scoredCandidates
                         .Select(x => new RankedCandidate(
                             x.Item,
@@ -353,12 +387,13 @@ public sealed class SQLiteMemoryRecallCoordinator(
                 var deterministicItems = budgeted.ToArray();
 
                 logger.LogInformation(
-                    "memory_retrieval_final session={SessionId} mode={Mode} injectedCount={InjectedCount} filteredByFloor={FilteredByFloor} appliedFloor={AppliedFloor:F3} injectedChars={InjectedChars} droppedByBudget={DroppedByBudget} droppedByGate={DroppedByGate} gateScores={GateScores} items={Items}",
+                    "memory_retrieval_final session={SessionId} mode={Mode} injectedCount={InjectedCount} filteredByFloor={FilteredByFloor} appliedFloor={AppliedFloor:F3} floorSource={FloorSource} injectedChars={InjectedChars} droppedByBudget={DroppedByBudget} droppedByGate={DroppedByGate} gateScores={GateScores} items={Items}",
                     request.SessionId,
                     mode,
                     deterministicItems.Length,
                     totalConsidered - aboveFloor.Length,
-                    mode == "hybrid" ? _recallConfig.MinCosineSimilarity : minimumCompositeScore,
+                    appliedFloor,
+                    floorSource,
                     injectedChars,
                     droppedByBudget,
                     droppedByGate,
@@ -390,11 +425,12 @@ public sealed class SQLiteMemoryRecallCoordinator(
     /// Attempts to embed <paramref name="request"/>'s query for hybrid recall
     /// (memory-core-redesign Slice 4, task 4.1). Returns null — logging the specific
     /// degradation reason via <see cref="LogVectorDegraded"/> — for every failure mode:
-    /// no embedder wired, embedder unavailable, no vector index wired, index reload failure,
-    /// sub-budget timeout, or an embedding call exception. Never throws; callers treat null as
-    /// "run the lexical-only path," identically regardless of which reason produced it.
+    /// no embedder wired, embedder unavailable, missing retrieval calibration (memory-query-
+    /// prefix design D3), no vector index wired, index reload failure, sub-budget timeout, or an
+    /// embedding call exception. Never throws; callers treat null as "run the lexical-only path,"
+    /// identically regardless of which reason produced it.
     /// </summary>
-    private async Task<(ReadOnlyMemory<float> QueryVector, MemoryVectorIndex Index)?> TryEmbedQueryAsync(
+    private async Task<(ReadOnlyMemory<float> QueryVector, MemoryVectorIndex Index, double EffectiveFloor, string FloorSource)?> TryEmbedQueryAsync(
         AutomaticRecallRequest request, CancellationToken ct)
     {
         var embedder = embedderHolder?.Current;
@@ -407,6 +443,31 @@ public sealed class SQLiteMemoryRecallCoordinator(
         if (!embedder.IsAvailable)
         {
             LogVectorDegraded(request.SessionId.Value, "embedder_unavailable");
+            return null;
+        }
+
+        // Floor resolution (memory-query-prefix design D3): an explicit config override always
+        // wins; otherwise follow the active model's manifest-carried calibration. Resolved BEFORE
+        // touching the vector index/embedding call below — a model with no calibration and no
+        // override has no way to gate admission, so there is nothing to embed a query for.
+        double effectiveFloor;
+        string floorSource;
+        if (_minCosineSimilarityOverride is { } overrideFloor)
+        {
+            effectiveFloor = overrideFloor;
+            floorSource = "override";
+        }
+        else if (embedderHolder!.CalibratedMinCosineSimilarity is { } manifestFloor)
+        {
+            effectiveFloor = manifestFloor;
+            floorSource = "manifest";
+        }
+        else
+        {
+            // A prefix-without-recalibration combination (e.g. the mxbai fallback entry before
+            // its own floor sweep lands) is unrepresentable by default — spec scenario "Missing
+            // calibration degrades to lexical-only."
+            LogVectorDegraded(request.SessionId.Value, "missing_calibration");
             return null;
         }
 
@@ -437,8 +498,8 @@ public sealed class SQLiteMemoryRecallCoordinator(
         {
             using var vectorCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             vectorCts.CancelAfter(VectorEmbedSubBudgetMs);
-            var vector = await embedder.EmbedAsync(request.Query, vectorCts.Token);
-            return (vector, index);
+            var vector = await embedder.EmbedAsync(request.Query, EmbeddingPurpose.RetrievalQuery, vectorCts.Token);
+            return (vector, index, effectiveFloor, floorSource);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -550,10 +611,10 @@ public sealed class SQLiteMemoryRecallCoordinator(
         DeterministicRetrievalRequestPlan deterministicPlan,
         string effectiveBoundary,
         IReadOnlyList<DeterministicCandidateSelector.ScoredCandidate> scoredCandidates,
-        (ReadOnlyMemory<float> QueryVector, MemoryVectorIndex Index) hybridInput,
+        (ReadOnlyMemory<float> QueryVector, MemoryVectorIndex Index, double EffectiveFloor, string FloorSource) hybridInput,
         CancellationToken ct)
     {
-        var (queryVector, vectorIndex) = hybridInput;
+        var (queryVector, vectorIndex, effectiveFloor, _) = hybridInput;
 
         // embeddedItemIds is read from the IDENTICAL snapshot vectorMatches was scored against
         // (MemoryVectorIndex.TopK's out-parameter overload) so the case-2-vs-case-3 distinction
@@ -563,7 +624,7 @@ public sealed class SQLiteMemoryRecallCoordinator(
         // candidate embedded-but-below-floor (case 2, excluded) be told apart from a candidate
         // never embedded at all (case 3, a coverage gap that bypasses the floor).
         var vectorMatches = vectorIndex.TopK(
-                queryVector.Span, VectorTopK, minCosine: _recallConfig.MinCosineSimilarity, out var embeddedItemIds)
+                queryVector.Span, VectorTopK, minCosine: effectiveFloor, out var embeddedItemIds)
             .Where(m => string.Equals(m.ItemKind, MemoryEmbedOnWriteCoordinator.DocumentItemKind, StringComparison.Ordinal))
             .ToArray();
         var cosineByItemId = vectorMatches.ToDictionary(m => m.ItemId, m => m.Cosine, StringComparer.Ordinal);
@@ -633,7 +694,7 @@ public sealed class SQLiteMemoryRecallCoordinator(
         // survivors overall is still intended, not an error: the "nothing relevant" spec
         // scenario, returned as a healthy empty result by the caller.
         var aboveFloor = fused
-            .Where(x => x.Cosine is not { } cosine || cosine >= _recallConfig.MinCosineSimilarity)
+            .Where(x => x.Cosine is not { } cosine || cosine >= effectiveFloor)
             .ToArray();
 
         return (aboveFloor, fused.Length);

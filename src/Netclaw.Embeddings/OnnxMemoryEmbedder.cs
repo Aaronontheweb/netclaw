@@ -39,6 +39,18 @@ namespace Netclaw.Embeddings;
 /// </para>
 ///
 /// <para>
+/// <b>Query prefix (memory-query-prefix design D2):</b> asymmetric retrieval models document a
+/// query-side instruction prefix that must never reach document embeddings. This embedder is
+/// handed its active model's <c>QueryPrefix</c> (empty for a model that documents none) at
+/// <see cref="LoadAsync"/> time and prepends it — before tokenization, so it counts against the
+/// token budget like any other text — only when a caller passes
+/// <see cref="Netclaw.Actors.Memory.EmbeddingPurpose.RetrievalQuery"/>.
+/// <see cref="Netclaw.Actors.Memory.EmbeddingPurpose.Passage"/> embeddings are never prefixed,
+/// which is what keeps them byte-identical to vectors already stored before prefix support
+/// existed — no re-embed is required when a prefix is adopted.
+/// </para>
+///
+/// <para>
 /// <b>Concurrency:</b> a single <see cref="InferenceSession"/> supports concurrent
 /// <see cref="InferenceSession.Run(IReadOnlyCollection{NamedOnnxValue})"/> calls, but an
 /// unbounded number of them would oversubscribe the CPU beyond what
@@ -68,13 +80,15 @@ public sealed class OnnxMemoryEmbedder : IMemoryEmbedder, IDisposable
     private readonly BertTokenizer _tokenizer;
     private readonly BoundedConcurrencyGate _gate;
     private readonly string _outputName;
+    private readonly string _queryPrefix;
 
     private OnnxMemoryEmbedder(
         string modelId,
         int dimensions,
         InferenceSession session,
         BertTokenizer tokenizer,
-        int maxConcurrency)
+        int maxConcurrency,
+        string queryPrefix)
     {
         if (session.OutputMetadata.Count != 1)
             throw new InvalidOperationException(
@@ -87,6 +101,7 @@ public sealed class OnnxMemoryEmbedder : IMemoryEmbedder, IDisposable
         _tokenizer = tokenizer;
         _gate = new BoundedConcurrencyGate(maxConcurrency);
         _outputName = session.OutputMetadata.Keys.Single();
+        _queryPrefix = queryPrefix;
     }
 
     /// <inheritdoc />
@@ -107,6 +122,14 @@ public sealed class OnnxMemoryEmbedder : IMemoryEmbedder, IDisposable
     /// <param name="vocabPath">Path to the WordPiece <c>vocab.txt</c> file.</param>
     /// <param name="modelId">The allowlisted model id these files correspond to.</param>
     /// <param name="dimensions">Expected output vector width, from the allowlist manifest.</param>
+    /// <param name="queryPrefix">
+    /// The allowlist manifest's <see cref="EmbeddingModelManifestEntry.QueryPrefix"/> for this
+    /// model id (memory-query-prefix design D2) — pass <see cref="string.Empty"/> for a model
+    /// that documents no retrieval-query prefix, or for a caller (a test fixture graph) that has
+    /// no manifest entry at all. Required rather than defaulted so every call site names its
+    /// choice explicitly; there is no safe default between "this model has a prefix" and "it
+    /// doesn't."
+    /// </param>
     /// <param name="maxConcurrency">Maximum concurrent inference calls (default 2).</param>
     /// <param name="intraOpNumThreads">Threads ONNX Runtime uses per inference call (default 4).</param>
     public static async Task<OnnxMemoryEmbedder> LoadAsync(
@@ -114,11 +137,13 @@ public sealed class OnnxMemoryEmbedder : IMemoryEmbedder, IDisposable
         string vocabPath,
         string modelId,
         int dimensions,
+        string queryPrefix,
         int maxConcurrency = 2,
         int intraOpNumThreads = 4,
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(queryPrefix);
 
         using var sessionOptions = new SessionOptions { IntraOpNumThreads = intraOpNumThreads };
         var session = new InferenceSession(modelPath, sessionOptions);
@@ -129,15 +154,15 @@ public sealed class OnnxMemoryEmbedder : IMemoryEmbedder, IDisposable
         // tokenizer_config.json — a standard BERT-base-uncased vocabulary.
         await tokenizer.LoadVocabularyAsync(vocabPath, convertInputToLowercase: true);
 
-        return new OnnxMemoryEmbedder(modelId, dimensions, session, tokenizer, maxConcurrency);
+        return new OnnxMemoryEmbedder(modelId, dimensions, session, tokenizer, maxConcurrency, queryPrefix);
     }
 
     /// <inheritdoc />
-    public async ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, CancellationToken ct)
-        => await _gate.RunAsync(_ => Task.FromResult(EmbedOne(text)), ct).ConfigureAwait(false);
+    public async ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, EmbeddingPurpose purpose, CancellationToken ct)
+        => await _gate.RunAsync(_ => Task.FromResult(EmbedOne(text, purpose)), ct).ConfigureAwait(false);
 
     /// <inheritdoc />
-    public async ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct)
+    public async ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, EmbeddingPurpose purpose, CancellationToken ct)
     {
         if (texts.Count == 0)
             return [];
@@ -150,14 +175,23 @@ public sealed class OnnxMemoryEmbedder : IMemoryEmbedder, IDisposable
         for (var i = 0; i < texts.Count; i++)
         {
             var text = texts[i];
-            tasks[i] = _gate.RunAsync(_ => Task.FromResult(EmbedOne(text)), ct);
+            tasks[i] = _gate.RunAsync(_ => Task.FromResult(EmbedOne(text, purpose)), ct);
         }
 
         return await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
-    private ReadOnlyMemory<float> EmbedOne(string text)
+    private ReadOnlyMemory<float> EmbedOne(string text, EmbeddingPurpose purpose)
     {
+        // Prefix applied before tokenization (memory-query-prefix design D2) so it counts
+        // against the token budget/bucketing below like any other text, and so the resulting
+        // vector reflects the exact string the model card instructs embedding. Never applied to
+        // Passage purpose -- that is what keeps document-side vectors byte-identical to ones
+        // stored before prefix support existed.
+        var effectiveText = purpose == EmbeddingPurpose.RetrievalQuery && _queryPrefix.Length > 0
+            ? _queryPrefix + text
+            : text;
+
         var scratchIds = new long[MaxTokens];
         var scratchMask = new long[MaxTokens];
         var scratchTypes = new long[MaxTokens];
@@ -165,7 +199,7 @@ public sealed class OnnxMemoryEmbedder : IMemoryEmbedder, IDisposable
         // This overload writes into the caller-supplied spans instead of BertTokenizer's
         // internal reused buffers, so calling it from multiple gate-scheduled tasks
         // concurrently against the one shared _tokenizer instance is safe.
-        _tokenizer.Encode(text, scratchIds, scratchMask, scratchTypes, MaxTokens);
+        _tokenizer.Encode(effectiveText, scratchIds, scratchMask, scratchTypes, MaxTokens);
 
         // Dynamic-length padding: only feed the ONNX graph the actual tokenized length
         // (rounded up to DynamicLengthBucket), not the full fixed-512 scratch buffers -- see

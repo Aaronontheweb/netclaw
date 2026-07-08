@@ -55,7 +55,8 @@ public sealed class EmbeddingModelProvisionerTests : IAsyncLifetime
             ["test-model"] = new EmbeddingModelManifestEntry(
                 "test-model", modelUrl, vocabUrl,
                 Sha256Hex(modelBytes), Sha256Hex(vocabBytes),
-                Dimensions: 8, ModelByteSize: modelBytes.Length),
+                Dimensions: 8, ModelByteSize: modelBytes.Length,
+                QueryPrefix: "", CalibratedMinCosineSimilarity: null),
         };
 
         var provisioner = new EmbeddingModelProvisioner(_httpClient, allowlist);
@@ -85,7 +86,8 @@ public sealed class EmbeddingModelProvisionerTests : IAsyncLifetime
             ["test-model"] = new EmbeddingModelManifestEntry(
                 "test-model", modelUrl, vocabUrl,
                 Sha256Hex(modelBytes), Sha256Hex(vocabBytes),
-                Dimensions: 8, ModelByteSize: modelBytes.Length),
+                Dimensions: 8, ModelByteSize: modelBytes.Length,
+                QueryPrefix: "", CalibratedMinCosineSimilarity: null),
         };
         var provisioner = new EmbeddingModelProvisioner(_httpClient, allowlist);
         await provisioner.ProvisionAsync("test-model", _destinationDirectory, TestContext.Current.CancellationToken);
@@ -138,7 +140,8 @@ public sealed class EmbeddingModelProvisionerTests : IAsyncLifetime
             ["test-model"] = new EmbeddingModelManifestEntry(
                 "test-model", modelUrl, vocabUrl,
                 Sha256Hex(modelBytes), Sha256Hex(vocabBytes),
-                Dimensions: 8, ModelByteSize: modelBytes.Length),
+                Dimensions: 8, ModelByteSize: modelBytes.Length,
+                QueryPrefix: "", CalibratedMinCosineSimilarity: null),
         };
         var provisioner = new EmbeddingModelProvisioner(_httpClient, allowlist);
         await provisioner.ProvisionAsync("test-model", _destinationDirectory, TestContext.Current.CancellationToken);
@@ -182,7 +185,8 @@ public sealed class EmbeddingModelProvisionerTests : IAsyncLifetime
                 "tampered", modelUrl, vocabUrl,
                 ModelSha256: Sha256Hex(Encoding.UTF8.GetBytes("this-does-not-match-the-served-bytes")),
                 TokenizerSha256: Sha256Hex(vocabBytes),
-                Dimensions: 8, ModelByteSize: modelBytes.Length),
+                Dimensions: 8, ModelByteSize: modelBytes.Length,
+                QueryPrefix: "", CalibratedMinCosineSimilarity: null),
         };
 
         var provisioner = new EmbeddingModelProvisioner(_httpClient, allowlist);
@@ -210,7 +214,8 @@ public sealed class EmbeddingModelProvisionerTests : IAsyncLifetime
             ["wrong-size"] = new EmbeddingModelManifestEntry(
                 "wrong-size", modelUrl, vocabUrl,
                 Sha256Hex(modelBytes), Sha256Hex(vocabBytes),
-                Dimensions: 8, ModelByteSize: modelBytes.Length + 1),
+                Dimensions: 8, ModelByteSize: modelBytes.Length + 1,
+                QueryPrefix: "", CalibratedMinCosineSimilarity: null),
         };
 
         var provisioner = new EmbeddingModelProvisioner(_httpClient, allowlist);
@@ -234,6 +239,32 @@ public sealed class EmbeddingModelProvisionerTests : IAsyncLifetime
         Assert.All(EmbeddingModelProvisioner.Allowlist.Values, e => Assert.Equal(64, e.TokenizerSha256.Length));
     }
 
+    // ── Retrieval-mode metadata (memory-query-prefix design D2/D4) ──────
+
+    [Fact]
+    public void ArcticEntry_carries_the_model_card_query_prefix_verbatim_and_its_calibrated_floor()
+    {
+        // Pins the exact model-card string (design.md D2: verified 2026-07-08 against the
+        // pinned HF commit) — a future model bump forces the author past this assertion too,
+        // so a stale prefix silently paired with new weights fails loudly here instead of only
+        // degrading retrieval quality at runtime.
+        var entry = EmbeddingModelProvisioner.Allowlist["snowflake-arctic-embed-m"];
+        Assert.Equal("Represent this sentence for searching relevant passages: ", entry.QueryPrefix);
+        Assert.Equal(0.24, entry.CalibratedMinCosineSimilarity);
+    }
+
+    [Fact]
+    public void MxbaiFallbackEntry_carries_a_query_prefix_but_no_retrieval_calibration()
+    {
+        // The fallback entry has not been through its own gold-set floor sweep (design D2): its
+        // CalibratedMinCosineSimilarity MUST stay null until that calibration lands, so
+        // SQLiteMemoryRecallCoordinator degrades to lexical-only rather than silently reusing a
+        // floor measured for a different model.
+        var entry = EmbeddingModelProvisioner.Allowlist["mxbai-embed-large-v1"];
+        Assert.False(string.IsNullOrEmpty(entry.QueryPrefix));
+        Assert.Null(entry.CalibratedMinCosineSimilarity);
+    }
+
     private static EmbeddingModelManifestEntry DummyEntry(string id)
-        => new(id, new Uri("http://127.0.0.1:1/model.onnx"), new Uri("http://127.0.0.1:1/vocab.txt"), new string('0', 64), new string('0', 64), 8, 1);
+        => new(id, new Uri("http://127.0.0.1:1/model.onnx"), new Uri("http://127.0.0.1:1/vocab.txt"), new string('0', 64), new string('0', 64), 8, 1, QueryPrefix: "", CalibratedMinCosineSimilarity: null);
 }

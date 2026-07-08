@@ -191,7 +191,9 @@ public sealed class MemoryCommandTests
                 ModelSha256: Convert.ToHexStringLower(SHA256.HashData(modelBytes)),
                 TokenizerSha256: Convert.ToHexStringLower(SHA256.HashData(vocabBytes)),
                 Dimensions: 8,
-                ModelByteSize: modelBytes.Length),
+                ModelByteSize: modelBytes.Length,
+                QueryPrefix: "search_query: ",
+                CalibratedMinCosineSimilarity: 0.42),
         };
     }
 }

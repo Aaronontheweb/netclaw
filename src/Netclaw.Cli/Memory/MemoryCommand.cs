@@ -98,7 +98,7 @@ internal static class MemoryCommand
 
         Console.WriteLine($"Loading embedder '{provisioned.ModelId}' ({provisioned.Dimensions} dims)...");
         using var embedder = await OnnxMemoryEmbedder.LoadAsync(
-            provisioned.ModelPath, provisioned.VocabPath, provisioned.ModelId, provisioned.Dimensions);
+            provisioned.ModelPath, provisioned.VocabPath, provisioned.ModelId, provisioned.Dimensions, provisioned.QueryPrefix);
 
         // Direct SQLite access, same as the doctor checks: WAL mode (set by InitializeAsync's
         // idempotent DDL) plus Microsoft.Data.Sqlite's default busy-timeout keep each small
@@ -129,7 +129,7 @@ internal static class MemoryCommand
             IReadOnlyList<ReadOnlyMemory<float>> vectors;
             try
             {
-                vectors = await embedder.EmbedBatchAsync(texts, CancellationToken.None);
+                vectors = await embedder.EmbedBatchAsync(texts, EmbeddingPurpose.Passage, CancellationToken.None);
             }
             catch (Exception ex)
             {

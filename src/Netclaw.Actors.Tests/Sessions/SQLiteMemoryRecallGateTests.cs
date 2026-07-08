@@ -356,7 +356,12 @@ public sealed class SQLiteMemoryRecallGateTests : IAsyncDisposable
             },
             TimeProvider.System,
             sessionTuning: new SessionTuning { DeterministicRetrievalEnabled = true },
-            embedderHolder: new MemoryEmbedderHolder(new ScriptedEmbedder(EmbedderModelId, Dimensions, QueryVector)),
+            // memory-query-prefix design D3: Memory.Recall.MinCosineSimilarity now defaults to
+            // null (manifest-follows). Every candidate here embeds at cosine 1.0 against itself
+            // (SeedFloorSurvivingDocumentAsync), so any floor below 1.0 clears it identically to
+            // this file's pre-existing fixture geometry.
+            embedderHolder: new MemoryEmbedderHolder(
+                new ScriptedEmbedder(EmbedderModelId, Dimensions, QueryVector), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: 0.5),
             vectorIndexHolder: new MemoryVectorIndexHolder(_store),
             relevanceScorerHolder: relevanceScorerHolder);
 
@@ -410,10 +415,10 @@ public sealed class SQLiteMemoryRecallGateTests : IAsyncDisposable
 
         public bool IsAvailable => true;
 
-        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, CancellationToken ct)
+        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, EmbeddingPurpose purpose, CancellationToken ct)
             => ValueTask.FromResult<ReadOnlyMemory<float>>(queryVector);
 
-        public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct)
+        public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, EmbeddingPurpose purpose, CancellationToken ct)
             => ValueTask.FromResult<IReadOnlyList<ReadOnlyMemory<float>>>(
                 texts.Select(_ => (ReadOnlyMemory<float>)queryVector).ToList());
     }

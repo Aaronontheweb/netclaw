@@ -242,6 +242,19 @@ alone cannot close the zero-injection gap within the F0.5-preserving range —
 that residual is tracked as the separate `memory-relevance-gate` change, not
 solved here.
 
+**Superseded by `memory-query-prefix` (2026-07-08):** the 0.68 figure above
+was measured with the query embedded RAW — `snowflake-arctic-embed-m`'s
+documented retrieval-query prefix (`Represent this sentence for searching
+relevant passages: `) was never applied. That is a no-prefix historical
+record, kept here for the archive, not the calibration of record. Applying
+the prefix compresses the model's cosine distribution downward (optimal τ
+0.68 → 0.24) and lifts F0.5 at the optimum from 0.141 to 0.239 (+69%
+relative) — see `openspec/changes/memory-query-prefix/design.md` D4 for the
+full prefixed sweep and the atomic prefix+floor recalibration rationale.
+`MemoryRecallConfig.MinCosineSimilarity` no longer defaults to 0.68; it
+defaults to null and follows the active model's manifest-carried
+calibration (0.24 for the shipped prefixed encoding).
+
 ### D7. Taxonomy rebalance: recall modes mean what they say
 
 - **BREAKING (semantic fix)**: `Searchable` leaves the automatic recall pool

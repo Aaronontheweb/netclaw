@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Diagnostics;
+using Netclaw.Actors.Memory;
 using Xunit;
 
 namespace Netclaw.Embeddings.Tests;
@@ -46,6 +47,7 @@ public sealed class EmbedQueryLatencyBudgetTests : IAsyncLifetime
             vocabPath: Path.Combine(fixturesDir, "tiny-vocab.txt"),
             modelId: ModelId,
             dimensions: Dimensions,
+            queryPrefix: "",
             maxConcurrency: 2);
     }
 
@@ -62,13 +64,13 @@ public sealed class EmbedQueryLatencyBudgetTests : IAsyncLifetime
 
         // Warm-up call: absorbs first-call session/JIT costs the real
         // EmbeddingWarmupHostedService pays once at startup, outside the per-turn budget.
-        await _embedder.EmbedAsync("warm up the inference session", ct);
+        await _embedder.EmbedAsync("warm up the inference session", EmbeddingPurpose.RetrievalQuery, ct);
 
         var samples = new double[SampleCount];
         for (var i = 0; i < SampleCount; i++)
         {
             var sw = Stopwatch.StartNew();
-            await _embedder.EmbedAsync("What's our Sev2 response time for commercial support?", ct);
+            await _embedder.EmbedAsync("What's our Sev2 response time for commercial support?", EmbeddingPurpose.RetrievalQuery, ct);
             sw.Stop();
             samples[i] = sw.Elapsed.TotalMilliseconds;
         }

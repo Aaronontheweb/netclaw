@@ -235,6 +235,35 @@ public sealed class ConfigSchemaDoctorCheckTests
         Assert.Equal(DoctorSeverity.Pass, result.Severity);
     }
 
+    // memory-query-prefix design D3: MinCosineSimilarity is now nullable
+    // ("type": ["number", "null"]) — an explicit null (the default, meaning "follow the active
+    // model's manifest calibration") must remain schema-valid, not just an omitted property.
+    [Fact]
+    public async Task ReturnsPass_WhenMemoryRecallMinCosineSimilarityIsExplicitlyNull()
+    {
+        var basePath = CreateTempBasePath();
+        var paths = new NetclawPaths(basePath);
+        paths.EnsureDirectoriesExist();
+
+        await File.WriteAllTextAsync(paths.NetclawConfigPath,
+            """
+            {
+              "configVersion": 1,
+              "Memory": {
+                "Enabled": true,
+                "Recall": {
+                  "MinCosineSimilarity": null
+                }
+              }
+            }
+            """, TestContext.Current.CancellationToken);
+
+        var check = new ConfigSchemaDoctorCheck(paths);
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Pass, result.Severity);
+    }
+
     [Fact]
     public async Task ReturnsError_WhenMemoryRecallHasAnUnknownProperty()
     {

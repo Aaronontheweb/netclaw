@@ -6,6 +6,32 @@
 namespace Netclaw.Actors.Memory;
 
 /// <summary>
+/// Distinguishes retrieval-query embedding from passage (document) embedding at the
+/// <see cref="IMemoryEmbedder"/> seam (memory-query-prefix design D1). Asymmetric retrieval
+/// models (e.g. <c>snowflake-arctic-embed-m</c>) document a query-side prefix that must NOT be
+/// applied to documents — the same text embedded for each purpose can legitimately produce a
+/// different vector. A batch call carries exactly one purpose: batching exists for
+/// same-purpose work (embed-on-write, backfill, gap-repair), never a mix of queries and
+/// documents in one call.
+/// </summary>
+public enum EmbeddingPurpose
+{
+    /// <summary>
+    /// Document-side embedding: embed-on-write, backfill, gap repair, and the dedup nominator's
+    /// proposal↔document comparison. Never carries a query prefix, regardless of the active
+    /// model — this is what keeps stored vectors byte-identical across a prefix-adoption change
+    /// like memory-query-prefix (no re-embed required).
+    /// </summary>
+    Passage,
+
+    /// <summary>
+    /// A recall turn's query text. The active model's documented retrieval-query prefix (if
+    /// any) is applied by the embedder before tokenization.
+    /// </summary>
+    RetrievalQuery,
+}
+
+/// <summary>
 /// Consumer-defined seam for computing memory embeddings (memory-core-redesign D1). Owned by
 /// the memory subsystem, not the embedding runtime, so actor code never references OnnxRuntime
 /// or any other inference library: <c>Netclaw.Embeddings</c>'s <c>OnnxMemoryEmbedder</c>
@@ -44,17 +70,21 @@ public interface IMemoryEmbedder
     bool IsAvailable { get; }
 
     /// <summary>
-    /// Embed a single piece of text. Callers MUST check <see cref="IsAvailable"/> first;
-    /// calling this while unavailable throws rather than degrading silently.
+    /// Embed a single piece of text for the given <paramref name="purpose"/>. Callers MUST
+    /// check <see cref="IsAvailable"/> first; calling this while unavailable throws rather than
+    /// degrading silently. <paramref name="purpose"/> is required (not defaulted) so every call
+    /// site makes an explicit, reviewable choice (memory-query-prefix design D1) — there is no
+    /// safe default between "prefix this as a query" and "leave this as a document."
     /// </summary>
-    ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, CancellationToken ct);
+    ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, EmbeddingPurpose purpose, CancellationToken ct);
 
     /// <summary>
-    /// Embed a batch of texts, preserving input order in the output list. Batching lets
-    /// callers (backfill, gap-repair) amortize per-call overhead that the single-item path
-    /// pays every time.
+    /// Embed a batch of texts for the given <paramref name="purpose"/>, preserving input order
+    /// in the output list. Batching lets callers (backfill, gap-repair) amortize per-call
+    /// overhead that the single-item path pays every time. A batch carries one purpose for all
+    /// its texts — see <see cref="EmbeddingPurpose"/>.
     /// </summary>
-    ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct);
+    ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, EmbeddingPurpose purpose, CancellationToken ct);
 }
 
 /// <summary>
@@ -87,10 +117,10 @@ public sealed class UnavailableMemoryEmbedder(string modelId, string reason) : I
 
     public bool IsAvailable => false;
 
-    public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, CancellationToken ct)
+    public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, EmbeddingPurpose purpose, CancellationToken ct)
         => throw new InvalidOperationException(BuildMessage(nameof(EmbedAsync)));
 
-    public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, CancellationToken ct)
+    public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, EmbeddingPurpose purpose, CancellationToken ct)
         => throw new InvalidOperationException(BuildMessage(nameof(EmbedBatchAsync)));
 
     private string BuildMessage(string calledMethod)

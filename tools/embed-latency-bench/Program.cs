@@ -24,6 +24,7 @@ using System.Numerics.Tensors;
 using FastBertTokenizer;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using Netclaw.Actors.Memory;
 using Netclaw.Embeddings;
 
 // Captured before any other work so the cold-load number can include .NET host/runtime
@@ -216,8 +217,10 @@ Console.WriteLine($"  doc   : min={docStats.Min} max={docStats.Max} mean={docSta
 // --- Cold load -------------------------------------------------------------------------------
 
 var loadOnlySw = Stopwatch.StartNew();
-var embedder = await OnnxMemoryEmbedder.LoadAsync(verified.ModelPath, verified.VocabPath, verified.ModelId, verified.Dimensions);
-_ = await embedder.EmbedAsync(shortQueries[0], CancellationToken.None);
+var embedder = await OnnxMemoryEmbedder.LoadAsync(verified.ModelPath, verified.VocabPath, verified.ModelId, verified.Dimensions, verified.QueryPrefix);
+// Cold-load's first embed mirrors EmbeddingWarmupHostedService's own warm-up call (Passage
+// purpose) -- see that type's remarks.
+_ = await embedder.EmbedAsync(shortQueries[0], EmbeddingPurpose.Passage, CancellationToken.None);
 loadOnlySw.Stop();
 var processToFirstEmbedMs = (DateTime.UtcNow - processStartUtc).TotalMilliseconds;
 
@@ -239,16 +242,16 @@ Row Percentiles(string label, List<double> samplesMs)
     return new Row(label, sorted.Length, Pct(50), Pct(90), Pct(95), Pct(99), sorted[^1], sorted.Average());
 }
 
-async Task<List<double>> RunCorpus(string[] corpus, int warmup, int timed)
+async Task<List<double>> RunCorpus(string[] corpus, int warmup, int timed, EmbeddingPurpose purpose)
 {
     for (var i = 0; i < warmup; i++)
-        _ = await embedder.EmbedAsync(corpus[i % corpus.Length], CancellationToken.None);
+        _ = await embedder.EmbedAsync(corpus[i % corpus.Length], purpose, CancellationToken.None);
 
     var samples = new List<double>(timed);
     for (var i = 0; i < timed; i++)
     {
         var sw = Stopwatch.StartNew();
-        _ = await embedder.EmbedAsync(corpus[i % corpus.Length], CancellationToken.None);
+        _ = await embedder.EmbedAsync(corpus[i % corpus.Length], purpose, CancellationToken.None);
         sw.Stop();
         samples.Add(sw.Elapsed.TotalMilliseconds);
     }
@@ -258,9 +261,13 @@ async Task<List<double>> RunCorpus(string[] corpus, int warmup, int timed)
 
 var rows = new List<Row>
 {
-    Percentiles("short", await RunCorpus(shortQueries, WarmupIterations, TimedIterations)),
-    Percentiles("medium", await RunCorpus(mediumCorpus, WarmupIterations, TimedIterations)),
-    Percentiles("doc", await RunCorpus(docCorpus, WarmupIterations, TimedIterations)),
+    // "short" mirrors SQLiteMemoryRecallCoordinator's per-turn query embedding (memory-query-
+    // prefix design D2): RetrievalQuery purpose, so this measurement includes the active
+    // model's query prefix -- the real cost VectorEmbedSubBudgetMs must budget for. "medium"/
+    // "doc" mirror embed-on-write/backfill document embedding: Passage purpose, never prefixed.
+    Percentiles("short", await RunCorpus(shortQueries, WarmupIterations, TimedIterations, EmbeddingPurpose.RetrievalQuery)),
+    Percentiles("medium", await RunCorpus(mediumCorpus, WarmupIterations, TimedIterations, EmbeddingPurpose.Passage)),
+    Percentiles("doc", await RunCorpus(docCorpus, WarmupIterations, TimedIterations, EmbeddingPurpose.Passage)),
 };
 
 // --- Concurrency-2 short-query pass (two parallel loops share the SemaphoreSlim(2) gate) ---
@@ -271,7 +278,7 @@ async Task<List<double>> RunConcurrentLoop(int iterations)
     for (var i = 0; i < iterations; i++)
     {
         var sw = Stopwatch.StartNew();
-        _ = await embedder.EmbedAsync(shortQueries[i % shortQueries.Length], CancellationToken.None);
+        _ = await embedder.EmbedAsync(shortQueries[i % shortQueries.Length], EmbeddingPurpose.RetrievalQuery, CancellationToken.None);
         sw.Stop();
         samples.Add(sw.Elapsed.TotalMilliseconds);
     }
@@ -295,7 +302,7 @@ Console.WriteLine($"Concurrency-2 pass total wall time: {concurrencySw.Elapsed.T
 // semantic content, should cosine-agree near 1.0 if the attention mask does its job).
 var fixedCorrectnessEmbeddings = new ReadOnlyMemory<float>[correctnessSentences.Length];
 for (var i = 0; i < correctnessSentences.Length; i++)
-    fixedCorrectnessEmbeddings[i] = await embedder.EmbedAsync(correctnessSentences[i], CancellationToken.None);
+    fixedCorrectnessEmbeddings[i] = await embedder.EmbedAsync(correctnessSentences[i], EmbeddingPurpose.Passage, CancellationToken.None);
 
 embedder.Dispose();
 
