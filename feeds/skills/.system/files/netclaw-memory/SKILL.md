@@ -3,7 +3,7 @@ name: netclaw-memory
 description: "REQUIRED when the user asks what you remember, recall, or know from past conversations, previous sessions, cross-session memory, memory classes, or memory types. Also before using memory tools: find_memories, get_memories, store_memory, update_memory."
 metadata:
   author: netclaw
-  version: "1.9.0"
+  version: "1.9.1"
 ---
 
 # Netclaw Memory
@@ -150,11 +150,16 @@ When memory behavior looks wrong:
 
 Useful log events:
 
-**Recall pipeline** (grep for `memory_retrieval`):
+**Recall pipeline** (grep for `memory_retrieval` / `memory_recall`):
 - `memory_retrieval_request_plan` — query tokenization, facets, soft scopes, anchor hints
 - `memory_retrieval_candidate_selection` — all candidates with selector scores
 - `memory_retrieval_final` — floor filtering results, final injected items
 - `turn_memory_recall` — summary event with item count and duration
+- `memory_recall_vector_degraded` — turn fell back to lexical-only recall (embedder
+  unavailable, no vector index, or the query-embedding sub-budget was exceeded)
+- `memory_recall_coverage_gap` — one or more candidates had no embedding row for the
+  current model; they degrade to lexical scoring rather than being excluded, and the
+  gap self-heals via embed-on-write plus `netclaw memory backfill-embeddings`
 
 **Formation pipeline** (grep for `memory_observation`):
 - `memory_observation_sidecar_completed`

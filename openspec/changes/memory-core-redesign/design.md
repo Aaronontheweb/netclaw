@@ -167,9 +167,20 @@ correctness requirement with its own scenario. Scoring = weighted fusion
 (default **0.68**, calibrated 2026-07-05 against the real-traffic gold set
 `gold-prod-2026-07` — calibration summary below). Nothing above the floor →
 inject nothing, and the volatile `[memory-recall]` block is omitted entirely
-(zero tokens). Recency decay (`RecencyHalfLifeDays`, floor-bounded
-multiplier) breaks ties toward fresh knowledge. The quick-win char budget and
-`AutoRecallMaxItems` remain
+(zero tokens). The floor applies only to a candidate the vector index
+actually holds an embedding for; a candidate with no embedding row at all
+(a coverage gap — not yet backfilled, or written before embeddings were
+enabled) has no cosine for the floor to gate, so it degrades to lexical
+scoring instead (its cosine term is 0, ranked purely on the fused
+lexical/class-prior score) with a rate-limited `memory_recall_coverage_gap`
+warning — honoring the Migration Plan's "both paths degrade loudly to
+lexical when coverage is incomplete rather than misbehaving" rather than
+blacking out recall for an un-backfilled corpus while the embedder is
+otherwise healthy. Coverage self-heals via embed-on-write (new/updated
+documents) plus gap repair (backfilling pre-existing ones), so the warning
+is expected to fall off after both complete. Recency decay
+(`RecencyHalfLifeDays`, floor-bounded multiplier) breaks ties toward fresh
+knowledge. The quick-win char budget and `AutoRecallMaxItems` remain
 the outer bounds.
 
 *Alternative considered*: RRF fusion — rejected: rank-only fusion always

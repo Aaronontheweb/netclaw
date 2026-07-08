@@ -110,13 +110,29 @@ public sealed class MemoryVectorIndex
     /// <see cref="ReloadIfStaleAsync"/> — callers that need current data must reload first.
     /// </summary>
     public IReadOnlyList<MemoryVectorMatch> TopK(ReadOnlySpan<float> query, int k, double minCosine)
+        => TopK(query, k, minCosine, out _);
+
+    /// <summary>
+    /// Overload of <see cref="TopK(ReadOnlySpan{float}, int, double)"/> that additionally
+    /// reports, via <paramref name="embeddedItemIds"/>, every item id that has ANY embedding row
+    /// in this model's index — regardless of whether its cosine cleared
+    /// <paramref name="minCosine"/> — computed from the IDENTICAL snapshot the returned matches
+    /// were scored against (memory-core-redesign Slice 4 gap-repair fix, design D6). Callers that
+    /// need to tell "embedded but below the absolute floor" apart from "never embedded" (a
+    /// coverage gap the floor cannot apply to) must use this overload rather than a second,
+    /// independent call: two separate snapshot reads could straddle a concurrent
+    /// <see cref="ReloadIfStaleAsync"/> and observe a torn combination — matches from one
+    /// snapshot, membership from another.
+    /// </summary>
+    public IReadOnlyList<MemoryVectorMatch> TopK(ReadOnlySpan<float> query, int k, double minCosine, out IReadOnlySet<string> embeddedItemIds)
     {
+        var snapshot = Volatile.Read(ref _snapshot);
+        embeddedItemIds = new HashSet<string>(snapshot.Ids, StringComparer.Ordinal);
+
         if (k <= 0)
             return [];
         if (query.Length != Dimensions)
             throw new ArgumentException($"Query vector has {query.Length} dimensions; index '{ModelId}' expects {Dimensions}.", nameof(query));
-
-        var snapshot = Volatile.Read(ref _snapshot);
         if (snapshot.Ids.Length == 0)
             return [];
 

@@ -23,11 +23,25 @@ namespace Netclaw.Actors.Sessions;
 /// which applies the IDENTICAL policy predicates <see cref="SQLiteMemoryStore.SearchByPlanAsync"/>
 /// applies to lexical hits — a vector hit can never bypass a gate a lexical one would have to
 /// clear. Scoring fuses a weighted cosine + squashed lexical-selector-score + dampened
-/// class-prior composite, recency-decayed, then applies an ABSOLUTE floor: any candidate
-/// (regardless of source) whose cosine falls below <see cref="MemoryRecallConfig.MinCosineSimilarity"/>
-/// is dropped before ranking. Zero survivors means zero injection and a HEALTHY (non-degraded)
-/// empty result — the caller (<see cref="SessionMessageAssembler.BuildVolatileContextBlock"/>)
-/// already omits the <c>[memory-recall]</c> block entirely for that shape.
+/// class-prior composite, recency-decayed, then admits by one of THREE cases per candidate
+/// (gap-repair fix, corrects the original Slice 4 landing):
+/// <list type="number">
+/// <item>Embedded for the current model AND cosine at or above
+/// <see cref="MemoryRecallConfig.MinCosineSimilarity"/> — admitted, ranked by fused score.</item>
+/// <item>Embedded AND cosine below the floor — excluded; the calibrated absolute floor gates
+/// admission for every candidate the index actually holds a vector for.</item>
+/// <item>No embedding row at all for the current model (a coverage gap — not yet backfilled, or
+/// written before embeddings were enabled) — the floor cannot apply to a similarity that was
+/// never computed, so the candidate bypasses it and competes on fused score alone (cosine term
+/// 0). A rate-limited <c>memory_recall_coverage_gap</c> log fires whenever this happens.</item>
+/// </list>
+/// Zero survivors across all three cases still means zero injection and a HEALTHY
+/// (non-degraded) empty result — the caller
+/// (<see cref="SessionMessageAssembler.BuildVolatileContextBlock"/>) already omits the
+/// <c>[memory-recall]</c> block entirely for that shape. See <see cref="ScoreHybrid"/> for the
+/// implementation and <c>openspec/changes/memory-core-redesign/design.md</c> D6 for the
+/// migration-plan rationale (coverage gaps degrade loudly to lexical scoring rather than
+/// silently blacking out recall while a corpus backfills).
 /// </para>
 ///
 /// <para>
@@ -63,6 +77,7 @@ public sealed class SQLiteMemoryRecallCoordinator(
     private readonly DeterministicRetrievalRequestPlanner _deterministicPlanner = new();
     private readonly DeterministicCandidateSelector _candidateSelector = new();
     private readonly ConcurrentDictionary<string, long> _lastVectorDegradedLogMs = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, long> _lastCoverageGapLogMs = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Default minimum composite score a candidate must reach to survive
@@ -83,8 +98,10 @@ public sealed class SQLiteMemoryRecallCoordinator(
     /// <para>
     /// This floor governs the DEGRADED (lexical-only) path exclusively
     /// (memory-core-redesign Slice 4). When a query vector is available the absolute cosine
-    /// floor (<see cref="MemoryRecallConfig.MinCosineSimilarity"/>) governs admission instead —
-    /// the two floors are never both applied to the same candidate set.
+    /// floor (<see cref="MemoryRecallConfig.MinCosineSimilarity"/>) governs admission for
+    /// EMBEDDED candidates instead — the two floors are never both applied to the same
+    /// candidate. A candidate with no embedding row at all (a coverage gap) is gated by
+    /// neither floor: see <see cref="ScoreHybrid"/>.
     /// </para>
     /// </summary>
     private const double DefaultMinimumRecallCompositeScore = 14.0;
@@ -371,9 +388,10 @@ public sealed class SQLiteMemoryRecallCoordinator(
 
     /// <summary>
     /// Builds the hybrid-mode ranked candidate pool (memory-core-redesign Slice 4, tasks
-    /// 4.2-4.4): vector top-k unioned with the lexical candidates already selected against the
-    /// plan, fused per design D6's weighted formula, recency-decayed, then filtered to the
-    /// absolute cosine floor. Vector-only ids are hydrated through
+    /// 4.2-4.4; gap-repair fix corrects the floor semantics below): vector top-k unioned with the
+    /// lexical candidates already selected against the plan, fused per design D6's weighted
+    /// formula, recency-decayed, then admitted per the three-case semantics documented on this
+    /// class's summary. Vector-only ids are hydrated through
     /// <see cref="SQLiteMemoryStore.GetRecallCandidatesByIdsAsync"/> — the SAME policy gates
     /// <see cref="SQLiteMemoryStore.SearchByPlanAsync"/> applied to the lexical candidates — and
     /// scored via <see cref="DeterministicCandidateSelector.Score"/> so a vector hit that also
@@ -389,11 +407,15 @@ public sealed class SQLiteMemoryRecallCoordinator(
     {
         var (queryVector, vectorIndex) = hybridInput;
 
-        // The absolute floor (design D6) is applied HERE, at the TopK call itself: only matches
-        // at or above MinCosineSimilarity are ever candidates for injection, regardless of
-        // source. A lexical candidate absent from this map (never embedded, or embedded but not
-        // similar enough) defaults to cosine 0.0 below and is excluded by the same floor check.
-        var vectorMatches = vectorIndex.TopK(queryVector.Span, VectorTopK, minCosine: _recallConfig.MinCosineSimilarity)
+        // embeddedItemIds is read from the IDENTICAL snapshot vectorMatches was scored against
+        // (MemoryVectorIndex.TopK's out-parameter overload) so the case-2-vs-case-3 distinction
+        // below can never straddle a concurrent index reload. Only matches at or above
+        // MinCosineSimilarity are ever returned as vectorMatches, but embeddedItemIds reports
+        // EVERY item the index holds a vector for regardless of cosine — that's what lets a
+        // candidate embedded-but-below-floor (case 2, excluded) be told apart from a candidate
+        // never embedded at all (case 3, a coverage gap that bypasses the floor).
+        var vectorMatches = vectorIndex.TopK(
+                queryVector.Span, VectorTopK, minCosine: _recallConfig.MinCosineSimilarity, out var embeddedItemIds)
             .Where(m => string.Equals(m.ItemKind, MemoryEmbedOnWriteCoordinator.DocumentItemKind, StringComparison.Ordinal))
             .ToArray();
         var cosineByItemId = vectorMatches.ToDictionary(m => m.ItemId, m => m.Cosine, StringComparer.Ordinal);
@@ -421,25 +443,49 @@ public sealed class SQLiteMemoryRecallCoordinator(
             pool.Add((item, DeterministicCandidateSelector.Score(deterministicPlan, item)));
 
         var nowMs = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        var gapCandidateCount = 0;
         var fused = pool
             .Select(x =>
             {
+                // Only "document" items are ever embedded (MemoryEmbedOnWriteCoordinator.
+                // DocumentItemKind), so embeddedItemIds needs no further kind filtering here.
+                var isCoverageGap = !embeddedItemIds.Contains(x.Item.Id);
+                if (isCoverageGap)
+                    gapCandidateCount++;
+
+                // GetValueOrDefault is exact for case 1 (cleared the TopK floor) and a harmless
+                // placeholder for case 2 (embedded but below the floor, so TopK never returned a
+                // cosine for it) -- 0.0 is guaranteed below any positive floor, so case 2 is
+                // rejected below regardless of its true, unrecorded cosine. For case 3 the
+                // fusedScore's cosine term is legitimately 0: there is no vector to score.
                 var cosine = cosineByItemId.GetValueOrDefault(x.Item.Id, 0.0);
                 var squash = x.SelectorScore / (x.SelectorScore + SquashHalfSaturation);
                 var classPrior = (RecallRank(x.Item) / RecallRankDampeningFactor) / HybridClassPriorDampeningFactor;
                 var fusedScore = (_recallConfig.VectorWeight * cosine) + (_recallConfig.LexicalWeight * squash) + classPrior;
                 var recencyMultiplier = RecencyMultiplier(x.Item, nowMs);
-                return new RankedCandidate(x.Item, fusedScore * recencyMultiplier, cosine);
+                // Cosine is null ONLY for a genuine coverage gap (case 3) -- that null is the
+                // floor check's signal below to admit on fused score alone. Case 1 and case 2
+                // both carry a non-null cosine (real or the case-2 placeholder above).
+                return new RankedCandidate(x.Item, fusedScore * recencyMultiplier, isCoverageGap ? null : cosine);
             })
             .OrderByDescending(x => x.Composite)
             .ToArray();
 
-        // THE absolute floor (design D6): cosine alone gates admission once a query vector
-        // exists — a high lexical/fused score cannot compensate for low semantic similarity.
-        // Zero survivors is intended, not an error: the "Nothing relevant means nothing
-        // injected" spec scenario, returned as a healthy empty result by the caller.
+        if (gapCandidateCount > 0)
+            LogCoverageGap(request.SessionId.Value, gapCandidateCount, fused.Length);
+
+        // THE absolute floor (design D6, corrected by the gap-repair fix): cosine gates
+        // admission only for a candidate the index actually holds a vector for. A coverage-gap
+        // candidate (Cosine null) has no similarity signal to gate on, so it degrades to
+        // competing on fused score alone (its cosine term already 0) instead of being dropped
+        // outright -- this is the fix: the original Slice 4 landing applied this same floor to
+        // EVERY candidate, including ones with no embedding row, which made an unembedded
+        // document structurally unrecallable while the embedder was healthy and blacked out
+        // recall on any un-backfilled corpus. See this class's summary and design.md D6. Zero
+        // survivors overall is still intended, not an error: the "nothing relevant" spec
+        // scenario, returned as a healthy empty result by the caller.
         var aboveFloor = fused
-            .Where(x => x.Cosine is { } cosine && cosine >= _recallConfig.MinCosineSimilarity)
+            .Where(x => x.Cosine is not { } cosine || cosine >= _recallConfig.MinCosineSimilarity)
             .ToArray();
 
         return (aboveFloor, fused.Length);
@@ -494,6 +540,40 @@ public sealed class SQLiteMemoryRecallCoordinator(
             logger.LogDebug("memory_recall_vector_degraded session={SessionId} reason={Reason}", sessionId, reason);
     }
 
+    /// <summary>
+    /// Rate-limited <c>memory_recall_coverage_gap</c> log (gap-repair fix to
+    /// memory-core-redesign Slice 4, design D6): fires whenever <see cref="ScoreHybrid"/> admits
+    /// one or more candidates with no embedding row for the current model, following the exact
+    /// same rate-limiting pattern as <see cref="LogVectorDegraded"/> — at most one line per
+    /// <see cref="VectorDegradedLogCooldown"/>, tracked in its own dictionary since this is a
+    /// distinct condition (a coverage gap in an otherwise-healthy hybrid turn, not a fallback to
+    /// the degraded path). Warning when embeddings are enabled — an operator running hybrid
+    /// recall should know a corpus gap is being carried by lexical scoring alone until gap
+    /// repair / embed-on-write catches up. Debug when embeddings are disabled by config: this
+    /// path should be unreachable in that state (no query vector means <see cref="ScoreHybrid"/>
+    /// itself never runs), but the level split is kept consistent with
+    /// <see cref="LogVectorDegraded"/> rather than asserting unreachability here.
+    /// </summary>
+    private void LogCoverageGap(string sessionId, int gapCandidateCount, int totalCandidateCount)
+    {
+        const string reason = "coverage_gap";
+        var nowMs = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        if (_lastCoverageGapLogMs.TryGetValue(reason, out var lastMs)
+            && nowMs - lastMs < VectorDegradedLogCooldown.TotalMilliseconds)
+            return;
+
+        _lastCoverageGapLogMs[reason] = nowMs;
+
+        if (_embeddingsEnabledByConfig)
+            logger.LogWarning(
+                "memory_recall_coverage_gap session={SessionId} gapCandidates={GapCandidates} totalCandidates={TotalCandidates}",
+                sessionId, gapCandidateCount, totalCandidateCount);
+        else
+            logger.LogDebug(
+                "memory_recall_coverage_gap session={SessionId} gapCandidates={GapCandidates} totalCandidates={TotalCandidates}",
+                sessionId, gapCandidateCount, totalCandidateCount);
+    }
+
     private static int RecallRank(SQLiteMemoryHydratedItem document)
     {
         var score = 0;
@@ -529,9 +609,13 @@ public sealed class SQLiteMemoryRecallCoordinator(
     }
 
     /// <summary>
-    /// A candidate after fusion scoring, in either mode. <see cref="Cosine"/> is null in the
-    /// degraded/lexical path (no query vector existed to compute one against) and non-null in
-    /// hybrid mode (0.0 for a candidate with no recorded embedding, its true cosine otherwise).
+    /// A candidate after fusion scoring, in either mode. In the degraded/lexical path
+    /// <see cref="Cosine"/> is always null (no query vector existed to compute one against). In
+    /// hybrid mode it is null ONLY for a genuine coverage gap (no embedding row at all for the
+    /// current model — case 3 on this class's summary, bypasses the absolute floor) and non-null
+    /// otherwise: the real cosine when it cleared <see cref="MemoryRecallConfig.MinCosineSimilarity"/>
+    /// (case 1), or a placeholder 0.0 when it did not (case 2 — the exact below-floor value was
+    /// never recorded, but any value below a positive floor rejects identically).
     /// </summary>
     private readonly record struct RankedCandidate(SQLiteMemoryHydratedItem Item, double Composite, double? Cosine);
 }

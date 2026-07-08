@@ -17,11 +17,12 @@ namespace Netclaw.Actors.Tests.Sessions;
 
 /// <summary>
 /// Covers <see cref="SQLiteMemoryRecallCoordinator"/>'s hybrid recall path
-/// (memory-core-redesign Slice 4, design D6, tasks 4.1-4.4): the absolute cosine floor, the
-/// zero-injection contract, recency decay bounds, and degraded-path parity with the pre-Slice-4
-/// lexical-only coordinator. Fixture geometry is engineered directly via hand-crafted 2D unit
-/// vectors (same technique as <c>MemoryCurationNominatorTests</c>) rather than a real embedding
-/// model, so every scenario is exact and deterministic.
+/// (memory-core-redesign Slice 4, design D6, tasks 4.1-4.4, gap-repair fix): the absolute cosine
+/// floor (embedded candidates only), the coverage-gap bypass for candidates with no embedding
+/// row at all, the zero-injection contract, recency decay bounds, and degraded-path parity with
+/// the pre-Slice-4 lexical-only coordinator. Fixture geometry is engineered directly via
+/// hand-crafted 2D unit vectors (same technique as <c>MemoryCurationNominatorTests</c>) rather
+/// than a real embedding model, so every scenario is exact and deterministic.
 ///
 /// <para>
 /// Gated-hydration policy-gate exclusions (recall_mode/boundary/audience/sensitivity/
@@ -54,7 +55,7 @@ public sealed class SQLiteMemoryRecallHybridTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync() => await SqliteTempDirectoryCleanup.TryDeleteDirectoryAsync(_baseDir);
 
-    // ── Absolute cosine floor (task 4.3) ────────────────────────────────
+    // ── Absolute cosine floor (task 4.3; gap-repair fix case 2) ─────────
 
     [Fact]
     public async Task Absolute_floor_excludes_a_lexically_strong_candidate_whose_cosine_is_below_threshold()
@@ -63,10 +64,12 @@ public sealed class SQLiteMemoryRecallHybridTests : IAsyncDisposable
         await _store.InitializeAsync(ct);
 
         // Strong lexical match: title+content share every query term, so the pre-Slice-4
-        // selector score alone clears the old lexical floor comfortably. Its embedding is the
-        // exact opposite direction of the query vector (cosine 0.0) -- well below
-        // MinCosineSimilarity's default 0.68. The absolute floor must reject it regardless of
-        // how strong the lexical match is.
+        // selector score alone clears the old lexical floor comfortably. Its embedding IS
+        // present (case 2, not a coverage gap) but points the exact opposite direction of the
+        // query vector (cosine 0.0) -- well below MinCosineSimilarity's default 0.68. The
+        // absolute floor must reject an embedded-but-dissimilar candidate regardless of how
+        // strong the lexical match is; only a genuine coverage gap (no embedding row at all)
+        // bypasses the floor -- see the coverage-gap facts below.
         await SeedDocumentAsync("doc-lexical-strong", "Grafana dashboard provisioning convention",
             "Grafana dashboard provisioning convention details for the ops team.", ct);
         await _store.UpsertEmbeddingAsync(
@@ -107,6 +110,103 @@ public sealed class SQLiteMemoryRecallHybridTests : IAsyncDisposable
         Assert.Contains(result.Items, i => i.Id.Value == "doc-cosine-match");
     }
 
+    // ── Coverage gap (gap-repair fix, cases 3 and its logging) ──────────
+
+    [Fact]
+    public async Task CoverageGap_unembedded_candidate_with_a_strong_lexical_match_is_recalled()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _store.InitializeAsync(ct);
+
+        // No UpsertEmbeddingAsync call at all for this document -- a genuine coverage gap, not a
+        // candidate the index scored and rejected. The absolute floor cannot apply to a
+        // similarity that was never computed, so the gap-repair fix admits it on its lexical/
+        // fused score alone, exactly as the pre-Slice-4 lexical-only path would have.
+        await SeedDocumentAsync("doc-coverage-gap", "Grafana dashboard provisioning convention",
+            "Grafana dashboard provisioning convention details for the ops team.", ct);
+
+        var coordinator = BuildHybridCoordinator(TimeProvider.System, NullLogger<SQLiteMemoryRecallCoordinator>.Instance);
+
+        var result = await coordinator.RecallAsync(new AutomaticRecallRequest(
+            SessionId: (SessionId)"hybrid/coverage-gap",
+            Query: "what is our grafana dashboard provisioning convention?",
+            RecentUserMessages: ["what is our grafana dashboard provisioning convention?"],
+            MaxItems: 3), ct);
+
+        Assert.False(result.Degraded);
+        Assert.Contains(result.Items, i => i.Id.Value == "doc-coverage-gap");
+    }
+
+    [Fact]
+    public async Task CoverageGap_emits_a_rate_limited_warning_log_when_embeddings_are_enabled()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _store.InitializeAsync(ct);
+
+        await SeedDocumentAsync("doc-coverage-gap-log", "Grafana dashboard provisioning convention",
+            "Grafana dashboard provisioning convention details for the ops team.", ct);
+
+        var recordingLogger = new RecordingLogger<SQLiteMemoryRecallCoordinator>();
+        var coordinator = new SQLiteMemoryRecallCoordinator(
+            _store,
+            recordingLogger,
+            new MemoryConfig { Embeddings = new MemoryEmbeddingsConfig { Enabled = true } },
+            TimeProvider.System,
+            sessionTuning: new SessionTuning { DeterministicRetrievalEnabled = true },
+            embedderHolder: new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVector)),
+            vectorIndexHolder: new MemoryVectorIndexHolder(_store));
+
+        var result = await coordinator.RecallAsync(new AutomaticRecallRequest(
+            SessionId: (SessionId)"hybrid/coverage-gap-log",
+            Query: "what is our grafana dashboard provisioning convention?",
+            RecentUserMessages: ["what is our grafana dashboard provisioning convention?"],
+            MaxItems: 3), ct);
+
+        Assert.False(result.Degraded);
+        Assert.Contains(result.Items, i => i.Id.Value == "doc-coverage-gap-log");
+        Assert.Contains(recordingLogger.Entries, e => e.Level == LogLevel.Warning && e.Message.Contains("memory_recall_coverage_gap"));
+    }
+
+    [Fact]
+    public async Task CoverageGap_no_log_is_emitted_when_the_corpus_is_fully_embedded()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _store.InitializeAsync(ct);
+
+        // Every candidate this query can surface has an embedding row (whether or not its
+        // cosine clears the floor) -- no coverage gap exists, so the coverage-gap log must never
+        // fire, only the ordinary absolute-floor admit/reject logic.
+        await SeedDocumentAsync("doc-fully-covered-admit", "Grafana dashboard provisioning convention",
+            "Grafana dashboard provisioning convention details for the ops team.", ct);
+        await _store.UpsertEmbeddingAsync(
+            "doc-fully-covered-admit", MemoryEmbedOnWriteCoordinator.DocumentItemKind, ModelId, "hash-admit", QueryVector, ct);
+        await SeedDocumentAsync("doc-fully-covered-reject", "Grafana dashboard provisioning convention",
+            "Grafana dashboard provisioning convention details for the ops team, second copy.", ct);
+        await _store.UpsertEmbeddingAsync(
+            "doc-fully-covered-reject", MemoryEmbedOnWriteCoordinator.DocumentItemKind, ModelId, "hash-reject", OrthogonalVector, ct);
+
+        var recordingLogger = new RecordingLogger<SQLiteMemoryRecallCoordinator>();
+        var coordinator = new SQLiteMemoryRecallCoordinator(
+            _store,
+            recordingLogger,
+            new MemoryConfig { Embeddings = new MemoryEmbeddingsConfig { Enabled = true } },
+            TimeProvider.System,
+            sessionTuning: new SessionTuning { DeterministicRetrievalEnabled = true },
+            embedderHolder: new MemoryEmbedderHolder(new ScriptedEmbedder(ModelId, Dimensions, QueryVector)),
+            vectorIndexHolder: new MemoryVectorIndexHolder(_store));
+
+        var result = await coordinator.RecallAsync(new AutomaticRecallRequest(
+            SessionId: (SessionId)"hybrid/no-coverage-gap",
+            Query: "what is our grafana dashboard provisioning convention?",
+            RecentUserMessages: ["what is our grafana dashboard provisioning convention?"],
+            MaxItems: 3), ct);
+
+        Assert.False(result.Degraded);
+        Assert.Contains(result.Items, i => i.Id.Value == "doc-fully-covered-admit");
+        Assert.DoesNotContain(result.Items, i => i.Id.Value == "doc-fully-covered-reject");
+        Assert.DoesNotContain(recordingLogger.Entries, e => e.Message.Contains("memory_recall_coverage_gap"));
+    }
+
     // ── Zero-injection contract (task 4.3) ──────────────────────────────
 
     [Fact]
@@ -115,12 +215,15 @@ public sealed class SQLiteMemoryRecallHybridTests : IAsyncDisposable
         var ct = TestContext.Current.CancellationToken;
         await _store.InitializeAsync(ct);
 
-        // Lexically matchable, but never embedded at all -- the vector index has zero rows for
-        // it, so its cosine defaults to 0.0 and the absolute floor excludes it. This is the
-        // "nothing relevant exists" case design D6 requires to surface as healthy-empty, not a
-        // degraded/error result.
-        await SeedDocumentAsync("doc-no-embedding", "Grafana dashboard provisioning convention",
+        // Lexically matchable AND embedded (case 2, not a coverage gap), but pointing the exact
+        // opposite direction of the query vector -- cosine 0.0, well below the floor. Since the
+        // gap-repair fix only bypasses the floor for a genuine coverage gap, this candidate is
+        // still excluded, so this remains the "nothing relevant exists" case design D6 requires
+        // to surface as healthy-empty, not a degraded/error result.
+        await SeedDocumentAsync("doc-embedded-below-floor", "Grafana dashboard provisioning convention",
             "Grafana dashboard provisioning convention details for the ops team.", ct);
+        await _store.UpsertEmbeddingAsync(
+            "doc-embedded-below-floor", MemoryEmbedOnWriteCoordinator.DocumentItemKind, ModelId, "hash-zero-survivors", OrthogonalVector, ct);
 
         var coordinator = BuildHybridCoordinator(TimeProvider.System, NullLogger<SQLiteMemoryRecallCoordinator>.Instance);
 

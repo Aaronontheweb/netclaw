@@ -41,12 +41,14 @@ namespace Netclaw.Actors.Tests.Sessions;
 /// pre-Slice-4 lexical-only coordinator (no embedder/vector-index holders) EXCEPT P09, which
 /// wires <see cref="ScriptedEmbedder"/> + a real <see cref="MemoryVectorIndex"/> loaded from the
 /// store's <c>memory_embeddings</c> table (only M16 is embedded — see <see cref="SeedCorpusAsync"/>).
-/// This is deliberate, not incidental: <see cref="SQLiteMemoryRecallCoordinator.ScoreHybrid"/>
-/// applies its absolute cosine floor to EVERY candidate once a query vector exists, including
-/// lexical-only ones (a missing embedding defaults to cosine 0.0, which is always below the
-/// floor) — so wiring the embedder across the whole table would silently zero out every
-/// lexical-only scenario (P01–P08, P10, P15) instead of proving the paraphrase-gap fix. See the
-/// zero-injection facts below for a direct demonstration of that behavior.
+/// This is deliberate, not incidental: <see cref="SQLiteMemoryRecallCoordinator.ScoreHybrid"/>'s
+/// absolute cosine floor only ever gates a candidate the index actually holds a vector for — an
+/// unembedded candidate (a coverage gap) bypasses the floor and competes on fused/lexical score
+/// alone (gap-repair fix; see the class's own summary and design.md D6) — so wiring the embedder
+/// across the whole table would change every lexical-only scenario's ranking geometry (coverage
+/// gaps no longer defaulting to a rejected cosine of 0.0, but to an admitted one) instead of
+/// isolating the paraphrase-gap fix P09 exists to prove. See the zero-injection facts below for a
+/// direct demonstration of the coverage-gap-bypasses-the-floor behavior.
 /// </para>
 /// </summary>
 public sealed class MemoryRecallScenarioTests : IAsyncLifetime
@@ -319,15 +321,16 @@ public sealed class MemoryRecallScenarioTests : IAsyncLifetime
         Assert.True(precisionAt3 >= PrecisionAt3Floor, $"precision@3 {precisionAt3:F3} fell below floor {PrecisionAt3Floor:F3}\n{report}");
     }
 
-    // ── Zero-injection cases under a healthy embedder (memory-core-redesign Slice 4, task 4.7) ──
+    // ── Zero-injection / coverage-gap cases under a healthy embedder (memory-core-redesign
+    //    Slice 4, task 4.7; gap-repair fix) ──
     //
     // The Scenarios() theory's zero-expected rows (P11/P12/P14/P16/P19-21) all run the
-    // lexical-only coordinator. These two facts instead prove the zero-injection contract holds
-    // once a query vector exists: a candidate whose cosine falls below the floor (or has no
-    // embedding at all) never gets injected, and — this is the important, non-obvious part per
-    // this class's summary — that holds EVEN WHEN the candidate is the strongest possible
-    // lexical match, because SQLiteMemoryRecallCoordinator's absolute floor gates every
-    // candidate once hybrid mode is active, not just vector-sourced ones.
+    // lexical-only coordinator. These facts instead exercise the hybrid path directly: the first
+    // proves the zero-injection contract holds once a query vector exists and truly nothing
+    // qualifies (no lexical candidates, no vector matches). The second proves the gap-repair fix
+    // — a candidate with NO embedding row at all is a coverage gap, not a floor violation, so it
+    // is recalled on its lexical/fused score exactly as it would be pre-Slice-4, even though a
+    // healthy query vector exists this turn.
 
     [Fact]
     public async Task ZeroInjection_novel_query_with_no_qualifying_candidate_is_empty_and_not_degraded()
@@ -347,15 +350,17 @@ public sealed class MemoryRecallScenarioTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task ZeroInjection_strong_lexical_match_without_an_embedding_is_excluded_when_the_embedder_is_healthy()
+    public async Task CoverageGap_strong_lexical_match_without_an_embedding_is_recalled_when_the_embedder_is_healthy()
     {
         var ct = TestContext.Current.CancellationToken;
 
         // Reuses P01's exact query text: under the lexical-only coordinator (see the P01 row
         // above) this clears the composite floor comfortably and recalls M07. M07 has no
-        // embedding row, so under a healthy embedder its cosine defaults to 0.0 -- below the
-        // 0.68 floor regardless of how strong the lexical match is. NonMatchingQueryVector also
-        // keeps M16 (the corpus's only embedded doc) below the floor, so nothing at all survives.
+        // embedding row at all under HybridModelId -- a coverage gap, not a candidate the index
+        // scored and rejected -- so the gap-repair fix bypasses the absolute floor for it
+        // entirely and it competes on fused score alone. NonMatchingQueryVector keeps M16 (the
+        // corpus's only embedded doc under this model) below the floor throughout, so M07's
+        // recall here is attributable ONLY to the coverage-gap bypass, not to any cosine signal.
         var coordinator = BuildHybridCoordinator(NonMatchingQueryVector);
 
         var result = await coordinator.RecallAsync(new AutomaticRecallRequest(
@@ -366,7 +371,8 @@ public sealed class MemoryRecallScenarioTests : IAsyncLifetime
             Audience: TrustAudience.Public), ct);
 
         Assert.False(result.Degraded);
-        Assert.Empty(result.Items);
+        Assert.Contains(result.Items, i => i.Id.Value == "M07");
+        Assert.DoesNotContain(result.Items, i => i.Id.Value == "M16");
     }
 
     // ── Policy parity under a healthy embedder (memory-core-redesign Slice 4, task 4.8) ────
