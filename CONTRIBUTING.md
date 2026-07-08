@@ -190,7 +190,7 @@ prerelease — or the workflow's version gate fails the release.
 
 1. Bump `<VersionPrefix>` in `Directory.Build.props` (e.g. `0.22.1` → `0.22.2`); leave
    `<VersionSuffix>` empty.
-2. Add a release-notes section to `RELEASE_NOTES.md` (`#### X.Y.Z YYYY-MM-DD ####`).
+2. Add a release-notes section to `RELEASE_NOTES.md` (`## X.Y.Z (YYYY-MM-DD)`).
 3. Commit, then tag and push the bare version:
    ```bash
    git tag 0.22.2 && git push origin 0.22.2
