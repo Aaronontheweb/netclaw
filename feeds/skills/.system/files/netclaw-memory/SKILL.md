@@ -3,7 +3,7 @@ name: netclaw-memory
 description: "REQUIRED when the user asks what you remember, recall, or know from past conversations, previous sessions, cross-session memory, memory classes, or memory types. Also before using memory tools: find_memories, get_memories, store_memory, update_memory."
 metadata:
   author: netclaw
-  version: "1.9.1"
+  version: "1.10.0"
 ---
 
 # Netclaw Memory
@@ -33,8 +33,11 @@ Both gates must pass for memory to function.
 - Recall is **selective by design**: candidates must clear a relevance floor
   and a per-turn character budget, so **many turns inject nothing at all**.
   An absent `[memory-recall]` block means nothing relevant cleared the bar —
-  it is not a malfunction. Use `find_memories` when you believe relevant
-  memories exist that automatic recall did not surface.
+  this is the normal, healthy outcome for most turns, not a malfunction and
+  not evidence that memory is broken. Never tell the user "my memory isn't
+  working" just because a turn had no `[memory-recall]` block. Use
+  `find_memories` when you believe relevant memories exist that automatic
+  recall did not surface.
 - Recall is **policy-aware**: `audience` and `boundary` still govern what
   can be surfaced for the current turn.
 - Recall resolves once at turn start and the same bundle is reused during
@@ -55,6 +58,42 @@ Both gates must pass for memory to function.
 - Memory IDs shown by automatic recall, `find_memories`, and `get_memories`
   (e.g. `doc-…` / `rec-…`) are stable, opaque handles. Copy them **verbatim**
   into `get_memories` or `update_memory` — do not rewrite or reformat them.
+
+### Hybrid Recall (semantic + lexical)
+
+When `Memory.Embeddings.Enabled` is `true`, automatic recall is **hybrid**:
+candidates come from the union of full-text search (FTS5) and vector
+nearest-neighbor search, then a single fused ranking decides what (if
+anything) gets injected. When embeddings are disabled, recall is
+lexical-only — same candidate pool, no vector term or cosine floor.
+
+- **Fusion**: each candidate's score is `VectorWeight × cosine similarity +
+  LexicalWeight × squashed lexical score`, class-prior adjusted, then
+  **recency-decayed** (a half-life multiplier that favors fresher memories
+  among otherwise similar candidates but never zeroes out an old one on age
+  alone).
+- **Absolute floor**: independent of the fused score, any candidate whose raw
+  cosine similarity falls below `MinCosineSimilarity` is dropped before
+  ranking. If nothing clears the floor, nothing is injected — this is a
+  correct, healthy outcome, not degraded recall. See the zero-injection note
+  above: don't editorialize about memory being broken when this happens.
+- **Defaults** (`Memory.Recall` in `netclaw.json`): `VectorWeight` 0.7,
+  `LexicalWeight` 0.3, `MinCosineSimilarity` 0.68 (calibrated against a
+  real-traffic gold set, not a placeholder), `RecencyHalfLifeDays` 30.
+- **Degradation is explicit and logged, not silent**: a turn whose
+  query-embedding step misses its latency sub-budget (or has no embedder
+  available) falls back to lexical-only scoring for that turn and logs
+  `memory_recall_vector_degraded`. A candidate with no embedding row for the
+  current model degrades to lexical-only scoring for that candidate alone
+  (rather than being excluded) and logs `memory_recall_coverage_gap`. Both
+  are self-healing, not persistent failures — see Diagnostics below.
+- **Backfilling an existing corpus**: enabling `Memory.Embeddings.Enabled`
+  on a deployment that already has memories does not retroactively embed
+  them. Until they're embedded, recall for those documents degrades to
+  lexical scoring and `memory_recall_coverage_gap` keeps firing. Operators
+  should run `netclaw memory backfill-embeddings` right after turning
+  embeddings on so the gap closes immediately instead of waiting for
+  embed-on-write to catch up opportunistically.
 
 ## When to Use Explicit Tools
 
