@@ -368,7 +368,66 @@ selectivity without one of these signals firing.
    re-run the shoot-out's threshold-sweep protocol against a different
    relevance model or a different corpus, so re-calibration is a documented
    procedure rather than tribal knowledge trapped in a local research
-   directory.
+   directory. See "Calibration Verification Procedure" below.
+
+## Calibration Verification Procedure
+
+S*=0.02 is calibrated specifically against `ms-marco-minilm-l-6-v2`'s score
+distribution (D3, D6) — it is not a universal constant. This section
+documents the re-run procedure so a future model swap or corpus-specific
+recalibration is a repeatable exercise, not tribal knowledge that only
+exists in the shoot-out's own history.
+
+**Where the harness lives**: the gate-shootout scripts (the 4-design
+comparison and the out-of-sample re-validation this design's scorecard
+reports) and the floor-calibration/quantization-eval harness this change's
+threshold sweep reuses both live in the operator's local research directory,
+never in this repo:
+
+- `~/recall-research-local/2026-07/gate-shootout/` — the 4-design shoot-out
+  (distribution-shape, cross-encoder, learned feature gate, per-memory
+  offender priors) and the threshold-sweep driver used to pick S* for a
+  given model's score distribution.
+- `~/recall-research-local/2026-07/quant-eval/` — the quantization/floor
+  harness (`floor_calibration.py` and related tooling) this change's sweep
+  protocol follows the same shape as: sweep a threshold over a fixed
+  corpus/gold-set pair, score every candidate, report zero-injection
+  accuracy, recall retention, and F0.5 at each candidate threshold.
+
+**Inputs required to re-run a sweep**:
+
+- A corpus snapshot as a SQLite file (`VACUUM INTO` clone of
+  `memory_documents`, same shape the July audit and the shoot-out both used)
+  — this is what candidates are drawn from.
+- A judged gold-set JSONL (query, candidate doc ids, relevance labels) —
+  either an existing ratified set (`gold-prod-2026-07`, the 450-query
+  expansion) or a freshly judged set for a new corpus/domain. The judging
+  protocol (dual-pass judging, harsher-wins aggregation for ambiguous
+  candidates) is documented in the shoot-out's own history, not repeated here.
+- The candidate relevance model as an ONNX artifact (the currently shipped
+  `model_quantized.onnx`, or a different cross-encoder being evaluated as a
+  replacement) — whatever model the new threshold will be calibrated *for*,
+  since the threshold is meaningless detached from the model that produced
+  the scores.
+
+**Outputs**: a per-threshold table (zero-injection accuracy, recall
+retention, F0.5, mean injected count) — the same shape as the D2 scorecard
+above — from which an operating point is chosen the same way S*=0.02 was:
+prefer the highest zero-injection accuracy whose recall retention still
+clears the ≥90% constraint, and re-validate the chosen point out-of-sample
+(a disjoint gold-set expansion) before treating it as calibrated, not just
+in-sample-optimal. The resulting `(ModelId, CalibratedThreshold)` pair is
+what gets hand-carried into a new `RelevanceModelManifestEntry` in
+`EmbeddingModelProvisioner`'s allowlist (D3) — recalibration never edits a
+bare config default disconnected from which model produced it.
+
+**Why this stays repo-external**: both harness directories operate on real,
+PII-bearing production traffic (query text, memory content) — the same
+constraint documented in `docs/research/memory-audit-2026-07.md` for every
+other research artifact referenced by this change and by
+memory-core-redesign. The scripts and their outputs are operator-local by
+design, never committed; only the *ratified, redacted results* (this
+scorecard, the frozen threshold, the pinned model SHA-256) enter the repo.
 
 ## Open Questions
 

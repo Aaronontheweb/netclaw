@@ -3,7 +3,7 @@ name: netclaw-memory
 description: "REQUIRED when the user asks what you remember, recall, or know from past conversations, previous sessions, cross-session memory, memory classes, or memory types. Also before using memory tools: find_memories, get_memories, store_memory, update_memory."
 metadata:
   author: netclaw
-  version: "1.10.0"
+  version: "1.11.0"
 ---
 
 # Netclaw Memory
@@ -94,6 +94,39 @@ lexical-only — same candidate pool, no vector term or cosine floor.
   should run `netclaw memory backfill-embeddings` right after turning
   embeddings on so the gap closes immediately instead of waiting for
   embed-on-write to catch up opportunistically.
+
+### Relevance Gate (cross-encoder)
+
+The cosine floor above answers "is this candidate on-topic?" — it does not
+answer "does this candidate actually help answer the question?" A second
+stage, the **relevance gate**, runs after the floor for exactly this reason:
+a tiny cross-encoder (`ms-marco-minilm-l-6-v2`) jointly scores `(query,
+candidate)` for each of the (≤3) floor survivors and drops anything below
+its calibrated threshold.
+
+- **Activation follows `Memory.Embeddings.Enabled`** — one mental switch, no
+  second thing to discover. `Memory.Recall.RelevanceGate.Enabled` (nullable)
+  is an explicit override for an operator who wants embeddings for
+  dedup/hybrid-recall but not the extra per-turn cross-encoder latency;
+  `Memory.Recall.RelevanceGate.Threshold` (nullable) is an explicit override
+  of the manifest's calibrated operating point. Leave both `null` unless you
+  have a specific reason to diverge — the manifest-carried default is what
+  was validated out-of-sample.
+- **Only ever runs in hybrid mode**, on the floor's own survivors — it never
+  sees a wider candidate pool and never runs when recall has already
+  degraded to lexical-only.
+- **Zero survivors after the gate is a healthy outcome**, identical in kind
+  to zero survivors at the floor: the `[memory-recall]` block is omitted
+  entirely, not emitted empty. Do not treat an absent recall block as
+  evidence the gate (or memory generally) is broken — see the zero-injection
+  note above.
+- **Degradation is explicit and logged, not silent**: when the relevance
+  model is unavailable, its sub-budget is exceeded, or recall is running in
+  lexical mode, the gate step is skipped and the floor's own result is
+  injected unfiltered — the exact pre-gate behavior. This fires
+  `memory_recall_gate_degraded` (rate-limited, same cooldown pattern as
+  `memory_recall_vector_degraded`). A degraded gate never silently changes
+  what gets injected without this marker.
 
 ## When to Use Explicit Tools
 
@@ -192,13 +225,18 @@ Useful log events:
 **Recall pipeline** (grep for `memory_retrieval` / `memory_recall`):
 - `memory_retrieval_request_plan` — query tokenization, facets, soft scopes, anchor hints
 - `memory_retrieval_candidate_selection` — all candidates with selector scores
-- `memory_retrieval_final` — floor filtering results, final injected items
+- `memory_retrieval_final` — floor filtering results, final injected items; also carries
+  `gateScores` (the cross-encoder score for every candidate the relevance gate scored) and
+  `droppedByGate` (count the gate dropped) when the gate ran
 - `turn_memory_recall` — summary event with item count and duration
 - `memory_recall_vector_degraded` — turn fell back to lexical-only recall (embedder
   unavailable, no vector index, or the query-embedding sub-budget was exceeded)
 - `memory_recall_coverage_gap` — one or more candidates had no embedding row for the
   current model; they degrade to lexical scoring rather than being excluded, and the
   gap self-heals via embed-on-write plus `netclaw memory backfill-embeddings`
+- `memory_recall_gate_degraded` — the relevance gate was skipped for this turn (model
+  unavailable, sub-budget exceeded, or recall in lexical mode); the floor's own result was
+  injected unfiltered
 
 **Formation pipeline** (grep for `memory_observation`):
 - `memory_observation_sidecar_completed`

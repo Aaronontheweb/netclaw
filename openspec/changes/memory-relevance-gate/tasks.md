@@ -63,13 +63,13 @@ independently shippable in order.
 
 ## 3. Docs, skill sync, scorecard, calibration note
 
-- [ ] 3.1 Update `netclaw-memory` skill: relevance gate exists, follows
+- [x] 3.1 Update `netclaw-memory` skill: relevance gate exists, follows
       `Memory.Embeddings.Enabled`, explicit override knobs, degraded-mode
       behavior (floor-only fallback)
-- [ ] 3.2 Runbook (`docs/runbooks/memory-health-and-evals.md`): relevance
+- [x] 3.2 Runbook (`docs/runbooks/memory-health-and-evals.md`): relevance
       gate section — doctor check, degradation log line, how to read
       `gateScores`/`droppedByGate` in `memory_retrieval_final`
-- [ ] 3.3 Record a scorecard in `design.md` (already drafted from the
+- [x] 3.3 Record a scorecard in `design.md` (already drafted from the
       shoot-out; keep in sync if any number changes before merge) and add a
       short calibration-verification harness note (how to re-run the
       threshold sweep against a different relevance model or corpus, so
