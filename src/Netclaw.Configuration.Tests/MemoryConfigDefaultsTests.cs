@@ -73,4 +73,34 @@ public sealed class MemoryConfigDefaultsTests
         var config = new MemoryConfig();
         Assert.Equal(10, config.Curation.LlmTimeoutSeconds);
     }
+
+    // ── MemoryRecallConfig (memory-core-redesign Slice 4, task 4.5) ──
+
+    [Fact]
+    public void Recall_vector_weight_defaults_to_0_7()
+    {
+        var config = new MemoryConfig();
+        Assert.Equal(0.7, config.Recall.VectorWeight);
+    }
+
+    [Fact]
+    public void Recall_lexical_weight_defaults_to_0_3()
+    {
+        var config = new MemoryConfig();
+        Assert.Equal(0.3, config.Recall.LexicalWeight);
+    }
+
+    [Fact]
+    public void Recall_min_cosine_similarity_defaults_to_0_55()
+    {
+        var config = new MemoryConfig();
+        Assert.Equal(0.55, config.Recall.MinCosineSimilarity);
+    }
+
+    [Fact]
+    public void Recall_recency_half_life_days_defaults_to_30()
+    {
+        var config = new MemoryConfig();
+        Assert.Equal(30, config.Recall.RecencyHalfLifeDays);
+    }
 }

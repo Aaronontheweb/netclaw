@@ -53,6 +53,17 @@ public sealed class OnnxMemoryEmbedder : IMemoryEmbedder, IDisposable
     // Both allowlisted models cap at 512 (their tokenizer_config.json model_max_length).
     private const int MaxTokens = 512;
 
+    // Dynamic-length padding (memory-core-redesign Slice 4, design D6 mitigation): the ONNX
+    // graph's sequence axis is symbolic (input_ids/attention_mask/token_type_ids all declare
+    // [batch_size, sequence_length], no fixed shape), so padding to the actual tokenized length
+    // -- rounded up to a multiple of this bucket -- instead of always MaxTokens is a drop-in
+    // performance change with no retrieval-quality risk (measured cosine parity vs fixed-512:
+    // 1.000000 on every sentence in the Slice 2/4 correctness set,
+    // tools/embed-latency-bench). Reference-box short-query latency: p50 19.0ms / p95 20.9ms,
+    // vs p50 281.9ms / p95 310.5ms fixed-512 -- ~15x faster, leaving large headroom under the
+    // 150ms recall sub-budget (SQLiteMemoryRecallCoordinator.VectorEmbedSubBudgetMs).
+    private const int DynamicLengthBucket = 8;
+
     private readonly InferenceSession _session;
     private readonly BertTokenizer _tokenizer;
     private readonly BoundedConcurrencyGate _gate;
@@ -147,18 +158,28 @@ public sealed class OnnxMemoryEmbedder : IMemoryEmbedder, IDisposable
 
     private ReadOnlyMemory<float> EmbedOne(string text)
     {
-        var inputIds = new long[MaxTokens];
-        var attentionMask = new long[MaxTokens];
-        var tokenTypeIds = new long[MaxTokens];
+        var scratchIds = new long[MaxTokens];
+        var scratchMask = new long[MaxTokens];
+        var scratchTypes = new long[MaxTokens];
 
         // This overload writes into the caller-supplied spans instead of BertTokenizer's
         // internal reused buffers, so calling it from multiple gate-scheduled tasks
         // concurrently against the one shared _tokenizer instance is safe.
-        _tokenizer.Encode(text, inputIds, attentionMask, tokenTypeIds, MaxTokens);
+        _tokenizer.Encode(text, scratchIds, scratchMask, scratchTypes, MaxTokens);
 
-        var inputIdsTensor = new DenseTensor<long>(inputIds, [1, MaxTokens]);
-        var attentionMaskTensor = new DenseTensor<long>(attentionMask, [1, MaxTokens]);
-        var tokenTypeIdsTensor = new DenseTensor<long>(tokenTypeIds, [1, MaxTokens]);
+        // Dynamic-length padding: only feed the ONNX graph the actual tokenized length
+        // (rounded up to DynamicLengthBucket), not the full fixed-512 scratch buffers -- see
+        // DynamicLengthBucket's remarks.
+        var actualLen = (int)scratchMask.Sum();
+        var bucketLen = ComputeBucketedLength(actualLen);
+
+        var inputIds = scratchIds[..bucketLen];
+        var attentionMask = scratchMask[..bucketLen];
+        var tokenTypeIds = scratchTypes[..bucketLen];
+
+        var inputIdsTensor = new DenseTensor<long>(inputIds, [1, bucketLen]);
+        var attentionMaskTensor = new DenseTensor<long>(attentionMask, [1, bucketLen]);
+        var tokenTypeIdsTensor = new DenseTensor<long>(tokenTypeIds, [1, bucketLen]);
 
         var available = new Dictionary<string, NamedOnnxValue>(StringComparer.Ordinal)
         {
@@ -190,6 +211,25 @@ public sealed class OnnxMemoryEmbedder : IMemoryEmbedder, IDisposable
 
         NormalizeL2(vector);
         return vector;
+    }
+
+    /// <summary>
+    /// Rounds <paramref name="actualTokenCount"/> up to the nearest multiple of
+    /// <see cref="DynamicLengthBucket"/> (minimum one bucket). A pure, directly-unit-tested
+    /// helper so the rounding rule itself has coverage independent of a live ONNX session.
+    /// Never exceeds <see cref="MaxTokens"/> in practice: <paramref name="actualTokenCount"/>
+    /// comes from <see cref="FastBertTokenizer.BertTokenizer.Encode"/>'s attention-mask sum,
+    /// which <see cref="EmbedOne"/> already truncates to <see cref="MaxTokens"/>, and
+    /// <see cref="MaxTokens"/> (512) is itself a multiple of <see cref="DynamicLengthBucket"/>.
+    /// </summary>
+    internal static int ComputeBucketedLength(int actualTokenCount)
+    {
+        if (actualTokenCount <= 0)
+            return DynamicLengthBucket;
+
+        return Math.Max(
+            DynamicLengthBucket,
+            ((actualTokenCount + DynamicLengthBucket - 1) / DynamicLengthBucket) * DynamicLengthBucket);
     }
 
     private static void NormalizeL2(float[] vector)

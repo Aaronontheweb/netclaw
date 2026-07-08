@@ -845,6 +845,32 @@ public sealed class SQLiteMemoryStore
             : ResolvedMemoryHandle.Failed(rawId, parsed.Kind, $"Memory \"{rawId}\" was not found or is not accessible from this session.");
     }
 
+    /// <summary>
+    /// Shared read-side policy predicate for the <c>memory_documents</c> table (memory-core-
+    /// redesign Slice 4, design D6): recall-mode allowlist (auto/searchable), boundary COALESCE
+    /// match, audience allowed-set, sensitivity exclusion (never secret), memory-class allowlist,
+    /// and expiry. Both <see cref="SearchByPlanAsync"/>'s document branch and
+    /// <see cref="GetRecallCandidatesByIdsAsync"/> build their WHERE clause from this single
+    /// string so the two queries cannot drift apart — a vector-sourced recall candidate must
+    /// clear the EXACT gates a lexically-discovered one would, not an independently-maintained
+    /// copy of them (spec scenario "Vector-sourced candidates obey policy gates").
+    ///
+    /// <para>
+    /// The parameter names baked into the returned SQL ($boundary, $planLegacyBoundary,
+    /// $planFallbackAudience, $now, $allowExpiredEvidence) are part of this contract: every
+    /// caller MUST bind them under these exact names, in addition to whatever produced
+    /// <paramref name="classInClause"/> and <paramref name="audienceInClause"/>.
+    /// </para>
+    /// </summary>
+    private static string DocumentRecallPolicyPredicateSql(string tableAlias, string classInClause, string audienceInClause) => $"""
+        {tableAlias}.recall_mode IN ('{MemoryRecallMode.Auto.ToWireValue()}', '{MemoryRecallMode.Searchable.ToWireValue()}')
+                  AND COALESCE({tableAlias}.boundary, $planLegacyBoundary) = $boundary
+                  AND COALESCE({tableAlias}.audience, $planFallbackAudience) IN ({audienceInClause})
+                  AND {tableAlias}.sensitivity != '{MemorySensitivity.Secret.ToWireValue()}'
+                  AND {tableAlias}.memory_class IN ({classInClause})
+                  AND ({tableAlias}.expires_at IS NULL OR {tableAlias}.expires_at > $now OR $allowExpiredEvidence = 1)
+        """;
+
     public async Task<IReadOnlyList<SQLiteMemoryHydratedItem>> SearchByPlanAsync(
         IReadOnlyList<string> queryTerms,
         IReadOnlyList<string> memoryClasses,
@@ -917,12 +943,7 @@ public sealed class SQLiteMemoryStore
                     dh.fts_rank AS score
                 FROM doc_hits dh
                 JOIN memory_documents d ON d.document_id = dh.document_id
-                WHERE d.recall_mode IN ('{MemoryRecallMode.Auto.ToWireValue()}', '{MemoryRecallMode.Searchable.ToWireValue()}')
-                  AND COALESCE(d.boundary, $planLegacyBoundary) = $boundary
-                  AND COALESCE(d.audience, $planFallbackAudience) IN ({whereAudiences})
-                  AND d.sensitivity != '{MemorySensitivity.Secret.ToWireValue()}'
-                  AND d.memory_class IN ({whereClasses})
-                  AND (d.expires_at IS NULL OR d.expires_at > $now OR $allowExpiredEvidence = 1)
+                WHERE {DocumentRecallPolicyPredicateSql("d", whereClasses, whereAudiences)}
 
                 UNION ALL
 
@@ -987,6 +1008,101 @@ public sealed class SQLiteMemoryStore
         }
 
         return output;
+        }, ct);
+    }
+
+    /// <summary>
+    /// Hydrates documents by id through the IDENTICAL policy predicates
+    /// <see cref="SearchByPlanAsync"/> applies to its document branch —
+    /// <see cref="DocumentRecallPolicyPredicateSql"/> — so a vector-sourced recall candidate
+    /// (memory-core-redesign Slice 4, design D6) can never bypass a gate a lexically-discovered
+    /// one would have to clear. This is a SECURITY requirement, not a convenience method:
+    /// <see cref="MemoryVectorIndex.TopK"/> returns bare ids and cosine similarities with no
+    /// policy fields at all, so <see cref="Sessions.SQLiteMemoryRecallCoordinator"/> MUST
+    /// hydrate vector-only hits through this method — never through
+    /// <see cref="GetCandidatesByIdsAsync"/>, which applies no policy gates at all and exists
+    /// for the write-side curation nominator's already-trusted internal comparisons — before a
+    /// vector hit is allowed to reach recall scoring.
+    ///
+    /// <para>
+    /// Documents only: only <c>document</c> items are ever embedded
+    /// (<see cref="MemoryEmbedOnWriteCoordinator.DocumentItemKind"/> — immutable records bypass
+    /// curation and are never embedded), so every id passed in is expected to be a document id.
+    /// </para>
+    /// </summary>
+    public async Task<IReadOnlyList<SQLiteMemoryHydratedItem>> GetRecallCandidatesByIdsAsync(
+        IReadOnlyList<string> documentIds,
+        IReadOnlyList<string> memoryClasses,
+        string boundary,
+        TrustAudience audience,
+        bool allowExpiredEvidence,
+        CancellationToken ct = default)
+    {
+        if (documentIds.Count == 0 || memoryClasses.Count == 0)
+            return [];
+
+        return await WithConnectionAsync(async (conn, ct) =>
+        {
+        var now = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        await using var cmd = conn.CreateCommand();
+
+        var idClauses = new List<string>();
+        for (var i = 0; i < documentIds.Count; i++)
+        {
+            idClauses.Add($"$id{i}");
+            cmd.Parameters.AddWithValue($"$id{i}", documentIds[i]);
+        }
+
+        var classClauses = new List<string>();
+        for (var i = 0; i < memoryClasses.Count; i++)
+        {
+            classClauses.Add($"$c{i}");
+            cmd.Parameters.AddWithValue($"$c{i}", memoryClasses[i]);
+        }
+
+        var allowedAudiences = MemoryPolicyEvaluator.AllowedAudienceWireValues(audience);
+        var audienceClauses = new List<string>();
+        for (var i = 0; i < allowedAudiences.Count; i++)
+        {
+            audienceClauses.Add($"$a{i}");
+            cmd.Parameters.AddWithValue($"$a{i}", allowedAudiences[i]);
+        }
+
+        cmd.CommandText = $"""
+            SELECT d.document_id, d.memory_class, d.title, d.markdown_body, d.aliases_json, d.facets_json, d.slots_json, d.boundary, d.audience, d.sensitivity, d.recall_mode, d.update_semantics, d.expires_at, d.updated_at
+            FROM memory_documents d
+            WHERE d.document_id IN ({string.Join(",", idClauses)})
+              AND {DocumentRecallPolicyPredicateSql("d", string.Join(",", classClauses), string.Join(",", audienceClauses))}
+            """;
+        cmd.Parameters.AddWithValue("$boundary", boundary);
+        cmd.Parameters.AddWithValue("$planLegacyBoundary", TrustBoundary.LegacyRestrictedValue);
+        cmd.Parameters.AddWithValue("$planFallbackAudience", TrustAudience.Personal.ToWireValue());
+        cmd.Parameters.AddWithValue("$now", now);
+        cmd.Parameters.AddWithValue("$allowExpiredEvidence", allowExpiredEvidence ? 1 : 0);
+
+        var output = new List<SQLiteMemoryHydratedItem>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            output.Add(new SQLiteMemoryHydratedItem(
+                Id: reader.GetString(0),
+                Kind: "document",
+                MemoryClass: reader.GetString(1),
+                Title: reader.GetString(2),
+                Content: reader.GetString(3),
+                AliasesJson: reader.IsDBNull(4) ? null : reader.GetString(4),
+                FacetsJson: reader.IsDBNull(5) ? null : reader.GetString(5),
+                SlotsJson: reader.IsDBNull(6) ? null : reader.GetString(6),
+                Boundary: reader.IsDBNull(7) ? TrustBoundary.LegacyRestrictedValue : reader.GetString(7),
+                Audience: reader.IsDBNull(8) ? TrustAudience.Personal.ToWireValue() : reader.GetString(8),
+                Sensitivity: reader.GetString(9),
+                RecallMode: reader.GetString(10),
+                UpdateSemantics: reader.GetString(11),
+                ExpiresAtMs: reader.IsDBNull(12) ? null : reader.GetInt64(12),
+                UpdatedAtMs: reader.GetInt64(13)));
+        }
+
+        return (IReadOnlyList<SQLiteMemoryHydratedItem>)output;
         }, ct);
     }
 

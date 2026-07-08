@@ -40,11 +40,11 @@ constitution gates (tests, evals where mapped, schema/skill sync, slopwatch).
 
 ## 4. Read-side hybrid recall + absolute floor
 
-- [ ] 4.1 Query embedding per turn with a vector sub-budget inside `RecallTimeoutMs`; lexical-only fallback + `memory_recall_vector_degraded` log on miss
-- [ ] 4.2 Candidate union (FTS5 ∪ vector top-k) with policy-gate parity for vector-sourced hits
-- [ ] 4.3 Weighted fusion scoring + `MinCosineSimilarity` absolute floor; omit the `[memory-recall]` block entirely on zero injections
-- [ ] 4.4 Recency half-life decay (floor-bounded multiplier) on composite scores
-- [ ] 4.5 Config: `Memory.Recall { VectorWeight, LexicalWeight, MinCosineSimilarity, RecencyHalfLifeDays }` + schema sync
+- [x] 4.1 Query embedding per turn with a vector sub-budget inside `RecallTimeoutMs`; lexical-only fallback + `memory_recall_vector_degraded` log on miss
+- [x] 4.2 Candidate union (FTS5 ∪ vector top-k) with policy-gate parity for vector-sourced hits
+- [x] 4.3 Weighted fusion scoring + `MinCosineSimilarity` absolute floor; omit the `[memory-recall]` block entirely on zero injections
+- [x] 4.4 Recency half-life decay (floor-bounded multiplier) on composite scores
+- [x] 4.5 Config: `Memory.Recall { VectorWeight, LexicalWeight, MinCosineSimilarity, RecencyHalfLifeDays }` + schema sync
 - [ ] 4.6 Calibrate the floor against `gold-prod-2026-07` (local gold set); record calibration numbers in design.md
 - [ ] 4.7 Gold-set recall regression suite (fixture corpus + labeled queries asserting injected/withheld ids, MRR/precision floors, zero-injection cases)
 - [ ] 4.8 Flip scenario P09 (paraphrase-gap) back to expected-recall; policy-parity scenario test; latency budget test with warm embedder

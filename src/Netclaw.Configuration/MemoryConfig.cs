@@ -38,6 +38,12 @@ public sealed class MemoryConfig
     /// lossless merge). See <see cref="MemoryCurationConfig"/>.
     /// </summary>
     public MemoryCurationConfig Curation { get; set; } = new();
+
+    /// <summary>
+    /// Read-side hybrid recall settings (memory-core-redesign Slice 4: weighted lexical/vector
+    /// fusion + absolute cosine floor). See <see cref="MemoryRecallConfig"/>.
+    /// </summary>
+    public MemoryRecallConfig Recall { get; set; } = new();
 }
 
 /// <summary>
@@ -116,4 +122,50 @@ public sealed class MemoryCurationConfig
     /// ignores reasoning suppression and thinks at length regardless of the token cap above.
     /// </summary>
     public int LlmTimeoutSeconds { get; set; } = 10;
+}
+
+/// <summary>
+/// Configuration for read-side hybrid recall: weighted lexical/vector fusion and the absolute
+/// cosine floor (memory-core-redesign Slice 4, design D6). Consumed by
+/// <see cref="Netclaw.Actors.Sessions.SQLiteMemoryRecallCoordinator"/>. Every property is
+/// defaulted, so no operator configuration is required once
+/// <see cref="MemoryEmbeddingsConfig.Enabled"/> is also on — a turn with no query vector
+/// available (embedder unavailable, over its sub-budget, or embeddings disabled) degrades to
+/// the pre-Slice-4 lexical-only composite floor unchanged, regardless of these values.
+/// </summary>
+public sealed class MemoryRecallConfig
+{
+    /// <summary>
+    /// Weight applied to a candidate's cosine similarity in the hybrid fusion score
+    /// (<c>fused = VectorWeight*cosine + LexicalWeight*squash(selectorScore) + classPrior</c>,
+    /// then recency-decayed). Only used in hybrid mode (a query vector was produced); ignored by
+    /// the lexical-only degraded path.
+    /// </summary>
+    public double VectorWeight { get; set; } = 0.7;
+
+    /// <summary>
+    /// Weight applied to a candidate's squashed lexical selector score in the hybrid fusion
+    /// score. See <see cref="VectorWeight"/> for the full formula.
+    /// </summary>
+    public double LexicalWeight { get; set; } = 0.3;
+
+    /// <summary>
+    /// Absolute relevance floor (design D6): when a query vector is available, any candidate —
+    /// vector- or lexical-sourced — whose cosine similarity to the query falls below this value
+    /// is dropped before ranking, regardless of fused score. Nothing surviving means nothing is
+    /// injected and the <c>[memory-recall]</c> block is omitted entirely — a healthy empty
+    /// result, not a degraded one. Calibrated against the real-traffic gold set
+    /// (<c>gold-prod-2026-07</c>); see design D6.
+    /// </summary>
+    public double MinCosineSimilarity { get; set; } = 0.55;
+
+    /// <summary>
+    /// Half-life, in days, for the recency-decay multiplier applied to a candidate's fused score
+    /// in hybrid mode (<c>0.85 + 0.15 * 2^(-ageDays/RecencyHalfLifeDays)</c>). Floor-bounded at
+    /// 0.85 by construction (the decay term is always in (0, 1] for non-negative age), so an
+    /// old-but-otherwise-strong match is downweighted only enough to break ties toward fresher
+    /// knowledge, never zeroed by age alone. Age is measured from the item's
+    /// <c>updated_at</c> timestamp against <see cref="TimeProvider.GetUtcNow"/>.
+    /// </summary>
+    public double RecencyHalfLifeDays { get; set; } = 30;
 }

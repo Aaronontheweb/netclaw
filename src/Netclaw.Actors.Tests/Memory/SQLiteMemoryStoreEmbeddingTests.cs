@@ -381,6 +381,140 @@ public sealed class SQLiteMemoryStoreEmbeddingTests : IAsyncLifetime
         Assert.Equal("worker body", doc.Body);
     }
 
+    // ── GetRecallCandidatesByIdsAsync gated hydration (memory-core-redesign Slice 4, task 4.2) ──
+    //
+    // These prove SQLiteMemoryRecallCoordinator's hybrid path cannot use a vector-sourced hit to
+    // bypass a policy gate a lexically-discovered hit (SearchByPlanAsync) would have to clear:
+    // every scenario here mirrors one of SearchByPlanAsync's document-branch predicates
+    // (recall_mode allowlist, boundary match, audience membership, sensitivity exclusion,
+    // memory-class allowlist) via the shared DocumentRecallPolicyPredicateSql helper.
+
+    [Fact]
+    public async Task GetRecallCandidatesByIdsAsync_returns_a_document_that_clears_every_gate()
+    {
+        await SeedGatedDocumentAsync("doc-gated-ok");
+
+        var result = await _store.GetRecallCandidatesByIdsAsync(
+            ["doc-gated-ok"],
+            [MemoryClass.DurableFact.ToWireValue()],
+            TrustBoundary.TrustedInstanceValue,
+            TrustAudience.Public,
+            allowExpiredEvidence: false,
+            TestContext.Current.CancellationToken);
+
+        Assert.Single(result, x => x.Id == "doc-gated-ok");
+    }
+
+    [Fact]
+    public async Task GetRecallCandidatesByIdsAsync_excludes_a_manual_recall_mode_document()
+    {
+        await SeedGatedDocumentAsync("doc-gated-manual", recallMode: "manual");
+
+        var result = await _store.GetRecallCandidatesByIdsAsync(
+            ["doc-gated-manual"],
+            [MemoryClass.DurableFact.ToWireValue()],
+            TrustBoundary.TrustedInstanceValue,
+            TrustAudience.Public,
+            allowExpiredEvidence: false,
+            TestContext.Current.CancellationToken);
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task GetRecallCandidatesByIdsAsync_excludes_a_secret_sensitivity_document()
+    {
+        await SeedGatedDocumentAsync("doc-gated-secret", sensitivity: "secret");
+
+        var result = await _store.GetRecallCandidatesByIdsAsync(
+            ["doc-gated-secret"],
+            [MemoryClass.DurableFact.ToWireValue()],
+            TrustBoundary.TrustedInstanceValue,
+            TrustAudience.Public,
+            allowExpiredEvidence: false,
+            TestContext.Current.CancellationToken);
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task GetRecallCandidatesByIdsAsync_excludes_a_document_outside_the_requested_boundary()
+    {
+        await SeedGatedDocumentAsync("doc-gated-boundary");
+
+        var result = await _store.GetRecallCandidatesByIdsAsync(
+            ["doc-gated-boundary"],
+            [MemoryClass.DurableFact.ToWireValue()],
+            "some-other-boundary",
+            TrustAudience.Public,
+            allowExpiredEvidence: false,
+            TestContext.Current.CancellationToken);
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task GetRecallCandidatesByIdsAsync_excludes_a_document_outside_the_requested_audience()
+    {
+        await SeedGatedDocumentAsync("doc-gated-audience", audience: TrustAudience.Team.ToWireValue());
+
+        // Public's allowed-audience set (MemoryPolicyEvaluator.AllowedAudienceWireValues) is
+        // [Public] only -- Team is not visible to a Public-scoped request.
+        var result = await _store.GetRecallCandidatesByIdsAsync(
+            ["doc-gated-audience"],
+            [MemoryClass.DurableFact.ToWireValue()],
+            TrustBoundary.TrustedInstanceValue,
+            TrustAudience.Public,
+            allowExpiredEvidence: false,
+            TestContext.Current.CancellationToken);
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public async Task GetRecallCandidatesByIdsAsync_excludes_a_document_outside_the_requested_memory_class()
+    {
+        await SeedGatedDocumentAsync("doc-gated-class");
+
+        var result = await _store.GetRecallCandidatesByIdsAsync(
+            ["doc-gated-class"],
+            [MemoryClass.Evidence.ToWireValue()],
+            TrustBoundary.TrustedInstanceValue,
+            TrustAudience.Public,
+            allowExpiredEvidence: false,
+            TestContext.Current.CancellationToken);
+
+        Assert.Empty(result);
+    }
+
+    private async Task SeedGatedDocumentAsync(
+        string documentId,
+        string recallMode = "auto",
+        string sensitivity = "normal",
+        string audience = "public")
+    {
+        var anchor = _store.CreateDefaultAnchor(documentId);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        await _store.UpsertDocumentAsync(new SQLiteMemoryDocument(
+            DocumentId: documentId,
+            Anchor: anchor,
+            MemoryClass: "durable_fact",
+            Title: "Gated hydration fixture",
+            MarkdownBody: "Gated hydration fixture body.",
+            AliasesJson: null,
+            FacetsJson: null,
+            SlotsJson: null,
+            UpdateSemantics: "merge-document",
+            Sensitivity: sensitivity,
+            RecallMode: recallMode,
+            Confidence: 0.9,
+            FreshnessAtMs: now,
+            ExpiresAtMs: null,
+            CreatedAtMs: now,
+            UpdatedAtMs: now,
+            Audience: audience), TestContext.Current.CancellationToken);
+    }
+
     private static SQLiteMemoryCurationOperation DocumentOperation(string? memoryId, string title, string content)
         => new(
             Kind: "document",

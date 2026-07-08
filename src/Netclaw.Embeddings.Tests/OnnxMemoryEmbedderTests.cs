@@ -99,4 +99,47 @@ public sealed class OnnxMemoryEmbedderTests : IAsyncLifetime
         var batch = await _embedder.EmbedBatchAsync([], TestContext.Current.CancellationToken);
         Assert.Empty(batch);
     }
+
+    // ── Dynamic-length padding (memory-core-redesign Slice 4, design D6 mitigation) ──
+    //
+    // OnnxMemoryEmbedder.EmbedOne now pads each input to bucket-of-8(actual token count)
+    // instead of always the fixed 512-token scratch buffers (tools/embed-latency-bench measured
+    // 1.000000 cosine parity vs fixed-512 across 10 fixed sentences on the real allowlisted
+    // model). There is no production hook to force the OLD fixed-512 behavior for a literal
+    // side-by-side cosine comparison here (adding one purely for this test would be exactly the
+    // kind of test-only production surface the constitution's "no optional params for test
+    // convenience" rule warns against), so these tests instead pin the properties that a broken
+    // bucketing implementation (wrong slice length, stale mask, truncation bug) would violate:
+    // determinism, correct/declared dimensionality, and a valid unit-length vector, across
+    // several distinctly-lengthed inputs so short, medium, and near-full-bucket lengths are all
+    // exercised through the real bucketing path.
+    [Theory]
+    [InlineData("cat")]
+    [InlineData("cat sat on the mat")]
+    [InlineData("the quarterly revenue report shows strong growth across every regional market segment this year")]
+    public async Task EmbedAsync_with_dynamic_length_padding_is_deterministic_and_normalized(string text)
+    {
+        var v1 = await _embedder.EmbedAsync(text, TestContext.Current.CancellationToken);
+        var v2 = await _embedder.EmbedAsync(text, TestContext.Current.CancellationToken);
+
+        Assert.Equal(v1.ToArray(), v2.ToArray());
+        Assert.Equal(Dimensions, v1.Length);
+
+        var normSquared = v1.ToArray().Sum(x => (double)x * x);
+        Assert.True(Math.Abs(normSquared - 1.0) < 1e-4, $"expected unit-length vector for \"{text}\", got ||v||^2={normSquared}");
+    }
+
+    [Theory]
+    [InlineData(0, 8)]
+    [InlineData(1, 8)]
+    [InlineData(8, 8)]
+    [InlineData(9, 16)]
+    [InlineData(16, 16)]
+    [InlineData(17, 24)]
+    [InlineData(511, 512)]
+    [InlineData(512, 512)]
+    public void ComputeBucketedLength_rounds_up_to_the_nearest_bucket_of_8(int actualTokenCount, int expectedBucketLength)
+    {
+        Assert.Equal(expectedBucketLength, OnnxMemoryEmbedder.ComputeBucketedLength(actualTokenCount));
+    }
 }
