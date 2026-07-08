@@ -1,5 +1,20 @@
 # NetClaw Release Notes
 
+## 0.25.0-alpha.onnx.1 (2026-07-08)
+
+> **Experimental feature build.** This is a named experimental prerelease of the semantic
+> memory-embeddings foundation, gated behind a config flag that is **off by default**
+> (`Memory.Embeddings.Enabled`). Without opting in, runtime behavior is identical to
+> 0.25.0-beta.2, which this build fully contains. It is not published to the beta channel —
+> install only by exact pin: `NETCLAW_VERSION=0.25.0-alpha.onnx.1`. Embeddings live in a
+> new additive table; disabling the flag or downgrading afterward is safe — vectors are
+> derived data and original memory content is never touched.
+
+### Memory (Experimental)
+- **Semantic memory embeddings (opt-in)** — In-process ONNX embedding runtime (snowflake-arctic-embed-m, CPU-only, hash-pinned model downloaded at daemon startup), embed-on-write with startup gap repair, a `netclaw memory backfill-embeddings [--force]` CLI command, and a doctor check for model/coverage status ([#1577](https://github.com/netclaw-dev/netclaw/pull/1577))
+- **Semantic dedup: kNN-nominate / LLM-decide with lossless merges** — With embeddings enabled, near-duplicate memories are nominated by vector similarity and merged by the curation LLM under a deterministic MergeGuard; guard failures fall back to a lossless structural append ([#1585](https://github.com/netclaw-dev/netclaw/pull/1585))
+- **Guard-rejected anchor updates fall through to nomination** — instead of being silently dropped ([#1587](https://github.com/netclaw-dev/netclaw/pull/1587))
+
 ## 0.25.0-beta.2 (2026-07-07)
 
 ### Bug Fixes
