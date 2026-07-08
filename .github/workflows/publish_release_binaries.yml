@@ -74,7 +74,7 @@ jobs:
       run: |
         $content = Get-Content RELEASE_NOTES.md -Raw
         # Match from the first #### heading to just before the second one
-        if ($content -match '(?s)(####.+?)(?=\n####|\z)') {
+        if ($content -match '(?s)(## \d.+?)(?=\n## \d|\z)') {
           $Matches[1].Trim() | Set-Content RELEASE_NOTES_LATEST.md
         } else {
           $content | Set-Content RELEASE_NOTES_LATEST.md
