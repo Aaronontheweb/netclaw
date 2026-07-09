@@ -3,7 +3,7 @@ name: netclaw-memory
 description: "REQUIRED when the user asks what you remember, recall, or know from past conversations, previous sessions, cross-session memory, memory classes, or memory types. Also before using memory tools: find_memories, get_memories, store_memory, update_memory."
 metadata:
   author: netclaw
-  version: "1.13.0"
+  version: "1.14.0"
 ---
 
 # Netclaw Memory
@@ -288,9 +288,16 @@ Useful log events:
 
 Embeddings are provisioned at daemon start when `Memory.Embeddings.Enabled` is
 `true` (default `false` for now). When unavailable:
-- Log: `memory_embedding_unavailable`
+- Log: `memory_embedding_unavailable` (embedder) or `memory_relevance_gate_unavailable`
+  (relevance/cross-encoder model)
 - Daemon status shows: `embeddings: degraded`
 - Lexical recall continues to work normally
+- An operator alert (`memory.embedding_model.unavailable` /
+  `memory.relevance_model.unavailable`, pushed via the same notification sink as
+  `provider.unreachable`/`reminder.execution.failed`) fires once per model per
+  daemon run, naming the model, the failure reason, and the consequence (lexical-only
+  recall/dedup, or an unfiltered relevance gate) — this is the push-based signal;
+  `netclaw doctor`/`netclaw status` remain the pull-based ones
 
 `netclaw doctor`'s Memory Embeddings check reports whether the active model
 has a query prefix (`queryPrefix=True/False`) and the effective retrieval

@@ -37,6 +37,8 @@ public enum AlertType
     DaemonStopping,
     DaemonCrashed,
     UpdateAvailable,
+    MemoryEmbeddingModelUnavailable,
+    MemoryRelevanceModelUnavailable,
 }
 
 /// <summary>

@@ -48,6 +48,23 @@ namespace Netclaw.Daemon.Services;
 /// relevance-gate sub-budget remarks for the other half of this fix (the envelope-derived
 /// sub-budget clamp).
 /// </para>
+///
+/// <para>
+/// <b>Operator alerting:</b> the log line alone is not operator-facing — nobody watches daemon
+/// logs in steady state, and the health endpoint/doctor check are pull-based (someone has to go
+/// look). Each provision-or-degrade failure above additionally fires an
+/// <see cref="OperationalAlert"/> through the injected <see cref="IOperationalNotificationSink"/>
+/// (the same push-to-operator seam <c>McpReconnectionService</c>, <c>ReminderManagerActor</c>, and
+/// <c>RoutingChatClient</c> already use for MCP/reminder/provider degradation) carrying the model
+/// id, the failure reason, the concrete consequence (lexical-only recall/dedup, or an unfiltered
+/// relevance gate), and a remediation hint. Latched per model (<see cref="_embedderAlertFired"/>,
+/// <see cref="_relevanceAlertFired"/>) so a given model fires at most once per daemon run — this
+/// method only ever runs once per host lifetime in production (see <see cref="StartAsync"/>), but
+/// the latch is cheap insurance against a future caller awaiting it more than once, and is the
+/// seam a mid-run keep-warm failure would also latch through if that path is ever wired up (see
+/// <see cref="LogKeepWarmFailed"/>'s remarks for why it currently is not). No alert fires when
+/// <c>Memory.Embeddings.Enabled</c> is false — that is an intentional, not degraded, state.
+/// </para>
 /// </summary>
 internal sealed class EmbeddingWarmupHostedService(
     EmbeddingModelProvisioner provisioner,
@@ -59,6 +76,7 @@ internal sealed class EmbeddingWarmupHostedService(
     MemoryConfig memoryConfig,
     NetclawPaths paths,
     TimeProvider timeProvider,
+    IOperationalNotificationSink notificationSink,
     ILogger<EmbeddingWarmupHostedService> logger) : IHostedService, IDisposable
 {
     /// <summary>
@@ -91,6 +109,12 @@ internal sealed class EmbeddingWarmupHostedService(
     // 0 is astronomically larger than KeepWarmFailureLogCooldown, so the very first failure always
     // logs, and there is no risk of the subtraction below overflowing.
     private long _lastKeepWarmFailureLogMs;
+
+    // Operator-alert latches (0/1 via Interlocked.CompareExchange): guarantee each model fires at
+    // most one OperationalAlert per daemon run even though this is currently only ever reachable
+    // from one call site each (see the class remarks' "Operator alerting" paragraph).
+    private int _embedderAlertFired;
+    private int _relevanceAlertFired;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -173,6 +197,18 @@ internal sealed class EmbeddingWarmupHostedService(
     /// <c>SQLiteMemoryRecallCoordinator</c>'s degradation logs use, so a persistently failing
     /// keep-warm tick (e.g. a model that failed to load) does not spam the log every 5 minutes
     /// forever.
+    ///
+    /// <para>
+    /// <b>Deliberately not wired to the operator-alert latches:</b> a single keep-warm tick
+    /// failure is a transient probe result (a slow/hung ONNX call under load, a momentary holder
+    /// swap mid-tick), not proof a model "went bad" — the very next tick, 5 minutes later, may
+    /// well succeed. Promoting the first miss to an operator page would be a false-positive
+    /// alert on exactly the condition this method's own doc comment already calls out as not
+    /// user-visible degradation. Doing this properly needs a consecutive-failure threshold
+    /// (mirroring <c>ReminderManagerActor</c>'s auto-disable threshold pattern) before treating a
+    /// keep-warm miss as equivalent-severity to a provisioning failure — a real design decision,
+    /// not just plumbing, so it is left as a follow-up rather than bolted on here.
+    /// </para>
     /// </summary>
     private void LogKeepWarmFailed(Exception ex)
     {
@@ -205,37 +241,45 @@ internal sealed class EmbeddingWarmupHostedService(
         var queryPrefix = manifestEntry?.QueryPrefix ?? string.Empty;
         var calibratedMinCosineSimilarity = manifestEntry?.CalibratedMinCosineSimilarity;
 
-        IMemoryEmbedder embedder;
+        // Nullable and only ever assigned on the success path below -- deliberately NOT an early
+        // return out of the catch block (a pre-existing bug this PR fixes: the relevance gate's
+        // provisioning attempt below was unreachable whenever the embedder itself failed,
+        // contradicting this method's own "runs regardless" contract for the relevance gate, and
+        // silently suppressing the relevance-model alert in exactly the both-models-degraded case
+        // an operator most needs to hear about).
+        IMemoryEmbedder? embedder = null;
         try
         {
             embedder = await LoadEmbedderAsync(modelId, queryPrefix, ct).ConfigureAwait(false);
+            holder.Set(embedder, queryPrefix, calibratedMinCosineSimilarity);
+            logger.LogInformation(
+                "memory_embedding_ready model={ModelId} dims={Dimensions} hasQueryPrefix={HasQueryPrefix} calibratedMinCosineSimilarity={CalibratedMinCosineSimilarity}",
+                embedder.ModelId,
+                embedder.Dimensions,
+                queryPrefix.Length > 0,
+                calibratedMinCosineSimilarity);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "memory_embedding_unavailable model={ModelId} reason={Reason}", modelId, ex.Message);
             holder.Set(new UnavailableMemoryEmbedder(modelId, ex.Message), queryPrefix, calibratedMinCosineSimilarity);
-            return;
+            EmitEmbedderUnavailableAlert(modelId, ex.Message);
         }
 
-        holder.Set(embedder, queryPrefix, calibratedMinCosineSimilarity);
-        logger.LogInformation(
-            "memory_embedding_ready model={ModelId} dims={Dimensions} hasQueryPrefix={HasQueryPrefix} calibratedMinCosineSimilarity={CalibratedMinCosineSimilarity}",
-            embedder.ModelId,
-            embedder.Dimensions,
-            queryPrefix.Length > 0,
-            calibratedMinCosineSimilarity);
-
-        try
+        if (embedder is not null)
         {
-            await GapRepairAsync(embedder, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            // The embedder itself is already loaded and the holder is already populated — a
-            // gap-repair failure (e.g. a transient store error) must not undo that or leave an
-            // unobserved exception on this fire-and-forget warmup task. The doctor check and
-            // the next daemon restart's sweep both retry whatever remains unembedded.
-            logger.LogWarning(ex, "memory_embedding_gap_repair_failed model={ModelId}", embedder.ModelId);
+            try
+            {
+                await GapRepairAsync(embedder, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // The embedder itself is already loaded and the holder is already populated — a
+                // gap-repair failure (e.g. a transient store error) must not undo that or leave an
+                // unobserved exception on this fire-and-forget warmup task. The doctor check and
+                // the next daemon restart's sweep both retry whatever remains unembedded.
+                logger.LogWarning(ex, "memory_embedding_gap_repair_failed model={ModelId}", embedder.ModelId);
+            }
         }
 
         // Relevance gate (memory-relevance-gate, design D4, task 1.4): a second, independent
@@ -272,7 +316,71 @@ internal sealed class EmbeddingWarmupHostedService(
         {
             logger.LogError(ex, "memory_relevance_gate_unavailable model={ModelId} reason={Reason}", modelId, ex.Message);
             relevanceScorerHolder.Set(new UnavailableRelevanceScorer(modelId, ex.Message), calibratedThreshold);
+            EmitRelevanceModelUnavailableAlert(modelId, ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Fires <see cref="AlertType.MemoryEmbeddingModelUnavailable"/> at most once per daemon run
+    /// (see <see cref="_embedderAlertFired"/>). Content mirrors the doctor check's own remediation
+    /// wording (<c>MemoryEmbeddingDoctorCheck</c>) so an operator sees the same guidance whether
+    /// they are pulling <c>netclaw doctor</c> or reacting to a pushed alert.
+    /// </summary>
+    private void EmitEmbedderUnavailableAlert(string modelId, string reason)
+    {
+        if (Interlocked.CompareExchange(ref _embedderAlertFired, 1, 0) != 0)
+            return;
+
+        const string consequence = "Memory recall/dedup is running lexical-only — semantic features are degraded.";
+        const string remediation = "Check network access and disk space, run `netclaw doctor`, or run " +
+            "`netclaw memory backfill-embeddings` — the daemon re-provisions the model on its next start.";
+
+        notificationSink.Emit(OperationalAlert.Create(
+            timeProvider,
+            "memory.embedding_model.unavailable",
+            AlertType.MemoryEmbeddingModelUnavailable,
+            $"Memory embedding model '{modelId}' could not be provisioned or loaded: {reason} {consequence}",
+            AlertSeverity.Warning,
+            source: modelId,
+            context: new Dictionary<string, string>
+            {
+                ["modelId"] = modelId,
+                ["reason"] = reason,
+                ["consequence"] = consequence,
+                ["remediation"] = remediation,
+            }));
+    }
+
+    /// <summary>
+    /// Fires <see cref="AlertType.MemoryRelevanceModelUnavailable"/> at most once per daemon run
+    /// (see <see cref="_relevanceAlertFired"/>). Unlike <see cref="EmitEmbedderUnavailableAlert"/>,
+    /// the remediation does not mention <c>netclaw memory backfill-embeddings</c> — that command
+    /// only re-embeds the document corpus, it has no relevance-model analogue (mirrors
+    /// <c>MemoryRelevanceGateDoctorCheck</c>'s own remediation wording).
+    /// </summary>
+    private void EmitRelevanceModelUnavailableAlert(string modelId, string reason)
+    {
+        if (Interlocked.CompareExchange(ref _relevanceAlertFired, 1, 0) != 0)
+            return;
+
+        const string consequence = "The relevance gate is disabled — recall is unfiltered by the cross-encoder.";
+        const string remediation = "Check network access and disk space, then run `netclaw doctor` or restart the " +
+            "daemon to re-provision the model.";
+
+        notificationSink.Emit(OperationalAlert.Create(
+            timeProvider,
+            "memory.relevance_model.unavailable",
+            AlertType.MemoryRelevanceModelUnavailable,
+            $"Memory relevance (cross-encoder) model '{modelId}' could not be provisioned or loaded: {reason} {consequence}",
+            AlertSeverity.Warning,
+            source: modelId,
+            context: new Dictionary<string, string>
+            {
+                ["modelId"] = modelId,
+                ["reason"] = reason,
+                ["consequence"] = consequence,
+                ["remediation"] = remediation,
+            }));
     }
 
     private async Task<IRelevanceScorer> LoadRelevanceScorerAsync(string modelId, CancellationToken ct)
