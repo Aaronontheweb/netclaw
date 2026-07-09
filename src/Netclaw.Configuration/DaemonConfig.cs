@@ -21,6 +21,34 @@ public sealed record DaemonConfig
     public const int DefaultPort = 5199;
 
     /// <summary>
+    /// Worst-case time the daemon's graceful shutdown drain is allotted before something
+    /// gives up and forces termination. Sized to comfortably exceed
+    /// <see cref="SessionConfig.TurnLlmTimeout"/>'s default (3 minutes) so a session mid-LLM-call
+    /// during shutdown can finish draining instead of being interrupted.
+    ///
+    /// Single source of truth shared by four surfaces that must stay in lockstep:
+    ///   - Netclaw.Daemon's Akka <c>coordinated-shutdown.phases.before-service-unbind.timeout</c>
+    ///     HOCON override (where the actual session drain runs)
+    ///   - Netclaw.Daemon's generic-host <c>HostOptions.ShutdownTimeout</c>
+    ///   - <see cref="Netclaw.Cli.Daemon.DaemonManager"/>'s SIGTERM grace period in
+    ///     <c>netclaw daemon stop</c> (the systemd unit's <c>ExecStop=</c>)
+    ///   - the generated systemd unit's <c>TimeoutStopSec=</c>
+    ///     (see <c>DaemonManager.BuildDaemonUnitContent</c>)
+    ///
+    /// A production canary regression traced to these four being inconsistent: the CLI's
+    /// SIGTERM wait was hardcoded to 10 seconds — far short of the 200s the daemon's own
+    /// CoordinatedShutdown phase is deliberately allotted — so a session still mid-LLM-call
+    /// caused the CLI to give up and force-kill the daemon itself long before the daemon's
+    /// own graceful drain could finish. The daemon still died, so <c>netclaw daemon stop</c>
+    /// (ExecStop) reported success, but via SIGKILL mid-shutdown rather than a clean exit —
+    /// exactly what systemd's <c>failed (Result: signal)</c> was observing.
+    ///
+    /// Changing this value requires re-running <c>netclaw daemon install</c> on existing
+    /// hosts to regenerate the unit file with the new <c>TimeoutStopSec=</c>.
+    /// </summary>
+    public static readonly TimeSpan GracefulShutdownBudget = TimeSpan.FromSeconds(200);
+
+    /// <summary>
     /// IP address the daemon binds to. Defaults to loopback (<c>127.0.0.1</c>).
     /// </summary>
     public string Host { get; init; } = "127.0.0.1";

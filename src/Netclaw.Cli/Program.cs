@@ -483,6 +483,15 @@ static async Task RunAsync(string[] args)
         if (IsHelpToken(subcommand))
             subcommand = "help";
 
+        // See DaemonCommandDispatch remarks: `pair`/`devices` guard their own trailing --help
+        // below; the remaining lifecycle verbs previously executed for real on a trailing help
+        // token (canary finding). Fail toward help, not execution.
+        if (DaemonCommandDispatch.ShouldShowHelpInsteadOfExecuting(subcommand, args))
+        {
+            WriteDaemonHelp();
+            return;
+        }
+
         var paths = new NetclawPaths();
         paths.EnsureDirectoriesExist();
         var manager = new DaemonManager(paths, TimeProvider.System);

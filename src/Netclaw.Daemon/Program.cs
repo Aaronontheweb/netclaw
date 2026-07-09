@@ -430,7 +430,13 @@ static void ConfigureDaemonServices(
 
     services.Configure<HostOptions>(options =>
     {
-        options.ShutdownTimeout = TimeSpan.FromSeconds(30);
+        // Must comfortably exceed DaemonConfig.GracefulShutdownBudget below (the Akka
+        // `before-service-unbind` CoordinatedShutdown phase timeout, where session draining
+        // actually happens) plus headroom for the handful of default-timeout phases that run
+        // after it. Previously a bare 30s — shorter than the 200s session-drain budget, which
+        // let this host-level timeout diverge from the Akka phase it is supposed to bound
+        // (canary finding: see DaemonConfig.GracefulShutdownBudget remarks for the full story).
+        options.ShutdownTimeout = DaemonConfig.GracefulShutdownBudget + TimeSpan.FromSeconds(30);
     });
 
     // Resolve models for session config
@@ -1063,12 +1069,7 @@ static void ConfigureDaemonServices(
         // mid-LLM-call (TurnLlmTimeout defaults to 3 minutes) must finish before
         // passivation can begin.
         akkaBuilder.AddHocon(
-            """
-            akka.coordinated-shutdown {
-                exit-clr = off
-                phases.before-service-unbind.timeout = 200s
-            }
-            """,
+            DaemonShutdownConfiguration.BuildCoordinatedShutdownHocon(DaemonConfig.GracefulShutdownBudget),
             HoconAddMode.Prepend);
 
         akkaBuilder = akkaBuilder.ConfigureLoggers(setup =>

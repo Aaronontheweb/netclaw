@@ -39,6 +39,14 @@ internal static class MemoryCommand
         if (subcommand is "help" or "-h" or "--help")
             return Task.FromResult(WriteHelp());
 
+        // `backfill-embeddings` takes no required positional arguments (only the optional
+        // `--force` flag), so a trailing `--help`/`-h` would otherwise be silently ignored
+        // and the real provision-and-embed run would execute instead of printing help
+        // (canary finding: `netclaw memory backfill-embeddings --help` downloaded/embedded
+        // for real). Scan the full argument list, not just the subcommand slot.
+        if (CliArgsParser.HasTrailingHelpToken(args, startIndex: 2))
+            return Task.FromResult(WriteHelp());
+
         return subcommand switch
         {
             "backfill-embeddings" => RunBackfillEmbeddingsAsync(args, paths, configuration, allowlist),

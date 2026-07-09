@@ -177,8 +177,16 @@ public sealed partial class DaemonManager
             process.Kill();
         }
 
-        // Wait up to 10 seconds for graceful exit.
-        if (!await WaitForExitAsync(process, TimeSpan.FromSeconds(10), cancellationToken))
+        // Wait for graceful exit. Matches DaemonConfig.GracefulShutdownBudget: the daemon's
+        // own Akka CoordinatedShutdown "before-service-unbind" phase is allotted this long to
+        // drain any in-flight LLM turn (TurnLlmTimeout defaults to 3 minutes) before sessions
+        // passivate. A shorter wait here (previously a hardcoded 10s) gave up and force-killed
+        // the daemon long before its own graceful drain could finish — the daemon still died,
+        // so this method reported success, but via SIGKILL mid-shutdown rather than a clean
+        // exit. That SIGKILL is exactly what systemd's `failed (Result: signal)` was observing
+        // even though `netclaw daemon stop` (ExecStop) itself exited 0 (canary finding).
+        var exitedGracefully = await WaitForExitAsync(process, DaemonConfig.GracefulShutdownBudget, cancellationToken);
+        if (!exitedGracefully)
         {
             // Timed out — hard cutoff.
             string? killError = null;
@@ -203,7 +211,18 @@ public sealed partial class DaemonManager
         }
 
         CleanupPidFile();
-        return new DaemonResult(true, $"Daemon stopped (was PID {pid}).");
+
+        // Surface whether this was a clean exit or a forced kill: a force-kill means
+        // something (typically a session mid-LLM-call) did not finish draining within
+        // DaemonConfig.GracefulShutdownBudget, which is worth an operator's attention if
+        // it recurs even though the daemon did eventually stop.
+        return exitedGracefully
+            ? new DaemonResult(true, $"Daemon stopped (was PID {pid}).")
+            : new DaemonResult(true,
+                $"Daemon stopped (was PID {pid}), but did not exit gracefully within " +
+                $"{DaemonConfig.GracefulShutdownBudget.TotalSeconds:F0}s and had to be force-killed. " +
+                "This usually means a session was still mid-LLM-call at shutdown; if it recurs, check " +
+                "for stuck sessions before stopping the daemon.");
     }
 
     /// <summary>
@@ -350,6 +369,17 @@ public sealed partial class DaemonManager
     }
 
     /// <summary>
+    /// systemd's <c>TimeoutStopSec=</c> for the generated unit: comfortably longer than
+    /// <see cref="DaemonManager.StopAsync"/>'s own graceful-shutdown wait
+    /// (<see cref="DaemonConfig.GracefulShutdownBudget"/>) so systemd never SIGKILLs the whole
+    /// cgroup out from under <c>ExecStop=</c> (<c>netclaw daemon stop</c>) while that command is
+    /// still legitimately waiting on the daemon's own CoordinatedShutdown drain. Existing
+    /// installs only pick this up after re-running <c>netclaw daemon install</c>.
+    /// </summary>
+    private static readonly int TimeoutStopSecValue =
+        (int)(DaemonConfig.GracefulShutdownBudget + TimeSpan.FromSeconds(30)).TotalSeconds;
+
+    /// <summary>
     /// Builds the systemd <c>--user</c> unit content. The daemon's shell-tool PATH is
     /// supplied out-of-band via <c>EnvironmentFile=</c> (see
     /// <see cref="DaemonPathEnvironmentFile"/>) rather than an inline
@@ -368,6 +398,7 @@ public sealed partial class DaemonManager
         Type=simple
         ExecStart={binaryPath}
         ExecStop={cliBinaryPath} daemon stop
+        TimeoutStopSec={TimeoutStopSecValue}
         Restart=always
         RestartSec=5
         Environment=DOTNET_ENVIRONMENT=Production
@@ -637,7 +668,14 @@ public sealed partial class DaemonManager
         return kill(pid, (int)signal) == 0;
     }
 
-    private async Task<bool> WaitForExitAsync(Process process, TimeSpan timeout, CancellationToken cancellationToken)
+    /// <summary>
+    /// Polls <paramref name="process"/> until it exits or <paramref name="timeout"/> elapses.
+    /// Internal (not private) so tests can drive the up-to-200-second graceful-shutdown wait
+    /// via an injected <see cref="TimeProvider"/> without a real wall-clock sleep: the poll
+    /// delay is scheduled against <see cref="_timeProvider"/> (matching this repo's virtualized-
+    /// timer convention, e.g. <c>ConfigWatcherService</c>), not a bare <c>Task.Delay(ms)</c>.
+    /// </summary>
+    internal async Task<bool> WaitForExitAsync(Process process, TimeSpan timeout, CancellationToken cancellationToken)
     {
         var deadline = _timeProvider.GetUtcNow() + timeout;
         while (_timeProvider.GetUtcNow() < deadline)
@@ -647,7 +685,7 @@ public sealed partial class DaemonManager
             if (process.HasExited)
                 return true;
 
-            await Task.Delay(200, cancellationToken);
+            await Task.Delay(TimeSpan.FromMilliseconds(200), _timeProvider, cancellationToken);
         }
 
         return process.HasExited;
