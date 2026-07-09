@@ -1,5 +1,19 @@
 # NetClaw Release Notes
 
+## 0.25.0-alpha.onnx.3 (2026-07-09)
+
+> **Experimental feature build** (third in the memory-embeddings series) — the canary-feedback
+> batch: fixes found by running 0.25.0-alpha.onnx.2 in production. Same gating as before:
+> everything rides `Memory.Embeddings.Enabled`, off by default; install only by exact pin
+> (`NETCLAW_VERSION=0.25.0-alpha.onnx.3`). Upgrading from alpha.onnx.2 is a binary swap —
+> no config or data changes; models re-verify from disk without re-downloading.
+
+### Bug Fixes
+- **Relevance-gate cold starts** — after idle periods the whole recall pipeline could exceed its 300ms envelope before the cross-encoder gate ever ran (paged-out ONNX sessions + host contention), silently skipping the gate. Fixed with periodic keep-warm inference on both models, an envelope-derived gate sub-budget (120ms ceiling, clamped to remaining turn budget), and per-turn `gateElapsedMs` observability ([#1608](https://github.com/netclaw-dev/netclaw/pull/1608))
+- **`netclaw memory` command not dispatchable** — the command was advertised in help and fully implemented but missing from the CLI parser's known-command set; `backfill-embeddings` was unusable. Fixed, with a bidirectional sync test deriving ground truth from the dispatch source so the parser/handler/help trio cannot drift again
+- **`netclawd --version` booted the daemon** — the daemon binary ignored the flag and started a real instance; now prints the version and exits without touching directories or the daemon lock
+- **Version banners show the full version** — `--version` in both binaries previously printed the truncated numeric version (`0.25.0`), hiding the prerelease suffix; both now print the full semver
+
 ## 0.25.0-alpha.onnx.2 (2026-07-08)
 
 > **Experimental feature build** (second in the memory-embeddings series). Everything here
