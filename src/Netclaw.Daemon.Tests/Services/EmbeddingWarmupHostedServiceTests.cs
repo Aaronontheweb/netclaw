@@ -6,6 +6,7 @@
 using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 using Netclaw.Actors.Memory;
 using Netclaw.Configuration;
 using Netclaw.Daemon.Services;
@@ -285,6 +286,127 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
         Assert.Same(initialRelevance, relevanceHolder.Current);
     }
 
+    // ── Keep-warm ticks (memory-relevance-gate 2026-07 canary fix) ──
+    //
+    // These tests exercise KeepWarmTickAsync/KeepWarmLoopAsync directly against simple signaling
+    // fakes rather than going through StartAsync -- StartAsync also fires the real, fixture-backed
+    // WarmUpAsync in the background (task 2.7's own coverage above), which would race to overwrite
+    // whatever embedder/scorer these tests plant in the holders. Testing the keep-warm loop's own
+    // scheduling/cancellation contract in isolation is both faster and immune to that race.
+
+    [Fact]
+    public async Task Keep_warm_tick_calls_both_the_embedder_and_the_scorer_exactly_once()
+    {
+        var embedder = new SignalingEmbedder(ModelId, Dimensions);
+        var scorer = new SignalingRelevanceScorer(RelevanceModelId);
+        var holder = new MemoryEmbedderHolder(embedder, initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
+        var relevanceHolder = new RelevanceScorerHolder(scorer, initialCalibratedThreshold: 0.0);
+        var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true } };
+        var service = CreateService(holder, memoryConfig, relevanceHolder, EmptyRelevanceAllowlist);
+
+        await service.KeepWarmTickAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, embedder.CallCount);
+        Assert.Equal(1, scorer.CallCount);
+    }
+
+    [Fact]
+    public async Task Keep_warm_tick_swallows_a_scorer_exception_without_throwing()
+    {
+        var embedder = new SignalingEmbedder(ModelId, Dimensions);
+        var scorer = new SignalingRelevanceScorer(RelevanceModelId, throwOnScore: new InvalidOperationException("simulated ONNX scoring failure"));
+        var holder = new MemoryEmbedderHolder(embedder, initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
+        var relevanceHolder = new RelevanceScorerHolder(scorer, initialCalibratedThreshold: 0.0);
+        var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true } };
+        var service = CreateService(holder, memoryConfig, relevanceHolder, EmptyRelevanceAllowlist);
+
+        // Must not throw -- a keep-warm tick failure is background maintenance, never a caller-
+        // visible fault.
+        await service.KeepWarmTickAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, embedder.CallCount);
+        Assert.Equal(1, scorer.CallCount);
+    }
+
+    [Fact]
+    public async Task Keep_warm_tick_skips_whichever_side_is_unavailable()
+    {
+        var embedder = new SignalingEmbedder(ModelId, Dimensions, isAvailable: false);
+        var scorer = new SignalingRelevanceScorer(RelevanceModelId, isAvailable: false);
+        var holder = new MemoryEmbedderHolder(embedder, initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
+        var relevanceHolder = new RelevanceScorerHolder(scorer, initialCalibratedThreshold: 0.0);
+        var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true } };
+        var service = CreateService(holder, memoryConfig, relevanceHolder, EmptyRelevanceAllowlist);
+
+        await service.KeepWarmTickAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, embedder.CallCount);
+        Assert.Equal(0, scorer.CallCount);
+    }
+
+    [Fact]
+    public async Task Keep_warm_loop_never_ticks_when_embeddings_are_disabled()
+    {
+        var embedder = new SignalingEmbedder(ModelId, Dimensions);
+        var scorer = new SignalingRelevanceScorer(RelevanceModelId);
+        var holder = new MemoryEmbedderHolder(embedder, initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
+        var relevanceHolder = new RelevanceScorerHolder(scorer, initialCalibratedThreshold: 0.0);
+        var memoryConfig = new MemoryConfig { Embeddings = { Enabled = false } };
+        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var service = CreateService(holder, memoryConfig, relevanceHolder, EmptyRelevanceAllowlist, time);
+
+        // Returns immediately (config checked up front, before the timer is even armed).
+        await service.KeepWarmLoopAsync(TestContext.Current.CancellationToken);
+
+        // Advancing time after the fact proves no timer was ever armed either.
+        time.Advance(EmbeddingWarmupHostedService.KeepWarmInterval * 3);
+        Assert.Equal(0, embedder.CallCount);
+        Assert.Equal(0, scorer.CallCount);
+    }
+
+    [Fact]
+    public async Task Keep_warm_loop_ticks_on_schedule_and_stops_cleanly_on_cancellation()
+    {
+        var embedder = new SignalingEmbedder(ModelId, Dimensions);
+        var scorer = new SignalingRelevanceScorer(RelevanceModelId);
+        var holder = new MemoryEmbedderHolder(embedder, initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
+        var relevanceHolder = new RelevanceScorerHolder(scorer, initialCalibratedThreshold: 0.0);
+        var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true } };
+        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var service = CreateService(holder, memoryConfig, relevanceHolder, EmptyRelevanceAllowlist, time);
+
+        using var cts = new CancellationTokenSource();
+        // This is the exact cancellation contract StopAsync relies on internally (cancel the
+        // token passed to KeepWarmLoopAsync, then await the loop task) -- driving it directly here
+        // avoids also triggering StartAsync's real, fixture-backed WarmUpAsync (see this section's
+        // header comment).
+        var loopTask = service.KeepWarmLoopAsync(cts.Token);
+
+        time.Advance(EmbeddingWarmupHostedService.KeepWarmInterval);
+        await embedder.WaitForCallAsync(TestContext.Current.CancellationToken);
+        await scorer.WaitForCallAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(1, embedder.CallCount);
+        Assert.Equal(1, scorer.CallCount);
+
+        // A second tick proves this is a recurring schedule, not a one-shot.
+        time.Advance(EmbeddingWarmupHostedService.KeepWarmInterval);
+        await embedder.WaitForCallAsync(TestContext.Current.CancellationToken);
+        await scorer.WaitForCallAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(2, embedder.CallCount);
+        Assert.Equal(2, scorer.CallCount);
+
+        await cts.CancelAsync();
+        // PeriodicTimer.WaitForNextTickAsync throws OperationCanceledException when its token is
+        // cancelled (mirrors PidFileWatchdogService.StopAsync's own SuppressThrowing usage) --
+        // that is how the loop unwinds, not a normal return.
+        await loopTask.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing | ConfigureAwaitOptions.ContinueOnCapturedContext);
+
+        // Further time advances after cancellation must not produce more ticks.
+        time.Advance(EmbeddingWarmupHostedService.KeepWarmInterval * 3);
+        Assert.Equal(2, embedder.CallCount);
+        Assert.Equal(2, scorer.CallCount);
+    }
+
     private EmbeddingWarmupHostedService CreateService(MemoryEmbedderHolder holder, MemoryConfig memoryConfig)
         => CreateService(holder, memoryConfig, CreateRelevanceScorerHolder(), EmptyRelevanceAllowlist);
 
@@ -292,9 +414,10 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
         MemoryEmbedderHolder holder,
         MemoryConfig memoryConfig,
         RelevanceScorerHolder relevanceScorerHolder,
-        IReadOnlyDictionary<string, RelevanceModelManifestEntry> relevanceAllowlist)
+        IReadOnlyDictionary<string, RelevanceModelManifestEntry> relevanceAllowlist,
+        TimeProvider? timeProvider = null)
         => new(_provisioner, _store, holder, relevanceScorerHolder, _allowlist, relevanceAllowlist, memoryConfig, _paths,
-            NullLogger<EmbeddingWarmupHostedService>.Instance);
+            timeProvider ?? TimeProvider.System, NullLogger<EmbeddingWarmupHostedService>.Instance);
 
     private static RelevanceScorerHolder CreateRelevanceScorerHolder()
         => new(new UnavailableRelevanceScorer(RelevanceModelId, "warmup not yet run"), initialCalibratedThreshold: 0.0);
@@ -365,6 +488,66 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
             {
                 await Task.Delay(25 * (i + 1));
             }
+        }
+    }
+
+    /// <summary>
+    /// Fake embedder for the keep-warm tests above: counts calls and signals a waiter each time
+    /// <see cref="EmbedAsync"/> runs, so a test driving a <c>FakeTimeProvider</c>-scheduled
+    /// <see cref="PeriodicTimer"/> can await the tick's actual completion deterministically instead
+    /// of racing a real-time delay against the background loop task.
+    /// </summary>
+    private sealed class SignalingEmbedder(string modelId, int dimensions, bool isAvailable = true) : IMemoryEmbedder
+    {
+        private readonly SemaphoreSlim _signal = new(0);
+        private int _callCount;
+
+        public string ModelId => modelId;
+
+        public int Dimensions => dimensions;
+
+        public bool IsAvailable => isAvailable;
+
+        public int CallCount => Volatile.Read(ref _callCount);
+
+        public Task WaitForCallAsync(CancellationToken ct) => _signal.WaitAsync(ct);
+
+        public ValueTask<ReadOnlyMemory<float>> EmbedAsync(string text, EmbeddingPurpose purpose, CancellationToken ct)
+        {
+            Interlocked.Increment(ref _callCount);
+            _signal.Release();
+            return ValueTask.FromResult<ReadOnlyMemory<float>>(new float[dimensions]);
+        }
+
+        public ValueTask<IReadOnlyList<ReadOnlyMemory<float>>> EmbedBatchAsync(IReadOnlyList<string> texts, EmbeddingPurpose purpose, CancellationToken ct)
+            => throw new NotSupportedException("Keep-warm ticks only ever call EmbedAsync, never the batch path.");
+    }
+
+    /// <summary>
+    /// Fake relevance scorer for the keep-warm tests above — mirrors <see cref="SignalingEmbedder"/>'s
+    /// call-counting/signaling shape, plus an optional <paramref name="throwOnScore"/> to exercise
+    /// the tick's own exception-swallowing contract.
+    /// </summary>
+    private sealed class SignalingRelevanceScorer(string modelId, bool isAvailable = true, Exception? throwOnScore = null) : IRelevanceScorer
+    {
+        private readonly SemaphoreSlim _signal = new(0);
+        private int _callCount;
+
+        public string ModelId => modelId;
+
+        public bool IsAvailable => isAvailable;
+
+        public int CallCount => Volatile.Read(ref _callCount);
+
+        public Task WaitForCallAsync(CancellationToken ct) => _signal.WaitAsync(ct);
+
+        public ValueTask<IReadOnlyList<double>> ScoreAsync(string query, IReadOnlyList<string> candidates, CancellationToken ct)
+        {
+            Interlocked.Increment(ref _callCount);
+            _signal.Release();
+            if (throwOnScore is not null)
+                throw throwOnScore;
+            return ValueTask.FromResult<IReadOnlyList<double>>(candidates.Select(_ => 1.0).ToArray());
         }
     }
 }

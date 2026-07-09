@@ -80,7 +80,9 @@ namespace Netclaw.Actors.Sessions;
 /// <b>Post-floor relevance gate (memory-relevance-gate, design D5/D6/D8):</b> in hybrid mode
 /// only, once <see cref="ScoreHybrid"/> produces its floor survivors, a tiny cross-encoder
 /// (<c>relevanceScorerHolder</c>) scores each of the top <c>AutoRecallMaxItems</c> survivors
-/// jointly against the query — under its own <see cref="RelevanceGateSubBudgetMs"/> sub-budget,
+/// jointly against the query — under a sub-budget capped at <see cref="RelevanceGateSubBudgetMs"/>
+/// but never larger than whatever remains of the caller's outer <c>RecallTimeoutMs</c> envelope
+/// (2026-07 production-canary finding; see <see cref="RelevanceGateSubBudgetMs"/>'s remarks),
 /// linked-CTS-nested exactly like the query-embedding sub-budget above — and drops anything
 /// below the active threshold (<see cref="MemoryRelevanceGateConfig.Threshold"/> if set,
 /// otherwise the scorer's manifest-carried <see cref="RelevanceScorerHolder.CalibratedThreshold"/>).
@@ -107,6 +109,13 @@ public sealed class SQLiteMemoryRecallCoordinator(
 {
     private readonly SessionTuning _sessionTuning = sessionTuning ?? new SessionTuning();
     private readonly MemoryRecallConfig _recallConfig = memoryConfig.Recall;
+
+    // Outer recall envelope (memory-relevance-gate 2026-07 canary fix): read once at
+    // construction, same lifecycle assumption as every other Memory.* setting. Used to derive the
+    // relevance gate's ACTUAL sub-budget from how much of the envelope is left when the gate
+    // stage is reached, not just the fixed RelevanceGateSubBudgetMs ceiling — see that constant's
+    // remarks.
+    private readonly int _recallTimeoutMs = memoryConfig.RecallTimeoutMs;
 
     // memory-query-prefix design D3: null (default) follows the active embedder's
     // manifest-carried calibration (embedderHolder.CalibratedMinCosineSimilarity, resolved per
@@ -182,14 +191,40 @@ public sealed class SQLiteMemoryRecallCoordinator(
     private const int VectorEmbedSubBudgetMs = 150;
 
     /// <summary>
-    /// Sub-budget, in milliseconds, for the per-turn cross-encoder relevance-gate scoring call
-    /// (memory-relevance-gate design D5), applied via a CTS linked to (nested inside) the
+    /// Sub-budget CEILING, in milliseconds, for the per-turn cross-encoder relevance-gate scoring
+    /// call (memory-relevance-gate design D5), applied via a CTS linked to (nested inside) the
     /// caller's overall recall <c>ct</c> — the same nesting pattern as
     /// <see cref="VectorEmbedSubBudgetMs"/>. Not a config knob: design D5 measured ~11ms p50 /
-    /// ~35ms p95 to score 3 pairs (quantized int8) on the reference CPU, so 60ms leaves roughly
-    /// 1.7x headroom before the sub-budget itself is hit.
+    /// ~35ms p95 to score 3 pairs (quantized int8) on the reference CPU, so this leaves headroom
+    /// before the sub-budget itself is hit under normal (warm) conditions.
+    ///
+    /// <para>
+    /// <b>This is a CEILING, not the sub-budget actually applied.</b> <see cref="TryApplyRelevanceGateAsync"/>
+    /// clamps the real sub-budget to <c>min(RelevanceGateSubBudgetMs, time remaining in the
+    /// caller's outer <see cref="MemoryConfig.RecallTimeoutMs"/> envelope)</c> before calling
+    /// <c>CancelAfter</c> — the outer linked CTS is already the hard cap on the whole turn, so
+    /// this clamp can never let the gate blow past it: on a turn where earlier stages (query
+    /// embed, hybrid fusion) already consumed most of the envelope, the gate gets whatever sliver
+    /// is left (possibly far less than this ceiling, possibly ~0 which degrades immediately),
+    /// never more than the ceiling on a turn with headroom to spare.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>2026-07 production-canary finding (raised from 60ms):</b> two live
+    /// <c>memory_recall_gate_degraded</c> events (reason <c>score_failed:TaskCanceledException</c>)
+    /// both fired in scheduled-reminder sessions waking from an idle period, on a VM host. Log
+    /// timestamps showed total turn latency (plan → candidate selection → query embed → hybrid
+    /// fusion → gate) already past the entire 300ms <c>RecallTimeoutMs</c> envelope by the time
+    /// the gate reached its own scoring call — a cold ONNX session (paged-out weights after the
+    /// idle gap) plus host CPU contention at reminder-fire time, not a per-call latency
+    /// regression against design D5's reference-box measurement, which still held. The paired fix
+    /// is <see cref="Netclaw.Daemon.Services.EmbeddingWarmupHostedService"/>'s periodic keep-warm
+    /// tick (keeps both ONNX sessions' working sets resident across idle gaps) plus this raised,
+    /// envelope-clamped ceiling — more headroom on a turn that still has budget left, without
+    /// ever exceeding the hard 300ms cap.
+    /// </para>
     /// </summary>
-    private const int RelevanceGateSubBudgetMs = 60;
+    private const int RelevanceGateSubBudgetMs = 120;
 
     /// <summary>Shared empty instance for turns where the gate never ran (disabled, degraded, or lexical mode).</summary>
     private static readonly IReadOnlyDictionary<string, double> EmptyGateScores = new Dictionary<string, double>(0, StringComparer.Ordinal);
@@ -244,6 +279,12 @@ public sealed class SQLiteMemoryRecallCoordinator(
 
     public async Task<AutomaticRecallResult> RecallAsync(AutomaticRecallRequest request, CancellationToken ct = default)
     {
+        // Turn-start timestamp (memory-relevance-gate 2026-07 canary fix): approximates when the
+        // caller's own outer RecallTimeoutMs-bounded CTS started (SessionRecallManager creates it
+        // immediately before calling RecallAsync), so the relevance gate can later derive how much
+        // of that envelope is actually left rather than assuming a fixed sub-budget is always
+        // affordable. TimeProvider-based so tests can virtualize it.
+        var turnStartedAtTs = timeProvider.GetTimestamp();
         try
         {
             if (_sessionTuning.DeterministicRetrievalEnabled)
@@ -345,14 +386,20 @@ public sealed class SQLiteMemoryRecallCoordinator(
                 var gated = aboveFloor;
                 var droppedByGate = 0;
                 IReadOnlyDictionary<string, double> gateScores = EmptyGateScores;
+                var gateElapsedMs = 0.0;
                 if (mode == "hybrid" && aboveFloor.Length > 0)
                 {
-                    var gateOutcome = await TryApplyRelevanceGateAsync(request, aboveFloor, deterministicMaxItems, ct);
-                    if (gateOutcome is { } outcome)
+                    // Envelope-derived sub-budget (memory-relevance-gate 2026-07 canary fix): the
+                    // gate never gets more than what's actually left of the caller's outer
+                    // RecallTimeoutMs envelope — see RelevanceGateSubBudgetMs's remarks.
+                    var remainingEnvelope = TimeSpan.FromMilliseconds(_recallTimeoutMs) - timeProvider.GetElapsedTime(turnStartedAtTs);
+                    var gateOutcome = await TryApplyRelevanceGateAsync(request, aboveFloor, deterministicMaxItems, remainingEnvelope, ct);
+                    gateElapsedMs = gateOutcome.ElapsedMs;
+                    if (gateOutcome.Applied)
                     {
-                        gated = outcome.Survivors;
-                        gateScores = outcome.Scores;
-                        droppedByGate = outcome.Dropped;
+                        gated = gateOutcome.Survivors;
+                        gateScores = gateOutcome.Scores;
+                        droppedByGate = gateOutcome.Dropped;
                     }
                 }
 
@@ -387,7 +434,7 @@ public sealed class SQLiteMemoryRecallCoordinator(
                 var deterministicItems = budgeted.ToArray();
 
                 logger.LogInformation(
-                    "memory_retrieval_final session={SessionId} mode={Mode} injectedCount={InjectedCount} filteredByFloor={FilteredByFloor} appliedFloor={AppliedFloor:F3} floorSource={FloorSource} injectedChars={InjectedChars} droppedByBudget={DroppedByBudget} droppedByGate={DroppedByGate} gateScores={GateScores} items={Items}",
+                    "memory_retrieval_final session={SessionId} mode={Mode} injectedCount={InjectedCount} filteredByFloor={FilteredByFloor} appliedFloor={AppliedFloor:F3} floorSource={FloorSource} injectedChars={InjectedChars} droppedByBudget={DroppedByBudget} droppedByGate={DroppedByGate} gateElapsedMs={GateElapsedMs:F1} gateScores={GateScores} items={Items}",
                     request.SessionId,
                     mode,
                     deterministicItems.Length,
@@ -397,6 +444,7 @@ public sealed class SQLiteMemoryRecallCoordinator(
                     injectedChars,
                     droppedByBudget,
                     droppedByGate,
+                    gateElapsedMs,
                     string.Join("|", gateScores.Select(kv => $"{kv.Key}={kv.Value:F3}")),
                     string.Join("|", deterministicItems.Select(i => $"{i.Id.Value}=score{i.Score:F3}")));
 
@@ -525,58 +573,71 @@ public sealed class SQLiteMemoryRecallCoordinator(
     /// <paramref name="maxItems"/>).
     ///
     /// <para>
-    /// Returns null for every degradation reason — gate disabled by config, no scorer configured,
-    /// scorer unavailable, sub-budget exceeded, or the scoring call itself throwing — mirroring
-    /// <see cref="TryEmbedQueryAsync"/>'s "never throws, null means skip" contract exactly.
-    /// Callers treat null as "inject the floor's own result unfiltered," identically regardless of
-    /// which reason produced it.
+    /// Returns a not-applied <see cref="RelevanceGateOutcome"/> for every degradation reason —
+    /// gate disabled by config, no scorer configured, scorer unavailable, sub-budget exceeded, or
+    /// the scoring call itself throwing — mirroring <see cref="TryEmbedQueryAsync"/>'s "never
+    /// throws" contract exactly. Callers treat <see cref="RelevanceGateOutcome.Applied"/> false as
+    /// "inject the floor's own result unfiltered," identically regardless of which reason produced
+    /// it, while <see cref="RelevanceGateOutcome.ElapsedMs"/> still reports whatever time WAS
+    /// spent (2026-07 canary observability follow-up: <c>memory_retrieval_final</c> logs this
+    /// unconditionally so soak data can quantify margins even on a degraded turn).
     /// </para>
     /// </summary>
-    private async Task<(RankedCandidate[] Survivors, IReadOnlyDictionary<string, double> Scores, int Dropped)?> TryApplyRelevanceGateAsync(
-        AutomaticRecallRequest request, RankedCandidate[] aboveFloor, int maxItems, CancellationToken ct)
+    private async Task<RelevanceGateOutcome> TryApplyRelevanceGateAsync(
+        AutomaticRecallRequest request, RankedCandidate[] aboveFloor, int maxItems, TimeSpan remainingEnvelope, CancellationToken ct)
     {
         if (!_relevanceGateEnabledByConfig)
         {
             LogGateDegraded(request.SessionId.Value, "gate_disabled_by_config");
-            return null;
+            return RelevanceGateOutcome.NotApplied;
         }
 
         var scorer = relevanceScorerHolder?.Current;
         if (scorer is null)
         {
             LogGateDegraded(request.SessionId.Value, "no_scorer_configured");
-            return null;
+            return RelevanceGateOutcome.NotApplied;
         }
 
         if (!scorer.IsAvailable)
         {
             LogGateDegraded(request.SessionId.Value, "scorer_unavailable");
-            return null;
+            return RelevanceGateOutcome.NotApplied;
         }
 
         var candidatesToScore = aboveFloor.Length > maxItems ? aboveFloor[..maxItems] : aboveFloor;
         var texts = candidatesToScore.Select(x => x.Item.Content ?? string.Empty).ToArray();
 
+        // Envelope-derived sub-budget (2026-07 production-canary finding; see
+        // RelevanceGateSubBudgetMs's remarks): never grants more than what's actually left of the
+        // caller's outer RecallTimeoutMs envelope, so the outer linked CTS stays the hard cap
+        // regardless of how much of it earlier stages already spent.
+        var subBudgetMs = (int)Math.Max(0.0, Math.Min(RelevanceGateSubBudgetMs, remainingEnvelope.TotalMilliseconds));
+
+        var gateStartTs = timeProvider.GetTimestamp();
         IReadOnlyList<double> scores;
         try
         {
             using var gateCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            gateCts.CancelAfter(RelevanceGateSubBudgetMs);
+            gateCts.CancelAfter(subBudgetMs);
             scores = await scorer.ScoreAsync(request.Query, texts, gateCts.Token);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             // The sub-budget's own timer fired, not the caller's outer recall ct — degrade to
             // floor-only rather than propagating a cancellation that would fail the whole turn.
-            LogGateDegraded(request.SessionId.Value, "sub_budget_exceeded");
-            return null;
+            var elapsedMs = timeProvider.GetElapsedTime(gateStartTs).TotalMilliseconds;
+            LogGateDegraded(request.SessionId.Value, "sub_budget_exceeded", elapsedMs);
+            return RelevanceGateOutcome.NotApplied with { ElapsedMs = elapsedMs };
         }
         catch (Exception ex)
         {
-            LogGateDegraded(request.SessionId.Value, $"score_failed:{ex.GetType().Name}");
-            return null;
+            var elapsedMs = timeProvider.GetElapsedTime(gateStartTs).TotalMilliseconds;
+            LogGateDegraded(request.SessionId.Value, $"score_failed:{ex.GetType().Name}", elapsedMs);
+            return RelevanceGateOutcome.NotApplied with { ElapsedMs = elapsedMs };
         }
 
+        var gateElapsedMs = timeProvider.GetElapsedTime(gateStartTs).TotalMilliseconds;
         var threshold = _relevanceGateThresholdOverride ?? relevanceScorerHolder!.CalibratedThreshold;
         var scoreByItemId = new Dictionary<string, double>(candidatesToScore.Length, StringComparer.Ordinal);
         var survivors = new List<RankedCandidate>(candidatesToScore.Length);
@@ -592,7 +653,7 @@ public sealed class SQLiteMemoryRecallCoordinator(
                 dropped++;
         }
 
-        return (survivors.ToArray(), scoreByItemId, dropped);
+        return new RelevanceGateOutcome(true, survivors.ToArray(), scoreByItemId, dropped, gateElapsedMs);
     }
 
     /// <summary>
@@ -796,7 +857,13 @@ public sealed class SQLiteMemoryRecallCoordinator(
     /// unavailable, sub-budget exceeded, scoring threw) — a genuine runtime condition an operator
     /// should notice.
     /// </summary>
-    private void LogGateDegraded(string sessionId, string reason)
+    /// <param name="elapsedMs">
+    /// Milliseconds actually spent before this degradation was detected (2026-07 canary
+    /// observability follow-up) — 0 for reasons where no scoring attempt ever started
+    /// (<c>gate_disabled_by_config</c>, <c>no_scorer_configured</c>, <c>scorer_unavailable</c>),
+    /// the measured elapsed time for <c>sub_budget_exceeded</c>/<c>score_failed:*</c>.
+    /// </param>
+    private void LogGateDegraded(string sessionId, string reason, double elapsedMs = 0)
     {
         var nowMs = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
         if (_lastGateDegradedLogMs.TryGetValue(reason, out var lastMs)
@@ -806,9 +873,9 @@ public sealed class SQLiteMemoryRecallCoordinator(
         _lastGateDegradedLogMs[reason] = nowMs;
 
         if (_relevanceGateEnabledByConfig)
-            logger.LogWarning("memory_recall_gate_degraded session={SessionId} reason={Reason}", sessionId, reason);
+            logger.LogWarning("memory_recall_gate_degraded session={SessionId} reason={Reason} elapsedMs={ElapsedMs:F1}", sessionId, reason, elapsedMs);
         else
-            logger.LogDebug("memory_recall_gate_degraded session={SessionId} reason={Reason}", sessionId, reason);
+            logger.LogDebug("memory_recall_gate_degraded session={SessionId} reason={Reason} elapsedMs={ElapsedMs:F1}", sessionId, reason, elapsedMs);
     }
 
     private static int RecallRank(SQLiteMemoryHydratedItem document)
@@ -855,4 +922,25 @@ public sealed class SQLiteMemoryRecallCoordinator(
     /// never recorded, but any value below a positive floor rejects identically).
     /// </summary>
     private readonly record struct RankedCandidate(SQLiteMemoryHydratedItem Item, double Composite, double? Cosine);
+
+    /// <summary>
+    /// Outcome of one <see cref="TryApplyRelevanceGateAsync"/> attempt (memory-relevance-gate
+    /// 2026-07 canary observability follow-up). <see cref="Applied"/> false covers every
+    /// degradation reason (gate disabled, no scorer, unavailable, sub-budget exceeded, scoring
+    /// threw) — callers treat it identically to the pre-canary-fix "returns null" contract,
+    /// falling back to the floor's own unfiltered result. <see cref="ElapsedMs"/> is populated
+    /// whenever a scoring attempt actually started (success or failure) so
+    /// <c>memory_retrieval_final</c> can log gate latency regardless of outcome; it stays 0 only
+    /// when the gate was never engaged at all (disabled/no scorer/unavailable), since no time was
+    /// spent gating in those cases.
+    /// </summary>
+    private readonly record struct RelevanceGateOutcome(
+        bool Applied,
+        RankedCandidate[] Survivors,
+        IReadOnlyDictionary<string, double> Scores,
+        int Dropped,
+        double ElapsedMs)
+    {
+        public static readonly RelevanceGateOutcome NotApplied = new(false, [], EmptyGateScores, 0, 0.0);
+    }
 }

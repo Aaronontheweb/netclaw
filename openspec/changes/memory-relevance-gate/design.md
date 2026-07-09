@@ -224,10 +224,13 @@ vector was available): the floor already reduced the candidate set to
 candidate-generation protocol — the gate never sees a candidate the floor
 would not already have admitted). Each survivor is paired with the query and
 scored via `RelevanceScorerHolder.Current.ScoreAsync`, under a CE sub-budget
-(~60 ms) nested inside the overall `RecallTimeoutMs` via a linked
+(ceiling 120 ms, envelope-clamped — raised from 60 ms and clamped to
+whatever remains of the outer envelope by a 2026-07 production-canary
+finding: two live cold-start timeouts, see the Open Questions entry below)
+nested inside the overall `RecallTimeoutMs` via a linked
 `CancellationTokenSource` — the same pattern the query-embedding sub-budget
 already uses (measured p95 35 ms for 3 pairs leaves roughly 1.7x headroom
-before the sub-budget itself is hit). Candidates scoring below the
+before the sub-budget itself is hit on a warm session). Candidates scoring below the
 manifest/config threshold are dropped; **zero survivors after the gate is a
 "nothing injected" outcome**, identical in kind to zero survivors at the
 floor — the `[memory-recall]` block continues to be omitted entirely, not
@@ -327,15 +330,25 @@ selectivity without one of these signals firing.
   (397 MB), the operator's measured total is ≈763 MB against a 1 GB K8s pod
   limit — inside budget, but the margin (≈260 MB) is not so large that a
   future addition to the memory runtime gets it for free. Mitigated by
-  measuring rather than assuming, and by keeping the CE sub-budget (~60 ms)
-  small relative to the overall 300 ms recall timeout so a degraded gate
-  never risks the turn itself.
-- [Nested sub-budgets: query-embedding (~150 ms) + gate (~60 ms) inside one
-  300 ms `RecallTimeoutMs`] → worst case both sub-budgets fully elapse
-  (210 ms) before any lexical/ranking work runs, leaving less slack than
-  Slice 4 alone had. Not yet measured end-to-end under production
-  contention. Flagged as an open question (below), not silently assumed
-  safe.
+  measuring rather than assuming, and by keeping the CE sub-budget
+  (120 ms ceiling, envelope-clamped) small relative to the overall 300 ms
+  recall timeout so a degraded gate never risks the turn itself.
+- [Nested sub-budgets: query-embedding (~150 ms) + gate (120 ms ceiling,
+  envelope-clamped) inside one 300 ms `RecallTimeoutMs`] → worst case both
+  sub-budgets fully elapse before any lexical/ranking work runs, leaving less
+  slack than Slice 4 alone had. **2026-07 production-canary update: this
+  materialized.** Two live `memory_recall_gate_degraded` events (reason
+  `score_failed:TaskCanceledException`) in scheduled-reminder sessions waking
+  from an idle period measured total turn latency already past the entire
+  300 ms envelope by the time the gate started scoring — a cold ONNX session
+  (paged-out weights) plus host contention, not a per-call latency
+  regression. Fix landed as (1) a periodic keep-warm tick in
+  `EmbeddingWarmupHostedService` keeping both ONNX sessions' working sets
+  resident, and (2) raising the gate ceiling to 120 ms while clamping the
+  actually-applied sub-budget to whatever remains of the outer envelope (the
+  linked CTS was already the hard cap; this just derives the sub-budget from
+  it instead of assuming a fixed value is always affordable). The Open
+  Questions entry below is resolved by this same finding.
 - [Two-holders-become-three] → `MemoryEmbedderHolder` +
   `MemoryVectorIndexHolder` + the new `RelevanceScorerHolder` is more moving
   parts than a consolidated holder would be. Accepted for this change (D4)
@@ -431,12 +444,16 @@ scorecard, the frozen threshold, the pinned model SHA-256) enter the repo.
 
 ## Open Questions
 
-- Combined worst-case latency of the query-embedding sub-budget (~150 ms)
+- ~~Combined worst-case latency of the query-embedding sub-budget (~150 ms)
   plus the new CE sub-budget (~60 ms) inside the single 300 ms
   `RecallTimeoutMs`, measured end-to-end under realistic contention rather
-  than each sub-budget's own isolated measurement — gates this change's
-  sub-budget sizing the same way Slice 4 gated its own latency assumption
-  before shipping.
+  than each sub-budget's own isolated measurement.~~ **Resolved by the
+  2026-07 production-canary finding**: it materialized under real cold-start
+  contention (two live `score_failed:TaskCanceledException` degradations,
+  reminder sessions waking from idle). Fix: `EmbeddingWarmupHostedService`
+  keep-warm tick (keeps both ONNX sessions resident) + gate sub-budget
+  raised to a 120 ms ceiling, clamped to whatever remains of the outer
+  envelope rather than a fixed value.
 - Whether the deferred R2-mirroring decision for the embedding model artifact
   (memory-core-redesign, post-PoC) should extend to this second (relevance)
   model artifact once that decision is made.

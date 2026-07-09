@@ -141,25 +141,34 @@ netclaw doctor
      enabled; otherwise provision manually and restart.
 
 2. Check the degradation log line. When the gate is skipped for a turn
-   (model unavailable, its ~60 ms sub-budget exceeded, or recall running in
-   lexical mode because there's no query vector), the coordinator logs a
-   rate-limited marker instead of silently changing what gets injected:
+   (model unavailable, its sub-budget exceeded — a 120 ms ceiling clamped to
+   whatever remains of the outer 300 ms `Memory.RecallTimeoutMs` envelope, so
+   a turn where earlier stages already ran long gets less than 120 ms; raised
+   from a fixed 60 ms by a 2026-07 production-canary finding of cold-start
+   timeouts — or recall running in lexical mode because there's no query
+   vector), the coordinator logs a rate-limited marker instead of silently
+   changing what gets injected:
 
 ```
-memory_recall_gate_degraded session=<id> reason=<reason>
+memory_recall_gate_degraded session=<id> reason=<reason> elapsedMs=<ms>
 ```
 
    `reason` is one of `gate_disabled_by_config`, `no_scorer_configured`,
    `scorer_unavailable`, `sub_budget_exceeded`, or `score_failed:<ExceptionType>`.
-   Logged at `Warning` when the gate is enabled but a turn still degraded (a
-   genuine runtime condition worth noticing); logged at `Debug` when the gate
-   is off by config (the default, intentional state — not spam). Rate-limited
-   per-reason with the same cooldown as `memory_recall_vector_degraded`, so
-   expect at most one `Warning` line per reason per cooldown window even
-   under sustained degradation, not one per turn.
+   `elapsedMs` is 0 for the first three (no scoring attempt ever started) and
+   the measured time spent before degrading for the latter two — useful for
+   telling a genuine cold-start/contention timeout apart from an instant
+   failure. Logged at `Warning` when the gate is enabled but a turn still
+   degraded (a genuine runtime condition worth noticing); logged at `Debug`
+   when the gate is off by config (the default, intentional state — not
+   spam). Rate-limited per-reason with the same cooldown as
+   `memory_recall_vector_degraded`, so expect at most one `Warning` line per
+   reason per cooldown window even under sustained degradation, not one per
+   turn.
 
-3. Read `gateScores`/`droppedByGate` on `memory_retrieval_final` when
-   diagnosing over- or under-injection:
+3. Read `gateScores`/`droppedByGate`/`gateElapsedMs` on `memory_retrieval_final`
+   when diagnosing over- or under-injection or quantifying gate latency
+   margin against the 120 ms ceiling:
 
 ```bash
 grep memory_retrieval_final "$HOME/.netclaw/logs/daemon-$(date +%F).log" | tail -20

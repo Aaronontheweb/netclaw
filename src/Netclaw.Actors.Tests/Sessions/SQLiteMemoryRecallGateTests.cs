@@ -160,9 +160,10 @@ public sealed class SQLiteMemoryRecallGateTests : IAsyncDisposable
         await _store.InitializeAsync(ct);
         await SeedFloorSurvivingDocumentAsync("doc-timeout", ct);
 
-        // Never completes on its own; only the coordinator's ~60ms sub-budget CTS can cancel it.
-        // Task.Delay inside a fake is the sanctioned way to simulate latency deterministically —
-        // no Thread.Sleep/Task.Delay appears in this test's own orchestration.
+        // Never completes on its own; only the coordinator's envelope-clamped sub-budget CTS
+        // (ceiling 120ms, default 300ms RecallTimeoutMs here so the ceiling itself governs) can
+        // cancel it. Task.Delay inside a fake is the sanctioned way to simulate latency
+        // deterministically — no Thread.Sleep/Task.Delay appears in this test's own orchestration.
         var scorer = new HangingRelevanceScorer(RelevanceModelId);
         var coordinator = BuildCoordinator(relevanceScorerHolder: BuildHolder(scorer));
 
@@ -170,6 +171,49 @@ public sealed class SQLiteMemoryRecallGateTests : IAsyncDisposable
 
         Assert.False(result.Degraded);
         Assert.Contains(result.Items, i => i.Id.Value == "doc-timeout");
+    }
+
+    // ── Envelope-derived sub-budget (2026-07 production-canary fix, task 3) ────
+
+    [Fact]
+    public async Task Gate_sub_budget_is_capped_by_the_remaining_outer_envelope_not_just_the_ceiling()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _store.InitializeAsync(ct);
+        await SeedFloorSurvivingDocumentAsync("doc-envelope-exhausted", ct);
+
+        // A real 50ms delay comfortably UNDER the 120ms gate-sub-budget ceiling -- if the fixed
+        // ceiling alone governed the gate's CTS, this scorer would complete in time and its
+        // (rejecting) score would apply. An almost-zero outer RecallTimeoutMs forces the
+        // envelope-derived clamp to hand the gate far less than 120ms instead, so the scorer gets
+        // cancelled and the turn degrades to the floor's unfiltered result.
+        var scorer = new DelayedRelevanceScorer(RelevanceModelId, TimeSpan.FromMilliseconds(50), score: 0.0);
+        var coordinator = BuildCoordinator(relevanceScorerHolder: BuildHolder(scorer), recallTimeoutMs: 1);
+
+        var result = await coordinator.RecallAsync(BuildRequest("gate/envelope-exhausted"), ct);
+
+        Assert.False(result.Degraded);
+        Assert.Contains(result.Items, i => i.Id.Value == "doc-envelope-exhausted");
+    }
+
+    [Fact]
+    public async Task Gate_runs_to_completion_when_the_outer_envelope_still_has_headroom()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await _store.InitializeAsync(ct);
+        await SeedFloorSurvivingDocumentAsync("doc-envelope-headroom", ct);
+
+        // Same 50ms real delay and same rejecting score as the test above -- the only difference
+        // is a generous outer envelope. Proves the previous test's degradation was caused by the
+        // exhausted envelope specifically, not merely by the fake being slow: with headroom, the
+        // gate runs to completion and its score is honored (candidate dropped, not degraded).
+        var scorer = new DelayedRelevanceScorer(RelevanceModelId, TimeSpan.FromMilliseconds(50), score: 0.0);
+        var coordinator = BuildCoordinator(relevanceScorerHolder: BuildHolder(scorer), recallTimeoutMs: 5000);
+
+        var result = await coordinator.RecallAsync(BuildRequest("gate/envelope-headroom"), ct);
+
+        Assert.False(result.Degraded);
+        Assert.DoesNotContain(result.Items, i => i.Id.Value == "doc-envelope-headroom");
     }
 
     [Fact]
@@ -342,12 +386,14 @@ public sealed class SQLiteMemoryRecallGateTests : IAsyncDisposable
         bool embeddingsEnabled = true,
         bool? relevanceGateEnabled = null,
         double? thresholdOverride = null,
-        ILogger<SQLiteMemoryRecallCoordinator>? logger = null)
+        ILogger<SQLiteMemoryRecallCoordinator>? logger = null,
+        int recallTimeoutMs = 300)
         => new(
             _store,
             logger ?? NullLogger<SQLiteMemoryRecallCoordinator>.Instance,
             new MemoryConfig
             {
+                RecallTimeoutMs = recallTimeoutMs,
                 Embeddings = new MemoryEmbeddingsConfig { Enabled = embeddingsEnabled },
                 Recall = new MemoryRecallConfig
                 {
@@ -463,6 +509,29 @@ public sealed class SQLiteMemoryRecallGateTests : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Fake relevance scorer that completes after a fixed, finite real-wall-clock delay (2026-07
+    /// production-canary envelope-derived-budget tests) rather than hanging forever like
+    /// <see cref="HangingRelevanceScorer"/> — this file's own copy of a "slow but not infinite"
+    /// fake, needed to prove the gate's sub-budget is actually smaller than the fixed
+    /// <c>RelevanceGateSubBudgetMs</c> ceiling when the outer envelope is nearly exhausted. The
+    /// delay itself is real (Task.Delay inside the fake, not this test's own orchestration) — the
+    /// sanctioned way to simulate latency deterministically per this repo's testing guidelines.
+    /// </summary>
+    private sealed class DelayedRelevanceScorer(string modelId, TimeSpan delay, double score) : IRelevanceScorer
+    {
+        public string ModelId => modelId;
+
+        public bool IsAvailable => true;
+
+        [SlopwatchSuppress("SW004", "Intentional latency simulation inside a fake (never in test orchestration) -- proves the envelope-derived sub-budget clamp actually cancels a scorer that would otherwise complete within the fixed 120ms ceiling.")]
+        public async ValueTask<IReadOnlyList<double>> ScoreAsync(string query, IReadOnlyList<string> candidates, CancellationToken ct)
+        {
+            await Task.Delay(delay, ct);
+            return candidates.Select(_ => score).ToArray();
+        }
+    }
+
     /// <summary>Records every (level, message) pair logged through the generic ILogger ctor seam.</summary>
     private sealed class RecordingLogger<T> : ILogger<T>
     {
@@ -477,4 +546,24 @@ public sealed class SQLiteMemoryRecallGateTests : IAsyncDisposable
             Func<TState, Exception?, string> formatter)
             => Entries.Add((logLevel, formatter(state, exception)));
     }
+}
+
+/// <summary>
+/// Lightweight stand-in for Slopwatch's suppression attribute (mirrors
+/// <c>samples/Netclaw.Demo.AppHost.IntegrationTests/DemoEndToEndSmokeTests.cs</c>'s own copy) so
+/// this project can build without taking a hard dependency on the slopwatch tooling. Slopwatch
+/// reads the attribute name as text via the source file, so an internal definition with matching
+/// shape is enough.
+/// </summary>
+[AttributeUsage(AttributeTargets.Method | AttributeTargets.Class | AttributeTargets.Property | AttributeTargets.Field | AttributeTargets.Constructor, AllowMultiple = true)]
+internal sealed class SlopwatchSuppressAttribute : Attribute
+{
+    public SlopwatchSuppressAttribute(string ruleId, string reason)
+    {
+        RuleId = ruleId;
+        Reason = reason;
+    }
+
+    public string RuleId { get; }
+    public string Reason { get; }
 }
