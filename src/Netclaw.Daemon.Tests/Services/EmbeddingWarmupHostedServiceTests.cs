@@ -286,6 +286,137 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
         Assert.Same(initialRelevance, relevanceHolder.Current);
     }
 
+    // ── Operator alerting (memory embedding/reranker provisioning-failure alert) ──
+
+    [Fact]
+    public async Task Embedder_provisioning_failure_emits_exactly_one_operator_alert_naming_the_model_and_reason()
+    {
+        // No PrePlaceValidModelFiles() call -- the embedder fails. The relevance model succeeds so
+        // only the embedder's alert is under test here.
+        PrePlaceValidRelevanceModelFiles();
+
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
+        var relevanceHolder = CreateRelevanceScorerHolder();
+        var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true, ModelId = ModelId, AutoDownload = false } };
+        var sink = new FakeNotificationSink();
+        var service = CreateService(holder, memoryConfig, relevanceHolder, RelevanceFixtureAllowlist(), notificationSink: sink);
+
+        await service.WarmUpAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(relevanceHolder.Current.IsAvailable);
+        var alert = Assert.Single(sink.Alerts);
+        Assert.Equal(AlertType.MemoryEmbeddingModelUnavailable, alert.Category);
+        Assert.Equal(ModelId, alert.Source);
+        Assert.Contains(ModelId, alert.Summary);
+        Assert.Equal(ModelId, alert.Context?["modelId"]);
+        Assert.False(string.IsNullOrWhiteSpace(alert.Context?["reason"]));
+        Assert.Contains("lexical-only", alert.Context?["consequence"]);
+        Assert.Contains("netclaw doctor", alert.Context?["remediation"]);
+    }
+
+    [Fact]
+    public async Task Relevance_model_provisioning_failure_emits_exactly_one_operator_alert_naming_the_model_and_reason()
+    {
+        // Embedder succeeds; the relevance model fails (no PrePlaceValidRelevanceModelFiles call).
+        PrePlaceValidModelFiles();
+
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
+        var relevanceHolder = CreateRelevanceScorerHolder();
+        var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true, ModelId = ModelId, AutoDownload = false } };
+        var sink = new FakeNotificationSink();
+        var service = CreateService(holder, memoryConfig, relevanceHolder, RelevanceFixtureAllowlist(), notificationSink: sink);
+
+        await service.WarmUpAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(holder.Current.IsAvailable);
+        var alert = Assert.Single(sink.Alerts);
+        Assert.Equal(AlertType.MemoryRelevanceModelUnavailable, alert.Category);
+        Assert.Equal(RelevanceModelId, alert.Source);
+        Assert.Contains(RelevanceModelId, alert.Summary);
+        Assert.Equal(RelevanceModelId, alert.Context?["modelId"]);
+        Assert.False(string.IsNullOrWhiteSpace(alert.Context?["reason"]));
+        Assert.Contains("relevance gate is disabled", alert.Context?["consequence"]);
+        // The relevance model has no backfill-embeddings analogue -- its remediation must not
+        // suggest that command (mirrors MemoryRelevanceGateDoctorCheck's own wording).
+        Assert.DoesNotContain("backfill-embeddings", alert.Context?["remediation"]);
+    }
+
+    [Fact]
+    public async Task Both_models_failing_emits_two_distinct_operator_alerts()
+    {
+        // Neither PrePlaceValidModelFiles() nor PrePlaceValidRelevanceModelFiles() is called --
+        // both models fail to provision independently.
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
+        var relevanceHolder = CreateRelevanceScorerHolder();
+        var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true, ModelId = ModelId, AutoDownload = false } };
+        var sink = new FakeNotificationSink();
+        var service = CreateService(holder, memoryConfig, relevanceHolder, RelevanceFixtureAllowlist(), notificationSink: sink);
+
+        await service.WarmUpAsync(TestContext.Current.CancellationToken);
+
+        Assert.False(holder.Current.IsAvailable);
+        Assert.False(relevanceHolder.Current.IsAvailable);
+        Assert.Equal(2, sink.Alerts.Count);
+        Assert.Contains(sink.Alerts, a => a.Category == AlertType.MemoryEmbeddingModelUnavailable);
+        Assert.Contains(sink.Alerts, a => a.Category == AlertType.MemoryRelevanceModelUnavailable);
+        // Distinct alert ids -- these are two independent events, not one duplicated.
+        Assert.NotEqual(sink.Alerts[0].AlertId, sink.Alerts[1].AlertId);
+    }
+
+    [Fact]
+    public async Task Success_path_emits_no_operator_alerts()
+    {
+        PrePlaceValidModelFiles();
+        PrePlaceValidRelevanceModelFiles();
+
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
+        var relevanceHolder = CreateRelevanceScorerHolder();
+        var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true, ModelId = ModelId, AutoDownload = true } };
+        var sink = new FakeNotificationSink();
+        var service = CreateService(holder, memoryConfig, relevanceHolder, RelevanceFixtureAllowlist(), notificationSink: sink);
+
+        await service.WarmUpAsync(TestContext.Current.CancellationToken);
+
+        Assert.True(holder.Current.IsAvailable);
+        Assert.True(relevanceHolder.Current.IsAvailable);
+        Assert.Empty(sink.Alerts);
+    }
+
+    [Fact]
+    public async Task Disabled_config_emits_no_operator_alerts()
+    {
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "embeddings disabled"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
+        var relevanceHolder = CreateRelevanceScorerHolder();
+        var memoryConfig = new MemoryConfig { Embeddings = { Enabled = false, ModelId = ModelId } };
+        var sink = new FakeNotificationSink();
+        var service = CreateService(holder, memoryConfig, relevanceHolder, RelevanceFixtureAllowlist(), notificationSink: sink);
+
+        await service.WarmUpAsync(TestContext.Current.CancellationToken);
+
+        // Embeddings disabled is an intentional, not degraded, state -- no alert should fire.
+        Assert.Empty(sink.Alerts);
+    }
+
+    [Fact]
+    public async Task Provisioning_failure_alert_is_latched_and_does_not_refire_across_repeated_warmup_runs()
+    {
+        // Neither model's fixture files are placed -- both fail every time WarmUpAsync runs.
+        var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder(ModelId, "warmup not yet run"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
+        var relevanceHolder = CreateRelevanceScorerHolder();
+        var memoryConfig = new MemoryConfig { Embeddings = { Enabled = true, ModelId = ModelId, AutoDownload = false } };
+        var sink = new FakeNotificationSink();
+        var service = CreateService(holder, memoryConfig, relevanceHolder, RelevanceFixtureAllowlist(), notificationSink: sink);
+
+        await service.WarmUpAsync(TestContext.Current.CancellationToken);
+        await service.WarmUpAsync(TestContext.Current.CancellationToken);
+
+        // Exactly one alert per model in total across both runs -- the latch, not the retry count,
+        // governs how many alerts an operator sees.
+        Assert.Equal(2, sink.Alerts.Count);
+        Assert.Single(sink.Alerts, a => a.Category == AlertType.MemoryEmbeddingModelUnavailable);
+        Assert.Single(sink.Alerts, a => a.Category == AlertType.MemoryRelevanceModelUnavailable);
+    }
+
     // ── Keep-warm ticks (memory-relevance-gate 2026-07 canary fix) ──
     //
     // These tests exercise KeepWarmTickAsync/KeepWarmLoopAsync directly against simple signaling
@@ -415,9 +546,11 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
         MemoryConfig memoryConfig,
         RelevanceScorerHolder relevanceScorerHolder,
         IReadOnlyDictionary<string, RelevanceModelManifestEntry> relevanceAllowlist,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IOperationalNotificationSink? notificationSink = null)
         => new(_provisioner, _store, holder, relevanceScorerHolder, _allowlist, relevanceAllowlist, memoryConfig, _paths,
-            timeProvider ?? TimeProvider.System, NullLogger<EmbeddingWarmupHostedService>.Instance);
+            timeProvider ?? TimeProvider.System, notificationSink ?? NullNotificationSink.Instance,
+            NullLogger<EmbeddingWarmupHostedService>.Instance);
 
     private static RelevanceScorerHolder CreateRelevanceScorerHolder()
         => new(new UnavailableRelevanceScorer(RelevanceModelId, "warmup not yet run"), initialCalibratedThreshold: 0.0);
@@ -549,5 +682,18 @@ public sealed class EmbeddingWarmupHostedServiceTests : IAsyncLifetime
                 throw throwOnScore;
             return ValueTask.FromResult<IReadOnlyList<double>>(candidates.Select(_ => 1.0).ToArray());
         }
+    }
+
+    /// <summary>
+    /// Captures every <see cref="OperationalAlert"/> emitted during a test — mirrors
+    /// <c>McpReconnectionServiceTests.FakeNotificationSink</c>'s shape. Tests below only ever
+    /// await <c>WarmUpAsync</c> to completion before inspecting <see cref="Alerts"/>, so no
+    /// additional synchronization is needed.
+    /// </summary>
+    private sealed class FakeNotificationSink : IOperationalNotificationSink
+    {
+        public List<OperationalAlert> Alerts { get; } = [];
+
+        public void Emit(OperationalAlert alert) => Alerts.Add(alert);
     }
 }

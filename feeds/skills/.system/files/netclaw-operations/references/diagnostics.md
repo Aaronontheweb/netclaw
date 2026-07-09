@@ -28,8 +28,10 @@ Log split — one stream, partitioned locally by session:
   id — nothing is duplicated locally.
 - `daemon.log` holds only sessionless, daemon-wide lines: startup/config, session
   start/stop, and operational **alerts** (e.g. the `provider.unreachable` /
-  `provider.failover` alert raised when an inference provider goes down — surfaced
-  here, and to webhooks, by the notification sink). Note the *per-call* failover/retry
+  `provider.failover` alert raised when an inference provider goes down, or
+  `memory.embedding_model.unavailable` / `memory.relevance_model.unavailable` when a
+  memory ONNX model fails to provision or load — surfaced here, and to webhooks, by
+  the notification sink). Note the *per-call* failover/retry
   log lines emitted while serving a specific session carry that session's id, so they
   partition into its `session.log`; the daemon-wide outage signal is the alert in
   `daemon.log`. Rolled daily, capped at 10 MB per file.
@@ -75,6 +77,7 @@ debugging a daemon-wide problem → read `daemon.log`.
 | No LLM responses | `netclaw doctor`; verify provider credentials |
 | Missing tools | `netclaw mcp list`; check MCP connection state |
 | Memory recall degraded | `netclaw status` memory section |
+| Memory embedding/relevance model unavailable | Fires a `memory.embedding_model.unavailable` / `memory.relevance_model.unavailable` operational alert (once per model per daemon run) naming the model, failure reason, and consequence when `Memory.Embeddings.Enabled=true` and either ONNX model fails to provision or load; see `netclaw-memory`'s Embeddings section and `netclaw doctor`'s Memory Embeddings / Memory Relevance Gate checks |
 | Daemon won't start | crash logs at `~/.netclaw/logs/crash-*.log` |
 | Docker daemon cannot create `/home/netclaw/.netclaw/*` | Official image entrypoint repairs writable bind mounts to UID/GID `1654:1654`; if bypassed or read-only, run `sudo chown -R 1654:1654 <host-data-dir>` or use a Docker named volume |
 | Discord/Slack channel offline | `netclaw status` shows the channel `disconnected` with a reason. Discord may also report `degraded` when Discord.Net says the socket is connected but the gateway is not ready, such as after a resumed session that Netclaw is replacing with a clean reconnect. A misconfigured channel (bad token, missing Discord Message Content intent) degrades only that channel — the daemon keeps running and other channels are unaffected. A transient network failure retries automatically; a config/permission failure stays offline until the operator fixes the config and restarts the daemon. |
