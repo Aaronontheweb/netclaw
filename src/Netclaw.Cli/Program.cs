@@ -76,7 +76,11 @@ static async Task RunAsync(string[] args)
             WriteGeneralHelp();
             return;
         case CliParseKind.Version:
-            Console.WriteLine($"netclaw {BuildInfo.Version} (commit {BuildInfo.CommitHash}, built {BuildInfo.BuildTimestamp})");
+            // FullVersion (not Version) — Version is the numeric AssemblyVersion prefix and
+            // silently drops any prerelease suffix, so a beta build (e.g. "0.25.0-alpha.onnx.2")
+            // printed as plain "0.25.0" here, indistinguishable from a stable release
+            // (alpha.onnx.2 production canary finding).
+            Console.WriteLine($"netclaw {BuildInfo.FullVersion} (commit {BuildInfo.CommitHash}, built {BuildInfo.BuildTimestamp})");
             return;
         case CliParseKind.Unknown:
             Console.Error.WriteLine($"netclaw: '{parseResult.Mode}' is not a netclaw command. See 'netclaw --help'.");

@@ -53,6 +53,21 @@ using Netclaw.Tools;
 using Netclaw.Security;
 using static Microsoft.Extensions.Logging.LogLevel;
 
+// Handled first, before any directory creation, lock-file acquisition, or host startup:
+// `netclawd --version`/`-v` must print the version and exit rather than booting a real
+// daemon instance (alpha.onnx.2 production canary regression).
+if (DaemonCliArgs.IsVersionRequest(args))
+{
+    // Fully qualified: Program.cs (top-level statements) sits in the global namespace, and both
+    // Netclaw.Daemon and Netclaw.Configuration are `using`-imported here, so the unqualified
+    // "BuildInfo" is ambiguous between the two. Netclaw.Daemon.BuildInfo is the daemon-specific
+    // facade that reads the daemon assembly's own metadata (see that type's remarks).
+    Console.WriteLine(
+        $"netclawd {Netclaw.Daemon.BuildInfo.FullVersion} "
+        + $"(commit {Netclaw.Daemon.BuildInfo.CommitHash}, built {Netclaw.Daemon.BuildInfo.BuildTimestamp})");
+    return;
+}
+
 var bootstrapPaths = new NetclawPaths();
 try
 {
