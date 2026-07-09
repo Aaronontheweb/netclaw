@@ -76,6 +76,47 @@ public sealed class MemoryCommandTests
         Assert.Contains("AutoDownload", stderr);
     }
 
+    [Theory]
+    [InlineData("--help")]
+    [InlineData("-h")]
+    [InlineData("help")]
+    public async Task BackfillEmbeddings_help_flag_prints_help_and_does_not_execute(string helpToken)
+    {
+        // Canary regression: `netclaw memory backfill-embeddings --help` was executing the real
+        // provision-and-embed run (downloading models, writing embeddings) instead of printing
+        // help, because only args[1] (the subcommand slot) was checked for a help token. Prove
+        // the fix by seeding a document that WOULD be embedded if the command ran for real (as
+        // in BackfillEmbeddings_embeds_missing_documents_and_reports_a_summary above) and
+        // asserting nothing was written.
+        var paths = CreateTempPaths(prePlaceValidModel: true);
+        var config = BuildConfig(autoDownload: true);
+
+        var store = new SQLiteMemoryStore(paths.MemorySqliteDbPath, TimeProvider.System);
+        await store.InitializeAsync(TestContext.Current.CancellationToken);
+        await SeedDocumentAsync(store, "doc-1", "Doc One", "first body");
+
+        var (exitCode, stdout) = await RunCapturedAsync(["memory", "backfill-embeddings", helpToken], paths, config);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Usage: netclaw memory <subcommand>", stdout);
+        Assert.DoesNotContain("Embedding", stdout);
+
+        var rows = await store.GetEmbeddingsForModelAsync(ModelId, TestContext.Current.CancellationToken);
+        Assert.Empty(rows);
+    }
+
+    [Fact]
+    public async Task TopLevelHelp_still_prints_help()
+    {
+        var paths = CreateTempPaths(prePlaceValidModel: false);
+        var config = BuildConfig(autoDownload: false);
+
+        var (exitCode, stdout) = await RunCapturedAsync(["memory", "--help"], paths, config);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Usage: netclaw memory <subcommand>", stdout);
+    }
+
     [Fact]
     public async Task BackfillEmbeddings_with_force_re_embeds_every_recallable_document()
     {

@@ -181,6 +181,40 @@ public sealed class CliArgsParserTests
         return commands;
     }
 
+    /// <summary>
+    /// Regression coverage for the canary "help executes instead of printing help" family of
+    /// bugs (<c>netclaw memory backfill-embeddings --help</c> ran a real embed pass;
+    /// <c>netclaw daemon stop --help</c> would have actually stopped the daemon). Every fix
+    /// site (MemoryCommand, the Program.cs daemon dispatch, WebhooksCommand, ReminderCommand)
+    /// routes through this one helper, so its own scan logic only needs proving once.
+    /// </summary>
+    [Theory]
+    [InlineData(new[] { "memory", "backfill-embeddings" }, false)]
+    [InlineData(new[] { "memory", "backfill-embeddings", "--force" }, false)]
+    [InlineData(new[] { "memory", "backfill-embeddings", "--help" }, true)]
+    [InlineData(new[] { "memory", "backfill-embeddings", "-h" }, true)]
+    [InlineData(new[] { "memory", "backfill-embeddings", "help" }, true)]
+    [InlineData(new[] { "daemon", "stop" }, false)]
+    [InlineData(new[] { "daemon", "stop", "--help" }, true)]
+    public void HasTrailingHelpToken_scans_from_startIndex(string[] args, bool expected)
+    {
+        Assert.Equal(expected, CliArgsParser.HasTrailingHelpToken(args, startIndex: 2));
+    }
+
+    [Fact]
+    public void HasTrailingHelpToken_ignores_tokens_before_startIndex()
+    {
+        // The subcommand itself ("help") sits at index 1, before startIndex — this helper is
+        // only meant to scan trailing args, so it must not double-count the subcommand slot.
+        Assert.False(CliArgsParser.HasTrailingHelpToken(["memory", "help"], startIndex: 2));
+    }
+
+    [Fact]
+    public void HasTrailingHelpToken_returns_false_for_empty_tail()
+    {
+        Assert.False(CliArgsParser.HasTrailingHelpToken(["memory", "backfill-embeddings"], startIndex: 2));
+    }
+
     private static string ReadProgramCsSource() => File.ReadAllText(Path.Combine(FindRepoRoot(), "src", "Netclaw.Cli", "Program.cs"));
 
     private static string FindRepoRoot()

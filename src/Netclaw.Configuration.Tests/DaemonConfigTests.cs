@@ -287,4 +287,26 @@ public sealed class DaemonConfigTests
 
         Assert.Contains(issues, issue => issue.Message.Contains("not-an-ip", StringComparison.OrdinalIgnoreCase));
     }
+
+    /// <summary>
+    /// Regression guard for the canary daemon-stop finding:
+    /// <see cref="DaemonConfig.GracefulShutdownBudget"/> is the single source of truth shared by
+    /// the daemon's CoordinatedShutdown session-drain phase, its generic-host ShutdownTimeout,
+    /// the CLI's SIGTERM grace period, and the generated systemd unit's TimeoutStopSec. It only
+    /// does its job if it comfortably exceeds how long a session can legitimately still be
+    /// mid-LLM-call at shutdown (<see cref="SessionConfig.TurnLlmTimeout"/>'s default) — shrink
+    /// it below that and the CLI (or systemd) will force-kill the daemon mid-graceful-drain
+    /// again, exactly the bug this constant exists to prevent.
+    /// </summary>
+    [Fact]
+    public void GracefulShutdownBudget_exceeds_default_TurnLlmTimeout()
+    {
+        var defaultTurnLlmTimeout = new SessionConfig().TurnLlmTimeout;
+
+        Assert.True(
+            DaemonConfig.GracefulShutdownBudget > defaultTurnLlmTimeout,
+            $"GracefulShutdownBudget ({DaemonConfig.GracefulShutdownBudget}) must exceed the default " +
+            $"TurnLlmTimeout ({defaultTurnLlmTimeout}) so an in-flight LLM turn can finish draining " +
+            "before the daemon's graceful-shutdown budget is exhausted.");
+    }
 }

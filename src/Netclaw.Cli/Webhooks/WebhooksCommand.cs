@@ -23,6 +23,13 @@ internal static class WebhooksCommand
         if (subcommand is "help" or "-h" or "--help")
             return Task.FromResult(WriteHelp(output));
 
+        // list/show/delete/validate take no --help of their own, so a trailing --help/-h
+        // was previously ignored and the subcommand ran for real (e.g. `webhooks list --help`
+        // still listed routes). `set` is excluded — it already has its own more specific
+        // WriteSetHelp() gated on HasFlag(args, "--help"/"-h").
+        if (subcommand is not "set" && CliArgsParser.HasTrailingHelpToken(args, startIndex: 2))
+            return Task.FromResult(WriteHelp(output));
+
         var store = new WebhookRouteStore(paths);
 
         return Task.FromResult(subcommand switch
