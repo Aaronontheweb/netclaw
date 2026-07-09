@@ -33,6 +33,21 @@ namespace Netclaw.Daemon.Services;
 /// rather than blocking <see cref="StartAsync"/> so a slow/hanging download can never delay the
 /// rest of the host's startup sequence either.
 /// </para>
+///
+/// <para>
+/// <b>Keep-warm (memory-relevance-gate 2026-07 canary fix):</b> the one-shot warm-up call above
+/// only pays first-call ONNX session / JIT cost once, at startup. On a long-lived daemon a
+/// subsequent idle gap (no memory-touching turns for a while — the exact shape of a scheduled
+/// reminder session waking up) lets the OS page out an ONNX session's working set entirely; the
+/// next real turn then pays a full cold-start cost that a fixed per-turn sub-budget was never
+/// sized for. A live production canary caught exactly this: two <c>memory_recall_gate_degraded</c>
+/// events with <c>TaskCanceledException</c>, both in reminder sessions firing after an idle
+/// period. <see cref="KeepWarmLoopAsync"/> re-exercises both ONNX sessions on a periodic tick
+/// while embeddings are enabled, so neither ever goes cold enough to blow its sub-budget on the
+/// next real turn — see <see cref="Netclaw.Actors.Sessions.SQLiteMemoryRecallCoordinator"/>'s
+/// relevance-gate sub-budget remarks for the other half of this fix (the envelope-derived
+/// sub-budget clamp).
+/// </para>
 /// </summary>
 internal sealed class EmbeddingWarmupHostedService(
     EmbeddingModelProvisioner provisioner,
@@ -43,7 +58,8 @@ internal sealed class EmbeddingWarmupHostedService(
     IReadOnlyDictionary<string, RelevanceModelManifestEntry> relevanceAllowlist,
     MemoryConfig memoryConfig,
     NetclawPaths paths,
-    ILogger<EmbeddingWarmupHostedService> logger) : IHostedService
+    TimeProvider timeProvider,
+    ILogger<EmbeddingWarmupHostedService> logger) : IHostedService, IDisposable
 {
     /// <summary>
     /// Gap-repair batch size. Kept small and yielding between batches (task 2.7) so a large
@@ -52,13 +68,122 @@ internal sealed class EmbeddingWarmupHostedService(
     /// </summary>
     internal const int GapRepairBatchSize = 16;
 
+    /// <summary>
+    /// Keep-warm tick period (memory-relevance-gate 2026-07 canary fix). Frequent enough that
+    /// neither ONNX session's working set gets fully paged out between ticks on the idle-reminder
+    /// shape the canary caught, cheap enough (one tiny embed + one tiny 1-pair score, a handful of
+    /// milliseconds warm) that it is negligible background CPU for a daemon otherwise doing
+    /// nothing.
+    /// </summary>
+    internal static readonly TimeSpan KeepWarmInterval = TimeSpan.FromMinutes(5);
+
+    /// <summary>Fixed, tiny keep-warm query/candidate text — content is irrelevant, only inference-path exercise matters.</summary>
+    private const string KeepWarmQueryText = "netclaw keep-warm probe";
+
+    private const string KeepWarmCandidateText = "netclaw keep-warm reference candidate";
+
+    /// <summary>Minimum interval between two keep-warm-failure debug log lines, mirroring the recall coordinator's degradation-log cooldowns.</summary>
+    private static readonly TimeSpan KeepWarmFailureLogCooldown = TimeSpan.FromMinutes(5);
+
+    private readonly CancellationTokenSource _keepWarmCts = new();
+    private Task? _keepWarmLoop;
+    // 0 (not long.MinValue) is the safe "never logged" sentinel: any real Unix-ms timestamp minus
+    // 0 is astronomically larger than KeepWarmFailureLogCooldown, so the very first failure always
+    // logs, and there is no risk of the subtraction below overflowing.
+    private long _lastKeepWarmFailureLogMs;
+
     public Task StartAsync(CancellationToken cancellationToken)
     {
         _ = Task.Run(() => WarmUpAsync(CancellationToken.None), CancellationToken.None);
+        _keepWarmLoop = Task.Run(() => KeepWarmLoopAsync(_keepWarmCts.Token), CancellationToken.None);
         return Task.CompletedTask;
     }
 
-    public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        await _keepWarmCts.CancelAsync();
+        if (_keepWarmLoop is not null)
+            await _keepWarmLoop.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+    }
+
+    public void Dispose() => _keepWarmCts.Dispose();
+
+    /// <summary>
+    /// Periodic keep-warm loop (memory-relevance-gate 2026-07 canary fix): ticks every
+    /// <see cref="KeepWarmInterval"/> for as long as embeddings are enabled, re-exercising both
+    /// ONNX sessions via <see cref="KeepWarmTickAsync"/> so an idle gap between real turns never
+    /// lets either session's working set page out entirely. Built on <see cref="PeriodicTimer"/>
+    /// over the injected <see cref="TimeProvider"/> — the same virtualizable-timer pattern
+    /// <c>McpReconnectionService</c> already uses for its own periodic tick — so tests can drive
+    /// ticks deterministically with a <c>FakeTimeProvider</c> instead of real wall-clock delays.
+    /// A disabled config is checked once up front rather than per tick: an operator flip requires
+    /// a restart, same as every other <c>Memory.*</c> setting this service already assumes.
+    /// </summary>
+    internal async Task KeepWarmLoopAsync(CancellationToken ct)
+    {
+        if (!memoryConfig.Embeddings.Enabled)
+            return;
+
+        using var timer = new PeriodicTimer(KeepWarmInterval, timeProvider);
+        while (await timer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+        {
+            await KeepWarmTickAsync(ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// One keep-warm tick: a single tiny embed (<see cref="EmbeddingPurpose.RetrievalQuery"/>,
+    /// mirroring the shape of a real recall turn's query embed) and a single tiny 1-pair
+    /// cross-encoder score, each only attempted while its holder currently reports
+    /// <c>IsAvailable</c> (a holder still pointed at an <c>Unavailable*</c> stub — warmup not yet
+    /// complete, or a load that failed — has nothing to keep warm). Never throws: any failure
+    /// (a transient ONNX error, a holder swapped mid-tick) is caught and rate-limited-logged at
+    /// Debug, since a missed keep-warm tick is not itself a user-visible degradation — the next
+    /// tick or the next real turn's own degradation path is what would actually surface a
+    /// persistently broken model.
+    /// </summary>
+    internal async Task KeepWarmTickAsync(CancellationToken ct)
+    {
+        try
+        {
+            var embedder = holder.Current;
+            if (embedder.IsAvailable)
+                await embedder.EmbedAsync(KeepWarmQueryText, EmbeddingPurpose.RetrievalQuery, ct).ConfigureAwait(false);
+
+            var scorer = relevanceScorerHolder.Current;
+            if (scorer.IsAvailable)
+                await scorer.ScoreAsync(KeepWarmQueryText, [KeepWarmCandidateText], ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Host shutdown mid-tick -- let this propagate so KeepWarmLoopAsync's own
+            // WaitForNextTickAsync(ct) loop unwinds normally instead of being masked as a tick
+            // failure.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            LogKeepWarmFailed(ex);
+        }
+    }
+
+    /// <summary>
+    /// Rate-limited keep-warm-failure log: at most one Debug line per
+    /// <see cref="KeepWarmFailureLogCooldown"/>, the same cooldown-throttle shape
+    /// <c>SQLiteMemoryRecallCoordinator</c>'s degradation logs use, so a persistently failing
+    /// keep-warm tick (e.g. a model that failed to load) does not spam the log every 5 minutes
+    /// forever.
+    /// </summary>
+    private void LogKeepWarmFailed(Exception ex)
+    {
+        var nowMs = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        var lastMs = Interlocked.Read(ref _lastKeepWarmFailureLogMs);
+        if (nowMs - lastMs < KeepWarmFailureLogCooldown.TotalMilliseconds)
+            return;
+
+        Interlocked.Exchange(ref _lastKeepWarmFailureLogMs, nowMs);
+        logger.LogDebug(ex, "memory_embedding_keep_warm_failed");
+    }
 
     /// <summary>Internal entry point so tests can await warmup to completion deterministically.</summary>
     internal async Task WarmUpAsync(CancellationToken ct)
