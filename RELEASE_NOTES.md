@@ -1,5 +1,21 @@
 # NetClaw Release Notes
 
+## 0.25.0-alpha.onnx.4 (2026-07-09)
+
+> **Experimental feature build** (fourth in the memory-embeddings series). Same gating:
+> everything rides `Memory.Embeddings.Enabled`, off by default; install only by exact pin
+> (`NETCLAW_VERSION=0.25.0-alpha.onnx.4`). **Upgrade note:** the systemd unit template
+> changed — after installing, re-run `netclaw daemon install` to regenerate the unit and
+> pick up the new graceful-shutdown settings.
+
+### Features
+- **Operational alert on model provisioning failure** — if either ONNX model (embedder or relevance reranker) cannot be downloaded, verified, or loaded while embeddings are enabled, the daemon now pushes an operational alert to configured notification targets (same channel as reminder-failure alerts) with the failure reason and remediation, once per model per daemon run — semantic-memory degradation is no longer discoverable only via doctor/logs ([#1611](https://github.com/netclaw-dev/netclaw/pull/1611))
+
+### Bug Fixes
+- **Embedder failure no longer blocks the relevance model** — a provisioning failure in the embedding model made the reranker's provisioning unreachable, silently disabling the relevance gate alongside it ([#1611](https://github.com/netclaw-dev/netclaw/pull/1611))
+- **Graceful daemon shutdown** — `netclaw daemon stop` self-escalated to SIGKILL after 10s while the daemon's own shutdown budget allows 200s to drain in-flight turns; one `GracefulShutdownBudget` now governs the Akka shutdown phase, host shutdown timeout, CLI wait, and the generated unit's `TimeoutStopSec` ([#1612](https://github.com/netclaw-dev/netclaw/pull/1612))
+- **`--help` no longer executes commands** — `netclaw memory backfill-embeddings --help` ran a real backfill; worse, `netclaw daemon stop --help` actually stopped the daemon. Trailing help tokens are now handled uniformly across memory, daemon, webhooks, and reminder subcommands ([#1612](https://github.com/netclaw-dev/netclaw/pull/1612))
+
 ## 0.25.0-alpha.onnx.3 (2026-07-09)
 
 > **Experimental feature build** (third in the memory-embeddings series) — the canary-feedback
