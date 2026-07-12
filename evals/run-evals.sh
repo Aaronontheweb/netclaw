@@ -914,6 +914,13 @@ assert_identity_session() {
     stdout_contains 'headless/' || stdout_contains 'signalr/' || stdout_contains 'slack/'
 }
 
+assert_identity_file_routing() {
+    stdout_response_contains 'SOUL.md' && \
+        stdout_response_contains 'AGENTS.md' && \
+        stdout_response_contains 'TOOLING.md' && \
+        daemon_log_no_skill_loaded
+}
+
 # Category 2: Skill Discovery — tests that the model retrieves procedural
 # knowledge from skills when needed AND actually loaded the skill to get it.
 assert_skill_scheduling_knowledge() {
@@ -1438,6 +1445,10 @@ run_all() {
     run_case identity_session "session ID in output" \
         "What is your session ID?" \
         "What session are we in?"
+
+    run_case identity_file_routing "routes all three identity concerns without loading a skill" \
+        "Which identity file should hold each of these: my communication style, this deployment's recurring sales workflow, and the tools available on this host?" \
+        "Map personality and operator context, deployment mission and review rules, and environment capabilities to the correct Netclaw identity files."
 
     end_category
 
