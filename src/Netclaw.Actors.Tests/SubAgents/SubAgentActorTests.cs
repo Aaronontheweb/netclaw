@@ -197,7 +197,7 @@ public class SubAgentActorTests : TestKit
         var fakeClient = new FakeChatClient();
         var definition = CreateDefinition() with
         {
-            OperatingRules = "Operating rules: never invent runtime facts.",
+            OperatingRules = "Operating rules: never invent runtime facts.\n\nDeployment playbook: review customer email.",
             ProjectInstructions = "Project rules: prefer C#.",
             SystemPrompt = "You are a test agent.\n\n[Skill Overlay]\nUse focused analysis."
         };
@@ -214,6 +214,7 @@ public class SubAgentActorTests : TestKit
         AssertPromptOrder(
             systemPrompt,
             "Operating rules: never invent runtime facts.",
+            "Deployment playbook: review customer email.",
             "Project rules: prefer C#.",
             "You are a test agent.",
             "[Skill Overlay]",

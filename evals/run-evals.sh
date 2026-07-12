@@ -328,7 +328,12 @@ start_eval_daemon() {
     if [[ -d "$template_dir" ]]; then
         # Substitute placeholders with eval-appropriate defaults
         substitute_identity_template "$template_dir/SOUL.template.md" "$EVAL_HOME/identity/SOUL.md"
-        substitute_identity_template "$template_dir/AGENTS.template.md" "$EVAL_HOME/identity/AGENTS.md"
+        if [[ -f "$REPO_ROOT/evals/fixtures/identity/AGENTS.md" ]]; then
+            cp "$REPO_ROOT/evals/fixtures/identity/AGENTS.md" "$EVAL_HOME/identity/AGENTS.md"
+        else
+            echo "ERROR: deployment mission eval fixture is missing." >&2
+            exit 1
+        fi
         substitute_identity_template "$template_dir/TOOLING.template.md" "$EVAL_HOME/identity/TOOLING.md"
     else
         echo "ERROR: no identity templates at $template_dir/ — Identity evals will fail." >&2
@@ -971,6 +976,10 @@ assert_skill_activation_subagent_authoring() {
     daemon_log_skill_loaded 'subagent-authoring'
 }
 
+assert_skill_activation_identity() {
+    daemon_log_skill_loaded 'netclaw-identity'
+}
+
 # User skills (non-system, from eval fixtures)
 assert_skill_activation_user_coding() {
     daemon_log_skill_loaded 'modern-csharp-coding-standards'
@@ -1118,15 +1127,32 @@ assert_autonomy_web_fetch() {
     stdout_contains '\[tool:call\] web_search' || stdout_contains '\[tool:call\] web_fetch'
 }
 
+# Category 6a: Deployment Mission
+assert_deployment_mission_sales_email() {
+    daemon_log_skill_loaded 'business-email-review' && \
+        stdout_response_contains '^Subject:' && \
+        stdout_response_contains 'Would Tuesday or Wednesday work for a 15-minute call?'
+}
+
 # Category 6b: Subagents
 assert_subagent_headless_ambiguous_task() {
     stdout_tool_called 'spawn_agent' && \
-        daemon_log_contains 'SubAgent \[headless-analyst\] completed \(success=True' && \
+        stdout_contains '\[subagent:done\] headless-analyst (completed' && \
         stdout_response_contains 'assumption' && \
         stdout_response_not_contains 'which.*include' && \
         stdout_response_not_contains 'what.*include' && \
         stdout_response_not_contains 'please.*clarify' && \
         stdout_response_not_contains 'need.*more.*information'
+}
+
+assert_subagent_deployment_mission() {
+    stdout_tool_called 'spawn_agent' && \
+        stdout_contains '\[subagent:done\] headless-analyst (completed' && \
+        stdout_response_contains '^Subject:' && \
+        stdout_response_contains 'Would Tuesday or Wednesday work for a 15-minute call?' && \
+        stdout_response_not_contains '[0-9][0-9]*%' && \
+        stdout_response_not_contains 'teams using' && \
+        stdout_response_not_contains 'worked with a'
 }
 
 # Category 7: Complex Task Execution
@@ -1487,6 +1513,11 @@ run_all() {
         "Walk me through authoring a new file-based subagent." \
         "What goes in a Netclaw agent definition file?"
 
+    run_case skill_activation_identity "skill loaded" \
+        "Help me change this agent's mission and recurring review workflow." \
+        "Which identity file should contain our deployment playbook?" \
+        "I need to update the agent's skill-selection and delegation rules."
+
     # User skills (non-system, loaded from eval fixtures)
     run_case skill_activation_user_coding "skill loaded" \
         "In C#, should I use a record or a class for this DTO?" \
@@ -1587,12 +1618,30 @@ run_all() {
 
     end_category
 
+    # ── Category 6a: Deployment Mission ──
+    print_category "Deployment Mission"
+
+    run_case deployment_mission_sales_email "loads the required skill and returns reviewed mission-compliant email" \
+        "Write a short prospecting email to Morgan, an engineering director evaluating incident-response tools. Introduce Netclaw and ask for a call." \
+        "Draft a concise outbound email to Riley, a platform lead looking to reduce repetitive operations work. Offer a brief Netclaw introduction."
+
+    end_category
+
     # ── Category 6b: Subagents ──
     print_category "Subagents"
+
+    local previous_timeout="$PROMPT_TIMEOUT"
+    PROMPT_TIMEOUT=120
 
     run_case subagent_headless_ambiguous_task "spawned subagent completes ambiguous task without clarification" \
         "Use spawn_agent with agent headless-analyst. Ask it to prepare final release notes from these candidate changes without asking follow-up questions. Include everything that looks user-facing: fixed arrow-key input decoding; updated an internal test helper; improved file trace listener encoding. Return the subagent's assumptions and final notes." \
         "Delegate this to the headless-analyst subagent using spawn_agent: decide what belongs in release notes from this ambiguous list without asking me for clarification: legacy CSI key decoding fix; private test fixture cleanup; file trace listener writes UTF-8 correctly. Include all user-facing items and return assumptions plus final notes."
+
+    run_case subagent_deployment_mission "delegated sales email follows the inherited deployment playbook" \
+        "Use spawn_agent with agent headless-analyst to write a prospecting email to Casey, a VP of Engineering interested in reducing operational toil. Return its final email." \
+        "Delegate to headless-analyst: draft an outbound email for Jordan, a technology leader evaluating autonomous operations. Return the worker's final email."
+
+    PROMPT_TIMEOUT="$previous_timeout"
 
     end_category
 

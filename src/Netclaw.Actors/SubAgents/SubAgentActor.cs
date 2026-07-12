@@ -1330,7 +1330,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private static string BuildSystemPrompt(SubAgentDefinition definition)
     {
         // Assemble the identity stack that sub-agents inherit from the parent session:
-        // 1. Embedded AGENTS.md (operating rules, safety, grounding constraints)
+        // 1. Embedded operating core + deployment AGENTS.md mission playbook
         // 2. Project instructions (workspace/domain context from the parent's working directory)
         var basePrompt = SystemPromptAssembler.Assemble(
             agents: definition.OperatingRules,
