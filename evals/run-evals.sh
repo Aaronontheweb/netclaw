@@ -976,10 +976,6 @@ assert_skill_activation_subagent_authoring() {
     daemon_log_skill_loaded 'subagent-authoring'
 }
 
-assert_skill_activation_identity() {
-    daemon_log_skill_loaded 'netclaw-identity'
-}
-
 # User skills (non-system, from eval fixtures)
 assert_skill_activation_user_coding() {
     daemon_log_skill_loaded 'modern-csharp-coding-standards'
@@ -1512,11 +1508,6 @@ run_all() {
         "How do I create a custom subagent in Netclaw?" \
         "Walk me through authoring a new file-based subagent." \
         "What goes in a Netclaw agent definition file?"
-
-    run_case skill_activation_identity "skill loaded" \
-        "Help me change this agent's mission and recurring review workflow." \
-        "Which identity file should contain our deployment playbook?" \
-        "I need to update the agent's skill-selection and delegation rules."
 
     # User skills (non-system, loaded from eval fixtures)
     run_case skill_activation_user_coding "skill loaded" \

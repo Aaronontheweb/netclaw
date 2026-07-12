@@ -35,7 +35,7 @@ The system SHALL assemble session context from ordered layers: `SOUL.md`, the au
 
 ### Requirement: Personality bootstrap via onboarding wizard
 
-The system SHALL bootstrap agent personality and its deployment playbook through `netclaw init`. The wizard SHALL collect owner identity, write initial `SOUL.md` and `TOOLING.md`, and seed a minimal `AGENTS.md` playbook scaffold only when that file is absent. The post-init conversation SHALL refine personality and mission guidance using identity-file tools guided by the `netclaw-identity` skill.
+The system SHALL bootstrap agent personality and its deployment playbook through `netclaw init`. The wizard SHALL collect owner identity, write initial `SOUL.md` and `TOOLING.md`, and seed a minimal `AGENTS.md` playbook scaffold only when that file is absent. The post-init conversation SHALL refine personality and mission guidance using identity-file tools and the always-present embedded identity routing rules.
 
 #### Scenario: Fresh init seeds identity files
 
@@ -52,7 +52,7 @@ The system SHALL bootstrap agent personality and its deployment playbook through
 
 ### Requirement: Self-configuration through conversation
 
-The system SHALL allow the agent to modify identity files (`SOUL.md`, `AGENTS.md`, `TOOLING.md`) and skill files (`~/.netclaw/skills/*.md`) through conversation using `file_read` and `file_write`. The `netclaw-identity` built-in skill SHALL route personality and operator context to `SOUL.md`, deployment mission/workflows/skill-selection/review rules to `AGENTS.md`, and environment capabilities to `TOOLING.md`. The agent SHALL propose and obtain confirmation before changing mission guidance. The agent SHALL NOT place secrets, volatile entity data, ACL, or security policy in the deployment playbook and SHALL NOT have tools that directly modify `netclaw.json`, `secrets.json`, ACL, or security policy.
+The system SHALL allow the agent to modify identity files (`SOUL.md`, `AGENTS.md`, `TOOLING.md`) and skill files (`~/.netclaw/skills/*.md`) through conversation using `file_read` and `file_write`. Always-present embedded guidance SHALL route personality and operator context to `SOUL.md`, deployment mission/workflows/skill-selection/review rules to `AGENTS.md`, and environment capabilities to `TOOLING.md`. The agent SHALL propose and obtain confirmation before changing mission guidance. The agent SHALL NOT place secrets, volatile entity data, ACL, or security policy in the deployment playbook and SHALL NOT have tools that directly modify `netclaw.json`, `secrets.json`, ACL, or security policy.
 
 #### Scenario: Agent updates deployment mission
 

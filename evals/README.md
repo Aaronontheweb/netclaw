@@ -62,7 +62,7 @@ log patterns** (skill loading, memory recall, checkpoint formation).
 | Category | Cases | What It Validates |
 |----------|-------|-------------------|
 | Identity & Self-Awareness | 4 | Bot knows its name, version, repo, session ID |
-| Skill Auto-Loading | 5 | Keyword matching triggers correct skills, including identity and mission authoring guidance |
+| Skill Auto-Loading | 4 | Keyword matching triggers correct skills |
 | Memory Pipeline | 4 | Memory recall is active, identity-vs-memory routing is correct, explicit saves use memory tools, and automatic checkpointing still fires |
 | Tool Discovery & Use | 4 | Progressive tool discovery and invocation |
 | Grounding & Alignment | 3 | Uses tools to verify facts, admits uncertainty |

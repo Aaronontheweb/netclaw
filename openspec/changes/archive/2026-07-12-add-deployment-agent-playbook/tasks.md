@@ -9,7 +9,7 @@
 - [x] 2.1 Replace the obsolete disk AGENTS template with a minimal deployment mission scaffold
 - [x] 2.2 Seed the scaffold only when absent and preserve it during init and identity redo
 - [x] 2.3 Extend the post-init conversation to separate SOUL context from confirmed AGENTS mission guidance
-- [x] 2.4 Add the netclaw-identity system skill with identity routing, authoring, safety, and activation guidance
+- [x] 2.4 Add identity routing, authoring, and safety guidance to the always-present embedded operating core
 - [x] 2.5 Update PRD/spec/operator documentation and native smoke assertions
 
 ## 3. Behavioral Evaluation
