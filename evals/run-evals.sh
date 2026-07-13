@@ -1148,14 +1148,12 @@ assert_subagent_headless_ambiguous_task() {
         stdout_response_not_contains 'need.*more.*information'
 }
 
-assert_subagent_deployment_mission() {
+assert_subagent_specialization_precedence() {
     stdout_tool_called 'spawn_agent' && \
         stdout_contains '\[subagent:done\] headless-analyst (completed' && \
+        stdout_contains 'SPECIALIZED ANALYST BRIEF' && \
         stdout_response_contains '^Subject:' && \
-        stdout_response_contains 'Would Tuesday or Wednesday work for a 15-minute call?' && \
-        stdout_response_not_contains '[0-9][0-9]*%' && \
-        stdout_response_not_contains 'teams using' && \
-        stdout_response_not_contains 'worked with a'
+        stdout_response_contains 'Would Tuesday or Wednesday work for a 15-minute call?'
 }
 
 # Category 7: Complex Task Execution
@@ -1639,7 +1637,7 @@ run_all() {
         "Use spawn_agent with agent headless-analyst. Ask it to prepare final release notes from these candidate changes without asking follow-up questions. Include everything that looks user-facing: fixed arrow-key input decoding; updated an internal test helper; improved file trace listener encoding. Return the subagent's assumptions and final notes." \
         "Delegate this to the headless-analyst subagent using spawn_agent: decide what belongs in release notes from this ambiguous list without asking me for clarification: legacy CSI key decoding fix; private test fixture cleanup; file trace listener writes UTF-8 correctly. Include all user-facing items and return assumptions plus final notes."
 
-    run_case subagent_deployment_mission "delegated sales email follows the inherited deployment playbook" \
+    run_case subagent_specialization_precedence "specialized subagent guidance overrides a conflicting deployment playbook" \
         "Use spawn_agent with agent headless-analyst to write a prospecting email to Casey, a VP of Engineering interested in reducing operational toil. Return its final email." \
         "Delegate to headless-analyst: draft an outbound email for Jordan, a technology leader evaluating autonomous operations. Return the worker's final email."
 

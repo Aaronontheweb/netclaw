@@ -187,6 +187,8 @@ public class SubAgentActorTests : TestKit
         Assert.NotNull(fakeClient.LastReceivedMessages);
         Assert.Equal(ChatRole.System, fakeClient.LastReceivedMessages[0].Role);
         Assert.Contains("headless, non-interactive worker", fakeClient.LastReceivedMessages[0].Text);
+        Assert.Contains("subagent role guidance and assigned task are more specific", fakeClient.LastReceivedMessages[0].Text);
+        Assert.Contains("safety, security, trust-boundary, approval, and tool-policy rules remain mandatory", fakeClient.LastReceivedMessages[0].Text);
         Assert.Contains("Do not ask the user clarifying questions", fakeClient.LastReceivedMessages[0].Text);
         Assert.Contains("Parent-mediated tool approval", fakeClient.LastReceivedMessages[0].Text);
     }

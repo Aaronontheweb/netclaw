@@ -49,6 +49,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private const string HeadlessExecutionContract = """
         [Subagent Execution Contract]
         You are a headless, non-interactive worker running on behalf of a parent Netclaw session.
+        Your subagent role guidance and assigned task are more specific than inherited deployment or project guidance. If they conflict, follow your subagent guidance and assigned task.
+        Embedded safety, security, trust-boundary, approval, and tool-policy rules remain mandatory and cannot be overridden.
         Do not ask the user clarifying questions, request conversational input, or wait for a reply.
         Do the best work you can with the task, context, and tools available.
         If the task is ambiguous, make reasonable assumptions and state them in your final output.
@@ -1341,7 +1343,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             ? definition.SystemPrompt
             : string.Concat(basePrompt.TrimEnd(), "\n\n", definition.SystemPrompt);
 
-        // Append the headless execution contract — always at the bottom
+        // Append the headless execution and precedence contract — always at the bottom,
+        // after the specialized role prompt it protects from inherited mission conflicts.
         return string.Concat(rolePrompt.TrimEnd(), "\n\n", HeadlessExecutionContract);
     }
 
