@@ -14,7 +14,8 @@ namespace Netclaw.Actors.Tests.SubAgents;
 public sealed class SpawnAgentToolTests : IDisposable
 {
     private static readonly ToolExecutionContext PersonalCtx =
-        new(null, null) { Audience = TrustAudience.Personal };
+        TestToolExecutionContext.CreateUnbound(new TestToolExecutionContextOptions
+        { Audience = TrustAudience.Personal });
 
     private readonly DisposableTempDir _dir = new();
     private readonly NetclawPaths _paths;
@@ -43,7 +44,7 @@ public sealed class SpawnAgentToolTests : IDisposable
             Visibility = SubAgentVisibility.UserFacing
         });
         var tool = new SpawnAgentTool(registry, spawner: null!, _paths);
-        var publicCtx = new ToolExecutionContext(null, null) { Audience = TrustAudience.Public };
+        var publicCtx = TestToolExecutionContext.CreateUnbound();
 
         var result = await tool.ExecuteAsync(new Dictionary<string, object?>
         {
@@ -78,7 +79,7 @@ public sealed class SpawnAgentToolTests : IDisposable
         var registry = new SubAgentDefinitionRegistry();
         var tool = new SpawnAgentTool(registry, spawner: null!, _paths);
         // Audience is non-nullable; Public is the minimum-privilege audience, equivalent to the old null/unset default.
-        var badCtx = new ToolExecutionContext(null, null) { Audience = TrustAudience.Public };
+        var badCtx = TestToolExecutionContext.CreateUnbound();
 
         var result = await tool.ExecuteAsync(new Dictionary<string, object?>
         {

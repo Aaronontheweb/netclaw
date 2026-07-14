@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="SessionToolExecutionPipeline.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -249,36 +249,12 @@ internal static class SessionToolExecutionPipeline
 
         var sw = Stopwatch.StartNew();
         string resultText;
-        var context = BuildToolExecutionContext(
-            sessionId,
-            source,
-            sessionDir,
-            spawnChildActor,
-            projectDirectory,
-            recentFiles,
-            turnContext,
-            modelInputModalities,
-            maxInlineToolResultChars);
-        context.RequestedTimeoutSeconds = (int)timeout.TotalSeconds;
-
-        // Re-drive of an ApprovedOnce approval: the user already clicked
-        // "approve once" before the session passivated, but there is no
-        // persisted grant to satisfy the gate on the cold-recovered re-drive.
-        // Pre-seed the one-time approval bypass for exactly this call id so the
-        // gate passes once without emitting a duplicate approval prompt. The
-        // bypass is still tool-name- and pattern-matched inside the gate
-        // (DispatchingToolExecutor.IsOneTimeApprovalSatisfied) and the pipeline
-        // clears it after the attempt — it cannot leak to any other call.
-        if (oneTimeApprovalPreSeed is not null)
-        {
-            context.OneTimeApprovedToolName = tc.Name;
-            context.SetOneTimeApprovedPatterns(oneTimeApprovalPreSeed);
-        }
+        IParentApprovalBridge? approvalBridge = null;
         if (approvalChannel is not null
             && emitApprovalRequest is not null
             && CanRequestInteractiveApproval(source, turnContext))
         {
-            context.ApprovalBridge = new ParentSessionApprovalBridge(
+            approvalBridge = new ParentSessionApprovalBridge(
                 approvalChannel,
                 emitApprovalRequest,
                 sessionId,
@@ -291,7 +267,7 @@ internal static class SessionToolExecutionPipeline
         }
         var completedRuns = new List<CompletedSubAgentRun>();
         var acceptedFindings = new List<AcceptedSubAgentFinding>();
-        context.OnSubAgentActivity = info =>
+        var outputs = new ToolExecutionOutputs(info =>
         {
             if (info.IsStarted)
             {
@@ -361,7 +337,31 @@ internal static class SessionToolExecutionPipeline
                     });
                 }
             }
-        };
+        });
+        var context = BuildToolExecutionContext(
+            sessionId,
+            source,
+            sessionDir,
+            spawnChildActor,
+            approvalBridge,
+            projectDirectory,
+            recentFiles,
+            turnContext,
+            modelInputModalities,
+            maxInlineToolResultChars,
+            timeout,
+            outputs);
+
+        // Re-drive of an ApprovedOnce approval: the user already clicked
+        // "approve once" before the session passivated, but there is no
+        // persisted grant to satisfy the gate on the cold-recovered re-drive.
+        // Pre-seed the one-time approval bypass for exactly this call id so the
+        // gate passes once without emitting a duplicate approval prompt. The
+        // bypass is still tool-name- and pattern-matched inside the gate
+        // (DispatchingToolExecutor.IsOneTimeApprovalSatisfied) and the pipeline
+        // clears it after the attempt — it cannot leak to any other call.
+        if (oneTimeApprovalPreSeed is not null)
+            context.Approval.SeedOneTimeApproval(tc.Name, oneTimeApprovalPreSeed);
         try
         {
             if (decisionOverride is ApprovalDecision.Denied or ApprovalDecision.TimedOut)
@@ -419,8 +419,8 @@ internal static class SessionToolExecutionPipeline
                         // own exit, cancellation, or session passivation.
                         meta.TimeoutHintSeconds ?? 0,
                         sw.Elapsed, logger,
-                        context.AppliedApprovalDecision,
-                        context.AppliedApprovalPattern);
+                        context.Approval.AppliedDecision,
+                        context.Approval.AppliedPattern);
                 }
             }
 
@@ -430,8 +430,8 @@ internal static class SessionToolExecutionPipeline
             auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
             {
                 Allowed = true,
-                ApprovalDecision = context.AppliedApprovalDecision,
-                ApprovalPattern = context.AppliedApprovalPattern
+                ApprovalDecision = context.Approval.AppliedDecision,
+                ApprovalPattern = context.Approval.AppliedPattern
             });
         }
         catch (ToolApprovalRequiredException approvalEx)
@@ -454,7 +454,7 @@ internal static class SessionToolExecutionPipeline
                     Content = resultText,
                     ToolCallId = new ToolCallId(tc.CallId),
                     Name = tc.Name
-                }, [], context.FileAttachments, completedRuns, acceptedFindings);
+                }, [], context.Outputs.FileAttachments, completedRuns, acceptedFindings);
             }
 
             // Mid-turn approval pause: emit request to channel, block on TCS
@@ -502,8 +502,7 @@ internal static class SessionToolExecutionPipeline
                 // are also recorded by the session actor into the shared approval service.)
                 if (decision == ApprovalDecision.ApprovedOnce)
                 {
-                    context.OneTimeApprovedToolName = tc.Name;
-                    context.SetOneTimeApprovedPatterns(ctx.Patterns);
+                    context.Approval.SeedOneTimeApproval(tc.Name, ctx.Patterns);
                 }
 
                 sw = Stopwatch.StartNew();
@@ -553,7 +552,7 @@ internal static class SessionToolExecutionPipeline
                 var hint = BuildSetWorkingDirectoryHint(
                     toolName: tc.Name,
                     decision: decision,
-                    cwd: context.Cwd,
+                    cwd: context.Approval.Cwd,
                     sessionDirectory: context.SessionDirectory,
                     projectDirectory: context.ProjectDirectory,
                     setWorkingDirectoryAvailable: setWorkingDirectoryAvailable);
@@ -637,7 +636,7 @@ internal static class SessionToolExecutionPipeline
         return new ToolCallResult(
             message,
             modelInputMaterialization.MediaReferences,
-            context.FileAttachments,
+            context.Outputs.FileAttachments,
             completedRuns,
             acceptedFindings);
     }
@@ -650,8 +649,8 @@ internal static class SessionToolExecutionPipeline
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-        var grantedOneTimeToolName = context.OneTimeApprovedToolName;
-        var grantedOneTimePatterns = context.OneTimeApprovedPatterns;
+        var grantedOneTimeToolName = context.Approval.OneTimeApprovedToolName;
+        var grantedOneTimePatterns = context.Approval.OneTimeApprovedPatterns;
 
         try
         {
@@ -694,12 +693,9 @@ internal static class SessionToolExecutionPipeline
             // preserving whatever baseline state existed before this call.
             if (!string.IsNullOrWhiteSpace(grantedOneTimeToolName))
             {
-                if (!string.Equals(context.OneTimeApprovedToolName, grantedOneTimeToolName, StringComparison.Ordinal)
-                    || !SetsEqual(context.OneTimeApprovedPatterns, grantedOneTimePatterns))
-                {
-                    context.OneTimeApprovedToolName = null;
-                    context.SetOneTimeApprovedPatterns([]);
-                }
+                if (!string.Equals(context.Approval.OneTimeApprovedToolName, grantedOneTimeToolName, StringComparison.Ordinal)
+                    || !SetsEqual(context.Approval.OneTimeApprovedPatterns, grantedOneTimePatterns))
+                    context.Approval.ClearOneTimeApproval();
             }
         }
     }
@@ -910,7 +906,7 @@ internal static class SessionToolExecutionPipeline
         ILogger? logger,
         ModelInputBatchBudget? batchBudget = null)
     {
-        if (context.ModelInputFiles.Count == 0)
+        if (context.Outputs.ModelInputFiles.Count == 0)
             return new ModelInputMaterializationResult([], 0);
 
         try
@@ -921,12 +917,12 @@ internal static class SessionToolExecutionPipeline
         {
             var mediaDir = Path.Combine(sessionDir, SessionDirectoryHelper.MediaSubdirectory);
             logger?.LogWarning(ex, "Failed to create model input media directory: {Path}", mediaDir);
-            return new ModelInputMaterializationResult([], context.ModelInputFiles.Count);
+            return new ModelInputMaterializationResult([], context.Outputs.ModelInputFiles.Count);
         }
 
-        var refs = new List<SerializableMediaReference>(context.ModelInputFiles.Count);
+        var refs = new List<SerializableMediaReference>(context.Outputs.ModelInputFiles.Count);
         batchBudget ??= new ModelInputBatchBudget(MaxModelInputBatchBytes);
-        foreach (var file in context.ModelInputFiles)
+        foreach (var file in context.Outputs.ModelInputFiles)
         {
             var reservedBytes = 0L;
             try
@@ -1024,7 +1020,7 @@ internal static class SessionToolExecutionPipeline
             }
         }
 
-        return new ModelInputMaterializationResult(refs, context.ModelInputFiles.Count);
+        return new ModelInputMaterializationResult(refs, context.Outputs.ModelInputFiles.Count);
     }
 
     internal static string AppendModelInputHandoffWarning(string resultText, int failedCount)
@@ -1056,34 +1052,37 @@ internal static class SessionToolExecutionPipeline
         MessageSource? source,
         string sessionDir,
         Func<object, string, CancellationToken, Task<object>> spawnChildActor,
+        IParentApprovalBridge? approvalBridge,
         string? projectDirectory,
         IReadOnlyList<string>? recentFiles,
         TurnContext? turnContext,
         ModelModality modelInputModalities,
-        int maxInlineToolResultChars)
+        int maxInlineToolResultChars,
+        TimeSpan timeout,
+        ToolExecutionOutputs outputs)
     {
-        // A turn with no authority context carries no trust context — fall closed
-        // to the most-restrictive audience. The default is resolved once, here,
-        // so every downstream tool gate reads a guaranteed audience.
-        var context = new ToolExecutionContext(sessionId.Value, sessionDir)
+        // This legacy fallback disappears when TurnContext becomes a required
+        // batch member in Stage 2. Until then it is resolved once at the seam,
+        // never independently by downstream policy code.
+        var runScope = new ToolRunScope
         {
+            Session = new ToolSessionScope.Bound(sessionId.Value, sessionDir),
             Audience = turnContext?.Audience ?? source?.Audience ?? TrustAudience.Public,
-            // The session content budget; DispatchingToolExecutor uses it (or a
-            // tool's own override) to bound results and spill the overflow.
-            MaxInlineToolResultChars = maxInlineToolResultChars,
+            InlineOutputBudget = new InlineOutputBudget(maxInlineToolResultChars),
+            Boundary = turnContext?.Boundary ?? source?.Boundary,
+            ChannelType = turnContext?.ChannelType?.ToWireValue()
+                          ?? (source is null ? null : source.ChannelType.ToWireValue()),
+            DefaultDeliveryTarget = turnContext?.DefaultDeliveryTarget ?? source?.DefaultDeliveryTarget,
+            RequestedDeliveryTarget = turnContext?.RequestedDeliveryTarget ?? source?.RequestedDeliveryTarget,
+            SupportsInteractiveApproval = turnContext?.SupportsInteractiveApproval
+                                          ?? source?.ChannelType.SupportsInteractiveApproval(),
+            ModelInputModalities = modelInputModalities,
+            SpawnChildActor = spawnChildActor,
+            ApprovalBridge = approvalBridge,
+            ProjectDirectory = projectDirectory,
             RecentFiles = recentFiles ?? [],
         };
-        context.Boundary = turnContext?.Boundary ?? source?.Boundary;
-        context.ChannelType = turnContext?.ChannelType?.ToWireValue()
-                              ?? (source is null ? null : source.ChannelType.ToWireValue());
-        context.DefaultDeliveryTarget = turnContext?.DefaultDeliveryTarget ?? source?.DefaultDeliveryTarget;
-        context.RequestedDeliveryTarget = turnContext?.RequestedDeliveryTarget ?? source?.RequestedDeliveryTarget;
-        context.SupportsInteractiveApproval = turnContext?.SupportsInteractiveApproval
-                                               ?? source?.ChannelType.SupportsInteractiveApproval();
-        context.ModelInputModalities = modelInputModalities;
-        context.SpawnChildActor = spawnChildActor;
-        context.ProjectDirectory = projectDirectory;
-        return context;
+        return new ToolExecutionContext(runScope, new ToolExecutionTimeout(timeout), outputs);
     }
 
     private static bool CanRequestInteractiveApproval(MessageSource? source, TurnContext? turnContext)
@@ -1100,16 +1099,16 @@ internal static class SessionToolExecutionPipeline
         TimeProvider timeProvider,
         TimeSpan duration,
         ToolCallMeta? meta) => new()
-    {
-        SessionId = sessionId,
-        ToolName = new ToolName(tc.Name),
-        CallId = new ToolCallId(tc.CallId),
-        Timestamp = timeProvider.GetUtcNow(),
-        Allowed = false,
-        Duration = duration,
-        Rationale = meta?.Rationale,
-        TimeoutHintSeconds = meta?.TimeoutHintSeconds
-    };
+        {
+            SessionId = sessionId,
+            ToolName = new ToolName(tc.Name),
+            CallId = new ToolCallId(tc.CallId),
+            Timestamp = timeProvider.GetUtcNow(),
+            Allowed = false,
+            Duration = duration,
+            Rationale = meta?.Rationale,
+            TimeoutHintSeconds = meta?.TimeoutHintSeconds
+        };
 
     /// <summary>
     /// Returns a one-line agent-facing hint pointing at <c>set_working_directory</c>

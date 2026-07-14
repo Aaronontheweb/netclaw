@@ -54,12 +54,12 @@ public sealed class SubAgentSpawnerTests : TestKit
             NullLogger<SubAgentSpawner>.Instance);
 
         var childProbe = CreateTestProbe("subagent-child");
-        var context = new ToolExecutionContext("console/subagent-parent", "/tmp/netclaw/sessions/parent")
+        var context = TestToolExecutionContext.CreateBound("console/subagent-parent", "/tmp/netclaw/sessions/parent", new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
-            ProjectDirectory = "/home/user/repos/foo"
-        };
-        context.SpawnChildActor = (_, _, _) => Task.FromResult<object>(childProbe.Ref);
+            ProjectDirectory = "/home/user/repos/foo",
+            SpawnChildActor = (_, _, _) => Task.FromResult<object>(childProbe.Ref),
+        });
 
         var profile = new SubAgentProfile
         {
@@ -74,7 +74,7 @@ public sealed class SubAgentSpawnerTests : TestKit
             profile,
             "Summarize the repo.",
             runtimeContext: null,
-            context,
+            context.Invocation,
             TestContext.Current.CancellationToken);
 
         var run = await childProbe.ExpectMsgAsync<RunSubAgent>(cancellationToken: TestContext.Current.CancellationToken);
@@ -101,20 +101,22 @@ public sealed class SubAgentSpawnerTests : TestKit
     {
         var childProbe = CreateTestProbe($"non-interactive-{channelType}-child");
         var spawner = CreateSpawner();
-        var context = new ToolExecutionContext("automation/subagent-parent", "/tmp/netclaw/sessions/parent")
+        var context = new ToolExecutionContext(new ToolRunScope
         {
+            Session = new ToolSessionScope.Bound("automation/subagent-parent", "/tmp/netclaw/sessions/parent"),
             Audience = TrustAudience.Personal,
+            InlineOutputBudget = InlineOutputBudget.Default,
             ChannelType = channelType.ToWireValue(),
             SupportsInteractiveApproval = false,
             ApprovalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.ApprovedOnce),
             SpawnChildActor = (_, _, _) => Task.FromResult<object>(childProbe.Ref)
-        };
+        }, ToolExecutionTimeout.Default);
 
         var spawnTask = spawner.SpawnAsync(
             CreateProfile(),
             "Inspect the system.",
             runtimeContext: null,
-            context,
+            context.Invocation,
             TestContext.Current.CancellationToken);
 
         var run = await childProbe.ExpectMsgAsync<RunSubAgent>(
@@ -131,20 +133,22 @@ public sealed class SubAgentSpawnerTests : TestKit
         var childProbe = CreateTestProbe("interactive-approval-child");
         var approvalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.ApprovedOnce);
         var spawner = CreateSpawner();
-        var context = new ToolExecutionContext("interactive/subagent-parent", "/tmp/netclaw/sessions/parent")
+        var context = new ToolExecutionContext(new ToolRunScope
         {
+            Session = new ToolSessionScope.Bound("interactive/subagent-parent", "/tmp/netclaw/sessions/parent"),
             Audience = TrustAudience.Personal,
+            InlineOutputBudget = InlineOutputBudget.Default,
             ChannelType = ChannelType.Tui.ToWireValue(),
             SupportsInteractiveApproval = true,
             ApprovalBridge = approvalBridge,
             SpawnChildActor = (_, _, _) => Task.FromResult<object>(childProbe.Ref)
-        };
+        }, ToolExecutionTimeout.Default);
 
         var spawnTask = spawner.SpawnAsync(
             CreateProfile(),
             "Inspect the system.",
             runtimeContext: null,
-            context,
+            context.Invocation,
             TestContext.Current.CancellationToken);
 
         var run = await childProbe.ExpectMsgAsync<RunSubAgent>(
@@ -179,12 +183,12 @@ public sealed class SubAgentSpawnerTests : TestKit
 
         var notifications = new List<SubAgentNotificationInfo>();
         var childProbe = CreateTestProbe("subagent-tool-metadata-child");
-        var context = new ToolExecutionContext("console/subagent-parent", "/tmp/netclaw/sessions/parent")
+        var context = TestToolExecutionContext.CreateBound("console/subagent-parent", "/tmp/netclaw/sessions/parent", new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
-            OnSubAgentActivity = notifications.Add
-        };
-        context.SpawnChildActor = (_, _, _) => Task.FromResult<object>(childProbe.Ref);
+            SpawnChildActor = (_, _, _) => Task.FromResult<object>(childProbe.Ref),
+            SubAgentActivitySink = notifications.Add,
+        });
 
         var profile = new SubAgentProfile
         {
@@ -199,7 +203,7 @@ public sealed class SubAgentSpawnerTests : TestKit
             profile,
             "Summarize the repo.",
             runtimeContext: null,
-            context,
+            context.Invocation,
             TestContext.Current.CancellationToken);
 
         await childProbe.ExpectMsgAsync<RunSubAgent>(cancellationToken: TestContext.Current.CancellationToken);
@@ -238,18 +242,18 @@ public sealed class SubAgentSpawnerTests : TestKit
         ]);
         var spawner = CreateSpawner(new SequenceWorkingContextSnapshotProvider(snapshots));
         var childProbe = CreateTestProbe("working-context-child");
-        var context = new ToolExecutionContext("console/subagent-parent", "/tmp/netclaw/sessions/parent")
+        var context = TestToolExecutionContext.CreateBound("console/subagent-parent", "/tmp/netclaw/sessions/parent", new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             ProjectDirectory = projectDirectory,
             SpawnChildActor = (_, _, _) => Task.FromResult<object>(childProbe.Ref)
-        };
+        });
 
         var spawnTask = spawner.SpawnAsync(
             CreateProfile(),
             "Update the project.",
             runtimeContext: null,
-            context,
+            context.Invocation,
             TestContext.Current.CancellationToken);
 
         await childProbe.ExpectMsgAsync<RunSubAgent>(cancellationToken: TestContext.Current.CancellationToken);
@@ -304,11 +308,11 @@ public sealed class SubAgentSpawnerTests : TestKit
             NullLogger<SubAgentSpawner>.Instance,
             sessionMetrics: metrics);
 
-        var context = new ToolExecutionContext("console/subagent-parent", "/tmp/netclaw/sessions/parent")
+        var context = TestToolExecutionContext.CreateBound("console/subagent-parent", "/tmp/netclaw/sessions/parent", new TestToolExecutionContextOptions
         {
-            Audience = TrustAudience.Personal
-        };
-        context.SpawnChildActor = (props, name, _) => Task.FromResult<object>(Sys.ActorOf((Props)props, name));
+            Audience = TrustAudience.Personal,
+            SpawnChildActor = (props, name, _) => Task.FromResult<object>(Sys.ActorOf((Props)props, name)),
+        });
 
         var profile = new SubAgentProfile
         {
@@ -323,7 +327,7 @@ public sealed class SubAgentSpawnerTests : TestKit
             profile,
             "Summarize the repo.",
             runtimeContext: null,
-            context,
+            context.Invocation,
             TestContext.Current.CancellationToken);
 
         Assert.True(result.Success, $"Expected success but got: {result.Output}");

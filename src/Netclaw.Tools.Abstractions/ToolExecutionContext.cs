@@ -1,8 +1,9 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ToolExecutionContext.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Collections.Frozen;
 using Netclaw.Configuration;
 using Netclaw.Media;
 
@@ -36,7 +37,7 @@ public sealed record SubAgentWorkingContextInfo
 
 /// <summary>
 /// Lightweight subagent activity notification for the tools abstraction layer.
-/// Tools emit these via <see cref="ToolExecutionContext.OnSubAgentActivity"/>;
+/// Tools emit these through <see cref="ToolExecutionOutputs"/>;
 /// the session actor converts them to output events.
 /// </summary>
 public sealed record SubAgentNotificationInfo
@@ -73,71 +74,259 @@ public sealed record SubAgentFinding
 }
 
 /// <summary>
-/// Per-call execution context passed from the session actor to tools.
-/// Provides session-scoped state like working directories for file output.
+/// Validated wall-clock limit for one tool invocation.
 /// </summary>
-public sealed class ToolExecutionContext
+public sealed record ToolExecutionTimeout
 {
-    // Context-less sentinel for tools invoked outside a session. It carries the
-    // most-restrictive audience — a tool with no trust context can only run at
-    // the lowest privilege.
-    public static readonly ToolExecutionContext Empty = new(null, null) { Audience = TrustAudience.Public };
-    private static readonly IReadOnlySet<string> EmptyApprovedPatternSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    public static ToolExecutionTimeout Default { get; } = new(TimeSpan.FromSeconds(90));
 
+    public ToolExecutionTimeout(TimeSpan value)
+    {
+        if (value <= TimeSpan.Zero && value != Timeout.InfiniteTimeSpan)
+            throw new ArgumentOutOfRangeException(nameof(value), value, "Tool execution timeout must be positive or infinite.");
+
+        Value = value;
+    }
+
+    public TimeSpan Value { get; }
+}
+
+/// <summary>
+/// Validated character budget for model-visible inline tool output.
+/// </summary>
+public sealed record InlineOutputBudget
+{
+    public static InlineOutputBudget Default { get; } = new(12_000);
+
+    public InlineOutputBudget(int value)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(value);
+        Value = value;
+    }
+
+    public int Value { get; }
+}
+
+/// <summary>
+/// Explicit session binding for a tool run. Sessionless execution is a deliberate
+/// state used by operator-owned routes, never an accidental null session id or
+/// an indication that authorization constraints are absent.
+/// </summary>
+public abstract record ToolSessionScope
+{
+    private ToolSessionScope()
+    {
+    }
+
+    public sealed record Sessionless : ToolSessionScope;
+
+    public sealed record Bound : ToolSessionScope
+    {
+        public Bound(string sessionId, string? sessionDirectory)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId))
+                throw new ArgumentException("Session id is required for a bound tool run.", nameof(sessionId));
+
+            SessionId = sessionId;
+            SessionDirectory = sessionDirectory;
+        }
+
+        public string SessionId { get; }
+        public string? SessionDirectory { get; }
+    }
+}
+
+/// <summary>
+/// Immutable authority and environment shared by every call in one admitted
+/// tool run. Mutable per-call outputs belong to <see cref="ToolExecutionContext"/>.
+/// </summary>
+public sealed record ToolRunScope
+{
+    private IReadOnlyList<string> _recentFiles = [];
+
+    public required ToolSessionScope Session { get; init; }
+    public required TrustAudience Audience { get; init; }
+    public required InlineOutputBudget InlineOutputBudget { get; init; }
+    public TrustBoundary? Boundary { get; init; }
+    public string? ChannelType { get; init; }
+    public ChannelDeliveryTargetInfo? DefaultDeliveryTarget { get; init; }
+    public ChannelDeliveryTargetInfo? RequestedDeliveryTarget { get; init; }
+    public bool? SupportsInteractiveApproval { get; init; }
+    public ModelModality ModelInputModalities { get; init; } = ModelModality.Text;
+    public Func<object, string, CancellationToken, Task<object>>? SpawnChildActor { get; init; }
+    public IParentApprovalBridge? ApprovalBridge { get; init; }
+    public string? ProjectDirectory { get; init; }
+    public string? InheritedCwd { get; init; }
+    public IReadOnlyList<string> RecentFiles
+    {
+        get => _recentFiles;
+        init
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _recentFiles = Array.AsReadOnly(value.ToArray());
+        }
+    }
+}
+
+/// <summary>
+/// Append-only products of one tool invocation. A fresh instance is allocated
+/// per call and is never shared between parallel invocations.
+/// </summary>
+public sealed class ToolExecutionOutputs
+{
+    private readonly Action<SubAgentNotificationInfo>? _subAgentActivitySink;
     private List<FileAttachmentInfo>? _fileAttachments;
     private List<ModelInputFileInfo>? _modelInputFiles;
-    private HashSet<string>? _oneTimeApprovedPatterns;
 
-    public ToolExecutionContext(string? sessionId, string? sessionDirectory)
+    public ToolExecutionOutputs()
     {
-        SessionId = sessionId;
-        SessionDirectory = sessionDirectory;
     }
+
+    public ToolExecutionOutputs(Action<SubAgentNotificationInfo> subAgentActivitySink)
+    {
+        ArgumentNullException.ThrowIfNull(subAgentActivitySink);
+        _subAgentActivitySink = subAgentActivitySink;
+    }
+
+    public IReadOnlyList<FileAttachmentInfo> FileAttachments
+        => _fileAttachments?.AsReadOnly() ?? (IReadOnlyList<FileAttachmentInfo>)[];
+
+    public IReadOnlyList<ModelInputFileInfo> ModelInputFiles
+        => _modelInputFiles?.AsReadOnly() ?? (IReadOnlyList<ModelInputFileInfo>)[];
+
+    public void AddFileAttachment(string filePath, string fileName, MimeType mimeType)
+    {
+        _fileAttachments ??= [];
+        _fileAttachments.Add(new FileAttachmentInfo(filePath, fileName, mimeType));
+    }
+
+    public void AddModelInputFile(string filePath, string fileName, MimeType mimeType)
+    {
+        _modelInputFiles ??= [];
+        _modelInputFiles.Add(new ModelInputFileInfo(filePath, fileName, mimeType));
+    }
+
+    public void ReportSubAgentActivity(SubAgentNotificationInfo notification)
+        => _subAgentActivitySink?.Invoke(notification);
+
+    public ToolExecutionOutputs Fork()
+        => _subAgentActivitySink is null ? new ToolExecutionOutputs() : new ToolExecutionOutputs(_subAgentActivitySink);
+}
+
+/// <summary>
+/// Mutable authorization state for one invocation attempt. The dispatcher and
+/// policy pipeline own this object; tools receive no setters for approval state.
+/// </summary>
+public sealed class ToolApprovalAttempt
+{
+    private static readonly IReadOnlySet<string> EmptyPatterns =
+        Array.Empty<string>().ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlySet<string>? _oneTimeApprovedPatterns;
+
+    public string? Cwd { get; private set; }
+    public string? OneTimeApprovedToolName { get; private set; }
+    public IReadOnlySet<string> OneTimeApprovedPatterns => _oneTimeApprovedPatterns ?? EmptyPatterns;
+    public string? AppliedDecision { get; private set; }
+    public string? AppliedPattern { get; private set; }
+
+    public void SetCwd(string? cwd) => Cwd = cwd;
+
+    public void SeedOneTimeApproval(string toolName, IEnumerable<string> patterns)
+    {
+        OneTimeApprovedToolName = toolName;
+        _oneTimeApprovedPatterns = patterns.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    public void ClearOneTimeApproval()
+    {
+        OneTimeApprovedToolName = null;
+        _oneTimeApprovedPatterns = null;
+    }
+
+    public void ApplyDecision(string decision, string? pattern)
+    {
+        AppliedDecision = decision;
+        AppliedPattern = pattern;
+    }
+
+    public void ClearAppliedDecision()
+    {
+        AppliedDecision = null;
+        AppliedPattern = null;
+    }
+}
+
+/// <summary>
+/// Immutable per-call context visible to tool implementations.
+/// </summary>
+public sealed class ToolInvocationContext
+{
+    public ToolInvocationContext(
+        ToolRunScope runScope,
+        ToolExecutionTimeout executionTimeout)
+        : this(runScope, executionTimeout, new ToolExecutionOutputs())
+    {
+    }
+
+    public ToolInvocationContext(
+        ToolRunScope runScope,
+        ToolExecutionTimeout executionTimeout,
+        ToolExecutionOutputs outputs)
+    {
+        ArgumentNullException.ThrowIfNull(runScope);
+        ArgumentNullException.ThrowIfNull(outputs);
+
+        RunScope = runScope;
+        ArgumentNullException.ThrowIfNull(runScope.Session);
+        ArgumentNullException.ThrowIfNull(runScope.InlineOutputBudget);
+        ArgumentNullException.ThrowIfNull(executionTimeout);
+
+        Outputs = outputs;
+        ExecutionTimeout = executionTimeout;
+
+        if (runScope.Session is ToolSessionScope.Bound bound)
+        {
+            SessionId = bound.SessionId;
+            SessionDirectory = bound.SessionDirectory;
+        }
+    }
+
+    /// <summary>
+    /// Immutable authority and environment from which this per-call context was created.
+    /// </summary>
+    public ToolRunScope RunScope { get; }
+
+    public ToolExecutionOutputs Outputs { get; }
 
     /// <summary>
     /// Parsed trust audience for this tool call. Required and non-nullable, so a
     /// tool gate reads it directly with no missing-audience fallback. The default
-    /// is resolved once, where the context is built; the context-less
-    /// <see cref="Empty"/> sentinel carries the most-restrictive
-    /// <see cref="TrustAudience.Public"/>.
+    /// is resolved once where the context is built.
     /// </summary>
-    public required TrustAudience Audience { get; init; }
+    public TrustAudience Audience => RunScope.Audience;
 
-    public TrustBoundary? Boundary { get; set; }
+    public TrustBoundary? Boundary => RunScope.Boundary;
 
     /// <summary>
     /// Per-call timeout requested by the LLM after pipeline clamping.
     /// Tools that have their own internal timeout should honor this when set.
     /// </summary>
-    public int? RequestedTimeoutSeconds { get; set; }
-
-    /// <summary>
-    /// Applies a per-call <see cref="ToolCallMeta"/> hint to this context — the one
-    /// definition of "meta hint → context" shared by the pipeline and sub-agent so the
-    /// timeout hint can't be dropped by a path that forgets to apply it. Currently
-    /// only the timeout hint maps onto the context; an absent hint leaves the
-    /// inherited default in place.
-    /// </summary>
-    public void ApplyMeta(ToolCallMeta? meta)
-    {
-        if (meta?.TimeoutHintSeconds is { } timeoutSeconds)
-            RequestedTimeoutSeconds = timeoutSeconds;
-    }
+    public ToolExecutionTimeout ExecutionTimeout { get; }
 
 
-    public string? ChannelType { get; set; }
+    public string? ChannelType => RunScope.ChannelType;
 
     /// <summary>
     /// Delivery target inherited from channel-originated input. Trigger sources
     /// must not rely on this because they are not output channels.
     /// </summary>
-    public ChannelDeliveryTargetInfo? DefaultDeliveryTarget { get; set; }
+    public ChannelDeliveryTargetInfo? DefaultDeliveryTarget => RunScope.DefaultDeliveryTarget;
 
     /// <summary>
     /// Explicit delivery target selected by a trigger source such as a reminder
     /// or webhook route when it expects external output.
     /// </summary>
-    public ChannelDeliveryTargetInfo? RequestedDeliveryTarget { get; set; }
+    public ChannelDeliveryTargetInfo? RequestedDeliveryTarget => RunScope.RequestedDeliveryTarget;
 
     public ChannelDeliveryTargetInfo? EffectiveDeliveryTarget
         => RequestedDeliveryTarget ?? DefaultDeliveryTarget;
@@ -146,18 +335,12 @@ public sealed class ToolExecutionContext
     /// Whether the originating channel supports interactive approval prompts.
     /// When false, approval-gated tools are automatically denied.
     /// </summary>
-    public bool? SupportsInteractiveApproval { get; set; }
+    public bool? SupportsInteractiveApproval => RunScope.SupportsInteractiveApproval;
 
     /// <summary>
     /// Modalities accepted by the active model for this tool call.
     /// </summary>
-    public ModelModality ModelInputModalities { get; set; } = ModelModality.Text;
-
-    /// <summary>
-    /// Optional callback for tools that spawn subagents.
-    /// The session wires this to relay notifications as <c>SubAgentOutput</c> events.
-    /// </summary>
-    public Action<SubAgentNotificationInfo>? OnSubAgentActivity { get; set; }
+    public ModelModality ModelInputModalities => RunScope.ModelInputModalities;
 
     /// <summary>
     /// Factory delegate for spawning subagent actors as children of the owning session.
@@ -171,38 +354,13 @@ public sealed class ToolExecutionContext
     /// tools abstraction layer. The actual types are <c>Akka.Actor.Props</c> and
     /// <c>Akka.Actor.IActorRef</c>.
     /// </remarks>
-    public Func<object, string, CancellationToken, Task<object>>? SpawnChildActor { get; set; }
+    public Func<object, string, CancellationToken, Task<object>>? SpawnChildActor => RunScope.SpawnChildActor;
 
     /// <summary>
     /// Parent session's approval bridge for sub-agent approval chaining. When set,
     /// the sub-agent can route approval requests back to the interactive user.
     /// </summary>
-    public IParentApprovalBridge? ApprovalBridge { get; set; }
-
-    /// <summary>
-    /// Tool name granted a one-shot approval for the current execution retry.
-    /// This is not persisted and only applies to the current in-memory context.
-    /// </summary>
-    public string? OneTimeApprovedToolName { get; set; }
-
-    /// <summary>
-    /// Approval decision applied without an interactive prompt for this tool
-    /// call, used by the session audit trail to distinguish cached approvals
-    /// from tools that were never gated.
-    /// </summary>
-    public string? AppliedApprovalDecision { get; set; }
-
-    /// <summary>
-    /// Human-readable approval match scopes used by
-    /// <see cref="AppliedApprovalDecision"/>.
-    /// </summary>
-    public string? AppliedApprovalPattern { get; set; }
-
-    /// <summary>
-    /// Approval patterns granted for a single retry of the current tool call.
-    /// </summary>
-    public IReadOnlySet<string> OneTimeApprovedPatterns
-        => _oneTimeApprovedPatterns ?? EmptyApprovedPatternSet;
+    public IParentApprovalBridge? ApprovalBridge => RunScope.ApprovalBridge;
 
     /// <summary>The session that initiated this tool call.</summary>
     public string? SessionId { get; }
@@ -222,19 +380,7 @@ public sealed class ToolExecutionContext
     /// tools), else this content budget. Zero when unset (the dispatcher falls back
     /// to its built-in content default).
     /// </summary>
-    public int MaxInlineToolResultChars { get; init; }
-
-    /// <summary>
-    /// Resolved absolute working directory for the in-flight tool call. Set
-    /// by the session pipeline from the candidate tool arguments,
-    /// <c>WorkingContext.ProjectDirectory</c>, or <see cref="SessionDirectory"/>
-    /// — whichever resolves first. The approval gate uses this as the directory
-    /// half of the candidate <c>(verb, directory)</c> pair when evaluating
-    /// folder-scoped <see cref="Netclaw.Configuration.ApprovalEntry"/> records.
-    /// Null when the tool call is not directory-anchored (e.g. an in-process
-    /// tool like <c>store_memory</c>).
-    /// </summary>
-    public string? Cwd { get; set; }
+    public int MaxInlineToolResultChars => RunScope.InlineOutputBudget.Value;
 
     /// <summary>
     /// Parent session's resolved cwd snapshot, captured at spawn time for
@@ -246,7 +392,7 @@ public sealed class ToolExecutionContext
     /// <c>Cwd</c> is the per-call resolved <i>output</i> the approval gate
     /// writes; <c>InheritedCwd</c> is a one-shot snapshot <i>input</i>.
     /// </summary>
-    public string? InheritedCwd { get; init; }
+    public string? InheritedCwd => RunScope.InheritedCwd;
 
     /// <summary>
     /// Absolute path to the project directory the agent is currently working
@@ -256,13 +402,13 @@ public sealed class ToolExecutionContext
     /// session actor. Null when no project root has been declared via
     /// <c>set_working_directory</c>.
     /// </summary>
-    public string? ProjectDirectory { get; set; }
+    public string? ProjectDirectory => RunScope.ProjectDirectory;
 
     /// <summary>
     /// Read-only snapshot of the parent session's recently used files. This is
     /// grounding for delegated work and does not grant filesystem authority.
     /// </summary>
-    public IReadOnlyList<string> RecentFiles { get; init; } = [];
+    public IReadOnlyList<string> RecentFiles => RunScope.RecentFiles;
 
     /// <summary>
     /// Resolves the working directory for a shell-style invocation. Returns
@@ -301,41 +447,107 @@ public sealed class ToolExecutionContext
     /// <summary>
     /// File attachments registered by tools during execution.
     /// </summary>
-    public IReadOnlyList<FileAttachmentInfo> FileAttachments
-        => _fileAttachments ?? (IReadOnlyList<FileAttachmentInfo>)[];
+    internal IReadOnlyList<FileAttachmentInfo> FileAttachments
+        => Outputs.FileAttachments;
 
     /// <summary>
     /// Files registered by tools for model-visible input on the next LLM call.
     /// </summary>
-    public IReadOnlyList<ModelInputFileInfo> ModelInputFiles
-        => _modelInputFiles ?? (IReadOnlyList<ModelInputFileInfo>)[];
+    internal IReadOnlyList<ModelInputFileInfo> ModelInputFiles
+        => Outputs.ModelInputFiles;
 
     /// <summary>
     /// Register a file attachment to be emitted as <c>FileOutput</c> after tool execution.
     /// </summary>
-    public void AddFileAttachment(string filePath, string fileName, string mimeType)
+    internal void AddFileAttachment(string filePath, string fileName, string mimeType)
         => AddFileAttachment(filePath, fileName, new MimeType(mimeType));
 
-    public void AddFileAttachment(string filePath, string fileName, MimeType mimeType)
-    {
-        _fileAttachments ??= [];
-        _fileAttachments.Add(new FileAttachmentInfo(filePath, fileName, mimeType));
-    }
+    internal void AddFileAttachment(string filePath, string fileName, MimeType mimeType)
+        => Outputs.AddFileAttachment(filePath, fileName, mimeType);
 
     /// <summary>
     /// Register a file to be copied into session media and supplied to the model.
     /// </summary>
-    public void AddModelInputFile(string filePath, string fileName, string mimeType)
+    internal void AddModelInputFile(string filePath, string fileName, string mimeType)
         => AddModelInputFile(filePath, fileName, new MimeType(mimeType));
 
-    public void AddModelInputFile(string filePath, string fileName, MimeType mimeType)
+    internal void AddModelInputFile(string filePath, string fileName, MimeType mimeType)
+        => Outputs.AddModelInputFile(filePath, fileName, mimeType);
+
+}
+
+/// <summary>
+/// Pipeline-owned execution state. Tool implementations receive only the
+/// separate immutable <see cref="Invocation"/> object.
+/// </summary>
+public sealed class ToolExecutionContext
+{
+    public ToolExecutionContext(ToolRunScope runScope, ToolExecutionTimeout executionTimeout)
+        : this(new ToolInvocationContext(runScope, executionTimeout))
     {
-        _modelInputFiles ??= [];
-        _modelInputFiles.Add(new ModelInputFileInfo(filePath, fileName, mimeType));
     }
 
-    public void SetOneTimeApprovedPatterns(IEnumerable<string> patterns)
+    public ToolExecutionContext(
+        ToolRunScope runScope,
+        ToolExecutionTimeout executionTimeout,
+        ToolExecutionOutputs outputs)
+        : this(new ToolInvocationContext(runScope, executionTimeout, outputs))
     {
-        _oneTimeApprovedPatterns = new HashSet<string>(patterns, StringComparer.OrdinalIgnoreCase);
     }
+
+    private ToolExecutionContext(ToolInvocationContext invocation)
+    {
+        Invocation = invocation;
+        Approval = new ToolApprovalAttempt();
+    }
+
+    public ToolInvocationContext Invocation { get; }
+    public ToolApprovalAttempt Approval { get; }
+
+    public ToolRunScope RunScope => Invocation.RunScope;
+    public ToolExecutionOutputs Outputs => Invocation.Outputs;
+    public IReadOnlyList<ModelInputFileInfo> ModelInputFiles => Outputs.ModelInputFiles;
+    public ToolExecutionTimeout ExecutionTimeout => Invocation.ExecutionTimeout;
+    public TrustAudience Audience => Invocation.Audience;
+    public TrustBoundary? Boundary => Invocation.Boundary;
+    public string? ChannelType => Invocation.ChannelType;
+    public bool? SupportsInteractiveApproval => Invocation.SupportsInteractiveApproval;
+    public string? SessionId => Invocation.SessionId;
+    public string? SessionDirectory => Invocation.SessionDirectory;
+    public int MaxInlineToolResultChars => Invocation.MaxInlineToolResultChars;
+    public string? ProjectDirectory => Invocation.ProjectDirectory;
+    public ModelModality ModelInputModalities => Invocation.ModelInputModalities;
+    public IParentApprovalBridge? ApprovalBridge => Invocation.ApprovalBridge;
+
+    internal IReadOnlyList<FileAttachmentInfo> FileAttachments => Invocation.FileAttachments;
+
+    internal void AddModelInputFile(string filePath, string fileName, string mimeType)
+        => Invocation.AddModelInputFile(filePath, fileName, mimeType);
+
+    public string? ResolveShellCwd(string? explicitArg)
+        => Invocation.ResolveShellCwd(explicitArg);
+
+    internal string? OneTimeApprovedToolName
+    {
+        get => Approval.OneTimeApprovedToolName;
+        set
+        {
+            if (value is null)
+                Approval.ClearOneTimeApproval();
+            else
+                Approval.SeedOneTimeApproval(value, Approval.OneTimeApprovedPatterns);
+        }
+    }
+
+    internal string? AppliedApprovalDecision => Approval.AppliedDecision;
+    internal string? AppliedApprovalPattern => Approval.AppliedPattern;
+    internal IReadOnlySet<string> OneTimeApprovedPatterns => Approval.OneTimeApprovedPatterns;
+    internal string? Cwd
+    {
+        get => Approval.Cwd;
+        set => Approval.SetCwd(value);
+    }
+
+    internal void SetOneTimeApprovedPatterns(IEnumerable<string> patterns)
+        => Approval.SeedOneTimeApproval(Approval.OneTimeApprovedToolName ?? string.Empty, patterns);
 }

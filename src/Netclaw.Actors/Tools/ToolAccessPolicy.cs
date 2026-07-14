@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ToolAccessPolicy.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -64,16 +64,16 @@ public sealed class ToolAccessPolicy
 
     public IReadOnlyList<INetclawTool> FilterDiscoverableTools(
         IEnumerable<INetclawTool> tools,
-        ToolExecutionContext? context)
+        ToolInvocationContext context)
         => tools.Where(tool => IsToolExposed(tool, context)).ToList();
 
     public bool IsToolExposed(ToolRegistration registration, EffectiveTrustContext? trustContext)
         => IsToolExposed(registration.Tool, ResolveAudience(trustContext));
 
-    public bool IsToolExposed(INetclawTool tool, ToolExecutionContext? context)
+    public bool IsToolExposed(INetclawTool tool, ToolInvocationContext context)
         => IsToolExposed(tool, ResolveAudience(context));
 
-    private bool IsToolExposed(INetclawTool tool, TrustAudience audience)
+    internal bool IsToolExposed(INetclawTool tool, TrustAudience audience)
     {
         // Feature-disabled tools are hidden for ALL audiences
         if (IsFeatureDisabledTool(tool.Name))
@@ -83,7 +83,7 @@ public sealed class ToolAccessPolicy
             return _profileResolver.IsMcpServerAllowed(new McpServerName(mcp.ServerName), audience)
                 && _profileResolver.IsMcpToolAllowed(new McpServerName(mcp.ServerName), new ToolName(mcp.BareToolName), audience);
 
-        if (!_profileResolver.IsToolAllowed(new ToolName(tool.Name), CreateContext(audience)))
+        if (!_profileResolver.IsToolAllowed(new ToolName(tool.Name), audience))
             return false;
 
         if (IsShellCoupledTool(tool))
@@ -92,20 +92,20 @@ public sealed class ToolAccessPolicy
         return true;
     }
 
-    public ToolAccessDecision AuthorizeInvocation(INetclawTool tool, ToolExecutionContext? context)
+    public ToolAccessDecision AuthorizeInvocation(INetclawTool tool, ToolExecutionContext context)
         => AuthorizeInvocation(tool, context, arguments: null);
 
     public ToolAccessDecision AuthorizeInvocation(
         INetclawTool tool,
-        ToolExecutionContext? context,
+        ToolExecutionContext context,
         IDictionary<string, object?>? arguments)
     {
         if (tool is McpToolAdapter mcp)
         {
-            if (!_profileResolver.IsMcpServerAllowed(new McpServerName(mcp.ServerName), context))
+            if (!_profileResolver.IsMcpServerAllowed(new McpServerName(mcp.ServerName), context.Invocation))
                 return ToolAccessDecision.Deny("mcp_server_not_allowed_for_audience_profile");
 
-            if (!_profileResolver.IsMcpToolAllowed(new McpServerName(mcp.ServerName), new ToolName(mcp.BareToolName), context))
+            if (!_profileResolver.IsMcpToolAllowed(new McpServerName(mcp.ServerName), new ToolName(mcp.BareToolName), context.Invocation))
                 return ToolAccessDecision.Deny("mcp_tool_not_allowed_for_audience_profile");
 
             var mcpToolName = new ToolName(tool.Name);
@@ -114,7 +114,7 @@ public sealed class ToolAccessPolicy
 
         var toolName = new ToolName(tool.Name);
 
-        if (!_profileResolver.IsToolAllowed(toolName, context))
+        if (!_profileResolver.IsToolAllowed(toolName, context.Invocation))
             return ToolAccessDecision.Deny("tool_not_allowed_for_audience_profile");
 
         if (!IsShellCoupledTool(tool))
@@ -127,7 +127,7 @@ public sealed class ToolAccessPolicy
         if (shellMode == ShellExecutionMode.SandboxOnly)
             return ToolAccessDecision.Deny("shell_requires_sandbox_backend");
 
-        var shellAudience = ResolveAudience(context);
+        var shellAudience = ResolveAudience(context.Invocation);
         if (shellAudience != TrustAudience.Personal)
             return ToolAccessDecision.Deny("shell_requires_personal_context");
 
@@ -149,7 +149,7 @@ public sealed class ToolAccessPolicy
         // Even if the verb-chain is pre-approved, path arguments must fall within
         // the channel's allowed filesystem roots. Fail-closed: if no trust zone
         // policy is configured, deny any shell command with path arguments.
-        if (context?.SupportsInteractiveApproval == false && shellCommand is not null)
+        if (context.SupportsInteractiveApproval == false && shellCommand is not null)
         {
             if (_shellTrustZonePolicy is null)
             {
@@ -186,7 +186,7 @@ public sealed class ToolAccessPolicy
             if (expandedWorkingDirectory is null)
                 return ToolAccessDecision.Deny("shell_invalid_working_directory");
 
-            if (!_shellTrustZonePolicy!.IsShellWritePathAuthorized(expandedWorkingDirectory, context))
+            if (!_shellTrustZonePolicy!.IsShellWritePathAuthorized(expandedWorkingDirectory, context.Invocation))
                 return ToolAccessDecision.Deny("shell_working_directory_outside_trust_zone");
         }
 
@@ -200,7 +200,7 @@ public sealed class ToolAccessPolicy
             if (expanded is null)
                 continue;
 
-            if (!_shellTrustZonePolicy!.IsShellWritePathAuthorized(expanded, context))
+            if (!_shellTrustZonePolicy!.IsShellWritePathAuthorized(expanded, context.Invocation))
                 return ToolAccessDecision.Deny("shell_path_outside_trust_zone");
         }
 
@@ -266,11 +266,11 @@ public sealed class ToolAccessPolicy
 
     private ToolAccessDecision CheckApprovalGate(
         ToolName toolName,
-        ToolExecutionContext? context,
+        ToolExecutionContext context,
         IDictionary<string, object?>? arguments,
         IToolApprovalMatcher matcher)
     {
-        var audience = ResolveAudience(context);
+        var audience = ResolveAudience(context.Invocation);
         var profile = ToolAudienceProfileDefaults.GetResolvedProfile(_toolConfig.AudienceProfiles, audience);
         var approvalPolicy = profile.ApprovalPolicy;
         var approvalModeKey = matcher.GetApprovalModeKey(toolName, arguments);
@@ -323,8 +323,8 @@ public sealed class ToolAccessPolicy
         // every "Always here" click into "Always anywhere" because the
         // persistence path reads PendingToolInteraction.Cwd.
         var isShell = string.Equals(toolName.Value, ShellTool.ToolName, StringComparison.Ordinal);
-        if (isShell && context is not null)
-            context.Cwd = context.ResolveShellCwd(ExtractWorkingDirectory(arguments));
+        if (isShell)
+            context.Approval.SetCwd(context.ResolveShellCwd(ExtractWorkingDirectory(arguments)));
 
         // Safe-verb ∩ safe-space short-circuit. Runs only for shell and only
         // when the matcher could extract candidate verbs cleanly — messy
@@ -332,20 +332,19 @@ public sealed class ToolAccessPolicy
         // demonstrably read-only verbs (cat/ls/grep/find/git status/...)
         // when the cwd is inside session_dir or project_dir.
         if (_safeVerbPolicy is not null
-            && context is not null
             && isShell
             && !isMessy
             && candidateVerbs.Count > 0
-            && _safeVerbPolicy.AllShortCircuit(candidateVerbs, context.Cwd, context))
+            && _safeVerbPolicy.AllShortCircuit(candidateVerbs, context.Approval.Cwd, context.Invocation))
         {
             return ToolAccessDecision.Allow();
         }
 
         var options = BuildApprovalOptions(
             isMessy,
-            isCwdShallow: IsCwdTooShallow(context?.Cwd),
+            isCwdShallow: IsCwdTooShallow(context.Approval.Cwd),
             allEffectiveDirsAreSessionScratch: AllCandidatesResolveToSessionScratch(
-                candidates, context?.Cwd, context?.SessionDirectory));
+                candidates, context.Approval.Cwd, context.SessionDirectory));
 
         var approvalContext = new ToolApprovalContext(
             toolName.Value,
@@ -353,7 +352,7 @@ public sealed class ToolAccessPolicy
             patterns,
             candidateVerbs,
             options,
-            Cwd: context?.Cwd,
+            Cwd: context.Approval.Cwd,
             IsMessy: isMessy,
             Candidates: candidates);
 
@@ -537,11 +536,8 @@ public sealed class ToolAccessPolicy
     private static TrustAudience ResolveAudience(EffectiveTrustContext? trustContext)
         => trustContext?.EffectiveAudience ?? TrustAudience.Public;
 
-    private static TrustAudience ResolveAudience(ToolExecutionContext? context)
-        => SecurityPolicyDefaults.ResolveAudienceWithFallback(context?.Audience, context?.SessionId);
-
-    private static ToolExecutionContext CreateContext(TrustAudience audience)
-        => new(null, null) { Audience = audience };
+    private static TrustAudience ResolveAudience(ToolInvocationContext context)
+        => context.Audience;
 
     private static bool IsShellTool(ToolRegistration registration)
         => registration.GrantCategory == "shell" || IsShellTool(registration.Tool);

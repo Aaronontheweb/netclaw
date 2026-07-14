@@ -81,12 +81,15 @@ public static class ReminderEndpointRouteBuilderExtensions
             var reminderResolvers = serviceProvider.GetServices<IReminderTargetResolver>();
             var restSchedulingConfig = serviceProvider.GetRequiredService<SchedulingConfig>();
             var tool = new SetReminderTool(manager, timeProvider, restSchedulingConfig, reminderResolvers);
-            var toolContext = new ToolExecutionContext(sessionId: null, sessionDirectory: null)
+            var toolContext = new ToolExecutionContext(new ToolRunScope
             {
+                Session = new ToolSessionScope.Sessionless(),
                 Audience = reminderSourceAudience,
+                InlineOutputBudget = InlineOutputBudget.Default,
                 Boundary = SecurityPolicyDefaults.ResolveBoundaryFromChannelType("manual", reminderSourceAudience),
-            };
-            toolContext.ChannelType = "manual";
+                ChannelType = "manual",
+                SupportsInteractiveApproval = false,
+            }, ToolExecutionTimeout.Default);
             var result = await tool.ExecuteAsync(
                 new Dictionary<string, object?>
                 {
@@ -102,7 +105,7 @@ public static class ReminderEndpointRouteBuilderExtensions
                     ["DeliveryInstructions"] = request.DeliveryInstructions,
                     ["Audience"] = request.Audience,
                     ["ExpiresIn"] = request.ExpiresIn
-                }, toolContext, ct);
+                }, toolContext.Invocation, ct);
 
             return result.StartsWith("Error", StringComparison.Ordinal)
                 ? TypedResults.BadRequest(new ReminderErrorResponse(result))

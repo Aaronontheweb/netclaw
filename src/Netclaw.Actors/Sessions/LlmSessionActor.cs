@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="LlmSessionActor.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -1810,7 +1810,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                     var (meta, cleaned) = toolExec.PrepareToolCall(tc);
                     return (meta, cleaned.Arguments);
                 }
-                : null);
+        : null);
         var userMsg = _state.FindLastUserMessage() ?? new SerializableChatMessage
         {
             Role = Protocol.ChatRole.User,
@@ -2449,7 +2449,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SessionId = _sessionId,
                 Title = _state.Title,
                 TurnCount = _state.TurnCount,
-                    RecentMessages = SessionRecentMessageExtractor.Extract(_state.History)
+                RecentMessages = SessionRecentMessageExtractor.Extract(_state.History)
             };
 
             // On re-join, only reply to the Sender (for Ask callers) — don't
@@ -2500,7 +2500,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _log.Info("Snapshot saved (seqNr={SequenceNr})", msg.Metadata.SequenceNr);
 
             DeleteMessages(msg.Metadata.SequenceNr); // delete all messages in journal up until snapshot was taken
-            DeleteSnapshots(new SnapshotSelectionCriteria(msg.Metadata.SequenceNr-1)); // delete all old snapshots
+            DeleteSnapshots(new SnapshotSelectionCriteria(msg.Metadata.SequenceNr - 1)); // delete all old snapshots
         });
 
         Command<SaveSnapshotFailure>(msg =>
@@ -3039,25 +3039,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     {
         try
         {
-            var context = new ToolExecutionContext(_sessionId.Value, GetSessionDirectory())
-            {
-                // No active turn context/source carries no trust context — fall closed.
-                Audience = _currentTurnContext?.Audience ?? _currentTurnSource?.Audience ?? TrustAudience.Public,
-                Boundary = _currentTurnContext?.Boundary ?? _currentTurnSource?.Boundary,
-                ChannelType = _currentTurnContext?.ChannelType?.ToWireValue()
-                              ?? (_currentTurnSource is null ? null : _currentTurnSource.ChannelType.ToWireValue()),
-                ProjectDirectory = _state.WorkingContext.ProjectDirectory,
-                RecentFiles = _state.WorkingContext.RecentFiles,
-                SupportsInteractiveApproval = false,
-            };
-
-            context.SpawnChildActor = async (props, name, ct) =>
+            Func<object, string, CancellationToken, Task<object>> spawnChildActor = async (props, name, ct) =>
                 await self.Ask<IActorRef>(
                     new SpawnChildActorRequest((Props)props, name),
                     timeout: _config.ToolExecutionTimeout,
                     cancellationToken: ct);
-
-            context.OnSubAgentActivity = info =>
+            var outputs = new ToolExecutionOutputs(info =>
             {
                 self.Tell(new RoutedSkillSubAgentActivity(
                     _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
@@ -3067,13 +3054,27 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                     info.Success,
                     info.Duration,
                     info.Findings.Count));
-            };
+            });
+            var context = new ToolExecutionContext(new ToolRunScope
+            {
+                Session = new ToolSessionScope.Bound(_sessionId.Value, GetSessionDirectory()),
+                // No active turn context/source carries no trust context — fall closed.
+                Audience = _currentTurnContext?.Audience ?? _currentTurnSource?.Audience ?? TrustAudience.Public,
+                InlineOutputBudget = new InlineOutputBudget(_config.Tuning.MaxInlineToolResultChars),
+                Boundary = _currentTurnContext?.Boundary ?? _currentTurnSource?.Boundary,
+                ChannelType = _currentTurnContext?.ChannelType?.ToWireValue()
+                              ?? (_currentTurnSource is null ? null : _currentTurnSource.ChannelType.ToWireValue()),
+                ProjectDirectory = _state.WorkingContext.ProjectDirectory,
+                RecentFiles = _state.WorkingContext.RecentFiles,
+                SupportsInteractiveApproval = false,
+                SpawnChildActor = spawnChildActor,
+            }, new ToolExecutionTimeout(_config.ToolExecutionTimeout), outputs);
 
             var result = await _subAgentSpawner!.SpawnAsync(
                 profile,
                 task,
                 runtimeContext: null,
-                context,
+                context.Invocation,
                 CancellationToken.None,
                 systemPromptOverlay: skillBody);
 
