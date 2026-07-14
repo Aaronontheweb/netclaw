@@ -328,7 +328,12 @@ start_eval_daemon() {
     if [[ -d "$template_dir" ]]; then
         # Substitute placeholders with eval-appropriate defaults
         substitute_identity_template "$template_dir/SOUL.template.md" "$EVAL_HOME/identity/SOUL.md"
-        substitute_identity_template "$template_dir/AGENTS.template.md" "$EVAL_HOME/identity/AGENTS.md"
+        if [[ -f "$REPO_ROOT/evals/fixtures/identity/AGENTS.md" ]]; then
+            cp "$REPO_ROOT/evals/fixtures/identity/AGENTS.md" "$EVAL_HOME/identity/AGENTS.md"
+        else
+            echo "ERROR: deployment mission eval fixture is missing." >&2
+            exit 1
+        fi
         substitute_identity_template "$template_dir/TOOLING.template.md" "$EVAL_HOME/identity/TOOLING.md"
     else
         echo "ERROR: no identity templates at $template_dir/ — Identity evals will fail." >&2
@@ -350,6 +355,16 @@ start_eval_daemon() {
     # Copy user skills from eval fixtures (non-system skills for activation testing).
     if [[ -d "$REPO_ROOT/evals/fixtures/skills" ]]; then
         cp -r "$REPO_ROOT/evals/fixtures/skills/." "$EVAL_HOME/skills/"
+    fi
+
+    # Copy a skill into a managed server-feed origin. The configured feed URL
+    # below is intentionally unreachable: startup must retain the already
+    # materialized managed skill while the eval proves model access by logical
+    # name without relying on the physical feed path.
+    if [[ -d "$REPO_ROOT/evals/fixtures/server-feed-skills" ]]; then
+        mkdir -p "$EVAL_HOME/skills/.server-feeds/eval-feed"
+        cp -r "$REPO_ROOT/evals/fixtures/server-feed-skills/." \
+            "$EVAL_HOME/skills/.server-feeds/eval-feed/"
     fi
 
     # Copy eval-only subagent definitions into the mounted NETCLAW_HOME so
@@ -421,6 +436,11 @@ start_eval_daemon() {
         # ships whatever was last released — masking any unpublished skill
         # changes (e.g. version bumps in this PR) and the local copies above.
         -e "NETCLAW_SkillSync__DisableSystemSkillSync=true"
+        -e "NETCLAW_SkillFeeds__Feeds__0__Name=eval-feed"
+        -e "NETCLAW_SkillFeeds__Feeds__0__Url=http://127.0.0.1:1"
+        -e "NETCLAW_SkillFeeds__Feeds__0__Enabled=true"
+        -e "NETCLAW_SkillFeeds__Feeds__0__TimeoutSeconds=1"
+        -e "NETCLAW_SkillFeeds__SyncIntervalMinutes=0"
     )
 
     if [[ -n "$EVAL_CONTEXT_WINDOW" ]]; then
@@ -882,12 +902,36 @@ daemon_log_skill_loaded() {
     daemon_log_tail | grep -qaE "turn_skill_loaded skill=$skill_name" 2>/dev/null
 }
 
+daemon_log_skill_loaded_by_method() {
+    local skill_name="$1"
+    local method="$2"
+    daemon_log_tail | grep -qaE \
+        "turn_skill_loaded skill=$skill_name method=$method" 2>/dev/null
+}
+
+daemon_log_skill_loaded_via_skill_tool() {
+    daemon_log_skill_loaded_by_method "$1" "skill_load"
+}
+
+daemon_log_skill_loaded_via_file_read() {
+    daemon_log_skill_loaded_by_method "$1" "file_read"
+}
+
 daemon_log_no_skill_loaded() {
     ! daemon_log_tail | grep -qaE "turn_skill_loaded" 2>/dev/null
 }
 
 stdout_tool_called() {
     grep -qaE "\\[tool:call\\] $1\\(" "$STDOUT_FILE" 2>/dev/null
+}
+
+stdout_skill_file_read_called() {
+    grep -aiE '^\[tool:call\] file_read\(' "$STDOUT_FILE" 2>/dev/null \
+        | grep -qi 'SKILL\.md'
+}
+
+stdout_no_skill_file_read_called() {
+    ! stdout_skill_file_read_called
 }
 
 # ─── Case Assertion Functions ─────────────────────────────────────────────────
@@ -909,10 +953,19 @@ assert_identity_session() {
     stdout_contains 'headless/' || stdout_contains 'signalr/' || stdout_contains 'slack/'
 }
 
+assert_identity_file_routing() {
+    stdout_response_contains 'SOUL.md' && \
+        stdout_response_contains 'AGENTS.md' && \
+        stdout_response_contains 'TOOLING.md' && \
+        daemon_log_no_skill_loaded
+}
+
 # Category 2: Skill Discovery — tests that the model retrieves procedural
 # knowledge from skills when needed AND actually loaded the skill to get it.
 assert_skill_scheduling_knowledge() {
-    stdout_contains 'cron' && daemon_log_skill_loaded 'netclaw-operations'
+    stdout_contains 'cron' \
+        && daemon_log_skill_loaded_via_skill_tool 'netclaw-operations' \
+        && stdout_no_skill_file_read_called
 }
 
 # Two-hop progressive disclosure: the model must (1) load netclaw-operations, then
@@ -921,13 +974,16 @@ assert_skill_scheduling_knowledge() {
 # in the slim SKILL.md index. Catches a model that loads the index but skips the
 # second hop — the failure mode that silently regresses smaller local agents.
 assert_skill_progressive_disclosure() {
-    daemon_log_skill_loaded 'netclaw-operations' \
+    daemon_log_skill_loaded_via_skill_tool 'netclaw-operations' \
         && stdout_tool_called 'skill_read_resource' \
+        && stdout_no_skill_file_read_called \
         && { stdout_contains 'ReminderAutoDisabled' || stdout_contains '5 consecutive'; }
 }
 
 assert_skill_memory_knowledge() {
-    stdout_contains 'durable' && stdout_contains 'evidence' && daemon_log_skill_loaded 'netclaw-memory'
+    stdout_contains 'durable' && stdout_contains 'evidence' \
+        && daemon_log_skill_loaded_via_skill_tool 'netclaw-memory' \
+        && stdout_no_skill_file_read_called
 }
 
 assert_skill_operations_diagnostics() {
@@ -941,43 +997,67 @@ assert_skill_citation_search() {
 }
 
 assert_skill_web_content_knowledge() {
-    stdout_contains 'browser' && daemon_log_skill_loaded 'web-content-retrieval'
+    stdout_contains 'browser' \
+        && daemon_log_skill_loaded_via_skill_tool 'web-content-retrieval' \
+        && stdout_no_skill_file_read_called
 }
 
 # Category 2b: Skill Activation — measures ONLY whether the model loaded
 # the skill, using prompts where pretraining cannot shortcut the answer.
 assert_skill_activation_scheduling() {
-    daemon_log_skill_loaded 'netclaw-operations'
+    daemon_log_skill_loaded_via_skill_tool 'netclaw-operations' \
+        && stdout_no_skill_file_read_called
 }
 
 assert_skill_activation_memory() {
-    daemon_log_skill_loaded 'netclaw-memory'
+    daemon_log_skill_loaded_via_skill_tool 'netclaw-memory' \
+        && stdout_no_skill_file_read_called
 }
 
 assert_skill_activation_search() {
-    daemon_log_skill_loaded 'search-citation'
+    daemon_log_skill_loaded_via_skill_tool 'search-citation' \
+        && stdout_no_skill_file_read_called
 }
 
 # Soft phrasing — model may load the skill OR use the tool directly from AGENTS.md
 assert_skill_activation_soft_scheduling() {
-    daemon_log_skill_loaded 'netclaw-operations' || stdout_tool_called 'set_reminder'
+    { daemon_log_skill_loaded_via_skill_tool 'netclaw-operations' \
+        || stdout_tool_called 'set_reminder'; } \
+        && stdout_no_skill_file_read_called
 }
 
 assert_skill_activation_soft_memory() {
-    daemon_log_skill_loaded 'netclaw-memory' || stdout_tool_called 'find_memories'
+    { daemon_log_skill_loaded_via_skill_tool 'netclaw-memory' \
+        || stdout_tool_called 'find_memories'; } \
+        && stdout_no_skill_file_read_called
 }
 
 assert_skill_activation_subagent_authoring() {
-    daemon_log_skill_loaded 'subagent-authoring'
+    daemon_log_skill_loaded_via_skill_tool 'subagent-authoring' \
+        && stdout_no_skill_file_read_called
 }
 
 # User skills (non-system, from eval fixtures)
 assert_skill_activation_user_coding() {
-    daemon_log_skill_loaded 'modern-csharp-coding-standards'
+    daemon_log_skill_loaded_via_skill_tool 'modern-csharp-coding-standards' \
+        && stdout_no_skill_file_read_called
 }
 
 assert_skill_activation_user_serialization() {
-    daemon_log_skill_loaded 'serialization'
+    daemon_log_skill_loaded_via_skill_tool 'serialization' \
+        && stdout_no_skill_file_read_called
+}
+
+assert_skill_server_feed_logical_access() {
+    daemon_log_skill_loaded_via_skill_tool 'logical-feed-probe' \
+        && stdout_tool_called 'skill_read_resource' \
+        && stdout_contains 'ORBITAL-MANGO-7421' \
+        && stdout_no_skill_file_read_called
+}
+
+assert_skill_explicit_physical_inspection() {
+    stdout_tool_called 'file_read' \
+        && daemon_log_skill_loaded_via_file_read 'modern-csharp-coding-standards'
 }
 
 # Negative cases — model should NOT load a skill for unrelated prompts
@@ -1118,15 +1198,32 @@ assert_autonomy_web_fetch() {
     stdout_contains '\[tool:call\] web_search' || stdout_contains '\[tool:call\] web_fetch'
 }
 
+# Category 6a: Deployment Mission
+assert_deployment_mission_sales_email() {
+    daemon_log_skill_loaded_via_skill_tool 'business-email-review' \
+        && stdout_no_skill_file_read_called \
+        && \
+        stdout_response_contains '^Subject:' && \
+        stdout_response_contains 'Would Tuesday or Wednesday work for a 15-minute call?'
+}
+
 # Category 6b: Subagents
 assert_subagent_headless_ambiguous_task() {
     stdout_tool_called 'spawn_agent' && \
-        daemon_log_contains 'SubAgent \[headless-analyst\] completed \(success=True' && \
+        stdout_contains '\[subagent:done\] headless-analyst (completed' && \
         stdout_response_contains 'assumption' && \
         stdout_response_not_contains 'which.*include' && \
         stdout_response_not_contains 'what.*include' && \
         stdout_response_not_contains 'please.*clarify' && \
         stdout_response_not_contains 'need.*more.*information'
+}
+
+assert_subagent_specialization_precedence() {
+    stdout_tool_called 'spawn_agent' && \
+        stdout_contains '\[subagent:done\] headless-analyst (completed' && \
+        stdout_contains 'SPECIALIZED ANALYST BRIEF' && \
+        stdout_response_contains '^Subject:' && \
+        stdout_response_contains 'Would Tuesday or Wednesday work for a 15-minute call?'
 }
 
 # Category 7: Complex Task Execution
@@ -1417,6 +1514,10 @@ run_all() {
         "What is your session ID?" \
         "What session are we in?"
 
+    run_case identity_file_routing "routes all three identity concerns without loading a skill" \
+        "Which identity file should hold each of these: my communication style, this deployment's recurring sales workflow, and the tools available on this host?" \
+        "Map personality and operator context, deployment mission and review rules, and environment capabilities to the correct Netclaw identity files."
+
     end_category
 
     # ── Category 2: Skill Discovery ──
@@ -1497,6 +1598,12 @@ run_all() {
         "What serializer should I use for our new event format?" \
         "Should I stick with Newtonsoft.Json or migrate to something else?" \
         "How should I handle serialization for messages between services?"
+
+    run_case skill_server_feed_logical_access "server-feed skill and resource loaded by logical name" \
+        "Use the logical-feed-probe skill and its listed reference resource. What exact verification phrase does the resource contain?"
+
+    run_case skill_explicit_physical_inspection "explicit physical inspection may use file_read" \
+        "Explicitly inspect the physical file /home/netclaw/.netclaw/skills/modern-csharp-coding-standards/SKILL.md with file_read and tell me its title. This is a filesystem inspection request, not normal skill activation."
 
     # Negative cases — model should NOT load a skill
     run_case skill_no_activation_unrelated "no skill loaded" \
@@ -1587,12 +1694,30 @@ run_all() {
 
     end_category
 
+    # ── Category 6a: Deployment Mission ──
+    print_category "Deployment Mission"
+
+    run_case deployment_mission_sales_email "loads the required skill and returns reviewed mission-compliant email" \
+        "Write a short prospecting email to Morgan, an engineering director evaluating incident-response tools. Introduce Netclaw and ask for a call." \
+        "Draft a concise outbound email to Riley, a platform lead looking to reduce repetitive operations work. Offer a brief Netclaw introduction."
+
+    end_category
+
     # ── Category 6b: Subagents ──
     print_category "Subagents"
+
+    local previous_timeout="$PROMPT_TIMEOUT"
+    PROMPT_TIMEOUT=120
 
     run_case subagent_headless_ambiguous_task "spawned subagent completes ambiguous task without clarification" \
         "Use spawn_agent with agent headless-analyst. Ask it to prepare final release notes from these candidate changes without asking follow-up questions. Include everything that looks user-facing: fixed arrow-key input decoding; updated an internal test helper; improved file trace listener encoding. Return the subagent's assumptions and final notes." \
         "Delegate this to the headless-analyst subagent using spawn_agent: decide what belongs in release notes from this ambiguous list without asking me for clarification: legacy CSI key decoding fix; private test fixture cleanup; file trace listener writes UTF-8 correctly. Include all user-facing items and return assumptions plus final notes."
+
+    run_case subagent_specialization_precedence "specialized subagent guidance overrides a conflicting deployment playbook" \
+        "Use spawn_agent with agent headless-analyst to write a prospecting email to Casey, a VP of Engineering interested in reducing operational toil. Return its final email." \
+        "Delegate to headless-analyst: draft an outbound email for Jordan, a technology leader evaluating autonomous operations. Return the worker's final email."
+
+    PROMPT_TIMEOUT="$previous_timeout"
 
     end_category
 
