@@ -6,15 +6,15 @@
 - [x] 1.4 Split mutable tool outputs into a per-invocation append-only sink and approval retry/match state into a pipeline-owned attempt object while sharing only immutable run authority across a batch.
 - [x] 1.5 Add focused tests proving invalid scope values fail before dispatch, missing authority has no dispatch path, and parallel calls cannot observe each other's mutable state.
 - [x] 1.6 Update affected engineering documentation; review the mapped `netclaw-operations` system skill and leave it unchanged because the internal refactor must not alter model-visible guidance.
-- [ ] 1.7 Run targeted tests, tool-related evals/full eval suite as required, `dotnet test`, Slopwatch, file-header verification, and `git diff --check`; open and babysit Stage 1 through review, CI, merge, and post-merge `dev` verification.
+- [x] 1.7 Run targeted tests, tool-related evals/full eval suite as required, `dotnet test`, Slopwatch, file-header verification, and `git diff --check`; open and babysit Stage 1 through review, CI, merge, and post-merge `dev` verification.
 
 ## 2. Stage 2 — Composed Session Pipeline
 
-- [ ] 2.1 Replace the broad session tool-call parameter list with a cohesive batch command and a composed `SessionToolExecutionPipeline` whose production dependencies are required.
-- [ ] 2.2 Trace each nullable pipeline service through every intended production composition path; make proven-unconditional services required, model genuinely production-reachable absence explicitly with unchanged behavior, and keep test-only fixture states out of the production API.
-- [ ] 2.3 Preserve existing `_background` behavior for shell, non-shell, missing-manager, and dispatch-failure paths while removing redundant parameter plumbing.
-- [ ] 2.4 Add characterization tests for audit/logging/approval/background infrastructure, malformed metadata, ACL and approval denial, supported background routing, missing-manager fallback, dispatch failure, and non-shell fallback.
-- [ ] 2.5 Verify MCP request/response schemas and persisted actor contracts remain compatible; update affected engineering docs, specs, and the versioned `netclaw-operations` system skill.
+- [x] 2.1 Replace the broad session tool-call parameter list with a cohesive batch command and a composed `SessionToolExecutionPipeline` whose production dependencies are required.
+- [x] 2.2 Trace each nullable pipeline service through every intended production composition path; make proven-unconditional services required, model genuinely production-reachable absence explicitly with unchanged behavior, and keep test-only fixture states out of the production API.
+- [x] 2.3 Preserve existing `_background` behavior for shell, non-shell, missing-manager, and dispatch-failure paths while removing redundant parameter plumbing.
+- [x] 2.4 Add characterization tests for audit/logging/approval/background infrastructure, malformed metadata, ACL and approval denial, supported background routing, missing-manager fallback, dispatch failure, and non-shell fallback.
+- [x] 2.5 Verify MCP request/response schemas and persisted actor contracts remain compatible; update affected engineering docs and specs, and review the versioned `netclaw-operations` system skill without changing model-visible guidance for an internal behavior-preserving refactor.
 - [ ] 2.6 Run targeted tests, the tool-definition eval suite, `dotnet test`, Slopwatch, file-header verification, and `git diff --check`; open and babysit Stage 2 through review, CI, merge, and post-merge `dev` verification.
 
 ## 3. Stage 3 — Child Context and Async Git
