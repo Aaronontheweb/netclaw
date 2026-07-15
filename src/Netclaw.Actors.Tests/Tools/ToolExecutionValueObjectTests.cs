@@ -43,16 +43,23 @@ public sealed class ToolExecutionValueObjectTests
             Session = new ToolSessionScope.Sessionless(),
             Audience = TrustAudience.Public,
             InlineOutputBudget = null!,
+            InteractiveApproval = new InteractiveApprovalCapability.Unavailable()
         };
         var validScope = new ToolRunScope
         {
             Session = new ToolSessionScope.Sessionless(),
             Audience = TrustAudience.Public,
             InlineOutputBudget = InlineOutputBudget.Default,
+            InteractiveApproval = new InteractiveApprovalCapability.Unavailable()
         };
+        var missingApprovalCapability = validScope with { InteractiveApproval = null! };
 
         Assert.Throws<ArgumentNullException>(
             () => new ToolExecutionContext(missingBudget, ToolExecutionTimeout.Default));
+        Assert.Throws<ArgumentNullException>(
+            () => new ToolExecutionContext(missingApprovalCapability, ToolExecutionTimeout.Default));
+        Assert.Throws<ArgumentNullException>(
+            () => new InteractiveApprovalCapability.Available(null!));
         Assert.Throws<ArgumentNullException>(
             () => new ToolExecutionContext(validScope, null!));
     }
@@ -66,6 +73,7 @@ public sealed class ToolExecutionValueObjectTests
             Session = new ToolSessionScope.Sessionless(),
             Audience = TrustAudience.Personal,
             InlineOutputBudget = InlineOutputBudget.Default,
+            InteractiveApproval = new InteractiveApprovalCapability.Unavailable(),
             RecentFiles = recentFiles,
         };
 
@@ -103,6 +111,7 @@ public sealed class ToolExecutionValueObjectTests
             Session = new ToolSessionScope.Bound("slack/thread-1", "/tmp/session"),
             Audience = TrustAudience.Personal,
             InlineOutputBudget = InlineOutputBudget.Default,
+            InteractiveApproval = new InteractiveApprovalCapability.Unavailable()
         };
         var first = new ToolExecutionContext(runScope, ToolExecutionTimeout.Default);
         var second = new ToolExecutionContext(runScope, ToolExecutionTimeout.Default);

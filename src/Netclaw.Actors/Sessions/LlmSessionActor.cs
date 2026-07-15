@@ -257,7 +257,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             ? null
             : new SessionToolExecutionPipeline(
                 tools.ToolExecutor,
-                tools.AuditLogger,
                 services.TimeProvider,
                 NoLogger.Instance);
 
@@ -2407,6 +2406,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 TurnLog().Debug("working_context_inspection_cancelled generation={Generation}", msg.Generation);
         });
         Command<WorkingContextSnapshotFailed>(HandleWorkingContextSnapshotFailed);
+        Command<WorkingContextSnapshotFatal>(message => throw message.Cause);
 
         // Title generation result — can arrive in any behavior, always safe to apply
         Command<TitleGenerationCompleted>(msg =>
@@ -2822,7 +2822,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             return new WorkingContextSnapshotCancelled(generation);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!FatalExceptionPolicy.IsFatal(ex))
         {
             return new WorkingContextSnapshotFailed(
                 generation,
@@ -2830,6 +2830,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 turnRestartNotice,
                 workingContext,
                 ex);
+        }
+        catch (Exception ex) when (FatalExceptionPolicy.IsFatal(ex))
+        {
+            return new WorkingContextSnapshotFatal(ex);
         }
     }
 
@@ -3186,7 +3190,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                               ?? (_currentTurnSource is null ? null : _currentTurnSource.ChannelType.ToWireValue()),
                 ProjectDirectory = _state.WorkingContext.ProjectDirectory,
                 RecentFiles = _state.WorkingContext.RecentFiles,
-                SupportsInteractiveApproval = false,
+                InteractiveApproval = new InteractiveApprovalCapability.Unavailable(),
                 SpawnChildActor = spawnChildActor,
             }, new ToolExecutionTimeout(_config.ToolExecutionTimeout), outputs);
 

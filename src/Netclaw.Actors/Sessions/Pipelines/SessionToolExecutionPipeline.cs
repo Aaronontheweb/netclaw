@@ -153,7 +153,7 @@ internal sealed class SessionToolBatch
             ChannelType = turnContext.ChannelType?.ToWireValue(),
             DefaultDeliveryTarget = turnContext.DefaultDeliveryTarget,
             RequestedDeliveryTarget = turnContext.RequestedDeliveryTarget,
-            SupportsInteractiveApproval = turnContext.SupportsInteractiveApproval,
+            InteractiveApproval = new InteractiveApprovalCapability.Unavailable(),
             InlineOutputBudget = environment.InlineOutputBudget,
             ModelInputModalities = environment.ModelInputModalities,
             SpawnChildActor = environment.SpawnChildActor,
@@ -233,23 +233,19 @@ internal sealed class SessionToolExecutionPipeline
     private const long MaxModelInputBatchBytes = ChannelAttachmentPolicy.DefaultMaxFileBytes;
 
     private readonly IToolExecutor _executor;
-    private readonly IToolAuditLogger _auditLogger;
     private readonly TimeProvider _timeProvider;
     private readonly ILoggingAdapter _logger;
 
     public SessionToolExecutionPipeline(
         IToolExecutor executor,
-        IToolAuditLogger auditLogger,
         TimeProvider timeProvider,
         ILoggingAdapter logger)
     {
         ArgumentNullException.ThrowIfNull(executor);
-        ArgumentNullException.ThrowIfNull(auditLogger);
         ArgumentNullException.ThrowIfNull(timeProvider);
         ArgumentNullException.ThrowIfNull(logger);
 
         _executor = executor;
-        _auditLogger = auditLogger;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -332,18 +328,10 @@ internal sealed class SessionToolExecutionPipeline
         // Single execution-preflight seam, shared with the sub-agent path via
         // IToolExecutor.InterpretToolCall: validate the ORIGINAL arguments (parse
         // sentinel, invalid/ambiguous meta values, unrecognized keys) and, on
-        // success, extract meta + strip meta keys. Rejecting here — rather than
-        // letting ExecuteAsync return the rejection string — is what lets the denial
-        // be audited as Allowed=false instead of being misreported as executed.
+        // success, extract meta + strip meta keys.
         var interpretation = _executor.InterpretToolCall(tc);
         if (interpretation.Rejection is { } rejection)
         {
-            _auditLogger.Log(BuildAuditEntry(batch.SessionId, tc, _timeProvider, TimeSpan.Zero, meta: null) with
-            {
-                Allowed = false,
-                DenyReason = rejection.DenyReason
-            });
-
             return new ToolCallResult(new SerializableChatMessage
             {
                 Role = Protocol.ChatRole.Tool,
@@ -450,7 +438,12 @@ internal sealed class SessionToolExecutionPipeline
                 batch.TurnContext.HasThirdPartyAdoptedContext,
                 batch.TurnContext.AdoptedSpeakerIds)
             : null;
-        var callScope = batch.RunScope with { ApprovalBridge = approvalBridge };
+        var callScope = batch.RunScope with
+        {
+            InteractiveApproval = approvalBridge is null
+                ? new InteractiveApprovalCapability.Unavailable()
+                : new InteractiveApprovalCapability.Available(approvalBridge)
+        };
         var context = new ToolExecutionContext(
             callScope,
             new ToolExecutionTimeout(timeout),
@@ -474,13 +467,6 @@ internal sealed class SessionToolExecutionPipeline
                 resultText = decisionOverride == ApprovalDecision.TimedOut
                     ? "Tool access denied: approval_timed_out"
                     : $"Tool access denied: approval_denied_by_user ({tc.Name} requires interactive approval and the user declined it)";
-
-                _auditLogger.Log(BuildAuditEntry(batch.SessionId, tc, _timeProvider, sw.Elapsed, meta) with
-                {
-                    Allowed = false,
-                    DenyReason = resultText,
-                    ApprovalDecision = decisionOverride.ToString()
-                });
 
                 var deniedMessage = new SerializableChatMessage
                 {
@@ -520,10 +506,7 @@ internal sealed class SessionToolExecutionPipeline
                         // kill timer is armed — a background job is a detached
                         // process with no completion expectation, reaped by its
                         // own exit, cancellation, or session passivation.
-                        meta.TimeoutHintSeconds ?? 0,
-                        sw.Elapsed,
-                        context.Approval.AppliedDecision,
-                        context.Approval.AppliedPattern);
+                        meta.TimeoutHintSeconds ?? 0);
                 }
             }
 
@@ -531,12 +514,6 @@ internal sealed class SessionToolExecutionPipeline
                 _executor, tc, context, timeout, _timeProvider, batch.CancellationToken);
             sw.Stop();
 
-            _auditLogger.Log(BuildAuditEntry(batch.SessionId, tc, _timeProvider, sw.Elapsed, meta) with
-            {
-                Allowed = true,
-                ApprovalDecision = context.Approval.AppliedDecision,
-                ApprovalPattern = context.Approval.AppliedPattern
-            });
         }
         catch (ToolApprovalRequiredException approvalEx)
         {
@@ -544,12 +521,6 @@ internal sealed class SessionToolExecutionPipeline
             {
                 sw.Stop();
                 resultText = $"Tool requires approval but no interactive approval requester is available: {approvalEx.ApprovalContext.ToolName}";
-
-                _auditLogger.Log(BuildAuditEntry(batch.SessionId, tc, _timeProvider, sw.Elapsed, meta) with
-                {
-                    Allowed = false,
-                    DenyReason = "interactive_approval_unavailable"
-                });
 
                 return new ToolCallResult(new SerializableChatMessage
                 {
@@ -621,23 +592,13 @@ internal sealed class SessionToolExecutionPipeline
                         // kill timer is armed — a background job is a detached
                         // process with no completion expectation, reaped by its
                         // own exit, cancellation, or session passivation.
-                        meta.TimeoutHintSeconds ?? 0,
-                        sw.Elapsed,
-                        decision.ToString(),
-                        string.Join(", ", ctx.Patterns));
+                        meta.TimeoutHintSeconds ?? 0);
                 }
 
                 resultText = await ExecuteToolAttemptAsync(
                     _executor, tc, context, timeout, _timeProvider, batch.CancellationToken);
                 sw.Stop();
 
-                var patternStr = string.Join(", ", ctx.Patterns);
-                _auditLogger.Log(BuildAuditEntry(batch.SessionId, tc, _timeProvider, sw.Elapsed, meta) with
-                {
-                    Allowed = true,
-                    ApprovalDecision = decision.ToString(),
-                    ApprovalPattern = patternStr
-                });
             }
             else
             {
@@ -660,17 +621,6 @@ internal sealed class SessionToolExecutionPipeline
                     setWorkingDirectoryAvailable: batch.SetWorkingDirectoryAvailable);
                 resultText = string.IsNullOrEmpty(hint) ? reason : $"{reason}\n{hint}";
 
-                // Denied audit entries should describe the exact blocked units
-                // the user saw in the prompt. Broader reusable approval entries
-                // are only relevant when B/C is granted.
-                var deniedPatternStr = string.Join(", ", ctx.Patterns);
-                _auditLogger.Log(BuildAuditEntry(batch.SessionId, tc, _timeProvider, sw.Elapsed, meta) with
-                {
-                    Allowed = false,
-                    DenyReason = reason,
-                    ApprovalDecision = decision.ToString(),
-                    ApprovalPattern = deniedPatternStr
-                });
             }
         }
         catch (ToolAccessDeniedException ex)
@@ -678,11 +628,6 @@ internal sealed class SessionToolExecutionPipeline
             sw.Stop();
             resultText = $"Tool access denied: {ex.DenyReason}";
 
-            _auditLogger.Log(BuildAuditEntry(batch.SessionId, tc, _timeProvider, sw.Elapsed, meta) with
-            {
-                Allowed = false,
-                DenyReason = ex.DenyReason
-            });
         }
         catch (OperationCanceledException) when (batch.CancellationToken.IsCancellationRequested)
         {
@@ -697,11 +642,6 @@ internal sealed class SessionToolExecutionPipeline
             sw.Stop();
             resultText = $"Error executing tool: {ex.Message}";
 
-            _auditLogger.Log(BuildAuditEntry(batch.SessionId, tc, _timeProvider, sw.Elapsed, meta) with
-            {
-                Allowed = false,
-                DenyReason = $"tool_execution_error:{ex.GetType().Name}"
-            });
         }
 
         var modelInputMaterialization = MaterializeModelInputFiles(
@@ -878,10 +818,7 @@ internal sealed class SessionToolExecutionPipeline
         SessionToolBatch batch,
         ToolCallMeta meta,
         IActorRef backgroundJobManager,
-        int timeoutSeconds,
-        TimeSpan duration,
-        string? approvalDecision = null,
-        string? approvalPattern = null)
+        int timeoutSeconds)
     {
         var command = ToolArgumentHelper.GetString(tc.Arguments, "Command");
         var workingDirectory = ToolArgumentHelper.GetString(tc.Arguments, "WorkingDirectory");
@@ -928,13 +865,6 @@ internal sealed class SessionToolExecutionPipeline
                 "Background job {JobId} submitted for shell command (session {SessionId})",
                 started.JobId.Value, batch.SessionId.Value);
 
-            _auditLogger.Log(BuildAuditEntry(batch.SessionId, tc, _timeProvider, duration, meta) with
-            {
-                Allowed = true,
-                ApprovalDecision = approvalDecision,
-                ApprovalPattern = approvalPattern
-            });
-
             var logPathHint = started.OutputLogPath is not null
                 ? $" Output streams to {started.OutputLogPath} while the job runs — file_read/grep it to monitor."
                 : string.Empty;
@@ -962,14 +892,6 @@ internal sealed class SessionToolExecutionPipeline
         catch (Exception ex)
         {
             _logger.Error(ex, "Failed to submit background job for {ToolName}", tc.Name);
-
-            _auditLogger.Log(BuildAuditEntry(batch.SessionId, tc, _timeProvider, duration, meta) with
-            {
-                Allowed = false,
-                DenyReason = $"background_job_submission_failed:{ex.GetType().Name}",
-                ApprovalDecision = approvalDecision,
-                ApprovalPattern = approvalPattern
-            });
 
             var errorMessage = new SerializableChatMessage
             {
@@ -1131,23 +1053,6 @@ internal sealed class SessionToolExecutionPipeline
 
     private static bool CanRequestInteractiveApproval(TurnContext turnContext)
         => turnContext.SupportsInteractiveApproval && turnContext.HasApprovalRequester;
-
-    private static ToolAuditEntry BuildAuditEntry(
-        SessionId sessionId,
-        FunctionCallContent tc,
-        TimeProvider timeProvider,
-        TimeSpan duration,
-        ToolCallMeta? meta) => new()
-        {
-            SessionId = sessionId,
-            ToolName = new ToolName(tc.Name),
-            CallId = new ToolCallId(tc.CallId),
-            Timestamp = timeProvider.GetUtcNow(),
-            Allowed = false,
-            Duration = duration,
-            Rationale = meta?.Rationale,
-            TimeoutHintSeconds = meta?.TimeoutHintSeconds
-        };
 
     /// <summary>
     /// Returns a one-line agent-facing hint pointing at <c>set_working_directory</c>
