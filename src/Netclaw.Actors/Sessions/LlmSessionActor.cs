@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="LlmSessionActor.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -57,8 +57,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly IReadOnlyList<IContextLayerProvider> _contextLayers;
     private readonly IWorkingContextSnapshotProvider _workingContextSnapshots;
     private readonly IToolExecutor? _toolExecutor;
+    private readonly SessionToolExecutionPipeline? _toolExecutionPipeline;
     private readonly Tools.ToolRegistry? _toolRegistry;
-    private readonly IToolAuditLogger? _auditLogger;
     private readonly IToolApprovalService? _approvalService;
     private readonly ApprovalChannel _approvalChannel = new();
     private readonly IMemoryExtractor _memoryExtractor;
@@ -153,6 +153,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // from cancelled calls are ignored when their CallId doesn't match.
     private long _activeCallId;
 
+    // Correlates asynchronous working-context inspection with the call that
+    // requested it. Every call advances the generation so a late snapshot can
+    // never enter a newer turn or tool-loop continuation.
+    private long _workingContextGeneration;
+
     // Tracks whether any content was streamed this call — selects the watchdog timeout
     // (the generous prefill budget before the first token vs the tighter inter-delta
     // budget after).
@@ -236,7 +241,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _subAgentLoader = tools?.SubAgentLoader;
         _toolExecutor = tools?.ToolExecutor;
         _toolRegistry = tools?.ToolRegistry;
-        _auditLogger = tools?.AuditLogger;
         _toolAccessPolicy = tools?.AccessPolicy;
         _approvalService = tools?.ApprovalService;
         _memoryExtractor = memory?.MemoryExtractor ?? NullMemoryExtractor.Instance;
@@ -253,6 +257,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         // Enrich logger with session context — all log messages automatically include SessionId
         _log = Context.GetLogger().WithContext(NetclawLogProperties.SessionId, _sessionId.Value);
+        _toolExecutionPipeline = tools is null
+            ? null
+            : new SessionToolExecutionPipeline(
+                tools.ToolExecutor,
+                services.TimeProvider,
+                NoLogger.Instance);
 
         // Load all non-MCP tools for initial LLM calls.
         // MCP tools are loaded dynamically via search_tools and can be retained for a
@@ -860,7 +870,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         foreach (var run in msg.CompletedSubAgentRuns)
         {
-            MergeSuccessfulSubAgentWorkingContext(run.Success, run.WorkingContext);
+            MergeSuccessfulSubAgentWorkingContext(run.Completion);
             if (!emittedRunIds.Add(run.RunId))
                 continue;
 
@@ -1816,7 +1826,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                     var (meta, cleaned) = toolExec.PrepareToolCall(tc);
                     return (meta, cleaned.Arguments);
                 }
-                : null);
+        : null);
         var userMsg = _state.FindLastUserMessage() ?? new SerializableChatMessage
         {
             Role = Protocol.ChatRole.User,
@@ -1964,12 +1974,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 tc.Arguments is not null ? JsonSerializer.Serialize(tc.Arguments) : "{}");
         }
         var self = Self;
-        var executor = _toolExecutor!;
-        var sessionId = _sessionId;
-        var auditLogger = _auditLogger;
-        var tp = _timeProvider;
         var sessionDir = GetSessionDirectory();
-        var maxInlineToolResultChars = _config.Tuning.MaxInlineToolResultChars;
         // Per-call inactivity watchdogs in the tool-execution pipeline govern
         // tool liveness; the session ProcessingWatchdog covers only LLM calls
         // and compaction, so no batch tool-execution watchdog is armed here.
@@ -1994,10 +1999,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 timeout: toolExecutionTimeout,
                 cancellationToken: ct);
 
-        IActorRef? bgJobManager = null;
         var registry = ActorRegistry.For(Context.System);
-        if (registry.TryGet<BackgroundJobManagerActorKey>(out var mgr))
-            bgJobManager = mgr;
+        var backgroundJobs = registry.TryGet<BackgroundJobManagerActorKey>(out var manager)
+            ? new BackgroundJobDispatch.Available(manager)
+            : (BackgroundJobDispatch)new BackgroundJobDispatch.Unavailable();
 
         // Pre-compute set_working_directory exposure once per dispatch so the
         // pipeline's deny-path hint logic can run without a policy lookup.
@@ -2008,21 +2013,40 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         CancelAndDisposeToolExecutionCts();
         _activeToolExecutionCts = new CancellationTokenSource();
         var toolExecutionCt = _activeToolExecutionCts.Token;
+        var turnContext = _currentTurnContext
+            ?? throw new InvalidOperationException("Tool batch dispatch requires admitted turn authority.");
+        var runEnvironment = new SessionToolRunEnvironment
+        {
+            SessionDirectory = sessionDir,
+            InlineOutputBudget = new InlineOutputBudget(_config.Tuning.MaxInlineToolResultChars),
+            ModelInputModalities = _model.InputModalities,
+            SpawnChildActor = spawnChildActor,
+            ProjectDirectory = _state.WorkingContext.ProjectDirectory,
+            RecentFiles = _state.WorkingContext.RecentFiles
+        };
+        var pipeline = _toolExecutionPipeline
+            ?? throw new InvalidOperationException("Tool batch dispatch requires tool execution infrastructure.");
+        var batch = new SessionToolBatch(turnContext, runEnvironment)
+        {
+            ToolCalls = toolCalls,
+            DefaultTimeout = new ToolExecutionTimeout(toolExecutionTimeout),
+            ReplyTo = self,
+            EmitSubAgentOutput = emitSubAgentOutput,
+            ApprovalRequests = new ToolApprovalRequests(
+                _approvalChannel,
+                request => self.Tell(request),
+                new ToolExecutionTimeout(Timeout.InfiniteTimeSpan)),
+            BackgroundJobs = backgroundJobs,
+            SetWorkingDirectoryAvailable = setWorkingDirectoryAvailable,
+            StreamResults = true,
+            OneTimeApprovalPreSeed = oneTimeApprovalPreSeed
+                ?? new Dictionary<string, IReadOnlyList<string>>(),
+            DecisionOverrides = decisionOverride
+                ?? new Dictionary<string, ApprovalDecision>(),
+            CancellationToken = toolExecutionCt
+        };
 
-        _ = SessionToolExecutionPipeline.ExecuteToolsAsync(executor, toolCalls, sessionId, _currentTurnSource, auditLogger, tp, sessionDir, maxInlineToolResultChars, toolExecutionTimeout, self, emitSubAgentOutput, spawnChildActor,
-            approvalChannel: _approvalChannel,
-            emitApprovalRequest: request => self.Tell(request),
-            approvalTimeout: Timeout.InfiniteTimeSpan,
-            backgroundJobManager: bgJobManager,
-            projectDirectory: _state.WorkingContext.ProjectDirectory,
-            recentFiles: _state.WorkingContext.RecentFiles,
-            setWorkingDirectoryAvailable: setWorkingDirectoryAvailable,
-            streamToolResults: true,
-            modelInputModalities: _model.InputModalities,
-            oneTimeApprovalPreSeed: oneTimeApprovalPreSeed,
-            decisionOverride: decisionOverride,
-            turnContext: _currentTurnContext,
-            ct: toolExecutionCt);
+        _ = pipeline.ExecuteAsync(batch);
     }
 
     private void HandleTextResponse(
@@ -2381,6 +2405,15 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void CommandSubscriptionMessages()
     {
+        Command<WorkingContextSnapshotReady>(HandleWorkingContextSnapshotReady);
+        Command<WorkingContextSnapshotCancelled>(msg =>
+        {
+            if (msg.Generation == _workingContextGeneration)
+                TurnLog().Debug("working_context_inspection_cancelled generation={Generation}", msg.Generation);
+        });
+        Command<WorkingContextSnapshotFailed>(HandleWorkingContextSnapshotFailed);
+        Command<WorkingContextSnapshotFatal>(message => throw message.Cause);
+
         // Title generation result — can arrive in any behavior, always safe to apply
         Command<TitleGenerationCompleted>(msg =>
         {
@@ -2455,7 +2488,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SessionId = _sessionId,
                 Title = _state.Title,
                 TurnCount = _state.TurnCount,
-                    RecentMessages = SessionRecentMessageExtractor.Extract(_state.History)
+                RecentMessages = SessionRecentMessageExtractor.Extract(_state.History)
             };
 
             // On re-join, only reply to the Sender (for Ask callers) — don't
@@ -2506,7 +2539,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _log.Info("Snapshot saved (seqNr={SequenceNr})", msg.Metadata.SequenceNr);
 
             DeleteMessages(msg.Metadata.SequenceNr); // delete all messages in journal up until snapshot was taken
-            DeleteSnapshots(new SnapshotSelectionCriteria(msg.Metadata.SequenceNr-1)); // delete all old snapshots
+            DeleteSnapshots(new SnapshotSelectionCriteria(msg.Metadata.SequenceNr - 1)); // delete all old snapshots
         });
 
         Command<SaveSnapshotFailure>(msg =>
@@ -2644,6 +2677,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         CancelAndDisposeLlmCts();
         _activeLlmCts = new CancellationTokenSource();
         _activeCallId++;
+        var workingContextGeneration = ++_workingContextGeneration;
 
         _turnState.ForceNoToolsActive = forceNoTools;
 
@@ -2703,29 +2737,22 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             // through this content on every subsequent turn instead of
             // re-tokenizing it from scratch.
             _activeRecall = _recallManager.TurnRecallCache;
-            var workingContextBlock = _workingContextSnapshots
-                .Create(_state.WorkingContext, CurrentTurnAudience())
-                .ToContextBlock();
-            var volatileBlock = SessionMessageAssembler.BuildVolatileContextBlock(new ContextAssemblyInput(
-                State: _state,
-                ContextLayers: _contextLayers,
-                StartupContextInjected: _startupContextInjected,
-                SlashCommandSkillContent: _slashCommandSkillContent,
-                SessionPromptOverlay: _sessionPromptOverlay,
-                TurnRestartNotice: _turnRestartNotice,
-                SessionId: _sessionId,
-                SessionsBasePath: _sessionsBasePath,
-                FileReadGranted: HasFileReadGranted(),
-                ActiveRecall: _activeRecall,
-                WorkingContextBlock: workingContextBlock,
-                Audience: CurrentTurnAudience(),
-                SkillHint: BuildSkillHint()));
-            if (!string.IsNullOrEmpty(volatileBlock))
-            {
-                _state = _state.AddVolatileContextNudge(volatileBlock);
-            }
+            _ = CreateWorkingContextContinuationAsync(
+                    workingContextGeneration,
+                    forceNoTools,
+                    _turnRestartNotice,
+                    _state.WorkingContext,
+                    CurrentTurnAudience(),
+                    _activeLlmCts.Token)
+                .PipeTo(Self);
+            return;
         }
 
+        ContinueFireLlmCall(forceNoTools);
+    }
+
+    private void ContinueFireLlmCall(bool forceNoTools)
+    {
         _activeRecall = _recallManager.TurnRecallCache;
 
         // Build the full message list via the cache-stable assembler.
@@ -2780,6 +2807,103 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         _ = SessionLlmInvoker.InvokeAsync(client, messages, options, self, _activeCallId, _sessionId, _activeLlmCts!.Token);
     }
+
+    private async Task<INoSerializationVerificationNeeded> CreateWorkingContextContinuationAsync(
+        long generation,
+        bool forceNoTools,
+        string? turnRestartNotice,
+        WorkingContext workingContext,
+        TrustAudience audience,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var snapshot = await _workingContextSnapshots.CreateAsync(
+                workingContext,
+                audience,
+                cancellationToken).ConfigureAwait(false);
+            return new WorkingContextSnapshotReady(generation, forceNoTools, turnRestartNotice, snapshot);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return new WorkingContextSnapshotCancelled(generation);
+        }
+        catch (Exception ex) when (!FatalExceptionPolicy.IsFatal(ex))
+        {
+            return new WorkingContextSnapshotFailed(
+                generation,
+                forceNoTools,
+                turnRestartNotice,
+                workingContext,
+                ex);
+        }
+        catch (Exception ex) when (FatalExceptionPolicy.IsFatal(ex))
+        {
+            return new WorkingContextSnapshotFatal(ex);
+        }
+    }
+
+    private void HandleWorkingContextSnapshotFailed(WorkingContextSnapshotFailed message)
+    {
+        if (!ShouldApplyWorkingContextSnapshot(
+                message.Generation,
+                _workingContextGeneration,
+                _activeLlmCts is not null))
+            return;
+
+        TurnLog().Warning(
+            message.Cause,
+            "working_context_inspection_failed generation={Generation}",
+            message.Generation);
+        HandleWorkingContextSnapshotReady(new WorkingContextSnapshotReady(
+            message.Generation,
+            message.ForceNoTools,
+            message.TurnRestartNotice,
+            new WorkingContextSnapshot
+            {
+                WorkingContext = message.WorkingContext,
+                Git = new GitWorkingContextInspection.Unavailable("working context inspection failed")
+            }));
+    }
+
+    private void HandleWorkingContextSnapshotReady(WorkingContextSnapshotReady message)
+    {
+        if (!ShouldApplyWorkingContextSnapshot(
+                message.Generation,
+                _workingContextGeneration,
+                _activeLlmCts is not null))
+        {
+            TurnLog().Debug(
+                "working_context_inspection_stale generation={Generation} activeGeneration={ActiveGeneration}",
+                message.Generation,
+                _workingContextGeneration);
+            return;
+        }
+
+        var volatileBlock = SessionMessageAssembler.BuildVolatileContextBlock(new ContextAssemblyInput(
+            State: _state,
+            ContextLayers: _contextLayers,
+            StartupContextInjected: _startupContextInjected,
+            SlashCommandSkillContent: _slashCommandSkillContent,
+            SessionPromptOverlay: _sessionPromptOverlay,
+            TurnRestartNotice: message.TurnRestartNotice,
+            SessionId: _sessionId,
+            SessionsBasePath: _sessionsBasePath,
+            FileReadGranted: HasFileReadGranted(),
+            ActiveRecall: _activeRecall,
+            WorkingContextBlock: message.Snapshot.ToContextBlock(),
+            Audience: CurrentTurnAudience(),
+            SkillHint: BuildSkillHint()));
+        if (!string.IsNullOrEmpty(volatileBlock))
+            _state = _state.AddVolatileContextNudge(volatileBlock);
+
+        ContinueFireLlmCall(message.ForceNoTools);
+    }
+
+    internal static bool ShouldApplyWorkingContextSnapshot(
+        long snapshotGeneration,
+        long activeGeneration,
+        bool hasActiveLlmCall) => hasActiveLlmCall && snapshotGeneration == activeGeneration;
 
 
     private TrustAudience CurrentTurnAudience()
@@ -3045,25 +3169,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     {
         try
         {
-            var context = new ToolExecutionContext(_sessionId.Value, GetSessionDirectory())
-            {
-                // No active turn context/source carries no trust context — fall closed.
-                Audience = _currentTurnContext?.Audience ?? _currentTurnSource?.Audience ?? TrustAudience.Public,
-                Boundary = _currentTurnContext?.Boundary ?? _currentTurnSource?.Boundary,
-                ChannelType = _currentTurnContext?.ChannelType?.ToWireValue()
-                              ?? (_currentTurnSource is null ? null : _currentTurnSource.ChannelType.ToWireValue()),
-                ProjectDirectory = _state.WorkingContext.ProjectDirectory,
-                RecentFiles = _state.WorkingContext.RecentFiles,
-                SupportsInteractiveApproval = false,
-            };
-
-            context.SpawnChildActor = async (props, name, ct) =>
+            Func<object, string, CancellationToken, Task<object>> spawnChildActor = async (props, name, ct) =>
                 await self.Ask<IActorRef>(
                     new SpawnChildActorRequest((Props)props, name),
                     timeout: _config.ToolExecutionTimeout,
                     cancellationToken: ct);
-
-            context.OnSubAgentActivity = info =>
+            var outputs = new ToolExecutionOutputs(info =>
             {
                 self.Tell(new RoutedSkillSubAgentActivity(
                     _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
@@ -3073,13 +3184,27 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                     info.Success,
                     info.Duration,
                     info.Findings.Count));
-            };
+            });
+            var context = new ToolExecutionContext(new ToolRunScope
+            {
+                Session = new ToolSessionScope.Bound(_sessionId.Value, GetSessionDirectory()),
+                // No active turn context/source carries no trust context — fall closed.
+                Audience = _currentTurnContext?.Audience ?? _currentTurnSource?.Audience ?? TrustAudience.Public,
+                InlineOutputBudget = new InlineOutputBudget(_config.Tuning.MaxInlineToolResultChars),
+                Boundary = _currentTurnContext?.Boundary ?? _currentTurnSource?.Boundary,
+                ChannelType = _currentTurnContext?.ChannelType?.ToWireValue()
+                              ?? (_currentTurnSource is null ? null : _currentTurnSource.ChannelType.ToWireValue()),
+                ProjectDirectory = _state.WorkingContext.ProjectDirectory,
+                RecentFiles = _state.WorkingContext.RecentFiles,
+                InteractiveApproval = new InteractiveApprovalCapability.Unavailable(),
+                SpawnChildActor = spawnChildActor,
+            }, new ToolExecutionTimeout(_config.ToolExecutionTimeout), outputs);
 
             var result = await _subAgentSpawner!.SpawnAsync(
                 profile,
                 task,
                 runtimeContext: null,
-                context,
+                context.Invocation,
                 CancellationToken.None,
                 systemPromptOverlay: skillBody);
 
@@ -3102,7 +3227,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             return;
         }
 
-        MergeSuccessfulSubAgentWorkingContext(msg.Result.Success, msg.Result.WorkingContext);
+        MergeSuccessfulSubAgentWorkingContext(msg.Result.Completion);
 
         var userMsg = _state.FindLastUserMessage();
         var turnEvent = new TurnRecorded
@@ -3160,23 +3285,25 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         });
     }
 
-    private void MergeSuccessfulSubAgentWorkingContext(
-        bool success,
-        SubAgentWorkingContextInfo? workingContext)
+    private void MergeSuccessfulSubAgentWorkingContext(ChildRunCompletion completion)
     {
-        var updated = MergeSuccessfulSubAgentWorkingContext(_state.WorkingContext, success, workingContext);
+        var updated = MergeSuccessfulSubAgentWorkingContext(_state.WorkingContext, completion);
         if (!ReferenceEquals(updated, _state.WorkingContext))
             _state = _state with { WorkingContext = updated };
     }
 
     internal static WorkingContext MergeSuccessfulSubAgentWorkingContext(
         WorkingContext current,
-        bool success,
-        SubAgentWorkingContextInfo? child)
-    {
-        if (!success || child is null)
-            return current;
+        ChildRunCompletion completion) => completion switch
+        {
+            ChildRunCompletion.Completed completed => MergeConfirmedChanges(current, completed.WorkingContext),
+            ChildRunCompletion.Partial partial => MergeConfirmedChanges(current, partial.WorkingContext),
+            ChildRunCompletion.Failed or ChildRunCompletion.Cancelled => current,
+            _ => throw new ArgumentOutOfRangeException(nameof(completion))
+        };
 
+    private static WorkingContext MergeConfirmedChanges(WorkingContext current, WorkingContextDelta child)
+    {
         var updated = current;
         foreach (var path in child.ConfirmedChangedFiles)
             updated = updated.AddRecentFile(path);
@@ -4251,6 +4378,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     {
         _inFlightDedup.CompleteReminder(_currentTurnSource?.ReminderId);
         _inFlightDedup.CompleteBackgroundJob(_currentTurnSource?.BackgroundJobId);
+        CancelAndDisposeLlmCts();
         CancelAndDisposeToolExecutionCts();
         _deliveryRetry.Clear();
         _pendingToolInteractions.Clear();
@@ -4427,7 +4555,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         foreach (var run in result.CompletedSubAgentRuns)
         {
-            MergeSuccessfulSubAgentWorkingContext(run.Success, run.WorkingContext);
+            MergeSuccessfulSubAgentWorkingContext(run.Completion);
             if (!emittedRunIds.Add(run.RunId))
                 continue;
 

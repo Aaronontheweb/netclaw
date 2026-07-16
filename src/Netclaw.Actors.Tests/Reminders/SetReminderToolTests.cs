@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="SetReminderToolTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -52,7 +52,7 @@ public class SetReminderToolTests : TestKit
                 ["ScheduleType"] = "once",
                 ["Schedule"] = "30m",
                 ["DeliveryKind"] = "none"
-            });
+            }, TestToolExecutionContext.CreateUnbound());
             return result;
         });
 
@@ -92,7 +92,7 @@ public class SetReminderToolTests : TestKit
                 ["ScheduleType"] = "interval",
                 ["Schedule"] = "2h",
                 ["DeliveryKind"] = "none"
-            });
+            }, TestToolExecutionContext.CreateUnbound());
             return result;
         });
 
@@ -127,7 +127,7 @@ public class SetReminderToolTests : TestKit
                 ["ScheduleType"] = "cron",
                 ["Schedule"] = "0 */6 * * *",
                 ["DeliveryKind"] = "none"
-            });
+            }, TestToolExecutionContext.CreateUnbound());
             return result;
         });
 
@@ -160,7 +160,7 @@ public class SetReminderToolTests : TestKit
             ["ScheduleType"] = "cron",
             ["Schedule"] = "not valid cron",
             ["DeliveryKind"] = "none"
-        }, TestContext.Current.CancellationToken);
+        }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
 
         Assert.Contains("Error:", result);
         Assert.Contains("Invalid cron expression", result);
@@ -181,7 +181,7 @@ public class SetReminderToolTests : TestKit
             ["ScheduleType"] = "weekly",
             ["Schedule"] = "1h",
             ["DeliveryKind"] = "none"
-        }, TestContext.Current.CancellationToken);
+        }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
 
         Assert.Contains("Error:", result);
         Assert.Contains("Unknown schedule type", result);
@@ -201,7 +201,7 @@ public class SetReminderToolTests : TestKit
             ["ScheduleType"] = "interval",
             ["Schedule"] = "10s",
             ["DeliveryKind"] = "none"
-        }, TestContext.Current.CancellationToken);
+        }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
 
         Assert.Contains("Error:", result);
         Assert.Contains("Minimum interval", result);
@@ -212,12 +212,12 @@ public class SetReminderToolTests : TestKit
     {
         var probe = CreateTestProbe();
         var tool = new SetReminderTool(probe, _timeProvider, new SchedulingConfig());
-        var context = new ToolExecutionContext("C0123ABC/1234567890.123456", null)
+        var context = TestToolExecutionContext.CreateBound("C0123ABC/1234567890.123456", null, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Team,
             Boundary = TrustBoundary.TrustedInstance,
             ChannelType = "slack"
-        };
+        });
 
         var execution = Task.Run(async () =>
         {
@@ -258,12 +258,12 @@ public class SetReminderToolTests : TestKit
     {
         var probe = CreateTestProbe();
         var tool = new SetReminderTool(probe, _timeProvider, new SchedulingConfig());
-        var context = new ToolExecutionContext("129847561203948576/130111223344556677", null)
+        var context = TestToolExecutionContext.CreateBound("129847561203948576/130111223344556677", null, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Team,
             Boundary = TrustBoundary.TrustedInstance,
             ChannelType = "discord"
-        };
+        });
 
         var execution = Task.Run(async () =>
         {
@@ -300,11 +300,11 @@ public class SetReminderToolTests : TestKit
     {
         var probe = CreateTestProbe();
         var tool = new SetReminderTool(probe, _timeProvider, new SchedulingConfig());
-        var context = new ToolExecutionContext("webhook/delivery-1", null)
+        var context = TestToolExecutionContext.CreateBound("webhook/delivery-1", null, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             ChannelType = "webhook"
-        };
+        });
 
         var result = await tool.ExecuteAsync(new Dictionary<string, object?>
         {
@@ -329,7 +329,7 @@ public class SetReminderToolTests : TestKit
         // Session id present but ChannelType is null — pre-v0.16 context
         // shape or an unusual caller. Fail loud, do not silently persist a
         // headless reminder that would drop on the floor at fire time.
-        var context = new ToolExecutionContext("C0123ABC/1234567890.123456", null) { Audience = TrustAudience.Personal };
+        var context = TestToolExecutionContext.CreateBound("C0123ABC/1234567890.123456", null, TrustAudience.Personal);
 
         var result = await tool.ExecuteAsync(new Dictionary<string, object?>
         {
@@ -362,7 +362,7 @@ public class SetReminderToolTests : TestKit
                 ["ScheduleType"] = "once",
                 ["Schedule"] = "10m",
                 ["DeliveryKind"] = "none"
-            }, ToolExecutionContext.Empty);
+            }, TestToolExecutionContext.CreateUnbound());
         });
 
         var cmd = await probe.ExpectMsgAsync<SaveReminderCommand>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
@@ -398,7 +398,7 @@ public class SetReminderToolTests : TestKit
                 ["ScheduleType"] = "interval",
                 ["Schedule"] = "24h",
                 ["DeliveryKind"] = "none"
-            });
+            }, TestToolExecutionContext.CreateUnbound());
             return result;
         });
 
@@ -421,11 +421,11 @@ public class SetReminderToolTests : TestKit
     {
         var probe = CreateTestProbe();
         var tool = new SetReminderTool(probe, _timeProvider, new SchedulingConfig());
-        var context = new ToolExecutionContext("slack/thread-1", null)
+        var context = TestToolExecutionContext.CreateBound("slack/thread-1", null, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             ChannelType = "slack"
-        };
+        });
 
         var execution = Task.Run(async () =>
         {
@@ -460,12 +460,12 @@ public class SetReminderToolTests : TestKit
     {
         var probe = CreateTestProbe();
         var tool = new SetReminderTool(probe, _timeProvider, new SchedulingConfig());
-        var context = new ToolExecutionContext("signalr/thread-1", null)
+        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", null, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             Boundary = TrustBoundary.TrustedInstance,
             ChannelType = "signalr"
-        };
+        });
 
         var execution = Task.Run(async () =>
         {
@@ -510,7 +510,7 @@ public class SetReminderToolTests : TestKit
             ["Schedule"] = "30m",
             ["Audience"] = "superadmin",
             ["DeliveryKind"] = "none"
-        }, TestContext.Current.CancellationToken);
+        }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
 
         Assert.Contains("Error:", result);
         Assert.Contains("Invalid audience", result);
@@ -522,11 +522,11 @@ public class SetReminderToolTests : TestKit
     {
         var probe = CreateTestProbe();
         var tool = new SetReminderTool(probe, _timeProvider, new SchedulingConfig());
-        var context = new ToolExecutionContext("slack/thread-1", null)
+        var context = TestToolExecutionContext.CreateBound("slack/thread-1", null, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Team,
             ChannelType = "slack"
-        };
+        });
 
         var execution = Task.Run(async () =>
         {
@@ -566,11 +566,11 @@ public class SetReminderToolTests : TestKit
     {
         var probe = CreateTestProbe();
         var tool = new SetReminderTool(probe, _timeProvider, new SchedulingConfig());
-        var context = new ToolExecutionContext("slack/thread-1", null)
+        var context = TestToolExecutionContext.CreateBound("slack/thread-1", null, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Team,
             ChannelType = "slack"
-        };
+        });
 
         var execution = Task.Run(async () =>
         {
@@ -608,11 +608,11 @@ public class SetReminderToolTests : TestKit
     {
         var probe = CreateTestProbe();
         var tool = new SetReminderTool(probe, _timeProvider, new SchedulingConfig());
-        var context = new ToolExecutionContext("129847561203948576/130111223344556677", null)
+        var context = TestToolExecutionContext.CreateBound("129847561203948576/130111223344556677", null, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Public,
             ChannelType = "discord"
-        };
+        });
 
         var execution = Task.Run(async () =>
         {
@@ -669,7 +669,7 @@ public class SetReminderToolTests : TestKit
                 ["DeliveryKind"] = "channel",
                 ["DeliveryTransport"] = "slack",
                 ["DeliveryAddress"] = "#general"
-            });
+            }, TestToolExecutionContext.CreateUnbound());
         });
 
         var cmd = await probe.ExpectMsgAsync<SaveReminderCommand>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
@@ -714,7 +714,7 @@ public class SetReminderToolTests : TestKit
             ["DeliveryKind"] = "channel",
             ["DeliveryTransport"] = "slack",
             ["DeliveryAddress"] = "#nope"
-        }, TestContext.Current.CancellationToken);
+        }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
 
         Assert.StartsWith("Error: Could not resolve delivery_address '#nope'", result);
         Assert.Contains("Could not resolve Slack target", result);
@@ -738,7 +738,7 @@ public class SetReminderToolTests : TestKit
             ["DeliveryKind"] = "channel",
             ["DeliveryTransport"] = "slack",
             ["DeliveryAddress"] = "C0123ABC"
-        }, TestContext.Current.CancellationToken);
+        }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
 
         Assert.StartsWith("Error: Unknown transport 'slack'", result);
         await probe.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
@@ -760,7 +760,7 @@ public class SetReminderToolTests : TestKit
             ["DeliveryKind"] = "channel",
             ["DeliveryTransport"] = "signalr",
             ["DeliveryAddress"] = "signalr/ops"
-        }, TestContext.Current.CancellationToken);
+        }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
 
         Assert.Equal("Error: Transport 'signalr' does not support channel delivery. Use current_session instead.", result);
         await probe.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
@@ -775,11 +775,11 @@ public class SetReminderToolTests : TestKit
             ResultFor = (_) => throw new InvalidOperationException("resolver must not be invoked for Mode B session re-entry")
         };
         var tool = new SetReminderTool(probe, _timeProvider, new SchedulingConfig(), [resolver]);
-        var context = new ToolExecutionContext("C0123ABC/1234567890.123456", null)
+        var context = TestToolExecutionContext.CreateBound("C0123ABC/1234567890.123456", null, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Team,
             ChannelType = "slack"
-        };
+        });
 
         var execution = Task.Run(async () =>
         {
@@ -834,7 +834,7 @@ public class SetReminderToolTests : TestKit
                 ["DeliveryKind"] = "channel",
                 ["DeliveryTransport"] = "slack",
                 ["DeliveryAddress"] = "@aaron"
-            });
+            }, TestToolExecutionContext.CreateUnbound());
         });
 
         var cmd = await probe.ExpectMsgAsync<SaveReminderCommand>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
@@ -880,7 +880,7 @@ public class SetReminderToolTests : TestKit
                 ["DeliveryKind"] = "channel",
                 ["DeliveryTransport"] = "discord",
                 ["DeliveryAddress"] = "<@129847561203948576>"
-            }, TestContext.Current.CancellationToken);
+            }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
         }, TestContext.Current.CancellationToken);
 
         var cmd = await probe.ExpectMsgAsync<SaveReminderCommand>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
@@ -924,7 +924,7 @@ public class SetReminderToolTests : TestKit
             ["DeliveryKind"] = "channel",
             ["DeliveryTransport"] = "discord",
             ["DeliveryAddress"] = "dm:129847561203948576"
-        }, TestContext.Current.CancellationToken);
+        }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
 
         Assert.StartsWith("Error: Could not resolve delivery_address", result);
         Assert.Contains("direct messages are disabled", result, StringComparison.OrdinalIgnoreCase);
@@ -952,7 +952,7 @@ public class SetReminderToolTests : TestKit
             ["DeliveryKind"] = "channel",
             ["DeliveryTransport"] = "discord",
             ["DeliveryAddress"] = "dm:129847561203948576"
-        }, TestContext.Current.CancellationToken);
+        }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
 
         Assert.StartsWith("Error: Could not resolve delivery_address", result);
         Assert.Contains("allowed users", result, StringComparison.OrdinalIgnoreCase);
@@ -979,7 +979,7 @@ public class SetReminderToolTests : TestKit
             ["DeliveryKind"] = "channel",
             ["DeliveryTransport"] = "slack",
             ["DeliveryAddress"] = "#general"
-        }, TestContext.Current.CancellationToken);
+        }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
 
         Assert.Contains("resolver returned an empty canonical target ID", result);
         Assert.Equal(1, resolver.CallCount);
@@ -1016,7 +1016,7 @@ public class SetReminderToolTests : TestKit
                 ["Schedule"] = "30m",
                 ["DeliveryKind"] = "none",
                 ["ExpiresIn"] = "24h"
-            });
+            }, TestToolExecutionContext.CreateUnbound());
         });
 
         var cmd = await probe.ExpectMsgAsync<SaveReminderCommand>(
@@ -1051,7 +1051,7 @@ public class SetReminderToolTests : TestKit
             ["Schedule"] = "30m",
             ["DeliveryKind"] = "none",
             ["ExpiresIn"] = "24h"
-        }, TestContext.Current.CancellationToken);
+        }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
 
         Assert.Contains("not applicable to one-shot", result);
         await probe.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
@@ -1072,7 +1072,7 @@ public class SetReminderToolTests : TestKit
             ["Schedule"] = "1h",
             ["DeliveryKind"] = "none",
             ["ExpiresIn"] = "next tuesday"
-        }, TestContext.Current.CancellationToken);
+        }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
 
         Assert.Contains("Cannot parse expires_in", result);
         await probe.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);

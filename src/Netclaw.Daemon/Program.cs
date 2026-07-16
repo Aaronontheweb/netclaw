@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="Program.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -805,7 +805,6 @@ static void ConfigureDaemonServices(
             toolAccessPolicy,
             sp.GetService<IToolApprovalService>(),
             sp.GetRequiredService<ILogger<DispatchingToolExecutor>>()));
-
     // Operational notification webhooks
     var notificationsConfig = configuration.GetSection("Notifications")
         .Get<NotificationsConfig>() ?? new NotificationsConfig();
@@ -916,6 +915,7 @@ static void ConfigureDaemonServices(
 
     // Current time context layer — transient per-turn grounding for date/time-sensitive prompts
     services.AddSingleton<IContextLayerProvider, CurrentTimeContextLayer>();
+    services.AddSingleton<IGitWorkingContextInspector, GitWorkingContextInspector>();
     services.AddSingleton<IWorkingContextSnapshotProvider, WorkingContextSnapshotProvider>();
 
     // Expose all context layers as IReadOnlyList for actor DI resolution
@@ -1031,7 +1031,6 @@ static void ConfigureDaemonServices(
 
     services.AddSingleton(sp => new SessionToolServices(
         sp.GetRequiredService<IToolExecutor>(),
-        sp.GetService<IToolAuditLogger>(),
         sp.GetRequiredService<ToolRegistry>(),
         sp.GetService<ToolAccessPolicy>(),
         sp.GetService<TrustContextDeriver>(),
@@ -1138,7 +1137,11 @@ static void ConfigureDaemonServices(
                 try
                 {
                     var drainResult = await SessionDrainHelper.DrainAsync(
-                        sessionManager, "daemon-stop", drainLogger, CancellationToken.None);
+                        sessionManager,
+                        "daemon-stop",
+                        drainLogger,
+                        CancellationToken.None,
+                        CancellationToken.None);
 
                     lifecycleNotifier.NotifyShutdown("daemon-stop", drainResult.ToNotificationContext());
                 }

@@ -43,7 +43,7 @@ internal sealed class ScopedShellSafeVerbPolicy
     /// no user prompt; <c>false</c> when the candidate should fall through
     /// to the existing approval gate.
     /// </summary>
-    public bool ShortCircuitsApproval(string candidateVerb, string? cwd, ToolExecutionContext? context)
+    public bool ShortCircuitsApproval(string candidateVerb, string? cwd, ToolInvocationContext context)
         => AllShortCircuit([candidateVerb], cwd, context);
 
     /// <summary>
@@ -56,7 +56,7 @@ internal sealed class ScopedShellSafeVerbPolicy
     /// so an N-verb compound costs one path-normalize + one symlink-segment
     /// scan instead of N.
     /// </summary>
-    public bool AllShortCircuit(IReadOnlyList<string> candidateVerbs, string? cwd, ToolExecutionContext? context)
+    public bool AllShortCircuit(IReadOnlyList<string> candidateVerbs, string? cwd, ToolInvocationContext context)
     {
         if (candidateVerbs.Count == 0)
             return false;
@@ -108,12 +108,8 @@ internal sealed class ScopedShellSafeVerbPolicy
     /// invocation. Personal and Team get <c>session_dir + project_dir</c>;
     /// Public gets <c>session_dir</c> only.
     /// </summary>
-    private static IReadOnlyList<string> ResolveSafeSpaceRoots(ToolExecutionContext? context)
+    private static IReadOnlyList<string> ResolveSafeSpaceRoots(ToolInvocationContext context)
     {
-        if (context is null)
-            return [];
-
-        var audience = ResolveAudience(context);
         var roots = new List<string>(2);
 
         if (!string.IsNullOrWhiteSpace(context.SessionDirectory))
@@ -124,7 +120,7 @@ internal sealed class ScopedShellSafeVerbPolicy
         // ScopedFileAccessPolicy. Even a Public session that has somehow
         // populated WorkingContext.ProjectDirectory does not get to use it
         // as a shell safe-space root.
-        if (audience != TrustAudience.Public
+        if (context.Audience != TrustAudience.Public
             && !string.IsNullOrWhiteSpace(context.ProjectDirectory))
         {
             roots.Add(PathUtility.Normalize(context.ProjectDirectory));
@@ -132,7 +128,4 @@ internal sealed class ScopedShellSafeVerbPolicy
 
         return roots;
     }
-
-    private static TrustAudience ResolveAudience(ToolExecutionContext context)
-        => SecurityPolicyDefaults.ResolveAudienceWithFallback(context.Audience, context.SessionId);
 }

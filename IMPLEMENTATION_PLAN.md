@@ -110,6 +110,38 @@ the smallest repeatable manual script plus expected output.
 
 ## NOW
 
+### Priority: Simplify Tool Execution Context Architecture
+
+**PRDs:** `docs/prd/PRD-001-netclaw-mvp.md`, `docs/prd/PRD-002-gateway-security-envelope.md`, `docs/prd/PRD-006-mcp-tool-integration.md`, `docs/prd/PRD-007-agent-personality-and-local-memory.md`
+**Specs:** `openspec/changes/archive/2026-07-15-simplify-tool-execution-context/`
+**Surface area:** tool execution, session actors, subagents, working context
+**Verification:** L2 plus behavioral evals
+
+Deliver three sequential, independently reviewed PRs from the active OpenSpec
+change. The series replaces nullable and context-free execution APIs with
+required immutable scopes and semantic value objects, composes the session
+pipeline with behavior-preserving dependency modeling, and gives child runs independent
+working state with gated asynchronous Git enrichment.
+
+Done when:
+
+- [x] Stage 1 lands required run scopes, per-call isolation, and non-null
+  security/authority dependencies without compatibility shims.
+- [x] Stage 2 lands the composed pipeline without changing existing background,
+  fallback, authorization, approval, MCP, or model-visible behavior.
+- [x] Stage 3 lands child fork/delta semantics and Git inspection only for
+  non-Public runs with a declared Git project.
+- [x] Each stage passes review, CI, post-merge fresh-worktree verification, and
+  repository quality gates. Stage 3 eval execution was attempted but explicitly
+  blocked because the required `NETCLAW_EVAL_*` provider environment was absent;
+  no model-facing tool schema or prompt behavior changed in that stage.
+- [x] OpenSpec deltas are verified, synced, and archived after the final merge.
+
+Durable execution details and checkbox state live in
+`openspec/changes/archive/2026-07-15-simplify-tool-execution-context/tasks.md`. Per-run evidence
+lives in `.ralph/runs/`; Git commits and PR state remain the recovery source of
+truth across context compaction.
+
 ### Phase 0: Execution Governance
 
 Purpose: prevent shallow local fixes from being mistaken for runtime-complete

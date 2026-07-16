@@ -33,25 +33,25 @@ internal sealed class ScopedFileAccessPolicy
         });
     }
 
-    public bool TryResolveReadPath(string rawPath, ToolExecutionContext context, out string fullPath, out string error)
+    public bool TryResolveReadPath(string rawPath, ToolInvocationContext context, out string fullPath, out string error)
         => TryResolvePath(rawPath, context, AccessKind.Read, out fullPath, out error);
 
-    public bool TryResolveWritePath(string rawPath, ToolExecutionContext context, out string fullPath, out string error)
+    public bool TryResolveWritePath(string rawPath, ToolInvocationContext context, out string fullPath, out string error)
         => TryResolvePath(rawPath, context, AccessKind.Write, out fullPath, out error);
 
-    public bool TryResolveAttachPath(string rawPath, ToolExecutionContext context, out string fullPath, out string error)
+    public bool TryResolveAttachPath(string rawPath, ToolInvocationContext context, out string fullPath, out string error)
         => TryResolvePath(rawPath, context, AccessKind.Attach, out fullPath, out error);
 
-    public IReadOnlyList<string> GetRootsForContext(ToolExecutionContext context, AccessKind accessKind)
+    public IReadOnlyList<string> GetRootsForContext(ToolInvocationContext context, AccessKind accessKind)
     {
         var profile = _profileResolver.ResolveProfile(context);
         var access = GetAccessProfile(profile, accessKind);
-        return ResolveAndMergeRoots(access, context, ResolveAudience(context), accessKind);
+        return ResolveAndMergeRoots(access, context, context.Audience, accessKind);
     }
 
     private bool TryResolvePath(
         string rawPath,
-        ToolExecutionContext context,
+        ToolInvocationContext context,
         AccessKind accessKind,
         out string fullPath,
         out string error)
@@ -79,14 +79,14 @@ internal sealed class ScopedFileAccessPolicy
             // blanket grant — the live approval gate is their backstop. This is the
             // single seam that covers shell (via TryResolveWritePath) and every file
             // tool at once.
-            if (context.SupportsInteractiveApproval == false)
+            if (context.RunScope.InteractiveApproval is InteractiveApprovalCapability.Unavailable)
                 return TryResolveWithinAutonomousZone(fullPath, context, accessKind, out error);
 
             error = string.Empty;
             return true;
         }
 
-        var audience = ResolveAudience(context);
+        var audience = context.Audience;
         var label = GetAudienceLabel(audience);
 
         if (access.Mode == ToolFilesystemMode.None)
@@ -142,7 +142,7 @@ internal sealed class ScopedFileAccessPolicy
     /// </summary>
     private IReadOnlyList<string> ResolveAndMergeRoots(
         ToolFilesystemAccessProfile access,
-        ToolExecutionContext context,
+        ToolInvocationContext context,
         TrustAudience audience,
         AccessKind accessKind)
     {
@@ -167,7 +167,7 @@ internal sealed class ScopedFileAccessPolicy
     /// </summary>
     private bool TryResolveWithinAutonomousZone(
         string fullPath,
-        ToolExecutionContext context,
+        ToolInvocationContext context,
         AccessKind accessKind,
         out string error)
     {
@@ -211,7 +211,7 @@ internal sealed class ScopedFileAccessPolicy
     /// the workspace without a security benefit. No additional plumbing — the
     /// cached read roots and workspaces root already exist on this policy.
     /// </summary>
-    private IReadOnlyList<string> ResolveAutonomousZone(ToolExecutionContext context, AccessKind accessKind)
+    private IReadOnlyList<string> ResolveAutonomousZone(ToolInvocationContext context, AccessKind accessKind)
     {
         var roots = new List<string>();
 
@@ -231,9 +231,6 @@ internal sealed class ScopedFileAccessPolicy
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
-
-    private static TrustAudience ResolveAudience(ToolExecutionContext context)
-        => SecurityPolicyDefaults.ResolveAudienceWithFallback(context.Audience, context.SessionId);
 
     private static string GetAudienceLabel(TrustAudience audience) => audience switch
     {

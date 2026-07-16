@@ -41,6 +41,42 @@ This enables:
 5. Actor emits typed `SessionOutput` events to subscribers.
 6. Actor checks compaction threshold.
 
+### Tool Execution Pipeline
+
+Tool-enabled sessions compose one `SessionToolExecutionPipeline` from required
+execution, time, and logging services. Each admitted tool-call response
+is submitted as one `SessionToolBatch`; the batch derives its immutable tool
+authority from the admitted `TurnContext` and carries environment and
+per-batch capabilities separately. Callers cannot supply a second authority
+object that disagrees with the admitted turn.
+
+The pipeline executes calls concurrently with fresh invocation state per call.
+Interactive approval is a required capability union: unavailable, or available
+with its required bridge. Tool-call and tool-result observability uses the
+existing session transcript path rather than a parallel no-op audit sink.
+Unavailable background-job infrastructure is an explicit capability state and
+retains synchronous execution behavior. This internal composition does not
+change MCP schemas, persisted actor messages, approval outcomes, or model-facing
+tool results.
+
+### Working Context and Child Runs
+
+For Team and Personal turns with a declared project directory, the session
+captures Git working context asynchronously before invoking the model. Git
+inspection has one aggregate deadline and produces an explicit available,
+not-repository, or unavailable result. Public turns and turns without a project
+directory do not launch Git. Continuations carry a generation number so a late
+inspection from a cancelled or superseded call cannot mutate the active turn.
+
+Each admitted subagent receives a `ChildRunScope`: a fork of immutable tool
+authority plus the parent's working-context snapshot. The child owns fresh
+activity tracking and mutable tool-call state; neither is shared with the
+parent or sibling runs. Terminal results use typed completion variants.
+Completed and partial runs carry a `WorkingContextDelta`; failed and cancelled
+runs cannot carry one. The parent merges only files the child confirms it
+changed through first-party tools. Git-observed dirty files remain diagnostic
+context and are never attributed to the child.
+
 ## Subscriber Model
 
 Subscribers join via `JoinSession` with an `OutputFilter` bitmask controlling

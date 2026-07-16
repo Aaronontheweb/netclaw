@@ -1,8 +1,11 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="WebhookRouteStore.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -11,6 +14,9 @@ namespace Netclaw.Configuration;
 
 public sealed class WebhookRouteStore
 {
+    private static readonly TimeSpan RouteLockTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan RouteLockPollInterval = TimeSpan.FromMilliseconds(50);
+
     private static readonly Regex RouteNamePattern = new(
         "^[a-z0-9]+(?:-[a-z0-9]+)*$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -23,7 +29,6 @@ public sealed class WebhookRouteStore
     };
 
     private readonly NetclawPaths _paths;
-    private readonly object _sync = new();
 
     public WebhookRouteStore(NetclawPaths paths)
     {
@@ -71,54 +76,66 @@ public sealed class WebhookRouteStore
     /// </summary>
     public bool TryGet(string routeName, out (string FilePath, WebhookRouteConfig? Definition) result)
     {
-        lock (_sync)
+        var filePath = GetPath(routeName);
+        if (!File.Exists(filePath))
         {
-            var filePath = GetPath(routeName);
-            if (!File.Exists(filePath))
-            {
-                result = default;
-                return false;
-            }
-            result = (filePath, TryRead(filePath));
-            return true;
+            result = default;
+            return false;
         }
+        result = (filePath, TryRead(filePath));
+        return true;
     }
 
     public IReadOnlyList<(string RouteName, string FilePath, WebhookRouteConfig? Definition)> ListRouteFiles()
-    {
-        lock (_sync)
-        {
-            return Directory.EnumerateFiles(_paths.WebhooksDirectory, "*.json", SearchOption.TopDirectoryOnly)
-                .Select(file => (Path.GetFileNameWithoutExtension(file), file, TryRead(file)))
-                .OrderBy(x => x.Item1, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
-    }
+        => Directory.EnumerateFiles(_paths.WebhooksDirectory, "*.json", SearchOption.TopDirectoryOnly)
+            .Select(file => (Path.GetFileNameWithoutExtension(file), file, TryRead(file)))
+            .OrderBy(x => x.Item1, StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     public void Save(string routeName, WebhookRouteConfig definition)
     {
-        lock (_sync)
-        {
-            Directory.CreateDirectory(_paths.WebhooksDirectory);
-
-            var filePath = GetPath(routeName);
-            var tempPath = $"{filePath}.tmp";
-            File.WriteAllText(tempPath, JsonSerializer.Serialize(definition, JsonOptions));
-            File.Move(tempPath, filePath, overwrite: true);
-        }
+        var filePath = GetPath(routeName);
+        using var routeLock = AcquireRouteLock(filePath, CancellationToken.None);
+        Write(filePath, definition);
     }
 
-    public bool Delete(string routeName)
+    /// <summary>
+    /// Reads and conditionally replaces one route while holding a route-scoped interprocess lock.
+    /// Returning a null definition leaves the file unchanged.
+    /// </summary>
+    public TResult Update<TResult>(
+        string routeName,
+        CancellationToken cancellationToken,
+        Func<WebhookRouteConfig?, (WebhookRouteConfig? Definition, TResult Result)> update)
     {
-        lock (_sync)
-        {
-            var filePath = GetPath(routeName);
-            if (!File.Exists(filePath))
-                return false;
+        ArgumentNullException.ThrowIfNull(update);
 
-            File.Delete(filePath);
-            return true;
+        var filePath = GetPath(routeName);
+        using var routeLock = AcquireRouteLock(filePath, cancellationToken);
+        WebhookRouteConfig? existing = null;
+        if (File.Exists(filePath))
+        {
+            existing = TryRead(filePath);
+            if (existing is null)
+                throw new InvalidDataException($"Existing webhook route '{routeName}' could not be parsed.");
         }
+
+        var outcome = update(existing);
+        if (outcome.Definition is not null)
+            Write(filePath, outcome.Definition);
+
+        return outcome.Result;
+    }
+
+    public bool Delete(string routeName, CancellationToken cancellationToken)
+    {
+        var filePath = GetPath(routeName);
+        using var routeLock = AcquireRouteLock(filePath, cancellationToken);
+        if (!File.Exists(filePath))
+            return false;
+
+        File.Delete(filePath);
+        return true;
     }
 
     private WebhookRouteConfig? TryRead(string filePath)
@@ -130,6 +147,130 @@ public sealed class WebhookRouteStore
         catch
         {
             return null;
+        }
+    }
+
+    private void Write(string filePath, WebhookRouteConfig definition)
+    {
+        Directory.CreateDirectory(_paths.WebhooksDirectory);
+        var tempPath = $"{filePath}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            File.WriteAllText(tempPath, JsonSerializer.Serialize(definition, JsonOptions));
+            File.Move(tempPath, filePath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+                File.Delete(tempPath);
+        }
+    }
+
+    private static IDisposable AcquireRouteLock(string filePath, CancellationToken cancellationToken)
+    {
+        var canonicalPath = GetCanonicalLockPath(filePath);
+        var lockIdentity = OperatingSystem.IsWindows()
+            ? canonicalPath.ToUpperInvariant()
+            : canonicalPath;
+        var lockId = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(lockIdentity)));
+        var lockScope = OperatingSystem.IsWindows() ? @"Global\" : string.Empty;
+        var mutex = new Mutex(initiallyOwned: false, $"{lockScope}netclaw-webhook-route-{lockId}");
+        var ownsMutex = false;
+
+        try
+        {
+            try
+            {
+                ownsMutex = WaitForMutex(mutex, cancellationToken);
+            }
+            catch (AbandonedMutexException)
+            {
+                ownsMutex = true;
+                // The abandoning process exited while holding the route lock. This process now owns it,
+                // and the route's atomic file replacement guarantees the existing file is still complete.
+                DeleteAbandonedTempFiles(canonicalPath);
+            }
+
+            if (!ownsMutex)
+                throw new TimeoutException($"Timed out waiting to update webhook route '{Path.GetFileNameWithoutExtension(filePath)}'.");
+
+            return new RouteLock(mutex);
+        }
+        catch
+        {
+            if (ownsMutex)
+                mutex.ReleaseMutex();
+            mutex.Dispose();
+            throw;
+        }
+    }
+
+    private static bool WaitForMutex(Mutex mutex, CancellationToken cancellationToken)
+    {
+        if (!cancellationToken.CanBeCanceled)
+            return mutex.WaitOne(RouteLockTimeout);
+
+        var startedAt = Stopwatch.GetTimestamp();
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (mutex.WaitOne(TimeSpan.Zero))
+                return true;
+
+            var remaining = RouteLockTimeout - Stopwatch.GetElapsedTime(startedAt);
+            if (remaining <= TimeSpan.Zero)
+                return false;
+
+            var wait = remaining < RouteLockPollInterval ? remaining : RouteLockPollInterval;
+            if (cancellationToken.WaitHandle.WaitOne(wait))
+                cancellationToken.ThrowIfCancellationRequested();
+        }
+    }
+
+    private static string GetCanonicalLockPath(string filePath)
+    {
+        var fullPath = Path.GetFullPath(filePath);
+        var directoryPath = Path.GetDirectoryName(fullPath)
+            ?? throw new InvalidOperationException("Webhook route path has no parent directory.");
+        return Path.Combine(GetCanonicalDirectoryPath(directoryPath), Path.GetFileName(fullPath));
+    }
+
+    private static string GetCanonicalDirectoryPath(string directoryPath)
+    {
+        var fullPath = Path.GetFullPath(directoryPath);
+        var root = Path.GetPathRoot(fullPath)
+            ?? throw new InvalidOperationException("Webhook route path has no root directory.");
+        var current = root;
+        var relativeDirectory = Path.GetRelativePath(root, fullPath);
+        foreach (var segment in relativeDirectory.Split(
+                     [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+                     StringSplitOptions.RemoveEmptyEntries))
+        {
+            var directory = new DirectoryInfo(Path.Combine(current, segment));
+            var target = directory.ResolveLinkTarget(returnFinalTarget: true);
+            current = target is null
+                ? directory.FullName
+                : GetCanonicalDirectoryPath(target.FullName);
+        }
+
+        return current;
+    }
+
+    private static void DeleteAbandonedTempFiles(string filePath)
+    {
+        var directory = Path.GetDirectoryName(filePath)
+            ?? throw new InvalidOperationException("Webhook route path has no parent directory.");
+        var fileName = Path.GetFileName(filePath);
+        foreach (var tempPath in Directory.EnumerateFiles(directory, $"{fileName}.*.tmp"))
+            File.Delete(tempPath);
+    }
+
+    private sealed class RouteLock(Mutex mutex) : IDisposable
+    {
+        public void Dispose()
+        {
+            mutex.ReleaseMutex();
+            mutex.Dispose();
         }
     }
 

@@ -1,5 +1,20 @@
 # NetClaw Release Notes
 
+## 0.25.0-alpha.onnx.7 (2026-07-16)
+
+> Experimental ONNX local-embeddings build. Syncs `feature/memory-embeddings` with `dev`
+> (post-0.25.0-beta.4). No memory/embeddings behavior changes vs onnx.6. Everything still
+> rides `Memory.Embeddings.Enabled`, off by default; install only by exact pin
+> (`NETCLAW_VERSION=0.25.0-alpha.onnx.7`).
+
+### Synced from dev
+- **Webhook timestamped HMAC verification** — inbound webhook signatures are now verified against a timestamped HMAC, closing a replay window ([#1660](https://github.com/netclaw-dev/netclaw/pull/1660))
+- **Tool execution pipeline refactor** — session tool dispatch now runs through a dedicated `SessionToolExecutionPipeline`/`SessionToolBatch` structure instead of a long positional-argument call, tightening the session/tool-execution seam ([#1641](https://github.com/netclaw-dev/netclaw/pull/1641), [#1643](https://github.com/netclaw-dev/netclaw/pull/1643), [#1644](https://github.com/netclaw-dev/netclaw/pull/1644), [#1646](https://github.com/netclaw-dev/netclaw/pull/1646))
+- **OpenAI client 2.12 support** — updated OpenAI provider integration for client library 2.12 ([#1654](https://github.com/netclaw-dev/netclaw/pull/1654))
+- **Reminders definition rescan fix** — reminder definitions are now rescanned correctly after edits ([#1653](https://github.com/netclaw-dev/netclaw/pull/1653))
+- **TSV content-scanner support** — the content scanner now handles tab-separated-value files ([#1645](https://github.com/netclaw-dev/netclaw/pull/1645))
+- Routine dependency bumps
+
 ## 0.25.0-alpha.onnx.6 (2026-07-14)
 
 > Experimental ONNX local-embeddings build. Syncs `feature/memory-embeddings` with `dev`

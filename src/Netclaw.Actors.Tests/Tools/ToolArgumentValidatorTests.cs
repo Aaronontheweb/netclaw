@@ -48,12 +48,12 @@ public class ToolArgumentValidatorTests
     }
 
     private static ToolExecutionContext PersonalContext(string sessionDir)
-        => new("signalr/thread-1", sessionDir)
+        => TestToolExecutionContext.CreateBound("signalr/thread-1", sessionDir, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             Boundary = TrustBoundary.TrustedInstance,
             ChannelType = "signalr"
-        };
+        });
 
     private async Task<string> ExecuteShellAsync(IDictionary<string, object?> args)
     {
@@ -224,7 +224,10 @@ public class ToolArgumentValidatorTests
                 """{"type":"object","properties":{"text":{"type":"string"},"_rationale":{"type":"string"}}}""")
                 .RootElement.Clone();
 
-        public Task<string> ExecuteAsync(IDictionary<string, object?>? arguments, CancellationToken ct = default)
+        public Task<string> ExecuteAsync(
+            IDictionary<string, object?>? arguments,
+            ToolInvocationContext context,
+            CancellationToken ct = default)
             => Task.FromResult("ok");
 
         // Not exercised by key validation, which reads only Name + ParameterSchema.
@@ -278,6 +281,7 @@ public class ToolArgumentValidatorTests
                 {
                     ["TotallyUnknownKey"] = "value"
                 }),
+                TestToolExecutionContext.CreateUnbound(),
                 ct: TestContext.Current.CancellationToken);
         }
         catch (Exception ex)

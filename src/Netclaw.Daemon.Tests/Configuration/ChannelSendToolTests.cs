@@ -179,17 +179,17 @@ public sealed class ChannelSendToolTests
         };
 
         return context is null
-            ? tool.ExecuteAsync(arguments, TestContext.Current.CancellationToken)
+            ? tool.ExecuteAsync(arguments, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken)
             : tool.ExecuteAsync(arguments, context, TestContext.Current.CancellationToken);
     }
 
     private static ToolExecutionContext TriggerContext(ChannelDeliveryTargetInfo? requestedTarget)
-        => new("reminder/test", null)
-        {
-            Audience = TrustAudience.Team,
-            ChannelType = ChannelType.Reminder.ToWireValue(),
-            RequestedDeliveryTarget = requestedTarget
-        };
+        => TestToolExecutionContext.CreateBound(
+            "reminder/test",
+            null,
+            TrustAudience.Team,
+            ChannelType.Reminder.ToWireValue(),
+            requestedTarget);
 
     private static string[] ReadChannelKeyEnum(JsonElement schema)
     {

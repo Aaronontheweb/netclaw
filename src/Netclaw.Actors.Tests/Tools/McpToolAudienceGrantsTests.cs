@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="McpToolAudienceGrantsTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -310,10 +310,10 @@ public sealed class McpToolAudienceGrantsTests
 
         Assert.True(policy.IsToolExposed(
             CreateMcpTool("memorizer", "search_memories"),
-            CreateExecutionContext(TrustAudience.Public)));
+            TrustAudience.Public));
         Assert.False(policy.IsToolExposed(
             CreateMcpTool("memorizer", "store"),
-            CreateExecutionContext(TrustAudience.Public)));
+            TrustAudience.Public));
     }
 
     // ── Multiple servers with independent grants ──
@@ -394,14 +394,14 @@ public sealed class McpToolAudienceGrantsTests
 
     private static ToolExecutionContext CreateExecutionContext(TrustAudience audience)
     {
-        return new ToolExecutionContext("slack/thread-1", null)
+        return TestToolExecutionContext.CreateBound("slack/thread-1", null, new TestToolExecutionContextOptions
         {
             Audience = audience,
             Boundary = TrustBoundary.TrustedInstance,
             ChannelType = "slack"
-        };
+        });
     }
 
-    private static ToolExecutionContext TeamContext() => CreateExecutionContext(TrustAudience.Team);
-    private static ToolExecutionContext PersonalContext() => CreateExecutionContext(TrustAudience.Personal);
+    private static ToolInvocationContext TeamContext() => CreateExecutionContext(TrustAudience.Team).Invocation;
+    private static ToolInvocationContext PersonalContext() => CreateExecutionContext(TrustAudience.Personal).Invocation;
 }
