@@ -1,9 +1,11 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="WebhooksCommandTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using Json.Schema;
 using Netclaw.Cli.Json;
 using Netclaw.Cli.Webhooks;
 using Netclaw.Configuration;
@@ -149,6 +151,23 @@ public sealed class WebhooksCommandTests : IDisposable
 
         Assert.Equal(0, result);
         Assert.True(File.Exists(Path.Combine(_paths.WebhooksDirectory, "new-route.json")));
+    }
+
+    [Fact]
+    public async Task Set_WriteFailure_DoesNotReportSuccess()
+    {
+        Directory.CreateDirectory(Path.Combine(_paths.WebhooksDirectory, "blocked-route.json"));
+        using var output = new StringWriter();
+
+        var exception = await Assert.ThrowsAnyAsync<SystemException>(() => WebhooksCommand.RunAsync([
+            "webhooks", "set", "blocked-route",
+            "--prompt", "Test prompt",
+            "--secret", "test-secret"
+        ], _paths, output));
+
+        Assert.True(exception is IOException or UnauthorizedAccessException,
+            $"Expected a persistence IO exception, got {exception.GetType().Name}: {exception.Message}");
+        Assert.DoesNotContain("[OK]", output.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -426,6 +445,151 @@ public sealed class WebhooksCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task Set_TimestampedHmac_Persists_advanced_settings()
+    {
+        var result = await WebhooksCommand.RunAsync([
+            "webhooks", "set", "stripe-events",
+            "--prompt", "Process Stripe event",
+            "--secret", "whsec_test",
+            "--verification-kind", "hmac-timestamped",
+            "--signature-header", "Stripe-Signature",
+            "--timestamp-field", "timestamp",
+            "--signature-field", "signature",
+            "--signed-payload-separator", "::",
+            "--signature-tolerance-seconds", "120"
+        ], _paths);
+
+        Assert.Equal(0, result);
+        var route = ReadRoute("stripe-events");
+        Assert.Equal(WebhookVerifierKind.HmacTimestamped, route.Verification.Kind);
+        Assert.Equal("Stripe-Signature", route.Verification.SignatureHeaderName);
+        Assert.Equal("timestamp", route.Verification.TimestampField);
+        Assert.Equal("signature", route.Verification.SignatureField);
+        Assert.Equal("::", route.Verification.SignedPayloadSeparator);
+        Assert.Equal(120, route.Verification.ToleranceSeconds);
+    }
+
+    [Fact]
+    public async Task Set_HeaderSecret_Accepts_documented_hyphenated_spelling()
+    {
+        var result = await WebhooksCommand.RunAsync([
+            "webhooks", "set", "internal-events",
+            "--prompt", "Process internal event",
+            "--secret", "shared-secret",
+            "--verification-kind", "header-secret",
+            "--secret-header", "X-Internal-Secret"
+        ], _paths);
+
+        Assert.Equal(0, result);
+        Assert.Equal(WebhookVerifierKind.HeaderSecret, ReadRoute("internal-events").Verification.Kind);
+    }
+
+    [Fact]
+    public async Task Set_Timestamp_options_with_body_hmac_fails_without_persisting()
+    {
+        var result = await WebhooksCommand.RunAsync([
+            "webhooks", "set", "invalid-route",
+            "--prompt", "Process event",
+            "--secret", "secret",
+            "--timestamp-field", "t"
+        ], _paths);
+
+        Assert.Equal(1, result);
+        Assert.False(File.Exists(Path.Combine(_paths.WebhooksDirectory, "invalid-route.json")));
+    }
+
+    [Theory]
+    [InlineData("v1", "v1")]
+    [InlineData(" timestamp", "v1")]
+    [InlineData("time=stamp", "v1")]
+    [InlineData("time stamp", "v1")]
+    [InlineData("téstamp", "v1")]
+    public async Task Set_Unusable_timestamp_fields_fail_without_persisting(
+        string timestampField,
+        string signatureField)
+    {
+        var result = await WebhooksCommand.RunAsync([
+            "webhooks", "set", "invalid-route",
+            "--prompt", "Process event",
+            "--secret", "secret",
+            "--verification-kind", "hmac-timestamped",
+            "--timestamp-field", timestampField,
+            "--signature-field", signatureField
+        ], _paths);
+
+        Assert.Equal(1, result);
+        Assert.False(File.Exists(Path.Combine(_paths.WebhooksDirectory, "invalid-route.json")));
+    }
+
+    [Fact]
+    public async Task Set_Unrelated_update_preserves_legacy_verifier_without_timestamp_fields()
+    {
+        CreateValidRoute("legacy-route");
+
+        var result = await WebhooksCommand.RunAsync([
+            "webhooks", "set", "legacy-route",
+            "--rate-limit", "12"
+        ], _paths);
+
+        Assert.Equal(0, result);
+        var route = ReadRoute("legacy-route");
+        Assert.Equal(WebhookVerifierKind.Hmac, route.Verification.Kind);
+        Assert.Equal(12, route.RateLimitPerMinute);
+        var json = File.ReadAllText(Path.Combine(_paths.WebhooksDirectory, "legacy-route.json"));
+        Assert.DoesNotContain("ToleranceSeconds", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("TimestampField", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Set_MalformedExistingRoute_ReturnsOneWithoutOverwriting()
+    {
+        WriteRouteText("malformed-route", "{");
+
+        var result = await WebhooksCommand.RunAsync([
+            "webhooks", "set", "malformed-route",
+            "--prompt", "updated prompt",
+            "--secret", "updated-secret"
+        ], _paths);
+
+        Assert.Equal(1, result);
+        Assert.Equal("{", File.ReadAllText(Path.Combine(_paths.WebhooksDirectory, "malformed-route.json")));
+    }
+
+    [Fact]
+    public async Task Show_Json_adds_timestamp_fields_only_for_timestamped_kind()
+    {
+        CreateValidRoute("legacy-route");
+        var timestamped = new WebhookRouteConfig
+        {
+            Prompt = "Process Stripe event",
+            Verification = new WebhookVerificationConfig
+            {
+                Kind = WebhookVerifierKind.HmacTimestamped,
+                Secret = new SensitiveString("whsec_test"),
+                SignatureHeaderName = "Stripe-Signature"
+            }
+        };
+        new WebhookRouteStore(_paths).Save("stripe-events", timestamped);
+
+        using var legacyOutput = new StringWriter();
+        using var timestampedOutput = new StringWriter();
+        Assert.Equal(0, await WebhooksCommand.RunAsync(
+            ["webhooks", "show", "legacy-route", "--json"], _paths, legacyOutput));
+        Assert.Equal(0, await WebhooksCommand.RunAsync(
+            ["webhooks", "show", "stripe-events", "--json"], _paths, timestampedOutput));
+
+        using var legacy = JsonDocument.Parse(legacyOutput.ToString());
+        using var stripe = JsonDocument.Parse(timestampedOutput.ToString());
+        var legacyVerification = legacy.RootElement.GetProperty("verification");
+        var stripeVerification = stripe.RootElement.GetProperty("verification");
+        Assert.False(legacyVerification.TryGetProperty("toleranceSeconds", out _));
+        Assert.Equal(300, stripeVerification.GetProperty("toleranceSeconds").GetInt32());
+        Assert.Equal("t", stripeVerification.GetProperty("timestampField").GetString());
+        Assert.Equal("v1", stripeVerification.GetProperty("signatureField").GetString());
+        Assert.Equal(".", stripeVerification.GetProperty("signedPayloadSeparator").GetString());
+    }
+
+    [Fact]
     public async Task Delete_ExistingRoute_ReturnsZero()
     {
         CreateValidRoute("delete-me");
@@ -464,6 +628,77 @@ public sealed class WebhooksCommandTests : IDisposable
 
         var result = await WebhooksCommand.RunAsync(["webhooks", "validate", "valid-route"], _paths);
         Assert.Equal(0, result);
+    }
+
+    [Fact]
+    public async Task Validate_TimestampedRoute_UsesDocumentedKindSpelling()
+    {
+        CreateValidRoute("timestamped-route");
+        var route = ReadRoute("timestamped-route");
+        route.Verification.Kind = WebhookVerifierKind.HmacTimestamped;
+        new WebhookRouteStore(_paths).Save("timestamped-route", route);
+        using var output = new StringWriter();
+
+        var result = await WebhooksCommand.RunAsync(
+            ["webhooks", "validate", "timestamped-route"],
+            _paths,
+            output);
+
+        Assert.Equal(0, result);
+        Assert.Contains("Verification: hmac-timestamped", output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Hmac", 0, "not valid", true)]
+    [InlineData("HmacTimestamped", 0, "t", false)]
+    [InlineData("HmacTimestamped", 300, "not valid", false)]
+    [InlineData("HmacTimestamped", 300, "t", true)]
+    public void RouteSchema_applies_timestamp_constraints_only_to_timestamped_kind(
+        string kind,
+        int toleranceSeconds,
+        string timestampField,
+        bool expectedValid)
+    {
+        var schema = JsonSchema.FromText(LoadRouteSchema());
+        var route = new JsonObject
+        {
+            ["prompt"] = "process delivery",
+            ["verification"] = new JsonObject
+            {
+                ["kind"] = kind,
+                ["toleranceSeconds"] = toleranceSeconds,
+                ["timestampField"] = timestampField
+            }
+        };
+
+        var evaluation = schema.Evaluate(route);
+
+        Assert.Equal(expectedValid, evaluation.IsValid);
+    }
+
+    [Fact]
+    public void RouteSchema_accepts_exact_store_serialization()
+    {
+        var route = new WebhookRouteConfig
+        {
+            Prompt = "process delivery",
+            Verification = new WebhookVerificationConfig
+            {
+                Kind = WebhookVerifierKind.HmacTimestamped,
+                Secret = new SensitiveString("test-secret"),
+                ToleranceSeconds = 300,
+                TimestampField = "t",
+                SignatureField = "v1"
+            }
+        };
+        new WebhookRouteStore(_paths).Save("schema-route", route);
+        var serializedRoute = JsonNode.Parse(
+            File.ReadAllText(Path.Combine(_paths.WebhooksDirectory, "schema-route.json")));
+        var schema = JsonSchema.FromText(LoadRouteSchema());
+
+        var evaluation = schema.Evaluate(serializedRoute);
+
+        Assert.True(evaluation.IsValid);
     }
 
     [Fact]
@@ -551,6 +786,15 @@ public sealed class WebhooksCommandTests : IDisposable
     private void WriteRouteText(string routeName, string text)
     {
         File.WriteAllText(Path.Combine(_paths.WebhooksDirectory, $"{routeName}.json"), text);
+    }
+
+    private static string LoadRouteSchema()
+    {
+        using var stream = typeof(EmbeddedSchemaLoader).Assembly.GetManifestResourceStream(
+            "Netclaw.Configuration.Schemas.webhook-route.v1.schema.json");
+        Assert.NotNull(stream);
+        using var reader = new StreamReader(stream!);
+        return reader.ReadToEnd();
     }
 
     private sealed class RouteListItem

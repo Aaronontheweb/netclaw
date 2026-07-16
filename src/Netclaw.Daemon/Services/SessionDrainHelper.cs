@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="SessionDrainHelper.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -18,24 +18,29 @@ namespace Netclaw.Daemon.Services;
 /// </summary>
 internal static class SessionDrainHelper
 {
+    internal static readonly EventId SessionDrainAcknowledgedEvent =
+        new(1, nameof(SessionDrainAcknowledgedEvent));
+
     /// <summary>
     /// Queries the session manager for active sessions, sends <see cref="PrepareForDaemonRestart"/>
     /// to each in parallel, and waits for acknowledgement or cancellation.
     /// </summary>
     /// <remarks>
-    /// Callers control the timeout by providing a <see cref="CancellationToken"/> from a
-    /// <see cref="CancellationTokenSource"/> with the desired deadline.
+    /// Callers control the timeout through <paramref name="operationCancellationToken"/>.
+    /// <paramref name="callerCancellationToken"/> distinguishes an expired drain deadline,
+    /// which records an undrained session, from an explicit caller cancellation, which propagates.
     /// </remarks>
     public static async Task<DrainResult> DrainAsync(
         IActorRef sessionManager,
         string reason,
         ILogger logger,
-        CancellationToken cancellationToken)
+        CancellationToken operationCancellationToken,
+        CancellationToken callerCancellationToken)
     {
         var activeIdsResponse = await sessionManager.Ask<ActiveEntityIds>(
             GetActiveEntityIds.Instance,
             timeout: Timeout.InfiniteTimeSpan,
-            cancellationToken: cancellationToken);
+            cancellationToken: operationCancellationToken);
 
         var sessionIds = activeIdsResponse.EntityIds
             .Select(id => new SessionId(id))
@@ -55,13 +60,27 @@ internal static class SessionDrainHelper
                 var ack = await sessionManager.Ask<CommandAck>(
                     new PrepareForDaemonRestart(sessionId, reason),
                     timeout: Timeout.InfiniteTimeSpan,
-                    cancellationToken: cancellationToken);
+                    cancellationToken: operationCancellationToken);
 
-                return new DrainOutcome(sessionId, ack.SessionId == sessionId);
+                var drained = ack.SessionId == sessionId;
+                if (drained)
+                {
+                    logger.LogDebug(
+                        SessionDrainAcknowledgedEvent,
+                        "Session {SessionId} acknowledged drain for {Reason}.",
+                        sessionId.Value,
+                        reason);
+                }
+
+                return new DrainOutcome(sessionId, drained);
+            }
+            catch (OperationCanceledException) when (!callerCancellationToken.IsCancellationRequested)
+            {
+                return new DrainOutcome(sessionId, false);
             }
             catch (OperationCanceledException)
             {
-                return new DrainOutcome(sessionId, false);
+                throw;
             }
             catch (Exception ex)
             {

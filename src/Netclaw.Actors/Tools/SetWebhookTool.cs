@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="SetWebhookTool.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -21,7 +21,7 @@ public sealed partial class SetWebhookTool : NetclawTool<SetWebhookTool.Params>
         string RouteName,
         [property: Description("Prompt overlay instructions for this route.")]
         string Prompt,
-        [property: Description("Verification kind: 'Hmac' or 'HeaderSecret'.")]
+        [property: Description("Verification kind: 'Hmac', 'HmacTimestamped', or 'HeaderSecret'.")]
         string VerificationKind,
         [property: Description("Shared secret used to verify incoming requests.")]
         string Secret,
@@ -50,7 +50,15 @@ public sealed partial class SetWebhookTool : NetclawTool<SetWebhookTool.Params>
         [property: Description("Per-route accepted requests per minute.")]
         int? RateLimitPerMinute = null,
         [property: Description("Whether this route is enabled. Defaults to true.")]
-        bool? Enabled = null);
+        bool? Enabled = null,
+        [property: Description("Timestamp field name for HmacTimestamped routes. Defaults to 't'.")]
+        string? TimestampField = null,
+        [property: Description("Signature field name for HmacTimestamped routes. Defaults to 'v1'.")]
+        string? SignatureField = null,
+        [property: Description("Separator between timestamp and raw body for HmacTimestamped routes. Defaults to '.'.")]
+        string? SignedPayloadSeparator = null,
+        [property: Description("Accepted timestamp tolerance in seconds for HmacTimestamped routes, from 1 to 3600. Defaults to 300.")]
+        int? ToleranceSeconds = null);
 
     public SetWebhookTool(WebhookRouteStore store)
     {
@@ -67,35 +75,111 @@ public sealed partial class SetWebhookTool : NetclawTool<SetWebhookTool.Params>
         if (string.IsNullOrWhiteSpace(args.Secret))
             return Task.FromResult("Error: 'secret' is required.");
 
-        if (!Enum.TryParse<WebhookVerifierKind>(args.VerificationKind, ignoreCase: true, out var verificationKind))
-            return Task.FromResult("Error: 'verificationKind' must be 'Hmac' or 'HeaderSecret'.");
+        if (!WebhookRouteValidator.TryParseVerifierKind(args.VerificationKind, out var verificationKind))
+            return Task.FromResult("Error: 'verificationKind' must be 'Hmac', 'HmacTimestamped', or 'HeaderSecret'.");
 
-        if (!TryResolveAudience(args.Audience, context.Audience, out var audience, out var audienceError))
-            return Task.FromResult(audienceError!);
+        if ((args.TimestampField is not null
+             || args.SignatureField is not null
+             || args.SignedPayloadSeparator is not null
+             || args.ToleranceSeconds is not null)
+            && verificationKind != WebhookVerifierKind.HmacTimestamped)
+        {
+            return Task.FromResult("Error: Timestamp signature settings require 'verificationKind' to be 'HmacTimestamped'.");
+        }
+
+        try
+        {
+            var result = _store.Update(
+                routeName,
+                ct,
+                existing => BuildUpdate(routeName, args, context.Audience, verificationKind, existing));
+            return Task.FromResult(result);
+        }
+        catch (InvalidDataException ex)
+        {
+            return Task.FromResult($"Error: {ex.Message}");
+        }
+        catch (TimeoutException ex)
+        {
+            return Task.FromResult($"Error: {ex.Message}");
+        }
+    }
+
+    private static (WebhookRouteConfig? Definition, string Result) BuildUpdate(
+        string routeName,
+        Params args,
+        TrustAudience creatorAudience,
+        WebhookVerifierKind verificationKind,
+        WebhookRouteConfig? existing)
+    {
+        if (existing is not null && existing.Audience > creatorAudience)
+        {
+            return (null,
+                $"Error: Existing route audience '{existing.Audience.ToWireValue()}' exceeds creator authority ({creatorAudience.ToWireValue()}).");
+        }
+
+        TrustAudience audience;
+        if (string.IsNullOrWhiteSpace(args.Audience) && existing is not null)
+        {
+            audience = existing.Audience;
+        }
+        else if (!TryResolveAudience(args.Audience, creatorAudience, out audience, out var audienceError))
+        {
+            return (null, audienceError!);
+        }
+
+        var existingVerification = existing?.Verification;
 
         var definition = new WebhookRouteConfig
         {
-            Enabled = args.Enabled ?? true,
+            Enabled = args.Enabled ?? existing?.Enabled ?? true,
             Prompt = args.Prompt.Trim(),
-            Events = ParseEvents(args.Events),
+            Events = args.Events is null ? [.. existing?.Events ?? []] : ParseEvents(args.Events),
             Audience = audience,
-            NotifyInstructions = args.NotifyInstructions?.Trim() ?? string.Empty,
-            DeliveryRequired = args.DeliveryRequired ?? true,
-            MaxBodyBytes = args.MaxBodyBytes ?? 1024 * 1024,
-            RateLimitPerMinute = args.RateLimitPerMinute ?? 30,
+            NotifyInstructions = args.NotifyInstructions?.Trim() ?? existing?.NotifyInstructions ?? string.Empty,
+            DeliveryRequired = args.DeliveryRequired ?? existing?.DeliveryRequired ?? true,
+            MaxBodyBytes = args.MaxBodyBytes ?? existing?.MaxBodyBytes ?? 1024 * 1024,
+            RateLimitPerMinute = args.RateLimitPerMinute ?? existing?.RateLimitPerMinute ?? 30,
             Verification = new WebhookVerificationConfig
             {
                 Kind = verificationKind,
+                HmacAlgorithm = existingVerification?.HmacAlgorithm ?? WebhookHmacAlgorithm.Sha256,
                 Secret = new SensitiveString(args.Secret),
-                SignatureHeaderName = string.IsNullOrWhiteSpace(args.SignatureHeaderName) ? null : args.SignatureHeaderName.Trim(),
-                SignaturePrefix = string.IsNullOrWhiteSpace(args.SignaturePrefix) ? null : args.SignaturePrefix,
-                SecretHeaderName = string.IsNullOrWhiteSpace(args.SecretHeaderName) ? null : args.SecretHeaderName.Trim(),
-                EventHeaderName = string.IsNullOrWhiteSpace(args.EventHeaderName) ? null : args.EventHeaderName.Trim(),
-                DeliveryIdHeaderName = string.IsNullOrWhiteSpace(args.DeliveryIdHeaderName) ? null : args.DeliveryIdHeaderName.Trim(),
+                SignatureHeaderName = args.SignatureHeaderName is null
+                    ? existingVerification?.SignatureHeaderName
+                    : NormalizeOptional(args.SignatureHeaderName),
+                SignaturePrefix = args.SignaturePrefix is null
+                    ? existingVerification?.SignaturePrefix
+                    : NormalizeOptional(args.SignaturePrefix, trim: false),
+                SecretHeaderName = args.SecretHeaderName is null
+                    ? existingVerification?.SecretHeaderName
+                    : NormalizeOptional(args.SecretHeaderName),
+                EventHeaderName = args.EventHeaderName is null
+                    ? existingVerification?.EventHeaderName
+                    : NormalizeOptional(args.EventHeaderName),
+                DeliveryIdHeaderName = args.DeliveryIdHeaderName is null
+                    ? existingVerification?.DeliveryIdHeaderName
+                    : NormalizeOptional(args.DeliveryIdHeaderName),
+                TimestampField = args.TimestampField is null
+                    ? existingVerification?.TimestampField
+                    : args.TimestampField,
+                SignatureField = args.SignatureField is null
+                    ? existingVerification?.SignatureField
+                    : args.SignatureField,
+                SignedPayloadSeparator = args.SignedPayloadSeparator ?? existingVerification?.SignedPayloadSeparator,
+                ToleranceSeconds = args.ToleranceSeconds ?? existingVerification?.ToleranceSeconds
             }
         };
 
-        if (!string.IsNullOrWhiteSpace(args.NotificationChannelId))
+        if (args.NotificationChannelId is null && existing?.NotificationTarget is { } existingTarget)
+        {
+            definition.NotificationTarget = new NotificationTargetConfig
+            {
+                Kind = existingTarget.Kind,
+                ChannelId = existingTarget.ChannelId
+            };
+        }
+        else if (!string.IsNullOrWhiteSpace(args.NotificationChannelId))
         {
             definition.NotificationTarget = new NotificationTargetConfig
             {
@@ -106,10 +190,10 @@ public sealed partial class SetWebhookTool : NetclawTool<SetWebhookTool.Params>
 
         var validationErrors = WebhookRouteValidator.Validate(routeName, definition);
         if (validationErrors.Count > 0)
-            return Task.FromResult($"Error: {validationErrors[0]}");
+            return (null, $"Error: {validationErrors[0]}");
 
-        _store.Save(routeName, definition);
-        return Task.FromResult($"Webhook route '{routeName}' saved at /api/webhooks/{routeName}. Secret stored in the route file; keep it aligned with the sender configuration.");
+        return (definition,
+            $"Webhook route '{routeName}' saved at /api/webhooks/{routeName}. Secret stored in the route file; keep it aligned with the sender configuration.");
     }
 
     /// <summary>
@@ -157,5 +241,13 @@ public sealed partial class SetWebhookTool : NetclawTool<SetWebhookTool.Params>
             return [];
 
         return [.. value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Where(x => !string.IsNullOrWhiteSpace(x))];
+    }
+
+    private static string? NormalizeOptional(string value, bool trim = true)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        return trim ? value.Trim() : value;
     }
 }

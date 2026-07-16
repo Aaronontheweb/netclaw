@@ -905,7 +905,7 @@
       "properties": {
         "Kind": {
           "type": "string",
-          "enum": ["Hmac", "HeaderSecret"],
+          "enum": ["Hmac", "HeaderSecret", "HmacTimestamped"],
           "default": "Hmac"
         },
         "HmacAlgorithm": {
@@ -930,8 +930,53 @@
         },
         "DeliveryIdHeaderName": {
           "type": ["string", "null"]
+        },
+        "ToleranceSeconds": {
+          "type": ["integer", "null"],
+          "default": 300
+        },
+        "TimestampField": {
+          "type": ["string", "null"],
+          "default": "t"
+        },
+        "SignatureField": {
+          "type": ["string", "null"],
+          "default": "v1"
+        },
+        "SignedPayloadSeparator": {
+          "type": ["string", "null"],
+          "default": "."
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "Kind": { "const": "HmacTimestamped" }
+            },
+            "required": ["Kind"]
+          },
+          "then": {
+            "properties": {
+              "ToleranceSeconds": {
+                "type": ["integer", "null"],
+                "minimum": 1,
+                "maximum": 3600
+              },
+              "TimestampField": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+              },
+              "SignatureField": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$"
+              }
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "WebhookRoute": {
