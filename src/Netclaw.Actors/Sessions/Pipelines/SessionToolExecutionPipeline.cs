@@ -1,12 +1,13 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="SessionToolExecutionPipeline.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Diagnostics;
+using System.Collections.Frozen;
 using Akka.Actor;
+using Akka.Event;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Logging;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Jobs;
 using Netclaw.Actors.Protocol;
@@ -64,98 +65,228 @@ internal sealed class ModelInputBatchBudget(long maxBytes)
     }
 }
 
+internal sealed class ToolApprovalRequests
+{
+    public ToolApprovalRequests(
+        IApprovalChannel channel,
+        Action<ToolInteractionRequestDispatch> emitRequest,
+        ToolExecutionTimeout timeout)
+    {
+        ArgumentNullException.ThrowIfNull(channel);
+        ArgumentNullException.ThrowIfNull(emitRequest);
+        ArgumentNullException.ThrowIfNull(timeout);
+
+        Channel = channel;
+        EmitRequest = emitRequest;
+        Timeout = timeout;
+    }
+
+    public IApprovalChannel Channel { get; }
+    public Action<ToolInteractionRequestDispatch> EmitRequest { get; }
+    public ToolExecutionTimeout Timeout { get; }
+}
+
+internal abstract record BackgroundJobDispatch
+{
+    private BackgroundJobDispatch()
+    {
+    }
+
+    public sealed record Unavailable : BackgroundJobDispatch;
+
+    public sealed record Available : BackgroundJobDispatch
+    {
+        public Available(IActorRef manager)
+        {
+            ArgumentNullException.ThrowIfNull(manager);
+            Manager = manager;
+        }
+
+        public IActorRef Manager { get; }
+    }
+}
+
+internal sealed class SessionToolRunEnvironment
+{
+    private IReadOnlyList<string> _recentFiles = [];
+
+    public required string SessionDirectory { get; init; }
+    public required InlineOutputBudget InlineOutputBudget { get; init; }
+    public required Func<object, string, CancellationToken, Task<object>> SpawnChildActor { get; init; }
+    public ModelModality ModelInputModalities { get; init; } = ModelModality.Text;
+    public string? ProjectDirectory { get; init; }
+    public IReadOnlyList<string> RecentFiles
+    {
+        get => _recentFiles;
+        init
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _recentFiles = Array.AsReadOnly(value.ToArray());
+        }
+    }
+}
+
+internal sealed class SessionToolBatch
+{
+    private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> NoApprovalPreSeed
+        = new Dictionary<string, IReadOnlyList<string>>().ToFrozenDictionary();
+    private static readonly IReadOnlyDictionary<string, ApprovalDecision> NoDecisionOverrides
+        = new Dictionary<string, ApprovalDecision>().ToFrozenDictionary();
+    private IReadOnlyList<FunctionCallContent> _toolCalls = [];
+    private IReadOnlyDictionary<string, IReadOnlyList<string>> _oneTimeApprovalPreSeed = NoApprovalPreSeed;
+    private IReadOnlyDictionary<string, ApprovalDecision> _decisionOverrides = NoDecisionOverrides;
+
+    public SessionToolBatch(TurnContext turnContext, SessionToolRunEnvironment environment)
+    {
+        ArgumentNullException.ThrowIfNull(turnContext);
+        ArgumentNullException.ThrowIfNull(environment);
+        ArgumentException.ThrowIfNullOrWhiteSpace(environment.SessionDirectory);
+        ArgumentNullException.ThrowIfNull(environment.InlineOutputBudget);
+        ArgumentNullException.ThrowIfNull(environment.SpawnChildActor);
+
+        TurnContext = turnContext;
+        RunScope = new ToolRunScope
+        {
+            Session = new ToolSessionScope.Bound(turnContext.SessionId.Value, environment.SessionDirectory),
+            Audience = turnContext.Audience,
+            Boundary = turnContext.Boundary,
+            ChannelType = turnContext.ChannelType?.ToWireValue(),
+            DefaultDeliveryTarget = turnContext.DefaultDeliveryTarget,
+            RequestedDeliveryTarget = turnContext.RequestedDeliveryTarget,
+            InteractiveApproval = new InteractiveApprovalCapability.Unavailable(),
+            InlineOutputBudget = environment.InlineOutputBudget,
+            ModelInputModalities = environment.ModelInputModalities,
+            SpawnChildActor = environment.SpawnChildActor,
+            ProjectDirectory = environment.ProjectDirectory,
+            RecentFiles = environment.RecentFiles
+        };
+    }
+
+    public required IReadOnlyList<FunctionCallContent> ToolCalls
+    {
+        get => _toolCalls;
+        init
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _toolCalls = Array.AsReadOnly(value.ToArray());
+        }
+    }
+    public TurnContext TurnContext { get; }
+    public ToolRunScope RunScope { get; }
+    public required ToolExecutionTimeout DefaultTimeout { get; init; }
+    public required IActorRef ReplyTo { get; init; }
+    public required Action<SubAgentOutput> EmitSubAgentOutput { get; init; }
+    public required ToolApprovalRequests ApprovalRequests { get; init; }
+    public required BackgroundJobDispatch BackgroundJobs { get; init; }
+    public bool SetWorkingDirectoryAvailable { get; init; }
+    public bool StreamResults { get; init; }
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> OneTimeApprovalPreSeed
+    {
+        get => _oneTimeApprovalPreSeed;
+        init
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _oneTimeApprovalPreSeed = value.ToFrozenDictionary(
+                entry => entry.Key,
+                entry => (IReadOnlyList<string>)Array.AsReadOnly(entry.Value.ToArray()),
+                StringComparer.Ordinal);
+        }
+    }
+    public IReadOnlyDictionary<string, ApprovalDecision> DecisionOverrides
+    {
+        get => _decisionOverrides;
+        init
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _decisionOverrides = value.ToFrozenDictionary(StringComparer.Ordinal);
+        }
+    }
+    public CancellationToken CancellationToken { get; init; }
+
+    public SessionId SessionId => TurnContext.SessionId;
+
+    public string SessionDirectory => RunScope.Session is ToolSessionScope.Bound bound
+        && !string.IsNullOrWhiteSpace(bound.SessionDirectory)
+            ? bound.SessionDirectory
+            : throw new InvalidOperationException("Session tool batches require a bound session directory.");
+
+    public void Validate()
+    {
+        ArgumentNullException.ThrowIfNull(ToolCalls);
+        ArgumentNullException.ThrowIfNull(DefaultTimeout);
+        ArgumentNullException.ThrowIfNull(ReplyTo);
+        ArgumentNullException.ThrowIfNull(EmitSubAgentOutput);
+        ArgumentNullException.ThrowIfNull(ApprovalRequests);
+        ArgumentNullException.ThrowIfNull(BackgroundJobs);
+        ArgumentNullException.ThrowIfNull(OneTimeApprovalPreSeed);
+        ArgumentNullException.ThrowIfNull(DecisionOverrides);
+    }
+}
+
 /// <summary>
 /// Async pipeline for parallel tool execution. Runs on the thread pool and
 /// sends results back to the session actor via <c>self.Tell()</c>.
 /// </summary>
-internal static class SessionToolExecutionPipeline
+internal sealed class SessionToolExecutionPipeline
 {
     private const long MaxModelInputFileBytes = ChannelAttachmentPolicy.DefaultMaxFileBytes;
     private const long MaxModelInputBatchBytes = ChannelAttachmentPolicy.DefaultMaxFileBytes;
 
-    public static async Task ExecuteToolsAsync(
+    private readonly IToolExecutor _executor;
+    private readonly TimeProvider _timeProvider;
+    private readonly ILoggingAdapter _logger;
+
+    public SessionToolExecutionPipeline(
         IToolExecutor executor,
-        List<FunctionCallContent> toolCalls,
-        SessionId sessionId,
-        MessageSource? source,
-        IToolAuditLogger? auditLogger,
         TimeProvider timeProvider,
-        string sessionDir,
-        int maxInlineToolResultChars,
-        TimeSpan timeout,
-        IActorRef self,
-        Action<SubAgentOutput> emitSubAgentOutput,
-        Func<object, string, CancellationToken, Task<object>> spawnChildActor,
-        IApprovalChannel? approvalChannel = null,
-        Action<ToolInteractionRequestDispatch>? emitApprovalRequest = null,
-        TimeSpan? approvalTimeout = null,
-        ILogger? logger = null,
-        IActorRef? backgroundJobManager = null,
-        string? projectDirectory = null,
-        IReadOnlyList<string>? recentFiles = null,
-        bool setWorkingDirectoryAvailable = false,
-        bool streamToolResults = false,
-        ModelModality modelInputModalities = ModelModality.Text,
-        IReadOnlyDictionary<string, IReadOnlyList<string>>? oneTimeApprovalPreSeed = null,
-        IReadOnlyDictionary<string, ApprovalDecision>? decisionOverride = null,
-        TurnContext? turnContext = null,
-        CancellationToken ct = default)
+        ILoggingAdapter logger)
+    {
+        ArgumentNullException.ThrowIfNull(executor);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        _executor = executor;
+        _timeProvider = timeProvider;
+        _logger = logger;
+    }
+
+    public async Task ExecuteAsync(SessionToolBatch batch)
     {
         try
         {
+            batch.Validate();
             // Execute all tool calls in parallel. Calls are not always
             // independent -- e.g. two file_edit calls on the same file -- so
             // file-mutating tools serialize their read-modify-write per target
             // path via FileMutationGate to avoid lost-update races here.
             var modelInputBudget = new ModelInputBatchBudget(MaxModelInputBatchBytes);
-            var tasks = toolCalls.Select(async tc =>
+            var tasks = batch.ToolCalls.Select(async tc =>
             {
                 var result = await ExecuteSingleToolAsync(
-                    executor,
                     tc,
-                    sessionId,
-                    source,
-                    auditLogger,
-                    timeProvider,
-                    sessionDir,
-                    maxInlineToolResultChars,
-                    emitSubAgentOutput,
-                    spawnChildActor,
-                    timeout,
-                    ct,
-                    approvalChannel,
-                    emitApprovalRequest,
-                    approvalTimeout ?? Timeout.InfiniteTimeSpan,
-                    logger,
-                    backgroundJobManager,
-                    projectDirectory,
-                    recentFiles,
-                    setWorkingDirectoryAvailable,
-                    modelInputModalities,
-                    oneTimeApprovalPreSeed is not null
-                    && oneTimeApprovalPreSeed.TryGetValue(tc.CallId, out var preSeedPatterns)
+                    batch,
+                    batch.OneTimeApprovalPreSeed.TryGetValue(tc.CallId, out var preSeedPatterns)
                         ? preSeedPatterns
                         : null,
-                    decisionOverride is not null && decisionOverride.TryGetValue(tc.CallId, out var overrideDecision)
+                    batch.DecisionOverrides.TryGetValue(tc.CallId, out var overrideDecision)
                         ? overrideDecision
                         : null,
-                    turnContext,
                     modelInputBudget);
-                if (streamToolResults)
-                    self.Tell(new ToolExecutionSingleCompleted(result));
+                if (batch.StreamResults)
+                    batch.ReplyTo.Tell(new ToolExecutionSingleCompleted(result));
                 return result;
             });
             var results = await Task.WhenAll(tasks);
 
-            if (streamToolResults)
+            if (batch.StreamResults)
             {
-                self.Tell(new ToolExecutionBatchCompleted());
+                batch.ReplyTo.Tell(new ToolExecutionBatchCompleted());
                 return;
             }
 
             var fileAttachments = results.SelectMany(r => r.FileAttachments).ToList();
             var modelInputMediaReferences = results.SelectMany(r => r.ModelInputMediaReferences).ToList();
-            self.Tell(new ToolExecutionCompleted
+            batch.ReplyTo.Tell(new ToolExecutionCompleted
             {
                 ToolResults = [.. results.Select(r => r.Message)],
                 ModelInputMediaReferences = modelInputMediaReferences,
@@ -167,68 +298,40 @@ internal static class SessionToolExecutionPipeline
         }
         catch (TimeoutException ex)
         {
-            self.Tell(new ToolExecutionFailed { Cause = ex });
+            batch.ReplyTo.Tell(new ToolExecutionFailed { Cause = ex });
         }
         catch (OperationCanceledException ex)
         {
             // The tool-execution token is cancelled both by caller (turn/user) supersede
             // and by the session's own timeout watchdog; surface either as a failed
             // batch (the watchdog message is the authoritative one).
-            self.Tell(new ToolExecutionFailed
+            batch.ReplyTo.Tell(new ToolExecutionFailed
             {
                 Cause = new TimeoutException(
-                    $"Tool execution exceeded timeout of {timeout.TotalSeconds:F0}s",
+                    $"Tool execution exceeded timeout of {batch.DefaultTimeout.Value.TotalSeconds:F0}s",
                     ex)
             });
         }
         catch (Exception ex)
         {
-            self.Tell(new ToolExecutionFailed { Cause = ex });
+            batch.ReplyTo.Tell(new ToolExecutionFailed { Cause = ex });
         }
     }
 
-    public static async Task<ToolCallResult> ExecuteSingleToolAsync(
-        IToolExecutor executor,
+    private async Task<ToolCallResult> ExecuteSingleToolAsync(
         FunctionCallContent tc,
-        SessionId sessionId,
-        MessageSource? source,
-        IToolAuditLogger? auditLogger,
-        TimeProvider timeProvider,
-        string sessionDir,
-        int maxInlineToolResultChars,
-        Action<SubAgentOutput> emitSubAgentOutput,
-        Func<object, string, CancellationToken, Task<object>> spawnChildActor,
-        TimeSpan timeout,
-        CancellationToken ct,
-        IApprovalChannel? approvalChannel = null,
-        Action<ToolInteractionRequestDispatch>? emitApprovalRequest = null,
-        TimeSpan? approvalTimeout = null,
-        ILogger? logger = null,
-        IActorRef? backgroundJobManager = null,
-        string? projectDirectory = null,
-        IReadOnlyList<string>? recentFiles = null,
-        bool setWorkingDirectoryAvailable = false,
-        ModelModality modelInputModalities = ModelModality.Text,
-        IReadOnlyList<string>? oneTimeApprovalPreSeed = null,
-        ApprovalDecision? decisionOverride = null,
-        TurnContext? turnContext = null,
-        ModelInputBatchBudget? modelInputBudget = null)
+        SessionToolBatch batch,
+        IReadOnlyList<string>? oneTimeApprovalPreSeed,
+        ApprovalDecision? decisionOverride,
+        ModelInputBatchBudget modelInputBudget)
     {
         // Single execution-preflight seam, shared with the sub-agent path via
         // IToolExecutor.InterpretToolCall: validate the ORIGINAL arguments (parse
         // sentinel, invalid/ambiguous meta values, unrecognized keys) and, on
-        // success, extract meta + strip meta keys. Rejecting here — rather than
-        // letting ExecuteAsync return the rejection string — is what lets the denial
-        // be audited as Allowed=false instead of being misreported as executed.
-        var interpretation = executor.InterpretToolCall(tc);
+        // success, extract meta + strip meta keys.
+        var interpretation = _executor.InterpretToolCall(tc);
         if (interpretation.Rejection is { } rejection)
         {
-            auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, TimeSpan.Zero, meta: null) with
-            {
-                Allowed = false,
-                DenyReason = rejection.DenyReason
-            });
-
             return new ToolCallResult(new SerializableChatMessage
             {
                 Role = Protocol.ChatRole.Tool,
@@ -244,61 +347,22 @@ internal static class SessionToolExecutionPipeline
         // The agent's per-call timeout hint is honored as requested; when absent
         // the inherited default (SessionConfig.ToolExecutionTimeout) applies.
         // ExtractFrom only yields a positive hint, so there is nothing to clamp.
+        var timeout = batch.DefaultTimeout.Value;
         if (meta?.TimeoutHintSeconds is { } hintSeconds)
             timeout = TimeSpan.FromSeconds(hintSeconds);
 
         var sw = Stopwatch.StartNew();
         string resultText;
-        var context = BuildToolExecutionContext(
-            sessionId,
-            source,
-            sessionDir,
-            spawnChildActor,
-            projectDirectory,
-            recentFiles,
-            turnContext,
-            modelInputModalities,
-            maxInlineToolResultChars);
-        context.RequestedTimeoutSeconds = (int)timeout.TotalSeconds;
-
-        // Re-drive of an ApprovedOnce approval: the user already clicked
-        // "approve once" before the session passivated, but there is no
-        // persisted grant to satisfy the gate on the cold-recovered re-drive.
-        // Pre-seed the one-time approval bypass for exactly this call id so the
-        // gate passes once without emitting a duplicate approval prompt. The
-        // bypass is still tool-name- and pattern-matched inside the gate
-        // (DispatchingToolExecutor.IsOneTimeApprovalSatisfied) and the pipeline
-        // clears it after the attempt — it cannot leak to any other call.
-        if (oneTimeApprovalPreSeed is not null)
-        {
-            context.OneTimeApprovedToolName = tc.Name;
-            context.SetOneTimeApprovedPatterns(oneTimeApprovalPreSeed);
-        }
-        if (approvalChannel is not null
-            && emitApprovalRequest is not null
-            && CanRequestInteractiveApproval(source, turnContext))
-        {
-            context.ApprovalBridge = new ParentSessionApprovalBridge(
-                approvalChannel,
-                emitApprovalRequest,
-                sessionId,
-                tc.CallId,
-                turnContext?.RequesterSenderId ?? source?.SenderId,
-                turnContext?.RequesterPrincipal ?? source?.Principal,
-                turnContext?.HasAdoptedContext ?? source?.HasAdoptedContext ?? false,
-                turnContext?.HasThirdPartyAdoptedContext ?? source?.HasThirdPartyAdoptedContext ?? false,
-                turnContext?.AdoptedSpeakerIds ?? source?.AdoptedSpeakerIds ?? []);
-        }
         var completedRuns = new List<CompletedSubAgentRun>();
         var acceptedFindings = new List<AcceptedSubAgentFinding>();
-        context.OnSubAgentActivity = info =>
+        var outputs = new ToolExecutionOutputs(info =>
         {
             if (info.IsStarted)
             {
-                emitSubAgentOutput(new SubAgentOutput
+                batch.EmitSubAgentOutput(new SubAgentOutput
                 {
-                    SessionId = sessionId,
-                    TimestampMs = timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
+                    SessionId = batch.SessionId,
+                    TimestampMs = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
                     AgentName = new SubAgents.AgentName(info.AgentName),
                     Phase = Netclaw.Actors.SubAgents.SubAgentPhase.Started,
                     ToolCount = info.ToolCount,
@@ -314,7 +378,7 @@ internal static class SessionToolExecutionPipeline
 
                 if (info.Success && info.Findings.Count == 1)
                 {
-                    var singleDecision = ReviewSubAgentFinding(info.Findings[0], sessionId);
+                    var singleDecision = ReviewSubAgentFinding(info.Findings[0], batch.SessionId);
                     decision = singleDecision.Decision.ToWireValue();
                     reason = singleDecision.Reason;
                 }
@@ -323,14 +387,14 @@ internal static class SessionToolExecutionPipeline
                 {
                     RunId = info.RunId,
                     AgentName = new SubAgents.AgentName(info.AgentName),
-                    Success = info.Success,
-                    Outcome = info.Outcome ?? (info.Success ? SubAgentRunOutcome.Completed : SubAgentRunOutcome.Failed),
-                    OutcomeReason = info.OutcomeReason,
+                    Completion = ChildRunCompletion.FromReportedOutcome(
+                        info.Outcome ?? (info.Success ? SubAgentRunOutcome.Completed : SubAgentRunOutcome.Failed),
+                        info.OutcomeReason,
+                        info.WorkingContext),
                     Duration = info.Duration,
                     FindingsCount = info.Findings.Count,
                     MemoryDecision = decision,
                     MemoryDecisionReason = reason,
-                    WorkingContext = info.WorkingContext
                 });
             }
 
@@ -338,7 +402,7 @@ internal static class SessionToolExecutionPipeline
             {
                 foreach (var finding in info.Findings)
                 {
-                    var findingDecision = ReviewSubAgentFinding(finding, sessionId);
+                    var findingDecision = ReviewSubAgentFinding(finding, batch.SessionId);
                     acceptedFindings.Add(new AcceptedSubAgentFinding
                     {
                         RunId = info.RunId,
@@ -361,7 +425,40 @@ internal static class SessionToolExecutionPipeline
                     });
                 }
             }
+        });
+        var approvalBridge = CanRequestInteractiveApproval(batch.TurnContext)
+            ? new ParentSessionApprovalBridge(
+                batch.ApprovalRequests.Channel,
+                batch.ApprovalRequests.EmitRequest,
+                batch.SessionId,
+                tc.CallId,
+                batch.TurnContext.RequesterSenderId,
+                batch.TurnContext.RequesterPrincipal,
+                batch.TurnContext.HasAdoptedContext,
+                batch.TurnContext.HasThirdPartyAdoptedContext,
+                batch.TurnContext.AdoptedSpeakerIds)
+            : null;
+        var callScope = batch.RunScope with
+        {
+            InteractiveApproval = approvalBridge is null
+                ? new InteractiveApprovalCapability.Unavailable()
+                : new InteractiveApprovalCapability.Available(approvalBridge)
         };
+        var context = new ToolExecutionContext(
+            callScope,
+            new ToolExecutionTimeout(timeout),
+            outputs);
+
+        // Re-drive of an ApprovedOnce approval: the user already clicked
+        // "approve once" before the session passivated, but there is no
+        // persisted grant to satisfy the gate on the cold-recovered re-drive.
+        // Pre-seed the one-time approval bypass for exactly this call id so the
+        // gate passes once without emitting a duplicate approval prompt. The
+        // bypass is still tool-name- and pattern-matched inside the gate
+        // (DispatchingToolExecutor.IsOneTimeApprovalSatisfied) and the pipeline
+        // clears it after the attempt — it cannot leak to any other call.
+        if (oneTimeApprovalPreSeed is not null)
+            context.Approval.SeedOneTimeApproval(tc.Name, oneTimeApprovalPreSeed);
         try
         {
             if (decisionOverride is ApprovalDecision.Denied or ApprovalDecision.TimedOut)
@@ -370,13 +467,6 @@ internal static class SessionToolExecutionPipeline
                 resultText = decisionOverride == ApprovalDecision.TimedOut
                     ? "Tool access denied: approval_timed_out"
                     : $"Tool access denied: approval_denied_by_user ({tc.Name} requires interactive approval and the user declined it)";
-
-                auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
-                {
-                    Allowed = false,
-                    DenyReason = resultText,
-                    ApprovalDecision = decisionOverride.ToString()
-                });
 
                 var deniedMessage = new SerializableChatMessage
                 {
@@ -393,60 +483,44 @@ internal static class SessionToolExecutionPipeline
             {
                 if (!string.Equals(tc.Name, Tools.ShellTool.ToolName, StringComparison.Ordinal))
                 {
-                    logger?.LogWarning(
+                    _logger.Warning(
                         "Tool {ToolName} (call {CallId}) requested background execution — " +
                         "only shell_execute supports background mode; executing synchronously",
                         tc.Name, tc.CallId);
                 }
-                else if (backgroundJobManager is null)
+                else if (batch.BackgroundJobs is BackgroundJobDispatch.Unavailable)
                 {
-                    logger?.LogWarning(
+                    _logger.Warning(
                         "Tool {ToolName} (call {CallId}) requested background execution — " +
                         "no background job manager available; executing synchronously",
                         tc.Name, tc.CallId);
                 }
-                else
+                else if (batch.BackgroundJobs is BackgroundJobDispatch.Available backgroundJobs)
                 {
-                    await executor.AuthorizeAsync(tc, context, ct);
+                    await _executor.AuthorizeAsync(tc, context, batch.CancellationToken);
                     sw.Stop();
                     return await RouteToBackgroundJobAsync(
-                        tc, sessionId, source, auditLogger, timeProvider,
-                        turnContext,
-                        meta, backgroundJobManager,
+                        tc, batch,
+                        meta, backgroundJobs.Manager,
                         // Honor the agent's requested timeout; when absent, no
                         // kill timer is armed — a background job is a detached
                         // process with no completion expectation, reaped by its
                         // own exit, cancellation, or session passivation.
-                        meta.TimeoutHintSeconds ?? 0,
-                        sw.Elapsed, logger,
-                        context.AppliedApprovalDecision,
-                        context.AppliedApprovalPattern);
+                        meta.TimeoutHintSeconds ?? 0);
                 }
             }
 
-            resultText = await ExecuteToolAttemptAsync(executor, tc, context, timeout, timeProvider, ct);
+            resultText = await ExecuteToolAttemptAsync(
+                _executor, tc, context, timeout, _timeProvider, batch.CancellationToken);
             sw.Stop();
 
-            auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
-            {
-                Allowed = true,
-                ApprovalDecision = context.AppliedApprovalDecision,
-                ApprovalPattern = context.AppliedApprovalPattern
-            });
         }
         catch (ToolApprovalRequiredException approvalEx)
-            when (approvalChannel is not null && emitApprovalRequest is not null)
         {
-            if (!CanRequestInteractiveApproval(source, turnContext))
+            if (!CanRequestInteractiveApproval(batch.TurnContext))
             {
                 sw.Stop();
                 resultText = $"Tool requires approval but no interactive approval requester is available: {approvalEx.ApprovalContext.ToolName}";
-
-                auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
-                {
-                    Allowed = false,
-                    DenyReason = "interactive_approval_unavailable"
-                });
 
                 return new ToolCallResult(new SerializableChatMessage
                 {
@@ -454,30 +528,29 @@ internal static class SessionToolExecutionPipeline
                     Content = resultText,
                     ToolCallId = new ToolCallId(tc.CallId),
                     Name = tc.Name
-                }, [], context.FileAttachments, completedRuns, acceptedFindings);
+                }, [], context.Outputs.FileAttachments, completedRuns, acceptedFindings);
             }
 
             // Mid-turn approval pause: emit request to channel, block on TCS
             var ctx = approvalEx.ApprovalContext;
-            var approvalWaitTimeout = approvalTimeout ?? Timeout.InfiniteTimeSpan;
-            var waitTask = approvalChannel.WaitForApprovalAsync(
+            var waitTask = batch.ApprovalRequests.Channel.WaitForApprovalAsync(
                 new ToolCallId(tc.CallId),
-                approvalWaitTimeout,
-                ct);
+                batch.ApprovalRequests.Timeout.Value,
+                batch.CancellationToken);
 
-            emitApprovalRequest(new ToolInteractionRequestDispatch(new ToolInteractionRequest
+            batch.ApprovalRequests.EmitRequest(new ToolInteractionRequestDispatch(new ToolInteractionRequest
             {
-                SessionId = sessionId,
+                SessionId = batch.SessionId,
                 Kind = "approval",
                 CallId = new ToolCallId(tc.CallId),
                 ToolName = new ToolName(ctx.ToolName),
                 DisplayText = ctx.DisplayText,
-                RequesterSenderId = turnContext?.RequesterSenderId ?? source?.SenderId,
-                RequesterPrincipal = turnContext?.RequesterPrincipal ?? source?.Principal,
-                HasAdoptedContext = turnContext?.HasAdoptedContext ?? source?.HasAdoptedContext ?? false,
-                HasThirdPartyAdoptedContext = turnContext?.HasThirdPartyAdoptedContext ?? source?.HasThirdPartyAdoptedContext ?? false,
-                AdoptedSpeakerIds = turnContext?.AdoptedSpeakerIds ?? source?.AdoptedSpeakerIds ?? [],
-                PersistedAdoptedContext = turnContext?.HasAdoptedContext ?? source?.HasAdoptedContext ?? false,
+                RequesterSenderId = batch.TurnContext.RequesterSenderId,
+                RequesterPrincipal = batch.TurnContext.RequesterPrincipal,
+                HasAdoptedContext = batch.TurnContext.HasAdoptedContext,
+                HasThirdPartyAdoptedContext = batch.TurnContext.HasThirdPartyAdoptedContext,
+                AdoptedSpeakerIds = batch.TurnContext.AdoptedSpeakerIds,
+                PersistedAdoptedContext = batch.TurnContext.HasAdoptedContext,
                 Patterns = ctx.Patterns,
                 CandidateVerbs = ctx.CandidateVerbs,
                 Candidates = ctx.Candidates ?? [],
@@ -502,41 +575,30 @@ internal static class SessionToolExecutionPipeline
                 // are also recorded by the session actor into the shared approval service.)
                 if (decision == ApprovalDecision.ApprovedOnce)
                 {
-                    context.OneTimeApprovedToolName = tc.Name;
-                    context.SetOneTimeApprovedPatterns(ctx.Patterns);
+                    context.Approval.SeedOneTimeApproval(tc.Name, ctx.Patterns);
                 }
 
                 sw = Stopwatch.StartNew();
                 if (meta is { Background: true }
                     && string.Equals(tc.Name, Tools.ShellTool.ToolName, StringComparison.Ordinal)
-                    && backgroundJobManager is not null)
+                    && batch.BackgroundJobs is BackgroundJobDispatch.Available backgroundJobs)
                 {
-                    await executor.AuthorizeAsync(tc, context, ct);
+                    await _executor.AuthorizeAsync(tc, context, batch.CancellationToken);
                     sw.Stop();
                     return await RouteToBackgroundJobAsync(
-                        tc, sessionId, source, auditLogger, timeProvider,
-                        turnContext,
-                        meta, backgroundJobManager,
+                        tc, batch,
+                        meta, backgroundJobs.Manager,
                         // Honor the agent's requested timeout; when absent, no
                         // kill timer is armed — a background job is a detached
                         // process with no completion expectation, reaped by its
                         // own exit, cancellation, or session passivation.
-                        meta.TimeoutHintSeconds ?? 0,
-                        sw.Elapsed, logger,
-                        decision.ToString(),
-                        string.Join(", ", ctx.Patterns));
+                        meta.TimeoutHintSeconds ?? 0);
                 }
 
-                resultText = await ExecuteToolAttemptAsync(executor, tc, context, timeout, timeProvider, ct);
+                resultText = await ExecuteToolAttemptAsync(
+                    _executor, tc, context, timeout, _timeProvider, batch.CancellationToken);
                 sw.Stop();
 
-                var patternStr = string.Join(", ", ctx.Patterns);
-                auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
-                {
-                    Allowed = true,
-                    ApprovalDecision = decision.ToString(),
-                    ApprovalPattern = patternStr
-                });
             }
             else
             {
@@ -553,49 +615,21 @@ internal static class SessionToolExecutionPipeline
                 var hint = BuildSetWorkingDirectoryHint(
                     toolName: tc.Name,
                     decision: decision,
-                    cwd: context.Cwd,
+                    cwd: context.Approval.Cwd,
                     sessionDirectory: context.SessionDirectory,
                     projectDirectory: context.ProjectDirectory,
-                    setWorkingDirectoryAvailable: setWorkingDirectoryAvailable);
+                    setWorkingDirectoryAvailable: batch.SetWorkingDirectoryAvailable);
                 resultText = string.IsNullOrEmpty(hint) ? reason : $"{reason}\n{hint}";
 
-                // Denied audit entries should describe the exact blocked units
-                // the user saw in the prompt. Broader reusable approval entries
-                // are only relevant when B/C is granted.
-                var deniedPatternStr = string.Join(", ", ctx.Patterns);
-                auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
-                {
-                    Allowed = false,
-                    DenyReason = reason,
-                    ApprovalDecision = decision.ToString(),
-                    ApprovalPattern = deniedPatternStr
-                });
             }
-        }
-        catch (ToolApprovalRequiredException approvalEx)
-        {
-            // No approval channel available — treat as denied
-            sw.Stop();
-            resultText = $"Tool requires approval but no approval channel is available: {approvalEx.ApprovalContext.ToolName}";
-
-            auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
-            {
-                Allowed = false,
-                DenyReason = "no_approval_channel"
-            });
         }
         catch (ToolAccessDeniedException ex)
         {
             sw.Stop();
             resultText = $"Tool access denied: {ex.DenyReason}";
 
-            auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
-            {
-                Allowed = false,
-                DenyReason = ex.DenyReason
-            });
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (batch.CancellationToken.IsCancellationRequested)
         {
             // Caller (turn/user) cancellation is not a tool failure. Self-monitoring
             // tools are bounded only by ct, so this is the normal cancel path; let it
@@ -608,15 +642,10 @@ internal static class SessionToolExecutionPipeline
             sw.Stop();
             resultText = $"Error executing tool: {ex.Message}";
 
-            auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, sw.Elapsed, meta) with
-            {
-                Allowed = false,
-                DenyReason = $"tool_execution_error:{ex.GetType().Name}"
-            });
         }
 
-        modelInputBudget ??= new ModelInputBatchBudget(MaxModelInputBatchBytes);
-        var modelInputMaterialization = MaterializeModelInputFiles(context, sessionDir, logger, modelInputBudget);
+        var modelInputMaterialization = MaterializeModelInputFiles(
+            context, batch.SessionDirectory, _logger, modelInputBudget);
         // No inline clamp here: DispatchingToolExecutor already bounds every tool
         // result to the inline budget N (and spills the overflow). Clamping again
         // would re-window the already-windowed+steered result.
@@ -637,7 +666,7 @@ internal static class SessionToolExecutionPipeline
         return new ToolCallResult(
             message,
             modelInputMaterialization.MediaReferences,
-            context.FileAttachments,
+            context.Outputs.FileAttachments,
             completedRuns,
             acceptedFindings);
     }
@@ -650,8 +679,8 @@ internal static class SessionToolExecutionPipeline
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-        var grantedOneTimeToolName = context.OneTimeApprovedToolName;
-        var grantedOneTimePatterns = context.OneTimeApprovedPatterns;
+        var grantedOneTimeToolName = context.Approval.OneTimeApprovedToolName;
+        var grantedOneTimePatterns = context.Approval.OneTimeApprovedPatterns;
 
         try
         {
@@ -694,12 +723,9 @@ internal static class SessionToolExecutionPipeline
             // preserving whatever baseline state existed before this call.
             if (!string.IsNullOrWhiteSpace(grantedOneTimeToolName))
             {
-                if (!string.Equals(context.OneTimeApprovedToolName, grantedOneTimeToolName, StringComparison.Ordinal)
-                    || !SetsEqual(context.OneTimeApprovedPatterns, grantedOneTimePatterns))
-                {
-                    context.OneTimeApprovedToolName = null;
-                    context.SetOneTimeApprovedPatterns([]);
-                }
+                if (!string.Equals(context.Approval.OneTimeApprovedToolName, grantedOneTimeToolName, StringComparison.Ordinal)
+                    || !SetsEqual(context.Approval.OneTimeApprovedPatterns, grantedOneTimePatterns))
+                    context.Approval.ClearOneTimeApproval();
             }
         }
     }
@@ -787,20 +813,12 @@ internal static class SessionToolExecutionPipeline
         return new(SubAgentFindingReviewDecision.Accepted, null);
     }
 
-    private static async Task<ToolCallResult> RouteToBackgroundJobAsync(
+    private async Task<ToolCallResult> RouteToBackgroundJobAsync(
         FunctionCallContent tc,
-        SessionId sessionId,
-        MessageSource? source,
-        IToolAuditLogger? auditLogger,
-        TimeProvider timeProvider,
-        TurnContext? turnContext,
+        SessionToolBatch batch,
         ToolCallMeta meta,
         IActorRef backgroundJobManager,
-        int timeoutSeconds,
-        TimeSpan duration,
-        ILogger? logger,
-        string? approvalDecision = null,
-        string? approvalPattern = null)
+        int timeoutSeconds)
     {
         var command = ToolArgumentHelper.GetString(tc.Arguments, "Command");
         var workingDirectory = ToolArgumentHelper.GetString(tc.Arguments, "WorkingDirectory");
@@ -820,11 +838,8 @@ internal static class SessionToolExecutionPipeline
         // A background job inherits the submitting turn's authority context.
         // There is no safe default — defaulting a missing context to Personal
         // would silently escalate the job's audience.
-        var audience = turnContext?.Audience ?? source?.Audience;
-        var boundary = turnContext?.Boundary ?? source?.Boundary;
-        var channelType = turnContext?.ChannelType ?? source?.ChannelType;
-        var senderId = turnContext?.RequesterSenderId ?? source?.SenderId;
-        if (audience is null || boundary is null || channelType is null)
+        var channelType = batch.TurnContext.ChannelType;
+        if (channelType is null)
             throw new InvalidOperationException(
                 "Background-job submission requires turn authority context; trust context cannot be defaulted.");
 
@@ -832,13 +847,13 @@ internal static class SessionToolExecutionPipeline
         {
             Command = command,
             WorkingDirectory = workingDirectory,
-            SessionId = sessionId,
+            SessionId = batch.SessionId,
             Rationale = meta.Rationale ?? "background shell execution",
-            Audience = audience.Value,
-            Boundary = boundary.Value,
+            Audience = batch.TurnContext.Audience,
+            Boundary = batch.TurnContext.Boundary,
             OriginChannelType = channelType.Value,
             TimeoutSeconds = timeoutSeconds,
-            SenderId = senderId
+            SenderId = batch.TurnContext.RequesterSenderId
         };
 
         try
@@ -846,16 +861,9 @@ internal static class SessionToolExecutionPipeline
             var started = await backgroundJobManager.Ask<BackgroundJobStarted>(
                 startCmd, TimeSpan.FromSeconds(30));
 
-            logger?.LogInformation(
+            _logger.Info(
                 "Background job {JobId} submitted for shell command (session {SessionId})",
-                started.JobId.Value, sessionId.Value);
-
-            auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, duration, meta) with
-            {
-                Allowed = true,
-                ApprovalDecision = approvalDecision,
-                ApprovalPattern = approvalPattern
-            });
+                started.JobId.Value, batch.SessionId.Value);
 
             var logPathHint = started.OutputLogPath is not null
                 ? $" Output streams to {started.OutputLogPath} while the job runs — file_read/grep it to monitor."
@@ -874,24 +882,16 @@ internal static class SessionToolExecutionPipeline
                 JobId = started.JobId,
                 Command = command,
                 Rationale = startCmd.Rationale,
-                StartedAtMs = timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
-                Audience = audience.Value,
-                Boundary = boundary.Value,
+                StartedAtMs = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
+                Audience = batch.TurnContext.Audience,
+                Boundary = batch.TurnContext.Boundary,
                 OutputLogPath = started.OutputLogPath
             };
             return new ToolCallResult(resultMessage, [], [], [], [], jobInfo);
         }
         catch (Exception ex)
         {
-            logger?.LogError(ex, "Failed to submit background job for {ToolName}", tc.Name);
-
-            auditLogger?.Log(BuildAuditEntry(sessionId, tc, timeProvider, duration, meta) with
-            {
-                Allowed = false,
-                DenyReason = $"background_job_submission_failed:{ex.GetType().Name}",
-                ApprovalDecision = approvalDecision,
-                ApprovalPattern = approvalPattern
-            });
+            _logger.Error(ex, "Failed to submit background job for {ToolName}", tc.Name);
 
             var errorMessage = new SerializableChatMessage
             {
@@ -907,10 +907,10 @@ internal static class SessionToolExecutionPipeline
     internal static ModelInputMaterializationResult MaterializeModelInputFiles(
         ToolExecutionContext context,
         string sessionDir,
-        ILogger? logger,
+        ILoggingAdapter logger,
         ModelInputBatchBudget? batchBudget = null)
     {
-        if (context.ModelInputFiles.Count == 0)
+        if (context.Outputs.ModelInputFiles.Count == 0)
             return new ModelInputMaterializationResult([], 0);
 
         try
@@ -920,13 +920,13 @@ internal static class SessionToolExecutionPipeline
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             var mediaDir = Path.Combine(sessionDir, SessionDirectoryHelper.MediaSubdirectory);
-            logger?.LogWarning(ex, "Failed to create model input media directory: {Path}", mediaDir);
-            return new ModelInputMaterializationResult([], context.ModelInputFiles.Count);
+            logger.Warning(ex, "Failed to create model input media directory: {Path}", mediaDir);
+            return new ModelInputMaterializationResult([], context.Outputs.ModelInputFiles.Count);
         }
 
-        var refs = new List<SerializableMediaReference>(context.ModelInputFiles.Count);
+        var refs = new List<SerializableMediaReference>(context.Outputs.ModelInputFiles.Count);
         batchBudget ??= new ModelInputBatchBudget(MaxModelInputBatchBytes);
-        foreach (var file in context.ModelInputFiles)
+        foreach (var file in context.Outputs.ModelInputFiles)
         {
             var reservedBytes = 0L;
             try
@@ -938,13 +938,13 @@ internal static class SessionToolExecutionPipeline
                 var mimeType = file.MimeType;
                 if (!SessionMediaStore.TryGetSupportedModelInput(mimeType, out var mediaModality, out var requiredModelModality))
                 {
-                    logger?.LogWarning("Model input file MIME type is not supported, skipping: {MimeType}", mimeType);
+                    logger.Warning("Model input file MIME type is not supported, skipping: {MimeType}", mimeType);
                     continue;
                 }
 
                 if (!context.ModelInputModalities.HasFlag(requiredModelModality))
                 {
-                    logger?.LogWarning(
+                    logger.Warning(
                         "Model input file requires unavailable modality {Modality}, skipping: {Path}",
                         requiredModelModality,
                         file.FilePath);
@@ -953,26 +953,26 @@ internal static class SessionToolExecutionPipeline
 
                 if (!File.Exists(file.FilePath))
                 {
-                    logger?.LogWarning("Model input file not found, skipping: {Path}", file.FilePath);
+                    logger.Warning("Model input file not found, skipping: {Path}", file.FilePath);
                     continue;
                 }
 
                 var info = new FileInfo(file.FilePath);
                 if (info.Length <= 0)
                 {
-                    logger?.LogWarning("Model input file is empty, skipping: {Path}", file.FilePath);
+                    logger.Warning("Model input file is empty, skipping: {Path}", file.FilePath);
                     continue;
                 }
 
                 if (info.Length > MaxModelInputFileBytes)
                 {
-                    logger?.LogWarning("Model input file exceeds size limit, skipping: {Path}", file.FilePath);
+                    logger.Warning("Model input file exceeds size limit, skipping: {Path}", file.FilePath);
                     continue;
                 }
 
                 if (!batchBudget.TryReserve(info.Length))
                 {
-                    logger?.LogWarning("Model input file would exceed batch size limit, skipping: {Path}", file.FilePath);
+                    logger.Warning("Model input file would exceed batch size limit, skipping: {Path}", file.FilePath);
                     continue;
                 }
 
@@ -980,7 +980,7 @@ internal static class SessionToolExecutionPipeline
 
                 if (!IsFileMagicCompatible(file.FilePath, mimeType))
                 {
-                    logger?.LogWarning(
+                    logger.Warning(
                         "Model input file MIME type does not match detected bytes, skipping: {Path}",
                         file.FilePath);
                     batchBudget.Release(reservedBytes);
@@ -1001,7 +1001,7 @@ internal static class SessionToolExecutionPipeline
                     // gap drives the model-input handoff warning, so this is not silent.
                     batchBudget.Release(reservedBytes);
                     reservedBytes = 0;
-                    logger?.LogWarning("Model input image could not be bounded, skipping: {Path}", file.FilePath);
+                    logger.Warning("Model input image could not be bounded, skipping: {Path}", file.FilePath);
                     continue;
                 }
 
@@ -1020,11 +1020,11 @@ internal static class SessionToolExecutionPipeline
             {
                 if (reservedBytes > 0)
                     batchBudget.Release(reservedBytes);
-                logger?.LogWarning(ex, "Failed to materialize model input file: {Path}", file.FilePath);
+                logger.Warning(ex, "Failed to materialize model input file: {Path}", file.FilePath);
             }
         }
 
-        return new ModelInputMaterializationResult(refs, context.ModelInputFiles.Count);
+        return new ModelInputMaterializationResult(refs, context.Outputs.ModelInputFiles.Count);
     }
 
     internal static string AppendModelInputHandoffWarning(string resultText, int failedCount)
@@ -1051,65 +1051,8 @@ internal static class SessionToolExecutionPipeline
         return string.Equals(MimeTypeCatalog.Normalize(detected), mimeType.Value, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static ToolExecutionContext BuildToolExecutionContext(
-        SessionId sessionId,
-        MessageSource? source,
-        string sessionDir,
-        Func<object, string, CancellationToken, Task<object>> spawnChildActor,
-        string? projectDirectory,
-        IReadOnlyList<string>? recentFiles,
-        TurnContext? turnContext,
-        ModelModality modelInputModalities,
-        int maxInlineToolResultChars)
-    {
-        // A turn with no authority context carries no trust context — fall closed
-        // to the most-restrictive audience. The default is resolved once, here,
-        // so every downstream tool gate reads a guaranteed audience.
-        var context = new ToolExecutionContext(sessionId.Value, sessionDir)
-        {
-            Audience = turnContext?.Audience ?? source?.Audience ?? TrustAudience.Public,
-            // The session content budget; DispatchingToolExecutor uses it (or a
-            // tool's own override) to bound results and spill the overflow.
-            MaxInlineToolResultChars = maxInlineToolResultChars,
-            RecentFiles = recentFiles ?? [],
-        };
-        context.Boundary = turnContext?.Boundary ?? source?.Boundary;
-        context.ChannelType = turnContext?.ChannelType?.ToWireValue()
-                              ?? (source is null ? null : source.ChannelType.ToWireValue());
-        context.DefaultDeliveryTarget = turnContext?.DefaultDeliveryTarget ?? source?.DefaultDeliveryTarget;
-        context.RequestedDeliveryTarget = turnContext?.RequestedDeliveryTarget ?? source?.RequestedDeliveryTarget;
-        context.SupportsInteractiveApproval = turnContext?.SupportsInteractiveApproval
-                                               ?? source?.ChannelType.SupportsInteractiveApproval();
-        context.ModelInputModalities = modelInputModalities;
-        context.SpawnChildActor = spawnChildActor;
-        context.ProjectDirectory = projectDirectory;
-        return context;
-    }
-
-    private static bool CanRequestInteractiveApproval(MessageSource? source, TurnContext? turnContext)
-    {
-        if (turnContext is not null)
-            return turnContext.SupportsInteractiveApproval && turnContext.HasApprovalRequester;
-
-        return source is not null && source.ChannelType.SupportsInteractiveApproval();
-    }
-
-    private static ToolAuditEntry BuildAuditEntry(
-        SessionId sessionId,
-        FunctionCallContent tc,
-        TimeProvider timeProvider,
-        TimeSpan duration,
-        ToolCallMeta? meta) => new()
-    {
-        SessionId = sessionId,
-        ToolName = new ToolName(tc.Name),
-        CallId = new ToolCallId(tc.CallId),
-        Timestamp = timeProvider.GetUtcNow(),
-        Allowed = false,
-        Duration = duration,
-        Rationale = meta?.Rationale,
-        TimeoutHintSeconds = meta?.TimeoutHintSeconds
-    };
+    private static bool CanRequestInteractiveApproval(TurnContext turnContext)
+        => turnContext.SupportsInteractiveApproval && turnContext.HasApprovalRequester;
 
     /// <summary>
     /// Returns a one-line agent-facing hint pointing at <c>set_working_directory</c>

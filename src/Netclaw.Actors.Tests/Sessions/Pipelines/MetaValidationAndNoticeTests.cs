@@ -62,21 +62,11 @@ public sealed class MetaValidationAndNoticeTests(ITestOutputHelper output) : Tes
             new("call-1", "shell_execute", args)
         };
 
-        var pipelineTask = SessionToolExecutionPipeline.ExecuteToolsAsync(
-            executor,
-            toolCalls,
-            sessionId,
-            source: null,
-            auditLogger: null,
-            timeProvider: TimeProvider.System,
-            sessionDir: Path.GetTempPath(),
-            maxInlineToolResultChars: 4096,
-            timeout: timeout ?? TimeSpan.FromSeconds(60),
-            self: probe.Ref,
-            emitSubAgentOutput: _ => { },
-            spawnChildActor: static (_, _, _) => Task.FromResult<object>(new object()),
-            turnContext: InteractiveTurnContext(sessionId),
-            ct: TestContext.Current.CancellationToken);
+        var fixture = new SessionToolPipelineTestFixture(executor, toolCalls, sessionId, probe.Ref)
+            .WithTurnContext(InteractiveTurnContext(sessionId))
+            .WithTimeout(timeout ?? TimeSpan.FromSeconds(60));
+
+        var pipelineTask = fixture.ExecuteAsync(TestContext.Current.CancellationToken);
 
         var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
             TimeSpan.FromSeconds(5),
@@ -124,7 +114,7 @@ public sealed class MetaValidationAndNoticeTests(ITestOutputHelper output) : Tes
 
         var content = completed.ToolResults[0].Content;
         Assert.Equal(1, executor.Invocations);
-        Assert.Equal(1200, executor.LastContext?.RequestedTimeoutSeconds);
+        Assert.Equal(TimeSpan.FromSeconds(1200), executor.LastContext?.ExecutionTimeout.Value);
         Assert.DoesNotContain("clamped", content);
         Assert.DoesNotContain("[timeout", content);
         Assert.Contains("ok", content);
@@ -144,7 +134,7 @@ public sealed class MetaValidationAndNoticeTests(ITestOutputHelper output) : Tes
 
         var content = completed.ToolResults[0].Content;
         Assert.Equal(1, executor.Invocations);
-        Assert.Equal(10, executor.LastContext?.RequestedTimeoutSeconds);
+        Assert.Equal(TimeSpan.FromSeconds(10), executor.LastContext?.ExecutionTimeout.Value);
         Assert.DoesNotContain("[timeout", content);
     }
 
@@ -162,7 +152,7 @@ public sealed class MetaValidationAndNoticeTests(ITestOutputHelper output) : Tes
         });
 
         Assert.Equal(1, executor.Invocations);
-        Assert.Equal(300, executor.LastContext?.RequestedTimeoutSeconds);
+        Assert.Equal(TimeSpan.FromSeconds(300), executor.LastContext?.ExecutionTimeout.Value);
         Assert.DoesNotContain("NOT executed", completed.ToolResults[0].Content);
     }
 
@@ -178,7 +168,7 @@ public sealed class MetaValidationAndNoticeTests(ITestOutputHelper output) : Tes
 
         var content = completed.ToolResults[0].Content;
         Assert.Equal(1, executor.Invocations);
-        Assert.Equal(300, executor.LastContext?.RequestedTimeoutSeconds);
+        Assert.Equal(TimeSpan.FromSeconds(300), executor.LastContext?.ExecutionTimeout.Value);
         Assert.DoesNotContain("[timeout", content);
         Assert.Equal("ok", content);
     }
@@ -218,6 +208,35 @@ public sealed class MetaValidationAndNoticeTests(ITestOutputHelper output) : Tes
         Assert.Contains("'_background'", content);
         Assert.Contains("boolean", content);
         Assert.Contains("NOT executed", content);
+    }
+
+    [Fact]
+    public async Task Malformed_metadata_returns_denial_without_execution()
+    {
+        var executor = new EchoExecutor();
+        var probe = CreateTestProbe("malformed-metadata-audit");
+        var sessionId = new SessionId("D1/malformed-metadata-audit");
+        var toolCalls = new List<FunctionCallContent>
+        {
+            new("call-invalid-background", "shell_execute", new Dictionary<string, object?>
+            {
+                ["Command"] = "echo hi",
+                ["_background"] = "yes"
+            })
+        };
+
+        await new SessionToolPipelineTestFixture(executor, toolCalls, sessionId, probe.Ref)
+            .WithTurnContext(InteractiveTurnContext(sessionId))
+            .ExecuteAsync(TestContext.Current.CancellationToken);
+
+        var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
+            TimeSpan.FromSeconds(3),
+            cancellationToken: TestContext.Current.CancellationToken);
+        var result = Assert.Single(completed.ToolResults);
+        Assert.Equal(0, executor.Invocations);
+        Assert.Equal(new ToolCallId("call-invalid-background"), result.ToolCallId);
+        Assert.Contains("NOT executed", result.Content);
+        Assert.Contains("'_background'", result.Content);
     }
 
     [Fact]

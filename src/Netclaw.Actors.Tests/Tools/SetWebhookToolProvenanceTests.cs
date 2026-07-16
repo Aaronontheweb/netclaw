@@ -31,7 +31,7 @@ public sealed class SetWebhookToolProvenanceTests : IDisposable
     public void Dispose() => _dir.Dispose();
 
     private static ToolExecutionContext Context(TrustAudience audience)
-        => new(sessionId: null, sessionDirectory: null) { Audience = audience };
+        => TestToolExecutionContext.CreateUnbound(new TestToolExecutionContextOptions { Audience = audience });
 
     private async Task<string> CreateRouteAsync(string routeName, TrustAudience creator, string? requestedAudience)
     {
@@ -98,5 +98,154 @@ public sealed class SetWebhookToolProvenanceTests : IDisposable
 
         Assert.Equal("Error: NotificationTarget is required when NotifyInstructions are provided.", result);
         Assert.False(_store.TryGet("notify-without-target", out _));
+    }
+
+    [Fact]
+    public async Task Timestamped_hmac_settings_are_persisted()
+    {
+        var tool = new SetWebhookTool(_store);
+
+        var result = await tool.ExecuteAsync(new Dictionary<string, object?>
+        {
+            ["RouteName"] = "stripe-events",
+            ["Prompt"] = "Handle Stripe delivery.",
+            ["VerificationKind"] = "HmacTimestamped",
+            ["Secret"] = "whsec_test",
+            ["SignatureHeaderName"] = "Stripe-Signature",
+            ["TimestampField"] = "timestamp",
+            ["SignatureField"] = "signature",
+            ["SignedPayloadSeparator"] = "::",
+            ["ToleranceSeconds"] = 120
+        }, Context(TrustAudience.Public), TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain("Error", result);
+        Assert.True(_store.TryGet("stripe-events", out var saved));
+        var verification = saved.Definition!.Verification;
+        Assert.Equal(WebhookVerifierKind.HmacTimestamped, verification.Kind);
+        Assert.Equal("timestamp", verification.TimestampField);
+        Assert.Equal("signature", verification.SignatureField);
+        Assert.Equal("::", verification.SignedPayloadSeparator);
+        Assert.Equal(120, verification.ToleranceSeconds);
+    }
+
+    [Fact]
+    public async Task Timestamp_settings_are_rejected_for_body_hmac()
+    {
+        var tool = new SetWebhookTool(_store);
+
+        var result = await tool.ExecuteAsync(new Dictionary<string, object?>
+        {
+            ["RouteName"] = "invalid-route",
+            ["Prompt"] = "Handle delivery.",
+            ["VerificationKind"] = "Hmac",
+            ["Secret"] = "test-secret",
+            ["TimestampField"] = "t"
+        }, Context(TrustAudience.Public), TestContext.Current.CancellationToken);
+
+        Assert.Contains("require 'verificationKind' to be 'HmacTimestamped'", result);
+        Assert.False(_store.TryGet("invalid-route", out _));
+    }
+
+    [Fact]
+    public async Task Update_preserves_omitted_route_and_verification_settings()
+    {
+        var tool = new SetWebhookTool(_store);
+        var createResult = await tool.ExecuteAsync(new Dictionary<string, object?>
+        {
+            ["RouteName"] = "stripe-events",
+            ["Prompt"] = "Handle Stripe delivery.",
+            ["VerificationKind"] = "HmacTimestamped",
+            ["Secret"] = "old-secret",
+            ["SignatureHeaderName"] = "Stripe-Signature",
+            ["EventHeaderName"] = "Stripe-Event",
+            ["DeliveryIdHeaderName"] = "Stripe-Delivery",
+            ["TimestampField"] = "timestamp",
+            ["SignatureField"] = "signature",
+            ["SignedPayloadSeparator"] = "::",
+            ["ToleranceSeconds"] = 120,
+            ["Events"] = "payment.created,payment.failed",
+            ["Audience"] = "team",
+            ["NotifyInstructions"] = "Notify the payments channel.",
+            ["DeliveryRequired"] = false,
+            ["NotificationChannelId"] = "C-PAYMENTS",
+            ["MaxBodyBytes"] = 4096,
+            ["RateLimitPerMinute"] = 12,
+            ["Enabled"] = false
+        }, Context(TrustAudience.Personal), TestContext.Current.CancellationToken);
+        Assert.DoesNotContain("Error", createResult);
+
+        var updateResult = await tool.ExecuteAsync(new Dictionary<string, object?>
+        {
+            ["RouteName"] = "stripe-events",
+            ["Prompt"] = "Handle and summarize Stripe delivery.",
+            ["VerificationKind"] = "HmacTimestamped",
+            ["Secret"] = "new-secret",
+            ["RateLimitPerMinute"] = 24
+        }, Context(TrustAudience.Team), TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain("Error", updateResult);
+        Assert.True(_store.TryGet("stripe-events", out var saved));
+        var route = saved.Definition!;
+        Assert.Equal("Handle and summarize Stripe delivery.", route.Prompt);
+        Assert.Equal(new SensitiveString("new-secret"), route.Verification.Secret);
+        Assert.Equal(24, route.RateLimitPerMinute);
+        Assert.False(route.Enabled);
+        Assert.Equal(4096, route.MaxBodyBytes);
+        Assert.Equal(TrustAudience.Team, route.Audience);
+        Assert.Equal(["payment.created", "payment.failed"], route.Events);
+        Assert.Equal("Notify the payments channel.", route.NotifyInstructions);
+        Assert.False(route.DeliveryRequired);
+        Assert.Equal("C-PAYMENTS", route.NotificationTarget?.ChannelId);
+        Assert.Equal("Stripe-Signature", route.Verification.SignatureHeaderName);
+        Assert.Equal("Stripe-Event", route.Verification.EventHeaderName);
+        Assert.Equal("Stripe-Delivery", route.Verification.DeliveryIdHeaderName);
+        Assert.Equal("timestamp", route.Verification.TimestampField);
+        Assert.Equal("signature", route.Verification.SignatureField);
+        Assert.Equal("::", route.Verification.SignedPayloadSeparator);
+        Assert.Equal(120, route.Verification.ToleranceSeconds);
+    }
+
+    [Fact]
+    public async Task Lower_audience_cannot_update_higher_audience_route()
+    {
+        var createResult = await CreateRouteAsync("team-route", TrustAudience.Team, requestedAudience: null);
+        Assert.DoesNotContain("Error", createResult);
+        var tool = new SetWebhookTool(_store);
+
+        var updateResult = await tool.ExecuteAsync(new Dictionary<string, object?>
+        {
+            ["RouteName"] = "team-route",
+            ["Prompt"] = "Replace team instructions.",
+            ["VerificationKind"] = "Hmac",
+            ["Secret"] = "replacement-secret"
+        }, Context(TrustAudience.Public), TestContext.Current.CancellationToken);
+
+        Assert.Contains("exceeds creator authority", updateResult);
+        Assert.True(_store.TryGet("team-route", out var saved));
+        Assert.Equal("Handle inbound delivery.", saved.Definition!.Prompt);
+        Assert.Equal(new SensitiveString("test-secret"), saved.Definition.Verification.Secret);
+    }
+
+    [Theory]
+    [InlineData("v1")]
+    [InlineData(" timestamp")]
+    [InlineData("time=stamp")]
+    [InlineData("time\nstamp")]
+    [InlineData("téstamp")]
+    public async Task Unusable_timestamp_field_names_are_rejected_before_save(string timestampField)
+    {
+        var tool = new SetWebhookTool(_store);
+
+        var result = await tool.ExecuteAsync(new Dictionary<string, object?>
+        {
+            ["RouteName"] = "invalid-route",
+            ["Prompt"] = "Handle delivery.",
+            ["VerificationKind"] = "HmacTimestamped",
+            ["Secret"] = "test-secret",
+            ["TimestampField"] = timestampField
+        }, Context(TrustAudience.Public), TestContext.Current.CancellationToken);
+
+        Assert.Contains("Verification.TimestampField", result);
+        Assert.False(_store.TryGet("invalid-route", out _));
     }
 }

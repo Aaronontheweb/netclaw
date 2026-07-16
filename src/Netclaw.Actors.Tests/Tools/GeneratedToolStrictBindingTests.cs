@@ -22,12 +22,12 @@ public class GeneratedToolStrictBindingTests
     private static FileReadTool NewFileReadTool() => new(new ToolConfig(), new NetclawPaths(), new Netclaw.Security.ToolPathPolicy([]));
 
     private static ToolExecutionContext PersonalContext()
-        => new("signalr/thread-1", Path.GetTempPath())
+        => TestToolExecutionContext.CreateBound("signalr/thread-1", Path.GetTempPath(), new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             Boundary = TrustBoundary.TrustedInstance,
             ChannelType = "signalr"
-        };
+        });
 
     [Fact]
     public async Task Invalid_int_value_surfaces_parse_error_and_does_not_execute()
@@ -37,7 +37,7 @@ public class GeneratedToolStrictBindingTests
         {
             ["Path"] = "/tmp/does-not-matter.txt",
             ["Limit"] = "abc"
-        }, TestContext.Current.CancellationToken);
+        }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
 
         Assert.Contains("Error parsing arguments for tool 'file_read'", result);
         Assert.Contains("'Limit'", result);
@@ -54,7 +54,7 @@ public class GeneratedToolStrictBindingTests
         {
             ["Path"] = "/tmp/does-not-matter.txt",
             ["Limit"] = limit
-        }, TestContext.Current.CancellationToken);
+        }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
 
         Assert.Contains("Error parsing arguments", result);
         Assert.Contains("'Limit'", result);

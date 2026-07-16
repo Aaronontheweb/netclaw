@@ -9,9 +9,10 @@
     <OpenTelemetryVersion>1.16.0</OpenTelemetryVersion>
     <SlackNetVersion>0.17.10</SlackNetVersion>
     <DiscordNetVersion>3.20.1</DiscordNetVersion>
-    <MattermostNetVersion>5.0.0</MattermostNetVersion>
-    <MicrosoftExtensionsAIVersion>10.6.0</MicrosoftExtensionsAIVersion>
-    <MicrosoftAspNetCoreVersion>10.0.9</MicrosoftAspNetCoreVersion>
+    <MattermostNetVersion>5.0.3</MattermostNetVersion>
+    <MicrosoftExtensionsAIVersion>10.8.0</MicrosoftExtensionsAIVersion>
+    <OpenAIVersion>2.12.0</OpenAIVersion>
+    <MicrosoftAspNetCoreVersion>10.0.10</MicrosoftAspNetCoreVersion>
     <SkiaSharpVersion>4.148.0</SkiaSharpVersion>
     <!-- Aspire pins are exercised only by samples/Netclaw.Demo.AppHost and its
          integration tests. The 13.x line is the .NET 10 generation of Aspire;
@@ -52,6 +53,7 @@
     <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="$(MicrosoftAspNetCoreVersion)" />
     <PackageVersion Include="Microsoft.Data.Sqlite" Version="$(MicrosoftAspNetCoreVersion)" />
     <PackageVersion Include="Microsoft.Extensions.AI.OpenAI" Version="$(MicrosoftExtensionsAIVersion)" />
+    <PackageVersion Include="OpenAI" Version="$(OpenAIVersion)" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.Json" Version="$(MicrosoftAspNetCoreVersion)" />
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="$(MicrosoftAspNetCoreVersion)" />
     <PackageVersion Include="Microsoft.Extensions.Http" Version="$(MicrosoftAspNetCoreVersion)" />
@@ -82,8 +84,9 @@
   <ItemGroup>
     <PackageVersion Include="Akka.Hosting.TestKit" Version="$(AkkaHostingVersion)" />
     <PackageVersion Include="xunit.v3" Version="3.2.2" />
+    <PackageVersion Include="xunit.v3.mtp-off" Version="4.0.0-pre.128" />
     <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.7.0" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
     <PackageVersion Include="CsCheck" Version="4.7.0" />
     <PackageVersion Include="Verify.XunitV3" Version="31.20.0" />
     <PackageVersion Include="Testcontainers" Version="4.13.0" />
@@ -117,11 +120,11 @@
   <ItemGroup>
     <PackageVersion Include="Microsoft.ML.OnnxRuntime" Version="1.27.0" />
     <PackageVersion Include="FastBertTokenizer" Version="1.0.28" />
-    <!-- Pinned to 10.0.9 (matches $(MicrosoftAspNetCoreVersion)), not the lowest version that
-         compiles: Microsoft.Extensions.AI 10.6.0 already pulls System.Numerics.Tensors
-         >= 10.0.8 transitively, and CentralPackageTransitivePinningEnabled requires the
+    <!-- Pinned to 10.0.10 (matches $(MicrosoftAspNetCoreVersion)), not the lowest version that
+         compiles: Microsoft.Extensions.AI 10.8.0 already pulls System.Numerics.Tensors
+         >= 10.0.10 transitively, and CentralPackageTransitivePinningEnabled requires the
          central pin to be at least as high as every transitive floor in the graph. -->
-    <PackageVersion Include="System.Numerics.Tensors" Version="10.0.9" />
+    <PackageVersion Include="System.Numerics.Tensors" Version="10.0.10" />
   </ItemGroup>
   <!-- Source generators -->
   <ItemGroup>

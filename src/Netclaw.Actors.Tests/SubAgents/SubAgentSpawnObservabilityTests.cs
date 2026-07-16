@@ -50,15 +50,17 @@ public sealed class SubAgentSpawnObservabilityTests : IDisposable
             toolAccessPolicy: null!,
             approvalService: null,
             promptProvider: null!,
-            workingContextSnapshots: new WorkingContextSnapshotProvider(NullLogger<WorkingContextSnapshotProvider>.Instance),
+            workingContextSnapshots: new WorkingContextSnapshotProvider(
+                new GitWorkingContextInspector(TimeProvider.System),
+                NullLogger<WorkingContextSnapshotProvider>.Instance),
             logger);
 
         // A context with a session id but no SpawnChildActor factory — the
         // "subagent tried to spawn but never launched" failure shape.
-        var context = new ToolExecutionContext(SessionId, null) { Audience = TrustAudience.Personal };
+        var context = TestToolExecutionContext.CreateBound(SessionId, null, TrustAudience.Personal);
 
         var result = await spawner.SpawnAsync(
-            Profile("summarizer"), "do the work", null, context, TestContext.Current.CancellationToken);
+            Profile("summarizer"), "do the work", null, context.Invocation, TestContext.Current.CancellationToken);
 
         Assert.False(result.Success);
         // The spawn attempt and its failure are both logged under the session's id, so the
@@ -78,7 +80,7 @@ public sealed class SubAgentSpawnObservabilityTests : IDisposable
 
         // Public audience is refused with a deliberately opaque model-facing string;
         // the operator-facing breadcrumb must still record the real reason.
-        var context = new ToolExecutionContext(SessionId, null) { Audience = TrustAudience.Public };
+        var context = TestToolExecutionContext.CreateBound(SessionId, null, TrustAudience.Public);
 
         var result = await tool.ExecuteAsync(
             new Dictionary<string, object?> { ["agent"] = "summarizer", ["task"] = "do the work" },

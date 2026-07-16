@@ -278,7 +278,7 @@ public sealed class MemoryRedesignedEvalSuiteTests : IAsyncDisposable
                 ["Query"] = "stir trek hotel",
                 ["Limit"] = 5
             },
-            new ToolExecutionContext("slack/thread-2", null) { Audience = TrustAudience.Personal },
+            TestToolExecutionContext.CreateBound("slack/thread-2", null, TrustAudience.Personal),
             CancellationToken.None);
 
         Assert.Contains("Hotel options", search);
@@ -453,7 +453,7 @@ public sealed class MemoryRedesignedEvalSuiteTests : IAsyncDisposable
                 ["Query"] = "stir trek shuttle",
                 ["Limit"] = 5
             },
-            new ToolExecutionContext("slack/thread-3", null) { Audience = TrustAudience.Personal },
+            TestToolExecutionContext.CreateBound("slack/thread-3", null, TrustAudience.Personal),
             CancellationToken.None);
         var debug = await tool.ExecuteAsync(
             new Dictionary<string, object?>
@@ -462,7 +462,7 @@ public sealed class MemoryRedesignedEvalSuiteTests : IAsyncDisposable
                 ["Limit"] = 5,
                 ["IncludeStale"] = true
             },
-            new ToolExecutionContext("slack/thread-3", null) { Audience = TrustAudience.Personal },
+            TestToolExecutionContext.CreateBound("slack/thread-3", null, TrustAudience.Personal),
             CancellationToken.None);
 
         Assert.Equal("No memories found.", normal);
@@ -566,7 +566,7 @@ public sealed class MemoryRedesignedEvalSuiteTests : IAsyncDisposable
                 ["Query"] = "stir trek hotel",
                 ["Limit"] = 5
             },
-            new ToolExecutionContext("slack/thread-report", null) { Audience = TrustAudience.Personal },
+            TestToolExecutionContext.CreateBound("slack/thread-report", null, TrustAudience.Personal),
             CancellationToken.None);
         var staleDebug = await searchTool.ExecuteAsync(
             new Dictionary<string, object?>
@@ -575,7 +575,7 @@ public sealed class MemoryRedesignedEvalSuiteTests : IAsyncDisposable
                 ["Limit"] = 5,
                 ["IncludeStale"] = true
             },
-            new ToolExecutionContext("slack/thread-report", null) { Audience = TrustAudience.Personal },
+            TestToolExecutionContext.CreateBound("slack/thread-report", null, TrustAudience.Personal),
             CancellationToken.None);
 
         var autoRecallHitRate = auto.Items.Any(x => x.Content.Contains("United Airlines", StringComparison.Ordinal)) ? 1.0 : 0.0;

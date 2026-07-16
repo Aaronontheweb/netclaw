@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ToolRegistry.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -240,7 +240,7 @@ public sealed class ToolRegistry
     public string GenerateCompressedIndex(TrustAudience audience, ToolAccessPolicy policy)
     {
         var visible = _tools
-            .Where(t => policy.IsToolExposed(t.Tool, CreateContext(audience)))
+            .Where(t => policy.IsToolExposed(t.Tool, audience))
             .ToList();
 
         return BuildCompressedIndex(visible);
@@ -305,9 +305,6 @@ public sealed class ToolRegistry
             .OrderBy(x => x.ServerName, StringComparer.Ordinal)
             .ToList();
     }
-
-    private static ToolExecutionContext CreateContext(TrustAudience audience)
-        => new(null, null) { Audience = audience };
 
     private static string DescribeServerCapability(string serverName, IReadOnlyList<McpToolAdapter> tools)
     {
@@ -459,7 +456,10 @@ public sealed class ToolRegistry
         public System.Text.Json.JsonElement ParameterSchema { get; }
         public AITool ToAITool() => _tool;
 
-        public Task<string> ExecuteAsync(IDictionary<string, object?>? arguments, CancellationToken ct = default)
+        public Task<string> ExecuteAsync(
+            IDictionary<string, object?>? arguments,
+            ToolInvocationContext context,
+            CancellationToken ct = default)
             => Task.FromResult("Not supported via adapter");
     }
 }

@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="FileReadToolTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -102,8 +102,7 @@ public class FileReadToolTests : IDisposable
     {
         var filePath = Path.Combine(_dir.Path, "diagram.png");
         await File.WriteAllBytesAsync(filePath, FakePngBytes, TestContext.Current.CancellationToken);
-        var context = CreatePersonalContext();
-        context.ModelInputModalities = ModelModality.Text | ModelModality.Image;
+        var context = CreateImageCapablePersonalContext();
 
         var result = await _tool.ExecuteAsync(ToolInput.Create("Path", filePath), context, CancellationToken.None);
 
@@ -132,8 +131,7 @@ public class FileReadToolTests : IDisposable
     {
         var filePath = Path.Combine(_dir.Path, "diagram.png");
         await File.WriteAllBytesAsync(filePath, [0, 1, 2, 3, 4, 5, 6, 7], TestContext.Current.CancellationToken);
-        var context = CreatePersonalContext();
-        context.ModelInputModalities = ModelModality.Text | ModelModality.Image;
+        var context = CreateImageCapablePersonalContext();
 
         var result = await _tool.ExecuteAsync(ToolInput.Create("Path", filePath), context, CancellationToken.None);
 
@@ -255,7 +253,7 @@ public class FileReadToolTests : IDisposable
     public async Task Missing_path_returns_error()
     {
         var args = ToolInput.Empty();
-        var result = await _tool.ExecuteAsync(args, CancellationToken.None);
+        var result = await _tool.ExecuteAsync(args, TestToolExecutionContext.CreateUnbound(), CancellationToken.None);
 
         Assert.Contains("Path", result);
         Assert.Contains("missing", result, StringComparison.OrdinalIgnoreCase);
@@ -264,7 +262,7 @@ public class FileReadToolTests : IDisposable
     [Fact]
     public async Task Null_arguments_returns_error()
     {
-        var result = await _tool.ExecuteAsync(null, CancellationToken.None);
+        var result = await _tool.ExecuteAsync(null, TestToolExecutionContext.CreateUnbound(), CancellationToken.None);
         Assert.Contains("No arguments provided", result);
     }
 
@@ -467,28 +465,37 @@ public class FileReadToolTests : IDisposable
     }
 
     private ToolExecutionContext CreatePersonalContext()
-        => new("signalr/thread-1", _sessionDir)
+        => TestToolExecutionContext.CreateBound("signalr/thread-1", _sessionDir, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             Boundary = TrustBoundary.TrustedInstance,
             ChannelType = "signalr"
-        };
+        });
+
+    private ToolExecutionContext CreateImageCapablePersonalContext()
+        => TestToolExecutionContext.CreateBound("signalr/thread-1", _sessionDir, new TestToolExecutionContextOptions
+        {
+            Audience = TrustAudience.Personal,
+            Boundary = TrustBoundary.TrustedInstance,
+            ChannelType = "signalr",
+            ModelInputModalities = ModelModality.Text | ModelModality.Image,
+        });
 
     private ToolExecutionContext CreateTeamContext()
-        => new("slack/thread-1", _sessionDir)
+        => TestToolExecutionContext.CreateBound("slack/thread-1", _sessionDir, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Team,
             Boundary = TrustBoundary.Team,
             ChannelType = "slack"
-        };
+        });
 
     private ToolExecutionContext CreatePublicContext()
-        => new("slack/thread-1", _sessionDir)
+        => TestToolExecutionContext.CreateBound("slack/thread-1", _sessionDir, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Public,
             Boundary = TrustBoundary.Public,
             ChannelType = "slack"
-        };
+        });
 
     private static readonly byte[] FakePngBytes =
     [

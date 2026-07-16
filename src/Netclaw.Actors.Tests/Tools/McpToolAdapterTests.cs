@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="McpToolAdapterTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -86,7 +86,7 @@ public class McpToolAdapterTests
         var fakeTool = AIFunctionFactory.Create(() => "hello from mcp", "greet");
         var adapter = new McpToolAdapter(fakeTool, "server", "greet");
 
-        var result = await adapter.ExecuteAsync(ToolInput.Empty(), CancellationToken.None);
+        var result = await adapter.ExecuteAsync(ToolInput.Empty(), TestToolExecutionContext.CreateUnbound(), CancellationToken.None);
 
         Assert.Equal("hello from mcp", result);
     }
@@ -98,7 +98,7 @@ public class McpToolAdapterTests
         var fakeTool = AIFunctionFactory.Create((Func<string>)ThrowingFunc, "fail_tool");
         var adapter = new McpToolAdapter(fakeTool, "server", "fail_tool");
 
-        var result = await adapter.ExecuteAsync(ToolInput.Empty(), CancellationToken.None);
+        var result = await adapter.ExecuteAsync(ToolInput.Empty(), TestToolExecutionContext.CreateUnbound(), CancellationToken.None);
 
         Assert.Contains("connection lost", result);
         Assert.StartsWith("Error:", result);
@@ -113,7 +113,7 @@ public class McpToolAdapterTests
         var adapter = new McpToolAdapter(fakeTool, "server", "search");
 
         var args = ToolInput.Create("limit", "10");
-        var result = await adapter.ExecuteAsync(args, CancellationToken.None);
+        var result = await adapter.ExecuteAsync(args, TestToolExecutionContext.CreateUnbound(), CancellationToken.None);
 
         Assert.Equal("limit=10", result);
     }
@@ -126,7 +126,7 @@ public class McpToolAdapterTests
         var adapter = new McpToolAdapter(fakeTool, "browser", "navigate_page");
 
         var args = ToolInput.Create("Url", "https://example.com");
-        var result = await adapter.ExecuteAsync(args, CancellationToken.None);
+        var result = await adapter.ExecuteAsync(args, TestToolExecutionContext.CreateUnbound(), CancellationToken.None);
 
         Assert.Equal("https://example.com", result);
     }
@@ -139,7 +139,7 @@ public class McpToolAdapterTests
         var invoker = new RecordingMcpToolInvoker("scoped-result");
         var adapter = new McpToolAdapter(fakeTool, "browser_playwright", "navigate_page", invoker: invoker);
 
-        var context = new ToolExecutionContext("chan/thread", null) { Audience = TrustAudience.Personal };
+        var context = TestToolExecutionContext.CreateBound("chan/thread", null, TrustAudience.Personal);
         var args = ToolInput.Create("Url", "https://example.com");
 
         var result = await adapter.ExecuteAsync(args, context, CancellationToken.None);
@@ -161,7 +161,7 @@ public class McpToolAdapterTests
         };
         var adapter = new McpToolAdapter(fakeTool, "browser_playwright", "navigate_page", invoker: invoker);
 
-        var context = new ToolExecutionContext("chan/thread", null) { Audience = TrustAudience.Personal };
+        var context = TestToolExecutionContext.CreateBound("chan/thread", null, TrustAudience.Personal);
         var result = await adapter.ExecuteAsync(ToolInput.Empty(), context, CancellationToken.None);
 
         Assert.StartsWith("Error:", result);
@@ -224,7 +224,7 @@ internal sealed class RecordingMcpToolInvoker(string result) : IMcpToolInvoker
         string serverName,
         string toolName,
         IDictionary<string, object?>? arguments,
-        ToolExecutionContext? context,
+        ToolInvocationContext context,
         CancellationToken ct = default)
     {
         if (Failure is not null)
@@ -953,7 +953,7 @@ public class McpSchemaSanitizerTests
         var fakeTool = AIFunctionFactory.Create((Func<string>)FakeFunc, "search_memories");
         var adapter = new McpToolAdapter(fakeTool, "memorizer", "search_memories", invoker: invoker);
 
-        var context = new ToolExecutionContext("chan/thread", null) { Audience = TrustAudience.Personal };
+        var context = TestToolExecutionContext.CreateBound("chan/thread", null, TrustAudience.Personal);
         var args = ToolInput.Create("query", "Akka.NET", "_rationale", "looking up docs", "_timeout_seconds", 30);
 
         await adapter.ExecuteAsync(args, context, CancellationToken.None);

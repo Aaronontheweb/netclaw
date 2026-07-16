@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ToolExecutionIntegrationTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -25,7 +25,6 @@ public class ToolExecutionIntegrationTests : LlmSessionTestBase
 {
     private readonly FakeChatClient _fakeChatClient = new();
     private readonly FakeToolExecutor _fakeToolExecutor = new();
-    private readonly FakeToolAuditLogger _fakeAuditLogger = new();
 
     public ToolExecutionIntegrationTests(ITestOutputHelper output) : base(output)
     {
@@ -51,7 +50,6 @@ public class ToolExecutionIntegrationTests : LlmSessionTestBase
         services.AddSingleton<ISystemPromptProvider>(new StaticSystemPromptProvider(
             "You are a test assistant with tools."));
         services.AddSingleton<IToolExecutor>(_fakeToolExecutor);
-        services.AddSingleton<IToolAuditLogger>(_fakeAuditLogger);
 
         var registry = new ToolRegistry();
         registry.Register(
@@ -114,9 +112,6 @@ public class ToolExecutionIntegrationTests : LlmSessionTestBase
         Assert.Equal(1, _fakeToolExecutor.CallCount);
 
         // Audit logger recorded the invocation
-        Assert.Single(_fakeAuditLogger.Entries);
-        Assert.Equal("web_search", _fakeAuditLogger.Entries[0].ToolName.Value);
-        Assert.True(_fakeAuditLogger.Entries[0].Allowed);
     }
 
     [Fact]
@@ -162,7 +157,6 @@ public class ToolExecutionIntegrationTests : LlmSessionTestBase
         await subscriber.ExpectMsgAsync<TurnCompleted>(TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(2, _fakeToolExecutor.CallCount);
-        Assert.Equal(2, _fakeAuditLogger.Entries.Count);
     }
 
     [Fact]
@@ -353,7 +347,7 @@ internal sealed class FakeToolExecutor : IToolExecutor
     /// <summary>Tool names that should throw on execution.</summary>
     public HashSet<string> FailForTools { get; } = [];
 
-    public Task AuthorizeAsync(FunctionCallContent toolCall, Netclaw.Tools.ToolExecutionContext? context = null, CancellationToken ct = default)
+    public Task AuthorizeAsync(FunctionCallContent toolCall, Netclaw.Tools.ToolExecutionContext context, CancellationToken ct = default)
     {
         if (FailForTools.Contains(toolCall.Name))
             throw new InvalidOperationException($"Tool '{toolCall.Name}' failed (simulated)");
@@ -361,7 +355,7 @@ internal sealed class FakeToolExecutor : IToolExecutor
         return Task.CompletedTask;
     }
 
-    public async Task<string> ExecuteAsync(FunctionCallContent toolCall, Netclaw.Tools.ToolExecutionContext? context = null, CancellationToken ct = default)
+    public async Task<string> ExecuteAsync(FunctionCallContent toolCall, Netclaw.Tools.ToolExecutionContext context, CancellationToken ct = default)
     {
         Interlocked.Increment(ref _callCount);
 
@@ -376,23 +370,12 @@ internal sealed class FakeToolExecutor : IToolExecutor
         // has no tool instance, so it uses the session content budget (per-tool
         // verbose overrides are exercised in DispatchingToolExecutorTests).
         result = Netclaw.Security.SecretOutputRedactor.Redact(result);
-        var budget = context?.MaxInlineToolResultChars is > 0 and var b
-            ? b
-            : Netclaw.Actors.Tools.ToolOutputSpill.DefaultContentBudget;
+        var budget = context.MaxInlineToolResultChars;
         return await Netclaw.Actors.Tools.ToolOutputSpill.BoundAndSpillAsync(
-            result, toolCall.CallId, budget, context, ct);
+            result, toolCall.CallId, budget, context.Invocation, ct);
     }
 }
 
 /// <summary>
 /// Fake audit logger that captures entries for verification.
 /// </summary>
-internal sealed class FakeToolAuditLogger : IToolAuditLogger
-{
-    public List<ToolAuditEntry> Entries { get; } = [];
-
-    public void Log(ToolAuditEntry entry)
-    {
-        Entries.Add(entry);
-    }
-}

@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="WebhookRouteValidator.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -39,6 +39,26 @@ public static class WebhookRouteValidator
 
         if (route.Verification.Secret.IsNullOrEmpty())
             errors.Add("Verification secret is required.");
+
+        if (!Enum.IsDefined(route.Verification.Kind))
+            errors.Add($"Verification.Kind value '{(int)route.Verification.Kind}' is not supported.");
+
+        if (!Enum.IsDefined(route.Verification.HmacAlgorithm))
+            errors.Add($"Verification.HmacAlgorithm value '{(int)route.Verification.HmacAlgorithm}' is not supported.");
+
+        if (route.Verification.Kind == WebhookVerifierKind.HmacTimestamped)
+        {
+            if (route.Verification.ToleranceSeconds is < 1 or > 3600)
+                errors.Add("Verification.ToleranceSeconds must be between 1 and 3600.");
+
+            var timestampField = route.Verification.TimestampField ?? "t";
+            var signatureField = route.Verification.SignatureField ?? "v1";
+            ValidateStructuredHeaderField(errors, "TimestampField", timestampField);
+            ValidateStructuredHeaderField(errors, "SignatureField", signatureField);
+
+            if (string.Equals(timestampField, signatureField, StringComparison.Ordinal))
+                errors.Add("Verification.TimestampField and Verification.SignatureField must be different.");
+        }
 
         if (route.MaxBodyBytes < 1)
             errors.Add("MaxBodyBytes must be >= 1.");
@@ -82,4 +102,47 @@ public static class WebhookRouteValidator
         => WebhookRouteStore.TryNormalizeRouteName(routeName, out _, out var error)
             ? null
             : error;
+
+    public static bool TryParseVerifierKind(string value, out WebhookVerifierKind kind)
+    {
+        switch (value.Trim().ToLowerInvariant())
+        {
+            case "hmac":
+                kind = WebhookVerifierKind.Hmac;
+                return true;
+            case "header-secret":
+            case "headersecret":
+                kind = WebhookVerifierKind.HeaderSecret;
+                return true;
+            case "hmac-timestamped":
+            case "hmactimestamped":
+                kind = WebhookVerifierKind.HmacTimestamped;
+                return true;
+            default:
+                kind = default;
+                return false;
+        }
+    }
+
+    private static void ValidateStructuredHeaderField(
+        List<string> errors,
+        string propertyName,
+        string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            errors.Add($"Verification.{propertyName} cannot be blank.");
+            return;
+        }
+
+        if (!value.All(IsHttpTokenCharacter))
+            errors.Add($"Verification.{propertyName} must contain only HTTP token characters.");
+    }
+
+    private static bool IsHttpTokenCharacter(char value)
+        => value is >= '0' and <= '9'
+            or >= 'A' and <= 'Z'
+            or >= 'a' and <= 'z'
+            or '!' or '#' or '$' or '%' or '&' or '\'' or '*' or '+' or '-'
+            or '.' or '^' or '_' or '`' or '|' or '~';
 }
