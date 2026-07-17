@@ -188,7 +188,7 @@ try {
     $entries4 = if ([string]::IsNullOrEmpty($fakePath4)) { @() } else {
         $fakePath4 -split ';' | ForEach-Object { $_.TrimEnd('\') }
     }
-    if ($entries4.Count -eq 0) {
+    if (@($entries4).Count -eq 0) {
         Pass "PATH logic: null User PATH treated as empty"
     } else {
         Fail "PATH logic: null User PATH not handled"
