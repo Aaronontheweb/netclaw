@@ -508,13 +508,85 @@ shell_integration_test() {
 }
 
 # Test bash on Linux — should modify ~/.bashrc
-shell_integration_test "bash-linux" "bash" ".bashrc"
+# Test bash — RC file depends on host OS: .bashrc on Linux, .profile on macOS
+BASH_RC=$(uname -s | grep -q Darwin && echo ".profile" || echo ".bashrc")
+shell_integration_test "bash-$(uname)" "bash" "$BASH_RC"
 
 # Test zsh — should modify ~/.zshrc
 shell_integration_test "zsh" "zsh" ".zshrc"
 
 # Test fish — should modify ~/.config/fish/conf.d/netclaw.fish
-shell_integration_test "fish" "fish" ".config/fish/conf.d/netclaw.fish"
+# Test fish — unset XDG_CONFIG_HOME so it falls back to $HOME/.config
+# (CI runners may have XDG_CONFIG_HOME set to a path outside our temp HOME)
+FISH_HOME="$WORK/shell-int-fish"
+FISH_INSTALL="$FISH_HOME/.netclaw/bin"
+FISH_RC="$FISH_HOME/.config/fish/conf.d/netclaw.fish"
+FISH_ENV="$FISH_HOME/.netclaw/env"
+set +e
+fish_out=$(env -u XDG_CONFIG_HOME \
+           SHELL="/bin/fish" \
+           HOME="$FISH_HOME" \
+           MANIFEST_URL="$BASE_URL/manifest.json" \
+           INSTALL_DIR="$FISH_INSTALL" \
+           CONFIG_DIR="$FISH_HOME/.netclaw/config" \
+           bash "$INSTALL_SH" 2>&1)
+fish_rc=$?
+set +e
+if [ "$fish_rc" -ne 0 ]; then
+  fail "fish: install failed (exit=$fish_rc)"
+  echo "$fish_out" | indent
+else
+  pass "fish: install completes"
+fi
+if [ -f "$FISH_ENV" ]; then
+  pass "fish: env script created"
+else
+  fail "fish: env script not found"
+fi
+fish_src_count=$(grep -cxF ". \"$FISH_ENV\"" "$FISH_RC" 2>/dev/null || true)
+if [ "$fish_src_count" -eq 1 ]; then
+  pass "fish: conf.d/netclaw.fish contains exactly 1 source line"
+else
+  fail "fish: conf.d/netclaw.fish contains $fish_src_count source lines (expected 1)"
+fi
+if grep -qF "# netclaw shell setup" "$FISH_RC" 2>/dev/null; then
+  pass "fish: conf.d/netclaw.fish contains marker comment"
+else
+  fail "fish: conf.d/netclaw.fish missing marker comment"
+fi
+# Verify PATH works after sourcing
+set +e
+eval_path=$(bash -c "source '$FISH_ENV'; echo \$PATH" 2>/dev/null)
+set +e
+if echo "$eval_path" | tr ':' '\n' | grep -qxF "$FISH_INSTALL"; then
+  pass "fish: PATH contains install dir after sourcing env"
+else
+  fail "fish: PATH does not contain install dir after sourcing env"
+fi
+# Test duplicate prevention: run install again
+set +e
+fish_out2=$(env -u XDG_CONFIG_HOME \
+            SHELL="/bin/fish" \
+            HOME="$FISH_HOME" \
+            MANIFEST_URL="$BASE_URL/manifest.json" \
+            INSTALL_DIR="$FISH_INSTALL" \
+            CONFIG_DIR="$FISH_HOME/.netclaw/config" \
+            bash "$INSTALL_SH" 2>&1)
+fish_rc2=$?
+set +e
+if [ "$fish_rc2" -eq 0 ]; then
+  dup_count=$(grep -cxF ". \"$FISH_ENV\"" "$FISH_RC" 2>/dev/null || true)
+  if [ "$dup_count" -eq 1 ]; then
+    pass "fish: no duplicate source line after second install"
+  else
+    fail "fish: $dup_count source lines after second install (expected 1)"
+  fi
+  if echo "$fish_out2" | grep -qF "already sources netclaw"; then
+    pass "fish: outputs 'already sources netclaw' on re-install"
+  fi
+else
+  fail "fish: second install failed (exit=$fish_rc2)"
+fi
 
 # Test --skip-shell — should NOT modify any RC file
 echo ""

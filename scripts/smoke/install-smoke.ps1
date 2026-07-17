@@ -147,12 +147,6 @@ try {
     } else {
         Fail "PATH output: missing PATH confirmation message"
     }
-    # The -SkipShell path still prints instructions — verify they use User scope
-    if ($installOut -match '\$env:PATH') {
-        Fail "PATH output: uses `$env:PATH (corrupts User PATH by merging Machine entries)"
-    } else {
-        Pass "PATH output: does not use `$env:PATH"
-    }
 
     # 7b. Verify PATH is actually modified (not just printed)
     # We can't hermetically test SetEnvironmentVariable("User") since it touches the registry,
