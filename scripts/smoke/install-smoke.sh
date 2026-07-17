@@ -177,11 +177,16 @@ else
 fi
 
 # ── 6. Mechanical check: a real install on the host's native RID ─────────────
+# Uses a temp HOME so shell integration writes to the temp dir, not the
+# CI runner's real profile — and we can verify the RC was modified.
 echo ""
 echo "=== real install (host RID, stand-in archive) ==="
-INSTALL_DIR="$WORK/installed"
+INSTALL_HOME="$WORK/installed-home"
+INSTALL_DIR="$INSTALL_HOME/.netclaw/bin"
+mkdir -p "$INSTALL_HOME"
 set +e
-install_out=$(MANIFEST_URL="$BASE_URL/manifest.json" INSTALL_DIR="$INSTALL_DIR" \
+install_out=$(HOME="$INSTALL_HOME" \
+              MANIFEST_URL="$BASE_URL/manifest.json" INSTALL_DIR="$INSTALL_DIR" \
               bash "$INSTALL_SH" 2>&1)
 install_rc=$?
 set -e
@@ -200,6 +205,26 @@ for name in netclaw netclawd; do
     fail "install: $name missing, not executable, or did not run"
   fi
 done
+
+# Verify shell integration actually ran
+INSTALL_ENV="$INSTALL_HOME/.netclaw/env"
+if [ -f "$INSTALL_ENV" ]; then
+  pass "real install: env script created"
+else
+  fail "real install: env script not found at $INSTALL_ENV"
+fi
+
+# The RC file depends on $SHELL — check whichever one was created
+RC_MODIFIED=false
+for rc in "$INSTALL_HOME/.bashrc" "$INSTALL_HOME/.zshrc" "$INSTALL_HOME/.profile" "$INSTALL_HOME/.config/fish/conf.d/netclaw.fish"; do
+  if [ -f "$rc" ] && grep -qxF ". \"$INSTALL_ENV\"" "$rc" 2>/dev/null; then
+    pass "real install: $(basename $rc) sources env script"
+    RC_MODIFIED=true
+  fi
+done
+if [ "$RC_MODIFIED" = false ]; then
+  fail "real install: no RC file sources env script (SHELL=$SHELL)"
+fi
 
 # ── 7. Release channel resolution (dry-run) ──────────────────────────────────
 echo ""
