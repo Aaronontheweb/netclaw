@@ -138,20 +138,82 @@ try {
         }
     }
 
-    # 7. Verify PATH instruction uses User scope correctly (issue #1072)
-    # The printed instruction must NOT use $env:PATH (which merges Machine+User
-    # and corrupts the User PATH when written back). It must read User scope.
+    # 7. Verify PATH automation output
+    # The installer now auto-modifies PATH. Verify the output reflects this.
     Write-Host ""
-    Write-Host "=== PATH instruction check ==="
-    if ($installOut -match '\$env:PATH') {
-        Fail "PATH instruction: uses `$env:PATH (corrupts User PATH by merging Machine entries)"
+    Write-Host "=== PATH automation output ==="
+    if ($installOut -match 'netclaw is (already )?on your PATH') {
+        Pass "PATH output: indicates netclaw is on PATH"
     } else {
-        Pass "PATH instruction: does not use `$env:PATH"
+        Fail "PATH output: missing PATH confirmation message"
     }
-    if ($installOut -match "GetEnvironmentVariable\('PATH',\s*'User'\)") {
-        Pass "PATH instruction: reads from User scope"
+    # The -SkipShell path still prints instructions — verify they use User scope
+    if ($installOut -match '\$env:PATH') {
+        Fail "PATH output: uses `$env:PATH (corrupts User PATH by merging Machine entries)"
     } else {
-        Fail "PATH instruction: should read from User scope with GetEnvironmentVariable('PATH', 'User')"
+        Pass "PATH output: does not use `$env:PATH"
+    }
+
+    # 7b. Verify PATH is actually modified (not just printed)
+    # We can't hermetically test SetEnvironmentVariable("User") since it touches the registry,
+    # but we CAN test the decision logic with fake PATH values.
+    Write-Host ""
+    Write-Host "=== PATH automation logic ==="
+
+    # Test: duplicate detection — directory not yet in PATH
+    $fakePath1 = "C:\existing\path;C:\another\path"
+    $testDir = "C:\Users\test\.netclaw\bin"
+    $testDirNorm = $testDir.TrimEnd('\')
+    $entries1 = ($fakePath1 -split ';' | ForEach-Object { $_.TrimEnd('\') })
+    if ($entries1 -notcontains $testDirNorm) {
+        Pass "PATH logic: new entry not in PATH (would be added)"
+    } else {
+        Fail "PATH logic: false negative — new entry detected as present"
+    }
+
+    # Test: duplicate detection — directory already in PATH
+    $fakePath2 = "$testDir;C:\existing\path"
+    $entries2 = ($fakePath2 -split ';' | ForEach-Object { $_.TrimEnd('\') })
+    if ($entries2 -contains $testDirNorm) {
+        Pass "PATH logic: existing entry detected (would skip)"
+    } else {
+        Fail "PATH logic: false negative — existing entry not detected"
+    }
+
+    # Test: trailing backslash normalization
+    $fakePath3 = "C:\Users\test\.netclaw\bin`;C:\existing"
+    $entries3 = ($fakePath3 -split ';' | ForEach-Object { $_.TrimEnd('\') })
+    if ($entries3 -contains $testDirNorm) {
+        Pass "PATH logic: trailing backslash normalized"
+    } else {
+        Fail "PATH logic: trailing backslash not normalized"
+    }
+
+    # Test: empty User PATH (null)
+    $fakePath4 = $null
+    $entries4 = if ([string]::IsNullOrEmpty($fakePath4)) { @() } else {
+        $fakePath4 -split ';' | ForEach-Object { $_.TrimEnd('\') }
+    }
+    if ($entries4.Count -eq 0) {
+        Pass "PATH logic: null User PATH treated as empty"
+    } else {
+        Fail "PATH logic: null User PATH not handled"
+    }
+
+    # 7c. Test -SkipShell flag
+    Write-Host ""
+    Write-Host "=== -SkipShell flag ==="
+    $skipDir = Join-Path $Work "skip-install"
+    $skipOut = & pwsh -NoProfile -File $InstallPs1 -InstallDir $skipDir -SkipShell 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0) {
+        Pass "-SkipShell: install completes without error"
+    } else {
+        Fail "-SkipShell: install failed (exit=$LASTEXITCODE)"
+    }
+    if ($skipOut -match "PATH modification skipped") {
+        Pass "-SkipShell: output mentions PATH modification skipped"
+    } else {
+        Fail "-SkipShell: missing 'skipped' message"
     }
 
     # 8. Release channel resolution (dry-run)

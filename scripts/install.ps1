@@ -7,6 +7,7 @@
 #   .\install.ps1 -InstallDir C:\tools\netclaw
 #   .\install.ps1 -Channel beta      # Opt into prereleases
 #   .\install.ps1 -DryRun
+#   .\install.ps1 -SkipShell         # Don't modify PATH
 #
 # -Channel beta installs the newest prerelease (or latest stable if no prerelease
 # exists). -Version pins an exact version and overrides -Channel (e.g. 0.19.0-beta.1).
@@ -24,7 +25,10 @@ param(
     [string]$Channel = "stable",
 
     # Resolve and report what would be installed, but install nothing.
-    [switch]$DryRun
+    [switch]$DryRun,
+
+    # Skip automatic PATH modification.
+    [switch]$SkipShell
 )
 
 $ErrorActionPreference = "Stop"
@@ -256,21 +260,54 @@ try {
         }
     }
 
-    # Check PATH and offer to add if missing
+    # ── Add to PATH ──
     Write-Host ""
-    $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-    $pathEntries = $userPath -split ';' | ForEach-Object { $_.TrimEnd('\') }
-    $installDirNormalized = $InstallDir.TrimEnd('\')
 
-    if ($pathEntries -contains $installDirNormalized) {
-        Write-Host "Installation complete! netclaw is already on your PATH."
+    if (-not $SkipShell) {
+        $installDirNormalized = $InstallDir.TrimEnd('\')
+
+        $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+        $pathEntries = if ([string]::IsNullOrEmpty($userPath)) { @() } else {
+            $userPath -split ';' | ForEach-Object { $_.TrimEnd('\') }
+        }
+
+        if ($pathEntries -contains $installDirNormalized) {
+            Write-Host "Installation complete! netclaw is already on your PATH."
+        } else {
+            # Check length limit (Windows API caps at 32767)
+            $newPath = "$installDirNormalized;$userPath"
+            if ($newPath.Length -gt 32700) {
+                Write-Warning "PATH is near its 32,767 character limit ($($newPath.Length) chars)."
+                Write-Host "Please manually add $InstallDir to your PATH."
+            } else {
+                [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
+                # Also update current session
+                $env:PATH = $newPath
+
+                # Broadcast WM_SETTINGCHANGE to Explorer so new terminal windows pick up the change
+                Add-Type -Namespace WinAPI -Name Func -MemberDefinition @'
+                    [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)]
+                    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg,
+                        UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+'@
+                [WinAPI.Func]::SendMessageTimeout(
+                    [IntPtr]0xFFFF, 0x001A, [UIntPtr]::Zero, "Environment", 2, 1000, [ref][UIntPtr]::Zero
+                ) | Out-Null
+
+                Write-Host "Installation complete! netclaw is on your PATH."
+                Write-Host ""
+                Write-Host "Start a new terminal, or run in the current session:"
+                Write-Host ""
+                Write-Host "  `$env:PATH += ';$InstallDir'"
+            }
+        }
     } else {
-        Write-Host "Installation complete!"
+        Write-Host "Installation complete! (PATH modification skipped)"
         Write-Host ""
         Write-Host "Add Netclaw to your PATH by running:"
         Write-Host ""
         Write-Host "  `$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')"
-        Write-Host "  [Environment]::SetEnvironmentVariable('PATH', `"$InstallDir;`$userPath`", 'User')"
+        Write-Host "  [Environment]::SetEnvironmentVariable('PATH', `"`$InstallDir;`$userPath`", 'User')"
         Write-Host ""
         Write-Host "Then restart your terminal."
     }
