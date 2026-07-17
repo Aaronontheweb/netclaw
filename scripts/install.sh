@@ -6,6 +6,7 @@
 #   curl -sSL https://releases.netclaw.dev/install.sh | bash -s -- cli            # CLI only
 #   curl -sSL https://releases.netclaw.dev/install.sh | bash -s -- daemon         # Daemon only
 #   curl -sSL https://releases.netclaw.dev/install.sh | bash -s -- --channel beta # Opt into prereleases
+#   curl -sSL https://releases.netclaw.dev/install.sh | bash -s -- --skip-shell   # Don't modify shell profile
 #   INSTALL_DIR=/opt/netclaw curl -sSL https://releases.netclaw.dev/install.sh | bash
 #
 # Arguments:
@@ -13,6 +14,7 @@
 #   --channel stable|beta   — Release channel (default: stable). 'beta' installs the
 #                             newest prerelease (or latest stable if no prerelease exists).
 #   --dry-run               — Resolve and report what would happen; install nothing.
+#   --skip-shell            — Skip automatic shell profile modification.
 #
 # Environment variables:
 #   INSTALL_DIR     — Install directory (default: ~/.netclaw/bin)
@@ -36,9 +38,11 @@ COMPONENT="all"        # "all", "cli", or "daemon"
 DRY_RUN=false          # --dry-run: resolve and report what would happen, install nothing
 CHANNEL="stable"       # release channel: "stable" (default) or "beta" (opt into prereleases)
 CHANNEL_EXPLICIT=false # true when --channel was explicitly passed
+SKIP_SHELL=false       # --skip-shell: don't modify shell profile
 while [ $# -gt 0 ]; do
     case "$1" in
         --dry-run) DRY_RUN=true; shift ;;
+        --skip-shell) SKIP_SHELL=true; shift ;;
         --channel)
             if [ $# -lt 2 ]; then
                 echo "Error: --channel requires a value (stable|beta)" >&2; exit 1
@@ -46,7 +50,7 @@ while [ $# -gt 0 ]; do
             CHANNEL="$2"; CHANNEL_EXPLICIT=true; shift 2 ;;
         --channel=*) CHANNEL="${1#*=}"; CHANNEL_EXPLICIT=true; shift ;;
         all|cli|daemon) COMPONENT="$1"; shift ;;
-        *) echo "Usage: install.sh [all|cli|daemon] [--channel stable|beta] [--dry-run]" >&2; exit 1 ;;
+        *) echo "Usage: install.sh [all|cli|daemon] [--channel stable|beta] [--dry-run] [--skip-shell]" >&2; exit 1 ;;
     esac
 done
 
@@ -197,7 +201,7 @@ download_component() {
         block=$(echo "$MANIFEST" | tr '\n' ' ' | grep -oP "\"component\"\\s*:\\s*\"${component}\"[^}]*\"rid\"\\s*:\\s*\"${RID}\"[^}]*}" | head -1)
         if [ -z "$block" ]; then
             # Try reversed order
-            block=$(echo "$MANIFEST" | tr '\n' ' ' | grep -oP "\"rid\"\\s*:\\s*\"${RID}\"[^}]*\"component\"\\s*:\\s*\"${component}\"[^}]*}" | head -1)
+            block=$(echo "$MANIFEST" | tr '\n' ' ' | grep -oP "\"rid\"\\s*:\\s*\"${RID}\"[^}]*\"component\"\\s*:\\s*\"${RID}\"[^}]*}" | head -1)
         fi
         url=$(echo "$block" | grep -oP '"url"\s*:\s*"\K[^"]+')
         sha256=$(echo "$block" | grep -oP '"sha256"\s*:\s*"\K[^"]+')
@@ -304,16 +308,137 @@ if [ "$CHANNEL_EXPLICIT" = true ]; then
     fi
 fi
 
-# PATH instructions
-echo ""
-if echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
-    echo "Installation complete! netclaw is already on your PATH."
+# ── Shell integration ─────────────────────────────────────────────────────
+# Write an intermediary env script (~/.netclaw/env) and source it from the
+# user's shell RC file. The env script self-guards at runtime so duplicate
+# PATH entries cannot occur even if the RC is sourced multiple times.
+
+# Derive the parent directory of INSTALL_DIR — this is where the env script
+# lives. For the default (~/.netclaw/bin) that's ~/.netclaw.
+# We use dirname because the install dir may not yet exist when this block runs
+# (e.g., if the user passes --skip-shell and no component needs the dir).
+INSTALL_ROOT="$(dirname "$INSTALL_DIR")"
+ENV_SCRIPT="$INSTALL_ROOT/env"
+SOURCE_LINE=". \"$ENV_SCRIPT\""
+
+detect_shell() {
+    # $SHELL is inherited from the parent login shell — it reflects the user's
+    # configured shell even when this script is piped via `curl | bash`.
+    local shell_name
+    shell_name="$(basename "${SHELL:-/bin/sh}")"
+    echo "$shell_name"
+}
+
+get_rc_file() {
+    local shell_name="$1"
+    local os
+    os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+
+    case "$shell_name" in
+        zsh)
+            echo "${ZDOTDIR:-$HOME}/.zshrc"
+            ;;
+        bash)
+            # macOS login shells read ~/.profile; Linux interactive shells
+            # read ~/.bashrc. We prefer .bashrc on Linux and .profile on macOS.
+            if [ "$os" = "darwin" ]; then
+                echo "$HOME/.profile"
+            else
+                echo "$HOME/.bashrc"
+            fi
+            ;;
+        fish)
+            local fish_conf_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d"
+            echo "$fish_conf_dir/netclaw.fish"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
+write_env_script() {
+    # Create the self-guarding env script. Uses a colon-affixed case guard
+    # (rustup/fzf pattern) to prevent duplicate PATH entries at runtime.
+    mkdir -p "$(dirname "$ENV_SCRIPT")"
+    cat > "$ENV_SCRIPT" <<ENVEOF
+#!/bin/sh
+# netclaw shell setup
+case ":\${PATH}:" in
+    *:"$INSTALL_DIR":*)
+        ;;
+    *)
+        export PATH="$INSTALL_DIR:\${PATH}"
+        ;;
+esac
+ENVEOF
+    chmod +x "$ENV_SCRIPT"
+}
+
+modify_rc_file() {
+    local shell_name="$1"
+    local rc_file
+
+    rc_file="$(get_rc_file "$shell_name")"
+    if [ -z "$rc_file" ]; then
+        echo "  Shell '$shell_name' is not supported for automatic PATH setup."
+        echo "  Add this to your shell profile:"
+        echo ""
+        echo "    $SOURCE_LINE"
+        return 0
+    fi
+
+    # Ensure the RC file's parent directory exists (fish conf.d may not)
+    mkdir -p "$(dirname "$rc_file")"
+
+    # Touch the file so it exists — some users have no RC file yet
+    touch "$rc_file"
+
+    # Guard: check if the source line already exists
+    if grep -qxF "$SOURCE_LINE" "$rc_file" 2>/dev/null; then
+        echo "  Shell profile '$rc_file' already sources netclaw."
+        return 0
+    fi
+
+    # Ensure a trailing newline before appending
+    if [ -s "$rc_file" ] && [ "$(tail -c1 "$rc_file" | wc -l)" -eq 0 ]; then
+        echo "" >> "$rc_file"
+    fi
+
+    # Append the marker comment and source line
+    {
+        echo "# netclaw shell setup"
+        echo "$SOURCE_LINE"
+    } >> "$rc_file"
+
+    echo "  Modified '$rc_file' to add netclaw to PATH."
+}
+
+if [ "$SKIP_SHELL" = false ]; then
+    SHELL_NAME="$(detect_shell)"
+    echo ""
+    echo "Setting up shell integration..."
+
+    # Write env script first — it must exist before we tell the RC to source it
+    write_env_script
+
+    # Modify the RC file to source the env script
+    modify_rc_file "$SHELL_NAME"
+
+    echo ""
+    echo "Installation complete! netclaw is on your PATH."
+    echo ""
+    echo "Start a new shell, or run:"
+    echo ""
+    echo "  $SOURCE_LINE"
 else
-    echo "Installation complete!"
+    # --skip-shell was passed
     echo ""
-    echo "Add Netclaw to your PATH by adding this to your shell profile:"
+    echo "Installation complete! (shell integration skipped)"
     echo ""
-    echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
+    echo "Add netclaw to your PATH by adding this to your shell profile:"
+    echo ""
+    echo "  $SOURCE_LINE"
     echo ""
     echo "Then restart your shell or run:"
     echo ""

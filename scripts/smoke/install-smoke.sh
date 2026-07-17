@@ -345,6 +345,257 @@ else
   fail "config: --channel stable on existing beta (exit=$down_rc)"
 fi
 
+# ── 9. Shell integration (PATH automation) ───────────────────────────────────
+# Tests that install.sh correctly modifies shell RC files for bash, zsh, and fish.
+# Uses fake SHELL values and temp home directories to isolate each case.
+echo ""
+echo "=== shell integration ==="
+
+# shell_integration_test <desc> <shell_name> <rc_relpath>
+#   desc:        test description
+#   shell_name:  basename of the fake SHELL (bash, zsh, fish, unknown)
+#   rc_relpath:  path relative to temp HOME where the RC file should be created
+shell_integration_test() {
+  local desc="$1" shell_name="$2" rc_rel="$3"
+  local temp_home="$WORK/shell-int-$desc"
+  local install_dir="$temp_home/.netclaw/bin"
+  local rc_file="$temp_home/$rc_rel"
+  local env_file="$temp_home/.netclaw/env"
+
+  # Pre-seed a minimal RC file so the installer has something to append to
+  mkdir -p "$(dirname "$rc_file")"
+  printf '# existing config\n' > "$rc_file"
+
+  # Run install WITHOUT --skip-shell
+  set +e
+  local out rc
+  out=$(SHELL="/bin/$shell_name" \
+        HOME="$temp_home" \
+        MANIFEST_URL="$BASE_URL/manifest.json" \
+        INSTALL_DIR="$install_dir" \
+        CONFIG_DIR="$temp_home/.netclaw/config" \
+        bash "$INSTALL_SH" 2>&1)
+  rc=$?
+  set +e
+
+  if [ "$rc" -ne 0 ]; then
+    fail "$desc: install failed (exit=$rc)"
+    echo "$out" | indent
+    return
+  fi
+
+  # Verify env script was created
+  if [ -f "$env_file" ]; then
+    pass "$desc: env script created at .netclaw/env"
+  else
+    fail "$desc: env script not found at .netclaw/env"
+  fi
+
+  # Verify env script is executable
+  if [ -x "$env_file" ]; then
+    pass "$desc: env script is executable"
+  else
+    fail "$desc: env script is not executable"
+  fi
+
+  # Verify env script contains the colon-affixed PATH guard (rustup pattern)
+  if grep -qF 'case ":${PATH}:"' "$env_file" 2>/dev/null; then
+    pass "$desc: env script contains colon-affixed PATH guard"
+  else
+    fail "$desc: env script missing colon-affixed PATH guard"
+  fi
+
+  # Verify env script contains the install dir in the PATH export
+  if grep -qF "export PATH=\"$install_dir:" "$env_file" 2>/dev/null; then
+    pass "$desc: env script exports correct install dir"
+  else
+    fail "$desc: env script does not export correct install dir"
+  fi
+
+  # Verify RC file was modified with the source line
+  local src_count
+  src_count=$(grep -cxF ". \"$env_file\"" "$rc_file" 2>/dev/null || true)
+  if [ "$src_count" -eq 1 ]; then
+    pass "$desc: $rc_rel contains exactly 1 source line"
+  else
+    fail "$desc: $rc_rel contains $src_count source lines (expected 1)"
+  fi
+
+  # Verify RC file contains the marker comment
+  if grep -qF "# netclaw shell setup" "$rc_file" 2>/dev/null; then
+    pass "$desc: $rc_rel contains marker comment"
+  else
+    fail "$desc: $rc_rel missing marker comment"
+  fi
+
+  # Verify the RC file is syntactically valid (bash -n)
+  set +e
+  bash -n "$rc_file" 2>"$WORK/syntax_err_$desc"
+  local syntax_rc=$?
+  set +e
+  if [ "$syntax_rc" -eq 0 ]; then
+    pass "$desc: $rc_rel passes bash -n syntax check"
+  else
+    fail "$desc: $rc_rel has syntax errors"
+    cat "$WORK/syntax_err_$desc" | indent
+  fi
+
+  # Verify PATH is correct after sourcing the env script
+  set +e
+  local eval_path
+  eval_path=$(bash -c "source '$env_file'; echo \$PATH" 2>/dev/null)
+  set +e
+  if echo "$eval_path" | tr ':' '\n' | grep -qxF "$install_dir"; then
+    pass "$desc: PATH contains install dir after sourcing env"
+  else
+    fail "$desc: PATH does not contain install dir after sourcing env"
+  fi
+
+  # Test duplicate prevention: run install again
+  set +e
+  out2=$(SHELL="/bin/$shell_name" \
+         HOME="$temp_home" \
+         MANIFEST_URL="$BASE_URL/manifest.json" \
+         INSTALL_DIR="$install_dir" \
+         CONFIG_DIR="$temp_home/.netclaw/config" \
+         bash "$INSTALL_SH" 2>&1)
+  rc2=$?
+  set +e
+
+  if [ "$rc2" -eq 0 ]; then
+    local dup_count
+    dup_count=$(grep -cxF ". \"$env_file\"" "$rc_file" 2>/dev/null || true)
+    if [ "$dup_count" -eq 1 ]; then
+      pass "$desc: no duplicate source line after second install"
+    else
+      fail "$desc: $dup_count source lines after second install (expected 1)"
+    fi
+
+    # Verify the "already sources" message appears
+    if echo "$out2" | grep -qF "already sources netclaw"; then
+      pass "$desc: outputs 'already sources netclaw' on re-install"
+    else
+      fail "$desc: missing 'already sources netclaw' message on re-install"
+    fi
+  else
+    fail "$desc: second install failed (exit=$rc2)"
+  fi
+}
+
+# Test bash on Linux — should modify ~/.bashrc
+shell_integration_test "bash-linux" "bash" ".bashrc"
+
+# Test zsh — should modify ~/.zshrc
+shell_integration_test "zsh" "zsh" ".zshrc"
+
+# Test fish — should modify ~/.config/fish/conf.d/netclaw.fish
+shell_integration_test "fish" "fish" ".config/fish/conf.d/netclaw.fish"
+
+# Test --skip-shell — should NOT modify any RC file
+echo ""
+echo "  shell-int --skip-shell:"
+SKIP_HOME="$WORK/shell-int-skip"
+SKIP_INSTALL="$SKIP_HOME/.netclaw/bin"
+SKIP_RC="$SKIP_HOME/.bashrc"
+mkdir -p "$SKIP_HOME"
+printf '# skip test\n' > "$SKIP_RC"
+set +e
+skip_out=$(SHELL="/bin/bash" \
+           HOME="$SKIP_HOME" \
+           MANIFEST_URL="$BASE_URL/manifest.json" \
+           INSTALL_DIR="$SKIP_INSTALL" \
+           CONFIG_DIR="$SKIP_HOME/.netclaw/config" \
+           bash "$INSTALL_SH" --skip-shell 2>&1)
+skip_rc=$?
+set +e
+if [ "$skip_rc" -eq 0 ]; then
+  pass "--skip-shell: install completes without error"
+else
+  fail "--skip-shell: install failed (exit=$skip_rc)"
+fi
+# Verify the RC file was NOT modified (no source line added)
+skip_lines=$(grep -cF ". \"$SKIP_HOME/.netclaw/env\"" "$SKIP_RC" 2>/dev/null || true)
+if [ "${skip_lines:-0}" -eq 0 ]; then
+  pass "--skip-shell: .bashrc was not modified"
+else
+  fail "--skip-shell: .bashrc was modified (found $skip_lines source lines)"
+fi
+# Verify no env script was created
+if [ ! -f "$SKIP_HOME/.netclaw/env" ]; then
+  pass "--skip-shell: env script was not created"
+else
+  fail "--skip-shell: env script was created"
+fi
+# Verify the output mentions "skipped"
+if echo "$skip_out" | grep -qi "shell integration skipped"; then
+  pass "--skip-shell: output mentions shell integration skipped"
+else
+  fail "--skip-shell: missing 'skipped' message in output"
+fi
+
+# Test unknown shell — should not crash, should print manual instructions
+echo ""
+echo "  shell-int unknown shell:"
+UNKNOWN_HOME="$WORK/shell-int-unknown"
+UNKNOWN_INSTALL="$UNKNOWN_HOME/.netclaw/bin"
+set +e
+unknown_out=$(SHELL="/bin/unknownshell" \
+              HOME="$UNKNOWN_HOME" \
+              MANIFEST_URL="$BASE_URL/manifest.json" \
+              INSTALL_DIR="$UNKNOWN_INSTALL" \
+              CONFIG_DIR="$UNKNOWN_HOME/.netclaw/config" \
+              bash "$INSTALL_SH" 2>&1)
+unknown_rc=$?
+set +e
+if [ "$unknown_rc" -eq 0 ]; then
+  pass "unknown shell: install completes without error"
+else
+  fail "unknown shell: install failed (exit=$unknown_rc)"
+fi
+if echo "$unknown_out" | grep -qi "not supported for automatic PATH setup"; then
+  pass "unknown shell: prints unsupported shell message"
+else
+  fail "unknown shell: missing unsupported shell message"
+fi
+
+# Test ZDOTDIR — zsh should respect ZDOTDIR for RC location
+echo ""
+echo "  shell-int ZDOTDIR:"
+ZDOT_HOME="$WORK/shell-int-zdotdir"
+ZDOT_DIR="$ZDOT_HOME/custom-zdotdir"
+ZDOT_INSTALL="$ZDOT_HOME/.netclaw/bin"
+ZDOT_RC="$ZDOT_DIR/.zshrc"
+mkdir -p "$ZDOT_DIR"
+printf '# zdotdir config\n' > "$ZDOT_RC"
+set +e
+zdot_out=$(SHELL="/bin/zsh" \
+           HOME="$ZDOT_HOME" \
+           ZDOTDIR="$ZDOT_DIR" \
+           MANIFEST_URL="$BASE_URL/manifest.json" \
+           INSTALL_DIR="$ZDOT_INSTALL" \
+           CONFIG_DIR="$ZDOT_HOME/.netclaw/config" \
+           bash "$INSTALL_SH" 2>&1)
+zdot_rc=$?
+set +e
+if [ "$zdot_rc" -eq 0 ]; then
+  # Check the ZDOTDIR rc file was modified, NOT ~/.zshrc
+  if grep -qxF '. "'"$ZDOT_HOME/.netclaw/env"'"' "$ZDOT_RC" 2>/dev/null; then
+    pass "ZDOTDIR: source line added to \$ZDOTDIR/.zshrc"
+  else
+    fail "ZDOTDIR: source line not found in \$ZDOTDIR/.zshrc"
+    cat "$ZDOT_RC" | indent
+  fi
+  # Verify ~/.zshrc was NOT created or modified
+  if [ ! -f "$ZDOT_HOME/.zshrc" ]; then
+    pass "ZDOTDIR: ~/.zshrc was not touched"
+  else
+    fail "ZDOTDIR: ~/.zshrc was created (should not exist)"
+  fi
+else
+  fail "ZDOTDIR: install failed (exit=$zdot_rc)"
+  echo "$zdot_out" | indent
+fi
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
