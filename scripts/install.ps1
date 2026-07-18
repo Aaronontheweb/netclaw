@@ -7,6 +7,7 @@
 #   .\install.ps1 -InstallDir C:\tools\netclaw
 #   .\install.ps1 -Channel beta      # Opt into prereleases
 #   .\install.ps1 -DryRun
+#   .\install.ps1 -SkipShell         # Don't modify PATH
 #
 # -Channel beta installs the newest prerelease (or latest stable if no prerelease
 # exists). -Version pins an exact version and overrides -Channel (e.g. 0.19.0-beta.1).
@@ -24,10 +25,36 @@ param(
     [string]$Channel = "stable",
 
     # Resolve and report what would be installed, but install nothing.
-    [switch]$DryRun
+    [switch]$DryRun,
+
+    # Skip automatic PATH modification.
+    [switch]$SkipShell
 )
 
 $ErrorActionPreference = "Stop"
+
+function Remove-TrailingDirectorySeparators {
+    param([string]$Path)
+
+    if ([string]::IsNullOrEmpty($Path)) {
+        return $Path
+    }
+
+    $root = [System.IO.Path]::GetPathRoot($Path)
+    if ($Path -eq $root) {
+        return $Path
+    }
+
+    $separators = [char[]]@(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar)
+    $trimmed = $Path.TrimEnd($separators)
+    if ([string]::IsNullOrEmpty($trimmed) -and -not [string]::IsNullOrEmpty($root)) {
+        return $root
+    }
+
+    return $trimmed
+}
 
 function Invoke-DownloadWithProgress {
     param(
@@ -92,6 +119,11 @@ $DefaultInstallDir = Join-Path $env:LOCALAPPDATA "Programs\netclaw"
 
 if (-not $InstallDir) {
     $InstallDir = $DefaultInstallDir
+}
+
+$InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
+if ($InstallDir.Contains(';') -or $InstallDir.Contains("`r") -or $InstallDir.Contains("`n")) {
+    throw "InstallDir cannot contain semicolons, carriage returns, or newlines when used on PATH."
 }
 
 Write-Host "Netclaw installer"
@@ -256,21 +288,126 @@ try {
         }
     }
 
-    # Check PATH and offer to add if missing
+    # ── Add to PATH ──
     Write-Host ""
-    $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-    $pathEntries = $userPath -split ';' | ForEach-Object { $_.TrimEnd('\') }
-    $installDirNormalized = $InstallDir.TrimEnd('\')
 
-    if ($pathEntries -contains $installDirNormalized) {
-        Write-Host "Installation complete! netclaw is already on your PATH."
+    if (-not $SkipShell) {
+        $installDirNormalized = Remove-TrailingDirectorySeparators $InstallDir
+
+        # Read the raw registry value so an existing REG_EXPAND_SZ PATH keeps both
+        # its %VAR% references and its registry type when we prepend Netclaw.
+        # HKCU is writable by the current user and does not require elevation.
+        # CreateSubKey opens the normal existing key and also supports minimal
+        # profiles where the per-user Environment key has not been created yet.
+        $userEnvironmentKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
+        if ($null -eq $userEnvironmentKey) {
+            throw "Cannot create or open the current user's Environment registry key for PATH update."
+        }
+
+        try {
+            $pathValueExists = $userEnvironmentKey.GetValueNames() -contains "Path"
+            $userPath = if ($pathValueExists) {
+                $userEnvironmentKey.GetValue(
+                    "Path",
+                    $null,
+                    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            } else {
+                ""
+            }
+
+            if ($null -ne $userPath -and $userPath -isnot [string]) {
+                throw "The current user's PATH registry value is not a string."
+            }
+
+            $userPathKind = if ($pathValueExists) {
+                $userEnvironmentKey.GetValueKind("Path")
+            } else {
+                [Microsoft.Win32.RegistryValueKind]::String
+            }
+            if ($userPathKind -notin @(
+                    [Microsoft.Win32.RegistryValueKind]::String,
+                    [Microsoft.Win32.RegistryValueKind]::ExpandString)) {
+                throw "The current user's PATH registry value has unsupported type $userPathKind."
+            }
+
+            if ($userPathKind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString `
+                -and $installDirNormalized.Contains('%')) {
+                throw "InstallDir containing '%' cannot be safely added to an expandable User PATH. Choose a directory without '%' or rerun with -SkipShell."
+            }
+
+            $userPathEntries = if ([string]::IsNullOrEmpty($userPath)) { @() } else {
+                $userPath -split ';' |
+                    Where-Object { -not [string]::IsNullOrEmpty($_) } |
+                    ForEach-Object {
+                        $expandedEntry = [Environment]::ExpandEnvironmentVariables($_)
+                        Remove-TrailingDirectorySeparators $expandedEntry
+                    }
+            }
+
+            $userPathChanged = $false
+            if ($userPathEntries -notcontains $installDirNormalized) {
+                $newUserPath = if ([string]::IsNullOrEmpty($userPath)) {
+                    $installDirNormalized
+                } else {
+                    "$installDirNormalized;$userPath"
+                }
+
+                if ($newUserPath.Length -gt 32700) {
+                    Write-Warning "User PATH is near its 32,767 character limit ($($newUserPath.Length) chars)."
+                    Write-Host "Please manually add $InstallDir to your User PATH."
+                } else {
+                    $userEnvironmentKey.SetValue("Path", $newUserPath, $userPathKind)
+                    $userPathChanged = $true
+                }
+            }
+        } finally {
+            $userEnvironmentKey.Dispose()
+        }
+
+        $processPath = $env:PATH
+        $processPathEntries = if ([string]::IsNullOrEmpty($processPath)) { @() } else {
+            $processPath -split ';' |
+                Where-Object { -not [string]::IsNullOrEmpty($_) } |
+                ForEach-Object { Remove-TrailingDirectorySeparators $_ }
+        }
+        if ($processPathEntries -notcontains $installDirNormalized) {
+            $env:PATH = if ([string]::IsNullOrEmpty($processPath)) {
+                $installDirNormalized
+            } else {
+                "$installDirNormalized;$processPath"
+            }
+        }
+
+        if ($userPathChanged) {
+            if (-not ("NetclawInstaller.NativeMethods" -as [type])) {
+                Add-Type -Namespace NetclawInstaller -Name NativeMethods -MemberDefinition @'
+                    [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)]
+                    public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg,
+                        UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+'@
+            }
+
+            $broadcastOutput = [UIntPtr]::Zero
+            $broadcastResult = [NetclawInstaller.NativeMethods]::SendMessageTimeout(
+                [IntPtr]0xFFFF, 0x001A, [UIntPtr]::Zero, "Environment", 2, 1000, [ref]$broadcastOutput)
+            if ($broadcastResult -eq [IntPtr]::Zero) {
+                Write-Warning "User PATH was updated, but Windows did not acknowledge the environment-change notification. New terminals may require sign-out or restart."
+            }
+        }
+
+        if ($userPathEntries -contains $installDirNormalized) {
+            Write-Host "Installation complete! netclaw is already on your User PATH."
+        } elseif ($userPathChanged) {
+            Write-Host "Installation complete! netclaw was added to your User PATH."
+        } else {
+            Write-Host "Installation complete! netclaw is on PATH for this terminal only."
+        }
     } else {
-        Write-Host "Installation complete!"
+        Write-Host "Installation complete! (PATH modification skipped)"
         Write-Host ""
-        Write-Host "Add Netclaw to your PATH by running:"
+        Write-Host "Add this directory to your User PATH using Windows Environment Variables settings:"
         Write-Host ""
-        Write-Host "  `$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')"
-        Write-Host "  [Environment]::SetEnvironmentVariable('PATH', `"$InstallDir;`$userPath`", 'User')"
+        Write-Host "  $InstallDir"
         Write-Host ""
         Write-Host "Then restart your terminal."
     }

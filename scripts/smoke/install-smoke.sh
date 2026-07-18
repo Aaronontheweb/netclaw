@@ -111,6 +111,26 @@ rm -f "$MANIFEST_DEST"
 bash "$MANIFEST_GEN" "$VERSION"      "$WORK/checksums-$VERSION"      "$BASE_URL" >/dev/null
 bash "$MANIFEST_GEN" "$BETA_VERSION" "$WORK/checksums-$BETA_VERSION" "$BASE_URL" >/dev/null
 cp "$MANIFEST_DEST" "$SERVE/manifest.json"
+python3 - "$SERVE/manifest.json" "$SERVE/manifest-rid-first.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    manifest = json.load(source)
+for release in manifest["releases"]:
+    release["assets"] = [
+        {
+            "rid": asset["rid"],
+            "component": asset["component"],
+            "url": asset["url"],
+            "sha256": asset["sha256"],
+            "sizeBytes": asset["sizeBytes"],
+        }
+        for asset in release["assets"]
+    ]
+with open(sys.argv[2], "w", encoding="utf-8") as destination:
+    json.dump(manifest, destination)
+PY
 
 # ── 4. Serve the manifest + archives from localhost ──────────────────────────
 python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$SERVE" >/dev/null 2>&1 &
@@ -169,6 +189,66 @@ check_detect "macOS x86_64 + Rosetta -> osx-arm64" Darwin x86_64 1 'DRY RUN: wou
 check_detect "Intel Mac rejected"               Darwin x86_64  0 'Apple Silicon'    1
 check_detect "unsupported OS rejected"          freebsd x86_64 0 'Unsupported OS'   1
 
+set +e
+invalid_path_out=$(INSTALL_DIR="$WORK/invalid:path" \
+  MANIFEST_URL="$BASE_URL/manifest.json" \
+  bash "$INSTALL_SH" --dry-run 2>&1)
+invalid_path_rc=$?
+set -e
+if [ "$invalid_path_rc" -ne 0 ] && echo "$invalid_path_out" | grep -q "cannot contain ':'"; then
+  pass "PATH: unrepresentable Unix install directory rejected"
+else
+  fail "PATH: Unix install directory containing ':' was accepted"
+fi
+
+PHYSICAL_INSTALL="$WORK/physical:install"
+SYMLINK_INSTALL="$WORK/safe-install-link"
+SYMLINK_HOME="$WORK/symlink-home"
+mkdir -p "$PHYSICAL_INSTALL" "$SYMLINK_HOME"
+ln -s "$PHYSICAL_INSTALL" "$SYMLINK_INSTALL"
+set +e
+symlink_path_out=$(HOME="$SYMLINK_HOME" SHELL="$(command -v bash)" \
+  INSTALL_DIR="$SYMLINK_INSTALL" MANIFEST_URL="$BASE_URL/manifest.json" \
+  bash "$INSTALL_SH" cli 2>&1)
+symlink_path_rc=$?
+set -e
+if [ "$symlink_path_rc" -ne 0 ] \
+    && echo "$symlink_path_out" | grep -q "cannot contain ':'" \
+    && [ ! -e "$SYMLINK_HOME/.netclaw/env" ] \
+    && [ ! -e "$SYMLINK_HOME/.bashrc" ] \
+    && [ ! -e "$PHYSICAL_INSTALL/netclaw" ]; then
+  pass "PATH: physical install path is validated before install or shell mutation"
+else
+  fail "PATH: unrepresentable symlink target was installed or persisted"
+  echo "$symlink_path_out" | indent
+fi
+
+# Exercise the dependency-free parser with a valid manifest whose asset fields
+# are in reverse order. A private mirror need not preserve JSON property order.
+NO_JQ_BIN="$WORK/no-jq-bin"
+mkdir -p "$NO_JQ_BIN"
+for cmd in awk bash curl cut grep head mktemp rm sed sha256sum shasum tar tr uname; do
+  command_path=$(command -v "$cmd" 2>/dev/null || true)
+  if [ -n "$command_path" ]; then
+    ln -s "$command_path" "$NO_JQ_BIN/$cmd"
+  fi
+done
+set +e
+no_jq_out=$(PATH="$NO_JQ_BIN" \
+  MANIFEST_URL="$BASE_URL/manifest-rid-first.json" \
+  INSTALL_DIR="$WORK/no-jq-install" \
+  /bin/bash "$INSTALL_SH" --dry-run 2>&1)
+no_jq_rc=$?
+set -e
+if [ "$no_jq_rc" -eq 0 ] \
+    && echo "$no_jq_out" | grep -q "DRY RUN: would install netclaw .*/$VERSION/" \
+    && echo "$no_jq_out" | grep -q "DRY RUN: would install netclawd .*/$VERSION/"; then
+  pass "manifest: jq-less parser selects stable assets with reordered fields"
+else
+  fail "manifest: jq-less reordered-field parse failed (exit=$no_jq_rc)"
+  echo "$no_jq_out" | indent
+fi
+
 # Dry run must not create the install directory.
 if [ -d "$WORK/should-not-exist" ]; then
   fail "dry-run: created an install directory (should install nothing)"
@@ -177,11 +257,16 @@ else
 fi
 
 # ── 6. Mechanical check: a real install on the host's native RID ─────────────
+# Uses a temp HOME so shell integration writes to the temp dir, not the
+# CI runner's real profile — and we can verify the RC was modified.
 echo ""
 echo "=== real install (host RID, stand-in archive) ==="
-INSTALL_DIR="$WORK/installed"
+INSTALL_HOME="$WORK/installed-home"
+INSTALL_DIR="$INSTALL_HOME/.netclaw/bin"
+mkdir -p "$INSTALL_HOME"
 set +e
-install_out=$(MANIFEST_URL="$BASE_URL/manifest.json" INSTALL_DIR="$INSTALL_DIR" \
+install_out=$(HOME="$INSTALL_HOME" \
+              MANIFEST_URL="$BASE_URL/manifest.json" INSTALL_DIR="$INSTALL_DIR" \
               bash "$INSTALL_SH" 2>&1)
 install_rc=$?
 set -e
@@ -200,6 +285,26 @@ for name in netclaw netclawd; do
     fail "install: $name missing, not executable, or did not run"
   fi
 done
+
+# Verify shell integration actually ran
+INSTALL_ENV="$INSTALL_HOME/.netclaw/env"
+if [ -f "$INSTALL_ENV" ]; then
+  pass "real install: env script created"
+else
+  fail "real install: env script not found at $INSTALL_ENV"
+fi
+
+# The RC file depends on $SHELL — check whichever one was created
+RC_MODIFIED=false
+for rc in "$INSTALL_HOME/.bashrc" "$INSTALL_HOME/.zshrc" "$INSTALL_HOME/.profile" "$INSTALL_HOME/.config/fish/conf.d/netclaw.fish"; do
+  if [ -f "$rc" ] && grep -qxF ". '$INSTALL_ENV'" "$rc" 2>/dev/null; then
+    pass "real install: $(basename "$rc") sources env script"
+    RC_MODIFIED=true
+  fi
+done
+if [ "$RC_MODIFIED" = false ]; then
+  fail "real install: no RC file sources env script (SHELL=$SHELL)"
+fi
 
 # ── 7. Release channel resolution (dry-run) ──────────────────────────────────
 echo ""
@@ -256,7 +361,7 @@ set +e
 fresh_out=$(MANIFEST_URL="$BASE_URL/manifest.json" \
             INSTALL_DIR="$FRESH_DIR" \
             CONFIG_DIR="$FRESH_CONFIG_DIR" \
-            bash "$INSTALL_SH" --channel beta 2>&1)
+            bash "$INSTALL_SH" --channel beta --skip-shell 2>&1)
 fresh_rc=$?
 set -e
 if [ "$fresh_rc" -eq 0 ] && [ -f "$FRESH_CONFIG_DIR/netclaw.json" ]; then
@@ -284,7 +389,7 @@ set +e
 exist_out=$(MANIFEST_URL="$BASE_URL/manifest.json" \
             INSTALL_DIR="$EXIST_DIR" \
             CONFIG_DIR="$EXIST_CONFIG_DIR" \
-            bash "$INSTALL_SH" --channel beta 2>&1)
+            bash "$INSTALL_SH" --channel beta --skip-shell 2>&1)
 exist_rc=$?
 set -e
 if [ "$exist_rc" -eq 0 ] && command -v jq >/dev/null 2>&1; then
@@ -297,6 +402,7 @@ if [ "$exist_rc" -eq 0 ] && command -v jq >/dev/null 2>&1; then
   fi
 else
   fail "config: --channel beta on existing config (exit=$exist_rc)"
+  echo "$exist_out" | indent
 fi
 
 # 8c. Plain upgrade (no --channel) leaves existing beta config alone
@@ -308,7 +414,7 @@ set +e
 noflag_out=$(MANIFEST_URL="$BASE_URL/manifest.json" \
              INSTALL_DIR="$NOFLAG_DIR" \
              CONFIG_DIR="$NOFLAG_CONFIG_DIR" \
-             bash "$INSTALL_SH" 2>&1)
+             bash "$INSTALL_SH" --skip-shell 2>&1)
 noflag_rc=$?
 set -e
 if [ "$noflag_rc" -eq 0 ] && command -v jq >/dev/null 2>&1; then
@@ -320,6 +426,7 @@ if [ "$noflag_rc" -eq 0 ] && command -v jq >/dev/null 2>&1; then
   fi
 else
   fail "config: plain upgrade (exit=$noflag_rc)"
+  echo "$noflag_out" | indent
 fi
 
 # 8d. --channel stable on existing beta overwrites to stable
@@ -331,7 +438,7 @@ set +e
 down_out=$(MANIFEST_URL="$BASE_URL/manifest.json" \
            INSTALL_DIR="$DOWNGRADE_DIR" \
            CONFIG_DIR="$DOWNGRADE_CONFIG_DIR" \
-           bash "$INSTALL_SH" --channel stable 2>&1)
+           bash "$INSTALL_SH" --channel stable --skip-shell 2>&1)
 down_rc=$?
 set -e
 if [ "$down_rc" -eq 0 ] && command -v jq >/dev/null 2>&1; then
@@ -343,6 +450,153 @@ if [ "$down_rc" -eq 0 ] && command -v jq >/dev/null 2>&1; then
   fi
 else
   fail "config: --channel stable on existing beta (exit=$down_rc)"
+  echo "$down_out" | indent
+fi
+
+# ── 9. Shell integration (PATH automation) ───────────────────────────────────
+echo ""
+echo "=== shell integration ==="
+
+assert_path_once() {
+  local desc="$1" observed_path="$2" install_dir="$3"
+  local count
+  count=$(printf '%s' "$observed_path" | tr ':' '\n' | grep -cxF "$install_dir" || true)
+  if [ "$count" -eq 1 ]; then
+    pass "$desc: install directory appears exactly once on PATH"
+  else
+    fail "$desc: install directory appears $count times on PATH"
+  fi
+}
+
+run_unix_installer() {
+  local shell_path="$1" home="$2" install_dir="$3"
+  shift 3
+  SHELL="$shell_path" HOME="$home" \
+    MANIFEST_URL="$BASE_URL/manifest.json" INSTALL_DIR="$install_dir" \
+    CONFIG_DIR="$home/.netclaw/config" \
+    bash "$INSTALL_SH" "$@"
+}
+
+# Bash: run the generated startup path through Bash itself, then repeat the
+# install to prove both profile mutation and PATH evaluation are idempotent.
+BASH_HOME="$WORK/shell-bash"
+BASH_INSTALL="$BASH_HOME/netclaw install's/bin"
+mkdir -p "$BASH_HOME"
+if [ "$(uname -s)" = "Darwin" ]; then
+  BASH_RC="$BASH_HOME/.bash_profile"
+  printf '# existing bash profile' > "$BASH_RC"
+  printf '# profile must remain untouched\n' > "$BASH_HOME/.profile"
+else
+  BASH_RC="$BASH_HOME/.bashrc"
+  printf '# existing bash rc' > "$BASH_RC"
+fi
+
+if run_unix_installer "$(command -v bash)" "$BASH_HOME" "$BASH_INSTALL" >/dev/null \
+    && run_unix_installer "$(command -v bash)" "$BASH_HOME" "$BASH_INSTALL" >/dev/null; then
+  BASH_INSTALL_PHYSICAL=$(cd "$BASH_INSTALL" && pwd -P)
+  bash_path=$(PATH="/usr/bin:/bin" HOME="$BASH_HOME" \
+    bash --noprofile --rcfile "$BASH_RC" -i -c 'printf "%s" "$PATH"' 2>/dev/null)
+  assert_path_once "bash" "$bash_path" "$BASH_INSTALL_PHYSICAL"
+  bash_empty_path=$(PATH="" HOME="$BASH_HOME" \
+    /bin/bash --noprofile --rcfile "$BASH_RC" -i -c 'printf "%s" "$PATH"' 2>/dev/null)
+  if [ "$bash_empty_path" = "$BASH_INSTALL_PHYSICAL" ]; then
+    pass "bash: empty PATH does not introduce a current-directory entry"
+  else
+    fail "bash: empty PATH produced '$bash_empty_path'"
+  fi
+  source_count=$(grep -cF "$BASH_HOME/.netclaw/env" "$BASH_RC" || true)
+  if [ "$source_count" -eq 1 ]; then
+    pass "bash: profile source line is idempotent"
+  else
+    fail "bash: profile contains $source_count netclaw source lines"
+  fi
+  if [ "$(uname -s)" = "Darwin" ] && ! grep -qF netclaw "$BASH_HOME/.profile"; then
+    pass "bash-macos: existing .bash_profile wins over .profile"
+  fi
+else
+  fail "bash: installer failed"
+fi
+
+# Zsh: resolve a non-exported ZDOTDIR from .zshenv, then execute the selected
+# startup file under zsh so a Bash-compatible false positive cannot pass.
+if command -v zsh >/dev/null 2>&1; then
+  ZSH_HOME="$WORK/shell-zsh"
+  ZDOT_DIR="$ZSH_HOME/custom-zdotdir"
+  ZSH_INSTALL="$ZSH_HOME/netclaw install's/bin"
+  mkdir -p "$ZDOT_DIR"
+  printf "ZDOTDIR='%s'\n" "$ZDOT_DIR" > "$ZSH_HOME/.zshenv"
+  printf '# existing zsh config\n' > "$ZDOT_DIR/.zshrc"
+  if (unset ZDOTDIR; run_unix_installer "$(command -v zsh)" "$ZSH_HOME" "$ZSH_INSTALL" >/dev/null) \
+      && (unset ZDOTDIR; run_unix_installer "$(command -v zsh)" "$ZSH_HOME" "$ZSH_INSTALL" >/dev/null); then
+    ZSH_INSTALL_PHYSICAL=$(cd "$ZSH_INSTALL" && pwd -P)
+    zsh_path=$(PATH="/usr/bin:/bin" ZDOTDIR="$ZDOT_DIR" \
+      zsh -f -c 'source "$ZDOTDIR/.zshrc"; print -rn -- "$PATH"')
+    assert_path_once "zsh" "$zsh_path" "$ZSH_INSTALL_PHYSICAL"
+    if [ ! -e "$ZSH_HOME/.zshrc" ]; then
+      pass "zsh: non-exported ZDOTDIR is authoritative"
+    else
+      fail "zsh: installer touched ~/.zshrc despite ZDOTDIR"
+    fi
+  else
+    fail "zsh: installer failed"
+  fi
+else
+  echo "SKIP: zsh executable not available"
+fi
+
+# Fish owns a native conf.d file. Execute that file with fish, not Bash.
+if command -v fish >/dev/null 2>&1; then
+  FISH_HOME="$WORK/shell-fish"
+  FISH_INSTALL="$FISH_HOME/netclaw install's/bin"
+  FISH_RC="$FISH_HOME/.config/fish/conf.d/netclaw.fish"
+  if XDG_CONFIG_HOME="$FISH_HOME/.config" \
+      run_unix_installer "$(command -v fish)" "$FISH_HOME" "$FISH_INSTALL" >/dev/null \
+      && XDG_CONFIG_HOME="$FISH_HOME/.config" \
+      run_unix_installer "$(command -v fish)" "$FISH_HOME" "$FISH_INSTALL" >/dev/null; then
+    FISH_INSTALL_PHYSICAL=$(cd "$FISH_INSTALL" && pwd -P)
+    fish_path=$(PATH="/usr/bin:/bin" fish --no-config -c \
+      "source '$FISH_RC'; string join : -- \$PATH")
+    assert_path_once "fish" "$fish_path" "$FISH_INSTALL_PHYSICAL"
+  else
+    fail "fish: installer failed"
+  fi
+else
+  echo "SKIP: fish executable not available"
+fi
+
+# Opt-out under a supported shell must print a self-contained command instead
+# of referring to an env file that was not made.
+MANUAL_HOME="$WORK/shell-skip"
+MANUAL_INSTALL="$MANUAL_HOME/netclaw install's/bin"
+mkdir -p "$MANUAL_HOME"
+manual_out=$(run_unix_installer "$(command -v bash)" "$MANUAL_HOME" "$MANUAL_INSTALL" --skip-shell)
+manual_command=$(printf '%s\n' "$manual_out" | sed -n 's/^  \{0,4\}\(export PATH=.*\)$/\1/p' | head -1)
+if [ -n "$manual_command" ] && [ ! -e "$MANUAL_HOME/.netclaw/env" ]; then
+  MANUAL_INSTALL_PHYSICAL=$(cd "$MANUAL_INSTALL" && pwd -P)
+  manual_path=$(PATH="/usr/bin:/bin" bash -c "$manual_command; printf '%s' \"\$PATH\"")
+  assert_path_once "skip" "$manual_path" "$MANUAL_INSTALL_PHYSICAL"
+  manual_empty_path=$(PATH="" /bin/bash -c "$manual_command; printf '%s' \"\$PATH\"")
+  if [ "$manual_empty_path" = "$MANUAL_INSTALL_PHYSICAL" ]; then
+    pass "skip: manual command preserves an empty PATH without adding current directory"
+  else
+    fail "skip: manual command produced '$manual_empty_path' from an empty PATH"
+  fi
+else
+  fail "skip: missing usable manual PATH command or created shell files"
+fi
+
+# Unsupported shells get shell-neutral guidance; emitting Bash syntax for an
+# arbitrary shell would make the suggested command actively misleading.
+UNKNOWN_HOME="$WORK/shell-unknown"
+UNKNOWN_INSTALL="$UNKNOWN_HOME/netclaw install's/bin"
+unknown_out=$(run_unix_installer /bin/unknownshell "$UNKNOWN_HOME" "$UNKNOWN_INSTALL")
+UNKNOWN_INSTALL_PHYSICAL=$(cd "$UNKNOWN_INSTALL" && pwd -P)
+if echo "$unknown_out" | grep -qF "$UNKNOWN_INSTALL_PHYSICAL" \
+    && ! echo "$unknown_out" | grep -q 'export PATH=' \
+    && [ ! -e "$UNKNOWN_HOME/.netclaw/env" ]; then
+  pass "unknown: guidance is shell-neutral and no shell files are created"
+else
+  fail "unknown: guidance is shell-specific or shell files were created"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────

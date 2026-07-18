@@ -100,7 +100,13 @@ curl -sSL https://releases.netclaw.dev/install.sh | bash -s -- --channel beta
 
 # Pin a specific version (e.g. a prerelease)
 NETCLAW_VERSION=0.17.1 curl -sSL https://releases.netclaw.dev/install.sh | bash
+
+# Install without modifying your shell profile
+curl -sSL https://releases.netclaw.dev/install.sh | bash -s -- --skip-shell
 ```
+
+By default, the Unix installer updates the detected Bash, zsh, or fish startup
+configuration so new shells include Netclaw on `PATH`.
 
 **macOS** (Apple Silicon — M1 or later — installs CLI + daemon to `~/.netclaw/bin`):
 
@@ -119,8 +125,9 @@ available on macOS ([#1015](https://github.com/netclaw-dev/netclaw/issues/1015))
 iwr -useb https://releases.netclaw.dev/install.ps1 | iex
 ```
 
-The `-Component cli|daemon`, `-Channel beta`, and `-Version` options work the same
-way as their Linux counterparts (download the script and run it with the flag).
+The installer adds Netclaw to your User PATH. The `-Component cli|daemon`,
+`-Channel beta`, `-Version`, and `-SkipShell` options work the same way as their
+Linux counterparts (download the script and run it with the flag).
 
 **Docker** (multi-arch: amd64/arm64):
 
