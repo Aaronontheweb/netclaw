@@ -1,0 +1,40 @@
+╭─Netclaw Chat─────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│System: MCP tool approval required                                                                                    │
+│  Tool: Dropbox/upload                                                                                                │
+│Invocation: Dropbox/upload(source_path="/home/operator/reports/2026/Q3/quarterly-results-final.pdf",                  │
+│destination_directory="/Finance/Board Pack/2026/Q3", contents=(89999 chars, 2000 lines), access_token=***REDACTED***) │
+│  Options: Once, This chat, Always allow this tool, Deny                                                              │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─Input────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│MCP tool approval required: Dropbox/upload.                                                                           │
+│Invocation: Dropbox/upload(source_path="/home/operator/reports/2026/Q3/quarterly-results-final.pdf",                  │
+│destination_directory="/Finance/Board Pack/2026/Q3", contents=(89999 chars, 2000 lines), access_token=***REDACTED***) │
+│Select an option and press Enter.                                                                                     │
+│1. Once                                                                                                               │
+│2. This chat                                                                                                          │
+│3. Always allow this tool                                                                                             │
+│4. Deny                                                                                                               │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+[Up/Down] Select [Enter] Confirm [Ctrl+O] Collapse [PgUp/PgDn] Scroll [Ctrl+Q] Quit | Approval required | test-model

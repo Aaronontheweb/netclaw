@@ -6,13 +6,20 @@
 # download -> checksum -> extract -> install path, plus -DryRun.
 #
 # Usage:    pwsh -File scripts/smoke/install-smoke.ps1
-# Requires: PowerShell 7+, python (for the local HTTP server).
+#           powershell.exe -File scripts/smoke/install-smoke.ps1
+# Requires: PowerShell 5.1+ and python (for the local HTTP server).
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot ".." "..")).Path
-$InstallPs1 = Join-Path $RepoRoot "scripts" "install.ps1"
+$PowerShellExecutable = if ($PSVersionTable.PSEdition -eq "Desktop") {
+    (Get-Command powershell.exe).Source
+} else {
+    (Get-Command pwsh).Source
+}
+
+$RepoRoot = (Resolve-Path (Join-Path (Join-Path $PSScriptRoot "..") "..")).Path
+$InstallPs1 = Join-Path (Join-Path $RepoRoot "scripts") "install.ps1"
 $Version = "0.0.0"            # stable -> manifest.latest
 $BetaVersion = "0.0.1-beta1"  # prerelease -> manifest.latestPrerelease
 $Rid = "win-x64"
@@ -22,9 +29,68 @@ $script:Fail = 0
 function Pass([string]$m) { Write-Host "PASS: $m"; $script:Pass++ }
 function Fail([string]$m) { Write-Host "FAIL: $m"; $script:Fail++ }
 
+function Invoke-CapturedPowerShell {
+    param([string[]]$Arguments)
+
+    # Windows PowerShell 5.1 promotes a native child's stderr to an error record.
+    # Rejection tests need to inspect that output and exit code without aborting.
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & $PowerShellExecutable @Arguments 2>&1 | Out-String
+        [PSCustomObject]@{ Output = $output; ExitCode = $LASTEXITCODE }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+}
+
+function Get-UserPathRegistryState {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $false)
+    if ($null -eq $key) { throw "Cannot open the current user's Environment registry key." }
+    try {
+        $exists = $key.GetValueNames() -contains "Path"
+        [PSCustomObject]@{
+            Exists = $exists
+            Value = if ($exists) {
+                $key.GetValue(
+                    "Path",
+                    $null,
+                    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            } else {
+                $null
+            }
+            Kind = if ($exists) { $key.GetValueKind("Path") } else { $null }
+        }
+    } finally {
+        $key.Dispose()
+    }
+}
+
+function Set-UserPathRegistryState {
+    param(
+        [bool]$Exists,
+        [AllowNull()][string]$Value,
+        [AllowNull()][Microsoft.Win32.RegistryValueKind]$Kind
+    )
+
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
+    if ($null -eq $key) { throw "Cannot create or open the current user's Environment registry key for update." }
+    try {
+        if ($Exists) {
+            $key.SetValue("Path", $Value, $Kind)
+        } else {
+            $key.DeleteValue("Path", $false)
+        }
+    } finally {
+        $key.Dispose()
+    }
+}
+
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ("netclaw-install-smoke-" + [Guid]::NewGuid().ToString('N'))
 $Serve = Join-Path $Work "serve"
 $BinDir = Join-Path $Work "bin"
+$OriginalUserPath = Get-UserPathRegistryState
+$OriginalProcessPath = $env:PATH
 New-Item -ItemType Directory -Path $Serve, $BinDir -Force | Out-Null
 
 $ServerProc = $null
@@ -74,7 +140,9 @@ try {
         latestPrerelease = $BetaVersion
         releases         = @($betaEntry, $stableEntry)
     }
-    $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $Serve "manifest.json") -Encoding utf8
+    # The fixture is ASCII-only. Windows PowerShell 5.1 writes a BOM for
+    # -Encoding UTF8 while PowerShell 7 does not, so use an identical encoding.
+    $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $Serve "manifest.json") -Encoding ascii
 
     # 4. Serve the manifest + archives from localhost
     $python = Get-Command python3 -ErrorAction SilentlyContinue
@@ -103,7 +171,7 @@ try {
     # 5. Dry-run check - resolves assets, installs nothing
     Write-Host "=== dry run ==="
     $dryDir = Join-Path $Work "dryrun-none"
-    $dryOut = & pwsh -NoProfile -File $InstallPs1 -InstallDir $dryDir -DryRun 2>&1 | Out-String
+    $dryOut = & $PowerShellExecutable -NoProfile -File $InstallPs1 -InstallDir $dryDir -DryRun 2>&1 | Out-String
     Write-Host ($dryOut.TrimEnd())
     if ($LASTEXITCODE -eq 0 `
         -and $dryOut -match 'DRY RUN: would install netclaw ' `
@@ -121,14 +189,21 @@ try {
     # 6. Real install of the stand-in archives
     Write-Host ""
     Write-Host "=== real install ==="
-    $installDir = Join-Path $Work "installed"
-    $installOut = & pwsh -NoProfile -File $InstallPs1 -InstallDir $installDir 2>&1 | Out-String
-    Write-Host ($installOut.TrimEnd())
-    if ($LASTEXITCODE -eq 0) {
-        Pass "install: exited 0"
+
+    $invalidResult = Invoke-CapturedPowerShell -Arguments @(
+        "-NoProfile", "-File", $InstallPs1,
+        "-InstallDir", (Join-Path $Work "invalid;path"), "-DryRun")
+    if ($invalidResult.ExitCode -ne 0 -and $invalidResult.Output -match "cannot contain semicolons") {
+        Pass "PATH: unrepresentable Windows install directory rejected"
     } else {
-        Fail "install: exited $LASTEXITCODE"
+        Fail "PATH: Windows install directory containing ';' was accepted"
     }
+
+    $installDir = Join-Path $Work "installed"
+    $existingUserEntry = Join-Path $Work "existing-user-bin"
+    Set-UserPathRegistryState $true $existingUserEntry ([Microsoft.Win32.RegistryValueKind]::String)
+    $installOut = & $InstallPs1 -InstallDir $installDir *>&1 | Out-String
+    Write-Host ($installOut.TrimEnd())
     foreach ($name in @("netclaw", "netclawd")) {
         $exe = Join-Path $installDir "$name.exe"
         if ((Test-Path $exe) -and ((Get-Item $exe).Length -gt 0)) {
@@ -138,20 +213,125 @@ try {
         }
     }
 
-    # 7. Verify PATH instruction uses User scope correctly (issue #1072)
-    # The printed instruction must NOT use $env:PATH (which merges Machine+User
-    # and corrupts the User PATH when written back). It must read User scope.
+    # 7. Verify the real installer changed User PATH without replacing the
+    # current process's inherited Machine PATH entries.
     Write-Host ""
-    Write-Host "=== PATH instruction check ==="
-    if ($installOut -match '\$env:PATH') {
-        Fail "PATH instruction: uses `$env:PATH (corrupts User PATH by merging Machine entries)"
+    Write-Host "=== PATH automation ==="
+    $persistedPath = Get-UserPathRegistryState
+    $persistedEntries = @($persistedPath.Value -split ';')
+    if ($persistedEntries[0] -eq $installDir `
+        -and $persistedEntries -contains $existingUserEntry `
+        -and @($persistedEntries | Where-Object { $_ -eq $installDir }).Count -eq 1) {
+        Pass "PATH: install directory prepended once and existing User PATH preserved"
     } else {
-        Pass "PATH instruction: does not use `$env:PATH"
+        Fail "PATH: persisted User PATH has unexpected contents"
     }
-    if ($installOut -match "GetEnvironmentVariable\('PATH',\s*'User'\)") {
-        Pass "PATH instruction: reads from User scope"
+
+    $originalProcessEntries = @($OriginalProcessPath -split ';' | Where-Object { $_ })
+    $currentProcessEntries = @($env:PATH -split ';' | Where-Object { $_ })
+    $missingProcessEntries = @($originalProcessEntries | Where-Object { $currentProcessEntries -notcontains $_ })
+    if ($currentProcessEntries[0] -eq $installDir `
+        -and @($currentProcessEntries | Where-Object { $_ -eq $installDir }).Count -eq 1 `
+        -and $missingProcessEntries.Count -eq 0) {
+        Pass "PATH: current process prepended once and inherited entries preserved"
     } else {
-        Fail "PATH instruction: should read from User scope with GetEnvironmentVariable('PATH', 'User')"
+        Fail "PATH: current process lost inherited entries or contains duplicates"
+    }
+
+    # A persisted entry must still repair a stale current process, and a
+    # trailing separator must not create a duplicate User PATH entry.
+    $env:PATH = $OriginalProcessPath
+    $userPathBeforeRepeat = Get-UserPathRegistryState
+    & $InstallPs1 -InstallDir "$installDir\" *>&1 | Out-Null
+    $userPathAfterRepeat = Get-UserPathRegistryState
+    $repeatProcessEntries = @($env:PATH -split ';' | Where-Object { $_ })
+    if ($userPathAfterRepeat.Value -eq $userPathBeforeRepeat.Value `
+        -and $userPathAfterRepeat.Kind -eq $userPathBeforeRepeat.Kind `
+        -and $repeatProcessEntries[0] -eq $installDir `
+        -and @($repeatProcessEntries | Where-Object { $_ -eq $installDir }).Count -eq 1) {
+        Pass "PATH: repeat install is idempotent and repairs current process"
+    } else {
+        Fail "PATH: repeat install changed User PATH or duplicated process entry"
+    }
+
+    $env:NETCLAW_SMOKE_INSTALL_DIR = $installDir
+    $expandedUserPath = "%NETCLAW_SMOKE_INSTALL_DIR%;$existingUserEntry"
+    Set-UserPathRegistryState $true $expandedUserPath ([Microsoft.Win32.RegistryValueKind]::ExpandString)
+    $env:PATH = $OriginalProcessPath
+    & $InstallPs1 -InstallDir $installDir *>&1 | Out-Null
+    $expandedUserPathAfter = Get-UserPathRegistryState
+    if ($expandedUserPathAfter.Value -eq $expandedUserPath `
+        -and $expandedUserPathAfter.Kind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) {
+        Pass "PATH: expandable User entry keeps its raw text and REG_EXPAND_SZ type"
+    } else {
+        Fail "PATH: expandable User entry or its registry type was rewritten"
+    }
+
+    $literalPercentInstall = Join-Path $Work "%NETCLAW_LITERAL%\bin"
+    Set-UserPathRegistryState $true $existingUserEntry ([Microsoft.Win32.RegistryValueKind]::String)
+    $literalPercentOut = & $PowerShellExecutable -NoProfile -File $InstallPs1 `
+        -InstallDir $literalPercentInstall 2>&1 | Out-String
+    $literalPercentState = Get-UserPathRegistryState
+    if ($LASTEXITCODE -eq 0 `
+        -and $literalPercentState.Kind -eq [Microsoft.Win32.RegistryValueKind]::String `
+        -and @($literalPercentState.Value -split ';')[0] -eq $literalPercentInstall) {
+        Pass "PATH: literal percent is preserved in a non-expanding User PATH"
+    } else {
+        Fail "PATH: literal percent was not preserved in a non-expanding User PATH"
+        Write-Host ($literalPercentOut.TrimEnd())
+    }
+
+    $expandablePath = "%SystemRoot%\System32"
+    $unsafePercentInstall = Join-Path $Work "%TEMP%\netclaw"
+    Set-UserPathRegistryState $true $expandablePath ([Microsoft.Win32.RegistryValueKind]::ExpandString)
+    $expandableStateBefore = Get-UserPathRegistryState
+    $unsafePercentResult = Invoke-CapturedPowerShell -Arguments @(
+        "-NoProfile", "-File", $InstallPs1, "-InstallDir", $unsafePercentInstall)
+    $expandableStateAfter = Get-UserPathRegistryState
+    if ($unsafePercentResult.ExitCode -ne 0 `
+        -and $unsafePercentResult.Output -match "cannot be safely added to an expandable User PATH" `
+        -and $expandableStateAfter.Value -eq $expandableStateBefore.Value `
+        -and $expandableStateAfter.Kind -eq $expandableStateBefore.Kind) {
+        Pass "PATH: literal percent is rejected before mutating an expandable User PATH"
+    } else {
+        Fail "PATH: literal percent corrupted or changed an expandable User PATH"
+    }
+
+    $env:PATH = ""
+    & $InstallPs1 -InstallDir $installDir *>&1 | Out-Null
+    if ($env:PATH -eq $installDir) {
+        Pass "PATH: empty process PATH does not create an empty entry"
+    } else {
+        Fail "PATH: empty process PATH produced unexpected contents"
+    }
+    $env:PATH = $OriginalProcessPath
+
+    # 7c. Test -SkipShell flag
+    Write-Host ""
+    Write-Host "=== -SkipShell flag ==="
+    $skipDir = Join-Path $Work "skip-install's"
+    $skipUserPathBefore = Get-UserPathRegistryState
+    $skipProcessPathBefore = $env:PATH
+    $skipOut = & $PowerShellExecutable -NoProfile -File $InstallPs1 -InstallDir $skipDir -SkipShell 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0) {
+        Pass "-SkipShell: install completes without error"
+    } else {
+        Fail "-SkipShell: install failed (exit=$LASTEXITCODE)"
+    }
+    if ($skipOut -match "PATH modification skipped") {
+        Pass "-SkipShell: output mentions PATH modification skipped"
+    } else {
+        Fail "-SkipShell: missing 'skipped' message"
+    }
+    $skipUserPathAfter = Get-UserPathRegistryState
+    if ($skipUserPathAfter.Value -eq $skipUserPathBefore.Value `
+        -and $skipUserPathAfter.Kind -eq $skipUserPathBefore.Kind `
+        -and $env:PATH -eq $skipProcessPathBefore `
+        -and $skipOut -match [regex]::Escape("Add this directory to your User PATH") `
+        -and $skipOut -match [regex]::Escape($skipDir)) {
+        Pass "-SkipShell: PATH is unchanged and manual guidance handles a literal install directory"
+    } else {
+        Fail "-SkipShell: changed PATH or printed an unusable manual command"
     }
 
     # 8. Release channel resolution (dry-run)
@@ -160,7 +340,7 @@ try {
     $shouldNotExist = Join-Path $Work "should-not-exist"
 
     function Assert-Resolves([string]$desc, [string]$want, [string[]]$extraArgs) {
-        $out = & pwsh -NoProfile -File $InstallPs1 -InstallDir $shouldNotExist -DryRun @extraArgs 2>&1 | Out-String
+        $out = & $PowerShellExecutable -NoProfile -File $InstallPs1 -InstallDir $shouldNotExist -DryRun @extraArgs 2>&1 | Out-String
         $pattern = "(?m)^\s+Version:\s+$([regex]::Escape($want))\s*$"
         if ($LASTEXITCODE -eq 0 -and $out -match $pattern) {
             Pass "channel: $desc -> $want"
@@ -176,8 +356,10 @@ try {
     Assert-Resolves "-Version pin overrides -Channel"     $BetaVersion @("-Channel", "stable", "-Version", $BetaVersion)
 
     # An unknown channel must be rejected by the ValidateSet, not silently default.
-    & pwsh -NoProfile -File $InstallPs1 -InstallDir $shouldNotExist -DryRun -Channel bogus 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
+    $invalidChannelResult = Invoke-CapturedPowerShell -Arguments @(
+        "-NoProfile", "-File", $InstallPs1, "-InstallDir", $shouldNotExist,
+        "-DryRun", "-Channel", "bogus")
+    if ($invalidChannelResult.ExitCode -ne 0) {
         Pass "channel: unknown value rejected"
     } else {
         Fail "channel: unknown value should fail (exit=$LASTEXITCODE)"
@@ -190,7 +372,7 @@ try {
     $freshDir = Join-Path $Work "fresh-beta"
     $freshConfigDir = Join-Path $Work "fresh-beta-config"
     $env:NETCLAW_CONFIG_DIR = $freshConfigDir
-    & pwsh -NoProfile -File $InstallPs1 -InstallDir $freshDir -Channel beta 2>&1 | Out-Null
+    & $PowerShellExecutable -NoProfile -File $InstallPs1 -InstallDir $freshDir -Channel beta -SkipShell 2>&1 | Out-Null
     $freshConfig = Join-Path $freshConfigDir "netclaw.json"
     if ((Test-Path $freshConfig)) {
         $c = Get-Content -Raw $freshConfig | ConvertFrom-Json
@@ -209,7 +391,7 @@ try {
     New-Item -ItemType Directory -Path $existConfigDir -Force | Out-Null
     '{"configVersion":1,"Daemon":{"ExposureMode":"local"}}' | Set-Content -Path (Join-Path $existConfigDir "netclaw.json") -Encoding UTF8
     $env:NETCLAW_CONFIG_DIR = $existConfigDir
-    & pwsh -NoProfile -File $InstallPs1 -InstallDir $existDir -Channel beta 2>&1 | Out-Null
+    & $PowerShellExecutable -NoProfile -File $InstallPs1 -InstallDir $existDir -Channel beta -SkipShell 2>&1 | Out-Null
     $c = Get-Content -Raw (Join-Path $existConfigDir "netclaw.json") | ConvertFrom-Json
     if ($c.Daemon.UpdateChannel -eq "beta" -and $c.Daemon.ExposureMode -eq "local") {
         Pass "config: -Channel beta patches existing config, preserves other Daemon keys"
@@ -223,7 +405,7 @@ try {
     New-Item -ItemType Directory -Path $noflagConfigDir -Force | Out-Null
     '{"configVersion":1,"Daemon":{"UpdateChannel":"beta"}}' | Set-Content -Path (Join-Path $noflagConfigDir "netclaw.json") -Encoding UTF8
     $env:NETCLAW_CONFIG_DIR = $noflagConfigDir
-    & pwsh -NoProfile -File $InstallPs1 -InstallDir $noflagDir 2>&1 | Out-Null
+    & $PowerShellExecutable -NoProfile -File $InstallPs1 -InstallDir $noflagDir -SkipShell 2>&1 | Out-Null
     $c = Get-Content -Raw (Join-Path $noflagConfigDir "netclaw.json") | ConvertFrom-Json
     if ($c.Daemon.UpdateChannel -eq "beta") {
         Pass "config: plain upgrade preserves existing beta channel"
@@ -237,7 +419,7 @@ try {
     New-Item -ItemType Directory -Path $downConfigDir -Force | Out-Null
     '{"configVersion":1,"Daemon":{"UpdateChannel":"beta"}}' | Set-Content -Path (Join-Path $downConfigDir "netclaw.json") -Encoding UTF8
     $env:NETCLAW_CONFIG_DIR = $downConfigDir
-    & pwsh -NoProfile -File $InstallPs1 -InstallDir $downDir -Channel stable 2>&1 | Out-Null
+    & $PowerShellExecutable -NoProfile -File $InstallPs1 -InstallDir $downDir -Channel stable -SkipShell 2>&1 | Out-Null
     $c = Get-Content -Raw (Join-Path $downConfigDir "netclaw.json") | ConvertFrom-Json
     if ($c.Daemon.UpdateChannel -eq "stable") {
         Pass "config: -Channel stable overwrites existing beta"
@@ -247,8 +429,11 @@ try {
 }
 finally {
     if ($ServerProc -and -not $ServerProc.HasExited) { $ServerProc.Kill() }
+    Set-UserPathRegistryState $OriginalUserPath.Exists $OriginalUserPath.Value $OriginalUserPath.Kind
+    $env:PATH = $OriginalProcessPath
     $env:MANIFEST_URL = $null
     $env:NETCLAW_CONFIG_DIR = $null
+    $env:NETCLAW_SMOKE_INSTALL_DIR = $null
     Remove-Item -Path $Work -Recurse -Force -ErrorAction SilentlyContinue
 }
 
@@ -259,7 +444,6 @@ if ($script:Fail -gt 0) {
     exit 1
 }
 Write-Host "install smoke (ps1): PASSED"
-# Exit explicitly on the result, not on $LASTEXITCODE — the channel checks above run
-# `pwsh -Channel bogus` (which exits non-zero by design), and without this the script
-# would fall off the end and inherit that non-zero code despite all assertions passing.
+# Deliberate rejection checks run child processes that exit nonzero, so return
+# the assertion result explicitly instead of inheriting a child's exit code.
 exit 0

@@ -3,42 +3,45 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Akka.Configuration;
 using Netclaw.Configuration;
-using Netclaw.Daemon;
 using Xunit;
 
 namespace Netclaw.Daemon.Tests;
 
 /// <summary>
-/// Regression coverage for the canary daemon-stop finding (see
-/// <see cref="DaemonConfig.GracefulShutdownBudget"/> remarks): the Akka CoordinatedShutdown
-/// "before-service-unbind" phase timeout — where session draining actually happens — must
-/// track <see cref="DaemonConfig.GracefulShutdownBudget"/>, not a hardcoded literal that can
-/// silently drift out of sync with the CLI's SIGTERM wait or the generated systemd unit's
-/// TimeoutStopSec.
+/// Tests for <see cref="DaemonShutdownConfiguration.BuildCoordinatedShutdownHocon"/>, which
+/// replaced the inline HOCON literal Program.cs used to prepend a hardcoded 200s
+/// before-service-unbind phase timeout (netclaw-dev/netclaw#1664, #1665). Proves the emitted
+/// HOCON tracks whatever <see cref="DaemonConfig.GracefulShutdownBudget"/> resolves to instead
+/// of drifting back to a literal that could disagree with the daemon-stop drain's own bound.
 /// </summary>
 public sealed class DaemonShutdownConfigurationTests
 {
+    [Theory]
+    [InlineData(200, 200)]
+    [InlineData(90, 90)]
+    public void BuildCoordinatedShutdownHocon_interpolates_the_given_budget_in_seconds(
+        int budgetSeconds, int expectedPhaseTimeoutSeconds)
+    {
+        var hocon = DaemonShutdownConfiguration.BuildCoordinatedShutdownHocon(TimeSpan.FromSeconds(budgetSeconds));
+
+        var config = ConfigurationFactory.ParseString(hocon);
+
+        Assert.Equal(TimeSpan.FromSeconds(expectedPhaseTimeoutSeconds),
+            config.GetTimeSpan("akka.coordinated-shutdown.phases.before-service-unbind.timeout"));
+        Assert.False(config.GetBoolean("akka.coordinated-shutdown.exit-clr"));
+    }
+
     [Fact]
-    public void BuildCoordinatedShutdownHocon_UsesGracefulShutdownBudget()
+    public void BuildCoordinatedShutdownHocon_tracks_DaemonConfig_GracefulShutdownBudget()
     {
         var hocon = DaemonShutdownConfiguration.BuildCoordinatedShutdownHocon(DaemonConfig.GracefulShutdownBudget);
 
-        Assert.Contains(
-            $"phases.before-service-unbind.timeout = {(int)DaemonConfig.GracefulShutdownBudget.TotalSeconds}s",
-            hocon,
-            StringComparison.Ordinal);
-        Assert.Contains("exit-clr = off", hocon, StringComparison.Ordinal);
-    }
+        var config = ConfigurationFactory.ParseString(hocon);
 
-    [Theory]
-    [InlineData(30)]
-    [InlineData(200)]
-    [InlineData(600)]
-    public void BuildCoordinatedShutdownHocon_InterpolatesArbitraryTimeouts(int seconds)
-    {
-        var hocon = DaemonShutdownConfiguration.BuildCoordinatedShutdownHocon(TimeSpan.FromSeconds(seconds));
-
-        Assert.Contains($"phases.before-service-unbind.timeout = {seconds}s", hocon, StringComparison.Ordinal);
+        Assert.Equal(
+            DaemonConfig.GracefulShutdownBudget,
+            config.GetTimeSpan("akka.coordinated-shutdown.phases.before-service-unbind.timeout"));
     }
 }
