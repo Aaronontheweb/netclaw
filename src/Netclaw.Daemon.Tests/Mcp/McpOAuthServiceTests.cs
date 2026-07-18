@@ -53,10 +53,111 @@ public sealed class McpOAuthServiceTests : IDisposable
         Assert.Equal(AlertType.McpAuthExpired, alert.Category);
         Assert.Equal("invalid_grant", alert.Context!["reason"]);
 
+        // invalid_grant kills the grant, not the client registration — the
+        // cached client_id must survive for the re-auth flow.
+        Assert.Equal("test-client", service.GetCachedMetadata(serverName)!.ClientId);
+
         // Subsequent calls must not re-attempt refresh against cleared tokens.
         var second = await service.GetValidTokenAsync(serverName, entry, TestContext.Current.CancellationToken);
         Assert.Null(second);
         Assert.Equal(1, handler.RefreshCallCount);
+    }
+
+    [Fact]
+    public async Task GetValidTokenAsync_InvalidClient_ClearsTokensAndClientRegistrationAndDoesNotRetry()
+    {
+        var now = new DateTimeOffset(2026, 6, 23, 12, 0, 0, TimeSpan.Zero);
+        var time = new FakeTimeProvider(now);
+        var sink = new RecordingNotificationSink();
+        var handler = new TokenEndpointHandler
+        {
+            // invalid_client MAY be a 401 per RFC 6749 §5.2.
+            RefreshResponse = _ => FakeHttpMessageHandler.JsonResponse(new { error = "invalid_client" }, HttpStatusCode.Unauthorized),
+        };
+        var serverName = new McpServerName("notion");
+        var entry = CreateHttpEntry();
+        var service = CreateService(CreateDiscoveryClient(), new OAuthPkceService(new HttpClient(handler), time),
+            timeProvider: time, notificationSink: sink);
+
+        await SeedTokenAsync(service, serverName, entry, handler, expiresInSeconds: 60, refreshToken: "refresh-old");
+        Assert.Equal("test-client", service.GetCachedMetadata(serverName)!.ClientId);
+        time.Advance(TimeSpan.FromMinutes(5)); // well past expiry
+
+        var token = await service.GetValidTokenAsync(serverName, entry, TestContext.Current.CancellationToken);
+
+        // Terminal like invalid_grant: tokens cleared, alert with the actual code.
+        Assert.Null(token);
+        Assert.Null(service.GetTokenSet(serverName));
+        Assert.Equal(1, handler.RefreshCallCount);
+        Assert.True(service.TryGetTerminalRefreshRejection(serverName, out var errorCode));
+        Assert.Equal("invalid_client", errorCode);
+
+        var alert = Assert.Single(sink.Alerts);
+        Assert.Equal(AlertType.McpAuthExpired, alert.Category);
+        Assert.Equal("invalid_client", alert.Context!["reason"]);
+
+        // The client registration itself is dead — the cached client_id must be
+        // dropped so the next `netclaw mcp auth` re-registers instead of
+        // reusing it (EnsureClientRegisteredAsync short-circuits on it).
+        Assert.Null(service.GetCachedMetadata(serverName)!.ClientId);
+
+        // No retry loop against dead credentials.
+        var second = await service.GetValidTokenAsync(serverName, entry, TestContext.Current.CancellationToken);
+        Assert.Null(second);
+        Assert.Equal(1, handler.RefreshCallCount);
+    }
+
+    [Fact]
+    public async Task GetValidTokenAsync_InvalidClient_ReauthPerformsFreshClientRegistration()
+    {
+        var now = new DateTimeOffset(2026, 6, 23, 12, 0, 0, TimeSpan.Zero);
+        var time = new FakeTimeProvider(now);
+        var registrationCount = 0;
+        // DCR-capable auth server, and a server entry with NO static client id,
+        // so the client_id in play is dynamically registered — the incident
+        // scenario where the provider purges DCR'd client IDs.
+        var discovery = new HttpClient(new FakeHttpMessageHandler(request => request.RequestUri!.ToString() switch
+        {
+            "https://mcp.example.com/" or "https://mcp.example.com" => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+            "https://mcp.example.com/.well-known/oauth-protected-resource" => JsonResponse(new
+            {
+                authorization_servers = new[] { "https://auth.example.com" },
+                resource = "https://mcp.example.com/resource"
+            }),
+            "https://auth.example.com/.well-known/oauth-authorization-server" => JsonResponse(new
+            {
+                authorization_endpoint = "https://auth.example.com/authorize",
+                token_endpoint = "https://auth.example.com/token",
+                registration_endpoint = "https://auth.example.com/register"
+            }),
+            "https://auth.example.com/register" => JsonResponse(new { client_id = $"dcr-client-{++registrationCount}" }),
+            _ => throw new InvalidOperationException($"Unexpected request URI: {request.RequestUri}")
+        }));
+        var handler = new TokenEndpointHandler
+        {
+            RefreshResponse = _ => FakeHttpMessageHandler.JsonResponse(new { error = "invalid_client" }, HttpStatusCode.Unauthorized),
+        };
+        var serverName = new McpServerName("notion");
+        var entry = new McpServerEntry { Transport = "http", Url = "https://mcp.example.com" };
+        var service = CreateService(discovery, new OAuthPkceService(new HttpClient(handler), time), timeProvider: time);
+
+        await SeedTokenAsync(service, serverName, entry, handler, expiresInSeconds: 60, refreshToken: "refresh-old");
+        Assert.Equal(1, registrationCount);
+        Assert.Equal("dcr-client-1", service.GetCachedMetadata(serverName)!.ClientId);
+
+        time.Advance(TimeSpan.FromMinutes(5));
+        await service.GetValidTokenAsync(serverName, entry, TestContext.Current.CancellationToken);
+        Assert.Null(service.GetTokenSet(serverName));
+
+        // Re-auth must perform a FRESH dynamic registration, not reuse the dead
+        // client_id, and a completed flow clears the terminal-rejection record.
+        var (_, state) = await service.StartAuthorizationFlowAsync(serverName, entry, TestContext.Current.CancellationToken);
+        Assert.Equal(2, registrationCount);
+        Assert.Equal("dcr-client-2", service.GetCachedMetadata(serverName)!.ClientId);
+
+        await service.CompleteAuthorizationAsync("code-2", state, TestContext.Current.CancellationToken);
+        Assert.NotNull(service.GetTokenSet(serverName));
+        Assert.False(service.TryGetTerminalRefreshRejection(serverName, out _));
     }
 
     [Fact]

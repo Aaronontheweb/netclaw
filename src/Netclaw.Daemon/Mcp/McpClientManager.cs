@@ -171,17 +171,19 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                 await _oauthService.GetValidTokenAsync(name, entry, ct);
 
                 var tokenSet = _oauthService.GetTokenSet(name);
-                if (tokenSet is null)
+                if (tokenSet is null
+                    && _oauthService.TryGetTerminalRefreshRejection(name, out var errorCode))
                 {
-                    // Tokens were just cleared: terminal invalid_grant (already
-                    // logged and alerted by McpOAuthService). Tear the
+                    // Tokens were just cleared: terminal rejection
+                    // (invalid_grant / invalid_client / unauthorized_client —
+                    // already logged and alerted by McpOAuthService). Tear the
                     // connection down now rather than waiting for the next
                     // tool call to 401 into a generic failure.
                     await TearDownConnectionAsync(name);
-                    _statuses[name] = CreateRefreshRejectedStatus(name);
+                    _statuses[name] = CreateRefreshRejectedStatus(name, errorCode);
                     _logger.LogWarning(
-                        "MCP server '{Name}' OAuth grant revoked (invalid_grant); disconnected pending re-authorization",
-                        name.Value);
+                        "MCP server '{Name}' OAuth refresh terminally rejected ({ErrorCode}); disconnected pending re-authorization",
+                        name.Value, errorCode);
                     continue;
                 }
 
@@ -436,6 +438,17 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                 var metadata = await _oauthService.TryDiscoverMetadataAsync(name, entry.Url, ct);
                 if (metadata is not null && entry.Headers is not { Count: > 0 })
                 {
+                    // A prior terminal refresh rejection cleared this server's
+                    // tokens; keep the distinct "refresh rejected" status
+                    // rather than downgrading to generic AwaitingAuth on every
+                    // subsequent reconnect attempt. The terminal alert (with
+                    // the actual error code) already fired at rejection time.
+                    if (_oauthService.TryGetTerminalRefreshRejection(name, out var priorRejection))
+                    {
+                        _statuses[name] = CreateRefreshRejectedStatus(name, priorRejection);
+                        return null;
+                    }
+
                     _statuses[name] = CreateAwaitingAuthStatus(name);
                     _logger.LogWarning("MCP server '{Name}' requires OAuth authorization", name.Value);
                     EmitAuthAlert(name, $"MCP server '{name.Value}' requires OAuth authorization. Run: netclaw mcp auth {name.Value}", "authorization_required");
@@ -452,18 +465,20 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                 // AuthorizationRedirectDelegate — then almost never has to run.
                 await _oauthService.GetValidTokenAsync(name, entry, ct);
 
-                if (_oauthService.GetTokenSet(name) is null)
+                if (_oauthService.GetTokenSet(name) is null
+                    && _oauthService.TryGetTerminalRefreshRejection(name, out var errorCode))
                 {
                     // The refresh above came back terminally rejected
-                    // (invalid_grant) and already cleared the tokens, logging
-                    // and alerting. Fail fast with a status distinct from a
-                    // generic connectivity failure instead of letting the
-                    // doomed connection attempt fall through to the SDK's
-                    // silent headless-auth failure path.
-                    _statuses[name] = CreateRefreshRejectedStatus(name);
+                    // (invalid_grant / invalid_client / unauthorized_client)
+                    // and already cleared the tokens, logging and alerting.
+                    // Fail fast with a status distinct from a generic
+                    // connectivity failure instead of letting the doomed
+                    // connection attempt fall through to the SDK's silent
+                    // headless-auth failure path.
+                    _statuses[name] = CreateRefreshRejectedStatus(name, errorCode);
                     _logger.LogWarning(
-                        "MCP server '{Name}' OAuth grant revoked (invalid_grant); re-authorization required",
-                        name.Value);
+                        "MCP server '{Name}' OAuth refresh terminally rejected ({ErrorCode}); re-authorization required",
+                        name.Value, errorCode);
                     return null;
                 }
             }
@@ -602,16 +617,19 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
     /// <summary>
     /// Distinct from <see cref="CreateAuthFailedStatus"/>'s generic "authentication
     /// rejected by server" text: this fires specifically when Netclaw's own
-    /// refresh path (McpOAuthService) got a terminal invalid_grant response and
-    /// cleared the stored tokens, so operators can tell "grant revoked by
-    /// provider" apart from "never authenticated" (AwaitingAuth) or a generic
-    /// connectivity failure (Unreachable). Uses the AuthFailed state so the
-    /// reconnection service's backoff loop — which only retries Unreachable
-    /// servers — never auto-retries a dead grant.
+    /// refresh path (McpOAuthService) got a terminal token-endpoint rejection
+    /// and cleared the stored tokens. <paramref name="errorCode"/> names the
+    /// cause — invalid_grant (grant revoked by provider) vs invalid_client /
+    /// unauthorized_client (client registration purged; re-auth performs a
+    /// fresh registration) — so operators can tell either apart from "never
+    /// authenticated" (AwaitingAuth) or a generic connectivity failure
+    /// (Unreachable). Uses the AuthFailed state so the reconnection service's
+    /// backoff loop — which only retries Unreachable servers — never
+    /// auto-retries dead credentials.
     /// </summary>
-    internal static McpServerStatus CreateRefreshRejectedStatus(McpServerName serverName)
+    internal static McpServerStatus CreateRefreshRejectedStatus(McpServerName serverName, string errorCode)
         => new(serverName, McpConnectionState.AuthFailed, 0,
-            $"Refresh rejected by provider (invalid_grant) — re-authorization required. Run: netclaw mcp auth {serverName.Value}");
+            $"Refresh rejected by provider ({errorCode}) — re-authorization required. Run: netclaw mcp auth {serverName.Value}");
 
     private void EmitAuthAlert(McpServerName serverName, string summary, string reason)
     {

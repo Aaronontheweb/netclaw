@@ -75,20 +75,23 @@ public sealed class McpClientManagerStatusTests
         Assert.Contains("Connection refused", status.ErrorMessage);
     }
 
-    [Fact]
-    public void CreateRefreshRejectedStatus_ReturnsAuthFailedWithDistinctInvalidGrantMessage()
+    [Theory]
+    [InlineData("invalid_grant")]
+    [InlineData("invalid_client")]
+    [InlineData("unauthorized_client")]
+    public void CreateRefreshRejectedStatus_ReturnsAuthFailedNamingTheErrorCode(string errorCode)
     {
-        var status = McpClientManager.CreateRefreshRejectedStatus(new McpServerName("notion"));
+        var status = McpClientManager.CreateRefreshRejectedStatus(new McpServerName("notion"), errorCode);
 
         // AuthFailed (not Unreachable) so McpReconnectionService's backoff loop
-        // — which only retries Unreachable servers — never auto-retries a dead
-        // grant into a loop.
+        // — which only retries Unreachable servers — never auto-retries dead
+        // credentials into a loop.
         Assert.Equal(McpConnectionState.AuthFailed, status.State);
-        Assert.Contains("invalid_grant", status.ErrorMessage);
+        Assert.Contains(errorCode, status.ErrorMessage);
         Assert.Contains("netclaw mcp auth notion", status.ErrorMessage);
 
         // Distinct wording from the generic AuthFailed message so operators can
-        // tell "grant revoked by provider" apart from "never authenticated".
+        // tell "credentials rejected by provider" apart from "never authenticated".
         var genericAuthFailed = McpClientManager.CreateAuthFailedStatus(
             new McpServerName("notion"),
             new HttpRequestException(httpRequestError: HttpRequestError.Unknown, "Unauthorized", null, System.Net.HttpStatusCode.Unauthorized),

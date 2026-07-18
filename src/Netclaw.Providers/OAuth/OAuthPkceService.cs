@@ -153,10 +153,26 @@ public sealed class OAuthPkceService
     }
 
     /// <summary>
-    /// Exchange a refresh token for a new access token.
-    /// Returns null if the refresh token is invalid or revoked.
+    /// OAuth error codes (RFC 6749 §5.2) that terminally reject a refresh
+    /// request — retrying with the same credentials can never succeed.
+    /// <c>invalid_grant</c>: the grant was revoked or the rotating refresh
+    /// token already consumed. <c>invalid_client</c> /
+    /// <c>unauthorized_client</c>: the client registration itself is dead.
     /// </summary>
-    public async Task<OAuthDeviceFlowResult?> RefreshTokenAsync(
+    private static readonly HashSet<string> TerminalRefreshErrorCodes = new(StringComparer.Ordinal)
+    {
+        "invalid_grant", "invalid_client", "unauthorized_client",
+    };
+
+    /// <summary>
+    /// Exchange a refresh token for a new access token.
+    /// Throws <see cref="OAuthTokenRefreshRejectedException"/> (carrying the
+    /// OAuth error code) when the token endpoint terminally rejects the request
+    /// — invalid_grant, invalid_client, unauthorized_client. Everything else
+    /// (5xx, network errors, unrecognized or unparsable error bodies) throws
+    /// <see cref="HttpRequestException"/> and should be treated as transient.
+    /// </summary>
+    public async Task<OAuthDeviceFlowResult> RefreshTokenAsync(
         string tokenEndpoint,
         string clientId,
         SensitiveString refreshToken,
@@ -179,9 +195,18 @@ public sealed class OAuthPkceService
 
         if (!response.IsSuccessStatusCode)
         {
-            var errorBody = await response.Content.ReadAsStringAsync(ct);
-            if (errorBody.Contains("invalid_grant", StringComparison.Ordinal))
-                return null;
+            // Only classify 4xx responses as potentially terminal: a 5xx is a
+            // server-side fault worth retrying even if its body happens to be
+            // error-shaped.
+            if ((int)response.StatusCode is >= 400 and < 500)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync(ct);
+                if (TryParseOAuthErrorCode(errorBody) is { } errorCode
+                    && TerminalRefreshErrorCodes.Contains(errorCode))
+                {
+                    throw new OAuthTokenRefreshRejectedException(errorCode, response.StatusCode);
+                }
+            }
 
             response.EnsureSuccessStatusCode();
         }
@@ -197,6 +222,29 @@ public sealed class OAuthPkceService
         };
 
         return result;
+    }
+
+    /// <summary>
+    /// Parses the <c>error</c> member of an RFC 6749 §5.2 error response body.
+    /// Returns null when the body is not a JSON object or has no string
+    /// <c>error</c> member — such responses are treated as transient, never
+    /// terminal.
+    /// </summary>
+    private static string? TryParseOAuthErrorCode(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return doc.RootElement.ValueKind == JsonValueKind.Object
+                   && doc.RootElement.TryGetProperty("error", out var errorProp)
+                   && errorProp.ValueKind == JsonValueKind.String
+                ? errorProp.GetString()
+                : null;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

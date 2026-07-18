@@ -306,6 +306,13 @@ internal sealed class McpOAuthService
             _tokens[context.ServerName] = tokenSet;
             PersistTokens();
 
+            // A fresh grant supersedes any prior terminal rejection, and its
+            // advisory conditions (missing refresh token / unknown expiry)
+            // should be re-evaluated — and re-warned if still true.
+            _terminalRefreshErrors.TryRemove(context.ServerName, out _);
+            _warnedNoRefreshToken.TryRemove(context.ServerName, out _);
+            _warnedUnknownExpiry.TryRemove(context.ServerName, out _);
+
             // Cache the server name so callers can trigger reconnect after cleanup
             _lastCompletedServerName[state] = context.ServerName;
 
@@ -353,6 +360,24 @@ internal sealed class McpOAuthService
     // no longer true (e.g. a fresh refresh token or expiry is observed).
     private readonly ConcurrentDictionary<McpServerName, byte> _warnedNoRefreshToken = new();
     private readonly ConcurrentDictionary<McpServerName, byte> _warnedUnknownExpiry = new();
+
+    // OAuth error code of the last terminal refresh rejection per server, so
+    // the connection manager can surface the specific code (invalid_grant vs
+    // invalid_client vs unauthorized_client) in the server status. Written
+    // just before the tokens are cleared; removed when the operator completes
+    // a fresh auth flow.
+    private readonly ConcurrentDictionary<McpServerName, string> _terminalRefreshErrors = new();
+
+    /// <summary>
+    /// True when the server's last refresh attempt was terminally rejected;
+    /// <paramref name="errorCode"/> carries the OAuth error code. Callers
+    /// should pair this with a tokens-cleared check (<see cref="GetTokenSet"/>
+    /// returning null) — the record intentionally lingers until re-auth so the
+    /// distinct status survives reconnect attempts.
+    /// </summary>
+    internal bool TryGetTerminalRefreshRejection(
+        McpServerName serverName, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? errorCode)
+        => _terminalRefreshErrors.TryGetValue(serverName, out errorCode);
 
     /// <summary>
     /// Get a valid access token for the given MCP server, refreshing proactively
@@ -501,38 +526,6 @@ internal sealed class McpOAuthService
                 extraParams,
                 ct);
 
-            if (result is null)
-            {
-                // OAuthPkceService.RefreshTokenAsync surfaces invalid_grant as a
-                // null return; every other non-2xx response is thrown and
-                // handled in the catch below. invalid_grant is terminal per
-                // RFC 6749 §5.2 — the grant was revoked, or (with rotating
-                // refresh tokens) already consumed — so retrying with the same
-                // refresh token will never succeed. Clear it now so callers
-                // stop retrying and fail straight to `netclaw mcp auth` instead
-                // of looping against a dead grant.
-                _logger.LogWarning(
-                    "Token refresh rejected for MCP server '{Name}': invalid_grant (terminal) — re-authorization required",
-                    serverName.Value);
-                _tokens.TryRemove(serverName, out _);
-                PersistTokens();
-
-                _notificationSink.Emit(OperationalAlert.Create(
-                    _timeProvider,
-                    "mcp.auth.expired",
-                    AlertType.McpAuthExpired,
-                    $"MCP server '{serverName.Value}' refresh token rejected (invalid_grant). Run: netclaw mcp auth {serverName.Value}",
-                    AlertSeverity.Warning,
-                    source: serverName.Value,
-                    context: new Dictionary<string, string>
-                    {
-                        ["serverName"] = serverName.Value,
-                        ["reason"] = "invalid_grant",
-                    }));
-
-                return null;
-            }
-
             var newTokenSet = new McpOAuthTokenSet
             {
                 AccessToken = result.AccessToken,
@@ -550,18 +543,79 @@ internal sealed class McpOAuthService
             _logger.LogInformation("Token refreshed for MCP server '{Name}'", serverName.Value);
             return newTokenSet.AccessToken.Value;
         }
+        catch (OAuthTokenRefreshRejectedException ex)
+        {
+            // Terminal per RFC 6749 §5.2 — one shared path for all three codes,
+            // with the code carried as data. invalid_grant: the grant was
+            // revoked or the rotating refresh token already consumed.
+            // invalid_client / unauthorized_client: the client registration
+            // itself is dead (e.g. a provider purged its DCR'd client IDs).
+            // Either way, retrying with the same credentials can never succeed:
+            // clear the stored tokens so callers stop retrying and fail
+            // straight to `netclaw mcp auth`.
+            _logger.LogWarning(
+                "Token refresh rejected for MCP server '{Name}': {ErrorCode} (terminal, HTTP {StatusCode}) — re-authorization required",
+                serverName.Value, ex.ErrorCode, (int)ex.StatusCode);
+
+            // Record the code before clearing the tokens: readers pair the
+            // rejection record with a tokens-cleared check, so the record must
+            // be visible first.
+            _terminalRefreshErrors[serverName] = ex.ErrorCode;
+            _tokens.TryRemove(serverName, out _);
+            PersistTokens();
+
+            if (ex.ErrorCode is "invalid_client" or "unauthorized_client")
+                ClearRegisteredClient(serverName);
+
+            _notificationSink.Emit(OperationalAlert.Create(
+                _timeProvider,
+                "mcp.auth.expired",
+                AlertType.McpAuthExpired,
+                $"MCP server '{serverName.Value}' token refresh rejected ({ex.ErrorCode}). Run: netclaw mcp auth {serverName.Value}",
+                AlertSeverity.Warning,
+                source: serverName.Value,
+                context: new Dictionary<string, string>
+                {
+                    ["serverName"] = serverName.Value,
+                    ["reason"] = ex.ErrorCode,
+                }));
+
+            return null;
+        }
         catch (Exception ex)
         {
-            // Transient failure: network error, or a non-2xx/non-invalid_grant
-            // response (5xx, invalid_client, etc.) surfaced by EnsureSuccessStatusCode.
-            // Tokens are retained so the server stays retryable — the next
-            // proactive tick or reactive 401 will try again.
+            // Transient failure: network error, 5xx, or a 4xx without a
+            // recognized terminal OAuth error code (surfaced by
+            // EnsureSuccessStatusCode). Tokens are retained so the server stays
+            // retryable — the next proactive tick or reactive 401 will try again.
             var statusCode = (ex as HttpRequestException)?.StatusCode;
             _logger.LogWarning(ex,
                 "Token refresh failed for MCP server '{Name}' (status={StatusCode}); tokens retained, will retry",
                 serverName.Value, statusCode?.ToString() ?? "n/a");
             return null;
         }
+    }
+
+    /// <summary>
+    /// Drops the cached (DCR-issued) client_id after the auth server rejected
+    /// the client itself. <see cref="EnsureClientRegisteredAsync"/>
+    /// short-circuits on a cached <see cref="McpOAuthServerMetadata.ClientId"/>,
+    /// so without this the next `netclaw mcp auth` would reuse the dead
+    /// client_id; clearing it forces a fresh dynamic registration. Statically
+    /// configured client IDs (<see cref="McpServerEntry.OAuthClientId"/>) take
+    /// precedence there and are re-applied regardless.
+    /// </summary>
+    private void ClearRegisteredClient(McpServerName serverName)
+    {
+        if (!_metadata.TryGetValue(serverName, out var meta) || string.IsNullOrEmpty(meta.ClientId))
+            return;
+
+        meta.ClientId = null;
+        _metadata[serverName] = meta;
+        PersistMetadata();
+        _logger.LogWarning(
+            "Cleared cached OAuth client registration for MCP server '{Name}'; the next authorization will re-register",
+            serverName.Value);
     }
 
     // ── SDK Token Cache Bridge ──────────────────────────────────────────

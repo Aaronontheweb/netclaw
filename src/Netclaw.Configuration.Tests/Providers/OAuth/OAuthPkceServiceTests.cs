@@ -288,20 +288,77 @@ public class OAuthPkceServiceTests
         Assert.Equal("old-refresh", result.RefreshToken!.Value);
     }
 
-    [Fact]
-    public async Task RefreshToken_InvalidGrant_ReturnsNull()
+    [Theory]
+    [InlineData("invalid_grant", HttpStatusCode.BadRequest)]
+    [InlineData("invalid_client", HttpStatusCode.Unauthorized)]
+    [InlineData("unauthorized_client", HttpStatusCode.BadRequest)]
+    public async Task RefreshToken_TerminalOAuthError_ThrowsRejectedWithErrorCode(
+        string errorCode, HttpStatusCode status)
     {
         var handler = new FakeHttpMessageHandler(_ =>
-            JsonResponse(new { error = "invalid_grant" }, HttpStatusCode.BadRequest));
+            JsonResponse(new { error = errorCode }, status));
 
         var service = new OAuthPkceService(new HttpClient(handler));
 
-        var result = await service.RefreshTokenAsync(
-            "https://auth.example.com/token",
-            "test-client",
-            new SensitiveString("expired-refresh"), ct: TestContext.Current.CancellationToken);
+        var ex = await Assert.ThrowsAsync<OAuthTokenRefreshRejectedException>(() =>
+            service.RefreshTokenAsync(
+                "https://auth.example.com/token",
+                "test-client",
+                new SensitiveString("expired-refresh"), ct: TestContext.Current.CancellationToken));
 
-        Assert.Null(result);
+        Assert.Equal(errorCode, ex.ErrorCode);
+        Assert.Equal(status, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task RefreshToken_UnrecognizedOAuthError_ThrowsHttpRequestException()
+    {
+        // "invalid_request" is a 4xx OAuth error but NOT a terminal refresh
+        // code — it must stay transient (retryable), not clear credentials.
+        var handler = new FakeHttpMessageHandler(_ =>
+            JsonResponse(new { error = "invalid_request" }, HttpStatusCode.BadRequest));
+
+        var service = new OAuthPkceService(new HttpClient(handler));
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            service.RefreshTokenAsync(
+                "https://auth.example.com/token",
+                "test-client",
+                new SensitiveString("expired-refresh"), ct: TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task RefreshToken_UnparsableErrorBody_ThrowsHttpRequestException()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = new StringContent("<html>gateway error</html>"),
+        });
+
+        var service = new OAuthPkceService(new HttpClient(handler));
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            service.RefreshTokenAsync(
+                "https://auth.example.com/token",
+                "test-client",
+                new SensitiveString("expired-refresh"), ct: TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task RefreshToken_ServerErrorWithTerminalShapedBody_ThrowsHttpRequestException()
+    {
+        // A 5xx is a server-side fault worth retrying even when its body
+        // happens to carry a terminal-looking error code.
+        var handler = new FakeHttpMessageHandler(_ =>
+            JsonResponse(new { error = "invalid_grant" }, HttpStatusCode.ServiceUnavailable));
+
+        var service = new OAuthPkceService(new HttpClient(handler));
+
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            service.RefreshTokenAsync(
+                "https://auth.example.com/token",
+                "test-client",
+                new SensitiveString("expired-refresh"), ct: TestContext.Current.CancellationToken));
     }
 
     [Fact]
