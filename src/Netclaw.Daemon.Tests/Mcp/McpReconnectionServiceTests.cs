@@ -164,6 +164,31 @@ public sealed class McpReconnectionServiceTests
         Assert.Equal(countBefore + 1, _reconnectable.ReconnectCallCount);
     }
 
+    [Fact]
+    public async Task RefreshOAuthTokensAsync_DelegatesToReconnectable()
+    {
+        _reconnectable.OnRefreshOAuthTokens = _ => Task.CompletedTask;
+
+        var service = CreateService();
+        await service.RefreshOAuthTokensAsync(CancellationToken.None);
+
+        Assert.Equal(1, _reconnectable.RefreshOAuthTokensCallCount);
+    }
+
+    [Fact]
+    public async Task RefreshOAuthTokensAsync_SwallowsExceptionsWithoutCrashing()
+    {
+        _reconnectable.OnRefreshOAuthTokens = _ => throw new InvalidOperationException("boom");
+
+        var service = CreateService();
+
+        // Should not throw — a failing proactive-refresh sweep must not kill
+        // the background service loop.
+        await service.RefreshOAuthTokensAsync(CancellationToken.None);
+
+        Assert.Equal(1, _reconnectable.RefreshOAuthTokensCallCount);
+    }
+
     [Theory]
     [InlineData(0, 0)]
     [InlineData(1, 30_000)]
@@ -181,10 +206,13 @@ public sealed class McpReconnectionServiceTests
     {
         private readonly Dictionary<McpServerName, McpServerStatus> _statuses = new();
         private int _reconnectCallCount;
+        private int _refreshOAuthTokensCallCount;
 
         public int ReconnectCallCount => Volatile.Read(ref _reconnectCallCount);
+        public int RefreshOAuthTokensCallCount => Volatile.Read(ref _refreshOAuthTokensCallCount);
 
         public Func<McpServerName, CancellationToken, Task<bool>>? OnReconnect { get; set; }
+        public Func<CancellationToken, Task>? OnRefreshOAuthTokens { get; set; }
 
         public void SetStatus(string name, McpConnectionState state, int toolCount = 0)
         {
@@ -202,6 +230,13 @@ public sealed class McpReconnectionServiceTests
             if (OnReconnect is not null)
                 return await OnReconnect(serverName, ct);
             return false;
+        }
+
+        public async Task RefreshOAuthTokensAsync(CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref _refreshOAuthTokensCallCount);
+            if (OnRefreshOAuthTokens is not null)
+                await OnRefreshOAuthTokens(ct);
         }
     }
 

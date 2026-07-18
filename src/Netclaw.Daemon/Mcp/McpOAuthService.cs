@@ -332,9 +332,34 @@ internal sealed class McpOAuthService
     // ── Token Access ───────────────────────────────────────────────────
 
     /// <summary>
-    /// Get a valid access token for the given MCP server. Refreshes automatically
-    /// if the token is expired and a refresh token is available. Returns null
-    /// if no token is available or refresh fails.
+    /// How far ahead of the persisted <see cref="McpOAuthTokenSet.ExpiresAt"/> to
+    /// refresh proactively, rather than waiting for the SDK's own on-401 fallback
+    /// (which is silent, and on our headless wiring terminates in a generic
+    /// failure — see <c>ClientOAuthProvider</c>). Ten minutes comfortably spans
+    /// several <see cref="McpReconnectionService"/> ticks (30s each) plus the
+    /// refresh request itself and clock skew against the provider.
+    /// </summary>
+    internal static readonly TimeSpan ProactiveRefreshWindow = TimeSpan.FromMinutes(10);
+
+    // Per-server refresh single-flight. Providers such as Notion rotate the
+    // refresh token on every redemption and treat concurrent redemption of the
+    // same refresh token as theft, revoking the whole grant — so at most one
+    // refresh call per server may be in flight at a time.
+    private readonly ConcurrentDictionary<McpServerName, SemaphoreSlim> _refreshGates = new();
+
+    // De-dupe advisory warnings that would otherwise re-log on every
+    // proactive-refresh tick (every 30s) for a server stuck in a state the
+    // operator already knows about. Cleared once the underlying condition is
+    // no longer true (e.g. a fresh refresh token or expiry is observed).
+    private readonly ConcurrentDictionary<McpServerName, byte> _warnedNoRefreshToken = new();
+    private readonly ConcurrentDictionary<McpServerName, byte> _warnedUnknownExpiry = new();
+
+    /// <summary>
+    /// Get a valid access token for the given MCP server, refreshing proactively
+    /// (ahead of <see cref="McpOAuthTokenSet.ExpiresAt"/> by <see cref="ProactiveRefreshWindow"/>)
+    /// as well as reactively (already expired). Refreshes are single-flighted
+    /// per server. Returns null if no token is cached, no refresh token is
+    /// available, or the refresh attempt failed.
     /// </summary>
     public async Task<string?> GetValidTokenAsync(
         McpServerName serverName, McpServerEntry entry, CancellationToken ct)
@@ -342,32 +367,108 @@ internal sealed class McpOAuthService
         if (!_tokens.TryGetValue(serverName, out var tokenSet))
             return null;
 
-        // If token hasn't expired, use it
-        if (tokenSet.ExpiresAt is null || tokenSet.ExpiresAt > _timeProvider.GetUtcNow())
+        if (!NeedsRefresh(tokenSet))
             return tokenSet.AccessToken.Value;
 
-        // Attempt refresh
-        if (tokenSet.RefreshToken is null)
+        var gate = _refreshGates.GetOrAdd(serverName, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
         {
-            _logger.LogWarning("Access token expired for MCP server '{Name}' with no refresh token", serverName.Value);
+            // Re-read and re-check under the gate: a concurrent caller may have
+            // already refreshed — or a terminal invalid_grant may have just
+            // cleared the tokens entirely — while we were waiting.
+            if (!_tokens.TryGetValue(serverName, out tokenSet))
+                return null;
 
-            _notificationSink.Emit(OperationalAlert.Create(
-                _timeProvider,
-                "mcp.auth.expired",
-                AlertType.McpAuthExpired,
-                $"MCP server '{serverName.Value}' access token expired with no refresh token. Run: netclaw mcp auth {serverName.Value}",
-                AlertSeverity.Warning,
-                source: serverName.Value,
-                context: new Dictionary<string, string>
-                {
-                    ["serverName"] = serverName.Value,
-                    ["reason"] = "no_refresh_token",
-                }));
+            if (!NeedsRefresh(tokenSet))
+                return tokenSet.AccessToken.Value;
 
-            return null;
+            if (tokenSet.RefreshToken is null)
+            {
+                WarnNoRefreshToken(serverName, tokenSet.ExpiresAt);
+                return null;
+            }
+
+            return await RefreshTokenAsync(serverName, entry, tokenSet, ct);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private bool NeedsRefresh(McpOAuthTokenSet tokenSet)
+        => tokenSet.ExpiresAt is not null
+           && tokenSet.ExpiresAt.Value - ProactiveRefreshWindow <= _timeProvider.GetUtcNow();
+
+    /// <summary>
+    /// Structural check, independent of proactive-refresh timing: if a token
+    /// set is time-limited but has no refresh token, silent refresh is
+    /// impossible no matter how far off expiry is. Called at connect time and
+    /// on every proactive-refresh tick so operators get advance warning instead
+    /// of discovering it only once the token has already expired.
+    /// </summary>
+    public void WarnIfMissingRefreshToken(McpServerName serverName)
+    {
+        if (!_tokens.TryGetValue(serverName, out var tokenSet) || tokenSet.ExpiresAt is null)
+            return;
+
+        if (tokenSet.RefreshToken is not null)
+        {
+            _warnedNoRefreshToken.TryRemove(serverName, out _);
+            return;
         }
 
-        return await RefreshTokenAsync(serverName, entry, tokenSet, ct);
+        WarnNoRefreshToken(serverName, tokenSet.ExpiresAt);
+    }
+
+    /// <summary>
+    /// Notes (once) that a server's token set has no known expiry, so proactive
+    /// refresh cannot be scheduled for it — only the reactive on-401 path
+    /// applies. Called from the proactive-refresh sweep only; unlike
+    /// <see cref="WarnIfMissingRefreshToken"/> this is not connect-time
+    /// guidance, it is a guard against silently skipping proactive refresh.
+    /// </summary>
+    public void NoteUnknownExpiryOnce(McpServerName serverName)
+    {
+        if (!_tokens.TryGetValue(serverName, out var tokenSet))
+            return;
+
+        if (tokenSet.ExpiresAt is not null)
+        {
+            _warnedUnknownExpiry.TryRemove(serverName, out _);
+            return;
+        }
+
+        if (!_warnedUnknownExpiry.TryAdd(serverName, 0))
+            return;
+
+        _logger.LogWarning(
+            "MCP server '{Name}' token set has no known expiry; cannot schedule proactive refresh ahead of time — reactive (on-401) refresh still applies",
+            serverName.Value);
+    }
+
+    private void WarnNoRefreshToken(McpServerName serverName, DateTimeOffset? expiresAt)
+    {
+        if (!_warnedNoRefreshToken.TryAdd(serverName, 0))
+            return;
+
+        _logger.LogWarning(
+            "MCP server '{Name}' has no refresh token; silent refresh is impossible and manual re-authorization will be required at expiry ({ExpiresAt})",
+            serverName.Value, expiresAt);
+
+        _notificationSink.Emit(OperationalAlert.Create(
+            _timeProvider,
+            "mcp.auth.expired",
+            AlertType.McpAuthExpired,
+            $"MCP server '{serverName.Value}' has no refresh token; access token expires at {expiresAt:u} and silent refresh is impossible. Run: netclaw mcp auth {serverName.Value}",
+            AlertSeverity.Warning,
+            source: serverName.Value,
+            context: new Dictionary<string, string>
+            {
+                ["serverName"] = serverName.Value,
+                ["reason"] = "no_refresh_token",
+            }));
     }
 
     // ── Token Refresh ──────────────────────────────────────────────────
@@ -402,7 +503,17 @@ internal sealed class McpOAuthService
 
             if (result is null)
             {
-                _logger.LogWarning("Refresh token rejected for MCP server '{Name}' (invalid_grant). Re-authorization required.", serverName.Value);
+                // OAuthPkceService.RefreshTokenAsync surfaces invalid_grant as a
+                // null return; every other non-2xx response is thrown and
+                // handled in the catch below. invalid_grant is terminal per
+                // RFC 6749 §5.2 — the grant was revoked, or (with rotating
+                // refresh tokens) already consumed — so retrying with the same
+                // refresh token will never succeed. Clear it now so callers
+                // stop retrying and fail straight to `netclaw mcp auth` instead
+                // of looping against a dead grant.
+                _logger.LogWarning(
+                    "Token refresh rejected for MCP server '{Name}': invalid_grant (terminal) — re-authorization required",
+                    serverName.Value);
                 _tokens.TryRemove(serverName, out _);
                 PersistTokens();
 
@@ -433,13 +544,22 @@ internal sealed class McpOAuthService
 
             _tokens[serverName] = newTokenSet;
             PersistTokens();
+            _warnedNoRefreshToken.TryRemove(serverName, out _);
+            _warnedUnknownExpiry.TryRemove(serverName, out _);
 
             _logger.LogInformation("Token refreshed for MCP server '{Name}'", serverName.Value);
             return newTokenSet.AccessToken.Value;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to refresh token for MCP server '{Name}'", serverName.Value);
+            // Transient failure: network error, or a non-2xx/non-invalid_grant
+            // response (5xx, invalid_client, etc.) surfaced by EnsureSuccessStatusCode.
+            // Tokens are retained so the server stays retryable — the next
+            // proactive tick or reactive 401 will try again.
+            var statusCode = (ex as HttpRequestException)?.StatusCode;
+            _logger.LogWarning(ex,
+                "Token refresh failed for MCP server '{Name}' (status={StatusCode}); tokens retained, will retry",
+                serverName.Value, statusCode?.ToString() ?? "n/a");
             return null;
         }
     }

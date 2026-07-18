@@ -45,6 +45,28 @@ internal sealed class McpReconnectionService : BackgroundService
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
             await CheckAndReconnectAsync(stoppingToken);
+            await RefreshOAuthTokensAsync(stoppingToken);
+        }
+    }
+
+    /// <summary>
+    /// Drives <see cref="IMcpReconnectable.RefreshOAuthTokensAsync"/> on the
+    /// same 30s cadence as reconnection — the natural existing host for
+    /// proactive OAuth refresh (see McpOAuthService.ProactiveRefreshWindow).
+    /// </summary>
+    internal async Task RefreshOAuthTokensAsync(CancellationToken ct)
+    {
+        try
+        {
+            await _mcpReconnectable.RefreshOAuthTokensAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Proactive MCP OAuth token refresh sweep threw an exception");
         }
     }
 

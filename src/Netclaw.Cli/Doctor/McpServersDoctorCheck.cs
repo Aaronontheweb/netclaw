@@ -263,7 +263,13 @@ public sealed class McpServersDoctorCheck(NetclawPaths paths, DaemonApi daemonAp
             switch (state)
             {
                 case "Connected":
-                    statusMessages.Add($"{name}: connected ({toolCount} tools)");
+                    // `error` doubles as an advisory slot for otherwise-healthy
+                    // servers — e.g. an OAuth token with no refresh token, which
+                    // will hard-fail at expiry with no chance of silent
+                    // recovery. See McpClientManager.BuildOAuthAdvisory.
+                    statusMessages.Add(string.IsNullOrEmpty(error)
+                        ? $"{name}: connected ({toolCount} tools)"
+                        : $"{name}: connected ({toolCount} tools) — {error}");
                     break;
                 case "AwaitingAuth":
                     hasAwaitingAuth = true;

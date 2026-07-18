@@ -406,6 +406,8 @@ public sealed class McpEndpointRouteBuilderExtensionsTests : IDisposable
 
         public Task<bool> TryReconnectAsync(McpServerName serverName, CancellationToken ct = default) =>
             Task.FromResult(false);
+
+        public Task RefreshOAuthTokensAsync(CancellationToken ct = default) => Task.CompletedTask;
     }
 
     private sealed class TrackingReconnectable : IMcpReconnectable
@@ -429,5 +431,7 @@ public sealed class McpEndpointRouteBuilderExtensionsTests : IDisposable
             _tcs.TrySetResult();
             return Task.FromResult(true);
         }
+
+        public Task RefreshOAuthTokensAsync(CancellationToken ct = default) => Task.CompletedTask;
     }
 }

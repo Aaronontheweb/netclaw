@@ -74,6 +74,7 @@ debugging a daemon-wide problem → read `daemon.log`.
 |---------|-------|
 | No LLM responses | `netclaw doctor`; verify provider credentials |
 | Missing tools | `netclaw mcp list`; check MCP connection state |
+| MCP server `auth failed` in `netclaw doctor` / `netclaw mcp status` | Fixed by `netclaw mcp auth <name>` either way, but the message tells you which case: "refresh rejected (invalid_grant)" means Netclaw's proactive refresh got a terminal rejection from the provider — the stored tokens were already cleared and the connection torn down (a revoked/rotated grant, not a config error). A generic "authentication rejected by server" means static credentials (token/headers) were rejected. `awaiting auth` is different from both — that server has never completed OAuth at all. A server reported **connected** with a "No refresh token" note is healthy now but cannot silently refresh; re-run `netclaw mcp auth <name>` before its current token expires. |
 | Memory recall degraded | `netclaw status` memory section |
 | Daemon won't start | crash logs at `<NETCLAW_HOME>/logs/crash-*.log` (`NETCLAW_HOME` defaults to `~/.netclaw`) |
 | Docker daemon cannot create `/home/netclaw/.netclaw/*` | Official image entrypoint repairs writable bind mounts to UID/GID `1654:1654`; if bypassed or read-only, run `sudo chown -R 1654:1654 <host-data-dir>` or use a Docker named volume |

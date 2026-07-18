@@ -232,6 +232,40 @@ public sealed class McpServersDoctorCheckTests : IDisposable
     }
 
     [Fact]
+    public async Task DaemonReportedConnectedWithNoRefreshTokenAdvisory_ReturnsPassButSurfacesAdvisory()
+    {
+        WriteConfig(new
+        {
+            configVersion = 1,
+            McpServers = new
+            {
+                notion = new
+                {
+                    Transport = "http",
+                    Url = "https://mcp.example.com",
+                    Enabled = true,
+                }
+            }
+        });
+
+        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(new
+        {
+            notion = new
+            {
+                state = "Connected",
+                toolCount = 5,
+                error = "No refresh token — re-authorization will be required at expiry. Run: netclaw mcp auth notion"
+            }
+        })));
+
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Pass, result.Severity);
+        Assert.Contains("connected (5 tools)", result.Message);
+        Assert.Contains("No refresh token", result.Message);
+    }
+
+    [Fact]
     public async Task OfflineOAuthProbe_DoesNotClaimAuthFailure()
     {
         using var server = new UnauthorizedHttpServer();

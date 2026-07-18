@@ -33,6 +33,14 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
 
     private readonly ConcurrentDictionary<McpServerName, McpServerStatus> _statuses = new();
 
+    // Serializes reconnect/teardown per server. Concurrent tool-invocation
+    // failures against the same server (see InvokeSharedAsync) can each
+    // independently reach TryReconnectAsync; without this gate they would race
+    // to tear down and rebuild the same McpClient, leaking the loser's
+    // client/process. Also shared by the proactive-refresh sweep's teardown on
+    // a terminal invalid_grant.
+    private readonly ConcurrentDictionary<McpServerName, SemaphoreSlim> _reconnectGates = new();
+
     public McpClientManager(
         Dictionary<string, McpServerEntry> serverEntries,
         ToolRegistry toolRegistry,
@@ -112,16 +120,118 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         if (!_serverEntries.TryGetValue(serverName.Value, out var entry) || !entry.Enabled)
             return false;
 
-        if (_clients.TryRemove(serverName, out var existing))
+        var gate = _reconnectGates.GetOrAdd(serverName, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
         {
-            try { await existing.DisposeAsync(); }
-            catch (Exception ex) { _logger.LogDebug(ex, "Error disposing MCP client '{Name}' during reconnect", serverName.Value); }
+            if (_clients.TryRemove(serverName, out var existing))
+            {
+                try { await existing.DisposeAsync(); }
+                catch (Exception ex) { _logger.LogDebug(ex, "Error disposing MCP client '{Name}' during reconnect", serverName.Value); }
+            }
+
+            _sharedToolFunctions.TryRemove(serverName, out _);
+
+            return await ConnectAsync(serverName, entry, ct);
         }
-
-        _sharedToolFunctions.TryRemove(serverName, out _);
-
-        return await ConnectAsync(serverName, entry, ct);
+        finally
+        {
+            gate.Release();
+        }
     }
+
+    /// <summary>
+    /// Proactively refreshes OAuth tokens for connected, OAuth-managed servers
+    /// ahead of expiry (see <see cref="McpOAuthService.ProactiveRefreshWindow"/>),
+    /// and surfaces advance warnings for token sets that cannot self-heal. If a
+    /// refresh comes back terminally rejected (invalid_grant), the connection
+    /// is torn down immediately and marked with a status distinct from a
+    /// generic connectivity failure or "never authenticated" — see
+    /// <see cref="CreateRefreshRejectedStatus"/>. Called once per
+    /// <see cref="McpReconnectionService"/> tick.
+    /// </summary>
+    public async Task RefreshOAuthTokensAsync(CancellationToken ct = default)
+    {
+        foreach (var (name, status) in _statuses)
+        {
+            if (status.State is not McpConnectionState.Connected)
+                continue;
+
+            if (!_serverEntries.TryGetValue(name.Value, out var entry) || !entry.Enabled)
+                continue;
+
+            if (_oauthService.GetTokenSet(name) is null)
+                continue; // not an OAuth-managed server
+
+            try
+            {
+                _oauthService.NoteUnknownExpiryOnce(name);
+                _oauthService.WarnIfMissingRefreshToken(name);
+
+                await _oauthService.GetValidTokenAsync(name, entry, ct);
+
+                var tokenSet = _oauthService.GetTokenSet(name);
+                if (tokenSet is null)
+                {
+                    // Tokens were just cleared: terminal invalid_grant (already
+                    // logged and alerted by McpOAuthService). Tear the
+                    // connection down now rather than waiting for the next
+                    // tool call to 401 into a generic failure.
+                    await TearDownConnectionAsync(name);
+                    _statuses[name] = CreateRefreshRejectedStatus(name);
+                    _logger.LogWarning(
+                        "MCP server '{Name}' OAuth grant revoked (invalid_grant); disconnected pending re-authorization",
+                        name.Value);
+                    continue;
+                }
+
+                var advisory = BuildOAuthAdvisory(name, tokenSet);
+                if (_statuses.TryGetValue(name, out var current) && current.ErrorMessage != advisory)
+                    _statuses[name] = current with { ErrorMessage = advisory };
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Proactive OAuth token refresh threw for MCP server '{Name}'", name.Value);
+            }
+        }
+    }
+
+    private async Task TearDownConnectionAsync(McpServerName name)
+    {
+        var gate = _reconnectGates.GetOrAdd(name, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync();
+        try
+        {
+            if (_clients.TryRemove(name, out var client))
+            {
+                try { await client.DisposeAsync(); }
+                catch (Exception ex) { _logger.LogDebug(ex, "Error disposing MCP client '{Name}' after auth revocation", name.Value); }
+            }
+
+            _sharedToolFunctions.TryRemove(name, out _);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Advisory text for an otherwise-healthy Connected status: null unless the
+    /// token set is time-limited but has no refresh token, in which case the
+    /// server will hard-fail at expiry with no chance of silent recovery.
+    /// Surfaced through <c>McpServerStatusDto.Error</c> even for the Connected
+    /// state so `netclaw doctor` and the daemon status API can show it ahead
+    /// of time (see McpServersDoctorCheck's "Connected" case).
+    /// </summary>
+    private static string? BuildOAuthAdvisory(McpServerName serverName, McpOAuthTokenSet? tokenSet)
+        => tokenSet is { RefreshToken: null, ExpiresAt: not null }
+            ? $"No refresh token — re-authorization will be required at expiry. Run: netclaw mcp auth {serverName.Value}"
+            : null;
 
     public async Task<string> InvokeAsync(
         string serverName,
@@ -227,7 +337,14 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             _sharedToolFunctions[name] = sharedFunctions;
             _clients[name] = client;
             client = null;
-            _statuses[name] = new McpServerStatus(name, McpConnectionState.Connected, tools.Count, null);
+
+            // Advance warning for OAuth-managed servers whose token can never
+            // self-refresh, surfaced both in the log and in the Connected
+            // status text (doctor/status API) — see BuildOAuthAdvisory.
+            var tokenSet = _oauthService.GetTokenSet(name);
+            if (tokenSet is not null)
+                _oauthService.WarnIfMissingRefreshToken(name);
+            _statuses[name] = new McpServerStatus(name, McpConnectionState.Connected, tools.Count, BuildOAuthAdvisory(name, tokenSet));
 
             _logger.LogInformation("MCP server '{Name}' connected ({ToolCount} tools)", name.Value, tools.Count);
             return true;
@@ -323,6 +440,30 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                     _logger.LogWarning("MCP server '{Name}' requires OAuth authorization", name.Value);
                     EmitAuthAlert(name, $"MCP server '{name.Value}' requires OAuth authorization. Run: netclaw mcp auth {name.Value}", "authorization_required");
 
+                    return null;
+                }
+            }
+            else
+            {
+                // Route the (re)connect through Netclaw's logged, single-flighted
+                // refresh path first, so the cached token the SDK's ITokenCache
+                // bridge (McpTokenCacheAdapter) sees is already fresh. The SDK's
+                // own on-401 refresh — silent, and headless-fatal on our stubbed
+                // AuthorizationRedirectDelegate — then almost never has to run.
+                await _oauthService.GetValidTokenAsync(name, entry, ct);
+
+                if (_oauthService.GetTokenSet(name) is null)
+                {
+                    // The refresh above came back terminally rejected
+                    // (invalid_grant) and already cleared the tokens, logging
+                    // and alerting. Fail fast with a status distinct from a
+                    // generic connectivity failure instead of letting the
+                    // doomed connection attempt fall through to the SDK's
+                    // silent headless-auth failure path.
+                    _statuses[name] = CreateRefreshRejectedStatus(name);
+                    _logger.LogWarning(
+                        "MCP server '{Name}' OAuth grant revoked (invalid_grant); re-authorization required",
+                        name.Value);
                     return null;
                 }
             }
@@ -457,6 +598,20 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
     internal static McpServerStatus CreateUnreachableStatus(McpServerName serverName, Exception ex)
         => new(serverName, McpConnectionState.Unreachable, 0,
             string.IsNullOrWhiteSpace(ex.Message) ? "Failed to reach MCP server." : ex.Message);
+
+    /// <summary>
+    /// Distinct from <see cref="CreateAuthFailedStatus"/>'s generic "authentication
+    /// rejected by server" text: this fires specifically when Netclaw's own
+    /// refresh path (McpOAuthService) got a terminal invalid_grant response and
+    /// cleared the stored tokens, so operators can tell "grant revoked by
+    /// provider" apart from "never authenticated" (AwaitingAuth) or a generic
+    /// connectivity failure (Unreachable). Uses the AuthFailed state so the
+    /// reconnection service's backoff loop — which only retries Unreachable
+    /// servers — never auto-retries a dead grant.
+    /// </summary>
+    internal static McpServerStatus CreateRefreshRejectedStatus(McpServerName serverName)
+        => new(serverName, McpConnectionState.AuthFailed, 0,
+            $"Refresh rejected by provider (invalid_grant) — re-authorization required. Run: netclaw mcp auth {serverName.Value}");
 
     private void EmitAuthAlert(McpServerName serverName, string summary, string reason)
     {

@@ -6,7 +6,9 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Secrets;
 using Netclaw.Daemon.Mcp;
@@ -20,6 +22,219 @@ namespace Netclaw.Daemon.Tests.Mcp;
 public sealed class McpOAuthServiceTests : IDisposable
 {
     private readonly DisposableTempDir _dir = new();
+
+    // ── Refresh: single-flight, invalid_grant, transient, proactive, missing-refresh-token ──
+
+    [Fact]
+    public async Task GetValidTokenAsync_InvalidGrant_ClearsTokensAndDoesNotRetry()
+    {
+        var now = new DateTimeOffset(2026, 6, 23, 12, 0, 0, TimeSpan.Zero);
+        var time = new FakeTimeProvider(now);
+        var sink = new RecordingNotificationSink();
+        var handler = new TokenEndpointHandler
+        {
+            RefreshResponse = _ => FakeHttpMessageHandler.JsonResponse(new { error = "invalid_grant" }, HttpStatusCode.BadRequest),
+        };
+        var serverName = new McpServerName("notion");
+        var entry = CreateHttpEntry();
+        var service = CreateService(CreateDiscoveryClient(), new OAuthPkceService(new HttpClient(handler), time),
+            timeProvider: time, notificationSink: sink);
+
+        await SeedTokenAsync(service, serverName, entry, handler, expiresInSeconds: 60, refreshToken: "refresh-old");
+        time.Advance(TimeSpan.FromMinutes(5)); // well past expiry
+
+        var token = await service.GetValidTokenAsync(serverName, entry, TestContext.Current.CancellationToken);
+
+        Assert.Null(token);
+        Assert.Null(service.GetTokenSet(serverName));
+        Assert.Equal(1, handler.RefreshCallCount);
+
+        var alert = Assert.Single(sink.Alerts);
+        Assert.Equal(AlertType.McpAuthExpired, alert.Category);
+        Assert.Equal("invalid_grant", alert.Context!["reason"]);
+
+        // Subsequent calls must not re-attempt refresh against cleared tokens.
+        var second = await service.GetValidTokenAsync(serverName, entry, TestContext.Current.CancellationToken);
+        Assert.Null(second);
+        Assert.Equal(1, handler.RefreshCallCount);
+    }
+
+    [Fact]
+    public async Task GetValidTokenAsync_TransientFailure_RetainsTokensAndLogsStatus()
+    {
+        var now = new DateTimeOffset(2026, 6, 23, 12, 0, 0, TimeSpan.Zero);
+        var time = new FakeTimeProvider(now);
+        var handler = new TokenEndpointHandler
+        {
+            RefreshResponse = _ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable),
+        };
+        var serverName = new McpServerName("notion");
+        var entry = CreateHttpEntry();
+        var logger = new RecordingLogger<McpOAuthService>();
+        var service = CreateService(CreateDiscoveryClient(), new OAuthPkceService(new HttpClient(handler), time),
+            timeProvider: time, logger: logger);
+
+        await SeedTokenAsync(service, serverName, entry, handler, expiresInSeconds: 60, refreshToken: "refresh-old");
+        time.Advance(TimeSpan.FromMinutes(5));
+
+        var token = await service.GetValidTokenAsync(serverName, entry, TestContext.Current.CancellationToken);
+
+        Assert.Null(token);
+        Assert.Equal(1, handler.RefreshCallCount);
+
+        // Tokens retained — server stays retryable, not clobbered by a transient 503.
+        var retained = service.GetTokenSet(serverName);
+        Assert.NotNull(retained);
+        Assert.Equal("refresh-old", retained!.RefreshToken!.Value);
+
+        Assert.Contains(logger.Entries, e => e.Level == LogLevel.Warning
+            && e.Message.Contains("notion", StringComparison.Ordinal)
+            && e.Message.Contains("ServiceUnavailable", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task GetValidTokenAsync_ConcurrentCallsWithExpiredToken_SingleFlightsRefresh()
+    {
+        var now = new DateTimeOffset(2026, 6, 23, 12, 0, 0, TimeSpan.Zero);
+        var time = new FakeTimeProvider(now);
+        var handler = new GatedTokenEndpointHandler();
+        var serverName = new McpServerName("notion");
+        var entry = CreateHttpEntry();
+        var service = CreateService(CreateDiscoveryClient(), new OAuthPkceService(new HttpClient(handler), time),
+            timeProvider: time);
+
+        await SeedTokenAsync(service, serverName, entry, handler, expiresInSeconds: 60, refreshToken: "refresh-old");
+        time.Advance(TimeSpan.FromMinutes(5)); // well past expiry
+
+        handler.RefreshResponseBody = new { access_token = "access-new", refresh_token = "refresh-new", expires_in = 3600 };
+
+        var callTasks = new Task<string?>[5];
+        for (var i = 0; i < callTasks.Length; i++)
+            callTasks[i] = service.GetValidTokenAsync(serverName, entry, TestContext.Current.CancellationToken);
+
+        await handler.WaitForFirstRefreshRequestAsync().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        handler.ReleaseFirstRefreshRequest();
+
+        var results = await Task.WhenAll(callTasks);
+
+        Assert.Equal(1, handler.RefreshCallCount);
+        Assert.All(results, r => Assert.Equal("access-new", r));
+
+        var persisted = service.GetTokenSet(serverName);
+        Assert.NotNull(persisted);
+        Assert.Equal("refresh-new", persisted!.RefreshToken!.Value);
+    }
+
+    [Fact]
+    public async Task GetValidTokenAsync_WithinProactiveWindow_RefreshesAheadOfExpiry()
+    {
+        var now = new DateTimeOffset(2026, 6, 23, 12, 0, 0, TimeSpan.Zero);
+        var time = new FakeTimeProvider(now);
+        var handler = new TokenEndpointHandler
+        {
+            RefreshResponse = _ => FakeHttpMessageHandler.JsonResponse(new
+            {
+                access_token = "access-new",
+                refresh_token = "refresh-new",
+                expires_in = 3600,
+            }),
+        };
+        var serverName = new McpServerName("notion");
+        var entry = CreateHttpEntry();
+        var service = CreateService(CreateDiscoveryClient(), new OAuthPkceService(new HttpClient(handler), time),
+            timeProvider: time);
+
+        // Token is not yet expired, but its 15-minute remaining lifetime is
+        // inside the 10-minute ProactiveRefreshWindow.
+        await SeedTokenAsync(service, serverName, entry, handler, expiresInSeconds: (int)TimeSpan.FromMinutes(15).TotalSeconds, refreshToken: "refresh-old");
+        time.Advance(TimeSpan.FromMinutes(6)); // 9 minutes remain — inside the window
+
+        var token = await service.GetValidTokenAsync(serverName, entry, TestContext.Current.CancellationToken);
+
+        Assert.Equal("access-new", token);
+        Assert.Equal(1, handler.RefreshCallCount);
+    }
+
+    [Fact]
+    public async Task GetValidTokenAsync_WellOutsideProactiveWindow_DoesNotRefresh()
+    {
+        var now = new DateTimeOffset(2026, 6, 23, 12, 0, 0, TimeSpan.Zero);
+        var time = new FakeTimeProvider(now);
+        var handler = new TokenEndpointHandler
+        {
+            RefreshResponse = _ => throw new InvalidOperationException("refresh should not be called"),
+        };
+        var serverName = new McpServerName("notion");
+        var entry = CreateHttpEntry();
+        var service = CreateService(CreateDiscoveryClient(), new OAuthPkceService(new HttpClient(handler), time),
+            timeProvider: time);
+
+        await SeedTokenAsync(service, serverName, entry, handler, expiresInSeconds: (int)TimeSpan.FromMinutes(30).TotalSeconds, refreshToken: "refresh-old");
+        // 30 minutes remain — well outside the 10-minute proactive window.
+
+        var token = await service.GetValidTokenAsync(serverName, entry, TestContext.Current.CancellationToken);
+
+        Assert.Equal("access-seed", token);
+        Assert.Equal(0, handler.RefreshCallCount);
+    }
+
+    [Fact]
+    public async Task GetValidTokenAsync_MissingRefreshToken_WarnsAndDoesNotAttemptRefresh()
+    {
+        var now = new DateTimeOffset(2026, 6, 23, 12, 0, 0, TimeSpan.Zero);
+        var time = new FakeTimeProvider(now);
+        var sink = new RecordingNotificationSink();
+        var handler = new TokenEndpointHandler
+        {
+            RefreshResponse = _ => throw new InvalidOperationException("refresh should not be called — no refresh token"),
+        };
+        var serverName = new McpServerName("notion");
+        var entry = CreateHttpEntry();
+        var service = CreateService(CreateDiscoveryClient(), new OAuthPkceService(new HttpClient(handler), time),
+            timeProvider: time, notificationSink: sink);
+
+        // Seed a token set with no refresh token at all (matches defect #4:
+        // a configured OAuth server whose persisted token set never got one).
+        await SeedTokenAsync(service, serverName, entry, handler, expiresInSeconds: 60, refreshToken: null);
+        time.Advance(TimeSpan.FromMinutes(5)); // past expiry
+
+        var token = await service.GetValidTokenAsync(serverName, entry, TestContext.Current.CancellationToken);
+
+        Assert.Null(token);
+        Assert.Equal(0, handler.RefreshCallCount);
+
+        var alert = Assert.Single(sink.Alerts);
+        Assert.Equal(AlertType.McpAuthExpired, alert.Category);
+        Assert.Equal("no_refresh_token", alert.Context!["reason"]);
+    }
+
+    [Fact]
+    public async Task WarnIfMissingRefreshToken_TokenSetWithoutRefreshToken_WarnsImmediatelyRegardlessOfExpiryWindow()
+    {
+        var now = new DateTimeOffset(2026, 6, 23, 12, 0, 0, TimeSpan.Zero);
+        var time = new FakeTimeProvider(now);
+        var sink = new RecordingNotificationSink();
+        var service = CreateService(CreateDiscoveryClient(),
+            CreatePkceService(JsonResponse(new { access_token = "access-tok", expires_in = 3600 })),
+            timeProvider: time, notificationSink: sink);
+        var serverName = new McpServerName("notion");
+        var entry = CreateHttpEntry();
+
+        // Far from expiry (1 hour, well outside the 10-minute window) but no
+        // refresh token was ever issued — the operator should be warned now,
+        // not left to discover it only once the token has already expired.
+        var (_, state) = await service.StartAuthorizationFlowAsync(serverName, entry, TestContext.Current.CancellationToken);
+        await service.CompleteAuthorizationAsync("code", state, TestContext.Current.CancellationToken);
+
+        service.WarnIfMissingRefreshToken(serverName);
+
+        var alert = Assert.Single(sink.Alerts);
+        Assert.Equal("no_refresh_token", alert.Context!["reason"]);
+
+        // Calling again should not re-emit — de-duped until the condition changes.
+        service.WarnIfMissingRefreshToken(serverName);
+        Assert.Single(sink.Alerts);
+    }
 
     [Fact]
     public async Task GetFlowStatusByState_ReauthWithExistingToken_RemainsPending()
@@ -113,16 +328,133 @@ public sealed class McpOAuthServiceTests : IDisposable
     }
 
     private McpOAuthService CreateService(HttpClient discoveryClient, OAuthPkceService pkceService,
-        ISecretsProtector? protector = null)
+        ISecretsProtector? protector = null,
+        TimeProvider? timeProvider = null,
+        IOperationalNotificationSink? notificationSink = null,
+        ILogger<McpOAuthService>? logger = null)
     {
         return new McpOAuthService(
             discoveryClient,
             new NetclawPaths(_dir.Path),
-            TimeProvider.System,
-            NullLogger<McpOAuthService>.Instance,
+            timeProvider ?? TimeProvider.System,
+            logger ?? NullLogger<McpOAuthService>.Instance,
             pkceService,
-            NullNotificationSink.Instance,
+            notificationSink ?? NullNotificationSink.Instance,
             protector);
+    }
+
+    /// <summary>
+    /// Completes an OAuth authorization flow through <paramref name="handler"/>'s
+    /// exchange route so the service ends up with a real, persisted token set —
+    /// the only way to populate <c>McpOAuthService</c>'s private token/metadata
+    /// caches from outside the class.
+    /// </summary>
+    private static async Task SeedTokenAsync(
+        McpOAuthService service,
+        McpServerName serverName,
+        McpServerEntry entry,
+        ITokenEndpointHandler handler,
+        int expiresInSeconds,
+        string? refreshToken)
+    {
+        handler.ExchangeResponse = _ => refreshToken is null
+            ? FakeHttpMessageHandler.JsonResponse(new { access_token = "access-seed", expires_in = expiresInSeconds })
+            : FakeHttpMessageHandler.JsonResponse(new { access_token = "access-seed", refresh_token = refreshToken, expires_in = expiresInSeconds });
+
+        var (_, state) = await service.StartAuthorizationFlowAsync(serverName, entry, CancellationToken.None);
+        await service.CompleteAuthorizationAsync("seed-code", state, CancellationToken.None);
+    }
+
+    private interface ITokenEndpointHandler
+    {
+        Func<HttpRequestMessage, HttpResponseMessage>? ExchangeResponse { get; set; }
+    }
+
+    /// <summary>
+    /// Fake token endpoint that routes on <c>grant_type</c> so the same handler
+    /// can serve both the authorization-code exchange (to seed a token set) and
+    /// a separately-scriptable refresh response, mirroring a real OAuth server
+    /// backing a single token endpoint URL.
+    /// </summary>
+    private sealed class TokenEndpointHandler : HttpMessageHandler, ITokenEndpointHandler
+    {
+        private int _refreshCallCount;
+
+        public Func<HttpRequestMessage, HttpResponseMessage>? ExchangeResponse { get; set; }
+        public Func<HttpRequestMessage, HttpResponseMessage>? RefreshResponse { get; set; }
+
+        public int RefreshCallCount => Volatile.Read(ref _refreshCallCount);
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
+            if (!body.Contains("grant_type=refresh_token", StringComparison.Ordinal))
+                return ExchangeResponse!(request);
+
+            Interlocked.Increment(ref _refreshCallCount);
+            return RefreshResponse!(request);
+        }
+    }
+
+    /// <summary>
+    /// Like <see cref="TokenEndpointHandler"/>, but the first refresh request
+    /// blocks until the test releases it — used to prove single-flight
+    /// behavior by forcing genuine overlap between concurrent
+    /// <c>GetValidTokenAsync</c> callers instead of relying on incidental
+    /// scheduling.
+    /// </summary>
+    private sealed class GatedTokenEndpointHandler : HttpMessageHandler, ITokenEndpointHandler
+    {
+        private readonly TaskCompletionSource _firstRefreshReceived =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _releaseFirstRefresh =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _refreshCallCount;
+
+        public Func<HttpRequestMessage, HttpResponseMessage>? ExchangeResponse { get; set; }
+        public object RefreshResponseBody { get; set; } = new { access_token = "access-new", expires_in = 3600 };
+
+        public int RefreshCallCount => Volatile.Read(ref _refreshCallCount);
+
+        public Task WaitForFirstRefreshRequestAsync() => _firstRefreshReceived.Task;
+        public void ReleaseFirstRefreshRequest() => _releaseFirstRefresh.TrySetResult();
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
+            if (!body.Contains("grant_type=refresh_token", StringComparison.Ordinal))
+                return ExchangeResponse!(request);
+
+            if (Interlocked.Increment(ref _refreshCallCount) == 1)
+            {
+                _firstRefreshReceived.TrySetResult();
+                await _releaseFirstRefresh.Task.WaitAsync(cancellationToken);
+            }
+
+            return FakeHttpMessageHandler.JsonResponse(RefreshResponseBody);
+        }
+    }
+
+    private sealed class RecordingNotificationSink : IOperationalNotificationSink
+    {
+        public List<OperationalAlert> Alerts { get; } = [];
+        public void Emit(OperationalAlert alert) => Alerts.Add(alert);
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<(LogLevel Level, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state,
+            Exception? exception, Func<TState, Exception?, string> formatter)
+            => Entries.Add((logLevel, formatter(state, exception)));
     }
 
     private static McpServerEntry CreateHttpEntry()
