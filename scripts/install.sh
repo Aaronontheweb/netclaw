@@ -137,6 +137,44 @@ json_field() {
     fi
 }
 
+json_asset_field() {
+    local json="$1" version="$2" component="$3" rid="$4" field="$5"
+
+    # Release manifests contain flat release and asset objects. Splitting object
+    # boundaries lets POSIX awk select an asset without depending on property order
+    # or GNU-only regular-expression extensions.
+    printf '%s\n' "$json" | tr '{' '\n' | tr '}' '\n' | awk \
+        -v wanted_version="$version" \
+        -v wanted_component="$component" \
+        -v wanted_rid="$rid" \
+        -v wanted_field="$field" '
+        function string_field(record, name, value) {
+            if (index(record, "\"" name "\"") == 0) {
+                return ""
+            }
+
+            value = record
+            sub(".*\"" name "\"[[:space:]]*:[[:space:]]*\"", "", value)
+            sub("\".*", "", value)
+            return value
+        }
+
+        {
+            release_version = string_field($0, "version")
+            if (release_version != "") {
+                current_version = release_version
+            }
+
+            if (current_version == wanted_version &&
+                string_field($0, "component") == wanted_component &&
+                string_field($0, "rid") == wanted_rid) {
+                print string_field($0, wanted_field)
+                exit
+            }
+        }
+    '
+}
+
 # ── Main ──
 check_deps
 
@@ -195,16 +233,8 @@ download_component() {
         url=$(echo "$MANIFEST" | jq -r ".releases[] | select(.version==\"$VERSION\") | .assets[] | select(.component==\"$component\" and .rid==\"$RID\") | .url")
         sha256=$(echo "$MANIFEST" | jq -r ".releases[] | select(.version==\"$VERSION\") | .assets[] | select(.component==\"$component\" and .rid==\"$RID\") | .sha256")
     else
-        # Fallback: extract URL and sha256 using grep (fragile but works for well-formed JSON)
-        # Find the block for this component+rid
-        local block
-        block=$(echo "$MANIFEST" | tr '\n' ' ' | grep -oP "\"component\"\\s*:\\s*\"${component}\"[^}]*\"rid\"\\s*:\\s*\"${RID}\"[^}]*}" | head -1)
-        if [ -z "$block" ]; then
-            # Try reversed order
-            block=$(echo "$MANIFEST" | tr '\n' ' ' | grep -oP "\"rid\"\\s*:\\s*\"${RID}\"[^}]*\"component\"\\s*:\\s*\"${component}\"[^}]*}" | head -1)
-        fi
-        url=$(echo "$block" | grep -oP '"url"\s*:\s*"\K[^"]+')
-        sha256=$(echo "$block" | grep -oP '"sha256"\s*:\s*"\K[^"]+')
+        url=$(json_asset_field "$MANIFEST" "$VERSION" "$component" "$RID" "url")
+        sha256=$(json_asset_field "$MANIFEST" "$VERSION" "$component" "$RID" "sha256")
     fi
 
     if [ -z "$url" ] || [ "$url" = "null" ]; then

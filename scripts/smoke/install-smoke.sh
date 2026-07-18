@@ -189,11 +189,11 @@ check_detect "macOS x86_64 + Rosetta -> osx-arm64" Darwin x86_64 1 'DRY RUN: wou
 check_detect "Intel Mac rejected"               Darwin x86_64  0 'Apple Silicon'    1
 check_detect "unsupported OS rejected"          freebsd x86_64 0 'Unsupported OS'   1
 
-# Exercise the grep parser with a valid manifest whose asset fields are in the
-# reverse order. A private mirror need not preserve the generator's JSON order.
+# Exercise the dependency-free parser with a valid manifest whose asset fields
+# are in reverse order. A private mirror need not preserve JSON property order.
 NO_JQ_BIN="$WORK/no-jq-bin"
 mkdir -p "$NO_JQ_BIN"
-for cmd in bash curl cut grep head mktemp rm sed sha256sum shasum tar tr uname; do
+for cmd in awk bash curl cut grep head mktemp rm sed sha256sum shasum tar tr uname; do
   command_path=$(command -v "$cmd" 2>/dev/null || true)
   if [ -n "$command_path" ]; then
     ln -s "$command_path" "$NO_JQ_BIN/$cmd"
@@ -207,11 +207,11 @@ no_jq_out=$(PATH="$NO_JQ_BIN" \
 no_jq_rc=$?
 set -e
 if [ "$no_jq_rc" -eq 0 ] \
-    && echo "$no_jq_out" | grep -q 'DRY RUN: would install netclaw ' \
-    && echo "$no_jq_out" | grep -q 'DRY RUN: would install netclawd '; then
-  pass "manifest: jq-less parser accepts rid-before-component assets"
+    && echo "$no_jq_out" | grep -q "DRY RUN: would install netclaw .*/$VERSION/" \
+    && echo "$no_jq_out" | grep -q "DRY RUN: would install netclawd .*/$VERSION/"; then
+  pass "manifest: jq-less parser selects stable assets with reordered fields"
 else
-  fail "manifest: jq-less rid-before-component parse failed (exit=$no_jq_rc)"
+  fail "manifest: jq-less reordered-field parse failed (exit=$no_jq_rc)"
   echo "$no_jq_out" | indent
 fi
 
