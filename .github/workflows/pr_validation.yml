@@ -184,6 +184,10 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: "Install shell integration test dependencies"
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes fish zsh
+
       - name: "install.sh smoke test"
         if: runner.os != 'Windows'
         shell: bash

@@ -264,42 +264,69 @@ try {
     Write-Host ""
 
     if (-not $SkipShell) {
-        $installDirNormalized = $InstallDir.TrimEnd('\')
+        $installDirNormalized = [System.IO.Path]::TrimEndingDirectorySeparator($InstallDir)
 
         $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-        $pathEntries = if ([string]::IsNullOrEmpty($userPath)) { @() } else {
-            $userPath -split ';' | ForEach-Object { $_.TrimEnd('\') }
+        $userPathEntries = if ([string]::IsNullOrEmpty($userPath)) { @() } else {
+            $userPath -split ';' |
+                Where-Object { -not [string]::IsNullOrEmpty($_) } |
+                ForEach-Object { [System.IO.Path]::TrimEndingDirectorySeparator($_) }
         }
 
-        if ($pathEntries -contains $installDirNormalized) {
-            Write-Host "Installation complete! netclaw is already on your PATH."
-        } else {
-            # Check length limit (Windows API caps at 32767)
-            $newPath = "$installDirNormalized;$userPath"
-            if ($newPath.Length -gt 32700) {
-                Write-Warning "PATH is near its 32,767 character limit ($($newPath.Length) chars)."
-                Write-Host "Please manually add $InstallDir to your PATH."
+        $userPathChanged = $false
+        if ($userPathEntries -notcontains $installDirNormalized) {
+            $newUserPath = if ([string]::IsNullOrEmpty($userPath)) {
+                $installDirNormalized
             } else {
-                [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
-                # Also update current session
-                $env:PATH = $newPath
+                "$installDirNormalized;$userPath"
+            }
 
-                # Broadcast WM_SETTINGCHANGE to Explorer so new terminal windows pick up the change
-                Add-Type -Namespace WinAPI -Name Func -MemberDefinition @'
+            if ($newUserPath.Length -gt 32700) {
+                Write-Warning "User PATH is near its 32,767 character limit ($($newUserPath.Length) chars)."
+                Write-Host "Please manually add $InstallDir to your User PATH."
+            } else {
+                [Environment]::SetEnvironmentVariable("PATH", $newUserPath, "User")
+                $userPathChanged = $true
+            }
+        }
+
+        $processPath = $env:PATH
+        $processPathEntries = if ([string]::IsNullOrEmpty($processPath)) { @() } else {
+            $processPath -split ';' |
+                Where-Object { -not [string]::IsNullOrEmpty($_) } |
+                ForEach-Object { [System.IO.Path]::TrimEndingDirectorySeparator($_) }
+        }
+        if ($processPathEntries -notcontains $installDirNormalized) {
+            $env:PATH = if ([string]::IsNullOrEmpty($processPath)) {
+                $installDirNormalized
+            } else {
+                "$installDirNormalized;$processPath"
+            }
+        }
+
+        if ($userPathChanged) {
+            if (-not ("NetclawInstaller.NativeMethods" -as [type])) {
+                Add-Type -Namespace NetclawInstaller -Name NativeMethods -MemberDefinition @'
                     [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)]
                     public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg,
                         UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
 '@
-                [WinAPI.Func]::SendMessageTimeout(
-                    [IntPtr]0xFFFF, 0x001A, [UIntPtr]::Zero, "Environment", 2, 1000, [ref][UIntPtr]::Zero
-                ) | Out-Null
-
-                Write-Host "Installation complete! netclaw is on your PATH."
-                Write-Host ""
-                Write-Host "Start a new terminal, or run in the current session:"
-                Write-Host ""
-                Write-Host "  `$env:PATH += ';$InstallDir'"
             }
+
+            $broadcastOutput = [UIntPtr]::Zero
+            $broadcastResult = [NetclawInstaller.NativeMethods]::SendMessageTimeout(
+                [IntPtr]0xFFFF, 0x001A, [UIntPtr]::Zero, "Environment", 2, 1000, [ref]$broadcastOutput)
+            if ($broadcastResult -eq [IntPtr]::Zero) {
+                Write-Warning "User PATH was updated, but Windows did not acknowledge the environment-change notification. New terminals may require sign-out or restart."
+            }
+        }
+
+        if ($userPathEntries -contains $installDirNormalized) {
+            Write-Host "Installation complete! netclaw is already on your User PATH."
+        } elseif ($userPathChanged) {
+            Write-Host "Installation complete! netclaw was added to your User PATH."
+        } else {
+            Write-Host "Installation complete! netclaw is on PATH for this terminal only."
         }
     } else {
         Write-Host "Installation complete! (PATH modification skipped)"
@@ -307,7 +334,7 @@ try {
         Write-Host "Add Netclaw to your PATH by running:"
         Write-Host ""
         Write-Host "  `$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')"
-        Write-Host "  [Environment]::SetEnvironmentVariable('PATH', `"`$InstallDir;`$userPath`", 'User')"
+        Write-Host "  [Environment]::SetEnvironmentVariable('PATH', `"$InstallDir;`$userPath`", 'User')"
         Write-Host ""
         Write-Host "Then restart your terminal."
     }

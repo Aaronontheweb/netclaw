@@ -25,6 +25,8 @@ function Fail([string]$m) { Write-Host "FAIL: $m"; $script:Fail++ }
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ("netclaw-install-smoke-" + [Guid]::NewGuid().ToString('N'))
 $Serve = Join-Path $Work "serve"
 $BinDir = Join-Path $Work "bin"
+$OriginalUserPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+$OriginalProcessPath = $env:PATH
 New-Item -ItemType Directory -Path $Serve, $BinDir -Force | Out-Null
 
 $ServerProc = $null
@@ -122,13 +124,10 @@ try {
     Write-Host ""
     Write-Host "=== real install ==="
     $installDir = Join-Path $Work "installed"
-    $installOut = & pwsh -NoProfile -File $InstallPs1 -InstallDir $installDir 2>&1 | Out-String
+    $existingUserEntry = Join-Path $Work "existing-user-bin"
+    [Environment]::SetEnvironmentVariable("PATH", $existingUserEntry, "User")
+    $installOut = & $InstallPs1 -InstallDir $installDir *>&1 | Out-String
     Write-Host ($installOut.TrimEnd())
-    if ($LASTEXITCODE -eq 0) {
-        Pass "install: exited 0"
-    } else {
-        Fail "install: exited $LASTEXITCODE"
-    }
     foreach ($name in @("netclaw", "netclawd")) {
         $exe = Join-Path $installDir "$name.exe"
         if ((Test-Path $exe) -and ((Get-Item $exe).Length -gt 0)) {
@@ -138,66 +137,51 @@ try {
         }
     }
 
-    # 7. Verify PATH automation output
-    # The installer now auto-modifies PATH. Verify the output reflects this.
+    # 7. Verify the real installer changed User PATH without replacing the
+    # current process's inherited Machine PATH entries.
     Write-Host ""
-    Write-Host "=== PATH automation output ==="
-    if ($installOut -match 'netclaw is (already )?on your PATH') {
-        Pass "PATH output: indicates netclaw is on PATH"
+    Write-Host "=== PATH automation ==="
+    $persistedEntries = @([Environment]::GetEnvironmentVariable("PATH", "User") -split ';')
+    if ($persistedEntries[0] -eq $installDir `
+        -and $persistedEntries -contains $existingUserEntry `
+        -and @($persistedEntries | Where-Object { $_ -eq $installDir }).Count -eq 1) {
+        Pass "PATH: install directory prepended once and existing User PATH preserved"
     } else {
-        Fail "PATH output: missing PATH confirmation message"
+        Fail "PATH: persisted User PATH has unexpected contents"
     }
 
-    # 7b. Verify PATH is actually modified (not just printed)
-    # We can't hermetically test SetEnvironmentVariable("User") since it touches the registry,
-    # but we CAN test the decision logic with fake PATH values.
-    Write-Host ""
-    Write-Host "=== PATH automation logic ==="
-
-    # Test: duplicate detection — directory not yet in PATH
-    $fakePath1 = "C:\existing\path;C:\another\path"
-    $testDir = "C:\Users\test\.netclaw\bin"
-    $testDirNorm = $testDir.TrimEnd('\')
-    $entries1 = ($fakePath1 -split ';' | ForEach-Object { $_.TrimEnd('\') })
-    if ($entries1 -notcontains $testDirNorm) {
-        Pass "PATH logic: new entry not in PATH (would be added)"
+    $originalProcessEntries = @($OriginalProcessPath -split ';' | Where-Object { $_ })
+    $currentProcessEntries = @($env:PATH -split ';' | Where-Object { $_ })
+    $missingProcessEntries = @($originalProcessEntries | Where-Object { $currentProcessEntries -notcontains $_ })
+    if ($currentProcessEntries[0] -eq $installDir `
+        -and @($currentProcessEntries | Where-Object { $_ -eq $installDir }).Count -eq 1 `
+        -and $missingProcessEntries.Count -eq 0) {
+        Pass "PATH: current process prepended once and inherited entries preserved"
     } else {
-        Fail "PATH logic: false negative — new entry detected as present"
+        Fail "PATH: current process lost inherited entries or contains duplicates"
     }
 
-    # Test: duplicate detection — directory already in PATH
-    $fakePath2 = "$testDir;C:\existing\path"
-    $entries2 = ($fakePath2 -split ';' | ForEach-Object { $_.TrimEnd('\') })
-    if ($entries2 -contains $testDirNorm) {
-        Pass "PATH logic: existing entry detected (would skip)"
+    # A persisted entry must still repair a stale current process, and a
+    # trailing separator must not create a duplicate User PATH entry.
+    $env:PATH = $OriginalProcessPath
+    $userPathBeforeRepeat = [Environment]::GetEnvironmentVariable("PATH", "User")
+    & $InstallPs1 -InstallDir "$installDir\" *>&1 | Out-Null
+    $userPathAfterRepeat = [Environment]::GetEnvironmentVariable("PATH", "User")
+    $repeatProcessEntries = @($env:PATH -split ';' | Where-Object { $_ })
+    if ($userPathAfterRepeat -eq $userPathBeforeRepeat `
+        -and $repeatProcessEntries[0] -eq $installDir `
+        -and @($repeatProcessEntries | Where-Object { $_ -eq $installDir }).Count -eq 1) {
+        Pass "PATH: repeat install is idempotent and repairs current process"
     } else {
-        Fail "PATH logic: false negative — existing entry not detected"
-    }
-
-    # Test: trailing backslash normalization
-    $fakePath3 = "C:\Users\test\.netclaw\bin`;C:\existing"
-    $entries3 = ($fakePath3 -split ';' | ForEach-Object { $_.TrimEnd('\') })
-    if ($entries3 -contains $testDirNorm) {
-        Pass "PATH logic: trailing backslash normalized"
-    } else {
-        Fail "PATH logic: trailing backslash not normalized"
-    }
-
-    # Test: empty User PATH (null)
-    $fakePath4 = $null
-    $entries4 = if ([string]::IsNullOrEmpty($fakePath4)) { @() } else {
-        $fakePath4 -split ';' | ForEach-Object { $_.TrimEnd('\') }
-    }
-    if (@($entries4).Count -eq 0) {
-        Pass "PATH logic: null User PATH treated as empty"
-    } else {
-        Fail "PATH logic: null User PATH not handled"
+        Fail "PATH: repeat install changed User PATH or duplicated process entry"
     }
 
     # 7c. Test -SkipShell flag
     Write-Host ""
     Write-Host "=== -SkipShell flag ==="
     $skipDir = Join-Path $Work "skip-install"
+    $skipUserPathBefore = [Environment]::GetEnvironmentVariable("PATH", "User")
+    $skipProcessPathBefore = $env:PATH
     $skipOut = & pwsh -NoProfile -File $InstallPs1 -InstallDir $skipDir -SkipShell 2>&1 | Out-String
     if ($LASTEXITCODE -eq 0) {
         Pass "-SkipShell: install completes without error"
@@ -208,6 +192,13 @@ try {
         Pass "-SkipShell: output mentions PATH modification skipped"
     } else {
         Fail "-SkipShell: missing 'skipped' message"
+    }
+    if ([Environment]::GetEnvironmentVariable("PATH", "User") -eq $skipUserPathBefore `
+        -and $env:PATH -eq $skipProcessPathBefore `
+        -and $skipOut -match [regex]::Escape($skipDir)) {
+        Pass "-SkipShell: PATH is unchanged and manual command contains resolved install directory"
+    } else {
+        Fail "-SkipShell: changed PATH or printed an unusable manual command"
     }
 
     # 8. Release channel resolution (dry-run)
@@ -246,7 +237,7 @@ try {
     $freshDir = Join-Path $Work "fresh-beta"
     $freshConfigDir = Join-Path $Work "fresh-beta-config"
     $env:NETCLAW_CONFIG_DIR = $freshConfigDir
-    & pwsh -NoProfile -File $InstallPs1 -InstallDir $freshDir -Channel beta 2>&1 | Out-Null
+    & pwsh -NoProfile -File $InstallPs1 -InstallDir $freshDir -Channel beta -SkipShell 2>&1 | Out-Null
     $freshConfig = Join-Path $freshConfigDir "netclaw.json"
     if ((Test-Path $freshConfig)) {
         $c = Get-Content -Raw $freshConfig | ConvertFrom-Json
@@ -265,7 +256,7 @@ try {
     New-Item -ItemType Directory -Path $existConfigDir -Force | Out-Null
     '{"configVersion":1,"Daemon":{"ExposureMode":"local"}}' | Set-Content -Path (Join-Path $existConfigDir "netclaw.json") -Encoding UTF8
     $env:NETCLAW_CONFIG_DIR = $existConfigDir
-    & pwsh -NoProfile -File $InstallPs1 -InstallDir $existDir -Channel beta 2>&1 | Out-Null
+    & pwsh -NoProfile -File $InstallPs1 -InstallDir $existDir -Channel beta -SkipShell 2>&1 | Out-Null
     $c = Get-Content -Raw (Join-Path $existConfigDir "netclaw.json") | ConvertFrom-Json
     if ($c.Daemon.UpdateChannel -eq "beta" -and $c.Daemon.ExposureMode -eq "local") {
         Pass "config: -Channel beta patches existing config, preserves other Daemon keys"
@@ -279,7 +270,7 @@ try {
     New-Item -ItemType Directory -Path $noflagConfigDir -Force | Out-Null
     '{"configVersion":1,"Daemon":{"UpdateChannel":"beta"}}' | Set-Content -Path (Join-Path $noflagConfigDir "netclaw.json") -Encoding UTF8
     $env:NETCLAW_CONFIG_DIR = $noflagConfigDir
-    & pwsh -NoProfile -File $InstallPs1 -InstallDir $noflagDir 2>&1 | Out-Null
+    & pwsh -NoProfile -File $InstallPs1 -InstallDir $noflagDir -SkipShell 2>&1 | Out-Null
     $c = Get-Content -Raw (Join-Path $noflagConfigDir "netclaw.json") | ConvertFrom-Json
     if ($c.Daemon.UpdateChannel -eq "beta") {
         Pass "config: plain upgrade preserves existing beta channel"
@@ -293,7 +284,7 @@ try {
     New-Item -ItemType Directory -Path $downConfigDir -Force | Out-Null
     '{"configVersion":1,"Daemon":{"UpdateChannel":"beta"}}' | Set-Content -Path (Join-Path $downConfigDir "netclaw.json") -Encoding UTF8
     $env:NETCLAW_CONFIG_DIR = $downConfigDir
-    & pwsh -NoProfile -File $InstallPs1 -InstallDir $downDir -Channel stable 2>&1 | Out-Null
+    & pwsh -NoProfile -File $InstallPs1 -InstallDir $downDir -Channel stable -SkipShell 2>&1 | Out-Null
     $c = Get-Content -Raw (Join-Path $downConfigDir "netclaw.json") | ConvertFrom-Json
     if ($c.Daemon.UpdateChannel -eq "stable") {
         Pass "config: -Channel stable overwrites existing beta"
@@ -303,6 +294,8 @@ try {
 }
 finally {
     if ($ServerProc -and -not $ServerProc.HasExited) { $ServerProc.Kill() }
+    [Environment]::SetEnvironmentVariable("PATH", $OriginalUserPath, "User")
+    $env:PATH = $OriginalProcessPath
     $env:MANIFEST_URL = $null
     $env:NETCLAW_CONFIG_DIR = $null
     Remove-Item -Path $Work -Recurse -Force -ErrorAction SilentlyContinue

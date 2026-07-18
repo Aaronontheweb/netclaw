@@ -201,7 +201,7 @@ download_component() {
         block=$(echo "$MANIFEST" | tr '\n' ' ' | grep -oP "\"component\"\\s*:\\s*\"${component}\"[^}]*\"rid\"\\s*:\\s*\"${RID}\"[^}]*}" | head -1)
         if [ -z "$block" ]; then
             # Try reversed order
-            block=$(echo "$MANIFEST" | tr '\n' ' ' | grep -oP "\"rid\"\\s*:\\s*\"${RID}\"[^}]*\"component\"\\s*:\\s*\"${RID}\"[^}]*}" | head -1)
+            block=$(echo "$MANIFEST" | tr '\n' ' ' | grep -oP "\"rid\"\\s*:\\s*\"${RID}\"[^}]*\"component\"\\s*:\\s*\"${component}\"[^}]*}" | head -1)
         fi
         url=$(echo "$block" | grep -oP '"url"\s*:\s*"\K[^"]+')
         sha256=$(echo "$block" | grep -oP '"sha256"\s*:\s*"\K[^"]+')
@@ -309,17 +309,20 @@ if [ "$CHANNEL_EXPLICIT" = true ]; then
 fi
 
 # ── Shell integration ─────────────────────────────────────────────────────
-# Write an intermediary env script (~/.netclaw/env) and source it from the
-# user's shell RC file. The env script self-guards at runtime so duplicate
-# PATH entries cannot occur even if the RC is sourced multiple times.
+# Bash and zsh source a small POSIX env file. Fish gets native syntax in its
+# dedicated conf.d file; fish cannot source POSIX `case ... esac` syntax.
+ENV_SCRIPT="$HOME/.netclaw/env"
 
-# Derive the parent directory of INSTALL_DIR — this is where the env script
-# lives. For the default (~/.netclaw/bin) that's ~/.netclaw.
-# We use dirname because the install dir may not yet exist when this block runs
-# (e.g., if the user passes --skip-shell and no component needs the dir).
-INSTALL_ROOT="$(dirname "$INSTALL_DIR")"
-ENV_SCRIPT="$INSTALL_ROOT/env"
-SOURCE_LINE=". \"$ENV_SCRIPT\""
+shell_quote() {
+    printf "'"
+    printf '%s' "$1" | sed "s/'/'\\\\''/g"
+    printf "'"
+}
+
+INSTALL_DIR_QUOTED="$(shell_quote "$INSTALL_DIR")"
+ENV_SCRIPT_QUOTED="$(shell_quote "$ENV_SCRIPT")"
+SOURCE_LINE=". $ENV_SCRIPT_QUOTED"
+MANUAL_PATH_LINE="export PATH=$INSTALL_DIR_QUOTED:\$PATH"
 
 detect_shell() {
     # $SHELL is inherited from the parent login shell — it reflects the user's
@@ -339,17 +342,18 @@ get_rc_file() {
             echo "${ZDOTDIR:-$HOME}/.zshrc"
             ;;
         bash)
-            # macOS login shells read ~/.profile; Linux interactive shells
-            # read ~/.bashrc. We prefer .bashrc on Linux and .profile on macOS.
             if [ "$os" = "darwin" ]; then
-                echo "$HOME/.profile"
+                # A login shell reads only the first existing file in this list.
+                if [ -f "$HOME/.bash_profile" ]; then
+                    echo "$HOME/.bash_profile"
+                elif [ -f "$HOME/.bash_login" ]; then
+                    echo "$HOME/.bash_login"
+                else
+                    echo "$HOME/.profile"
+                fi
             else
                 echo "$HOME/.bashrc"
             fi
-            ;;
-        fish)
-            local fish_conf_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d"
-            echo "$fish_conf_dir/netclaw.fish"
             ;;
         *)
             echo ""
@@ -357,55 +361,37 @@ get_rc_file() {
     esac
 }
 
-write_env_script() {
-    # Create the self-guarding env script. Uses a colon-affixed case guard
-    # (rustup/fzf pattern) to prevent duplicate PATH entries at runtime.
+write_posix_env_script() {
     mkdir -p "$(dirname "$ENV_SCRIPT")"
     cat > "$ENV_SCRIPT" <<ENVEOF
 #!/bin/sh
 # netclaw shell setup
+netclaw_bin=$INSTALL_DIR_QUOTED
 case ":\${PATH}:" in
-    *:"$INSTALL_DIR":*)
+    *:"\${netclaw_bin}":*)
         ;;
     *)
-        export PATH="$INSTALL_DIR:\${PATH}"
+        export PATH="\${netclaw_bin}:\${PATH}"
         ;;
 esac
+unset netclaw_bin
 ENVEOF
-    chmod +x "$ENV_SCRIPT"
 }
 
-modify_rc_file() {
-    local shell_name="$1"
-    local rc_file
-
-    rc_file="$(get_rc_file "$shell_name")"
-    if [ -z "$rc_file" ]; then
-        echo "  Shell '$shell_name' is not supported for automatic PATH setup."
-        echo "  Add this to your shell profile:"
-        echo ""
-        echo "    $SOURCE_LINE"
-        return 0
-    fi
-
-    # Ensure the RC file's parent directory exists (fish conf.d may not)
+modify_posix_rc_file() {
+    local rc_file="$1"
     mkdir -p "$(dirname "$rc_file")"
-
-    # Touch the file so it exists — some users have no RC file yet
     touch "$rc_file"
 
-    # Guard: check if the source line already exists
     if grep -qxF "$SOURCE_LINE" "$rc_file" 2>/dev/null; then
         echo "  Shell profile '$rc_file' already sources netclaw."
         return 0
     fi
 
-    # Ensure a trailing newline before appending
     if [ -s "$rc_file" ] && [ "$(tail -c1 "$rc_file" | wc -l)" -eq 0 ]; then
         echo "" >> "$rc_file"
     fi
 
-    # Append the marker comment and source line
     {
         echo "# netclaw shell setup"
         echo "$SOURCE_LINE"
@@ -414,35 +400,58 @@ modify_rc_file() {
     echo "  Modified '$rc_file' to add netclaw to PATH."
 }
 
+write_fish_config() {
+    local fish_config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d"
+    local fish_config="$fish_config_dir/netclaw.fish"
+    mkdir -p "$fish_config_dir"
+    cat > "$fish_config" <<FISHEOF
+# netclaw shell setup
+set -l netclaw_bin $INSTALL_DIR_QUOTED
+if not contains -- \$netclaw_bin \$PATH
+    set -gx PATH \$netclaw_bin \$PATH
+end
+FISHEOF
+    echo "  Wrote '$fish_config' to add netclaw to PATH."
+}
+
 if [ "$SKIP_SHELL" = false ]; then
     SHELL_NAME="$(detect_shell)"
     echo ""
     echo "Setting up shell integration..."
 
-    # Write env script first — it must exist before we tell the RC to source it
-    write_env_script
-
-    # Modify the RC file to source the env script
-    modify_rc_file "$SHELL_NAME"
-
-    echo ""
-    echo "Installation complete! netclaw is on your PATH."
-    echo ""
-    echo "Start a new shell, or run:"
-    echo ""
-    echo "  $SOURCE_LINE"
+    case "$SHELL_NAME" in
+        bash|zsh)
+            RC_FILE="$(get_rc_file "$SHELL_NAME")"
+            write_posix_env_script
+            modify_posix_rc_file "$RC_FILE"
+            echo ""
+            echo "Installation complete! netclaw will be on PATH in new shells."
+            echo "To update this shell, run:"
+            echo ""
+            echo "  $SOURCE_LINE"
+            ;;
+        fish)
+            write_fish_config
+            echo ""
+            echo "Installation complete! netclaw will be on PATH in new fish shells."
+            echo "To update this shell, run:"
+            echo ""
+            echo "  set -gx PATH $INSTALL_DIR_QUOTED \$PATH"
+            ;;
+        *)
+            echo "  Shell '$SHELL_NAME' is not supported for automatic PATH setup."
+            echo "  No shell profile was changed. Add this to your shell profile:"
+            echo ""
+            echo "    $MANUAL_PATH_LINE"
+            ;;
+    esac
 else
-    # --skip-shell was passed
     echo ""
     echo "Installation complete! (shell integration skipped)"
     echo ""
     echo "Add netclaw to your PATH by adding this to your shell profile:"
     echo ""
-    echo "  $SOURCE_LINE"
-    echo ""
-    echo "Then restart your shell or run:"
-    echo ""
-    echo "  source ~/.bashrc  # or ~/.zshrc"
+    echo "  $MANUAL_PATH_LINE"
 fi
 
 echo ""

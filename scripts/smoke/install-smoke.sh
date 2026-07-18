@@ -111,6 +111,26 @@ rm -f "$MANIFEST_DEST"
 bash "$MANIFEST_GEN" "$VERSION"      "$WORK/checksums-$VERSION"      "$BASE_URL" >/dev/null
 bash "$MANIFEST_GEN" "$BETA_VERSION" "$WORK/checksums-$BETA_VERSION" "$BASE_URL" >/dev/null
 cp "$MANIFEST_DEST" "$SERVE/manifest.json"
+python3 - "$SERVE/manifest.json" "$SERVE/manifest-rid-first.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    manifest = json.load(source)
+for release in manifest["releases"]:
+    release["assets"] = [
+        {
+            "rid": asset["rid"],
+            "component": asset["component"],
+            "url": asset["url"],
+            "sha256": asset["sha256"],
+            "sizeBytes": asset["sizeBytes"],
+        }
+        for asset in release["assets"]
+    ]
+with open(sys.argv[2], "w", encoding="utf-8") as destination:
+    json.dump(manifest, destination)
+PY
 
 # ── 4. Serve the manifest + archives from localhost ──────────────────────────
 python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$SERVE" >/dev/null 2>&1 &
@@ -169,6 +189,32 @@ check_detect "macOS x86_64 + Rosetta -> osx-arm64" Darwin x86_64 1 'DRY RUN: wou
 check_detect "Intel Mac rejected"               Darwin x86_64  0 'Apple Silicon'    1
 check_detect "unsupported OS rejected"          freebsd x86_64 0 'Unsupported OS'   1
 
+# Exercise the grep parser with a valid manifest whose asset fields are in the
+# reverse order. A private mirror need not preserve the generator's JSON order.
+NO_JQ_BIN="$WORK/no-jq-bin"
+mkdir -p "$NO_JQ_BIN"
+for cmd in bash curl cut grep head mktemp rm sed sha256sum shasum tar tr uname; do
+  command_path=$(command -v "$cmd" 2>/dev/null || true)
+  if [ -n "$command_path" ]; then
+    ln -s "$command_path" "$NO_JQ_BIN/$cmd"
+  fi
+done
+set +e
+no_jq_out=$(PATH="$NO_JQ_BIN" \
+  MANIFEST_URL="$BASE_URL/manifest-rid-first.json" \
+  INSTALL_DIR="$WORK/no-jq-install" \
+  /bin/bash "$INSTALL_SH" --dry-run 2>&1)
+no_jq_rc=$?
+set -e
+if [ "$no_jq_rc" -eq 0 ] \
+    && echo "$no_jq_out" | grep -q 'DRY RUN: would install netclaw ' \
+    && echo "$no_jq_out" | grep -q 'DRY RUN: would install netclawd '; then
+  pass "manifest: jq-less parser accepts rid-before-component assets"
+else
+  fail "manifest: jq-less rid-before-component parse failed (exit=$no_jq_rc)"
+  echo "$no_jq_out" | indent
+fi
+
 # Dry run must not create the install directory.
 if [ -d "$WORK/should-not-exist" ]; then
   fail "dry-run: created an install directory (should install nothing)"
@@ -217,8 +263,8 @@ fi
 # The RC file depends on $SHELL — check whichever one was created
 RC_MODIFIED=false
 for rc in "$INSTALL_HOME/.bashrc" "$INSTALL_HOME/.zshrc" "$INSTALL_HOME/.profile" "$INSTALL_HOME/.config/fish/conf.d/netclaw.fish"; do
-  if [ -f "$rc" ] && grep -qxF ". \"$INSTALL_ENV\"" "$rc" 2>/dev/null; then
-    pass "real install: $(basename $rc) sources env script"
+  if [ -f "$rc" ] && grep -qxF ". '$INSTALL_ENV'" "$rc" 2>/dev/null; then
+    pass "real install: $(basename "$rc") sources env script"
     RC_MODIFIED=true
   fi
 done
@@ -281,7 +327,7 @@ set +e
 fresh_out=$(MANIFEST_URL="$BASE_URL/manifest.json" \
             INSTALL_DIR="$FRESH_DIR" \
             CONFIG_DIR="$FRESH_CONFIG_DIR" \
-            bash "$INSTALL_SH" --channel beta 2>&1)
+            bash "$INSTALL_SH" --channel beta --skip-shell 2>&1)
 fresh_rc=$?
 set -e
 if [ "$fresh_rc" -eq 0 ] && [ -f "$FRESH_CONFIG_DIR/netclaw.json" ]; then
@@ -309,7 +355,7 @@ set +e
 exist_out=$(MANIFEST_URL="$BASE_URL/manifest.json" \
             INSTALL_DIR="$EXIST_DIR" \
             CONFIG_DIR="$EXIST_CONFIG_DIR" \
-            bash "$INSTALL_SH" --channel beta 2>&1)
+            bash "$INSTALL_SH" --channel beta --skip-shell 2>&1)
 exist_rc=$?
 set -e
 if [ "$exist_rc" -eq 0 ] && command -v jq >/dev/null 2>&1; then
@@ -322,6 +368,7 @@ if [ "$exist_rc" -eq 0 ] && command -v jq >/dev/null 2>&1; then
   fi
 else
   fail "config: --channel beta on existing config (exit=$exist_rc)"
+  echo "$exist_out" | indent
 fi
 
 # 8c. Plain upgrade (no --channel) leaves existing beta config alone
@@ -333,7 +380,7 @@ set +e
 noflag_out=$(MANIFEST_URL="$BASE_URL/manifest.json" \
              INSTALL_DIR="$NOFLAG_DIR" \
              CONFIG_DIR="$NOFLAG_CONFIG_DIR" \
-             bash "$INSTALL_SH" 2>&1)
+             bash "$INSTALL_SH" --skip-shell 2>&1)
 noflag_rc=$?
 set -e
 if [ "$noflag_rc" -eq 0 ] && command -v jq >/dev/null 2>&1; then
@@ -345,6 +392,7 @@ if [ "$noflag_rc" -eq 0 ] && command -v jq >/dev/null 2>&1; then
   fi
 else
   fail "config: plain upgrade (exit=$noflag_rc)"
+  echo "$noflag_out" | indent
 fi
 
 # 8d. --channel stable on existing beta overwrites to stable
@@ -356,7 +404,7 @@ set +e
 down_out=$(MANIFEST_URL="$BASE_URL/manifest.json" \
            INSTALL_DIR="$DOWNGRADE_DIR" \
            CONFIG_DIR="$DOWNGRADE_CONFIG_DIR" \
-           bash "$INSTALL_SH" --channel stable 2>&1)
+           bash "$INSTALL_SH" --channel stable --skip-shell 2>&1)
 down_rc=$?
 set -e
 if [ "$down_rc" -eq 0 ] && command -v jq >/dev/null 2>&1; then
@@ -368,330 +416,128 @@ if [ "$down_rc" -eq 0 ] && command -v jq >/dev/null 2>&1; then
   fi
 else
   fail "config: --channel stable on existing beta (exit=$down_rc)"
+  echo "$down_out" | indent
 fi
 
 # ── 9. Shell integration (PATH automation) ───────────────────────────────────
-# Tests that install.sh correctly modifies shell RC files for bash, zsh, and fish.
-# Uses fake SHELL values and temp home directories to isolate each case.
 echo ""
 echo "=== shell integration ==="
 
-# shell_integration_test <desc> <shell_name> <rc_relpath>
-#   desc:        test description
-#   shell_name:  basename of the fake SHELL (bash, zsh, fish, unknown)
-#   rc_relpath:  path relative to temp HOME where the RC file should be created
-shell_integration_test() {
-  local desc="$1" shell_name="$2" rc_rel="$3"
-  local temp_home="$WORK/shell-int-$desc"
-  local install_dir="$temp_home/.netclaw/bin"
-  local rc_file="$temp_home/$rc_rel"
-  local env_file="$temp_home/.netclaw/env"
-
-  # Pre-seed a minimal RC file so the installer has something to append to
-  mkdir -p "$(dirname "$rc_file")"
-  printf '# existing config\n' > "$rc_file"
-
-  # Run install WITHOUT --skip-shell
-  set +e
-  local out rc
-  out=$(SHELL="/bin/$shell_name" \
-        HOME="$temp_home" \
-        MANIFEST_URL="$BASE_URL/manifest.json" \
-        INSTALL_DIR="$install_dir" \
-        CONFIG_DIR="$temp_home/.netclaw/config" \
-        bash "$INSTALL_SH" 2>&1)
-  rc=$?
-  set +e
-
-  if [ "$rc" -ne 0 ]; then
-    fail "$desc: install failed (exit=$rc)"
-    echo "$out" | indent
-    return
-  fi
-
-  # Verify env script was created
-  if [ -f "$env_file" ]; then
-    pass "$desc: env script created at .netclaw/env"
+assert_path_once() {
+  local desc="$1" observed_path="$2" install_dir="$3"
+  local count
+  count=$(printf '%s' "$observed_path" | tr ':' '\n' | grep -cxF "$install_dir" || true)
+  if [ "$count" -eq 1 ]; then
+    pass "$desc: install directory appears exactly once on PATH"
   else
-    fail "$desc: env script not found at .netclaw/env"
-  fi
-
-  # Verify env script is executable
-  if [ -x "$env_file" ]; then
-    pass "$desc: env script is executable"
-  else
-    fail "$desc: env script is not executable"
-  fi
-
-  # Verify env script contains the colon-affixed PATH guard (rustup pattern)
-  if grep -qF 'case ":${PATH}:"' "$env_file" 2>/dev/null; then
-    pass "$desc: env script contains colon-affixed PATH guard"
-  else
-    fail "$desc: env script missing colon-affixed PATH guard"
-  fi
-
-  # Verify env script contains the install dir in the PATH export
-  if grep -qF "export PATH=\"$install_dir:" "$env_file" 2>/dev/null; then
-    pass "$desc: env script exports correct install dir"
-  else
-    fail "$desc: env script does not export correct install dir"
-  fi
-
-  # Verify RC file was modified with the source line
-  local src_count
-  src_count=$(grep -cxF ". \"$env_file\"" "$rc_file" 2>/dev/null || true)
-  if [ "$src_count" -eq 1 ]; then
-    pass "$desc: $rc_rel contains exactly 1 source line"
-  else
-    fail "$desc: $rc_rel contains $src_count source lines (expected 1)"
-  fi
-
-  # Verify RC file contains the marker comment
-  if grep -qF "# netclaw shell setup" "$rc_file" 2>/dev/null; then
-    pass "$desc: $rc_rel contains marker comment"
-  else
-    fail "$desc: $rc_rel missing marker comment"
-  fi
-
-  # Verify the RC file is syntactically valid (bash -n)
-  set +e
-  bash -n "$rc_file" 2>"$WORK/syntax_err_$desc"
-  local syntax_rc=$?
-  set +e
-  if [ "$syntax_rc" -eq 0 ]; then
-    pass "$desc: $rc_rel passes bash -n syntax check"
-  else
-    fail "$desc: $rc_rel has syntax errors"
-    cat "$WORK/syntax_err_$desc" | indent
-  fi
-
-  # Verify PATH is correct after sourcing the env script
-  set +e
-  local eval_path
-  eval_path=$(bash -c "source '$env_file'; echo \$PATH" 2>/dev/null)
-  set +e
-  if echo "$eval_path" | tr ':' '\n' | grep -qxF "$install_dir"; then
-    pass "$desc: PATH contains install dir after sourcing env"
-  else
-    fail "$desc: PATH does not contain install dir after sourcing env"
-  fi
-
-  # Test duplicate prevention: run install again
-  set +e
-  out2=$(SHELL="/bin/$shell_name" \
-         HOME="$temp_home" \
-         MANIFEST_URL="$BASE_URL/manifest.json" \
-         INSTALL_DIR="$install_dir" \
-         CONFIG_DIR="$temp_home/.netclaw/config" \
-         bash "$INSTALL_SH" 2>&1)
-  rc2=$?
-  set +e
-
-  if [ "$rc2" -eq 0 ]; then
-    local dup_count
-    dup_count=$(grep -cxF ". \"$env_file\"" "$rc_file" 2>/dev/null || true)
-    if [ "$dup_count" -eq 1 ]; then
-      pass "$desc: no duplicate source line after second install"
-    else
-      fail "$desc: $dup_count source lines after second install (expected 1)"
-    fi
-
-    # Verify the "already sources" message appears
-    if echo "$out2" | grep -qF "already sources netclaw"; then
-      pass "$desc: outputs 'already sources netclaw' on re-install"
-    else
-      fail "$desc: missing 'already sources netclaw' message on re-install"
-    fi
-  else
-    fail "$desc: second install failed (exit=$rc2)"
+    fail "$desc: install directory appears $count times on PATH"
   fi
 }
 
-# Test bash on Linux — should modify ~/.bashrc
-# Test bash — RC file depends on host OS: .bashrc on Linux, .profile on macOS
-BASH_RC=$(uname -s | grep -q Darwin && echo ".profile" || echo ".bashrc")
-shell_integration_test "bash-$(uname)" "bash" "$BASH_RC"
+run_unix_installer() {
+  local shell_path="$1" home="$2" install_dir="$3"
+  shift 3
+  SHELL="$shell_path" HOME="$home" \
+    MANIFEST_URL="$BASE_URL/manifest.json" INSTALL_DIR="$install_dir" \
+    CONFIG_DIR="$home/.netclaw/config" \
+    bash "$INSTALL_SH" "$@"
+}
 
-# Test zsh — should modify ~/.zshrc
-shell_integration_test "zsh" "zsh" ".zshrc"
+# Bash: run the generated startup path through Bash itself, then repeat the
+# install to prove both profile mutation and PATH evaluation are idempotent.
+BASH_HOME="$WORK/shell-bash"
+BASH_INSTALL="$BASH_HOME/netclaw install's/bin"
+mkdir -p "$BASH_HOME"
+if [ "$(uname -s)" = "Darwin" ]; then
+  BASH_RC="$BASH_HOME/.bash_profile"
+  printf '# existing bash profile' > "$BASH_RC"
+  printf '# profile must remain untouched\n' > "$BASH_HOME/.profile"
+else
+  BASH_RC="$BASH_HOME/.bashrc"
+  printf '# existing bash rc' > "$BASH_RC"
+fi
 
-# Test fish — should modify ~/.config/fish/conf.d/netclaw.fish
-# Test fish — unset XDG_CONFIG_HOME so it falls back to $HOME/.config
-# (CI runners may have XDG_CONFIG_HOME set to a path outside our temp HOME)
-FISH_HOME="$WORK/shell-int-fish"
-FISH_INSTALL="$FISH_HOME/.netclaw/bin"
-FISH_RC="$FISH_HOME/.config/fish/conf.d/netclaw.fish"
-FISH_ENV="$FISH_HOME/.netclaw/env"
-set +e
-fish_out=$(env -u XDG_CONFIG_HOME \
-           SHELL="/bin/fish" \
-           HOME="$FISH_HOME" \
-           MANIFEST_URL="$BASE_URL/manifest.json" \
-           INSTALL_DIR="$FISH_INSTALL" \
-           CONFIG_DIR="$FISH_HOME/.netclaw/config" \
-           bash "$INSTALL_SH" 2>&1)
-fish_rc=$?
-set +e
-if [ "$fish_rc" -ne 0 ]; then
-  fail "fish: install failed (exit=$fish_rc)"
-  echo "$fish_out" | indent
-else
-  pass "fish: install completes"
-fi
-if [ -f "$FISH_ENV" ]; then
-  pass "fish: env script created"
-else
-  fail "fish: env script not found"
-fi
-fish_src_count=$(grep -cxF ". \"$FISH_ENV\"" "$FISH_RC" 2>/dev/null || true)
-if [ "$fish_src_count" -eq 1 ]; then
-  pass "fish: conf.d/netclaw.fish contains exactly 1 source line"
-else
-  fail "fish: conf.d/netclaw.fish contains $fish_src_count source lines (expected 1)"
-fi
-if grep -qF "# netclaw shell setup" "$FISH_RC" 2>/dev/null; then
-  pass "fish: conf.d/netclaw.fish contains marker comment"
-else
-  fail "fish: conf.d/netclaw.fish missing marker comment"
-fi
-# Verify PATH works after sourcing
-set +e
-eval_path=$(bash -c "source '$FISH_ENV'; echo \$PATH" 2>/dev/null)
-set +e
-if echo "$eval_path" | tr ':' '\n' | grep -qxF "$FISH_INSTALL"; then
-  pass "fish: PATH contains install dir after sourcing env"
-else
-  fail "fish: PATH does not contain install dir after sourcing env"
-fi
-# Test duplicate prevention: run install again
-set +e
-fish_out2=$(env -u XDG_CONFIG_HOME \
-            SHELL="/bin/fish" \
-            HOME="$FISH_HOME" \
-            MANIFEST_URL="$BASE_URL/manifest.json" \
-            INSTALL_DIR="$FISH_INSTALL" \
-            CONFIG_DIR="$FISH_HOME/.netclaw/config" \
-            bash "$INSTALL_SH" 2>&1)
-fish_rc2=$?
-set +e
-if [ "$fish_rc2" -eq 0 ]; then
-  dup_count=$(grep -cxF ". \"$FISH_ENV\"" "$FISH_RC" 2>/dev/null || true)
-  if [ "$dup_count" -eq 1 ]; then
-    pass "fish: no duplicate source line after second install"
+if run_unix_installer "$(command -v bash)" "$BASH_HOME" "$BASH_INSTALL" >/dev/null \
+    && run_unix_installer "$(command -v bash)" "$BASH_HOME" "$BASH_INSTALL" >/dev/null; then
+  bash_path=$(PATH="/usr/bin:/bin" HOME="$BASH_HOME" \
+    bash --noprofile --rcfile "$BASH_RC" -i -c 'printf "%s" "$PATH"' 2>/dev/null)
+  assert_path_once "bash" "$bash_path" "$BASH_INSTALL"
+  source_count=$(grep -cF "$BASH_HOME/.netclaw/env" "$BASH_RC" || true)
+  if [ "$source_count" -eq 1 ]; then
+    pass "bash: profile source line is idempotent"
   else
-    fail "fish: $dup_count source lines after second install (expected 1)"
+    fail "bash: profile contains $source_count netclaw source lines"
   fi
-  if echo "$fish_out2" | grep -qF "already sources netclaw"; then
-    pass "fish: outputs 'already sources netclaw' on re-install"
+  if [ "$(uname -s)" = "Darwin" ] && ! grep -qF netclaw "$BASH_HOME/.profile"; then
+    pass "bash-macos: existing .bash_profile wins over .profile"
   fi
 else
-  fail "fish: second install failed (exit=$fish_rc2)"
+  fail "bash: installer failed"
 fi
 
-# Test --skip-shell — should NOT modify any RC file
-echo ""
-echo "  shell-int --skip-shell:"
-SKIP_HOME="$WORK/shell-int-skip"
-SKIP_INSTALL="$SKIP_HOME/.netclaw/bin"
-SKIP_RC="$SKIP_HOME/.bashrc"
-mkdir -p "$SKIP_HOME"
-printf '# skip test\n' > "$SKIP_RC"
-set +e
-skip_out=$(SHELL="/bin/bash" \
-           HOME="$SKIP_HOME" \
-           MANIFEST_URL="$BASE_URL/manifest.json" \
-           INSTALL_DIR="$SKIP_INSTALL" \
-           CONFIG_DIR="$SKIP_HOME/.netclaw/config" \
-           bash "$INSTALL_SH" --skip-shell 2>&1)
-skip_rc=$?
-set +e
-if [ "$skip_rc" -eq 0 ]; then
-  pass "--skip-shell: install completes without error"
-else
-  fail "--skip-shell: install failed (exit=$skip_rc)"
-fi
-# Verify the RC file was NOT modified (no source line added)
-skip_lines=$(grep -cF ". \"$SKIP_HOME/.netclaw/env\"" "$SKIP_RC" 2>/dev/null || true)
-if [ "${skip_lines:-0}" -eq 0 ]; then
-  pass "--skip-shell: .bashrc was not modified"
-else
-  fail "--skip-shell: .bashrc was modified (found $skip_lines source lines)"
-fi
-# Verify no env script was created
-if [ ! -f "$SKIP_HOME/.netclaw/env" ]; then
-  pass "--skip-shell: env script was not created"
-else
-  fail "--skip-shell: env script was created"
-fi
-# Verify the output mentions "skipped"
-if echo "$skip_out" | grep -qi "shell integration skipped"; then
-  pass "--skip-shell: output mentions shell integration skipped"
-else
-  fail "--skip-shell: missing 'skipped' message in output"
-fi
-
-# Test unknown shell — should not crash, should print manual instructions
-echo ""
-echo "  shell-int unknown shell:"
-UNKNOWN_HOME="$WORK/shell-int-unknown"
-UNKNOWN_INSTALL="$UNKNOWN_HOME/.netclaw/bin"
-set +e
-unknown_out=$(SHELL="/bin/unknownshell" \
-              HOME="$UNKNOWN_HOME" \
-              MANIFEST_URL="$BASE_URL/manifest.json" \
-              INSTALL_DIR="$UNKNOWN_INSTALL" \
-              CONFIG_DIR="$UNKNOWN_HOME/.netclaw/config" \
-              bash "$INSTALL_SH" 2>&1)
-unknown_rc=$?
-set +e
-if [ "$unknown_rc" -eq 0 ]; then
-  pass "unknown shell: install completes without error"
-else
-  fail "unknown shell: install failed (exit=$unknown_rc)"
-fi
-if echo "$unknown_out" | grep -qi "not supported for automatic PATH setup"; then
-  pass "unknown shell: prints unsupported shell message"
-else
-  fail "unknown shell: missing unsupported shell message"
-fi
-
-# Test ZDOTDIR — zsh should respect ZDOTDIR for RC location
-echo ""
-echo "  shell-int ZDOTDIR:"
-ZDOT_HOME="$WORK/shell-int-zdotdir"
-ZDOT_DIR="$ZDOT_HOME/custom-zdotdir"
-ZDOT_INSTALL="$ZDOT_HOME/.netclaw/bin"
-ZDOT_RC="$ZDOT_DIR/.zshrc"
-mkdir -p "$ZDOT_DIR"
-printf '# zdotdir config\n' > "$ZDOT_RC"
-set +e
-zdot_out=$(SHELL="/bin/zsh" \
-           HOME="$ZDOT_HOME" \
-           ZDOTDIR="$ZDOT_DIR" \
-           MANIFEST_URL="$BASE_URL/manifest.json" \
-           INSTALL_DIR="$ZDOT_INSTALL" \
-           CONFIG_DIR="$ZDOT_HOME/.netclaw/config" \
-           bash "$INSTALL_SH" 2>&1)
-zdot_rc=$?
-set +e
-if [ "$zdot_rc" -eq 0 ]; then
-  # Check the ZDOTDIR rc file was modified, NOT ~/.zshrc
-  if grep -qxF '. "'"$ZDOT_HOME/.netclaw/env"'"' "$ZDOT_RC" 2>/dev/null; then
-    pass "ZDOTDIR: source line added to \$ZDOTDIR/.zshrc"
+# Zsh: CI installs zsh on Linux and macOS provides it. Explicitly source the
+# selected ZDOTDIR file under zsh so a Bash-compatible false positive cannot pass.
+if command -v zsh >/dev/null 2>&1; then
+  ZSH_HOME="$WORK/shell-zsh"
+  ZDOT_DIR="$ZSH_HOME/custom-zdotdir"
+  ZSH_INSTALL="$ZSH_HOME/netclaw install's/bin"
+  mkdir -p "$ZDOT_DIR"
+  printf '# existing zsh config\n' > "$ZDOT_DIR/.zshrc"
+  if ZDOTDIR="$ZDOT_DIR" run_unix_installer "$(command -v zsh)" "$ZSH_HOME" "$ZSH_INSTALL" >/dev/null \
+      && ZDOTDIR="$ZDOT_DIR" run_unix_installer "$(command -v zsh)" "$ZSH_HOME" "$ZSH_INSTALL" >/dev/null; then
+    zsh_path=$(PATH="/usr/bin:/bin" ZDOTDIR="$ZDOT_DIR" \
+      zsh -f -c 'source "$ZDOTDIR/.zshrc"; print -rn -- "$PATH"')
+    assert_path_once "zsh" "$zsh_path" "$ZSH_INSTALL"
+    if [ ! -e "$ZSH_HOME/.zshrc" ]; then
+      pass "zsh: ZDOTDIR is authoritative"
+    else
+      fail "zsh: installer touched ~/.zshrc despite ZDOTDIR"
+    fi
   else
-    fail "ZDOTDIR: source line not found in \$ZDOTDIR/.zshrc"
-    cat "$ZDOT_RC" | indent
-  fi
-  # Verify ~/.zshrc was NOT created or modified
-  if [ ! -f "$ZDOT_HOME/.zshrc" ]; then
-    pass "ZDOTDIR: ~/.zshrc was not touched"
-  else
-    fail "ZDOTDIR: ~/.zshrc was created (should not exist)"
+    fail "zsh: installer failed"
   fi
 else
-  fail "ZDOTDIR: install failed (exit=$zdot_rc)"
-  echo "$zdot_out" | indent
+  echo "SKIP: zsh executable not available"
 fi
+
+# Fish owns a native conf.d file. Execute that file with fish, not Bash.
+if command -v fish >/dev/null 2>&1; then
+  FISH_HOME="$WORK/shell-fish"
+  FISH_INSTALL="$FISH_HOME/netclaw install's/bin"
+  FISH_RC="$FISH_HOME/.config/fish/conf.d/netclaw.fish"
+  if XDG_CONFIG_HOME="$FISH_HOME/.config" \
+      run_unix_installer "$(command -v fish)" "$FISH_HOME" "$FISH_INSTALL" >/dev/null \
+      && XDG_CONFIG_HOME="$FISH_HOME/.config" \
+      run_unix_installer "$(command -v fish)" "$FISH_HOME" "$FISH_INSTALL" >/dev/null; then
+    fish_path=$(PATH="/usr/bin:/bin" fish --no-config -c \
+      "source '$FISH_RC'; string join : -- \$PATH")
+    assert_path_once "fish" "$fish_path" "$FISH_INSTALL"
+  else
+    fail "fish: installer failed"
+  fi
+else
+  echo "SKIP: fish executable not available"
+fi
+
+# Opt-out and unsupported shells must leave shell files alone and print a
+# self-contained command instead of referring to an env file that was not made.
+for mode in skip unknown; do
+  MANUAL_HOME="$WORK/shell-$mode"
+  MANUAL_INSTALL="$MANUAL_HOME/netclaw install's/bin"
+  mkdir -p "$MANUAL_HOME"
+  if [ "$mode" = "skip" ]; then
+    manual_out=$(run_unix_installer "$(command -v bash)" "$MANUAL_HOME" "$MANUAL_INSTALL" --skip-shell)
+  else
+    manual_out=$(run_unix_installer /bin/unknownshell "$MANUAL_HOME" "$MANUAL_INSTALL")
+  fi
+  manual_command=$(printf '%s\n' "$manual_out" | sed -n 's/^  \{0,4\}\(export PATH=.*\)$/\1/p' | head -1)
+  if [ -n "$manual_command" ] && [ ! -e "$MANUAL_HOME/.netclaw/env" ]; then
+    manual_path=$(PATH="/usr/bin:/bin" bash -c "$manual_command; printf '%s' \"\$PATH\"")
+    assert_path_once "$mode" "$manual_path" "$MANUAL_INSTALL"
+  else
+    fail "$mode: missing usable manual PATH command or created shell files"
+  fi
+done
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo ""
