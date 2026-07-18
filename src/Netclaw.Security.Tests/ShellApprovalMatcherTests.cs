@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Text.Json;
 using Netclaw.Configuration;
 using Netclaw.Tools;
 using Xunit;
@@ -978,5 +979,201 @@ public sealed class DefaultApprovalMatcherTests
             null,
             [Verb("mcp:memorizer:get")],
             cwd: null));
+    }
+}
+
+public sealed class McpApprovalMatcherTests
+{
+    private readonly McpApprovalMatcher _matcher = McpApprovalMatcher.Instance;
+
+    [Fact]
+    public void FormatForDisplay_without_arguments_returns_tool_name()
+    {
+        Assert.Equal(
+            "Dropbox/upload",
+            _matcher.FormatForDisplay(new ToolName("Dropbox/upload"), null));
+    }
+
+    [Fact]
+    public void FormatForDisplay_prioritizes_location_values_and_summarizes_large_strings()
+    {
+        var content = string.Join('\n', Enumerable.Repeat("memorizer payload line", 2_000));
+        var display = _matcher.FormatForDisplay(
+            new ToolName("Dropbox/upload"),
+            new Dictionary<string, object?>
+            {
+                ["contents"] = content,
+                ["overwrite"] = true,
+                ["source_path"] = "/home/operator/reports/quarterly-results.pdf",
+                ["destination_directory"] = "/Finance/Board/2026/Q3"
+            });
+
+        Assert.Contains("source_path=\"/home/operator/reports/quarterly-results.pdf\"", display);
+        Assert.Contains("destination_directory=\"/Finance/Board/2026/Q3\"", display);
+        Assert.Contains($"contents=({content.Length} chars, 2000 lines)", display);
+        Assert.DoesNotContain("memorizer payload line", display);
+        Assert.True(
+            display.IndexOf("destination_directory", StringComparison.Ordinal)
+            < display.IndexOf("contents", StringComparison.Ordinal));
+        Assert.True(
+            display.IndexOf("source_path", StringComparison.Ordinal)
+            < display.IndexOf("contents", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void FormatForDisplay_handles_JsonElement_scalars_and_small_structures()
+    {
+        using var json = JsonDocument.Parse(
+            """{"mode":"replace","options":{"notify":true,"retries":3},"tags":["finance","board"]}""");
+        var root = json.RootElement;
+
+        var display = _matcher.FormatForDisplay(
+            new ToolName("Dropbox/upload"),
+            new Dictionary<string, object?>
+            {
+                ["mode"] = root.GetProperty("mode").Clone(),
+                ["options"] = root.GetProperty("options").Clone(),
+                ["tags"] = root.GetProperty("tags").Clone()
+            });
+
+        Assert.Contains("mode=\"replace\"", display);
+        Assert.Contains("options={\"notify\":true,\"retries\":3}", display);
+        Assert.Contains("tags=[\"finance\",\"board\"]", display);
+        Assert.DoesNotContain('\n', display);
+    }
+
+    [Fact]
+    public void FormatForDisplay_redacts_top_level_nested_and_token_shaped_secrets()
+    {
+        using var json = JsonDocument.Parse(
+            """{"password":"nested-password","safe":"visible"}""");
+        const string providerToken = "sk-1234567890abcdef";
+
+        var display = _matcher.FormatForDisplay(
+            new ToolName("service/create"),
+            new Dictionary<string, object?>
+            {
+                ["access_token"] = "plain-access-token",
+                ["options"] = json.RootElement.Clone(),
+                ["reference"] = providerToken
+            });
+
+        Assert.DoesNotContain("plain-access-token", display);
+        Assert.DoesNotContain("nested-password", display);
+        Assert.DoesNotContain(providerToken, display);
+        Assert.Contains("***REDACTED***", display);
+        Assert.Contains("visible", display);
+    }
+
+    [Fact]
+    public void FormatForDisplay_preserves_both_ends_of_long_locator()
+    {
+        var path = "/source/" + new string('a', 1_100) + "/quarterly-results.pdf";
+
+        var display = _matcher.FormatForDisplay(
+            new ToolName("Dropbox/upload"),
+            new Dictionary<string, object?> { ["source_path"] = path });
+
+        Assert.Contains("/source/", display);
+        Assert.Contains("quarterly-results.pdf", display);
+        Assert.Contains($"[{path.Length} chars]", display);
+    }
+
+    [Fact]
+    public void FormatForDisplay_redacts_uri_credentials_query_and_fragment()
+    {
+        const string signedUrl = "https://operator:password@example.com/reports/q3.pdf?signature=opaque-secret&expires=123#access-token";
+
+        var display = _matcher.FormatForDisplay(
+            new ToolName("Dropbox/upload"),
+            new Dictionary<string, object?> { ["callback"] = signedUrl });
+
+        Assert.Contains("https://example.com/reports/q3.pdf", display);
+        Assert.DoesNotContain("operator", display);
+        Assert.DoesNotContain("password", display);
+        Assert.DoesNotContain("opaque-secret", display);
+        Assert.DoesNotContain("access-token", display);
+        Assert.Contains("REDACTED", display);
+    }
+
+    [Fact]
+    public void FormatForDisplay_escapes_untrusted_argument_names_and_inline_code_breakouts()
+    {
+        var display = _matcher.FormatForDisplay(
+            new ToolName("service/invoke"),
+            new Dictionary<string, object?>
+            {
+                ["safe\n```\u202E**Approve**"] = "value`spoof"
+            });
+
+        Assert.DoesNotContain('\n', display);
+        Assert.DoesNotContain('`', display);
+        Assert.DoesNotContain('\u202E', display);
+        Assert.Contains("\\u000A", display);
+        Assert.Contains("\\u0060", display);
+        Assert.Contains("\\u202E", display);
+    }
+
+    [Fact]
+    public void FormatForDisplay_does_not_infer_value_sensitivity_from_argument_names()
+    {
+        var longValue = new string('x', 2_000);
+        var display = _matcher.FormatForDisplay(
+            new ToolName("service/invoke"),
+            new Dictionary<string, object?>
+            {
+                ["file_contents"] = longValue,
+                ["source_code"] = longValue,
+                ["target_payload"] = longValue
+            });
+
+        Assert.Equal(3, display.Split("2000 chars", StringSplitOptions.None).Length - 1);
+        Assert.DoesNotContain(new string('x', 50), display);
+    }
+
+    [Fact]
+    public void FormatForDisplay_bounds_argument_and_collection_work()
+    {
+        using var json = JsonDocument.Parse(
+            $"[{string.Join(',', Enumerable.Range(0, 1_000))}]");
+        var arguments = Enumerable.Range(0, 1_000)
+            .ToDictionary(i => $"argument_{i:D4}", i => (object?)json.RootElement.Clone());
+
+        var display = _matcher.FormatForDisplay(new ToolName("service/invoke"), arguments);
+
+        Assert.True(display.Length <= 1_600);
+        Assert.Contains("12+ items", display);
+        Assert.Contains("arguments", display);
+        Assert.DoesNotContain("argument_0024", display);
+    }
+
+    [Fact]
+    public void FormatForDisplay_bounds_oversized_names_and_redacts_their_values()
+    {
+        var oversizedKey = new string('k', 10_000);
+        var display = _matcher.FormatForDisplay(
+            new ToolName($"service/{new string('t', 10_000)}`\nspoof"),
+            new Dictionary<string, object?> { [oversizedKey] = "must-not-appear" });
+
+        Assert.True(display.Length <= 1_600);
+        Assert.DoesNotContain("must-not-appear", display);
+        Assert.DoesNotContain('`', display);
+        Assert.DoesNotContain('\n', display);
+        Assert.Contains("10015 chars", display);
+        Assert.Contains("10000\\u0020chars", display);
+        Assert.Contains("REDACTED", display);
+    }
+
+    [Fact]
+    public void FormatForDisplay_reports_unserializable_value_without_throwing()
+    {
+        var value = new Func<int>(() => 42);
+
+        var display = _matcher.FormatForDisplay(
+            new ToolName("service/invoke"),
+            new Dictionary<string, object?> { ["callback"] = value });
+
+        Assert.Contains("value unavailable", display);
+        Assert.DoesNotContain("42", display);
     }
 }

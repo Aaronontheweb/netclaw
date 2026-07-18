@@ -288,25 +288,49 @@ public sealed class DaemonConfigTests
         Assert.Contains(issues, issue => issue.Message.Contains("not-an-ip", StringComparison.OrdinalIgnoreCase));
     }
 
-    /// <summary>
-    /// Regression guard for the canary daemon-stop finding:
-    /// <see cref="DaemonConfig.GracefulShutdownBudget"/> is the single source of truth shared by
-    /// the daemon's CoordinatedShutdown session-drain phase, its generic-host ShutdownTimeout,
-    /// the CLI's SIGTERM grace period, and the generated systemd unit's TimeoutStopSec. It only
-    /// does its job if it comfortably exceeds how long a session can legitimately still be
-    /// mid-LLM-call at shutdown (<see cref="SessionConfig.TurnLlmTimeout"/>'s default) — shrink
-    /// it below that and the CLI (or systemd) will force-kill the daemon mid-graceful-drain
-    /// again, exactly the bug this constant exists to prevent.
-    /// </summary>
-    [Fact]
-    public void GracefulShutdownBudget_exceeds_default_TurnLlmTimeout()
-    {
-        var defaultTurnLlmTimeout = new SessionConfig().TurnLlmTimeout;
+    // ── Shutdown-budget layering (netclaw-dev/netclaw#1664, #1665) ───────────
+    //
+    // Four surfaces derive from DaemonConfig.GracefulShutdownBudget and must stay strictly
+    // ordered: the daemon-stop drain bound, the Akka before-service-unbind phase timeout, the
+    // CLI's force-kill budget (graceful wait + grace window), and the generated systemd unit's
+    // TimeoutStopSec=. If any margin is changed inconsistently in the future — e.g. the CLI's
+    // grace window grows past the systemd teardown margin — this test fails instead of silently
+    // reintroducing the guaranteed-SIGKILL race these issues were filed against.
 
+    [Fact]
+    public void ShutdownBudgetLayering_bounded_drain_finishes_before_the_akka_phase_timeout()
+    {
         Assert.True(
-            DaemonConfig.GracefulShutdownBudget > defaultTurnLlmTimeout,
-            $"GracefulShutdownBudget ({DaemonConfig.GracefulShutdownBudget}) must exceed the default " +
-            $"TurnLlmTimeout ({defaultTurnLlmTimeout}) so an in-flight LLM turn can finish draining " +
-            "before the daemon's graceful-shutdown budget is exhausted.");
+            DaemonConfig.BoundedDrainTimeout < DaemonConfig.GracefulShutdownBudget,
+            "the daemon-stop drain's own deadline must fire before the Akka phase timeout abandons the task outright");
+    }
+
+    [Fact]
+    public void ShutdownBudgetLayering_cli_waits_at_least_as_long_as_the_daemon_phase_timeout()
+    {
+        Assert.True(
+            DaemonConfig.GracefulShutdownBudget <= DaemonConfig.CliForceKillBudget,
+            "the CLI's graceful-wait budget must be at least the daemon's own Akka phase timeout");
+    }
+
+    [Fact]
+    public void ShutdownBudgetLayering_cli_force_kill_budget_stays_under_systemd_timeout_stop_sec()
+    {
+        Assert.True(
+            DaemonConfig.CliForceKillBudget < DaemonConfig.SystemdTimeoutStopSec,
+            "systemd's TimeoutStopSec= must exceed the CLI's own budget+grace, or systemd SIGKILLs " +
+            "the cgroup out from under a `netclaw daemon stop` (ExecStop=) that is still legitimately waiting");
+    }
+
+    [Fact]
+    public void ShutdownBudgetLayering_matches_the_documented_second_values()
+    {
+        // Pins the concrete values referenced in netclaw-dev/netclaw#1665's evidence trail
+        // (200s phase timeout, 230s TimeoutStopSec) so a change to any constant is a visible,
+        // deliberate diff rather than a silent drift.
+        Assert.Equal(TimeSpan.FromSeconds(190), DaemonConfig.BoundedDrainTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(200), DaemonConfig.GracefulShutdownBudget);
+        Assert.Equal(TimeSpan.FromSeconds(215), DaemonConfig.CliForceKillBudget);
+        Assert.Equal(TimeSpan.FromSeconds(230), DaemonConfig.SystemdTimeoutStopSec);
     }
 }

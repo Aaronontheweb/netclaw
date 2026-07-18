@@ -12,8 +12,8 @@ namespace Netclaw.Daemon;
 /// phase. Extracted into its own testable method (rather than an inline string literal in
 /// Program.cs's top-level statements) so a unit test can assert the interpolated timeout
 /// tracks <see cref="DaemonConfig.GracefulShutdownBudget"/> instead of drifting back to a
-/// hardcoded literal — the exact class of bug behind the canary daemon-stop finding (see
-/// <see cref="DaemonConfig.GracefulShutdownBudget"/> remarks for the full story).
+/// hardcoded literal (see <see cref="DaemonConfig.GracefulShutdownBudget"/> remarks for why
+/// that drift is the exact class of bug behind netclaw-dev/netclaw#1664 and #1665).
 /// </summary>
 internal static class DaemonShutdownConfiguration
 {
