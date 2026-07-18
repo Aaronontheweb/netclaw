@@ -98,6 +98,11 @@ if (-not $InstallDir) {
     $InstallDir = $DefaultInstallDir
 }
 
+$InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
+if ($InstallDir.Contains(';') -or $InstallDir.Contains("`r") -or $InstallDir.Contains("`n")) {
+    throw "InstallDir cannot contain semicolons, carriage returns, or newlines when used on PATH."
+}
+
 Write-Host "Netclaw installer"
 Write-Host "  Platform: win-x64"
 Write-Host "  Install dir: $InstallDir"
@@ -266,28 +271,66 @@ try {
     if (-not $SkipShell) {
         $installDirNormalized = [System.IO.Path]::TrimEndingDirectorySeparator($InstallDir)
 
-        $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-        $userPathEntries = if ([string]::IsNullOrEmpty($userPath)) { @() } else {
-            $userPath -split ';' |
-                Where-Object { -not [string]::IsNullOrEmpty($_) } |
-                ForEach-Object { [System.IO.Path]::TrimEndingDirectorySeparator($_) }
+        # Read the raw registry value so an existing REG_EXPAND_SZ PATH keeps both
+        # its %VAR% references and its registry type when we prepend Netclaw.
+        $userEnvironmentKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
+        if ($null -eq $userEnvironmentKey) {
+            throw "Cannot open the current user's Environment registry key for PATH update."
         }
 
-        $userPathChanged = $false
-        if ($userPathEntries -notcontains $installDirNormalized) {
-            $newUserPath = if ([string]::IsNullOrEmpty($userPath)) {
-                $installDirNormalized
+        try {
+            $pathValueExists = $userEnvironmentKey.GetValueNames() -contains "Path"
+            $userPath = if ($pathValueExists) {
+                $userEnvironmentKey.GetValue(
+                    "Path",
+                    $null,
+                    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
             } else {
-                "$installDirNormalized;$userPath"
+                ""
             }
 
-            if ($newUserPath.Length -gt 32700) {
-                Write-Warning "User PATH is near its 32,767 character limit ($($newUserPath.Length) chars)."
-                Write-Host "Please manually add $InstallDir to your User PATH."
-            } else {
-                [Environment]::SetEnvironmentVariable("PATH", $newUserPath, "User")
-                $userPathChanged = $true
+            if ($null -ne $userPath -and $userPath -isnot [string]) {
+                throw "The current user's PATH registry value is not a string."
             }
+
+            $userPathKind = if ($pathValueExists) {
+                $userEnvironmentKey.GetValueKind("Path")
+            } else {
+                [Microsoft.Win32.RegistryValueKind]::String
+            }
+            if ($userPathKind -notin @(
+                    [Microsoft.Win32.RegistryValueKind]::String,
+                    [Microsoft.Win32.RegistryValueKind]::ExpandString)) {
+                throw "The current user's PATH registry value has unsupported type $userPathKind."
+            }
+
+            $userPathEntries = if ([string]::IsNullOrEmpty($userPath)) { @() } else {
+                $userPath -split ';' |
+                    Where-Object { -not [string]::IsNullOrEmpty($_) } |
+                    ForEach-Object {
+                        $expandedEntry = [Environment]::ExpandEnvironmentVariables($_)
+                        [System.IO.Path]::TrimEndingDirectorySeparator($expandedEntry)
+                    }
+            }
+
+            $userPathChanged = $false
+            if ($userPathEntries -notcontains $installDirNormalized) {
+                $newUserPath = if ([string]::IsNullOrEmpty($userPath)) {
+                    $installDirNormalized
+                } else {
+                    "$installDirNormalized;$userPath"
+                }
+
+                if ($newUserPath.Length -gt 32700) {
+                    Write-Warning "User PATH is near its 32,767 character limit ($($newUserPath.Length) chars)."
+                    Write-Host "Please manually add $InstallDir to your User PATH."
+                } else {
+                    $userEnvironmentKey.SetValue("Path", $newUserPath, $userPathKind)
+                    $userPathChanged = $true
+                }
+            }
+        } finally {
+            $userEnvironmentKey.Dispose()
         }
 
         $processPath = $env:PATH
@@ -331,10 +374,9 @@ try {
     } else {
         Write-Host "Installation complete! (PATH modification skipped)"
         Write-Host ""
-        Write-Host "Add Netclaw to your PATH by running:"
+        Write-Host "Add this directory to your User PATH using Windows Environment Variables settings:"
         Write-Host ""
-        Write-Host "  `$userPath = [Environment]::GetEnvironmentVariable('PATH', 'User')"
-        Write-Host "  [Environment]::SetEnvironmentVariable('PATH', `"$InstallDir;`$userPath`", 'User')"
+        Write-Host "  $InstallDir"
         Write-Host ""
         Write-Host "Then restart your terminal."
     }

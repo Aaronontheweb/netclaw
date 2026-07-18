@@ -22,10 +22,52 @@ $script:Fail = 0
 function Pass([string]$m) { Write-Host "PASS: $m"; $script:Pass++ }
 function Fail([string]$m) { Write-Host "FAIL: $m"; $script:Fail++ }
 
+function Get-UserPathRegistryState {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $false)
+    if ($null -eq $key) { throw "Cannot open the current user's Environment registry key." }
+    try {
+        $exists = $key.GetValueNames() -contains "Path"
+        [PSCustomObject]@{
+            Exists = $exists
+            Value = if ($exists) {
+                $key.GetValue(
+                    "Path",
+                    $null,
+                    [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            } else {
+                $null
+            }
+            Kind = if ($exists) { $key.GetValueKind("Path") } else { $null }
+        }
+    } finally {
+        $key.Dispose()
+    }
+}
+
+function Set-UserPathRegistryState {
+    param(
+        [bool]$Exists,
+        [AllowNull()][string]$Value,
+        [AllowNull()][Microsoft.Win32.RegistryValueKind]$Kind
+    )
+
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
+    if ($null -eq $key) { throw "Cannot open the current user's Environment registry key for update." }
+    try {
+        if ($Exists) {
+            $key.SetValue("Path", $Value, $Kind)
+        } else {
+            $key.DeleteValue("Path", $false)
+        }
+    } finally {
+        $key.Dispose()
+    }
+}
+
 $Work = Join-Path ([System.IO.Path]::GetTempPath()) ("netclaw-install-smoke-" + [Guid]::NewGuid().ToString('N'))
 $Serve = Join-Path $Work "serve"
 $BinDir = Join-Path $Work "bin"
-$OriginalUserPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+$OriginalUserPath = Get-UserPathRegistryState
 $OriginalProcessPath = $env:PATH
 New-Item -ItemType Directory -Path $Serve, $BinDir -Force | Out-Null
 
@@ -123,9 +165,18 @@ try {
     # 6. Real install of the stand-in archives
     Write-Host ""
     Write-Host "=== real install ==="
+
+    $invalidOut = & pwsh -NoProfile -File $InstallPs1 `
+        -InstallDir (Join-Path $Work "invalid;path") -DryRun 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0 -and $invalidOut -match "cannot contain semicolons") {
+        Pass "PATH: unrepresentable Windows install directory rejected"
+    } else {
+        Fail "PATH: Windows install directory containing ';' was accepted"
+    }
+
     $installDir = Join-Path $Work "installed"
     $existingUserEntry = Join-Path $Work "existing-user-bin"
-    [Environment]::SetEnvironmentVariable("PATH", $existingUserEntry, "User")
+    Set-UserPathRegistryState $true $existingUserEntry ([Microsoft.Win32.RegistryValueKind]::String)
     $installOut = & $InstallPs1 -InstallDir $installDir *>&1 | Out-String
     Write-Host ($installOut.TrimEnd())
     foreach ($name in @("netclaw", "netclawd")) {
@@ -141,7 +192,8 @@ try {
     # current process's inherited Machine PATH entries.
     Write-Host ""
     Write-Host "=== PATH automation ==="
-    $persistedEntries = @([Environment]::GetEnvironmentVariable("PATH", "User") -split ';')
+    $persistedPath = Get-UserPathRegistryState
+    $persistedEntries = @($persistedPath.Value -split ';')
     if ($persistedEntries[0] -eq $installDir `
         -and $persistedEntries -contains $existingUserEntry `
         -and @($persistedEntries | Where-Object { $_ -eq $installDir }).Count -eq 1) {
@@ -164,11 +216,12 @@ try {
     # A persisted entry must still repair a stale current process, and a
     # trailing separator must not create a duplicate User PATH entry.
     $env:PATH = $OriginalProcessPath
-    $userPathBeforeRepeat = [Environment]::GetEnvironmentVariable("PATH", "User")
+    $userPathBeforeRepeat = Get-UserPathRegistryState
     & $InstallPs1 -InstallDir "$installDir\" *>&1 | Out-Null
-    $userPathAfterRepeat = [Environment]::GetEnvironmentVariable("PATH", "User")
+    $userPathAfterRepeat = Get-UserPathRegistryState
     $repeatProcessEntries = @($env:PATH -split ';' | Where-Object { $_ })
-    if ($userPathAfterRepeat -eq $userPathBeforeRepeat `
+    if ($userPathAfterRepeat.Value -eq $userPathBeforeRepeat.Value `
+        -and $userPathAfterRepeat.Kind -eq $userPathBeforeRepeat.Kind `
         -and $repeatProcessEntries[0] -eq $installDir `
         -and @($repeatProcessEntries | Where-Object { $_ -eq $installDir }).Count -eq 1) {
         Pass "PATH: repeat install is idempotent and repairs current process"
@@ -176,11 +229,32 @@ try {
         Fail "PATH: repeat install changed User PATH or duplicated process entry"
     }
 
+    $env:NETCLAW_SMOKE_INSTALL_DIR = $installDir
+    $expandedUserPath = "%NETCLAW_SMOKE_INSTALL_DIR%;$existingUserEntry"
+    Set-UserPathRegistryState $true $expandedUserPath ([Microsoft.Win32.RegistryValueKind]::ExpandString)
+    $env:PATH = $OriginalProcessPath
+    & $InstallPs1 -InstallDir $installDir *>&1 | Out-Null
+    $expandedUserPathAfter = Get-UserPathRegistryState
+    if ($expandedUserPathAfter.Value -eq $expandedUserPath `
+        -and $expandedUserPathAfter.Kind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) {
+        Pass "PATH: expandable User entry keeps its raw text and REG_EXPAND_SZ type"
+    } else {
+        Fail "PATH: expandable User entry or its registry type was rewritten"
+    }
+
+    $env:PATH = ""
+    & $InstallPs1 -InstallDir $installDir *>&1 | Out-Null
+    if ($env:PATH -eq $installDir) {
+        Pass "PATH: empty process PATH does not create an empty entry"
+    } else {
+        Fail "PATH: empty process PATH produced unexpected contents"
+    }
+
     # 7c. Test -SkipShell flag
     Write-Host ""
     Write-Host "=== -SkipShell flag ==="
-    $skipDir = Join-Path $Work "skip-install"
-    $skipUserPathBefore = [Environment]::GetEnvironmentVariable("PATH", "User")
+    $skipDir = Join-Path $Work "skip-install's"
+    $skipUserPathBefore = Get-UserPathRegistryState
     $skipProcessPathBefore = $env:PATH
     $skipOut = & pwsh -NoProfile -File $InstallPs1 -InstallDir $skipDir -SkipShell 2>&1 | Out-String
     if ($LASTEXITCODE -eq 0) {
@@ -193,10 +267,13 @@ try {
     } else {
         Fail "-SkipShell: missing 'skipped' message"
     }
-    if ([Environment]::GetEnvironmentVariable("PATH", "User") -eq $skipUserPathBefore `
+    $skipUserPathAfter = Get-UserPathRegistryState
+    if ($skipUserPathAfter.Value -eq $skipUserPathBefore.Value `
+        -and $skipUserPathAfter.Kind -eq $skipUserPathBefore.Kind `
         -and $env:PATH -eq $skipProcessPathBefore `
+        -and $skipOut -match [regex]::Escape("Add this directory to your User PATH") `
         -and $skipOut -match [regex]::Escape($skipDir)) {
-        Pass "-SkipShell: PATH is unchanged and manual command contains resolved install directory"
+        Pass "-SkipShell: PATH is unchanged and manual guidance handles a literal install directory"
     } else {
         Fail "-SkipShell: changed PATH or printed an unusable manual command"
     }
@@ -294,10 +371,11 @@ try {
 }
 finally {
     if ($ServerProc -and -not $ServerProc.HasExited) { $ServerProc.Kill() }
-    [Environment]::SetEnvironmentVariable("PATH", $OriginalUserPath, "User")
+    Set-UserPathRegistryState $OriginalUserPath.Exists $OriginalUserPath.Value $OriginalUserPath.Kind
     $env:PATH = $OriginalProcessPath
     $env:MANIFEST_URL = $null
     $env:NETCLAW_CONFIG_DIR = $null
+    $env:NETCLAW_SMOKE_INSTALL_DIR = $null
     Remove-Item -Path $Work -Recurse -Force -ErrorAction SilentlyContinue
 }
 

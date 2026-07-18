@@ -189,6 +189,18 @@ check_detect "macOS x86_64 + Rosetta -> osx-arm64" Darwin x86_64 1 'DRY RUN: wou
 check_detect "Intel Mac rejected"               Darwin x86_64  0 'Apple Silicon'    1
 check_detect "unsupported OS rejected"          freebsd x86_64 0 'Unsupported OS'   1
 
+set +e
+invalid_path_out=$(INSTALL_DIR="$WORK/invalid:path" \
+  MANIFEST_URL="$BASE_URL/manifest.json" \
+  bash "$INSTALL_SH" --dry-run 2>&1)
+invalid_path_rc=$?
+set -e
+if [ "$invalid_path_rc" -ne 0 ] && echo "$invalid_path_out" | grep -q "cannot contain ':'"; then
+  pass "PATH: unrepresentable Unix install directory rejected"
+else
+  fail "PATH: Unix install directory containing ':' was accepted"
+fi
+
 # Exercise the dependency-free parser with a valid manifest whose asset fields
 # are in reverse order. A private mirror need not preserve JSON property order.
 NO_JQ_BIN="$WORK/no-jq-bin"
@@ -462,6 +474,13 @@ if run_unix_installer "$(command -v bash)" "$BASH_HOME" "$BASH_INSTALL" >/dev/nu
   bash_path=$(PATH="/usr/bin:/bin" HOME="$BASH_HOME" \
     bash --noprofile --rcfile "$BASH_RC" -i -c 'printf "%s" "$PATH"' 2>/dev/null)
   assert_path_once "bash" "$bash_path" "$BASH_INSTALL"
+  bash_empty_path=$(PATH="" HOME="$BASH_HOME" \
+    /bin/bash --noprofile --rcfile "$BASH_RC" -i -c 'printf "%s" "$PATH"' 2>/dev/null)
+  if [ "$bash_empty_path" = "$BASH_INSTALL" ]; then
+    pass "bash: empty PATH does not introduce a current-directory entry"
+  else
+    fail "bash: empty PATH produced '$bash_empty_path'"
+  fi
   source_count=$(grep -cF "$BASH_HOME/.netclaw/env" "$BASH_RC" || true)
   if [ "$source_count" -eq 1 ]; then
     pass "bash: profile source line is idempotent"
@@ -534,6 +553,12 @@ for mode in skip unknown; do
   if [ -n "$manual_command" ] && [ ! -e "$MANUAL_HOME/.netclaw/env" ]; then
     manual_path=$(PATH="/usr/bin:/bin" bash -c "$manual_command; printf '%s' \"\$PATH\"")
     assert_path_once "$mode" "$manual_path" "$MANUAL_INSTALL"
+    manual_empty_path=$(PATH="" /bin/bash -c "$manual_command; printf '%s' \"\$PATH\"")
+    if [ "$manual_empty_path" = "$MANUAL_INSTALL" ]; then
+      pass "$mode: manual command preserves an empty PATH without adding current directory"
+    else
+      fail "$mode: manual command produced '$manual_empty_path' from an empty PATH"
+    fi
   else
     fail "$mode: missing usable manual PATH command or created shell files"
   fi

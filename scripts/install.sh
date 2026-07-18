@@ -181,6 +181,13 @@ check_deps
 RID=$(detect_platform)
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.netclaw/bin}"
 
+# PATH uses ':' as its entry separator, and startup files are line-oriented.
+# These names cannot be represented without changing their meaning.
+if [[ "$INSTALL_DIR" == *:* || "$INSTALL_DIR" == *$'\n'* || "$INSTALL_DIR" == *$'\r'* ]]; then
+    echo "Error: INSTALL_DIR cannot contain ':', carriage returns, or newlines when used on PATH." >&2
+    exit 1
+fi
+
 echo "Netclaw installer"
 echo "  Platform: $RID"
 echo "  Install dir: $INSTALL_DIR"
@@ -307,6 +314,10 @@ if [ "$DRY_RUN" = true ]; then
     exit 0
 fi
 
+# The directory now exists. Persist its physical absolute path so a relative
+# invocation is not tied to the installer's current working directory.
+INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd -P)"
+
 # ── Persist UpdateChannel into config ──
 # Only runs when --channel was explicitly passed. Without this guard a plain
 # upgrade (`install.sh` with no flags) would silently overwrite an existing
@@ -352,7 +363,7 @@ shell_quote() {
 INSTALL_DIR_QUOTED="$(shell_quote "$INSTALL_DIR")"
 ENV_SCRIPT_QUOTED="$(shell_quote "$ENV_SCRIPT")"
 SOURCE_LINE=". $ENV_SCRIPT_QUOTED"
-MANUAL_PATH_LINE="export PATH=$INSTALL_DIR_QUOTED:\$PATH"
+MANUAL_PATH_LINE="export PATH=$INSTALL_DIR_QUOTED\${PATH:+:\"\$PATH\"}"
 
 detect_shell() {
     # $SHELL is inherited from the parent login shell — it reflects the user's
@@ -397,11 +408,15 @@ write_posix_env_script() {
 #!/bin/sh
 # netclaw shell setup
 netclaw_bin=$INSTALL_DIR_QUOTED
-case ":\${PATH}:" in
+case ":\${PATH:-}:" in
     *:"\${netclaw_bin}":*)
         ;;
     *)
-        export PATH="\${netclaw_bin}:\${PATH}"
+        if [ -n "\${PATH:-}" ]; then
+            export PATH="\${netclaw_bin}:\${PATH}"
+        else
+            export PATH="\${netclaw_bin}"
+        fi
         ;;
 esac
 unset netclaw_bin
