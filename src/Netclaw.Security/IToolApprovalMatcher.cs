@@ -104,18 +104,24 @@ public interface IToolApprovalMatcher
 
 /// <summary>
 /// Shell-specific approval matcher. Verb-chain extraction stops at the first
-/// flag, path, or URL token; <c>&amp;&amp;</c> / <c>||</c> / <c>;</c> split
-/// approval units while <c>|</c> stays inside one unit; <c>bash -c</c> /
-/// <c>sh -c</c> wrappers recurse into the inner command.
+/// flag, path, or URL token. The selected ShellSyntaxTree grammar is the
+/// structural authority for clause, alias, path, wrapper, and dynamic-command
+/// classification.
 /// </summary>
 public sealed class ShellApprovalMatcher : IToolApprovalMatcher
 {
-    public static readonly ShellApprovalMatcher Instance = new();
+    public static readonly ShellApprovalMatcher Instance = new(ShellExecutionEnvironment.Current);
 
-    // BashParser is immutable — Parse delegates to a pure static — so one
-    // shared instance is safe and avoids a per-evaluation allocation. The DI
-    // container registers it as a singleton for the same reason.
-    private static readonly ShellSyntaxTree.BashParser Parser = new();
+    private readonly ShellExecutionEnvironment _environment;
+    private readonly IShellApprovalSemantics _approvalSemantics;
+
+    public ShellApprovalMatcher(ShellExecutionEnvironment environment)
+    {
+        _environment = environment;
+        _approvalSemantics = environment.PathStyle == ShellPathStyle.Windows
+            ? WindowsShellApprovalSemantics.Instance
+            : PosixShellApprovalSemantics.Instance;
+    }
 
     public string GetApprovalModeKey(ToolName toolName, IDictionary<string, object?>? arguments)
         => toolName.Value;
@@ -132,29 +138,12 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         var workingDirectory = GetWorkingDirectory(arguments);
         var patterns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // POSIX commands route through BashParser so the approval units
-        // match the clause decomposition ExtractCandidates already uses — in
-        // particular a bare newline separates statements, so a multi-line
-        // command yields one unit per statement. Windows keeps the legacy
-        // ShellTokenizer path — ShellSyntaxTree is bash-only.
-        if (!OperatingSystem.IsWindows())
+        foreach (var unit in ExtractApprovalUnitsViaParser(command, workingDirectory))
         {
-            foreach (var unit in ExtractApprovalUnitsViaBashParser(command))
-            {
-                var normalized = ShellTokenizer.NormalizeApprovalUnit(unit, workingDirectory);
-                if (!string.IsNullOrEmpty(normalized))
-                    patterns.Add(normalized);
-            }
-
-            return patterns.ToList();
-        }
-
-        TraverseApprovalUnits(command, unit =>
-        {
-            var normalized = ShellTokenizer.NormalizeApprovalUnit(unit, workingDirectory);
+            var normalized = _approvalSemantics.NormalizeApprovalUnit(unit, workingDirectory);
             if (!string.IsNullOrEmpty(normalized))
                 patterns.Add(normalized);
-        });
+        }
 
         return patterns.ToList();
     }
@@ -171,30 +160,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (string.IsNullOrWhiteSpace(command))
             return [];
 
-        // POSIX commands route through BashParser so we pick up the parser's
-        // cd-in-compound cwd attribution. The parser walks `cd X && verb`,
-        // `bash -c "cd X && verb"`, and multi-step `cd A && cd B && verb`
-        // chains; the candidate's directory inherits the latest cd target
-        // when the clause itself has no anchored path arg. Windows keeps
-        // the legacy ShellTokenizer path — ShellSyntaxTree is bash-only.
-        if (!OperatingSystem.IsWindows())
-            return ExtractCandidatesViaBashParser(command);
-
-        var seen = new HashSet<(string, string?)>();
-        var candidates = new List<ApprovalCandidate>();
-        TraverseApprovalUnits(command, unit =>
-        {
-            var verb = ShellTokenizer.ExtractVerbChain(unit);
-            if (string.IsNullOrEmpty(verb))
-                return;
-
-            var directory = ShellTokenizer.ExtractFirstPathArgument(unit);
-            var key = (verb.ToLowerInvariant(), directory);
-            if (seen.Add(key))
-                candidates.Add(new ApprovalCandidate(verb, directory));
-        });
-
-        return candidates;
+        return ExtractCandidatesViaParser(command, GetWorkingDirectory(arguments));
     }
 
     /// <summary>
@@ -205,44 +171,28 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     /// pattern/candidate list (messy semantics — Once/Deny prompt only) or
     /// the flattened raw command for display.
     /// </summary>
-    private static ShellSyntaxTree.ParsedCommand? TryParseCommand(string command)
+    private ShellCommandAnalysis? TryAnalyzeCommand(string command, string? workingDirectory)
     {
-        try
-        {
-            var result = Parser.Parse(command);
-            return result.IsUnparseable || result.Clauses.Count == 0 ? null : result;
-        }
-        catch
-        {
-            return null;
-        }
+        var result = _environment.Analyze(command, workingDirectory);
+        return result.Failure == ShellAnalysisFailure.None && result.Clauses.Count > 0
+            ? result
+            : null;
     }
 
-    private static IReadOnlyList<ApprovalCandidate> ExtractCandidatesViaBashParser(string command)
+    private IReadOnlyList<ApprovalCandidate> ExtractCandidatesViaParser(string command, string? workingDirectory)
     {
-        var result = TryParseCommand(command);
-        if (result is null)
+        var result = TryAnalyzeCommand(command, workingDirectory);
+        if (result is null || result.HasDynamicSyntax)
             return [];
 
-        // Group consecutive Pipe clauses into a single approval unit so
-        // `cat /etc/hosts | wc -l` stays one decision rather than two.
-        // AndIf / OrIf / Sequence and the leading None-operator clause each
-        // start a fresh group.
+        // Every executable pipeline clause is a distinct security candidate.
+        // The prompt may render a pipeline as one display unit, but a safe or
+        // approved head must never authorize a different tail process.
         var seen = new HashSet<(string, string?)>();
         var candidates = new List<ApprovalCandidate>();
-        ShellSyntaxTree.Clause? groupHead = null;
 
         foreach (var clause in result.Clauses)
         {
-            if (clause.Operator != ShellSyntaxTree.CompoundOperator.Pipe)
-                groupHead = clause;
-
-            if (groupHead is null)
-                continue;
-
-            if (!ReferenceEquals(clause, groupHead))
-                continue;  // pipe-tail clauses fold into the group head
-
             // ShellSyntaxTree's greedy verb walk (SPEC §6.1) folds
             // lowercase-leading value tokens into the verb chain (`git tag
             // v0.4.2`, `git show aa211dcb`, `git checkout feature2`), while
@@ -253,8 +203,12 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             // `git tag 0.4.2` matches. Mirrors the value-termination in
             // ReconstructClauseText so the gate candidate and the persisted
             // pattern normalize identically.
-            var verb = ShellTokenizer.ApplyVerbShortCircuit(
-                string.Join(" ", TrimTrailingValueTokens(clause.Verb.Tokens)));
+            if (clause.Verb.IsDynamic)
+                continue;
+
+            var parsedVerb = clause.Verb.CanonicalVerb
+                ?? string.Join(" ", TrimTrailingValueTokens(clause.Verb.Tokens));
+            var verb = ShellTokenizer.ApplyVerbShortCircuit(parsedVerb);
             if (string.IsNullOrEmpty(verb))
                 continue;
 
@@ -267,7 +221,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             // surface their target via the explicit-path scan above
             // when BashParser exposes the redirect arg.
             var isSideEffectVerb = ShellTokenizer.SingleTokenSideEffectVerbs.Contains(verb);
-            var directory = ResolveClauseDirectory(clause, isSideEffectVerb);
+            var directory = ResolveClauseDirectory(clause, isSideEffectVerb, workingDirectory);
             var key = (verb.ToLowerInvariant(), directory);
             if (seen.Add(key))
                 candidates.Add(new ApprovalCandidate(verb, directory));
@@ -276,17 +230,19 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         return candidates;
     }
 
-    private static string? ResolveClauseDirectory(ShellSyntaxTree.Clause clause, bool isSideEffectVerb)
+    private string? ResolveClauseDirectory(
+        ShellSyntaxTree.Clause clause,
+        bool isSideEffectVerb,
+        string? workingDirectory)
     {
         // First explicit path arg wins — that's the candidate's own
-        // operand, e.g. `dotnet test /home/user/repos/Foo`. Only the
-        // anchored-path predicate from the legacy tokenizer counts (/, ~/,
-        // ./, ../ and the bare ~/./..), so `feature/freshdesk-cli-skill`
-        // and other internal-slash tokens stay as args, not directories.
-        // The IsPathToken classification runs on the raw user-facing form
-        // so branch names whose Resolved happens to look path-like don't
-        // get misclassified; once classified as a path, we persist the
-        // parser-resolved absolute path when available so it compares
+        // operand, e.g. `dotnet test /home/user/repos/Foo`. The canonical
+        // parser supplies structural path classification and resolution for
+        // the selected grammar. Netclaw's conservative path predicate remains
+        // the scope boundary: an internal slash in a git ref must not turn a
+        // branch into a directory approval. Persist the parser-resolved path
+        // when available
+        // so it compares
         // string-equal to cwd-attributed directories produced by other
         // clauses (otherwise `cd ~/x && verb` produces "2 directories" in
         // the approval prompt even though both refer to the same folder).
@@ -302,11 +258,25 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             if (raw.StartsWith('-'))
                 continue;
 
-            if (ShellTokenizer.IsPathToken(raw))
+            if (arg.IsPath && _approvalSemantics.LooksLikePath(raw))
             {
                 var canonical = !string.IsNullOrEmpty(arg.Resolved) ? arg.Resolved : raw;
                 return ShellTokenizer.ApplyFileParentRule(canonical);
             }
+        }
+
+        foreach (var redirect in clause.Redirects)
+        {
+            if (redirect.IsDynamicSkip
+                || string.IsNullOrEmpty(redirect.Target)
+                || !_approvalSemantics.LooksLikePath(redirect.Target))
+            {
+                continue;
+            }
+
+            var canonical = _approvalSemantics.NormalizePathToken(redirect.Target, workingDirectory)
+                            ?? redirect.Target;
+            return ShellTokenizer.ApplyFileParentRule(canonical);
         }
 
         // Side-effect verbs ignore cd attribution — see caller's comment
@@ -323,14 +293,15 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     }
 
     /// <summary>
-    /// Splits a POSIX command into approval-unit strings via BashParser:
-    /// one unit per statement, with consecutive <c>|</c> clauses folded into
-    /// the same unit so <c>cat x | wc -l</c> stays a single decision.
+    /// Splits a command into approval-unit strings via the canonical parser:
+    /// one display unit per statement, with consecutive <c>|</c> clauses folded
+    /// into the same display text. Security candidates are still extracted for
+    /// every pipeline clause by <see cref="ExtractCandidatesViaParser"/>.
     /// Returns an empty list for messy, unparseable, or parser-rejected
     /// commands — mirroring the legacy <see cref="ShellTokenizer.SplitCompoundCommand"/>
     /// empty-result contract so the prompt builder offers only Once/Deny.
     /// </summary>
-    private static IReadOnlyList<string> ExtractApprovalUnitsViaBashParser(string command)
+    private IReadOnlyList<string> ExtractApprovalUnitsViaParser(string command, string? workingDirectory)
     {
         // Messy commands (control-flow keywords, unbalanced brackets) cannot
         // be cleanly decomposed into approval units; mirror the legacy
@@ -338,8 +309,8 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (ShellTokenizer.IsMessyCompoundCommand(command))
             return [];
 
-        var result = TryParseCommand(command);
-        if (result is null)
+        var result = TryAnalyzeCommand(command, workingDirectory);
+        if (result is null || result.HasDynamicSyntax)
             return [];
 
         try
@@ -543,8 +514,8 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (ShellTokenizer.IsMessyCompoundCommand(command))
             return false;
 
-        // Fail-closed on a parser miss: BashParser swallows exceptions and
-        // unparseable results return an empty candidate list. Treating that
+        // Fail-closed on a parser miss: exceptions and unparseable results
+        // return an empty candidate list. Treating that
         // as "approved" would silently auto-allow any command our parser
         // regresses on. Force the gate instead.
         var candidates = ExtractCandidates(toolName, arguments);
@@ -569,7 +540,17 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     }
 
     public bool IsMessy(ToolName toolName, IDictionary<string, object?>? arguments)
-        => ShellTokenizer.IsMessyCompoundCommand(GetCommand(arguments));
+    {
+        var command = GetCommand(arguments);
+        if (ShellTokenizer.IsMessyCompoundCommand(command))
+            return true;
+
+        if (string.IsNullOrWhiteSpace(command))
+            return false;
+
+        var parsed = TryAnalyzeCommand(command, GetWorkingDirectory(arguments));
+        return parsed is null || parsed.HasDynamicSyntax;
+    }
 
     public string FormatForDisplay(ToolName toolName, IDictionary<string, object?>? arguments)
     {
@@ -583,14 +564,11 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
 
         // Issue #1402: channel renderers embed DisplayText in single-line
         // code fences, so a multi-line quoted string (a message body, an
-        // inline script) dumped verbatim corrupts the approval prompt. On
-        // POSIX, rebuild a one-line view from the parse tree with multi-line
-        // args summarized by size; Windows flattens — ShellSyntaxTree is
-        // bash-only. The trailing ReplaceLineEndings catches line breaks the
+        // inline script) dumped verbatim corrupts the approval prompt. Rebuild
+        // a one-line view from the canonical parse tree with multi-line args
+        // summarized by size. The trailing ReplaceLineEndings catches line breaks the
         // reconstruction can leak and collapses CRLF to a single space.
-        var display = OperatingSystem.IsWindows()
-            ? command
-            : BuildSanitizedDisplayViaParser(command);
+        var display = BuildSanitizedDisplayViaParser(command, GetWorkingDirectory(arguments));
 
         return display.ReplaceLineEndings(" ");
     }
@@ -610,9 +588,9 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     /// misstate which statements a pipe or <c>&amp;&amp;</c> guard applies
     /// to. The flattened raw command is ugly but fully disclosed.
     /// </summary>
-    private static string BuildSanitizedDisplayViaParser(string command)
+    private string BuildSanitizedDisplayViaParser(string command, string? workingDirectory)
     {
-        var result = TryParseCommand(command);
+        var result = TryAnalyzeCommand(command, workingDirectory);
         if (result is null)
             return command;
 

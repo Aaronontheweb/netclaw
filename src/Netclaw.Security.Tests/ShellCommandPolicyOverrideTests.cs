@@ -18,6 +18,7 @@ public sealed class ShellCommandPolicyOverrideTests
     public void Override_verb_rule_denies_matching_command()
     {
         var policy = new ShellCommandPolicy(
+            ShellExecutionEnvironment.Current,
             additionalDenyPatterns: null,
             overrideRules:
             [
@@ -33,6 +34,7 @@ public sealed class ShellCommandPolicyOverrideTests
     public void Override_verb_rule_allows_non_matching_command()
     {
         var policy = new ShellCommandPolicy(
+            ShellExecutionEnvironment.Current,
             additionalDenyPatterns: null,
             overrideRules:
             [
@@ -49,6 +51,7 @@ public sealed class ShellCommandPolicyOverrideTests
         // Note: shipped defaults already include `mkfs` prefix; this verifies
         // the override mechanism correctly translates a verbPrefix rule.
         var policy = new ShellCommandPolicy(
+            ShellExecutionEnvironment.Current,
             additionalDenyPatterns: null,
             overrideRules:
             [
@@ -64,6 +67,7 @@ public sealed class ShellCommandPolicyOverrideTests
     public void Override_raw_text_rule_denies_substring_match()
     {
         var policy = new ShellCommandPolicy(
+            ShellExecutionEnvironment.Current,
             additionalDenyPatterns: null,
             overrideRules:
             [
@@ -83,6 +87,7 @@ public sealed class ShellCommandPolicyOverrideTests
     public void Override_refined_verb_with_arg_flag_requires_flag_present()
     {
         var policy = new ShellCommandPolicy(
+            ShellExecutionEnvironment.Current,
             additionalDenyPatterns: null,
             overrideRules:
             [
@@ -104,6 +109,7 @@ public sealed class ShellCommandPolicyOverrideTests
         // -rf as a required flag should match against tokens like -rfv that
         // pack multiple short flags into one combined token.
         var policy = new ShellCommandPolicy(
+            ShellExecutionEnvironment.Current,
             additionalDenyPatterns: null,
             overrideRules:
             [
@@ -124,6 +130,7 @@ public sealed class ShellCommandPolicyOverrideTests
     public void Override_refined_verb_with_first_path_constraint()
     {
         var policy = new ShellCommandPolicy(
+            ShellExecutionEnvironment.Current,
             additionalDenyPatterns: null,
             overrideRules:
             [
@@ -146,6 +153,7 @@ public sealed class ShellCommandPolicyOverrideTests
     {
         // Override does not weaken or remove shipped defaults.
         var policy = new ShellCommandPolicy(
+            ShellExecutionEnvironment.Current,
             additionalDenyPatterns: null,
             overrideRules:
             [
@@ -167,6 +175,7 @@ public sealed class ShellCommandPolicyOverrideTests
         // rejects invalid rules as a defense-in-depth check.
         Assert.Throws<InvalidDataException>(() =>
             new ShellCommandPolicy(
+                ShellExecutionEnvironment.Current,
                 additionalDenyPatterns: null,
                 overrideRules:
                 [
@@ -178,6 +187,7 @@ public sealed class ShellCommandPolicyOverrideTests
     public void Combined_string_patterns_and_override_rules_both_apply()
     {
         var policy = new ShellCommandPolicy(
+            ShellExecutionEnvironment.Current,
             additionalDenyPatterns: ["legacy-bad-tool"],
             overrideRules:
             [

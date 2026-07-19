@@ -350,8 +350,14 @@ internal sealed class PosixShellApprovalSemantics : ShellApprovalSemanticsBase
             if (!IsPosixShellInvoker(verb))
                 continue;
 
-            if (i + 1 < tokens.Count && IsShellCommandFlag(tokens[i + 1]) && i + 2 < tokens.Count)
-                results.Add(tokens[i + 2]);
+            for (var j = i + 1; j < tokens.Count - 1; j++)
+            {
+                if (IsShellCommandFlag(tokens[j]))
+                {
+                    results.Add(tokens[j + 1]);
+                    break;
+                }
+            }
         }
 
         return results;
@@ -492,12 +498,16 @@ internal sealed class WindowsShellApprovalSemantics : ShellApprovalSemanticsBase
                 continue;
             }
 
-            if (IsPowerShellInvoker(verb)
-                && i + 1 < tokens.Count
-                && IsPowerShellCommandFlag(tokens[i + 1])
-                && i + 2 < tokens.Count)
+            if (!IsPowerShellInvoker(verb))
+                continue;
+
+            for (var j = i + 1; j < tokens.Count - 1; j++)
             {
-                results.Add(tokens[i + 2]);
+                if (IsPowerShellCommandFlag(tokens[j]))
+                {
+                    results.Add(tokens[j + 1]);
+                    break;
+                }
             }
         }
 

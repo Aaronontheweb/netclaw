@@ -182,6 +182,46 @@ public sealed class ShellSyntaxTreeIntegrationTests
     }
 
     [Fact]
+    public void Command_string_wrapper_marks_inner_clause()
+    {
+        var parser = new BashParser();
+
+        var result = parser.Parse("bash -c \"git status\"");
+
+        Assert.False(result.IsUnparseable);
+        var clause = Assert.Single(result.Clauses);
+        Assert.True(clause.IsCommandStringWrapped);
+        Assert.Equal("git status", clause.Verb.Joined);
+        Assert.Null(clause.Verb.CanonicalVerb);
+    }
+
+    [Fact]
+    public void PowerShell_alias_exposes_canonical_verb()
+    {
+        var parser = new PwshParser();
+
+        var result = parser.Parse("gci C:\\temp");
+
+        Assert.False(result.IsUnparseable);
+        var clause = Assert.Single(result.Clauses);
+        Assert.False(clause.Verb.IsDynamic);
+        Assert.Equal("Get-ChildItem", clause.Verb.CanonicalVerb);
+    }
+
+    [Fact]
+    public void PowerShell_dynamic_invocation_is_explicitly_flagged()
+    {
+        var parser = new PwshParser();
+
+        var result = parser.Parse("& $COMMAND --version");
+
+        Assert.False(result.IsUnparseable);
+        var clause = Assert.Single(result.Clauses);
+        Assert.True(clause.Verb.IsDynamic);
+        Assert.Null(clause.Verb.CanonicalVerb);
+    }
+
+    [Fact]
     public void Leading_line_comment_is_stripped_from_clause_extraction()
     {
         // Regression test for ShellSyntaxTree #25 — bash line comments

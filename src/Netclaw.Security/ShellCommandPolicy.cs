@@ -23,11 +23,16 @@ public sealed record ShellCommandDecision(bool Allowed, string? DenyReason = nul
 /// </summary>
 public sealed class ShellCommandPolicy
 {
+    private readonly ShellExecutionEnvironment _environment;
     private readonly IReadOnlyList<DenyPattern> _denyPatterns;
     private readonly IReadOnlyList<RawStringPattern> _rawStringPatterns;
 
-    public ShellCommandPolicy(IEnumerable<string>? additionalDenyPatterns = null)
-        : this(additionalDenyPatterns, overrideRules: null)
+    public ShellExecutionEnvironment ExecutionEnvironment => _environment;
+
+    public ShellCommandPolicy(
+        ShellExecutionEnvironment environment,
+        IEnumerable<string>? additionalDenyPatterns = null)
+        : this(environment, additionalDenyPatterns, overrideRules: null)
     {
     }
 
@@ -40,9 +45,11 @@ public sealed class ShellCommandPolicy
     /// are always present and cannot be removed via either input.
     /// </summary>
     public ShellCommandPolicy(
+        ShellExecutionEnvironment environment,
         IEnumerable<string>? additionalDenyPatterns,
         IEnumerable<HardDenyRule>? overrideRules)
     {
+        _environment = environment;
         var structured = new List<DenyPattern>(DefaultDenyPatterns);
         var raw = new List<RawStringPattern>(DefaultRawStringPatterns);
 
@@ -109,7 +116,7 @@ public sealed class ShellCommandPolicy
     /// <summary>
     /// Evaluates a shell command (possibly compound) against the deny list.
     /// If any segment of a compound command matches, the entire command is denied.
-    /// Recursively scans bash -c / sh -c inner commands.
+    /// Nested command strings are flattened by the canonical parser.
     /// </summary>
     public ShellCommandDecision Evaluate(string command)
     {
@@ -122,8 +129,42 @@ public sealed class ShellCommandPolicy
         if (!rawDecision.Allowed)
             return rawDecision;
 
-        var segments = ShellTokenizer.GetAllCommandSegments(command);
-        foreach (var segment in segments)
+        var parsed = _environment.Analyze(command);
+        if (parsed.Failure == ShellAnalysisFailure.UnsupportedShellWrapper)
+        {
+            foreach (var clause in parsed.Clauses)
+            {
+                var clauseDecision = EvaluateClause(clause);
+                if (!clauseDecision.Allowed)
+                    return clauseDecision;
+            }
+
+            return ShellCommandDecision.Deny(
+                "Command uses an unsupported shell wrapper",
+                DenyCategory.CustomDeny);
+        }
+
+        if (parsed.Failure == ShellAnalysisFailure.Unresolved || parsed.Clauses.Count == 0)
+            return EvaluateLegacySegments(command);
+
+        foreach (var clause in parsed.Clauses)
+        {
+            var decision = EvaluateClause(clause);
+            if (!decision.Allowed)
+                return decision;
+        }
+
+        return ShellCommandDecision.Allow();
+    }
+
+    private ShellCommandDecision EvaluateLegacySegments(string command)
+    {
+        // Control-flow scripts are an intentional parser boundary today. The
+        // approval matcher marks them messy, preventing safe-list or persisted
+        // auto-approval; a human can still approve the fully disclosed raw
+        // script once. Retain the legacy hard-deny scan as defense in depth so
+        // obvious supported deny shapes are not lost at that boundary.
+        foreach (var segment in ShellTokenizer.GetAllCommandSegments(command))
         {
             var decision = EvaluateSegment(segment);
             if (!decision.Allowed)
@@ -138,6 +179,44 @@ public sealed class ShellCommandPolicy
         foreach (var pattern in _rawStringPatterns)
         {
             if (command.Contains(pattern.Pattern, StringComparison.Ordinal))
+                return ShellCommandDecision.Deny(pattern.Reason, pattern.Category);
+        }
+
+        return ShellCommandDecision.Allow();
+    }
+
+    private ShellCommandDecision EvaluateClause(ShellSyntaxTree.Clause clause)
+    {
+        var tokens = new List<string>(clause.Verb.Tokens.Count + clause.Args.Count + clause.Redirects.Count);
+        if (!string.IsNullOrWhiteSpace(clause.Verb.CanonicalVerb))
+            tokens.Add(_environment.Grammar == ShellGrammar.PowerShell
+                ? ShellExecutionEnvironment.NormalizePowerShellVerb(clause.Verb.CanonicalVerb)
+                : clause.Verb.CanonicalVerb);
+        else
+        {
+            if (_environment.Grammar == ShellGrammar.PowerShell && clause.Verb.Tokens.Count > 0)
+            {
+                tokens.Add(ShellExecutionEnvironment.NormalizePowerShellVerb(clause.Verb.Tokens[0]));
+                tokens.AddRange(clause.Verb.Tokens.Skip(1));
+            }
+            else
+            {
+                tokens.AddRange(clause.Verb.Tokens);
+            }
+        }
+        tokens.AddRange(clause.Args
+            .Where(static arg => !arg.IsCwdAttribution)
+            .Select(static arg => arg.Raw));
+        tokens.AddRange(clause.Redirects
+            .Where(static redirect => !string.IsNullOrEmpty(redirect.Target))
+            .Select(static redirect => redirect.Target));
+
+        if (tokens.Count == 0)
+            return ShellCommandDecision.Allow();
+
+        foreach (var pattern in _denyPatterns)
+        {
+            if (pattern.Matches(tokens))
                 return ShellCommandDecision.Deny(pattern.Reason, pattern.Category);
         }
 
@@ -168,6 +247,19 @@ public sealed class ShellCommandPolicy
         return new VerbChainDenyPattern(tokens, raw, DenyCategory.CustomDeny);
     }
 
+    private static bool IsPowerShellParameterAbbreviation(string token, string parameter)
+    {
+        if (token.Length < 2 || token[0] != '-')
+            return false;
+
+        var name = token[1..];
+        var colon = name.IndexOf(':', StringComparison.Ordinal);
+        if (colon >= 0)
+            name = name[..colon];
+
+        return name.Length > 0 && parameter.StartsWith(name, StringComparison.OrdinalIgnoreCase);
+    }
+
     // ── Default deny patterns ──
 
     private static readonly IReadOnlyList<DenyPattern> DefaultDenyPatterns =
@@ -187,6 +279,11 @@ public sealed class ShellCommandPolicy
 
         // System-destructive: rm -rf on root or home
         new RmRfRootDenyPattern("Cannot remove root or home directories", DenyCategory.SystemDestructive),
+        new PowerShellRemoveItemRootDenyPattern("Cannot remove root or home directories", DenyCategory.SystemDestructive),
+
+        // PowerShell elevation through Start-Process is the native equivalent
+        // of sudo/doas and must remain categorically unavailable.
+        new PowerShellRunAsDenyPattern("Cannot escalate privileges from within a session", DenyCategory.PrivilegeEscalation),
 
         // Filesystem destruction (mkfs, mkfs.ext4, mkfs.xfs, etc.)
         new VerbPrefixDenyPattern("mkfs", "Cannot create filesystems", DenyCategory.SystemDestructive),
@@ -263,7 +360,7 @@ public sealed class ShellCommandPolicy
     {
         private static readonly HashSet<string> KillVerbs = new(StringComparer.OrdinalIgnoreCase)
         {
-            "kill", "killall", "pkill"
+            "kill", "killall", "pkill", "Stop-Process"
         };
 
         public override bool Matches(IReadOnlyList<string> tokens)
@@ -356,8 +453,73 @@ public sealed class ShellCommandPolicy
 
             var trimmed = token.TrimEnd('/', '\\');
             return trimmed is "~" or "$HOME" or "${HOME}"
-                || string.Equals(trimmed, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                || string.Equals(trimmed, System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile),
                     StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    internal sealed record PowerShellRemoveItemRootDenyPattern(string Reason, DenyCategory Category)
+        : DenyPattern(Reason, Category)
+    {
+        public override bool Matches(IReadOnlyList<string> tokens)
+        {
+            if (tokens.Count < 2
+                || !string.Equals(tokens[0], "Remove-Item", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            var recursive = tokens.Any(static token =>
+                IsPowerShellParameterAbbreviation(token, "Recurse"));
+            var force = tokens.Any(static token =>
+                IsPowerShellParameterAbbreviation(token, "Force"));
+            var dangerousTarget = tokens.Skip(1).Any(IsDangerousPowerShellTarget);
+            return recursive && force && dangerousTarget;
+        }
+
+        private static bool IsDangerousPowerShellTarget(string token)
+        {
+            var unquoted = token.Trim('"', '\'').TrimEnd('/', '\\');
+            if (unquoted.Length == 2 && char.IsAsciiLetter(unquoted[0]) && unquoted[1] == ':')
+                return true;
+
+            return unquoted.Equals("~", StringComparison.OrdinalIgnoreCase)
+                   || unquoted.Equals("$HOME", StringComparison.OrdinalIgnoreCase)
+                   || unquoted.Equals("${HOME}", StringComparison.OrdinalIgnoreCase)
+                   || unquoted.Equals("$env:USERPROFILE", StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    internal sealed record PowerShellRunAsDenyPattern(string Reason, DenyCategory Category)
+        : DenyPattern(Reason, Category)
+    {
+        public override bool Matches(IReadOnlyList<string> tokens)
+        {
+            if (tokens.Count < 2
+                || !string.Equals(tokens[0], "Start-Process", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            for (var i = 1; i < tokens.Count; i++)
+            {
+                if (IsPowerShellParameterAbbreviation(tokens[i], "Verb")
+                    && i + 1 < tokens.Count
+                    && tokens[i + 1].Trim('"', '\'').Equals("RunAs", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                var colon = tokens[i].IndexOf(':', StringComparison.Ordinal);
+                if (colon > 1
+                    && IsPowerShellParameterAbbreviation(tokens[i], "Verb")
+                    && tokens[i][(colon + 1)..].Trim('"', '\'').Equals("RunAs", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
     }
 

@@ -16,6 +16,8 @@ namespace Netclaw.Actors.Tests.Tools;
 
 public sealed class ToolApprovalGateTests
 {
+    public static bool IsWindows => OperatingSystem.IsWindows();
+
     private static ToolAccessPolicy CreatePolicy(ToolApprovalMode shellApprovalMode)
     {
         var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
@@ -33,7 +35,8 @@ public sealed class ToolApprovalGateTests
                 DeploymentPosture.Personal,
                 TrustAudience.Personal,
                 ShellExecutionMode.HostAllowed,
-                UsedStrictFallback: false));
+                UsedStrictFallback: false),
+                new Netclaw.Security.ShellCommandPolicy(Netclaw.Security.ShellExecutionEnvironment.Current));
     }
 
     private static ToolExecutionContext PersonalContext(bool supportsApproval = true, string sessionId = "signalr/thread-1") =>
@@ -43,7 +46,7 @@ public sealed class ToolApprovalGateTests
     private static INetclawTool ShellTool()
     {
         var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
-        return new ShellTool(config, new ToolPathPolicy([]), new ShellCommandPolicy());
+        return new ShellTool(config, new ToolPathPolicy([]), new ShellCommandPolicy(ShellExecutionEnvironment.Current));
     }
 
     [Fact]
@@ -96,7 +99,8 @@ public sealed class ToolApprovalGateTests
                 DeploymentPosture.Personal,
                 TrustAudience.Personal,
                 ShellExecutionMode.HostAllowed,
-                UsedStrictFallback: false));
+                UsedStrictFallback: false),
+                new Netclaw.Security.ShellCommandPolicy(Netclaw.Security.ShellExecutionEnvironment.Current));
 
         var args = ToolInput.Create("Command", "git pull --ff-only");
 
@@ -155,7 +159,7 @@ public sealed class ToolApprovalGateTests
                 TrustAudience.Personal,
                 ShellExecutionMode.HostAllowed,
                 UsedStrictFallback: false),
-            new ShellCommandPolicy());
+            new ShellCommandPolicy(ShellExecutionEnvironment.Current));
 
         var decision = policy.AuthorizeInvocation(
             ShellTool(),
@@ -165,6 +169,75 @@ public sealed class ToolApprovalGateTests
         Assert.False(decision.Allowed);
         Assert.False(decision.NeedsApproval);
         Assert.Equal("hard_deny_self_destructive", decision.DenyReason);
+    }
+
+    [Fact]
+    public void Hard_denied_pipeline_tail_is_blocked_before_approval()
+    {
+        var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
+        config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
+        {
+            ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
+            {
+                ["shell_execute"] = ToolApprovalMode.Approval
+            }
+        };
+        var policy = new ToolAccessPolicy(
+            config,
+            new EffectivePolicyDefaults(
+                DeploymentPosture.Personal,
+                TrustAudience.Personal,
+                ShellExecutionMode.HostAllowed,
+                UsedStrictFallback: false),
+            new ShellCommandPolicy(ShellExecutionEnvironment.Current));
+
+        var decision = policy.AuthorizeInvocation(
+            ShellTool(),
+            PersonalContext(),
+            ToolInput.Create("Command", "echo safe | netclaw daemon stop"));
+
+        Assert.False(decision.Allowed);
+        Assert.False(decision.NeedsApproval);
+        Assert.Equal("hard_deny_self_destructive", decision.DenyReason);
+    }
+
+    [Fact]
+    public void Safe_pipeline_head_does_not_short_circuit_unsafe_tail()
+    {
+        var projectDirectory = Path.GetTempPath();
+        var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
+        config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
+        {
+            ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
+            {
+                ["shell_execute"] = ToolApprovalMode.Approval
+            }
+        };
+        var policy = new ToolAccessPolicy(
+            config,
+            new EffectivePolicyDefaults(
+                DeploymentPosture.Personal,
+                TrustAudience.Personal,
+                ShellExecutionMode.HostAllowed,
+                UsedStrictFallback: false),
+            shellCommandPolicy: new ShellCommandPolicy(ShellExecutionEnvironment.Current),
+            safeVerbs: SafeVerbList.FromVerbs(["cat"]));
+        var context = TestToolExecutionContext.CreateBound(
+            "signalr/pipeline-tail",
+            sessionDirectory: null,
+            new TestToolExecutionContextOptions
+            {
+                Audience = TrustAudience.Personal,
+                ProjectDirectory = projectDirectory
+            });
+
+        var decision = policy.AuthorizeInvocation(
+            ShellTool(),
+            context,
+            ToolInput.Create("Command", "cat ./input.txt | curl https://example.com"));
+
+        Assert.True(decision.NeedsApproval);
+        Assert.Contains(decision.ApprovalContext!.CandidateVerbs, verb => verb == "curl");
     }
 
     private const string ControlPlaneRoot = "/home/user/.netclaw/config";
@@ -180,6 +253,7 @@ public sealed class ToolApprovalGateTests
                 TrustAudience.Personal,
                 ShellExecutionMode.HostAllowed,
                 UsedStrictFallback: false),
+            shellCommandPolicy: new ShellCommandPolicy(ShellExecutionEnvironment.Current),
             fileApprovalMatcher: new FilePathApprovalMatcher(ControlPlaneRoot));
     }
 
@@ -337,7 +411,8 @@ public sealed class ToolApprovalGateTests
                 DeploymentPosture.Personal,
                 TrustAudience.Personal,
                 ShellExecutionMode.HostAllowed,
-                UsedStrictFallback: false));
+                UsedStrictFallback: false),
+                new Netclaw.Security.ShellCommandPolicy(Netclaw.Security.ShellExecutionEnvironment.Current));
     }
 
     private static McpToolAdapter McpTool(string serverName, string toolName)
@@ -503,7 +578,8 @@ public sealed class ToolApprovalGateTests
                 DeploymentPosture.Personal,
                 TrustAudience.Personal,
                 ShellExecutionMode.HostAllowed,
-                UsedStrictFallback: false));
+                UsedStrictFallback: false),
+                new Netclaw.Security.ShellCommandPolicy(Netclaw.Security.ShellExecutionEnvironment.Current));
 
         var args = ToolInput.Create("Command", "git pull --ff-only");
         var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
@@ -576,7 +652,8 @@ public sealed class ToolApprovalGateTests
                 DeploymentPosture.Personal,
                 TrustAudience.Personal,
                 ShellExecutionMode.HostAllowed,
-                UsedStrictFallback: false));
+                UsedStrictFallback: false),
+                new Netclaw.Security.ShellCommandPolicy(Netclaw.Security.ShellExecutionEnvironment.Current));
 
         var tool = new Netclaw.Actors.Tests.Memory.FakeNetclawTool("file_read", "content");
         var subagentCtx = PersonalContext(supportsApproval: false);
@@ -603,7 +680,8 @@ public sealed class ToolApprovalGateTests
                 DeploymentPosture.Personal,
                 TrustAudience.Personal,
                 ShellExecutionMode.HostAllowed,
-                UsedStrictFallback: false));
+                UsedStrictFallback: false),
+                new Netclaw.Security.ShellCommandPolicy(Netclaw.Security.ShellExecutionEnvironment.Current));
 
         var tool = new Netclaw.Actors.Tests.Memory.FakeNetclawTool("file_read", "content");
         var decision = policy.AuthorizeInvocation(tool, PersonalContext());
@@ -632,7 +710,8 @@ public sealed class ToolApprovalGateTests
                 DeploymentPosture.Personal,
                 TrustAudience.Personal,
                 ShellExecutionMode.HostAllowed,
-                UsedStrictFallback: false));
+                UsedStrictFallback: false),
+                new Netclaw.Security.ShellCommandPolicy(Netclaw.Security.ShellExecutionEnvironment.Current));
 
         var tool = new Netclaw.Actors.Tests.Memory.FakeNetclawTool("store_memory", "ok");
         var subagentCtx = PersonalContext(supportsApproval: false);
@@ -685,6 +764,30 @@ public sealed class ToolApprovalGateTests
     }
 
     [Fact]
+    public void PowerShell_pipeline_tail_outside_trust_zone_is_denied()
+    {
+        using var dir = new DisposableTempDir();
+        var trustRoot = CreateTrustZoneRoot(dir.Path);
+        var insidePath = Path.Combine(trustRoot, "project", "README.md");
+        var outsidePath = Path.Combine(dir.Path, "outside", "secrets.txt");
+        var environment = ShellExecutionEnvironment.PowerShell();
+        var policy = CreatePolicyWithTrustZone(
+            new FakeShellTrustZonePolicy([trustRoot]),
+            environment);
+
+        var decision = policy.AuthorizeInvocation(
+            ShellTool(),
+            PersonalContext(supportsApproval: false),
+            new Dictionary<string, object?>
+            {
+                ["command"] = $"gci '{insidePath}' | gci '{outsidePath}'"
+            });
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("shell_path_outside_trust_zone", decision.DenyReason);
+    }
+
+    [Fact]
     public void Non_interactive_shell_without_path_args_proceeds_to_approval()
     {
         using var dir = new DisposableTempDir();
@@ -720,8 +823,11 @@ public sealed class ToolApprovalGateTests
         Assert.True(decision.NeedsApproval);
     }
 
-    [Fact]
-    public void Non_interactive_shell_with_nested_shell_path_outside_trust_zone_is_denied()
+    [Theory]
+    [InlineData("bash -c")]
+    [InlineData("bash -lc")]
+    [InlineData("timeout 5 bash -lc")]
+    public void Non_interactive_shell_with_nested_shell_path_outside_trust_zone_is_denied(string invocation)
     {
         using var dir = new DisposableTempDir();
         var trustRoot = CreateTrustZoneRoot(dir.Path);
@@ -733,10 +839,32 @@ public sealed class ToolApprovalGateTests
         var ctx = PersonalContext(supportsApproval: false);
 
         var decision = policy.AuthorizeInvocation(tool, ctx,
-            new Dictionary<string, object?> { ["command"] = $"bash -c \"cat {outsidePath}\"" });
+            new Dictionary<string, object?> { ["command"] = $"{invocation} \"cat {outsidePath}\"" });
 
         Assert.False(decision.Allowed);
         Assert.Equal("shell_path_outside_trust_zone", decision.DenyReason);
+    }
+
+    [Fact]
+    public void Non_interactive_PowerShell_dynamic_path_is_denied_as_unresolved()
+    {
+        using var dir = new DisposableTempDir();
+        var trustRoot = CreateTrustZoneRoot(dir.Path);
+        var environment = ShellExecutionEnvironment.PowerShell();
+        var policy = CreatePolicyWithTrustZone(
+            new FakeShellTrustZonePolicy([trustRoot]),
+            environment);
+
+        var decision = policy.AuthorizeInvocation(
+            ShellTool(),
+            PersonalContext(supportsApproval: false),
+            new Dictionary<string, object?>
+            {
+                ["command"] = @"Get-Content $env:TEMP\secret.txt"
+            });
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("shell_command_has_unresolved_syntax", decision.DenyReason);
     }
 
     [Fact]
@@ -848,6 +976,7 @@ public sealed class ToolApprovalGateTests
                 TrustAudience.Personal,
                 ShellExecutionMode.HostAllowed,
                 UsedStrictFallback: false),
+            shellCommandPolicy: new ShellCommandPolicy(ShellExecutionEnvironment.Current),
             shellTrustZonePolicy: trustZone);
         var tool = ShellTool();
         var ctx = PersonalContext(supportsApproval: false);
@@ -867,6 +996,11 @@ public sealed class ToolApprovalGateTests
     }
 
     private static ToolAccessPolicy CreatePolicyWithTrustZone(IShellTrustZonePolicy trustZone)
+        => CreatePolicyWithTrustZone(trustZone, ShellExecutionEnvironment.Current);
+
+    private static ToolAccessPolicy CreatePolicyWithTrustZone(
+        IShellTrustZonePolicy trustZone,
+        ShellExecutionEnvironment environment)
     {
         var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
         config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
@@ -884,6 +1018,7 @@ public sealed class ToolApprovalGateTests
                 TrustAudience.Personal,
                 ShellExecutionMode.HostAllowed,
                 UsedStrictFallback: false),
+            shellCommandPolicy: new ShellCommandPolicy(environment),
             shellTrustZonePolicy: trustZone);
     }
 
