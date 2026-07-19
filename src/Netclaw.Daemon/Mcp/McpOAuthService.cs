@@ -8,7 +8,6 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
-using ModelContextProtocol.Authentication;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Secrets;
 using Netclaw.Providers.OAuth;
@@ -422,6 +421,44 @@ internal sealed class McpOAuthService
         }
     }
 
+    /// <summary>
+    /// Refreshes the access token after the MCP resource server rejected the
+    /// specific token carried by a request. Concurrent 401 responses for the
+    /// same token coalesce under the normal per-server refresh gate; callers
+    /// waiting behind the winner reuse its replacement token.
+    /// </summary>
+    public async Task<string?> RefreshAfterUnauthorizedAsync(
+        McpServerName serverName,
+        McpServerEntry entry,
+        string rejectedAccessToken,
+        CancellationToken ct)
+    {
+        var gate = _refreshGates.GetOrAdd(serverName, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct);
+        try
+        {
+            if (!_tokens.TryGetValue(serverName, out var tokenSet))
+                return null;
+
+            // A concurrent request already redeemed the refresh token. Reuse
+            // its result instead of presenting the rotated credential again.
+            if (!string.Equals(tokenSet.AccessToken.Value, rejectedAccessToken, StringComparison.Ordinal))
+                return tokenSet.AccessToken.Value;
+
+            if (tokenSet.RefreshToken is null)
+            {
+                WarnNoRefreshToken(serverName, tokenSet.ExpiresAt);
+                return null;
+            }
+
+            return await RefreshTokenAsync(serverName, entry, tokenSet, ct);
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
     private bool NeedsRefresh(McpOAuthTokenSet tokenSet)
         => tokenSet.ExpiresAt is not null
            && tokenSet.ExpiresAt.Value - ProactiveRefreshWindow <= _timeProvider.GetUtcNow();
@@ -582,6 +619,10 @@ internal sealed class McpOAuthService
 
             return null;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             // Transient failure: network error, 5xx, or a 4xx without a
@@ -618,16 +659,6 @@ internal sealed class McpOAuthService
             serverName.Value);
     }
 
-    // ── SDK Token Cache Bridge ──────────────────────────────────────────
-
-    /// <summary>
-    /// Creates an <see cref="ITokenCache"/> adapter that bridges the SDK's
-    /// token management to Netclaw's existing <see cref="McpOAuthTokenSet"/>
-    /// persistence for the given server.
-    /// </summary>
-    internal ITokenCache CreateTokenCache(McpServerName serverName)
-        => new McpTokenCacheAdapter(serverName, _tokens, PersistTokens, _timeProvider);
-
     /// <summary>Returns the cached token set for the given server, or null.</summary>
     internal McpOAuthTokenSet? GetTokenSet(McpServerName serverName)
         => _tokens.TryGetValue(serverName, out var ts) ? ts : null;
@@ -635,17 +666,6 @@ internal sealed class McpOAuthService
     /// <summary>Returns the cached OAuth metadata for the given server, or null.</summary>
     internal McpOAuthServerMetadata? GetCachedMetadata(McpServerName serverName)
         => _metadata.TryGetValue(serverName, out var m) ? m : null;
-
-    /// <summary>Persists a DCR-issued client_id into the metadata cache.</summary>
-    internal void UpdateMetadataClientId(McpServerName serverName, string clientId)
-    {
-        if (_metadata.TryGetValue(serverName, out var meta))
-        {
-            meta.ClientId = clientId;
-            _metadata[serverName] = meta;
-            PersistMetadata();
-        }
-    }
 
     // ── Flow Status (for CLI polling) ──────────────────────────────────
 

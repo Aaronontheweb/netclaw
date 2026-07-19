@@ -7,7 +7,6 @@ using System.Collections.Concurrent;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using ModelContextProtocol.Authentication;
 using ModelContextProtocol.Client;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
@@ -33,13 +32,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
 
     private readonly ConcurrentDictionary<McpServerName, McpServerStatus> _statuses = new();
 
-    // Serializes reconnect/teardown per server. Concurrent tool-invocation
-    // failures against the same server (see InvokeSharedAsync) can each
-    // independently reach TryReconnectAsync; without this gate they would race
-    // to tear down and rebuild the same McpClient, leaking the loser's
-    // client/process. Also shared by the proactive-refresh sweep's teardown on
-    // a terminal invalid_grant.
-    private readonly ConcurrentDictionary<McpServerName, SemaphoreSlim> _reconnectGates = new();
+    private readonly ConcurrentDictionary<McpServerName, McpReconnectGate> _reconnectGates = new();
 
     public McpClientManager(
         Dictionary<string, McpServerEntry> serverEntries,
@@ -120,24 +113,24 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         if (!_serverEntries.TryGetValue(serverName.Value, out var entry) || !entry.Enabled)
             return false;
 
-        var gate = _reconnectGates.GetOrAdd(serverName, static _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(ct);
-        try
-        {
-            if (_clients.TryRemove(serverName, out var existing))
+        var gate = GetReconnectGate(serverName);
+        var observedVersion = gate.CaptureVersion();
+        return await gate.ReconnectAsync(
+            observedVersion,
+            () => _clients.ContainsKey(serverName),
+            async cancellationToken =>
             {
-                try { await existing.DisposeAsync(); }
-                catch (Exception ex) { _logger.LogDebug(ex, "Error disposing MCP client '{Name}' during reconnect", serverName.Value); }
-            }
+                if (_clients.TryRemove(serverName, out var existing))
+                {
+                    try { await existing.DisposeAsync(); }
+                    catch (Exception ex) { _logger.LogDebug(ex, "Error disposing MCP client '{Name}' during reconnect", serverName.Value); }
+                }
 
-            _sharedToolFunctions.TryRemove(serverName, out _);
+                _sharedToolFunctions.TryRemove(serverName, out _);
 
-            return await ConnectAsync(serverName, entry, ct);
-        }
-        finally
-        {
-            gate.Release();
-        }
+                return await ConnectAsync(serverName, entry, cancellationToken);
+            },
+            ct);
     }
 
     /// <summary>
@@ -160,7 +153,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             if (!_serverEntries.TryGetValue(name.Value, out var entry) || !entry.Enabled)
                 continue;
 
-            if (_oauthService.GetTokenSet(name) is null)
+            if (!UsesManagedOAuth(name, entry))
                 continue; // not an OAuth-managed server
 
             try
@@ -179,7 +172,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                     // already logged and alerted by McpOAuthService). Tear the
                     // connection down now rather than waiting for the next
                     // tool call to 401 into a generic failure.
-                    await TearDownConnectionAsync(name);
+                    await TearDownConnectionAsync(name, ct);
                     _statuses[name] = CreateRefreshRejectedStatus(name, errorCode);
                     _logger.LogWarning(
                         "MCP server '{Name}' OAuth refresh terminally rejected ({ErrorCode}); disconnected pending re-authorization",
@@ -202,25 +195,24 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         }
     }
 
-    private async Task TearDownConnectionAsync(McpServerName name)
+    private async Task TearDownConnectionAsync(McpServerName name, CancellationToken ct)
     {
-        var gate = _reconnectGates.GetOrAdd(name, static _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync();
-        try
-        {
-            if (_clients.TryRemove(name, out var client))
+        await GetReconnectGate(name).TearDownAsync(
+            async () =>
             {
-                try { await client.DisposeAsync(); }
-                catch (Exception ex) { _logger.LogDebug(ex, "Error disposing MCP client '{Name}' after auth revocation", name.Value); }
-            }
+                if (_clients.TryRemove(name, out var client))
+                {
+                    try { await client.DisposeAsync(); }
+                    catch (Exception ex) { _logger.LogDebug(ex, "Error disposing MCP client '{Name}' after auth revocation", name.Value); }
+                }
 
-            _sharedToolFunctions.TryRemove(name, out _);
-        }
-        finally
-        {
-            gate.Release();
-        }
+                _sharedToolFunctions.TryRemove(name, out _);
+            },
+            ct);
     }
+
+    private McpReconnectGate GetReconnectGate(McpServerName name)
+        => _reconnectGates.GetOrAdd(name, static _ => new McpReconnectGate());
 
     /// <summary>
     /// Advisory text for an otherwise-healthy Connected status: null unless the
@@ -338,12 +330,15 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
 
             _sharedToolFunctions[name] = sharedFunctions;
             _clients[name] = client;
+            GetReconnectGate(name).MarkConnectionChanged();
             client = null;
 
             // Advance warning for OAuth-managed servers whose token can never
             // self-refresh, surfaced both in the log and in the Connected
             // status text (doctor/status API) — see BuildOAuthAdvisory.
-            var tokenSet = _oauthService.GetTokenSet(name);
+            var tokenSet = UsesManagedOAuth(name, entry)
+                ? _oauthService.GetTokenSet(name)
+                : null;
             if (tokenSet is not null)
                 _oauthService.WarnIfMissingRefreshToken(name);
             _statuses[name] = new McpServerStatus(name, McpConnectionState.Connected, tools.Count, BuildOAuthAdvisory(name, tokenSet));
@@ -393,7 +388,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                     EmitDisconnectedAlert(name, $"MCP server '{name.Value}' authentication failed: {failureStatus.ErrorMessage}");
                 }
             }
-            else
+            else if (!HasConfiguredAuthorizationHeader(entry))
             {
                 _logger.LogWarning(ex, "Failed to connect to MCP server '{Name}'", name.Value);
                 EmitDisconnectedAlert(name, $"MCP server '{name.Value}' connection failed: {failureStatus.ErrorMessage}");
@@ -459,10 +454,9 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             else
             {
                 // Route the (re)connect through Netclaw's logged, single-flighted
-                // refresh path first, so the cached token the SDK's ITokenCache
-                // bridge (McpTokenCacheAdapter) sees is already fresh. The SDK's
-                // own on-401 refresh — silent, and headless-fatal on our stubbed
-                // AuthorizationRedirectDelegate — then almost never has to run.
+                // refresh path before constructing the HTTP transport. Runtime
+                // requests use McpOAuthAuthorizationHandler, so the SDK never
+                // receives or independently redeems the refresh token.
                 await _oauthService.GetValidTokenAsync(name, entry, ct);
 
                 if (_oauthService.GetTokenSet(name) is null
@@ -519,9 +513,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         var headers = entry.Headers.ToRawValues(StringComparer.OrdinalIgnoreCase)
             ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        // Identify Netclaw to the remote MCP server. The SDK's HttpClientTransport
-        // builds its own HttpClient internally, so this header dictionary is the
-        // only seam — DelegatingHandlers can't reach it. User-configured headers
+        // Identify Netclaw to the remote MCP server. User-configured headers
         // win: if an operator already sets User-Agent or X-Netclaw-Component,
         // we leave them alone.
         if (!headers.ContainsKey("User-Agent"))
@@ -529,7 +521,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         if (!headers.ContainsKey(NetclawUserAgent.ComponentHeader))
             headers[NetclawUserAgent.ComponentHeader] = "mcp";
 
-        return new HttpClientTransport(new HttpClientTransportOptions
+        var options = new HttpClientTransportOptions
         {
             Endpoint = new Uri(entry.Url!),
             Name = serverName.Value,
@@ -537,44 +529,38 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             TransportMode = entry.Transport is "sse"
                 ? HttpTransportMode.Sse
                 : HttpTransportMode.AutoDetect,
-            OAuth = BuildOAuthOptions(serverName, entry),
-        });
-    }
-
-    private ClientOAuthOptions? BuildOAuthOptions(McpServerName serverName, McpServerEntry entry)
-    {
-        var metadata = _oauthService.GetCachedMetadata(serverName);
-
-        // Only wire OAuth if server is known to need it (has metadata or static config)
-        if (metadata is null && string.IsNullOrWhiteSpace(entry.OAuthClientId))
-            return null;
-
-        var serverNameCapture = serverName;
-        return new ClientOAuthOptions
-        {
-            RedirectUri = new Uri("http://127.0.0.1:5199/api/mcp/oauth/callback"),
-            ClientId = metadata?.ClientId ?? entry.OAuthClientId,
-            Scopes = ParseScopes(entry.OAuthScope),
-            TokenCache = _oauthService.CreateTokenCache(serverName),
-            // Return null to suppress the SDK's default browser-open behavior;
-            // Netclaw handles interactive auth via `netclaw mcp auth`.
-            AuthorizationRedirectDelegate = static (_, _, _) => Task.FromResult<string?>(null),
-            DynamicClientRegistration = new DynamicClientRegistrationOptions
-            {
-                ClientName = "netclaw",
-                ResponseDelegate = (response, _) =>
-                {
-                    _oauthService.UpdateMetadataClientId(serverNameCapture, response.ClientId);
-                    return Task.CompletedTask;
-                },
-            },
         };
+
+        // Static Authorization headers are operator-owned and retain precedence.
+        // Otherwise a cached OAuth grant is applied by Netclaw's handler, which
+        // owns both proactive and reactive refresh under one per-server gate.
+        if (_oauthService.GetTokenSet(serverName) is not null
+            && !headers.ContainsKey("Authorization"))
+        {
+            var authorizationHandler = new McpOAuthAuthorizationHandler(
+                serverName,
+                entry,
+                _oauthService,
+                new HttpClientHandler());
+            var httpClient = new HttpClient(authorizationHandler, disposeHandler: true);
+            return new HttpClientTransport(options, httpClient, ownsHttpClient: true);
+        }
+
+        return new HttpClientTransport(options);
     }
 
     private bool HasOAuthRuntimeHints(McpServerName serverName, McpServerEntry entry)
         => !string.IsNullOrWhiteSpace(entry.OAuthClientId)
            || !string.IsNullOrWhiteSpace(entry.OAuthScope)
            || _oauthService.GetCachedMetadata(serverName) is not null;
+
+    private bool UsesManagedOAuth(McpServerName serverName, McpServerEntry entry)
+        => _oauthService.GetTokenSet(serverName) is not null
+           && !HasConfiguredAuthorizationHeader(entry);
+
+    private static bool HasConfiguredAuthorizationHeader(McpServerEntry entry)
+        => entry.Headers?.Keys.Any(
+            static header => string.Equals(header, "Authorization", StringComparison.OrdinalIgnoreCase)) is true;
 
     internal static McpServerStatus BuildConnectionFailureStatus(
         McpServerName serverName,
@@ -657,14 +643,6 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             AlertSeverity.Warning,
             source: serverName.Value,
             context: new Dictionary<string, string> { ["serverName"] = serverName.Value }));
-    }
-
-    private static IEnumerable<string>? ParseScopes(string? scopeString)
-    {
-        if (string.IsNullOrWhiteSpace(scopeString))
-            return null;
-
-        return scopeString.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
     private static bool IsAuthFailure(Exception ex)

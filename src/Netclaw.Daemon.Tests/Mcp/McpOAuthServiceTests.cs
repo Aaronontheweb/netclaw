@@ -9,6 +9,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
+using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Secrets;
 using Netclaw.Daemon.Mcp;
@@ -423,6 +424,150 @@ public sealed class McpOAuthServiceTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task AuthorizationHandler_ConcurrentUnauthorizedResponses_SingleFlightRefreshAndRetry()
+    {
+        var now = new DateTimeOffset(2026, 6, 23, 12, 0, 0, TimeSpan.Zero);
+        var time = new FakeTimeProvider(now);
+        var tokenHandler = new GatedTokenEndpointHandler
+        {
+            RefreshResponseBody = new
+            {
+                access_token = "access-new",
+                refresh_token = "refresh-new",
+                expires_in = 3600,
+            },
+        };
+        var serverName = new McpServerName("notion");
+        var entry = CreateHttpEntry();
+        var service = CreateService(
+            CreateDiscoveryClient(),
+            new OAuthPkceService(new HttpClient(tokenHandler), time),
+            timeProvider: time);
+
+        await SeedTokenAsync(service, serverName, entry, tokenHandler,
+            expiresInSeconds: 3600, refreshToken: "refresh-old");
+
+        var resourceHandler = new RejectStaleAccessTokenHandler();
+        using var client = new HttpClient(new McpOAuthAuthorizationHandler(
+            serverName, entry, service, resourceHandler));
+
+        var requests = Enumerable.Range(0, 5)
+            .Select(_ => client.GetStringAsync("https://mcp.example.com/tools",
+                TestContext.Current.CancellationToken))
+            .ToArray();
+
+        await tokenHandler.WaitForFirstRefreshRequestAsync()
+            .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        tokenHandler.ReleaseFirstRefreshRequest();
+
+        var results = await Task.WhenAll(requests);
+
+        Assert.All(results, result => Assert.Equal("ok", result));
+        Assert.Equal(1, tokenHandler.RefreshCallCount);
+        Assert.Equal(5, resourceHandler.RejectedRequestCount);
+        Assert.Equal(5, resourceHandler.AcceptedRequestCount);
+    }
+
+    [Fact]
+    public async Task AuthorizationHandler_UnauthorizedPost_RetryPreservesBody()
+    {
+        var now = new DateTimeOffset(2026, 6, 23, 12, 0, 0, TimeSpan.Zero);
+        var time = new FakeTimeProvider(now);
+        var tokenHandler = new TokenEndpointHandler
+        {
+            RefreshResponse = _ => FakeHttpMessageHandler.JsonResponse(new
+            {
+                access_token = "access-new",
+                refresh_token = "refresh-new",
+                expires_in = 3600,
+            }),
+        };
+        var serverName = new McpServerName("notion");
+        var entry = CreateHttpEntry();
+        var service = CreateService(
+            CreateDiscoveryClient(),
+            new OAuthPkceService(new HttpClient(tokenHandler), time),
+            timeProvider: time);
+
+        await SeedTokenAsync(service, serverName, entry, tokenHandler,
+            expiresInSeconds: 3600, refreshToken: "refresh-old");
+
+        var resourceHandler = new RejectStaleAccessTokenHandler();
+        using var client = new HttpClient(new McpOAuthAuthorizationHandler(
+            serverName, entry, service, resourceHandler));
+        const string body = "{\"jsonrpc\":\"2.0\",\"method\":\"tools/list\"}";
+
+        using var response = await client.PostAsync(
+            "https://mcp.example.com/messages",
+            new StringContent(body, Encoding.UTF8, "application/json"),
+            TestContext.Current.CancellationToken);
+
+        response.EnsureSuccessStatusCode();
+        Assert.Equal([body, body], resourceHandler.RequestBodies);
+        Assert.Equal(1, tokenHandler.RefreshCallCount);
+    }
+
+    [Fact]
+    public async Task ProactiveTerminalRefresh_TearsDownLiveClientAndSetsAuthFailedStatus()
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+        var now = new DateTimeOffset(2026, 6, 23, 12, 0, 0, TimeSpan.Zero);
+        var time = new FakeTimeProvider(now);
+        var tokenHandler = new TokenEndpointHandler
+        {
+            RefreshResponse = _ => FakeHttpMessageHandler.JsonResponse(
+                new { error = "invalid_grant" }, HttpStatusCode.BadRequest),
+        };
+        var serverName = new McpServerName("notion");
+
+        await using var server = await SmokeHttpMcpServer.StartAsync(ct, requireAuth: true);
+        var entry = new McpServerEntry
+        {
+            Transport = "http",
+            Url = server.Url,
+            Enabled = true,
+            OAuthClientId = "test-client",
+        };
+        var service = CreateService(
+            CreateDiscoveryClient(server.Url),
+            new OAuthPkceService(new HttpClient(tokenHandler), time),
+            timeProvider: time);
+        await SeedTokenAsync(service, serverName, entry, tokenHandler,
+            expiresInSeconds: 3600, refreshToken: "refresh-old");
+
+        using var manager = new McpClientManager(
+            new Dictionary<string, McpServerEntry> { [serverName.Value] = entry },
+            new ToolRegistry(),
+            new ToolConfig(),
+            service,
+            NullNotificationSink.Instance,
+            time,
+            NullLogger<McpClientManager>.Instance);
+
+        try
+        {
+            await manager.StartAsync(ct);
+            Assert.NotNull(manager.GetClient(serverName));
+            Assert.Equal(McpConnectionState.Connected,
+                manager.GetServerStatuses()[serverName].State);
+
+            time.Advance(TimeSpan.FromMinutes(51));
+            await manager.RefreshOAuthTokensAsync(ct);
+
+            Assert.Null(manager.GetClient(serverName));
+            var status = manager.GetServerStatuses()[serverName];
+            Assert.Equal(McpConnectionState.AuthFailed, status.State);
+            Assert.Contains("invalid_grant", status.ErrorMessage, StringComparison.Ordinal);
+            Assert.Equal(1, tokenHandler.RefreshCallCount);
+        }
+        finally
+        {
+            await manager.StopAsync(ct);
+        }
+    }
+
     public void Dispose()
     {
         _dir.Dispose();
@@ -544,6 +689,51 @@ public sealed class McpOAuthServiceTests : IDisposable
         public void Emit(OperationalAlert alert) => Alerts.Add(alert);
     }
 
+    private sealed class RejectStaleAccessTokenHandler : HttpMessageHandler
+    {
+        private readonly List<string> _requestBodies = [];
+        private readonly Lock _requestBodiesLock = new();
+        private int _rejectedRequestCount;
+        private int _acceptedRequestCount;
+
+        public int RejectedRequestCount => Volatile.Read(ref _rejectedRequestCount);
+        public int AcceptedRequestCount => Volatile.Read(ref _acceptedRequestCount);
+        public IReadOnlyList<string> RequestBodies
+        {
+            get
+            {
+                lock (_requestBodiesLock)
+                    return _requestBodies.ToList();
+            }
+        }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.Content is not null)
+            {
+                var body = await request.Content.ReadAsStringAsync(cancellationToken);
+                lock (_requestBodiesLock)
+                    _requestBodies.Add(body);
+            }
+
+            var token = request.Headers.Authorization?.Parameter;
+            if (token == "access-seed")
+            {
+                Interlocked.Increment(ref _rejectedRequestCount);
+                return new HttpResponseMessage(HttpStatusCode.Unauthorized);
+            }
+
+            Assert.Equal("access-new", token);
+            Interlocked.Increment(ref _acceptedRequestCount);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("ok"),
+            };
+        }
+    }
+
     private sealed class RecordingLogger<T> : ILogger<T>
     {
         public List<(LogLevel Level, string Message)> Entries { get; } = [];
@@ -569,14 +759,19 @@ public sealed class McpOAuthServiceTests : IDisposable
     }
 
     private static HttpClient CreateDiscoveryClient()
+        => CreateDiscoveryClient("https://mcp.example.com");
+
+    private static HttpClient CreateDiscoveryClient(string mcpServerUrl)
     {
+        var normalizedServerUrl = mcpServerUrl.TrimEnd('/');
+        var serverOrigin = new Uri(normalizedServerUrl).GetLeftPart(UriPartial.Authority);
         return new HttpClient(new FakeHttpMessageHandler(request => request.RequestUri!.ToString() switch
         {
-            "https://mcp.example.com/" or "https://mcp.example.com" => new HttpResponseMessage(HttpStatusCode.Unauthorized),
-            "https://mcp.example.com/.well-known/oauth-protected-resource" => JsonResponse(new
+            var url when url.TrimEnd('/') == normalizedServerUrl => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+            var url when url == $"{serverOrigin}/.well-known/oauth-protected-resource" => JsonResponse(new
             {
                 authorization_servers = new[] { "https://auth.example.com" },
-                resource = "https://mcp.example.com/resource"
+                resource = normalizedServerUrl,
             }),
             "https://auth.example.com/.well-known/oauth-authorization-server" => JsonResponse(new
             {
