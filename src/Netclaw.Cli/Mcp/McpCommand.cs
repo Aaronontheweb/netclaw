@@ -456,14 +456,14 @@ internal static class McpCommand
         return await ReadPasteRedirectAsync(
             writer,
             token => Task.Run(Console.ReadLine, token),
-            (code, state, token) => daemonApi.McpOAuthCallbackAsync(code, state, token),
+            (code, state, iss, token) => daemonApi.McpOAuthCallbackAsync(code, state, iss, token),
             ct);
     }
 
     internal static async Task<bool> ReadPasteRedirectAsync(
         TextWriter writer,
         Func<CancellationToken, Task<string?>> readLineAsync,
-        Func<string, string, CancellationToken, Task<HttpResponseMessage>> submitRedirectAsync,
+        Func<string, string, string?, CancellationToken, Task<HttpResponseMessage>> submitRedirectAsync,
         CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -485,7 +485,7 @@ internal static class McpCommand
             if (string.IsNullOrWhiteSpace(line))
                 continue;
 
-            if (!OAuthRedirectParser.TryParse(line, out var code, out var state, out var error))
+            if (!OAuthRedirectParser.TryParse(line, out var code, out var state, out var iss, out var error))
             {
                 writer.WriteLine($"Invalid redirect URL: {error}");
                 continue;
@@ -493,7 +493,7 @@ internal static class McpCommand
 
             try
             {
-                using var response = await submitRedirectAsync(code, state, ct);
+                using var response = await submitRedirectAsync(code, state, iss, ct);
                 if (response.IsSuccessStatusCode)
                     return true;
 

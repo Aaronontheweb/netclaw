@@ -15,7 +15,9 @@ namespace Netclaw.Daemon.Mcp;
 /// <summary>Query string for the MCP OAuth browser callback.</summary>
 public sealed record McpOAuthCallbackQuery(
     [FromQuery(Name = "code")] string? Code,
-    [FromQuery(Name = "state")] string? State);
+    [FromQuery(Name = "state")] string? State,
+    // RFC 9207 issuer identifier. The MCP SDK validates it; the daemon only relays it.
+    [FromQuery(Name = "iss")] string? Iss);
 
 /// <summary>Authorization URL and opaque state returned when an MCP OAuth flow starts.</summary>
 public sealed record McpOAuthStartResponse(string AuthorizationUrl, string State);
@@ -107,7 +109,7 @@ public static class McpEndpointRouteBuilderExtensions
             try
             {
                 var flow = flowBroker.GetForCallback(query.State);
-                flow.DeliverCode(query.Code);
+                flow.DeliverAuthorizationResponse(query.Code, query.State, query.Iss);
                 var terminal = await flow.WaitForTerminalAsync(requestCancellation);
                 if (terminal.Status is McpOAuthFlowStatus.Failed)
                 {

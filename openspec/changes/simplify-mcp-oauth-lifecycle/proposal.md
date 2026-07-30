@@ -34,7 +34,7 @@ parts: one owner per concern, not a more complete second OAuth implementation.
   degradation).
 - **OAuth ownership**: PKCE, authorization-code exchange, refresh, and bearer
   injection delegate to the MCP C# SDK (ModelContextProtocol.Core 1.4.1
-  `ClientOAuthOptions`, `ITokenCache`, `AuthorizationRedirectDelegate`).
+  `ClientOAuthOptions`, `ITokenCache`, `AuthorizationCallbackHandler`).
   Netclaw's manual protocol implementation in `McpOAuthService` and the
   `mcp-oauth-metadata.json` runtime dependency are **removed**. Existing
   metadata files are ignored, not deleted.
@@ -55,7 +55,7 @@ parts: one owner per concern, not a more complete second OAuth implementation.
   handoff only: opaque one-time state, bounded flow lifetime via
   `TimeProvider`) and `McpOAuthCredentialStore` (durable per-server token
   sets plus the DCR-issued client ID; supplies SDK `ITokenCache` adapters).
-  One SDK redirect delegate owns each flow's PKCE/code exchange; concurrent
+  One SDK authorization callback handler owns each flow's PKCE/code exchange; concurrent
   delegates observe authorization in progress but never reuse its code.
 - **Durable credentials**: active token state changes only after durable
   persistence succeeds; persistence failure fails the connection visibly. A token

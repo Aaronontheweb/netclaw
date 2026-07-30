@@ -3,7 +3,8 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Security.Cryptography;
+using System.Web;
+using ModelContextProtocol.Authentication;
 using Netclaw.Tools;
 
 namespace Netclaw.Daemon.Mcp;
@@ -39,19 +40,27 @@ internal sealed class McpOAuthFlowBroker : IDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             PruneTombstones();
-            if (_latestByServer.TryGetValue(serverName, out var active) && !active.IsTerminal)
-                return new McpOAuthFlowStart(active, false);
+            if (_latestByServer.TryGetValue(serverName, out var active))
+            {
+                if (!active.IsTerminal)
+                    return new McpOAuthFlowStart(active, false);
 
-            var state = CreateOpaqueState();
+                // A flow that failed before the SDK built its authorization URL never reached
+                // _byState, so the state-keyed sweep below cannot reclaim it. Once it is
+                // replaced here nothing can reach it at all, and its timer and its token
+                // source registration on the daemon shutdown token would leak.
+                if (active.State is null)
+                    active.Dispose();
+            }
+
             var flow = new McpOAuthFlow(
                 serverName,
-                state,
                 _timeProvider.GetUtcNow().Add(FlowLifetime),
                 _timeProvider,
                 _daemonCancellation,
-                OnFlowExpired);
+                OnFlowExpired,
+                OnStateDiscovered);
             _latestByServer[serverName] = flow;
-            _byState[state] = flow;
             return new McpOAuthFlowStart(flow, true);
         }
     }
@@ -155,7 +164,9 @@ internal sealed class McpOAuthFlowBroker : IDisposable
             if (_disposed)
                 return;
             _disposed = true;
-            flows = _byState.Values.ToList();
+            // Union both indexes: a flow that never reached its authorization URL appears
+            // only in _latestByServer.
+            flows = _byState.Values.Concat(_latestByServer.Values).Distinct().ToList();
             _latestByServer.Clear();
             _byState.Clear();
         }
@@ -164,6 +175,24 @@ internal sealed class McpOAuthFlowBroker : IDisposable
         {
             flow.Fail(new McpErrorResponse("The daemon stopped the authorization flow.", "daemon shutdown"));
             flow.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Indexes a flow under the <c>state</c> value the MCP SDK generated for it. The browser
+    /// callback carries only that value, so a flow cannot be routed to before the SDK builds
+    /// its authorization URL. The flow registers here before it publishes that URL, so an
+    /// operator can never be redirected to a callback the broker cannot resolve.
+    /// </summary>
+    private void OnStateDiscovered(McpOAuthFlow flow, string state)
+    {
+        lock (_sync)
+        {
+            // The SDK calls this from a task that outlives the broker. Dispose() clears both
+            // indexes and fails every flow; re-inserting here would answer the operator's
+            // callback with "already used" instead of the shutdown reason.
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _byState[state] = flow;
         }
     }
 
@@ -194,25 +223,20 @@ internal sealed class McpOAuthFlowBroker : IDisposable
             flow.Dispose();
         }
     }
-
-    private static string CreateOpaqueState()
-    {
-        var bytes = RandomNumberGenerator.GetBytes(32);
-        return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-    }
 }
 
 internal sealed class McpOAuthFlow : IDisposable
 {
     private readonly object _sync = new();
-    private readonly TaskCompletionSource<Uri> _authorizationUrl =
+    private readonly TaskCompletionSource<(Uri Url, string State)> _authorizationRequest =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly TaskCompletionSource<string> _authorizationCode =
+    private readonly TaskCompletionSource<AuthorizationResult> _authorizationResponse =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource<McpOAuthFlowTerminal> _terminal =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly CancellationTokenSource _lifetimeCancellation;
     private readonly ITimer _expiryTimer;
+    private readonly Action<McpOAuthFlow, string> _stateDiscovered;
     private int _delegateOwner;
     private bool _codeDelivered;
     private bool _commitClaimed;
@@ -220,15 +244,15 @@ internal sealed class McpOAuthFlow : IDisposable
 
     public McpOAuthFlow(
         McpServerName serverName,
-        string state,
         DateTimeOffset expiresAt,
         TimeProvider timeProvider,
         CancellationToken daemonCancellation,
-        Action<McpOAuthFlow> expired)
+        Action<McpOAuthFlow> expired,
+        Action<McpOAuthFlow, string> stateDiscovered)
     {
         ServerName = serverName;
-        State = state;
         ExpiresAt = expiresAt;
+        _stateDiscovered = stateDiscovered;
         _lifetimeCancellation = CancellationTokenSource.CreateLinkedTokenSource(daemonCancellation);
         _expiryTimer = timeProvider.CreateTimer(
             static state =>
@@ -243,7 +267,11 @@ internal sealed class McpOAuthFlow : IDisposable
 
     public McpServerName ServerName { get; }
 
-    public string State { get; }
+    /// <summary>
+    /// The <c>state</c> value the MCP SDK generated for this flow. Null until the SDK builds
+    /// the authorization URL.
+    /// </summary>
+    public string? State { get; private set; }
 
     public DateTimeOffset ExpiresAt { get; }
 
@@ -260,28 +288,32 @@ internal sealed class McpOAuthFlow : IDisposable
         }
     }
 
-    public Task<Uri> WaitForAuthorizationUrlAsync(CancellationToken requestCancellation)
-        => _authorizationUrl.Task.WaitAsync(requestCancellation);
+    public Task<(Uri Url, string State)> WaitForAuthorizationRequestAsync(CancellationToken requestCancellation)
+        => _authorizationRequest.Task.WaitAsync(requestCancellation);
 
     public Task<McpOAuthFlowTerminal> WaitForTerminalAsync(CancellationToken requestCancellation)
         => _terminal.Task.WaitAsync(requestCancellation);
 
-    public async Task<string?> HandleAuthorizationRedirectAsync(
-        Uri authorizationUri,
-        Uri redirectUri,
+    public async Task<AuthorizationResult?> HandleAuthorizationCallbackAsync(
+        AuthorizationCallbackContext context,
         CancellationToken sdkCancellation)
     {
         if (Interlocked.CompareExchange(ref _delegateOwner, 1, 0) != 0)
             throw new McpOAuthAuthorizationInProgressException(ServerName);
 
-        _authorizationUrl.TrySetResult(authorizationUri);
+        PublishAuthorizationRequest(context.AuthorizationUri);
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
             sdkCancellation,
             _lifetimeCancellation.Token);
-        return await _authorizationCode.Task.WaitAsync(cancellation.Token);
+        return await _authorizationResponse.Task.WaitAsync(cancellation.Token);
     }
 
-    public void DeliverCode(string code)
+    /// <summary>
+    /// Hands the browser's callback parameters back to the MCP SDK. The SDK compares
+    /// <paramref name="state"/> against the value it generated and validates
+    /// <paramref name="iss"/> per RFC 9207, so both travel through unmodified.
+    /// </summary>
+    public void DeliverAuthorizationResponse(string code, string? state, string? iss)
     {
         lock (_sync)
         {
@@ -290,7 +322,36 @@ internal sealed class McpOAuthFlow : IDisposable
             _codeDelivered = true;
         }
 
-        _authorizationCode.TrySetResult(code);
+        _authorizationResponse.TrySetResult(new AuthorizationResult
+        {
+            Code = code,
+            State = state,
+            Iss = iss,
+        });
+    }
+
+    private void PublishAuthorizationRequest(Uri authorizationUri)
+    {
+        var state = HttpUtility.ParseQueryString(authorizationUri.Query)["state"];
+        if (string.IsNullOrEmpty(state))
+        {
+            var error = new McpErrorResponse(
+                "The MCP SDK produced an authorization URL with no state parameter.",
+                "authorization start");
+            // Fail before throwing. The caller waiting in StartAuthorizationAsync observes
+            // _authorizationRequest, and an exception that only unwinds the SDK's task would
+            // leave that caller blocked for the full flow lifetime.
+            Fail(error);
+            throw new McpOAuthOperationException(error);
+        }
+
+        lock (_sync)
+            State = state;
+
+        // Index before publishing the URL: the operator cannot reach the callback until the
+        // URL is observable, so this ordering makes an unroutable callback impossible.
+        _stateDiscovered(this, state);
+        _authorizationRequest.TrySetResult((authorizationUri, state));
     }
 
     public bool TryBeginCommit(DateTimeOffset now)
@@ -340,13 +401,17 @@ internal sealed class McpOAuthFlow : IDisposable
             _terminal.TrySetResult(terminal);
         }
 
-        _authorizationUrl.TrySetException(new McpOAuthOperationException(error));
-        _authorizationCode.TrySetCanceled(_lifetimeCancellation.Token);
+        _authorizationRequest.TrySetException(new McpOAuthOperationException(error));
+        _authorizationResponse.TrySetCanceled(_lifetimeCancellation.Token);
         EndLifetime();
     }
 
+    /// <summary>Observable so a test can prove the broker reclaims a retired flow.</summary>
+    public bool IsDisposed { get; private set; }
+
     public void Dispose()
     {
+        IsDisposed = true;
         _expiryTimer.Dispose();
         _lifetimeCancellation.Dispose();
     }

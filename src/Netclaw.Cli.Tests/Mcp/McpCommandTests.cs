@@ -477,7 +477,7 @@ public sealed class McpCommandTests : IDisposable
     {
         var lines = new Queue<string?>([
             "not-a-url",
-            "http://127.0.0.1:5199/api/mcp/oauth/callback?code=auth-code&state=flow-state"
+            "http://127.0.0.1:5199/api/mcp/oauth/callback?code=auth-code&state=flow-state&iss=https%3A%2F%2Fauth.example"
         ]);
 
         var submissions = 0;
@@ -486,11 +486,14 @@ public sealed class McpCommandTests : IDisposable
         var result = await McpCommand.ReadPasteRedirectAsync(
             output,
             _ => Task.FromResult(lines.Dequeue()),
-            (code, state, _) =>
+            (code, state, iss, _) =>
             {
                 submissions++;
                 Assert.Equal("auth-code", code);
                 Assert.Equal("flow-state", state);
+                // The MCP SDK validates iss per RFC 9207. Dropping it here makes every
+                // headless authorization fail against a server that advertises it.
+                Assert.Equal("https://auth.example", iss);
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
             },
             CancellationToken.None);
@@ -514,7 +517,7 @@ public sealed class McpCommandTests : IDisposable
         var result = await McpCommand.ReadPasteRedirectAsync(
             output,
             _ => Task.FromResult(lines.Dequeue()),
-            (code, _, _) =>
+            (code, _, _, _) =>
             {
                 submissions++;
                 var status = code == "bad-code"

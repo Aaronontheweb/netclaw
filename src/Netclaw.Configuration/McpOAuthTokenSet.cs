@@ -41,6 +41,15 @@ public sealed class McpOAuthTokenSet
     public bool DynamicClientRegistration { get; set; }
 
     /// <summary>
+    /// Issuer of the authorization server that issued this client registration. The MCP SDK
+    /// binds a registration to one issuer and will not reuse it against another.
+    /// </summary>
+    public string? AuthorizationServer { get; set; }
+
+    /// <summary>Token endpoint authentication method this client registered with.</summary>
+    public string? TokenEndpointAuthMethod { get; set; }
+
+    /// <summary>
     /// Legacy resource field. It is retained for deserialization only and is not
     /// accepted as the security binding for cached credentials.
     /// </summary>

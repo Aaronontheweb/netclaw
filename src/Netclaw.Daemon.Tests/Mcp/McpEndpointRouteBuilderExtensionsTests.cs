@@ -16,6 +16,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.Authentication;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Secrets;
@@ -235,6 +236,10 @@ public sealed class McpEndpointRouteBuilderExtensionsTests : IDisposable
         var ct = TestContext.Current.CancellationToken;
         using var broker = new McpOAuthFlowBroker(TimeProvider.System, CancellationToken.None);
         var flow = broker.StartOrJoin(new McpServerName("failed-server")).Flow;
+        // Look-up by state needs a state, and only the SDK can supply one. Drive the
+        // callback handler far enough to publish the authorization URL it built.
+        _ = InvokeCallbackHandler(flow, new Uri("https://auth.example.com/authorize?state=failed-state"), ct);
+        await flow.WaitForAuthorizationRequestAsync(ct);
         broker.Fail(flow, new McpErrorResponse(
             "MCP OAuth dynamic client registration failed: HTTP 403 Forbidden.",
             "dynamic client registration",
@@ -275,11 +280,9 @@ public sealed class McpEndpointRouteBuilderExtensionsTests : IDisposable
 
         using var broker = new McpOAuthFlowBroker(TimeProvider.System, CancellationToken.None);
         var pending = broker.StartOrJoin(new McpServerName("test-mcp")).Flow;
-        var expectedUrl = new Uri("https://auth.example.com/authorize?client_id=test-client");
-        var owner = pending.HandleAuthorizationRedirectAsync(
-            expectedUrl,
-            new Uri("http://127.0.0.1:5199/api/mcp/oauth/callback"),
-            ct);
+        var expectedUrl = new Uri("https://auth.example.com/authorize?client_id=test-client&state=sdk-state");
+        var owner = InvokeCallbackHandler(pending, expectedUrl, ct);
+        await pending.WaitForAuthorizationRequestAsync(ct);
         await using var app = await CreateAppAsync(
             spoofLoopback: true,
             mcpServers: servers,
@@ -293,7 +296,7 @@ public sealed class McpEndpointRouteBuilderExtensionsTests : IDisposable
         Assert.True(body.TryGetProperty("authorizationUrl", out var urlProp));
         Assert.True(body.TryGetProperty("state", out var stateProp));
         Assert.False(string.IsNullOrWhiteSpace(urlProp.GetString()));
-        Assert.False(string.IsNullOrWhiteSpace(stateProp.GetString()));
+        Assert.Equal("sdk-state", stateProp.GetString());
         Assert.Equal(expectedUrl.ToString(), urlProp.GetString());
         broker.Fail(pending, new McpErrorResponse("test cleanup"));
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await owner);
@@ -316,10 +319,11 @@ public sealed class McpEndpointRouteBuilderExtensionsTests : IDisposable
 
         using var broker = new McpOAuthFlowBroker(TimeProvider.System, CancellationToken.None);
         var flow = broker.StartOrJoin(new McpServerName("test-mcp")).Flow;
-        var owner = flow.HandleAuthorizationRedirectAsync(
-            new Uri("https://auth.example.com/authorize"),
-            new Uri("http://127.0.0.1:5199/api/mcp/oauth/callback"),
+        var owner = InvokeCallbackHandler(
+            flow,
+            new Uri("https://auth.example.com/authorize?state=happy-path"),
             ct);
+        await flow.WaitForAuthorizationRequestAsync(ct);
         await using var app = await CreateAppAsync(
             spoofLoopback: true,
             mcpServers: servers,
@@ -328,8 +332,12 @@ public sealed class McpEndpointRouteBuilderExtensionsTests : IDisposable
 
         // Complete via callback — no Authorization header (AllowAnonymous)
         var callback = client.GetAsync(
-            $"/api/mcp/oauth/callback?code=test-code&state={flow.State}", ct);
-        Assert.Equal("test-code", await owner);
+            $"/api/mcp/oauth/callback?code=test-code&state={flow.State}&iss=https%3A%2F%2Fauth.example.com", ct);
+        var result = await owner;
+        Assert.Equal("test-code", result?.Code);
+        // The SDK validates both against what it generated, so both must survive the round trip.
+        Assert.Equal("happy-path", result?.State);
+        Assert.Equal("https://auth.example.com", result?.Iss);
         broker.BeginCommit(flow);
         broker.Complete(flow);
         var callbackResponse = await callback;
@@ -345,14 +353,15 @@ public sealed class McpEndpointRouteBuilderExtensionsTests : IDisposable
         var ct = TestContext.Current.CancellationToken;
         using var broker = new McpOAuthFlowBroker(TimeProvider.System, CancellationToken.None);
         var flow = broker.StartOrJoin(new McpServerName("test-mcp")).Flow;
-        var owner = flow.HandleAuthorizationRedirectAsync(
-            new Uri("https://auth.example.com/authorize"),
-            new Uri("http://127.0.0.1:5199/api/mcp/oauth/callback"),
+        var owner = InvokeCallbackHandler(
+            flow,
+            new Uri("https://auth.example.com/authorize?state=failure-path"),
             ct);
+        await flow.WaitForAuthorizationRequestAsync(ct);
         await using var app = await CreateAppAsync(spoofLoopback: true, flowBroker: broker);
         var callback = app.GetTestClient().GetAsync(
             $"/api/mcp/oauth/callback?code=sensitive-code&state={flow.State}", ct);
-        Assert.Equal("sensitive-code", await owner);
+        Assert.Equal("sensitive-code", (await owner)?.Code);
         broker.Fail(flow, new McpErrorResponse(
             "MCP OAuth authorization code exchange failed: HTTP 403 Forbidden.",
             "authorization code exchange",
@@ -365,7 +374,18 @@ public sealed class McpEndpointRouteBuilderExtensionsTests : IDisposable
         Assert.Equal("text/html", response.Content.Headers.ContentType?.MediaType);
         Assert.Contains("authorization code exchange failed", html, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("sensitive-code", html, StringComparison.Ordinal);
-        Assert.DoesNotContain(flow.State, html, StringComparison.Ordinal);
+        Assert.DoesNotContain("failure-path", html, StringComparison.Ordinal);
     }
 
+    private static Task<AuthorizationResult?> InvokeCallbackHandler(
+        McpOAuthFlow flow,
+        Uri authorizationUri,
+        CancellationToken cancellationToken)
+        => flow.HandleAuthorizationCallbackAsync(
+            new AuthorizationCallbackContext
+            {
+                AuthorizationUri = authorizationUri,
+                RedirectUri = new Uri("http://127.0.0.1:5199/api/mcp/oauth/callback"),
+            },
+            cancellationToken);
 }

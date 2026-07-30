@@ -203,8 +203,8 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         if (started.Created)
             _ = RunExplicitAuthorizationAsync(lifecycle, entry, started.Flow);
 
-        var authorizationUrl = await started.Flow.WaitForAuthorizationUrlAsync(requestCancellation);
-        return new McpOAuthStartResponse(authorizationUrl.ToString(), started.Flow.State);
+        var request = await started.Flow.WaitForAuthorizationRequestAsync(requestCancellation);
+        return new McpOAuthStartResponse(request.Url.ToString(), request.State);
     }
 
     public async Task<string> InvokeAsync(
@@ -775,12 +775,13 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             ClientSecret = entry.OAuthClientId is null ? identity.ClientSecret : null,
             Scopes = ParseScopes(entry.OAuthScope),
             TokenCache = cache,
-            AuthorizationRedirectDelegate = authorizationFlow is null
-                ? static (_, _, _) => Task.FromResult<string?>(null)
-                : authorizationFlow.HandleAuthorizationRedirectAsync,
-            AdditionalAuthorizationParameters = authorizationFlow is null
-                ? new Dictionary<string, string>()
-                : new Dictionary<string, string> { ["state"] = authorizationFlow.State },
+
+            // A background reconnect has no flow and therefore no operator at a browser.
+            // Returning null makes the SDK fail the connection instead of blocking on a
+            // redirect nobody will complete.
+            AuthorizationCallbackHandler = authorizationFlow is null
+                ? static (_, _) => Task.FromResult<AuthorizationResult?>(null)
+                : authorizationFlow.HandleAuthorizationCallbackAsync,
 
             // DynamicClientRegistration is deliberately left unset. McpOAuthClientRegistrar
             // owns registration because the SDK hard-codes client_secret_post and cannot
@@ -958,15 +959,24 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             || ex.Message.Contains("forbidden", StringComparison.OrdinalIgnoreCase)
             || ex.Message.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase)
             || ex.Message.Contains("invalid_client", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("AuthorizationRedirectDelegate", StringComparison.OrdinalIgnoreCase)
+            || ex.Message.Contains("AuthorizationCallbackHandler", StringComparison.OrdinalIgnoreCase)
             || ex.Message.Contains("authorization code", StringComparison.OrdinalIgnoreCase))
             return true;
 
         return ex.InnerException is not null && IsAuthFailure(ex.InnerException);
     }
 
+    /// <summary>
+    /// Identifies a stored client registration the authorization server will never accept
+    /// again. The caller only acts on this when the client id came from dynamic registration,
+    /// so an operator-pinned OAuthClientId is never discarded behind their back.
+    /// </summary>
     private static bool IsInvalidClientFailure(Exception ex)
         => ex.Message.Contains("invalid_client", StringComparison.OrdinalIgnoreCase)
+           // A registration is bound to the issuer that granted it. When the resource server
+           // moves to a new issuer, SDK 2.0 refuses to reuse the old one and offers no remedy
+           // of its own, so the stale identity has to go or every retry repeats the failure.
+           || ex.Message.Contains("authorization server changed", StringComparison.OrdinalIgnoreCase)
            || ex.InnerException is not null && IsInvalidClientFailure(ex.InnerException);
 
     internal static McpErrorResponse CreateSafeOAuthError(Exception ex, string fallbackOperation)
