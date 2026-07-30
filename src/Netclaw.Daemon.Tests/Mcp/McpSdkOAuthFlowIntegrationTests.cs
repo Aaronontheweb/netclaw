@@ -414,6 +414,46 @@ public sealed class McpSdkOAuthFlowIntegrationTests
     }
 
     [Fact]
+    public async Task LegacyCredentialsWithoutAnIssuerRequireOneReauthorizationAtExpiry()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var server = await FakeOAuthMcpServer.StartAsync(ct);
+        server.AcceptRefreshToken("legacy-refresh", "legacy-client");
+        using var directory = new DisposableTempDir();
+        var paths = new NetclawPaths(directory.Path);
+        paths.EnsureDirectoriesExist();
+        var canonical = McpOAuthCredentialStore.CanonicalizeResource(server.McpEndpoint.ToString());
+
+        // The shape every install written before SDK 2.0 carries at the moment its access
+        // token lapses: a refresh token the authorization server would honour, but no
+        // AuthorizationServer. Release 1.4.1 refreshed this silently. SDK 2.0 gates refresh on
+        // the stored issuer, and Netclaw deliberately does not fill that value from what the
+        // resource server advertises — a repointed server could then satisfy the SDK's own
+        // issuer binding with a value of its choosing. One reauthorization is the trade.
+        File.WriteAllText(paths.SecretsPath, $$"""
+            {
+              "McpOAuthTokens": {
+                "fake-oauth": {
+                  "AccessToken": "expired-legacy-access",
+                  "RefreshToken": "legacy-refresh",
+                  "ClientId": "legacy-client",
+                  "ExpiresAt": "2020-01-01T00:00:00+00:00",
+                  "ResourceIdentity": "{{canonical}}"
+                }
+              }
+            }
+            """);
+        await using var harness = CreateManagerHarness(server, directory.Path);
+
+        await harness.Manager.StartAsync(ct);
+
+        Assert.Equal(0, server.RefreshGrantCount);
+        var status = harness.Manager.GetServerStatuses()[harness.ServerName];
+        Assert.Equal(McpConnectionState.AuthFailed, status.State);
+        Assert.Contains("netclaw mcp auth fake-oauth", status.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task LegacyUnboundCredentialsReportAwaitingAuthWithoutBeingStamped()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -832,6 +872,8 @@ public sealed class McpSdkOAuthFlowIntegrationTests
 
         public void AcceptBearer(string token) => _state.AcceptBearer(token);
 
+        public void AcceptRefreshToken(string token, string clientId) => _state.AcceptRefreshToken(token, clientId);
+
         public void FailNextTokenExchange() => _state.FailNextTokenExchange();
 
         public void RevokeAccessToken(string token) => _state.RevokeAccessToken(token);
@@ -1246,6 +1288,8 @@ public sealed class McpSdkOAuthFlowIntegrationTests
         }
 
         public void AcceptBearer(string token) => _acceptedAccessTokens[token] = 0;
+
+        public void AcceptRefreshToken(string token, string clientId) => _refreshTokens[token] = clientId;
 
         public void RejectClient(string clientId) => _rejectedClients[clientId] = 0;
 
