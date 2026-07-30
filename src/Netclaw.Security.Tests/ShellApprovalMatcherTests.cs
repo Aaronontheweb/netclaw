@@ -1162,6 +1162,44 @@ public sealed class ShellApprovalMatcherPathExtractionTests
             [new ApprovalEntry(alias) { Directory = null }],
             cwd: null));
     }
+
+    [Fact]
+    public void PowerShell_formatting_cmdlet_with_plain_args_stays_auto_pass_eligible()
+    {
+        // The read-only forms of the pipeline/formatting cmdlets resolve to a
+        // clean verb chain, so they can reach the safe-verb auto-pass path.
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironment.PowerShell());
+        var arguments = new Dictionary<string, object?>
+        {
+            ["Command"] = @"Get-ChildItem C:\repo | Format-Table Name, Length"
+        };
+
+        Assert.False(matcher.IsMessy(new ToolName("shell_execute"), arguments));
+        Assert.Equal(
+            new[] { "Get-ChildItem", "Format-Table" },
+            matcher.ExtractCandidates(new ToolName("shell_execute"), arguments)
+                .Select(c => c.Verb)
+                .ToArray());
+    }
+
+    [Theory]
+    [InlineData(@"Get-ChildItem C:\repo | Format-Table @{Expression={Remove-Item $_}}")]
+    [InlineData(@"Get-ChildItem C:\repo | Select-Object @{N='x';E={Remove-Item $_}}")]
+    [InlineData(@"Get-ChildItem C:\repo | Sort-Object {Remove-Item $_}")]
+    public void PowerShell_formatting_cmdlet_with_script_block_is_messy(string command)
+    {
+        // SCRIPT-BLOCK GUARDRAIL. A calculated-property or script-block argument
+        // could run arbitrary code, so it must never reach safe-verb auto-pass.
+        // The parser tags that argument dynamic; the matcher must then treat the
+        // whole command as messy — prompt only, no candidates, no persisted
+        // grant. This invariant is what makes it safe to list Format-Table /
+        // Select-Object / Sort-Object as safe verbs.
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironment.PowerShell());
+        var arguments = new Dictionary<string, object?> { ["Command"] = command };
+
+        Assert.True(matcher.IsMessy(new ToolName("shell_execute"), arguments));
+        Assert.Empty(matcher.ExtractCandidates(new ToolName("shell_execute"), arguments));
+    }
 }
 
 public sealed class DefaultApprovalMatcherTests
