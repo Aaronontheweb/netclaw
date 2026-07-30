@@ -776,6 +776,16 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             Scopes = ParseScopes(entry.OAuthScope),
             TokenCache = cache,
 
+            // Same choice the SDK's default selector makes; the point is the side effect.
+            // The SDK selects the issuer before it reads the token cache, so this hands a
+            // pre-2.0 credential the issuer it needs to refresh.
+            AuthServerSelector = servers =>
+            {
+                var selected = servers.FirstOrDefault();
+                cache.ObservedAuthorizationServer = selected?.OriginalString;
+                return selected;
+            },
+
             // A background reconnect has no flow and therefore no operator at a browser.
             // Returning null makes the SDK fail the connection instead of blocking on a
             // redirect nobody will complete.

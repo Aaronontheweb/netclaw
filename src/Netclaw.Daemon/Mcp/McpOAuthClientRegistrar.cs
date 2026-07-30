@@ -129,7 +129,12 @@ internal sealed class McpOAuthClientRegistrar(
             authMethod,
             issuer);
 
-        return new McpOAuthClientIdentity(clientId, clientSecret, DynamicClientRegistration: true);
+        return new McpOAuthClientIdentity(
+            clientId,
+            clientSecret,
+            DynamicClientRegistration: true,
+            issuer,
+            authMethod);
     }
 
     private async Task<(string Issuer, string? RegistrationEndpoint, IReadOnlyList<string> AuthMethods)?>

@@ -286,6 +286,38 @@ public sealed class McpSdkOAuthFlowIntegrationTests
     }
 
     [Fact]
+    public async Task StoredCredentialsRefreshAfterRestartWithoutReauthorization()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var server = await FakeOAuthMcpServer.StartAsync(ct);
+        using var directory = new DisposableTempDir();
+        await using (var first = CreateManagerHarness(server, directory.Path))
+        {
+            await CompleteManagerAuthorizationAsync(server, first, ct);
+        }
+
+        await using var restarted = CreateManagerHarness(server, directory.Path);
+        await restarted.Manager.StartAsync(ct);
+        Assert.Equal(McpConnectionState.Connected, restarted.Manager.GetServerStatuses()[restarted.ServerName].State);
+
+        // SDK 2.0 only redeems a refresh token when the stored container reports the same
+        // client registration the provider holds — client id, secret, issuer, and token
+        // endpoint auth method. Drop the access token so the resource server answers 401 and
+        // the SDK must take that path.
+        var issuedAccessToken = server.TokenRequests[^1].IssuedAccessToken;
+        server.RevokeAccessToken(issuedAccessToken);
+        var authorizationsBefore = server.AuthorizationRequests.Count;
+
+        await restarted.Manager.TryReconnectAsync(restarted.ServerName, ct);
+
+        Assert.Equal(1, server.RefreshGrantCount);
+        Assert.Equal(McpConnectionState.Connected, restarted.Manager.GetServerStatuses()[restarted.ServerName].State);
+        // A refresh that silently falls through to interactive authorization is the failure
+        // this test exists to catch, so no new authorization request may appear.
+        Assert.Equal(authorizationsBefore, server.AuthorizationRequests.Count);
+    }
+
+    [Fact]
     public async Task RejectedClientIdentityIsDiscardedSoTheNextAuthorizationRegistersAfresh()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -379,6 +411,47 @@ public sealed class McpSdkOAuthFlowIntegrationTests
         Assert.Equal(
             McpOAuthCredentialStore.CanonicalizeResource(server.McpEndpoint.ToString()),
             harness.Credentials.GetActiveForTests(harness.ServerName)?.ResourceIdentity);
+    }
+
+    [Fact]
+    public async Task LegacyCredentialsWithoutAnIssuerStillRefresh()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var server = await FakeOAuthMcpServer.StartAsync(ct);
+        server.AcceptBearer("legacy-access");
+        server.AcceptRefreshToken("legacy-refresh", "legacy-client");
+        using var directory = new DisposableTempDir();
+        var paths = new NetclawPaths(directory.Path);
+        paths.EnsureDirectoriesExist();
+
+        // Exactly the shape an install written before SDK 2.0 carries: no AuthorizationServer.
+        // SDK 2.0 refuses to refresh without one, so this is the upgrade path that would
+        // otherwise force every operator to authorize again.
+        File.WriteAllText(paths.SecretsPath, $$"""
+            {
+              "McpOAuthTokens": {
+                "fake-oauth": {
+                  "AccessToken": "legacy-access",
+                  "RefreshToken": "legacy-refresh",
+                  "ClientId": "legacy-client",
+                  "McpServerUrl": "{{server.McpEndpoint}}"
+                }
+              }
+            }
+            """);
+        await using var harness = CreateManagerHarness(server, directory.Path);
+        await harness.Manager.StartAsync(ct);
+        Assert.Equal(McpConnectionState.Connected, harness.Manager.GetServerStatuses()[harness.ServerName].State);
+
+        server.RevokeAccessToken("legacy-access");
+        var authorizationsBefore = server.AuthorizationRequests.Count;
+
+        await harness.Manager.TryReconnectAsync(harness.ServerName, ct);
+
+        Assert.Equal(1, server.RefreshGrantCount);
+        Assert.Equal(McpConnectionState.Connected, harness.Manager.GetServerStatuses()[harness.ServerName].State);
+        Assert.Equal(authorizationsBefore, server.AuthorizationRequests.Count);
+        Assert.Empty(server.DynamicClientRegistrations);
     }
 
     [Fact]
@@ -800,7 +873,13 @@ public sealed class McpSdkOAuthFlowIntegrationTests
 
         public void AcceptBearer(string token) => _state.AcceptBearer(token);
 
+        public void AcceptRefreshToken(string token, string clientId) => _state.AcceptRefreshToken(token, clientId);
+
         public void FailNextTokenExchange() => _state.FailNextTokenExchange();
+
+        public void RevokeAccessToken(string token) => _state.RevokeAccessToken(token);
+
+        public int RefreshGrantCount => _state.RefreshGrantCount;
 
         public static async Task<FakeOAuthMcpServer> StartAsync(
             CancellationToken ct,
@@ -920,6 +999,8 @@ public sealed class McpSdkOAuthFlowIntegrationTests
         private readonly ConcurrentDictionary<string, RegisteredClient> _clients = new(StringComparer.Ordinal);
         private readonly ConcurrentDictionary<string, AuthorizationCodeRecord> _authorizationCodes = new(StringComparer.Ordinal);
         private readonly ConcurrentDictionary<string, byte> _acceptedAccessTokens = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, string> _refreshTokens = new(StringComparer.Ordinal);
+        private int _refreshGrantCount;
         private readonly ConcurrentDictionary<string, byte> _rejectedClients = new(StringComparer.Ordinal);
         private readonly ConcurrentQueue<DynamicClientRegistrationObservation> _registrations = new();
         private readonly ConcurrentQueue<AuthorizationObservation> _authorizations = new();
@@ -1098,8 +1179,10 @@ public sealed class McpSdkOAuthFlowIntegrationTests
         {
             var form = await context.Request.ReadFormAsync(context.RequestAborted);
             var grantType = form["grant_type"].ToString();
+            if (string.Equals(grantType, "refresh_token", StringComparison.Ordinal))
+                return HandleRefreshGrant(form);
             if (!string.Equals(grantType, "authorization_code", StringComparison.Ordinal))
-                return Results.BadRequest("Only authorization_code is supported by the fake server.");
+                return Results.BadRequest($"Unsupported grant_type '{grantType}'.");
 
             var code = form["code"].ToString();
             if (!_authorizationCodes.TryGetValue(code, out var authorizationCode))
@@ -1148,6 +1231,7 @@ public sealed class McpSdkOAuthFlowIntegrationTests
                 return Results.StatusCode(StatusCodes.Status500InternalServerError);
 
             _acceptedAccessTokens[issuedAccessToken] = 0;
+            _refreshTokens[issuedRefreshToken] = clientId;
             return Results.Json(new
             {
                 access_token = issuedAccessToken,
@@ -1157,6 +1241,40 @@ public sealed class McpSdkOAuthFlowIntegrationTests
                 scope = authorizationCode.Scope,
             });
         }
+
+        /// <summary>
+        /// Redeems a refresh token the way a rotating-token authorization server does: the old
+        /// refresh token is consumed and a new pair is issued.
+        /// </summary>
+        private IResult HandleRefreshGrant(IFormCollection form)
+        {
+            var presented = form["refresh_token"].ToString();
+            if (!_refreshTokens.TryRemove(presented, out var clientId))
+                return Results.BadRequest(new { error = "invalid_grant" });
+
+            var requestedClientId = form["client_id"].ToString();
+            if (!string.Equals(requestedClientId, clientId, StringComparison.Ordinal))
+                return Results.BadRequest(new { error = "invalid_client" });
+
+            var issuedAccessToken = $"access-{Interlocked.Increment(ref _tokenSequence)}";
+            var issuedRefreshToken = $"refresh-{_tokenSequence}";
+            _refreshTokens[issuedRefreshToken] = clientId;
+            _acceptedAccessTokens[issuedAccessToken] = 0;
+            Interlocked.Increment(ref _refreshGrantCount);
+
+            return Results.Json(new
+            {
+                access_token = issuedAccessToken,
+                refresh_token = issuedRefreshToken,
+                token_type = "Bearer",
+                expires_in = 3600,
+            });
+        }
+
+        /// <summary>Stops accepting an access token, which makes the resource server answer 401.</summary>
+        public void RevokeAccessToken(string token) => _acceptedAccessTokens.TryRemove(token, out _);
+
+        public int RefreshGrantCount => Volatile.Read(ref _refreshGrantCount);
 
         public bool TryAcceptBearer(string authorizationHeader)
         {
@@ -1169,6 +1287,8 @@ public sealed class McpSdkOAuthFlowIntegrationTests
         }
 
         public void AcceptBearer(string token) => _acceptedAccessTokens[token] = 0;
+
+        public void AcceptRefreshToken(string token, string clientId) => _refreshTokens[token] = clientId;
 
         public void RejectClient(string clientId) => _rejectedClients[clientId] = 0;
 
