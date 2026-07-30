@@ -82,6 +82,15 @@ public sealed class SafeVerbLoaderTests
         Assert.False(list.Contains("gh auth status"));
         Assert.False(list.Contains("Where-Object"));
         Assert.False(list.Contains("ForEach-Object"));
+
+        // Pulled after the Windows security audit. Write-Output turns the
+        // redirect-write gate gap into an arbitrary-content file write
+        // (Write-Output '<bytes>' > path). Get-Command / Get-Help can trigger
+        // module auto-import (code exec via a planted module on PSModulePath),
+        // and Get-Help -Online spawns a browser plus a network request.
+        Assert.False(list.Contains("Write-Output"));
+        Assert.False(list.Contains("Get-Command"));
+        Assert.False(list.Contains("Get-Help"));
     }
 
     [Fact]
