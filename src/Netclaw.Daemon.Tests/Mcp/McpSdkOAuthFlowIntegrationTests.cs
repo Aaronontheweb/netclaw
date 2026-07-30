@@ -414,47 +414,6 @@ public sealed class McpSdkOAuthFlowIntegrationTests
     }
 
     [Fact]
-    public async Task LegacyCredentialsWithoutAnIssuerStillRefresh()
-    {
-        var ct = TestContext.Current.CancellationToken;
-        await using var server = await FakeOAuthMcpServer.StartAsync(ct);
-        server.AcceptBearer("legacy-access");
-        server.AcceptRefreshToken("legacy-refresh", "legacy-client");
-        using var directory = new DisposableTempDir();
-        var paths = new NetclawPaths(directory.Path);
-        paths.EnsureDirectoriesExist();
-
-        // Exactly the shape an install written before SDK 2.0 carries: no AuthorizationServer.
-        // SDK 2.0 refuses to refresh without one, so this is the upgrade path that would
-        // otherwise force every operator to authorize again.
-        File.WriteAllText(paths.SecretsPath, $$"""
-            {
-              "McpOAuthTokens": {
-                "fake-oauth": {
-                  "AccessToken": "legacy-access",
-                  "RefreshToken": "legacy-refresh",
-                  "ClientId": "legacy-client",
-                  "McpServerUrl": "{{server.McpEndpoint}}"
-                }
-              }
-            }
-            """);
-        await using var harness = CreateManagerHarness(server, directory.Path);
-        await harness.Manager.StartAsync(ct);
-        Assert.Equal(McpConnectionState.Connected, harness.Manager.GetServerStatuses()[harness.ServerName].State);
-
-        server.RevokeAccessToken("legacy-access");
-        var authorizationsBefore = server.AuthorizationRequests.Count;
-
-        await harness.Manager.TryReconnectAsync(harness.ServerName, ct);
-
-        Assert.Equal(1, server.RefreshGrantCount);
-        Assert.Equal(McpConnectionState.Connected, harness.Manager.GetServerStatuses()[harness.ServerName].State);
-        Assert.Equal(authorizationsBefore, server.AuthorizationRequests.Count);
-        Assert.Empty(server.DynamicClientRegistrations);
-    }
-
-    [Fact]
     public async Task LegacyUnboundCredentialsReportAwaitingAuthWithoutBeingStamped()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -873,8 +832,6 @@ public sealed class McpSdkOAuthFlowIntegrationTests
 
         public void AcceptBearer(string token) => _state.AcceptBearer(token);
 
-        public void AcceptRefreshToken(string token, string clientId) => _state.AcceptRefreshToken(token, clientId);
-
         public void FailNextTokenExchange() => _state.FailNextTokenExchange();
 
         public void RevokeAccessToken(string token) => _state.RevokeAccessToken(token);
@@ -1204,8 +1161,9 @@ public sealed class McpSdkOAuthFlowIntegrationTests
                 authorizationCode.CodeChallenge,
                 ComputeCodeChallenge(codeVerifier),
                 StringComparison.Ordinal);
-            var issuedAccessToken = $"access-{Interlocked.Increment(ref _tokenSequence)}";
-            var issuedRefreshToken = $"refresh-{_tokenSequence}";
+            var sequence = Interlocked.Increment(ref _tokenSequence);
+            var issuedAccessToken = $"access-{sequence}";
+            var issuedRefreshToken = $"refresh-{sequence}";
 
             var observation = new TokenRequestObservation(
                 ClientId: clientId,
@@ -1256,8 +1214,9 @@ public sealed class McpSdkOAuthFlowIntegrationTests
             if (!string.Equals(requestedClientId, clientId, StringComparison.Ordinal))
                 return Results.BadRequest(new { error = "invalid_client" });
 
-            var issuedAccessToken = $"access-{Interlocked.Increment(ref _tokenSequence)}";
-            var issuedRefreshToken = $"refresh-{_tokenSequence}";
+            var sequence = Interlocked.Increment(ref _tokenSequence);
+            var issuedAccessToken = $"access-{sequence}";
+            var issuedRefreshToken = $"refresh-{sequence}";
             _refreshTokens[issuedRefreshToken] = clientId;
             _acceptedAccessTokens[issuedAccessToken] = 0;
             Interlocked.Increment(ref _refreshGrantCount);
@@ -1287,8 +1246,6 @@ public sealed class McpSdkOAuthFlowIntegrationTests
         }
 
         public void AcceptBearer(string token) => _acceptedAccessTokens[token] = 0;
-
-        public void AcceptRefreshToken(string token, string clientId) => _refreshTokens[token] = clientId;
 
         public void RejectClient(string clientId) => _rejectedClients[clientId] = 0;
 

@@ -40,8 +40,18 @@ internal sealed class McpOAuthFlowBroker : IDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             PruneTombstones();
-            if (_latestByServer.TryGetValue(serverName, out var active) && !active.IsTerminal)
-                return new McpOAuthFlowStart(active, false);
+            if (_latestByServer.TryGetValue(serverName, out var active))
+            {
+                if (!active.IsTerminal)
+                    return new McpOAuthFlowStart(active, false);
+
+                // A flow that failed before the SDK built its authorization URL never reached
+                // _byState, so the state-keyed sweep below cannot reclaim it. Once it is
+                // replaced here nothing can reach it at all, and its timer and its token
+                // source registration on the daemon shutdown token would leak.
+                if (active.State is null)
+                    active.Dispose();
+            }
 
             var flow = new McpOAuthFlow(
                 serverName,
@@ -177,7 +187,13 @@ internal sealed class McpOAuthFlowBroker : IDisposable
     private void OnStateDiscovered(McpOAuthFlow flow, string state)
     {
         lock (_sync)
+        {
+            // The SDK calls this from a task that outlives the broker. Dispose() clears both
+            // indexes and fails every flow; re-inserting here would answer the operator's
+            // callback with "already used" instead of the shutdown reason.
+            ObjectDisposedException.ThrowIf(_disposed, this);
             _byState[state] = flow;
+        }
     }
 
     private void OnFlowExpired(McpOAuthFlow flow)
@@ -204,17 +220,6 @@ internal sealed class McpOAuthFlowBroker : IDisposable
             if (_latestByServer.TryGetValue(flow.ServerName, out var latest)
                 && ReferenceEquals(latest, flow))
                 _latestByServer.Remove(flow.ServerName);
-            flow.Dispose();
-        }
-
-        // A flow that failed before the SDK built its authorization URL has no state key, so
-        // the loop above cannot reach it. Retire it here or its timer and token source leak.
-        foreach (var (serverName, flow) in _latestByServer.ToArray())
-        {
-            if (flow.State is not null || !flow.IsTerminal || flow.ExpiresAt > cutoff)
-                continue;
-
-            _latestByServer.Remove(serverName);
             flow.Dispose();
         }
     }
@@ -330,9 +335,14 @@ internal sealed class McpOAuthFlow : IDisposable
         var state = HttpUtility.ParseQueryString(authorizationUri.Query)["state"];
         if (string.IsNullOrEmpty(state))
         {
-            throw new McpOAuthOperationException(new McpErrorResponse(
+            var error = new McpErrorResponse(
                 "The MCP SDK produced an authorization URL with no state parameter.",
-                "authorization start"));
+                "authorization start");
+            // Fail before throwing. The caller waiting in StartAuthorizationAsync observes
+            // _authorizationRequest, and an exception that only unwinds the SDK's task would
+            // leave that caller blocked for the full flow lifetime.
+            Fail(error);
+            throw new McpOAuthOperationException(error);
         }
 
         lock (_sync)
@@ -396,8 +406,12 @@ internal sealed class McpOAuthFlow : IDisposable
         EndLifetime();
     }
 
+    /// <summary>Observable so a test can prove the broker reclaims a retired flow.</summary>
+    public bool IsDisposed { get; private set; }
+
     public void Dispose()
     {
+        IsDisposed = true;
         _expiryTimer.Dispose();
         _lifetimeCancellation.Dispose();
     }

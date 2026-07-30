@@ -70,13 +70,16 @@ operator-facing error naming `OAuthClientId` as the remedy.
 
 Explicit authorization (`netclaw mcp auth <name>`) SHALL retain its existing
 CLI and HTTP surface. The daemon SHALL broker the SDK-generated authorization
-URL to the operator and complete the SDK's redirect delegate from the local
-callback endpoint. Flow state values SHALL be cryptographically opaque,
-one-time, bound to a single server and flow, and SHALL expire after a bounded
-lifetime of five minutes measured via `TimeProvider`. Netclaw SHALL validate
-the callback state itself — the SDK neither generates nor validates the OAuth
-state parameter. The first redirect-delegate invocation for a flow SHALL own
-the authorization URL, callback code, and PKCE exchange. Concurrent delegate
+URL to the operator and complete the SDK's authorization callback handler from
+the local callback endpoint. A flow SHALL be one-time, bound to a single server,
+and SHALL expire after a bounded lifetime of five minutes measured via
+`TimeProvider`. The SDK owns the OAuth `state` value: it generates the value,
+puts it in the authorization URL, and validates the value that returns. The
+daemon SHALL read that value out of the authorization URL only to index the flow,
+so the browser callback can reach it. The daemon SHALL relay `code`, `state`,
+and the RFC 9207 `iss` parameter to the SDK without a change, and SHALL validate
+none of them. The first callback-handler invocation for a flow SHALL own the
+authorization URL, callback code, and PKCE exchange. Concurrent handler
 invocations SHALL observe that authorization is already in progress and SHALL
 NOT receive or reuse the owner's authorization code. At most one
 interactive flow SHALL be active per server; concurrent start requests SHALL
@@ -90,7 +93,7 @@ existing five-minute CLI and TUI polling timeout.
 - **GIVEN** a configured HTTP MCP server requiring OAuth
 - **WHEN** the operator starts explicit authorization
 - **THEN** the daemon creates a pending flow and an unpublished candidate connection
-- **AND** the SDK performs discovery, registration if needed, and PKCE, and supplies the authorization URL through its redirect delegate
+- **AND** the SDK performs discovery, registration if needed, and PKCE, and supplies the authorization URL through its authorization callback handler
 - **AND** the CLI receives that URL through the existing start response and polls the existing status endpoint
 - **AND** the callback completes the flow, the SDK exchanges the code, and the candidate is published only after initialization (including tool listing) succeeds
 - **AND** polling reports `Completed` only after that publication succeeds
@@ -138,7 +141,7 @@ existing five-minute CLI and TUI polling timeout.
 #### Scenario: Concurrent challenges reuse one pending flow
 
 - **GIVEN** a pending interactive flow for a server
-- **WHEN** the SDK invokes the redirect delegate concurrently from parallel transport requests
+- **WHEN** the SDK invokes the authorization callback handler concurrently from parallel transport requests
 - **THEN** one invocation owns the authorization URL and callback code
 - **AND** every other invocation observes authorization in progress without prompting
 - **AND** no authorization code is returned to more than one SDK invocation
@@ -257,7 +260,7 @@ NOT derive the callback host from an incoming request's Host header.
 
 The system SHALL create every configured HTTP MCP transport without an
 operator-configured `Authorization` header with SDK OAuth support whose
-non-interactive redirect delegate returns no authorization code. A configured
+non-interactive authorization callback handler returns no authorization result. A configured
 `Authorization` header SHALL suppress SDK OAuth so the SDK cannot replace it
 after a challenge. OAuth support SHALL remain dormant for unauthenticated
 servers, and all operator-provided headers SHALL remain authoritative. When interactive authorization is required, the

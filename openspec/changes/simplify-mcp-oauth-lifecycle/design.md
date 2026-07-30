@@ -89,7 +89,7 @@ cannot delegate: client lifecycle and durable local state.
 
 **Decision:** Authorization-server selection, PKCE, authorization-code exchange,
 bearer injection, and refresh delegate entirely to the SDK via
-`ClientOAuthOptions`, `ITokenCache`, and `AuthorizationRedirectDelegate`.
+`ClientOAuthOptions`, `ITokenCache`, and `AuthorizationCallbackHandler`.
 `McpOAuthService`'s protocol code — authorization-URL construction, code
 exchange, refresh redemption, `GetValidTokenAsync`, and the metadata cache — is
 deleted.
@@ -111,7 +111,7 @@ registering with the same method the SDK will later select, and seeds
 
 **Rationale:** One protocol implementation cannot drift from itself. 1.4.1
 already exposes every hook the interactive and non-interactive flows need, and
-the redirect delegate explicitly supports custom UI, so the manual stack can go
+the authorization callback handler explicitly supports custom UI, so the manual stack can go
 now — before the pending upstream fixes ship. This is a net-negative-LOC change
 that shrinks the attack and defect surface.
 
@@ -329,10 +329,11 @@ URL, and a task the HTTP callback completes with the code) and
 supplying `ITokenCache` adapters). The broker performs no discovery, DCR, PKCE,
 exchange, or refresh. On `POST /api/mcp/oauth/start/{name}`, the manager opens a
 pending broker flow and starts an unpublished candidate whose
-`AuthorizationRedirectDelegate` is owned by that flow; the SDK generates the
-authorization URL, the broker returns it through the existing
-`McpOAuthStartResponse`, and `GET /api/mcp/oauth/callback` validates the exact
-pending state and completes the flow. The callback request is never made the
+`AuthorizationCallbackHandler` is owned by that flow; the SDK generates the
+authorization URL and the `state` inside it, the broker indexes the flow by that
+state and returns the URL through the existing `McpOAuthStartResponse`, and
+`GET /api/mcp/oauth/callback` routes on that state and relays `code`, `state`,
+and `iss` to the SDK, which validates them. The callback request is never made the
 candidate's lifetime owner, so closing the tab cannot cancel a running exchange.
 The start request does not own the candidate either: the manager supplies a
 daemon-owned cancellation token bounded by flow expiry and shutdown. A second
@@ -351,7 +352,7 @@ They may continue using a healthy published generation, or report
 the authorization flow.
 The redirect URI is
 `http://127.0.0.1:{DaemonConfig.Port}/api/mcp/oauth/callback`, never derived
-from a request `Host` header. For normal startup the redirect delegate is
+from a request `Host` header. For normal startup the authorization callback handler is
 non-interactive and returns no code, so startup never unexpectedly opens a
 browser or blocks.
 
@@ -360,24 +361,27 @@ simultaneously protocol client, cache, state machine, and persistence layer. The
 simplicity metric is fewer authorities and state machines, not fewer classes.
 Deriving the port from config fixes defect 7 for any non-default local port.
 
-**Decompiled 1.4.1 contract (verified against the shipped assembly):**
+**SDK 2.0.0 contract (verified against the shipped source):**
 
-- `AuthorizationRedirectDelegate` returns the authorization code as a string;
-  the SDK invokes it only after discovery, DCR, and PKCE, with the fully built
-  authorization URI and the `ClientOAuthOptions.RedirectUri`. A null or empty
-  return throws `McpException` — loud, non-blocking, and safe for the
-  non-interactive startup variant, which maps that failure to `AwaitingAuth`.
-- The SDK neither generates nor validates the OAuth `state` parameter. The
-  broker injects its opaque state via
-  `ClientOAuthOptions.AdditionalAuthorizationParameters["state"]` (the SDK's
-  URL builder reserves only `client_id`, `redirect_uri`, `response_type`,
-  `code_challenge`, `code_challenge_method`, `resource`, and `scope`), and
-  Netclaw owns state validation and CSRF protection end-to-end.
+- `AuthorizationCallbackHandler` returns an `AuthorizationResult` carrying the
+  authorization code, the `state`, and the RFC 9207 `iss`. The SDK invokes it
+  only after discovery, DCR, and PKCE, with the fully built authorization URI
+  and the `ClientOAuthOptions.RedirectUri`. A null return throws `McpException`
+  — loud, non-blocking, and safe for the non-interactive startup variant, which
+  maps that failure to `AwaitingAuth`. `AuthorizationRedirectDelegate` is
+  obsolete (diagnostic MCP9007) and skips state and issuer validation.
+- The SDK generates and validates the OAuth `state` parameter, and validates
+  `iss` per RFC 9207. The broker reads the state out of the SDK-built
+  authorization URL only to index the flow, so the browser callback can reach
+  it, and relays `code`, `state`, and `iss` back unchanged. The broker MUST NOT
+  send its own `state` through
+  `ClientOAuthOptions.AdditionalAuthorizationParameters`: the SDK's URL builder
+  merges those entries with `Dictionary.Add`, which throws on the duplicate key.
 - The provider contains no synchronization, and the transport's POST and
   GET/SSE paths can challenge concurrently through one provider instance. The
-  broker therefore elects the first redirect-delegate invocation as the flow
+  broker therefore elects the first callback-handler invocation as the flow
   owner. It alone publishes the authorization URL, waits for the callback code,
-  and returns that code to its SDK invocation. Concurrent delegates observe the
+  and returns that code to its SDK invocation. Concurrent handler invocations observe the
   same flow as authorization-in-progress and do not prompt, but they fail their
   request with a classified in-progress result rather than reusing the owner's
   code with a different PKCE verifier.
@@ -445,7 +449,7 @@ blank error into an operator instruction.
   fake-server OAuth integration tests plus the existing provider reproduction
   cases; report standards/SDK defects upstream instead of re-forking the
   protocol inside Netclaw.
-- **[Risk]** The SDK redirect-delegate interactive flow is unexercised in this
+- **[Risk]** The SDK authorization-callback-handler interactive flow is unexercised in this
   codebase — today `BuildOAuthOptions` sets the delegate to return `null`,
   deliberately suppressing the SDK browser path. → **Mitigation:**
   decompilation of the shipped 1.4.1 assembly has verified the static contract
@@ -497,7 +501,7 @@ release; the split exists for review isolation and rollback clarity.
    OAuth protocol behavior changes. Update netclaw-dev/netclaw#1696 with the
    local lifecycle completion; do not close it.
 2. **PR 2 — SDK-owned OAuth, durable boundary, diagnostics.** Replace the manual
-   OAuth stack with the SDK redirect-delegate flow; add `McpOAuthFlowBroker` and
+   OAuth stack with the SDK authorization-callback-handler flow; add `McpOAuthFlowBroker` and
    `McpOAuthCredentialStore`; delete discovery/DCR/PKCE/exchange/refresh and the
    metadata-cache runtime dependency; add transactional `secrets.json` mutation
    and migrate callers; bind credentials to the configured resource identity;

@@ -43,13 +43,24 @@ public sealed class McpOAuthFlowBrokerTests
     [Fact]
     public async Task AuthorizationUrlWithoutStateFailsTheFlowInsteadOfHanging()
     {
-        using var broker = CreateBroker();
+        // A virtual clock is what makes this test meaningful: the expiry timer never fires,
+        // so the waiting caller can only be released by the failure path under test. On the
+        // system clock the five-minute expiry releases it anyway and the assertion passes
+        // whether or not the flow fails promptly.
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 7, 22, 12, 0, 0, TimeSpan.Zero));
+        using var broker = new McpOAuthFlowBroker(time, CancellationToken.None);
         var flow = broker.StartOrJoin(ServerName).Flow;
+        var waitingStart = flow.WaitForAuthorizationRequestAsync(TestContext.Current.CancellationToken);
 
         var handler = InvokeCallbackHandler(flow, new Uri("https://auth.example/authorize?client_id=one"));
 
         await Assert.ThrowsAsync<McpOAuthOperationException>(async () => await handler);
         Assert.Null(flow.State);
+        await Assert.ThrowsAsync<McpOAuthOperationException>(
+            async () => await waitingStart.WaitAsync(
+                TimeSpan.FromSeconds(30),
+                TestContext.Current.CancellationToken));
+        Assert.Equal(McpOAuthFlowStatus.Failed, broker.GetLatestStatus(ServerName).Status);
     }
 
     [Fact]
@@ -73,19 +84,22 @@ public sealed class McpOAuthFlowBrokerTests
     }
 
     [Fact]
-    public void StatelessTerminalFlowIsRetiredByPruning()
+    public void StatelessTerminalFlowIsDisposedWhenReplaced()
     {
-        var time = new FakeTimeProvider(new DateTimeOffset(2026, 7, 22, 12, 0, 0, TimeSpan.Zero));
-        using var broker = new McpOAuthFlowBroker(time, CancellationToken.None);
+        using var daemonCancellation = new CancellationTokenSource();
+        using var broker = new McpOAuthFlowBroker(TimeProvider.System, daemonCancellation.Token);
         var abandoned = broker.StartOrJoin(ServerName).Flow;
         broker.Fail(abandoned, new McpErrorResponse("discovery failed", "authorization start"));
 
-        // A flow with no state was never indexed by state, so only the per-server sweep can
-        // reach it. Without that sweep its timer and token source leak.
-        time.Advance(McpOAuthFlowBroker.FlowLifetime * 2);
+        // Retrying immediately is the normal reaction to a failed authorization, so the
+        // replacement must reclaim the old flow. It was never indexed by state, so nothing
+        // else can reach it, and Cancel alone does not release its registration on the daemon
+        // shutdown token — only Dispose does.
+        var replacement = broker.StartOrJoin(ServerName);
 
-        Assert.Equal(McpOAuthFlowStatus.NotStarted, broker.GetLatestStatus(ServerName).Status);
-        Assert.NotSame(abandoned, broker.StartOrJoin(ServerName).Flow);
+        Assert.True(replacement.Created);
+        Assert.NotSame(abandoned, replacement.Flow);
+        Assert.True(abandoned.IsDisposed);
     }
 
     [Fact]

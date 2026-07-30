@@ -41,7 +41,7 @@ never `Thread.Sleep` or `Task.Delay` in orchestration.
 
 - [x] 5.1 Update netclaw-dev/netclaw#1696 with the local lifecycle completion. Do not close it — the upstream SDK fixes are still pending.
 
-## 6. PR 2 — Spike: prove the SDK redirect-delegate flow
+## 6. PR 2 — Spike: prove the SDK authorization-callback-handler flow
 
 - [x] 6.1 Stand up a fake OAuth MCP server harness exposing discovery metadata, a DCR endpoint, an authorization endpoint, and a token endpoint, usable from integration tests. Done when a test can drive each endpoint.
 - [x] 6.2 Prove the SDK redirect-delegate flow end-to-end against the fake server — discovery, DCR, PKCE, authorization-URL delivery via `AuthorizationRedirectDelegate`, callback completion, code exchange, and `ITokenCache` store — BEFORE any manual OAuth code is deleted. Done when a green integration test drives the full SDK path and de-risks the previously unexercised redirect delegate.
