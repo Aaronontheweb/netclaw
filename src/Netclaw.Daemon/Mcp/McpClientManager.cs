@@ -203,8 +203,8 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         if (started.Created)
             _ = RunExplicitAuthorizationAsync(lifecycle, entry, started.Flow);
 
-        var authorizationUrl = await started.Flow.WaitForAuthorizationUrlAsync(requestCancellation);
-        return new McpOAuthStartResponse(authorizationUrl.ToString(), started.Flow.State);
+        var request = await started.Flow.WaitForAuthorizationRequestAsync(requestCancellation);
+        return new McpOAuthStartResponse(request.Url.ToString(), request.State);
     }
 
     public async Task<string> InvokeAsync(
@@ -775,12 +775,13 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             ClientSecret = entry.OAuthClientId is null ? identity.ClientSecret : null,
             Scopes = ParseScopes(entry.OAuthScope),
             TokenCache = cache,
-            AuthorizationRedirectDelegate = authorizationFlow is null
-                ? static (_, _, _) => Task.FromResult<string?>(null)
-                : authorizationFlow.HandleAuthorizationRedirectAsync,
-            AdditionalAuthorizationParameters = authorizationFlow is null
-                ? new Dictionary<string, string>()
-                : new Dictionary<string, string> { ["state"] = authorizationFlow.State },
+
+            // A background reconnect has no flow and therefore no operator at a browser.
+            // Returning null makes the SDK fail the connection instead of blocking on a
+            // redirect nobody will complete.
+            AuthorizationCallbackHandler = authorizationFlow is null
+                ? static (_, _) => Task.FromResult<AuthorizationResult?>(null)
+                : authorizationFlow.HandleAuthorizationCallbackAsync,
 
             // DynamicClientRegistration is deliberately left unset. McpOAuthClientRegistrar
             // owns registration because the SDK hard-codes client_secret_post and cannot
@@ -958,8 +959,11 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             || ex.Message.Contains("forbidden", StringComparison.OrdinalIgnoreCase)
             || ex.Message.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase)
             || ex.Message.Contains("invalid_client", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("AuthorizationRedirectDelegate", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("authorization code", StringComparison.OrdinalIgnoreCase))
+            || ex.Message.Contains("AuthorizationCallbackHandler", StringComparison.OrdinalIgnoreCase)
+            || ex.Message.Contains("authorization code", StringComparison.OrdinalIgnoreCase)
+            // The SDK validates the returned state and the RFC 9207 issuer from 2.0 onward.
+            // Both rejections mean the operator must authorize again.
+            || ex.Message.Contains("authorization response", StringComparison.OrdinalIgnoreCase))
             return true;
 
         return ex.InnerException is not null && IsAuthFailure(ex.InnerException);

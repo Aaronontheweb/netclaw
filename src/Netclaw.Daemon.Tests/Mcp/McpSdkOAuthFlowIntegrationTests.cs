@@ -51,7 +51,7 @@ public sealed class McpSdkOAuthFlowIntegrationTests
             new Uri("http://127.0.0.1:7331/api/mcp/oauth/callback"),
             ct);
         var flow = harness.Broker.GetForCallback(started.State);
-        flow.DeliverCode(authorization.Code);
+        flow.DeliverAuthorizationResponse(authorization.Code, authorization.State, null);
 
         var terminal = await flow.WaitForTerminalAsync(ct);
 
@@ -101,7 +101,7 @@ public sealed class McpSdkOAuthFlowIntegrationTests
             RedirectUri,
             ct);
         var flow = harness.Broker.GetForCallback(starts[0].State);
-        flow.DeliverCode(authorization.Code);
+        flow.DeliverAuthorizationResponse(authorization.Code, authorization.State, null);
         Assert.Equal(McpOAuthFlowStatus.Completed, (await flow.WaitForTerminalAsync(ct)).Status);
 
         Assert.Single(server.DynamicClientRegistrations);
@@ -123,7 +123,7 @@ public sealed class McpSdkOAuthFlowIntegrationTests
             RedirectUri,
             ct);
         var firstFlow = harness.Broker.GetForCallback(firstStart.State);
-        firstFlow.DeliverCode(firstAuthorization.Code);
+        firstFlow.DeliverAuthorizationResponse(firstAuthorization.Code, firstAuthorization.State, null);
         Assert.Equal(
             McpOAuthFlowStatus.Failed,
             (await firstFlow.WaitForTerminalAsync(ct)).Status);
@@ -134,7 +134,7 @@ public sealed class McpSdkOAuthFlowIntegrationTests
             RedirectUri,
             ct);
         var secondFlow = harness.Broker.GetForCallback(secondStart.State);
-        secondFlow.DeliverCode(secondAuthorization.Code);
+        secondFlow.DeliverAuthorizationResponse(secondAuthorization.Code, secondAuthorization.State, null);
         Assert.Equal(
             McpOAuthFlowStatus.Completed,
             (await secondFlow.WaitForTerminalAsync(ct)).Status);
@@ -167,7 +167,7 @@ public sealed class McpSdkOAuthFlowIntegrationTests
 
         var authorization = await server.AuthorizeAsync(new Uri(started.AuthorizationUrl), RedirectUri, ct);
         var flow = harness.Broker.GetForCallback(started.State);
-        flow.DeliverCode(authorization.Code);
+        flow.DeliverAuthorizationResponse(authorization.Code, authorization.State, null);
         Assert.Equal(McpOAuthFlowStatus.Completed, (await flow.WaitForTerminalAsync(ct)).Status);
     }
 
@@ -184,7 +184,7 @@ public sealed class McpSdkOAuthFlowIntegrationTests
         var started = await harness.Manager.StartAuthorizationAsync(harness.ServerName, ct);
         var authorization = await server.AuthorizeAsync(new Uri(started.AuthorizationUrl), RedirectUri, ct);
         var flow = harness.Broker.GetForCallback(started.State);
-        flow.DeliverCode(authorization.Code);
+        flow.DeliverAuthorizationResponse(authorization.Code, authorization.State, null);
         await barrier.Reached.Task.WaitAsync(ct);
         Assert.Null(harness.Credentials.GetActiveForTests(harness.ServerName));
 
@@ -209,7 +209,7 @@ public sealed class McpSdkOAuthFlowIntegrationTests
         var started = await harness.Manager.StartAuthorizationAsync(harness.ServerName, ct);
         var authorization = await server.AuthorizeAsync(new Uri(started.AuthorizationUrl), RedirectUri, ct);
         var flow = harness.Broker.GetForCallback(started.State);
-        flow.DeliverCode(authorization.Code);
+        flow.DeliverAuthorizationResponse(authorization.Code, authorization.State, null);
         var terminal = await flow.WaitForTerminalAsync(ct);
 
         var retained = Assert.IsType<McpServerSnapshot>(harness.Manager.GetSnapshot(harness.ServerName));
@@ -236,7 +236,7 @@ public sealed class McpSdkOAuthFlowIntegrationTests
         var started = await harness.Manager.StartAuthorizationAsync(harness.ServerName, ct);
         var authorization = await server.AuthorizeAsync(new Uri(started.AuthorizationUrl), RedirectUri, ct);
         var flow = harness.Broker.GetForCallback(started.State);
-        flow.DeliverCode(authorization.Code);
+        flow.DeliverAuthorizationResponse(authorization.Code, authorization.State, null);
         await barrier.Reached.Task.WaitAsync(ct);
         try
         {
@@ -302,7 +302,7 @@ public sealed class McpSdkOAuthFlowIntegrationTests
         var rejectedStart = await harness.Manager.StartAuthorizationAsync(harness.ServerName, ct);
         var rejectedAuthorization = await server.AuthorizeAsync(new Uri(rejectedStart.AuthorizationUrl), RedirectUri, ct);
         var rejectedFlow = harness.Broker.GetForCallback(rejectedStart.State);
-        rejectedFlow.DeliverCode(rejectedAuthorization.Code);
+        rejectedFlow.DeliverAuthorizationResponse(rejectedAuthorization.Code, rejectedAuthorization.State, null);
 
         Assert.Equal(McpOAuthFlowStatus.Failed, (await rejectedFlow.WaitForTerminalAsync(ct)).Status);
 
@@ -317,7 +317,7 @@ public sealed class McpSdkOAuthFlowIntegrationTests
         var replacementAuthorization = await server.AuthorizeAsync(
             new Uri(replacementStart.AuthorizationUrl), RedirectUri, ct);
         var replacementFlow = harness.Broker.GetForCallback(replacementStart.State);
-        replacementFlow.DeliverCode(replacementAuthorization.Code);
+        replacementFlow.DeliverAuthorizationResponse(replacementAuthorization.Code, replacementAuthorization.State, null);
 
         Assert.Equal(McpOAuthFlowStatus.Completed, (await replacementFlow.WaitForTerminalAsync(ct)).Status);
         Assert.Equal("client-2", harness.Credentials.GetActiveForTests(harness.ServerName)?.ClientId);
@@ -583,7 +583,7 @@ public sealed class McpSdkOAuthFlowIntegrationTests
         var started = await harness.Manager.StartAuthorizationAsync(harness.ServerName, ct);
         var authorization = await server.AuthorizeAsync(new Uri(started.AuthorizationUrl), RedirectUri, ct);
         var flow = harness.Broker.GetForCallback(started.State);
-        flow.DeliverCode(authorization.Code);
+        flow.DeliverAuthorizationResponse(authorization.Code, authorization.State, null);
         Assert.Equal(McpOAuthFlowStatus.Completed, (await flow.WaitForTerminalAsync(ct)).Status);
     }
 

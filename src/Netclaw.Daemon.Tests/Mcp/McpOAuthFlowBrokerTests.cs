@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Microsoft.Extensions.Time.Testing;
+using ModelContextProtocol.Authentication;
 using Netclaw.Daemon.Mcp;
 using Netclaw.Tools;
 using Xunit;
@@ -13,11 +14,10 @@ namespace Netclaw.Daemon.Tests.Mcp;
 public sealed class McpOAuthFlowBrokerTests
 {
     private static readonly McpServerName ServerName = new("oauth-server");
-    private static readonly Uri AuthorizationUrl = new("https://auth.example/authorize?client_id=one");
     private static readonly Uri RedirectUri = new("http://127.0.0.1:7331/api/mcp/oauth/callback");
 
     [Fact]
-    public void ConcurrentStartsForOneServerShareOpaqueFlow()
+    public async Task ConcurrentStartsForOneServerShareFlowAndSdkState()
     {
         using var broker = CreateBroker();
 
@@ -27,44 +27,116 @@ public sealed class McpOAuthFlowBrokerTests
         Assert.True(first.Created);
         Assert.False(second.Created);
         Assert.Same(first.Flow, second.Flow);
-        Assert.Equal(43, first.Flow.State.Length);
-        Assert.DoesNotContain(ServerName.Value, first.Flow.State, StringComparison.Ordinal);
+
+        // The MCP SDK owns `state` from 2.0 onward, so a flow has none until the SDK
+        // hands over the authorization URL it built.
+        Assert.Null(first.Flow.State);
+
+        _ = InvokeCallbackHandler(first.Flow, AuthorizationUrl("sdk-state"));
+        var request = await first.Flow.WaitForAuthorizationRequestAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal("sdk-state", request.State);
+        Assert.Equal("sdk-state", first.Flow.State);
+        Assert.Same(first.Flow, broker.GetForCallback("sdk-state"));
     }
 
     [Fact]
-    public async Task FirstDelegateOwnsUrlAndCodeFollowersFailWithoutCodeReuse()
+    public async Task AuthorizationUrlWithoutStateFailsTheFlowInsteadOfHanging()
     {
         using var broker = CreateBroker();
         var flow = broker.StartOrJoin(ServerName).Flow;
 
-        var owner = flow.HandleAuthorizationRedirectAsync(
-            AuthorizationUrl,
-            RedirectUri,
-            CancellationToken.None);
-        var follower = flow.HandleAuthorizationRedirectAsync(
-            new Uri("https://auth.example/authorize?client_id=two"),
-            RedirectUri,
-            CancellationToken.None);
+        var handler = InvokeCallbackHandler(flow, new Uri("https://auth.example/authorize?client_id=one"));
 
-        Assert.Equal(AuthorizationUrl, await flow.WaitForAuthorizationUrlAsync(CancellationToken.None));
+        await Assert.ThrowsAsync<McpOAuthOperationException>(async () => await handler);
+        Assert.Null(flow.State);
+    }
+
+    [Fact]
+    public async Task FailureBeforeTheAuthorizationUrlSurfacesToTheWaitingStartRequest()
+    {
+        using var broker = CreateBroker();
+        var flow = broker.StartOrJoin(ServerName).Flow;
+        var waiting = flow.WaitForAuthorizationRequestAsync(TestContext.Current.CancellationToken);
+
+        // Registration and discovery run before the SDK builds an authorization URL, so a
+        // failure there leaves the flow with no state. `netclaw mcp auth` must still get the
+        // structured reason instead of waiting for a URL that will never arrive.
+        broker.Fail(flow, new McpErrorResponse(
+            "MCP OAuth dynamic client registration failed: HTTP 403 Forbidden.",
+            "dynamic client registration",
+            403));
+
+        var error = await Assert.ThrowsAsync<McpOAuthOperationException>(async () => await waiting);
+        Assert.Equal(403, error.Error.Status);
+        Assert.Null(flow.State);
+    }
+
+    [Fact]
+    public void StatelessTerminalFlowIsRetiredByPruning()
+    {
+        var time = new FakeTimeProvider(new DateTimeOffset(2026, 7, 22, 12, 0, 0, TimeSpan.Zero));
+        using var broker = new McpOAuthFlowBroker(time, CancellationToken.None);
+        var abandoned = broker.StartOrJoin(ServerName).Flow;
+        broker.Fail(abandoned, new McpErrorResponse("discovery failed", "authorization start"));
+
+        // A flow with no state was never indexed by state, so only the per-server sweep can
+        // reach it. Without that sweep its timer and token source leak.
+        time.Advance(McpOAuthFlowBroker.FlowLifetime * 2);
+
+        Assert.Equal(McpOAuthFlowStatus.NotStarted, broker.GetLatestStatus(ServerName).Status);
+        Assert.NotSame(abandoned, broker.StartOrJoin(ServerName).Flow);
+    }
+
+    [Fact]
+    public async Task CallbackParametersReturnToTheSdkUnmodified()
+    {
+        using var broker = CreateBroker();
+        var flow = broker.StartOrJoin(ServerName).Flow;
+        var handler = InvokeCallbackHandler(flow, AuthorizationUrl("round-trip"));
+        await flow.WaitForAuthorizationRequestAsync(TestContext.Current.CancellationToken);
+
+        // The SDK compares state against the value it generated and validates iss per
+        // RFC 9207, so the daemon must relay both without touching them.
+        broker.GetForCallback("round-trip")
+            .DeliverAuthorizationResponse("the-code", "round-trip", "https://auth.example");
+
+        var result = await handler;
+        Assert.Equal("the-code", result?.Code);
+        Assert.Equal("round-trip", result?.State);
+        Assert.Equal("https://auth.example", result?.Iss);
+    }
+
+    [Fact]
+    public async Task FirstHandlerOwnsUrlAndCodeFollowersFailWithoutCodeReuse()
+    {
+        using var broker = CreateBroker();
+        var flow = broker.StartOrJoin(ServerName).Flow;
+
+        var owner = InvokeCallbackHandler(flow, AuthorizationUrl("owner"));
+        var follower = InvokeCallbackHandler(flow, AuthorizationUrl("follower"));
+
+        var request = await flow.WaitForAuthorizationRequestAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(AuthorizationUrl("owner"), request.Url);
         await Assert.ThrowsAsync<McpOAuthAuthorizationInProgressException>(async () => await follower);
-        broker.GetForCallback(flow.State).DeliverCode("owner-code");
-        Assert.Equal("owner-code", await owner);
+
+        broker.GetForCallback("owner").DeliverAuthorizationResponse("owner-code", "owner", null);
+        Assert.Equal("owner-code", (await owner)?.Code);
         broker.BeginCommit(flow);
         broker.Complete(flow);
-        Assert.Equal(McpOAuthFlowStatus.Completed, broker.GetStatusByState(flow.State).Status);
+        Assert.Equal(McpOAuthFlowStatus.Completed, broker.GetStatusByState("owner").Status);
     }
 
     [Fact]
-    public void MissingOrMismatchedStateDoesNotAffectPendingFlow()
+    public async Task MissingOrMismatchedStateDoesNotAffectPendingFlow()
     {
         using var broker = CreateBroker();
-        var flow = broker.StartOrJoin(ServerName).Flow;
+        var flow = await StartFlowWithStateAsync(broker, "pending-state");
 
         Assert.Throws<McpOAuthCallbackException>(() => broker.GetForCallback("wrong-state"));
 
-        Assert.Same(flow, broker.GetForCallback(flow.State));
-        Assert.Equal(McpOAuthFlowStatus.Pending, broker.GetStatusByState(flow.State).Status);
+        Assert.Same(flow, broker.GetForCallback("pending-state"));
+        Assert.Equal(McpOAuthFlowStatus.Pending, broker.GetStatusByState("pending-state").Status);
     }
 
     [Fact]
@@ -72,12 +144,13 @@ public sealed class McpOAuthFlowBrokerTests
     {
         using var broker = CreateBroker();
         var flow = broker.StartOrJoin(ServerName).Flow;
-        var owner = flow.HandleAuthorizationRedirectAsync(AuthorizationUrl, RedirectUri, CancellationToken.None);
+        var owner = InvokeCallbackHandler(flow, AuthorizationUrl("one-time"));
 
-        flow.DeliverCode("one-time-code");
-        Assert.Equal("one-time-code", await owner);
+        flow.DeliverAuthorizationResponse("one-time-code", "one-time", null);
+        Assert.Equal("one-time-code", (await owner)?.Code);
 
-        Assert.Throws<McpOAuthCallbackException>(() => flow.DeliverCode("reused-code"));
+        Assert.Throws<McpOAuthCallbackException>(
+            () => flow.DeliverAuthorizationResponse("reused-code", "one-time", null));
     }
 
     [Fact]
@@ -86,15 +159,16 @@ public sealed class McpOAuthFlowBrokerTests
         var time = new FakeTimeProvider(new DateTimeOffset(2026, 7, 22, 12, 0, 0, TimeSpan.Zero));
         using var broker = new McpOAuthFlowBroker(time, CancellationToken.None);
         var flow = broker.StartOrJoin(ServerName).Flow;
-        var owner = flow.HandleAuthorizationRedirectAsync(AuthorizationUrl, RedirectUri, CancellationToken.None);
+        var owner = InvokeCallbackHandler(flow, AuthorizationUrl("expiring"));
+        await flow.WaitForAuthorizationRequestAsync(TestContext.Current.CancellationToken);
 
         time.Advance(McpOAuthFlowBroker.FlowLifetime);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await owner);
-        var terminal = broker.GetStatusByState(flow.State);
+        var terminal = broker.GetStatusByState("expiring");
         Assert.Equal(McpOAuthFlowStatus.Failed, terminal.Status);
         Assert.Contains("expired", terminal.Error?.Error, StringComparison.OrdinalIgnoreCase);
-        Assert.Throws<McpOAuthCallbackException>(() => broker.GetForCallback(flow.State));
+        Assert.Throws<McpOAuthCallbackException>(() => broker.GetForCallback("expiring"));
     }
 
     [Fact]
@@ -103,14 +177,14 @@ public sealed class McpOAuthFlowBrokerTests
         var time = new FakeTimeProvider(new DateTimeOffset(2026, 7, 22, 12, 0, 0, TimeSpan.Zero));
         using var broker = new McpOAuthFlowBroker(time, CancellationToken.None);
         var flow = broker.StartOrJoin(ServerName).Flow;
-        var owner = flow.HandleAuthorizationRedirectAsync(AuthorizationUrl, RedirectUri, CancellationToken.None);
-        flow.DeliverCode("burned-code");
-        Assert.Equal("burned-code", await owner);
+        var owner = InvokeCallbackHandler(flow, AuthorizationUrl("burned"));
+        flow.DeliverAuthorizationResponse("burned-code", "burned", null);
+        Assert.Equal("burned-code", (await owner)?.Code);
 
         time.Advance(McpOAuthFlowBroker.FlowLifetime);
 
         Assert.Throws<McpOAuthOperationException>(() => broker.BeginCommit(flow));
-        Assert.Equal(McpOAuthFlowStatus.Failed, broker.GetStatusByState(flow.State).Status);
+        Assert.Equal(McpOAuthFlowStatus.Failed, broker.GetStatusByState("burned").Status);
     }
 
     [Fact]
@@ -119,16 +193,16 @@ public sealed class McpOAuthFlowBrokerTests
         var time = new FakeTimeProvider(new DateTimeOffset(2026, 7, 22, 12, 0, 0, TimeSpan.Zero));
         using var broker = new McpOAuthFlowBroker(time, CancellationToken.None);
         var flow = broker.StartOrJoin(ServerName).Flow;
-        var owner = flow.HandleAuthorizationRedirectAsync(AuthorizationUrl, RedirectUri, CancellationToken.None);
-        flow.DeliverCode("commit-code");
-        Assert.Equal("commit-code", await owner);
+        var owner = InvokeCallbackHandler(flow, AuthorizationUrl("commit"));
+        flow.DeliverAuthorizationResponse("commit-code", "commit", null);
+        Assert.Equal("commit-code", (await owner)?.Code);
         time.Advance(McpOAuthFlowBroker.FlowLifetime - TimeSpan.FromTicks(1));
 
         broker.BeginCommit(flow);
         time.Advance(TimeSpan.FromTicks(1));
         broker.Complete(flow);
 
-        Assert.Equal(McpOAuthFlowStatus.Completed, broker.GetStatusByState(flow.State).Status);
+        Assert.Equal(McpOAuthFlowStatus.Completed, broker.GetStatusByState("commit").Status);
     }
 
     [Fact]
@@ -137,15 +211,16 @@ public sealed class McpOAuthFlowBrokerTests
         using var broker = CreateBroker();
         var flow = broker.StartOrJoin(ServerName).Flow;
         using var requestCancellation = new CancellationTokenSource();
-        var request = flow.WaitForAuthorizationUrlAsync(requestCancellation.Token);
-        requestCancellation.Cancel();
+        var request = flow.WaitForAuthorizationRequestAsync(requestCancellation.Token);
+        await requestCancellation.CancelAsync();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await request);
 
-        var owner = flow.HandleAuthorizationRedirectAsync(AuthorizationUrl, RedirectUri, CancellationToken.None);
-        Assert.Equal(AuthorizationUrl, await flow.WaitForAuthorizationUrlAsync(CancellationToken.None));
-        flow.DeliverCode("still-running");
-        Assert.Equal("still-running", await owner);
+        var owner = InvokeCallbackHandler(flow, AuthorizationUrl("still-running"));
+        var published = await flow.WaitForAuthorizationRequestAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(AuthorizationUrl("still-running"), published.Url);
+        flow.DeliverAuthorizationResponse("still-running-code", "still-running", null);
+        Assert.Equal("still-running-code", (await owner)?.Code);
     }
 
     [Fact]
@@ -153,18 +228,18 @@ public sealed class McpOAuthFlowBrokerTests
     {
         using var broker = CreateBroker();
         var flow = broker.StartOrJoin(ServerName).Flow;
-        var owner = flow.HandleAuthorizationRedirectAsync(AuthorizationUrl, RedirectUri, CancellationToken.None);
-        flow.DeliverCode("delivered");
-        Assert.Equal("delivered", await owner);
+        var owner = InvokeCallbackHandler(flow, AuthorizationUrl("delivered"));
+        flow.DeliverAuthorizationResponse("delivered-code", "delivered", null);
+        Assert.Equal("delivered-code", (await owner)?.Code);
         using var requestCancellation = new CancellationTokenSource();
         var callbackWait = flow.WaitForTerminalAsync(requestCancellation.Token);
-        requestCancellation.Cancel();
+        await requestCancellation.CancelAsync();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await callbackWait);
 
         broker.BeginCommit(flow);
         broker.Complete(flow);
-        Assert.Equal(McpOAuthFlowStatus.Completed, broker.GetStatusByState(flow.State).Status);
+        Assert.Equal(McpOAuthFlowStatus.Completed, broker.GetStatusByState("delivered").Status);
     }
 
     [Fact]
@@ -173,27 +248,47 @@ public sealed class McpOAuthFlowBrokerTests
         using var daemonCancellation = new CancellationTokenSource();
         using var broker = new McpOAuthFlowBroker(TimeProvider.System, daemonCancellation.Token);
         var flow = broker.StartOrJoin(ServerName).Flow;
-        var owner = flow.HandleAuthorizationRedirectAsync(AuthorizationUrl, RedirectUri, CancellationToken.None);
-        var follower = flow.HandleAuthorizationRedirectAsync(AuthorizationUrl, RedirectUri, CancellationToken.None);
+        var owner = InvokeCallbackHandler(flow, AuthorizationUrl("cancelled"));
+        var follower = InvokeCallbackHandler(flow, AuthorizationUrl("cancelled"));
 
-        daemonCancellation.Cancel();
+        await daemonCancellation.CancelAsync();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await owner);
         await Assert.ThrowsAsync<McpOAuthAuthorizationInProgressException>(async () => await follower);
     }
 
     [Fact]
-    public void TerminalFlowAllowsNewAttemptWithNewStateWhileKeepingOldStatus()
+    public async Task TerminalFlowAllowsNewAttemptWithNewStateWhileKeepingOldStatus()
     {
         using var broker = CreateBroker();
-        var oldFlow = broker.StartOrJoin(ServerName).Flow;
+        var oldFlow = await StartFlowWithStateAsync(broker, "old-state");
         broker.Fail(oldFlow, new McpErrorResponse("DCR failed: HTTP 403 Forbidden.", "dynamic client registration", 403));
 
         var next = broker.StartOrJoin(ServerName);
 
         Assert.True(next.Created);
-        Assert.NotEqual(oldFlow.State, next.Flow.State);
-        Assert.Equal(403, broker.GetStatusByState(oldFlow.State).Error?.Status);
+        Assert.NotSame(oldFlow, next.Flow);
+        Assert.Equal(403, broker.GetStatusByState("old-state").Error?.Status);
+    }
+
+    private static Uri AuthorizationUrl(string state)
+        => new($"https://auth.example/authorize?client_id=one&state={state}");
+
+    private static Task<AuthorizationResult?> InvokeCallbackHandler(McpOAuthFlow flow, Uri authorizationUri)
+        => flow.HandleAuthorizationCallbackAsync(
+            new AuthorizationCallbackContext
+            {
+                AuthorizationUri = authorizationUri,
+                RedirectUri = RedirectUri,
+            },
+            CancellationToken.None);
+
+    private static async Task<McpOAuthFlow> StartFlowWithStateAsync(McpOAuthFlowBroker broker, string state)
+    {
+        var flow = broker.StartOrJoin(ServerName).Flow;
+        _ = InvokeCallbackHandler(flow, AuthorizationUrl(state));
+        await flow.WaitForAuthorizationRequestAsync(TestContext.Current.CancellationToken);
+        return flow;
     }
 
     private static McpOAuthFlowBroker CreateBroker()
