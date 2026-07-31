@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ProviderManagerPage.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -139,8 +139,8 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
                         // Embedded in `netclaw config`, Esc backs out to the dashboard (Navigate("/config"));
                         // standalone `netclaw provider`, it exits. Match the footer to the real behavior.
                         ViewModel.IsEmbeddedInConfig
-                            ? " [\u2191/\u2193] Navigate  [Enter] Select  [Esc] Back  [Ctrl+Q] Quit"
-                            : " [\u2191/\u2193] Navigate  [Enter] Select  [Esc] Quit  [Ctrl+Q] Quit",
+                            ? " [\u2191/\u2193] Navigate  [Enter] Select  [Delete] Remove  [Esc] Back  [Ctrl+Q] Quit"
+                            : " [\u2191/\u2193] Navigate  [Enter] Select  [Delete] Remove  [Esc] Quit  [Ctrl+Q] Quit",
                     ProviderManagerState.AddSelectType =>
                         " [\u2191/\u2193] Navigate  [Enter] Select  [Esc] Back  [Ctrl+Q] Quit",
                     ProviderManagerState.AddName =>
@@ -971,7 +971,26 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
         }
 
         // List state: Enter is handled by SelectionConfirmed subscription,
-        // arrow keys are routed through RouteInputToActiveComponent
+        // Delete starts remove confirmation for configured providers. Arrow keys are
+        // routed through RouteInputToActiveComponent.
+        if (state == ProviderManagerState.List && keyInfo.Key == ConsoleKey.Delete)
+        {
+            if (ViewModel.SelectedProviderIndex < 0 || ViewModel.SelectedProviderIndex >= ViewModel.DisplayProviders.Count)
+                return;
+
+            var item = ViewModel.DisplayProviders[ViewModel.SelectedProviderIndex];
+            if (item.IsConfigured)
+            {
+                ViewModel.RemoveSelectedProvider();
+            }
+            else
+            {
+                ViewModel.ErrorMessage.Value = "Cannot remove an unconfigured provider type.";
+                ViewModel.RequestRedraw();
+            }
+
+            return;
+        }
 
         // Enter in validating state
         if (state == ProviderManagerState.AddValidating && keyInfo.Key == ConsoleKey.Enter)

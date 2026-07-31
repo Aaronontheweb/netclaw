@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ProviderManagerViewModel.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -308,14 +308,20 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
     }
 
     /// <summary>
+    /// Get the currently selected provider display item, or null if the selection is invalid.
+    /// </summary>
+    public ProviderDisplayItem? SelectedProvider =>
+        SelectedProviderIndex >= 0 && SelectedProviderIndex < DisplayProviders.Count
+            ? DisplayProviders[SelectedProviderIndex]
+            : null;
+
+    /// <summary>
     /// Activate the currently selected provider based on its state.
     /// </summary>
     public void ActivateSelectedProvider()
     {
-        if (SelectedProviderIndex < 0 || SelectedProviderIndex >= DisplayProviders.Count)
+        if (SelectedProvider is not { } item)
             return;
-
-        var item = DisplayProviders[SelectedProviderIndex];
 
         if (!item.IsConfigured)
         {
@@ -726,6 +732,18 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         StatusMessage.Value = $"Added provider '{NewProviderName}'. Restart daemon for changes to take effect.";
         ClearAddState();
         RefreshAndProbeAll();
+    }
+
+    /// <summary>
+    /// Remove the currently selected configured provider. Used by the Delete keybinding on the list.
+    /// </summary>
+    public void RemoveSelectedProvider()
+    {
+        if (SelectedProvider is not { IsConfigured: true, ConfiguredName: not null } item)
+            return;
+
+        DetailProvider = item;
+        StartRemove();
     }
 
     /// <summary>
