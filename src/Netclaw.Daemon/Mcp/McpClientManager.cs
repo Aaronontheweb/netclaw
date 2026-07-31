@@ -15,6 +15,7 @@ using ModelContextProtocol.Authentication;
 using ModelContextProtocol.Client;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
+using Netclaw.Security;
 using Netclaw.Tools;
 
 namespace Netclaw.Daemon.Mcp;
@@ -242,6 +243,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                 throw CreateUnavailableException(serverName, toolName);
 
             return await InvokeFunctionAsync(
+                serverName,
                 function,
                 $"{serverName.Value}/{toolName.Value}",
                 arguments,
@@ -647,6 +649,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
     }
 
     private async Task<string> InvokeFunctionAsync(
+        McpServerName serverName,
         AIFunction function,
         string qualifiedToolName,
         IDictionary<string, object?>? arguments,
@@ -656,7 +659,64 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             ? new AIFunctionArguments(arguments)
             : null;
         var result = await _clientRuntime.InvokeAsync(function, aiArgs, ct);
+
+        if (McpToolResultFormatter.TryGetErrorDetail(result, out var detail))
+            ReportToolFailure(serverName, qualifiedToolName, detail);
+
         return McpToolResultFormatter.Format(result, qualifiedToolName);
+    }
+
+    /// <summary>
+    /// Records a failure the MCP server reported inside an otherwise successful response.
+    /// The detail reaches the model but no exception reaches the transport layer, so
+    /// without this the daemon log keeps only the result length and an operator has
+    /// nothing to debug from.
+    /// </summary>
+    private void ReportToolFailure(McpServerName serverName, string qualifiedToolName, string detail)
+    {
+        // Redact before logging: an MCP error body can echo the arguments it rejected, and
+        // daemon logs leave the box when OTLP export is enabled.
+        _logger.LogWarning(
+            "MCP tool '{Tool}' reported a failure: {Detail}",
+            qualifiedToolName,
+            SecretOutputRedactor.Redact(detail));
+
+        if (!IsAuthFailureMessage(detail))
+            return;
+
+        MarkToolAuthFailure(serverName);
+    }
+
+    /// <summary>
+    /// Moves a server out of <see cref="McpConnectionState.Connected"/> when its
+    /// credential is rejected at call time. The transport stays healthy in this case, so
+    /// status would otherwise report a working server while every invocation fails, and
+    /// the one state that needs operator action would be the one state never shown.
+    /// </summary>
+    private void MarkToolAuthFailure(McpServerName serverName)
+    {
+        if (!_servers.TryGetValue(serverName, out var lifecycle))
+            return;
+
+        var current = lifecycle.Snapshot;
+        if (current is null || current.Status.State is McpConnectionState.AuthFailed)
+            return;
+
+        var status = new McpServerStatus(
+            serverName,
+            McpConnectionState.AuthFailed,
+            current.Status.ToolCount,
+            $"Authentication rejected by server. Run: netclaw mcp auth {serverName.Value}",
+            _timeProvider.GetUtcNow());
+        lifecycle.Publish(current with { Status = status });
+
+        _logger.LogWarning(
+            "MCP server '{Name}' rejected an authenticated tool call; reauthorization is required",
+            serverName.Value);
+        EmitAuthAlert(
+            serverName,
+            $"MCP server '{serverName.Value}' authentication failed. Run: netclaw mcp auth {serverName.Value}",
+            "authentication_failed");
     }
 
     private static InvalidOperationException CreateUnavailableException(
@@ -955,16 +1015,25 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         if (ex is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden })
             return true;
 
-        if (ex.Message.Contains("unauthorized", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("forbidden", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("invalid_client", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("AuthorizationCallbackHandler", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("authorization code", StringComparison.OrdinalIgnoreCase))
+        if (IsAuthFailureMessage(ex.Message))
             return true;
 
         return ex.InnerException is not null && IsAuthFailure(ex.InnerException);
     }
+
+    /// <summary>
+    /// Recognizes an authentication rejection from message text alone. A tool-level
+    /// failure carries no exception and no HTTP status, so the wording is all there is.
+    /// </summary>
+    private static bool IsAuthFailureMessage(string message)
+        => message.Contains("unauthorized", StringComparison.OrdinalIgnoreCase)
+           || message.Contains("forbidden", StringComparison.OrdinalIgnoreCase)
+           || message.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase)
+           || message.Contains("invalid_client", StringComparison.OrdinalIgnoreCase)
+           || message.Contains("invalid_token", StringComparison.OrdinalIgnoreCase)
+           || message.Contains("token expired", StringComparison.OrdinalIgnoreCase)
+           || message.Contains("AuthorizationCallbackHandler", StringComparison.OrdinalIgnoreCase)
+           || message.Contains("authorization code", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Identifies a stored client registration the authorization server will never accept

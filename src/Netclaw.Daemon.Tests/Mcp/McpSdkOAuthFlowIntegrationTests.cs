@@ -734,31 +734,6 @@ public sealed class McpSdkOAuthFlowIntegrationTests
         }
     }
 
-    private sealed class RecordingLogger<T> : ILogger<T>
-    {
-        public Exception? LastException { get; private set; }
-
-        public List<Exception> Exceptions { get; } = [];
-
-        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-
-        public bool IsEnabled(LogLevel logLevel) => true;
-
-        public void Log<TState>(
-            LogLevel logLevel,
-            EventId eventId,
-            TState state,
-            Exception? exception,
-            Func<TState, Exception?, string> formatter)
-        {
-            if (exception is not null)
-            {
-                LastException = exception;
-                Exceptions.Add(exception);
-            }
-        }
-    }
-
     private sealed class FakeServerMcpRuntime(
         FakeOAuthMcpServer server,
         bool failToolListing) : IMcpClientRuntime
