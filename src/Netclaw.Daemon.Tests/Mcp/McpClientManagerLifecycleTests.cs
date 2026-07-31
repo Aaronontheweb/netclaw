@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Collections.Concurrent;
+using System.Net;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
@@ -144,6 +145,40 @@ public sealed class McpClientManagerLifecycleTests
         var status = harness.Manager.GetServerStatuses()[ServerName];
         Assert.Equal(McpConnectionState.AuthFailed, status.State);
         Assert.Contains($"netclaw mcp auth {ServerName.Value}", status.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InvocationAgainstAnAuthFailedServer_NamesTheRemedy()
+    {
+        var runtime = new ControlledMcpClientRuntime();
+        runtime.Enqueue(new ClientPlan("run")
+        {
+            Invoke = (_, _) => Task.FromResult<object?>(JsonDocument.Parse(
+                """{"content":[{"type":"text","text":"Unauthorized: token expired"}],"isError":true}""")
+                .RootElement.Clone()),
+        });
+        // The reconnect that follows must fail the way a dead credential does. A failure
+        // the manager cannot read as an auth problem would reclassify the server as
+        // Unreachable, and the remedy branch would correctly not apply.
+        runtime.Enqueue(new ClientPlan("run")
+        {
+            Initialize = _ => Task.FromException(
+                new HttpRequestException("Unauthorized", null, HttpStatusCode.Unauthorized)),
+        });
+        await using var harness = CreateHarness(runtime);
+        await harness.Manager.StartAsync(TestContext.Current.CancellationToken);
+        await InvokeAsync(harness.Manager, TestContext.Current.CancellationToken);
+        Assert.Equal(
+            McpConnectionState.AuthFailed,
+            harness.Manager.GetServerStatuses()[ServerName].State);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => InvokeAsync(harness.Manager, TestContext.Current.CancellationToken));
+
+        // This text is what the agent repeats to the operator. "unavailable" would send
+        // them looking for a broken server rather than a credential to renew.
+        Assert.Contains($"netclaw mcp auth {ServerName.Value}", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("unavailable", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

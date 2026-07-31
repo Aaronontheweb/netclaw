@@ -719,10 +719,26 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             "authentication_failed");
     }
 
-    private static InvalidOperationException CreateUnavailableException(
+    /// <summary>
+    /// Explains why a tool could not run. This message is what the agent reports, so a
+    /// server that is only waiting on authorization must name that remedy: "unavailable"
+    /// reads as a broken server and sends the operator looking for the wrong problem.
+    /// </summary>
+    private InvalidOperationException CreateUnavailableException(
         McpServerName serverName,
         ToolName toolName)
-        => new($"MCP server '{serverName.Value}' is unavailable or tool '{toolName.Value}' is not registered.");
+    {
+        var state = _servers.TryGetValue(serverName, out var lifecycle)
+            ? lifecycle.Snapshot?.Status.State
+            : null;
+
+        return state is McpConnectionState.AuthFailed or McpConnectionState.AwaitingAuth
+            ? new InvalidOperationException(
+                $"MCP server '{serverName.Value}' requires authorization. " +
+                $"Run: netclaw mcp auth {serverName.Value}")
+            : new InvalidOperationException(
+                $"MCP server '{serverName.Value}' is unavailable or tool '{toolName.Value}' is not registered.");
+    }
 
     private async Task<McpClientCandidate> CreateClientAsync(
         McpServerName name,
