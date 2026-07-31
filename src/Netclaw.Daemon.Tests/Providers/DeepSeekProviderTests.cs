@@ -146,8 +146,8 @@ public sealed class DeepSeekProviderTests
     [InlineData("insufficient_system_resource")]
     public async Task DeepSeekProfilePreservesTerminalFinishReason(string finishReason)
     {
-        using var handler = new RecordingHandler(_ => JsonResponse($$"""
-            {"id":"response-1","model":"deepseek-v4-pro","choices":[{"finish_reason":"{{finishReason}}","message":{"role":"assistant","content":null}}]}
+        using var handler = new RecordingHandler(_ => JsonResponse($$$"""
+            {"id":"response-1","model":"deepseek-v4-pro","choices":[{"finish_reason":"{{{finishReason}}}","message":{"role":"assistant","content":null}}]}
             """));
         using var http = new HttpClient(handler) { BaseAddress = new Uri("https://api.deepseek.com") };
         var endpoint = OpenAiCompatibleEndpoint.FromBaseUrl(
