@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Netclaw.Providers.Anthropic;
+using Netclaw.Providers.DeepSeek;
 using Netclaw.Providers.GitHubCopilot;
 using Netclaw.Providers.OpenAi;
 using Netclaw.Providers.OpenRouter;
@@ -25,7 +26,8 @@ public sealed class ProviderDescriptorCatalog
         AnthropicDescriptor anthropic,
         OpenRouterDescriptor openRouter,
         GitHubCopilotDescriptor gitHubCopilot,
-        VeniceAiDescriptor veniceAi)
+        VeniceAiDescriptor veniceAi,
+        DeepSeekDescriptor deepSeek)
     {
         Ollama = ollama;
         OpenAiCompatible = openAiCompatible;
@@ -34,7 +36,8 @@ public sealed class ProviderDescriptorCatalog
         OpenRouter = openRouter;
         GitHubCopilot = gitHubCopilot;
         VeniceAi = veniceAi;
-        All = [Ollama, OpenAiCompatible, OpenAi, Anthropic, OpenRouter, GitHubCopilot, VeniceAi];
+        DeepSeek = deepSeek;
+        All = [Ollama, OpenAiCompatible, OpenAi, Anthropic, OpenRouter, GitHubCopilot, VeniceAi, DeepSeek];
     }
 
     public OllamaDescriptor Ollama { get; }
@@ -50,6 +53,8 @@ public sealed class ProviderDescriptorCatalog
     public GitHubCopilotDescriptor GitHubCopilot { get; }
 
     public VeniceAiDescriptor VeniceAi { get; }
+
+    public DeepSeekDescriptor DeepSeek { get; }
 
     public IReadOnlyList<IProviderDescriptor> All { get; }
 
@@ -68,6 +73,7 @@ public sealed class ProviderDescriptorCatalog
             new AnthropicDescriptor(httpClient),
             new OpenRouterDescriptor(httpClient),
             new GitHubCopilotDescriptor(httpClient, copilotTokenExchanger),
-            new VeniceAiDescriptor(httpClient));
+            new VeniceAiDescriptor(httpClient),
+            new DeepSeekDescriptor(httpClient));
     }
 }
