@@ -337,7 +337,14 @@ internal static class McpCommand
         // Wait until the deadline the daemon reports rather than assume the flow lifetime.
         // A client that gives up first tells the operator the attempt timed out while the
         // daemon is still ready to accept their callback.
-        var deadline = startResult.GetProperty("expiresAt").GetDateTimeOffset();
+        // A daemon older than this CLI does not report the deadline. The CLI and the
+        // daemon swap separately during an upgrade, so a newer CLI against an older
+        // daemon is a normal window rather than a broken install, and crashing here
+        // would take out `netclaw mcp auth` for the length of it. Fall back to the
+        // lifetime that daemon enforces.
+        var deadline = startResult.TryGetProperty("expiresAt", out var expiresAt)
+            ? expiresAt.GetDateTimeOffset()
+            : DateTimeOffset.UtcNow.AddMinutes(5);
 
         // 2. Open browser (detect headless first)
         var canOpenBrowser = BrowserDetection.CanOpenBrowser();
