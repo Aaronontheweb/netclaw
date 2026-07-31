@@ -205,7 +205,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             _ = RunExplicitAuthorizationAsync(lifecycle, entry, started.Flow);
 
         var request = await started.Flow.WaitForAuthorizationRequestAsync(requestCancellation);
-        return new McpOAuthStartResponse(request.Url.ToString(), request.State);
+        return new McpOAuthStartResponse(request.Url.ToString(), request.State, started.Flow.ExpiresAt);
     }
 
     public async Task<string> InvokeAsync(

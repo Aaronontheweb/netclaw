@@ -334,6 +334,10 @@ internal static class McpCommand
         var startResult = await startResponse.Content.ReadFromJsonAsync<JsonElement>();
         var authUrl = startResult.GetProperty("authorizationUrl").GetString()!;
         var flowState = startResult.GetProperty("state").GetString()!;
+        // Wait until the deadline the daemon reports rather than assume the flow lifetime.
+        // A client that gives up first tells the operator the attempt timed out while the
+        // daemon is still ready to accept their callback.
+        var deadline = startResult.GetProperty("expiresAt").GetDateTimeOffset();
 
         // 2. Open browser (detect headless first)
         var canOpenBrowser = BrowserDetection.CanOpenBrowser();
@@ -369,7 +373,8 @@ internal static class McpCommand
 
         // 3. Start polling + listen for paste concurrently
         writer.Write("Waiting for authorization");
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+        var remaining = deadline - DateTimeOffset.UtcNow;
+        using var cts = new CancellationTokenSource(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero);
         var pollTask = PollMcpOAuthStatusAsync(daemonApi, flowState, writer, cts.Token);
         var pasteTask = ReadPasteRedirectAsync(daemonApi, writer, cts.Token);
 

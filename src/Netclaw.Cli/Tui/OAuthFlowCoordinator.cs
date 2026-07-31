@@ -279,6 +279,9 @@ public sealed class OAuthFlowCoordinator : IDisposable
             var startResult = await startResponse.Content.ReadFromJsonAsync<JsonElement>(ct);
             var authUrl = startResult.GetProperty("authorizationUrl").GetString()!;
             var flowState = startResult.GetProperty("state").GetString()!;
+            // The daemon owns the flow deadline; polling past it, or stopping before it,
+            // both misreport the outcome to the operator.
+            var deadline = startResult.GetProperty("expiresAt").GetDateTimeOffset();
 
             // Step 2: Try to open browser (detect headless first)
             VerificationUri = authUrl;
@@ -300,7 +303,7 @@ public sealed class OAuthFlowCoordinator : IDisposable
             }
 
             // Step 3: Poll daemon for completion
-            var pollTimeout = TimeSpan.FromMinutes(5);
+            var pollTimeout = deadline - DateTimeOffset.UtcNow;
             var pollInterval = TimeSpan.FromSeconds(2);
             var elapsed = TimeSpan.Zero;
 
