@@ -776,17 +776,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             }
 
             var transport = CreateTransport(name, entry, oauthCache, authorizationFlow);
-            var client = await _clientRuntime.CreateAsync(transport, new McpClientOptions
-            {
-                ClientInfo = new()
-                {
-                    Name = "netclaw",
-                    Title = "Netclaw",
-                    Version = BuildInfo.Version,
-                    WebsiteUrl = "https://netclaw.dev",
-                    Description = "Open-source autonomous operations agent built on Akka.NET",
-                },
-            }, ct);
+            var client = await _clientRuntime.CreateAsync(transport, BuildClientOptions(authorizationFlow), ct);
             return new McpClientCandidate(client, oauthCache);
         }
         catch
@@ -795,6 +785,44 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                 _credentialStore.Discard(oauthCache);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Builds the client options, stretching both connect timeouts when an operator is
+    /// waiting at a browser.
+    /// <para>
+    /// The SDK defaults are machine-scale: a 5 second <c>server/discover</c> probe and a
+    /// 60 second initialization budget. A server that answers the probe with 401 sends the
+    /// SDK into the authorization callback handler, which cannot return until the operator
+    /// finishes. The probe timeout then cancels that wait, the SDK falls back to the
+    /// <c>initialize</c> handshake, and it calls the handler a second time for the same
+    /// flow — which the single-owner guard rejects, ending the authorization the operator
+    /// was still working through. Both timeouts therefore match the flow lifetime while a
+    /// flow exists. A background reconnect keeps the defaults, because its handler returns
+    /// immediately and nothing waits.
+    /// </para>
+    /// </summary>
+    private static McpClientOptions BuildClientOptions(McpOAuthFlow? authorizationFlow)
+    {
+        var options = new McpClientOptions
+        {
+            ClientInfo = new()
+            {
+                Name = "netclaw",
+                Title = "Netclaw",
+                Version = BuildInfo.Version,
+                WebsiteUrl = "https://netclaw.dev",
+                Description = "Open-source autonomous operations agent built on Akka.NET",
+            },
+        };
+
+        if (authorizationFlow is not null)
+        {
+            options.InitializationTimeout = McpOAuthFlowBroker.FlowLifetime;
+            options.DiscoverProbeTimeout = McpOAuthFlowBroker.FlowLifetime;
+        }
+
+        return options;
     }
 
     private IClientTransport CreateTransport(

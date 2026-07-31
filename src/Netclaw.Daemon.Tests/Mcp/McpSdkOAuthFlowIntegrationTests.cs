@@ -82,6 +82,60 @@ public sealed class McpSdkOAuthFlowIntegrationTests
     }
 
     [Fact]
+    public async Task ExplicitAuthorizationGivesTheOperatorTimeToFinishInTheBrowser()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var server = await FakeOAuthMcpServer.StartAsync(ct);
+        using var directory = new DisposableTempDir();
+        await using var harness = CreateManagerHarness(server, directory.Path);
+
+        await harness.Manager.StartAuthorizationAsync(harness.ServerName, ct);
+
+        // The SDK ships a 5 second server/discover probe and a 60 second initialization
+        // budget. Both are machine-scale. A server that answers the probe with 401 sends the
+        // SDK into the callback handler, which cannot return until the operator finishes in
+        // a browser; the probe timeout then cancels that wait and the SDK calls the handler
+        // again for the same flow, ending the authorization the operator was still doing.
+        var options = harness.Runtime.LastClientOptions;
+        Assert.NotNull(options);
+        Assert.Equal(McpOAuthFlowBroker.FlowLifetime, options!.DiscoverProbeTimeout);
+        Assert.Equal(McpOAuthFlowBroker.FlowLifetime, options.InitializationTimeout);
+    }
+
+    [Fact]
+    public async Task BackgroundReconnectKeepsTheSdkDefaultConnectTimeouts()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var server = await FakeOAuthMcpServer.StartAsync(ct);
+        server.AcceptBearer("startup-access");
+        using var directory = new DisposableTempDir();
+        var paths = new NetclawPaths(directory.Path);
+        paths.EnsureDirectoriesExist();
+        var canonical = McpOAuthCredentialStore.CanonicalizeResource(server.McpEndpoint.ToString());
+        File.WriteAllText(paths.SecretsPath, $$"""
+            {
+              "McpOAuthTokens": {
+                "fake-oauth": {
+                  "AccessToken": "startup-access",
+                  "ClientId": "startup-client",
+                  "ResourceIdentity": "{{canonical}}"
+                }
+              }
+            }
+            """);
+        await using var harness = CreateManagerHarness(server, directory.Path);
+
+        await harness.Manager.StartAsync(ct);
+
+        // Nobody is waiting on a background reconnect: its handler returns immediately, so
+        // stretching these would only delay a genuinely unreachable server.
+        var options = harness.Runtime.LastClientOptions;
+        Assert.NotNull(options);
+        Assert.NotEqual(McpOAuthFlowBroker.FlowLifetime, options!.DiscoverProbeTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(60), options.InitializationTimeout);
+    }
+
+    [Fact]
     public async Task ConcurrentManagerStartsShareCandidateUrlCredentialWriteAndGeneration()
     {
         var ct = TestContext.Current.CancellationToken;
@@ -745,6 +799,8 @@ public sealed class McpSdkOAuthFlowIntegrationTests
 
         public HttpClientTransportOptions? LastHttpOptions { get; private set; }
 
+        public McpClientOptions? LastClientOptions { get; private set; }
+
         public InitializationBarrier? InitializationBarrier { get; set; }
 
         public void FailNextToolListing() => Interlocked.Exchange(ref _failNextToolListing, 1);
@@ -761,6 +817,7 @@ public sealed class McpSdkOAuthFlowIntegrationTests
             CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref _createCount);
+            LastClientOptions = options;
             return McpClient.CreateAsync(transport, options, cancellationToken: cancellationToken);
         }
 
