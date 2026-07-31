@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Collections.Concurrent;
+using System.Net;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
@@ -117,6 +118,93 @@ public sealed class McpClientManagerLifecycleTests
         Assert.Equal(1, third.DisposeCount);
         Assert.Equal(3, runtime.CreateCount);
         Assert.Empty(harness.Registry.GetToolsForServer(ServerName, int.MaxValue));
+    }
+
+    [Fact]
+    public async Task ToolLevelAuthFailure_MovesServerOutOfConnected()
+    {
+        var runtime = new ControlledMcpClientRuntime();
+        runtime.Enqueue(new ClientPlan("run")
+        {
+            // An expired credential reaches the agent as an ordinary successful response
+            // carrying isError, not as a transport 401. The transport stays healthy, so
+            // without reclassification the server keeps reporting Connected while every
+            // call fails, and the operator is never told to reauthorize.
+            Invoke = (_, _) => Task.FromResult<object?>(JsonDocument.Parse(
+                """{"content":[{"type":"text","text":"Unauthorized: token expired"}],"isError":true}""")
+                .RootElement.Clone()),
+        });
+        await using var harness = CreateHarness(runtime);
+        await harness.Manager.StartAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(
+            McpConnectionState.Connected,
+            harness.Manager.GetServerStatuses()[ServerName].State);
+
+        await InvokeAsync(harness.Manager, TestContext.Current.CancellationToken);
+
+        var status = harness.Manager.GetServerStatuses()[ServerName];
+        Assert.Equal(McpConnectionState.AuthFailed, status.State);
+        Assert.Contains($"netclaw mcp auth {ServerName.Value}", status.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task InvocationAgainstAnAuthFailedServer_NamesTheRemedy()
+    {
+        var runtime = new ControlledMcpClientRuntime();
+        runtime.Enqueue(new ClientPlan("run")
+        {
+            Invoke = (_, _) => Task.FromResult<object?>(JsonDocument.Parse(
+                """{"content":[{"type":"text","text":"Unauthorized: token expired"}],"isError":true}""")
+                .RootElement.Clone()),
+        });
+        // The reconnect that follows must fail the way a dead credential does. A failure
+        // the manager cannot read as an auth problem would reclassify the server as
+        // Unreachable, and the remedy branch would correctly not apply.
+        runtime.Enqueue(new ClientPlan("run")
+        {
+            Initialize = _ => Task.FromException(
+                new HttpRequestException("Unauthorized", null, HttpStatusCode.Unauthorized)),
+        });
+        await using var harness = CreateHarness(runtime);
+        await harness.Manager.StartAsync(TestContext.Current.CancellationToken);
+        await InvokeAsync(harness.Manager, TestContext.Current.CancellationToken);
+        Assert.Equal(
+            McpConnectionState.AuthFailed,
+            harness.Manager.GetServerStatuses()[ServerName].State);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => InvokeAsync(harness.Manager, TestContext.Current.CancellationToken));
+
+        // This text is what the agent repeats to the operator. "unavailable" would send
+        // them looking for a broken server rather than a credential to renew.
+        Assert.Contains($"netclaw mcp auth {ServerName.Value}", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("unavailable", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ToolLevelFailureDetail_ReachesTheDaemonLog()
+    {
+        var runtime = new ControlledMcpClientRuntime();
+        runtime.Enqueue(new ClientPlan("run")
+        {
+            Invoke = (_, _) => Task.FromResult<object?>(JsonDocument.Parse(
+                """{"content":[{"type":"text","text":"database_not_found: no such data source"}],"isError":true}""")
+                .RootElement.Clone()),
+        });
+        await using var harness = CreateHarness(runtime);
+        await harness.Manager.StartAsync(TestContext.Current.CancellationToken);
+
+        await InvokeAsync(harness.Manager, TestContext.Current.CancellationToken);
+
+        // The detail reaches the model either way. Logging it is what gives an operator
+        // something to debug from, instead of only the result length.
+        Assert.Contains(
+            harness.Logger.Entries,
+            entry => entry.Contains("database_not_found: no such data source", StringComparison.Ordinal));
+        // A non-auth failure must not change connection state.
+        Assert.Equal(
+            McpConnectionState.Connected,
+            harness.Manager.GetServerStatuses()[ServerName].State);
     }
 
     [Fact]
@@ -419,6 +507,7 @@ public sealed class McpClientManagerLifecycleTests
                 NullLogger<McpOAuthCredentialStore>.Instance);
             _flowBroker = new McpOAuthFlowBroker(timeProvider, CancellationToken.None);
             Registry = new ToolRegistry();
+            Logger = new RecordingLogger<McpClientManager>();
             Manager = new McpClientManager(
                 new Dictionary<string, McpServerEntry>
                 {
@@ -438,13 +527,15 @@ public sealed class McpClientManagerLifecycleTests
                 notificationSink,
                 timeProvider,
                 runtime,
-                NullLogger<McpClientManager>.Instance,
+                Logger,
                 new SessionConfig());
         }
 
         public McpClientManager Manager { get; }
 
         public ToolRegistry Registry { get; }
+
+        public RecordingLogger<McpClientManager> Logger { get; }
 
         public void MarkStopFailureObserved() => _stopFailureObserved = true;
 

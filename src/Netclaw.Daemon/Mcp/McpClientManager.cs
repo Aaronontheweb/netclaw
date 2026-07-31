@@ -15,6 +15,7 @@ using ModelContextProtocol.Authentication;
 using ModelContextProtocol.Client;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
+using Netclaw.Security;
 using Netclaw.Tools;
 
 namespace Netclaw.Daemon.Mcp;
@@ -204,7 +205,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             _ = RunExplicitAuthorizationAsync(lifecycle, entry, started.Flow);
 
         var request = await started.Flow.WaitForAuthorizationRequestAsync(requestCancellation);
-        return new McpOAuthStartResponse(request.Url.ToString(), request.State);
+        return new McpOAuthStartResponse(request.Url.ToString(), request.State, started.Flow.ExpiresAt);
     }
 
     public async Task<string> InvokeAsync(
@@ -242,6 +243,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                 throw CreateUnavailableException(serverName, toolName);
 
             return await InvokeFunctionAsync(
+                serverName,
                 function,
                 $"{serverName.Value}/{toolName.Value}",
                 arguments,
@@ -647,6 +649,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
     }
 
     private async Task<string> InvokeFunctionAsync(
+        McpServerName serverName,
         AIFunction function,
         string qualifiedToolName,
         IDictionary<string, object?>? arguments,
@@ -656,13 +659,86 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             ? new AIFunctionArguments(arguments)
             : null;
         var result = await _clientRuntime.InvokeAsync(function, aiArgs, ct);
+
+        if (McpToolResultFormatter.TryGetErrorDetail(result, out var detail))
+            ReportToolFailure(serverName, qualifiedToolName, detail);
+
         return McpToolResultFormatter.Format(result, qualifiedToolName);
     }
 
-    private static InvalidOperationException CreateUnavailableException(
+    /// <summary>
+    /// Records a failure the MCP server reported inside an otherwise successful response.
+    /// The detail reaches the model but no exception reaches the transport layer, so
+    /// without this the daemon log keeps only the result length and an operator has
+    /// nothing to debug from.
+    /// </summary>
+    private void ReportToolFailure(McpServerName serverName, string qualifiedToolName, string detail)
+    {
+        // Redact before logging: an MCP error body can echo the arguments it rejected, and
+        // daemon logs leave the box when OTLP export is enabled.
+        _logger.LogWarning(
+            "MCP tool '{Tool}' reported a failure: {Detail}",
+            qualifiedToolName,
+            SecretOutputRedactor.Redact(detail));
+
+        if (!IsAuthFailureMessage(detail))
+            return;
+
+        MarkToolAuthFailure(serverName);
+    }
+
+    /// <summary>
+    /// Moves a server out of <see cref="McpConnectionState.Connected"/> when its
+    /// credential is rejected at call time. The transport stays healthy in this case, so
+    /// status would otherwise report a working server while every invocation fails, and
+    /// the one state that needs operator action would be the one state never shown.
+    /// </summary>
+    private void MarkToolAuthFailure(McpServerName serverName)
+    {
+        if (!_servers.TryGetValue(serverName, out var lifecycle))
+            return;
+
+        var current = lifecycle.Snapshot;
+        if (current is null || current.Status.State is McpConnectionState.AuthFailed)
+            return;
+
+        var status = new McpServerStatus(
+            serverName,
+            McpConnectionState.AuthFailed,
+            current.Status.ToolCount,
+            $"Authentication rejected by server. Run: netclaw mcp auth {serverName.Value}",
+            _timeProvider.GetUtcNow());
+        lifecycle.Publish(current with { Status = status });
+
+        _logger.LogWarning(
+            "MCP server '{Name}' rejected an authenticated tool call; reauthorization is required",
+            serverName.Value);
+        EmitAuthAlert(
+            serverName,
+            $"MCP server '{serverName.Value}' authentication failed. Run: netclaw mcp auth {serverName.Value}",
+            "authentication_failed");
+    }
+
+    /// <summary>
+    /// Explains why a tool could not run. This message is what the agent reports, so a
+    /// server that is only waiting on authorization must name that remedy: "unavailable"
+    /// reads as a broken server and sends the operator looking for the wrong problem.
+    /// </summary>
+    private InvalidOperationException CreateUnavailableException(
         McpServerName serverName,
         ToolName toolName)
-        => new($"MCP server '{serverName.Value}' is unavailable or tool '{toolName.Value}' is not registered.");
+    {
+        var state = _servers.TryGetValue(serverName, out var lifecycle)
+            ? lifecycle.Snapshot?.Status.State
+            : null;
+
+        return state is McpConnectionState.AuthFailed or McpConnectionState.AwaitingAuth
+            ? new InvalidOperationException(
+                $"MCP server '{serverName.Value}' requires authorization. " +
+                $"Run: netclaw mcp auth {serverName.Value}")
+            : new InvalidOperationException(
+                $"MCP server '{serverName.Value}' is unavailable or tool '{toolName.Value}' is not registered.");
+    }
 
     private async Task<McpClientCandidate> CreateClientAsync(
         McpServerName name,
@@ -700,17 +776,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             }
 
             var transport = CreateTransport(name, entry, oauthCache, authorizationFlow);
-            var client = await _clientRuntime.CreateAsync(transport, new McpClientOptions
-            {
-                ClientInfo = new()
-                {
-                    Name = "netclaw",
-                    Title = "Netclaw",
-                    Version = BuildInfo.Version,
-                    WebsiteUrl = "https://netclaw.dev",
-                    Description = "Open-source autonomous operations agent built on Akka.NET",
-                },
-            }, ct);
+            var client = await _clientRuntime.CreateAsync(transport, BuildClientOptions(authorizationFlow), ct);
             return new McpClientCandidate(client, oauthCache);
         }
         catch
@@ -719,6 +785,44 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                 _credentialStore.Discard(oauthCache);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Builds the client options, stretching both connect timeouts when an operator is
+    /// waiting at a browser.
+    /// <para>
+    /// The SDK defaults are machine-scale: a 5 second <c>server/discover</c> probe and a
+    /// 60 second initialization budget. A server that answers the probe with 401 sends the
+    /// SDK into the authorization callback handler, which cannot return until the operator
+    /// finishes. The probe timeout then cancels that wait, the SDK falls back to the
+    /// <c>initialize</c> handshake, and it calls the handler a second time for the same
+    /// flow — which the single-owner guard rejects, ending the authorization the operator
+    /// was still working through. Both timeouts therefore match the flow lifetime while a
+    /// flow exists. A background reconnect keeps the defaults, because its handler returns
+    /// immediately and nothing waits.
+    /// </para>
+    /// </summary>
+    private static McpClientOptions BuildClientOptions(McpOAuthFlow? authorizationFlow)
+    {
+        var options = new McpClientOptions
+        {
+            ClientInfo = new()
+            {
+                Name = "netclaw",
+                Title = "Netclaw",
+                Version = BuildInfo.Version,
+                WebsiteUrl = "https://netclaw.dev",
+                Description = "Open-source autonomous operations agent built on Akka.NET",
+            },
+        };
+
+        if (authorizationFlow is not null)
+        {
+            options.InitializationTimeout = McpOAuthFlowBroker.FlowLifetime;
+            options.DiscoverProbeTimeout = McpOAuthFlowBroker.FlowLifetime;
+        }
+
+        return options;
     }
 
     private IClientTransport CreateTransport(
@@ -955,16 +1059,25 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         if (ex is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden })
             return true;
 
-        if (ex.Message.Contains("unauthorized", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("forbidden", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("invalid_client", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("AuthorizationCallbackHandler", StringComparison.OrdinalIgnoreCase)
-            || ex.Message.Contains("authorization code", StringComparison.OrdinalIgnoreCase))
+        if (IsAuthFailureMessage(ex.Message))
             return true;
 
         return ex.InnerException is not null && IsAuthFailure(ex.InnerException);
     }
+
+    /// <summary>
+    /// Recognizes an authentication rejection from message text alone. A tool-level
+    /// failure carries no exception and no HTTP status, so the wording is all there is.
+    /// </summary>
+    private static bool IsAuthFailureMessage(string message)
+        => message.Contains("unauthorized", StringComparison.OrdinalIgnoreCase)
+           || message.Contains("forbidden", StringComparison.OrdinalIgnoreCase)
+           || message.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase)
+           || message.Contains("invalid_client", StringComparison.OrdinalIgnoreCase)
+           || message.Contains("invalid_token", StringComparison.OrdinalIgnoreCase)
+           || message.Contains("token expired", StringComparison.OrdinalIgnoreCase)
+           || message.Contains("AuthorizationCallbackHandler", StringComparison.OrdinalIgnoreCase)
+           || message.Contains("authorization code", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Identifies a stored client registration the authorization server will never accept

@@ -19,8 +19,13 @@ public sealed record McpOAuthCallbackQuery(
     // RFC 9207 issuer identifier. The MCP SDK validates it; the daemon only relays it.
     [FromQuery(Name = "iss")] string? Iss);
 
-/// <summary>Authorization URL and opaque state returned when an MCP OAuth flow starts.</summary>
-public sealed record McpOAuthStartResponse(string AuthorizationUrl, string State);
+/// <summary>
+/// Authorization URL and state returned when an MCP OAuth flow starts, with the deadline the
+/// daemon will enforce. Clients wait until <paramref name="ExpiresAt"/> rather than assume a
+/// lifetime, so a client that stops early can never report a timeout for a flow the daemon
+/// still considers live.
+/// </summary>
+public sealed record McpOAuthStartResponse(string AuthorizationUrl, string State, DateTimeOffset ExpiresAt);
 
 /// <summary>Connection status for a single MCP server.</summary>
 public sealed record McpServerStatusDto(
