@@ -735,11 +735,13 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
     }
 
     /// <summary>
-    /// Remove the currently selected configured provider. Used by the Delete keybinding on the list.
+    /// Remove a configured provider. Used by the Delete keybinding on the list.
+    /// Takes the target item directly (resolved from the list's live highlight)
+    /// rather than the selection index, which only updates on Enter.
     /// </summary>
-    public void RemoveSelectedProvider()
+    public void RemoveSelectedProvider(ProviderDisplayItem item)
     {
-        if (SelectedProvider is not { IsConfigured: true, ConfiguredName: not null } item)
+        if (item is not { IsConfigured: true, ConfiguredName: not null })
             return;
 
         DetailProvider = item;
