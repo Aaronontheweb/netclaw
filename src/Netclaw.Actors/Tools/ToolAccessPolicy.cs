@@ -333,13 +333,18 @@ public sealed class ToolAccessPolicy
         // Safe-verb ∩ safe-space short-circuit. Runs only for shell and only
         // when the matcher could extract candidate verbs cleanly — messy
         // commands always prompt regardless of verb membership. Auto-allows
-        // demonstrably read-only verbs (cat/ls/grep/find/git status/...)
-        // when the cwd is inside session_dir or project_dir.
+        // demonstrably read-only verbs (cat/ls/grep/find/git status/...) only
+        // when BOTH the cwd AND every path the command touches stay inside a
+        // safe-space root, and the command reads no non-filesystem provider
+        // drive. The cwd check alone is not enough: `cat /etc/passwd` (or
+        // `Get-ChildItem Env:`) from a trusted cwd reaches outside the zone, so
+        // OperationStaysInSafeSpace validates the operation targets too.
         if (_safeVerbPolicy is not null
             && isShell
             && !isMessy
             && candidateVerbs.Count > 0
-            && _safeVerbPolicy.AllShortCircuit(candidateVerbs, context.Approval.Cwd, context.Invocation))
+            && _safeVerbPolicy.AllShortCircuit(candidateVerbs, context.Approval.Cwd, context.Invocation)
+            && OperationStaysInSafeSpace(arguments, context))
         {
             return ToolAccessDecision.Allow();
         }
@@ -363,6 +368,70 @@ public sealed class ToolAccessPolicy
             Candidates: candidates);
 
         return ToolAccessDecision.RequiresApproval(approvalContext);
+    }
+
+    // Non-filesystem PowerShell provider drives. A read-only verb like
+    // Get-Content pointed at one of these (`Get-Content Env:\SECRET`,
+    // `Get-ChildItem HKLM:\...`) exposes ambient state a filesystem-zone check
+    // cannot contain, so such a command is never auto-passed. This is a small,
+    // stable part of PowerShell (its built-in providers), not an open-ended
+    // list that has to track new tools.
+    private static readonly HashSet<string> NonFilesystemProviderDrives = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Env", "HKLM", "HKCU", "HKCR", "HKU", "HKCC", "Cert", "Variable", "Function", "Alias", "WSMan"
+    };
+
+    /// <summary>
+    /// Second gate on the safe-verb auto-pass: the whole command must stay
+    /// inside the safe space, not just the process cwd. Returns false — falling
+    /// through to the interactive prompt — when the command reads or writes a
+    /// path outside a safe-space root, references a non-filesystem provider
+    /// drive, or cannot be statically resolved. Fail-closed by construction:
+    /// any unresolved token, provider drive, or out-of-zone target prompts.
+    /// </summary>
+    private bool OperationStaysInSafeSpace(IDictionary<string, object?>? arguments, ToolExecutionContext context)
+    {
+        var command = ExtractShellCommand(arguments);
+        if (string.IsNullOrWhiteSpace(command))
+            return false;
+
+        if (ReferencesNonFilesystemProviderDrive(command))
+            return false;
+
+        var workingDirectory = ExtractWorkingDirectory(arguments);
+
+        // Arguments and redirect targets both count. A dynamic or unparseable
+        // command returns false here and fails closed.
+        if (!_shellEnvironment.TryExtractStaticPathTokens(command, workingDirectory, out var pathTokens))
+            return false;
+
+        foreach (var token in pathTokens)
+        {
+            var absolute = _shellEnvironment.NormalizePathToken(token, workingDirectory);
+            if (absolute is null || !_safeVerbPolicy!.IsWithinSafeSpace(absolute, context.Invocation))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool ReferencesNonFilesystemProviderDrive(string command)
+    {
+        foreach (var token in ShellTokenizer.Tokenize(command))
+        {
+            var trimmed = token.Trim('"', '\'', ';', '|', '&', '(', ')');
+            var colon = trimmed.IndexOf(':', StringComparison.Ordinal);
+
+            // colon <= 1 is no colon or a single-letter filesystem drive (C:,
+            // D:); a longer prefix is a provider-qualified drive like Env:.
+            if (colon <= 1)
+                continue;
+
+            if (NonFilesystemProviderDrives.Contains(trimmed[..colon]))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>

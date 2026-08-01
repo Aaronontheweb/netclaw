@@ -823,6 +823,123 @@ public sealed class ToolApprovalGateTests
         Assert.True(decision.NeedsApproval);
     }
 
+    // ── Safe-verb auto-pass: whole operation must stay in the zone ──
+
+    private static ToolAccessPolicy CreateSafeVerbGatePolicy(
+        string safeVerb, ShellExecutionEnvironment? environment = null)
+    {
+        var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
+        config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
+        {
+            ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
+            {
+                ["shell_execute"] = ToolApprovalMode.Approval
+            }
+        };
+        return new ToolAccessPolicy(
+            config,
+            new EffectivePolicyDefaults(
+                DeploymentPosture.Personal,
+                TrustAudience.Personal,
+                ShellExecutionMode.HostAllowed,
+                UsedStrictFallback: false),
+            shellCommandPolicy: new ShellCommandPolicy(environment ?? ShellExecutionEnvironment.Current),
+            safeVerbs: SafeVerbList.FromVerbs([safeVerb]));
+    }
+
+    [Fact]
+    public void Safe_verb_reading_inside_the_zone_auto_passes()
+    {
+        using var dir = new DisposableTempDir();
+        var projectDir = dir.Path;
+        var insideFile = Path.Combine(projectDir, "notes.txt");
+        File.WriteAllText(insideFile, "hello");
+        var verb = OperatingSystem.IsWindows() ? "Get-Content" : "cat";
+        var policy = CreateSafeVerbGatePolicy(verb);
+        var context = TestToolExecutionContext.CreateBound(
+            "signalr/safe-verb-zone",
+            sessionDirectory: null,
+            new TestToolExecutionContextOptions
+            {
+                Audience = TrustAudience.Personal,
+                ProjectDirectory = projectDir
+            });
+
+        var decision = policy.AuthorizeInvocation(
+            ShellTool(),
+            context,
+            new Dictionary<string, object?>
+            {
+                ["Command"] = $"{verb} \"{insideFile}\"",
+                ["WorkingDirectory"] = projectDir
+            });
+
+        Assert.True(decision.Allowed);
+        Assert.False(decision.NeedsApproval);
+    }
+
+    [Fact]
+    public void Safe_verb_reading_outside_the_zone_still_prompts()
+    {
+        // The over-fire fix: cwd is inside the zone, but the file read is not,
+        // so the auto-pass shortcut must not fire.
+        using var dir = new DisposableTempDir();
+        var projectDir = Path.Combine(dir.Path, "project");
+        Directory.CreateDirectory(projectDir);
+        var outsideFile = Path.Combine(dir.Path, "outside.txt");
+        var verb = OperatingSystem.IsWindows() ? "Get-Content" : "cat";
+        var policy = CreateSafeVerbGatePolicy(verb);
+        var context = TestToolExecutionContext.CreateBound(
+            "signalr/safe-verb-zone",
+            sessionDirectory: null,
+            new TestToolExecutionContextOptions
+            {
+                Audience = TrustAudience.Personal,
+                ProjectDirectory = projectDir
+            });
+
+        var decision = policy.AuthorizeInvocation(
+            ShellTool(),
+            context,
+            new Dictionary<string, object?>
+            {
+                ["Command"] = $"{verb} \"{outsideFile}\"",
+                ["WorkingDirectory"] = projectDir
+            });
+
+        Assert.True(decision.NeedsApproval);
+    }
+
+    [Fact]
+    public void Safe_verb_reading_a_provider_drive_still_prompts()
+    {
+        // GAP 1: `Get-ChildItem Env:` reads the whole environment. It carries
+        // no filesystem path, so only the provider-drive rule stops it from
+        // auto-passing when the cwd is inside the zone.
+        using var dir = new DisposableTempDir();
+        var projectDir = dir.Path;
+        var policy = CreateSafeVerbGatePolicy("Get-ChildItem", ShellExecutionEnvironment.PowerShell());
+        var context = TestToolExecutionContext.CreateBound(
+            "signalr/safe-verb-zone",
+            sessionDirectory: null,
+            new TestToolExecutionContextOptions
+            {
+                Audience = TrustAudience.Personal,
+                ProjectDirectory = projectDir
+            });
+
+        var decision = policy.AuthorizeInvocation(
+            ShellTool(),
+            context,
+            new Dictionary<string, object?>
+            {
+                ["Command"] = "Get-ChildItem Env:",
+                ["WorkingDirectory"] = projectDir
+            });
+
+        Assert.True(decision.NeedsApproval);
+    }
+
     [Theory]
     [InlineData("bash -c")]
     [InlineData("bash -lc")]

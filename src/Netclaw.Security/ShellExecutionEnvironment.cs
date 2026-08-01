@@ -101,23 +101,44 @@ public sealed class ShellExecutionEnvironment
         {
             foreach (var argument in clause.Args)
             {
-                if (!argument.IsCwdAttribution
-                    && argument.IsPath
-                    && LooksLikePath(argument.Raw))
-                {
-                    paths.Add(argument.Raw);
-                }
+                if (argument.IsCwdAttribution || !argument.IsPath)
+                    continue;
+
+                // arg.Raw keeps the source quotes, and a leading quote breaks
+                // the drive-letter check in LooksLikePath (`"C:\x"` shifts the
+                // colon off index 1). Strip quotes for the predicate, then
+                // record the parser's resolved absolute path when it has one so
+                // downstream trust-zone checks see the real target, not a
+                // quoted or relative token.
+                var unquoted = StripSurroundingQuotes(argument.Raw);
+                if (!LooksLikePath(unquoted))
+                    continue;
+
+                paths.Add(!string.IsNullOrEmpty(argument.Resolved) ? argument.Resolved : unquoted);
             }
 
             foreach (var redirect in clause.Redirects)
             {
-                if (LooksLikePath(redirect.Target))
-                    paths.Add(redirect.Target);
+                var target = StripSurroundingQuotes(redirect.Target);
+                if (LooksLikePath(target))
+                    paths.Add(target);
             }
         }
 
         pathTokens = paths;
         return true;
+    }
+
+    private static string StripSurroundingQuotes(string value)
+    {
+        if (value.Length >= 2
+            && (value[0] == '"' || value[0] == '\'')
+            && value[^1] == value[0])
+        {
+            return value[1..^1];
+        }
+
+        return value;
     }
 
     internal ShellCommandAnalysis Analyze(string command, string? workingDirectory = null)
