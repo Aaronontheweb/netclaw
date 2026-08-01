@@ -758,6 +758,7 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
 
         RemoveProviderName = DetailProvider.ConfiguredName;
         RemoveBlockingRoles.Clear();
+        ErrorMessage.Value = "";
 
         var roles = Provider.ProviderCommand.GetReferencingModelRoles(RemoveProviderName, _paths);
         RemoveBlockingRoles.AddRange(roles);
