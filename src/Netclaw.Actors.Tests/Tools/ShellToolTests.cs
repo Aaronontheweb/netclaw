@@ -94,7 +94,13 @@ public class ShellToolTests
     [Fact]
     public async Task Execute_captures_stderr()
     {
-        var command = OperatingSystem.IsWindows() ? "Write-Error 'error'" : "echo error >&2";
+        // On Windows, Write-Error sets a non-zero pwsh exit code, which would
+        // break the clean-exit assertion below. [Console]::Error.WriteLine
+        // writes to stderr and still exits 0, so the test verifies stderr
+        // capture on a clean exit — the same property as the Unix branch.
+        var command = OperatingSystem.IsWindows()
+            ? "[Console]::Error.WriteLine('error')"
+            : "echo error >&2";
         var args = ToolInput.Create("Command", command);
         var result = await _tool.ExecuteAsync(args, TestToolExecutionContext.CreateUnbound(), CancellationToken.None);
 

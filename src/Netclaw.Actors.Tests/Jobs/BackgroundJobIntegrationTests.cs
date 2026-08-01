@@ -135,7 +135,10 @@ public class BackgroundJobIntegrationTests : TestKit
             TimeSpan.FromSeconds(15), cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("does not exist", delivered.Content);
-        Assert.Contains("mkdir", delivered.Content);
+        // The create-directory remedy is OS-appropriate: PowerShell's New-Item
+        // on Windows, mkdir on Unix. Assert the hint the product actually emits
+        // for the host so the "helpful error" intent is verified either way.
+        Assert.Contains(OperatingSystem.IsWindows() ? "New-Item" : "mkdir", delivered.Content);
         Assert.Contains("failed", delivered.Content.ToLowerInvariant());
 
         await AwaitAssertAsync(() =>

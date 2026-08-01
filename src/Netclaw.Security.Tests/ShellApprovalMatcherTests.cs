@@ -55,7 +55,10 @@ public sealed class ShellApprovalMatcherTests
     [Fact]
     public void ExtractPatterns_recurses_into_bash_c_wrapper()
     {
-        var patterns = _matcher.ExtractPatterns(new ToolName("shell_execute"), Args("bash -c \"git push --force\""));
+        // bash -c wrapper recursion is Bash grammar; pin the Bash environment so
+        // the inner command is unwrapped on any host.
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironment.Bash());
+        var patterns = matcher.ExtractPatterns(new ToolName("shell_execute"), Args("bash -c \"git push --force\""));
 
         Assert.Single(patterns);
         Assert.Equal("git push --force", patterns[0]);
@@ -89,7 +92,10 @@ public sealed class ShellApprovalMatcherTests
         // The path argument is captured separately on
         // ExtractCandidates(...).Directory; see
         // ShellApprovalMatcherPathExtractionTests for the full coverage.
-        var verbs = _matcher.ExtractCandidateVerbs(
+        // POSIX path command (cat + /home/... path); pin the Bash grammar so the
+        // command head is extracted deterministically on any host.
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironment.Bash());
+        var verbs = matcher.ExtractCandidateVerbs(
             new ToolName("shell_execute"),
             Args("cat /home/user/.netclaw/logs/crash.log"));
         Assert.Single(verbs);
@@ -257,8 +263,11 @@ public sealed class ShellApprovalMatcherTests
     [Fact]
     public void IsApproved_recurses_into_bash_c_wrapper()
     {
+        // bash -c wrapper recursion is Bash grammar; pin the Bash environment so
+        // the inner command is unwrapped and matched on any host.
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironment.Bash());
         var approved = new[] { Verb("git push") };
-        Assert.True(_matcher.IsApproved(
+        Assert.True(matcher.IsApproved(
             new ToolName("shell_execute"),
             Args("bash -c \"git push --force\""),
             approved,
@@ -573,12 +582,17 @@ public sealed class ShellApprovalMatcherPathExtractionTests
     [Fact]
     public void ExtractCandidates_compound_command_extracts_per_clause()
     {
-        var candidates = _matcher.ExtractCandidates(new ToolName("shell_execute"),
+        // POSIX verbs and a POSIX path (`ls /repo`); pin the Bash grammar so the
+        // per-clause extraction is deterministic on any host. The candidate
+        // directory is normalized to forward slashes because ApplyFileParentRule
+        // routes through System.IO.Path, which emits the host separator.
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironment.Bash());
+        var candidates = matcher.ExtractCandidates(new ToolName("shell_execute"),
             Args("ls /repo && git status"));
 
         Assert.Equal(2, candidates.Count);
         Assert.Equal("ls", candidates[0].Verb);
-        Assert.Equal("/repo", candidates[0].Directory);
+        Assert.Equal("/repo", candidates[0].Directory?.Replace('\\', '/'));
         Assert.Equal("git status", candidates[1].Verb);
         Assert.Null(candidates[1].Directory);
     }
@@ -710,7 +724,11 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         // (`echo done` is the more natural example; the parser now reads
         // `done` as a plain argument — see
         // ExtractCandidates_treats_control_flow_keyword_as_plain_argument.)
-        var candidates = _matcher.ExtractCandidates(
+        // Pinned to the Bash environment so the POSIX `echo` side-effect cap is
+        // exercised on any host (PowerShell would canonicalize `echo` to
+        // Write-Output — covered separately).
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironment.Bash());
+        var candidates = matcher.ExtractCandidates(
             new ToolName("shell_execute"),
             new Dictionary<string, object?> { ["Command"] = "echo hello" });
 
@@ -1007,9 +1025,13 @@ public sealed class ShellApprovalMatcherPathExtractionTests
             // No echo entry — exactly what the side-effect skip produces.
         };
 
+        // POSIX compound (cd/git/echo side effects); pin the Bash grammar so the
+        // side-effect skip and verb-chain extraction run deterministically on
+        // any host.
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironment.Bash());
         var compound =
             "cd ~/repo && git status && echo \"---\" && git remote -v && echo \"finished\"";
-        Assert.True(_matcher.IsApproved(
+        Assert.True(matcher.IsApproved(
             new ToolName("shell_execute"),
             new Dictionary<string, object?> { ["Command"] = compound },
             approvedEntries,
@@ -1028,7 +1050,10 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         var candidate = Assert.Single(matcher.ExtractCandidates(new ToolName("shell_execute"), arguments));
 
         Assert.Equal("echo", candidate.Verb);
-        Assert.Equal("/tmp", candidate.Directory);
+        // The redirect-target parent is computed via System.IO.Path
+        // (ApplyFileParentRule), which emits the host separator; normalize to
+        // forward slashes so the POSIX directory compares equal on any host.
+        Assert.Equal("/tmp", candidate.Directory?.Replace('\\', '/'));
         Assert.False(ApprovalPatternMatching.IsPureSideEffect(candidate));
         Assert.False(matcher.IsApproved(
             new ToolName("shell_execute"),

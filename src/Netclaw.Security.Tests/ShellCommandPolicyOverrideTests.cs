@@ -151,9 +151,13 @@ public sealed class ShellCommandPolicyOverrideTests
     [Fact]
     public void Shipped_defaults_remain_active_alongside_overrides()
     {
-        // Override does not weaken or remove shipped defaults.
+        // Override does not weaken or remove shipped defaults. The shipped
+        // defaults asserted below (rm -rf /, the fork bomb) are Bash/POSIX
+        // shapes, so pin the Bash grammar to exercise them deterministically on
+        // any host — the override-mechanism-preserves-defaults invariant is
+        // grammar-independent.
         var policy = new ShellCommandPolicy(
-            ShellExecutionEnvironment.Current,
+            ShellExecutionEnvironment.Bash(),
             additionalDenyPatterns: null,
             overrideRules:
             [

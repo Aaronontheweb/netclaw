@@ -18,7 +18,9 @@ public sealed class ToolApprovalGateTests
 {
     public static bool IsWindows => OperatingSystem.IsWindows();
 
-    private static ToolAccessPolicy CreatePolicy(ToolApprovalMode shellApprovalMode)
+    private static ToolAccessPolicy CreatePolicy(
+        ToolApprovalMode shellApprovalMode,
+        ShellExecutionEnvironment? environment = null)
     {
         var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
         config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
@@ -36,7 +38,8 @@ public sealed class ToolApprovalGateTests
                 TrustAudience.Personal,
                 ShellExecutionMode.HostAllowed,
                 UsedStrictFallback: false),
-                new Netclaw.Security.ShellCommandPolicy(Netclaw.Security.ShellExecutionEnvironment.Current));
+                new Netclaw.Security.ShellCommandPolicy(
+                    environment ?? Netclaw.Security.ShellExecutionEnvironment.Current));
     }
 
     private static ToolExecutionContext PersonalContext(bool supportsApproval = true, string sessionId = "signalr/thread-1") =>
@@ -948,10 +951,18 @@ public sealed class ToolApprovalGateTests
     {
         using var dir = new DisposableTempDir();
         var trustRoot = CreateTrustZoneRoot(dir.Path);
-        var outsidePath = Path.Combine(dir.Path, "outside", "shadow.txt");
+        // Bash grammar only anchors POSIX-absolute paths — a Windows drive-letter
+        // token (C:\...) is rejected as scheme-like, so the out-of-zone target is
+        // expressed as a POSIX path. It normalizes to the current drive root on
+        // Windows (e.g. C:\outside\...) and stays under / on Linux; either way it
+        // is outside the temp-based trust root and must be denied.
+        var outsidePath = "/outside/shadow.txt";
 
         var trustZone = new FakeShellTrustZonePolicy([trustRoot]);
-        var policy = CreatePolicyWithTrustZone(trustZone);
+        // bash -c/-lc wrapper path extraction is Bash grammar; pin the Bash
+        // environment so the nested command's path is unwrapped and checked
+        // against the trust zone on any host.
+        var policy = CreatePolicyWithTrustZone(trustZone, ShellExecutionEnvironment.Bash());
         var tool = ShellTool();
         var ctx = PersonalContext(supportsApproval: false);
 
@@ -1034,8 +1045,10 @@ public sealed class ToolApprovalGateTests
     [Fact]
     public void Non_interactive_shell_with_path_denied_when_no_trust_zone_configured()
     {
-        // No trust zone policy = fail-closed for non-interactive path commands
-        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        // No trust zone policy = fail-closed for non-interactive path commands.
+        // `cat /etc/passwd` is a POSIX path command; pin the Bash grammar so the
+        // path token is extracted (and the fail-closed deny fires) on any host.
+        var policy = CreatePolicy(ToolApprovalMode.Approval, ShellExecutionEnvironment.Bash());
         var tool = ShellTool();
         var ctx = PersonalContext(supportsApproval: false);
 
@@ -1157,7 +1170,12 @@ public sealed class ToolApprovalGateTests
     [Fact]
     public void Shell_path_command_extracts_path_aware_verb_chain_with_no_directory_roots()
     {
-        var policy = CreatePolicy(ToolApprovalMode.Approval);
+        // POSIX verb + path (`cat /home/...`); pin the Bash grammar so the
+        // path-aware candidate (verb `cat`, directory the file's parent) is
+        // extracted deterministically on any host. The directory is normalized
+        // to forward slashes below because the parent is computed via
+        // System.IO.Path, which emits the host separator.
+        var policy = CreatePolicy(ToolApprovalMode.Approval, ShellExecutionEnvironment.Bash());
         var args = ToolInput.Create("Command", "cat /home/user/.netclaw/logs/crash.log");
 
         var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);

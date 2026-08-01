@@ -32,7 +32,13 @@ public sealed class ShellSyntaxTreeIntegrationTests
         using var provider = services.BuildServiceProvider();
         var parser = provider.GetRequiredService<IShellParser>();
 
-        Assert.IsType<BashParser>(parser);
+        // The DI registration resolves the parser for the host's canonical
+        // shell grammar: PowerShell (PwshParser) on Windows, Bash (BashParser)
+        // on Linux/macOS. Assert the type that matches the current OS.
+        if (OperatingSystem.IsWindows())
+            Assert.IsType<PwshParser>(parser);
+        else
+            Assert.IsType<BashParser>(parser);
     }
 
     [Fact]

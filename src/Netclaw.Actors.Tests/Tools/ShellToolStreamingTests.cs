@@ -62,7 +62,13 @@ public class ShellToolStreamingTests
     [Fact]
     public async Task Stderr_emits_activity_items_with_stderr_phase()
     {
-        var cmd = OperatingSystem.IsWindows() ? "Write-Error 'error'" : "echo error >&2";
+        // On Windows, Write-Error sets a non-zero pwsh exit code, breaking the
+        // clean-exit assertion below. [Console]::Error.WriteLine writes to
+        // stderr and exits 0, keeping the test's meaning: stderr is emitted as
+        // a stderr-phase activity on a clean exit.
+        var cmd = OperatingSystem.IsWindows()
+            ? "[Console]::Error.WriteLine('error')"
+            : "echo error >&2";
         var args = ToolInput.Create("Command", cmd);
         var (activities, completion) = await CollectStreamAsync(_tool, args, ct: TestContext.Current.CancellationToken);
 

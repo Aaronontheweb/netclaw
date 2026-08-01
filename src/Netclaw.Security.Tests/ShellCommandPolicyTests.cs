@@ -39,7 +39,12 @@ public sealed class ShellCommandPolicyTests
     [InlineData("bash -c \"sudo kill -9 123\"")]
     public void Denies_privilege_escalation_commands(string command)
     {
-        var decision = _policy.Evaluate(command);
+        // Every row is Bash/POSIX grammar (sudo/su/doas, bash -c recursion), so
+        // pin the Bash environment to exercise that grammar deterministically on
+        // any host. PowerShell privilege-escalation coverage lives in
+        // PowerShell_canonical_verbs_enforce_native_hard_denies.
+        var policy = new ShellCommandPolicy(ShellExecutionEnvironment.Bash());
+        var decision = policy.Evaluate(command);
         Assert.False(decision.Allowed);
         Assert.Equal(DenyCategory.PrivilegeEscalation, decision.DenyCategory);
     }
@@ -54,7 +59,11 @@ public sealed class ShellCommandPolicyTests
     [InlineData(":(){ :|:& };:")]
     public void Denies_system_destructive_commands(string command)
     {
-        var decision = _policy.Evaluate(command);
+        // POSIX destructive shapes (rm -rf /, ~, $HOME, mkfs, fork bomb) are
+        // Bash grammar; pin the Bash environment so they parse identically on
+        // Windows. PowerShell's Remove-Item destructive coverage is separate.
+        var policy = new ShellCommandPolicy(ShellExecutionEnvironment.Bash());
+        var decision = policy.Evaluate(command);
         Assert.False(decision.Allowed);
         Assert.Equal(DenyCategory.SystemDestructive, decision.DenyCategory);
     }
@@ -96,7 +105,11 @@ public sealed class ShellCommandPolicyTests
     [InlineData("bash -c \"echo safe | netclaw daemon stop\"")]
     public void Denies_pipeline_with_denied_tail(string command)
     {
-        var decision = _policy.Evaluate(command);
+        // Bash pipelines and bash -c recursion — pin the Bash grammar so the
+        // pipeline tail is parsed the same on any host. The PowerShell pipeline
+        // equivalent is PowerShell_parser_denies_process_kill_in_pipeline_tail.
+        var policy = new ShellCommandPolicy(ShellExecutionEnvironment.Bash());
+        var decision = policy.Evaluate(command);
 
         Assert.False(decision.Allowed);
     }
@@ -197,7 +210,11 @@ public sealed class ShellCommandPolicyTests
     [InlineData("bash -c \"echo safe\" && bash -lc \"netclaw daemon stop\"")]
     public void Denies_bash_wrapping_denied_command(string command)
     {
-        var decision = _policy.Evaluate(command);
+        // These rows exercise bash -c/-lc wrapper recursion (a Bash-grammar
+        // construct); pin the Bash environment so the wrapper is unwrapped and
+        // the inner denied command is caught on any host.
+        var policy = new ShellCommandPolicy(ShellExecutionEnvironment.Bash());
+        var decision = policy.Evaluate(command);
         Assert.False(decision.Allowed);
         Assert.Equal(DenyCategory.SelfDestructive, decision.DenyCategory);
     }
@@ -218,7 +235,11 @@ public sealed class ShellCommandPolicyTests
     [InlineData("rm --recursive --force /")]
     public void Denies_case_insensitive_and_flag_variants(string command)
     {
-        var decision = _policy.Evaluate(command);
+        // All rows are Bash/POSIX shapes (netclaw daemon stop, kill, rm flag
+        // variants); pin the Bash grammar so the case-insensitive verb and flag
+        // normalization is exercised deterministically on any host.
+        var policy = new ShellCommandPolicy(ShellExecutionEnvironment.Bash());
+        var decision = policy.Evaluate(command);
         Assert.False(decision.Allowed);
     }
 
