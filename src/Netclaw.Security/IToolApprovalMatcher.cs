@@ -303,12 +303,13 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     /// </summary>
     private IReadOnlyList<string> ExtractApprovalUnitsViaParser(string command, string? workingDirectory)
     {
-        // Messy commands (control-flow keywords, unbalanced brackets) cannot
-        // be cleanly decomposed into approval units; mirror the legacy
-        // splitter, which returns no units for them.
-        if (ShellTokenizer.IsMessyCompoundCommand(command))
-            return [];
-
+        // The parser is the sole authority on "messy". A command it cannot
+        // fully resolve (control flow, unbalanced quotes, dynamic syntax)
+        // yields a null analysis here and returns no units, so the prompt
+        // offers only Once/Deny. A hand-rolled keyword/bracket scan used to run
+        // first, but it over-flagged safe compounds the parser handles
+        // correctly (e.g. `[ -f x ] && cat x`, where `[` is the test command),
+        // forcing needless prompts.
         var result = TryAnalyzeCommand(command, workingDirectory);
         if (result is null || result.HasDynamicSyntax)
             return [];
@@ -507,17 +508,11 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (string.IsNullOrWhiteSpace(command))
             return false;
 
-        // Messy commands cannot be auto-approved: the matcher cannot extract a
-        // candidate verb-chain to evaluate against the persisted store, so
-        // every messy invocation must round-trip through the user. The prompt
-        // builder offers only Once/Deny in this case (see IsMessy).
-        if (ShellTokenizer.IsMessyCompoundCommand(command))
-            return false;
-
-        // Fail-closed on a parser miss: exceptions and unparseable results
-        // return an empty candidate list. Treating that
-        // as "approved" would silently auto-allow any command our parser
-        // regresses on. Force the gate instead.
+        // Fail-closed on anything the parser cannot fully resolve. A messy
+        // command (control flow, unbalanced quotes, dynamic syntax) and a
+        // parser miss both extract to an empty candidate list, so the same
+        // count == 0 guard forces every such invocation back through the gate
+        // rather than silently auto-allowing it.
         var candidates = ExtractCandidates(toolName, arguments);
         if (candidates.Count == 0)
             return false;
@@ -542,12 +537,15 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     public bool IsMessy(ToolName toolName, IDictionary<string, object?>? arguments)
     {
         var command = GetCommand(arguments);
-        if (ShellTokenizer.IsMessyCompoundCommand(command))
-            return true;
-
         if (string.IsNullOrWhiteSpace(command))
             return false;
 
+        // The parser is the authority on "messy": a command it cannot fully
+        // resolve (control flow, unbalanced quotes) parses to a null analysis,
+        // and dynamic syntax is flagged separately. A hand-rolled
+        // keyword/bracket scan used to run first, but it over-flagged safe
+        // compounds the parser handles (e.g. `[ -f x ] && cat x`), so an
+        // all-safe chain was needlessly forced to a prompt.
         var parsed = TryAnalyzeCommand(command, GetWorkingDirectory(arguments));
         return parsed is null || parsed.HasDynamicSyntax;
     }

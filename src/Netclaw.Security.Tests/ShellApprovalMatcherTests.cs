@@ -707,9 +707,9 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         // dogfood case used `echo "---REMOTE-INFO---"` which already
         // breaks at the leading `-` — but operators routinely run
         // `echo hello`-shape commands in build scripts.
-        // (`echo done` would be the more obvious example but `done` is
-        // a bash control-flow keyword and triggers IsMessyCompoundCommand,
-        // which returns zero candidates.)
+        // (`echo done` is the more natural example; the parser now reads
+        // `done` as a plain argument — see
+        // ExtractCandidates_treats_control_flow_keyword_as_plain_argument.)
         var candidates = _matcher.ExtractCandidates(
             new ToolName("shell_execute"),
             new Dictionary<string, object?> { ["Command"] = "echo hello" });
@@ -717,6 +717,24 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         var c = Assert.Single(candidates);
         Assert.Equal("echo", c.Verb);
         Assert.True(ApprovalPatternMatching.IsPureSideEffect(c));
+    }
+
+    [Fact]
+    public void ExtractCandidates_treats_control_flow_keyword_as_plain_argument()
+    {
+        // Regression for the removed hand-rolled messy scan: a bash
+        // control-flow keyword used as a plain argument (`done`, `for`, `case`)
+        // used to force the whole command "messy" — zero candidates, always a
+        // prompt — even though it is just an echo argument. The parser reads it
+        // correctly, so the command now resolves to a clean, auto-pass-eligible
+        // candidate. Pinned to the Bash environment so it exercises the Bash
+        // grammar on any host.
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironment.Bash());
+        var arguments = new Dictionary<string, object?> { ["Command"] = "echo done" };
+
+        Assert.False(matcher.IsMessy(new ToolName("shell_execute"), arguments));
+        var c = Assert.Single(matcher.ExtractCandidates(new ToolName("shell_execute"), arguments));
+        Assert.Equal("echo", c.Verb);
     }
 
     [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
