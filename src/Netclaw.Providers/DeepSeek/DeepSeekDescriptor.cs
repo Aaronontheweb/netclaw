@@ -14,6 +14,7 @@ namespace Netclaw.Providers.DeepSeek;
 public sealed class DeepSeekDescriptor(HttpClient httpClient) : IProviderDescriptor
 {
     private const int CurrentContextWindow = 1_000_000;
+    private const string CurrentModelFamilyPrefix = "deepseek-v4-";
 
     public string TypeKey => "deepseek";
 
@@ -54,7 +55,9 @@ public sealed class DeepSeekDescriptor(HttpClient httpClient) : IProviderDescrip
     {
         var parsed = ProbeHelpers.ParseOpenAiStyleModels(json);
         var models = parsed.Models
-            .Select(model => IsCurrentModel(model.ModelId.Value)
+            // DeepSeek's /models response omits capabilities. Enrich the documented
+            // V4 family, but keep future families unknown until DeepSeek documents them.
+            .Select(model => IsCurrentModelFamily(model.ModelId.Value)
                 ? model with
                 {
                     ContextWindowTokens = CurrentContextWindow,
@@ -67,6 +70,6 @@ public sealed class DeepSeekDescriptor(HttpClient httpClient) : IProviderDescrip
         return parsed with { Models = models };
     }
 
-    private static bool IsCurrentModel(string modelId) =>
-        modelId is "deepseek-v4-flash" or "deepseek-v4-pro";
+    private static bool IsCurrentModelFamily(string modelId) =>
+        modelId.StartsWith(CurrentModelFamilyPrefix, StringComparison.Ordinal);
 }

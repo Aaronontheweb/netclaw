@@ -19,6 +19,8 @@ namespace Netclaw.Providers.SelfHosted;
 public enum OpenAiCompatibleWireProfile
 {
     Generic,
+    // DeepSeek requires a thinking field and reasoning_content replay rules.
+    // The generic OpenAI-compatible payload does not apply these rules.
     DeepSeek,
 }
 
