@@ -1,5 +1,15 @@
 # NetClaw Release Notes
 
+## 0.25.2 (2026-08-01)
+
+### Features
+- **Provider manager: delete providers** — Providers can now be removed from the provider list via the TUI provider manager ([#1726](https://github.com/netclaw-dev/netclaw/pull/1726))
+- **DeepSeek provider support** — First-party DeepSeek model provider with full provider lifecycle, model catalog, and TUI integration ([#1725](https://github.com/netclaw-dev/netclaw/pull/1725))
+
+### Dependency Updates
+- **Bump OllamaSharp** — 5.4.27 → 5.4.30
+- **Bump Grpc.Tools** — 2.82.0 → 2.83.0
+
 ## 0.25.1 (2026-07-31)
 
 ### Bug Fixes

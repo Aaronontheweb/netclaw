@@ -8,10 +8,10 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <VersionPrefix>0.25.1</VersionPrefix>
+    <VersionPrefix>0.25.2</VersionPrefix>
     <VersionSuffix></VersionSuffix>
     <PackageReleaseNotes>
-      Bug Fixes: MCP OAuth lifecycle hardened to prevent credential loss on upgrade; MCP tool-level auth failures now visible; MCP permissions focus/save fixed in TUI; TUI approval revocation targets highlighted item. Internal: Migrate to MCP SDK 2.0.0; GitHub Copilot GHE model routing. Dependencies: Anthropic 12.39.0, Mattermost.NET 5.0.7, SkillClient 0.4.1, OpenTelemetry 1.17.0, OllamaSharp 5.4.27, SkiaSharp 4.150.1, SourceLink 10.0.301, Akka updated.
+      Features: Provider manager supports deleting providers from the list; First-party DeepSeek provider with full provider lifecycle, model catalog, and TUI integration. Dependencies: OllamaSharp 5.4.30, Grpc.Tools 2.83.0.
     </PackageReleaseNotes>
   </PropertyGroup>
   <PropertyGroup>
