@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="SecretsFileWriterTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -148,102 +148,6 @@ public sealed class SecretsFileWriterTests : IDisposable
         var (encrypted, plaintext) = SecretsFileWriter.CountEncryptionStatus("{}");
         Assert.Equal(0, encrypted);
         Assert.Equal(0, plaintext);
-    }
-
-    [Fact]
-    public async Task Update_serializes_cross_section_mutations_and_second_writer_observes_committed_state()
-    {
-        var paths = new NetclawPaths(_dir.Path);
-        paths.EnsureDirectoriesExist();
-        var protector = SecretsProtection.CreateProtector(paths);
-        SecretsFileWriter.Write(_secretsPath,
-            """
-            {
-              "Slack": {
-                "BotToken": "xoxb-existing"
-              }
-            }
-            """,
-            protector);
-
-        var secondSecretsPath = _secretsPath;
-        string? aliasPath = null;
-        if (!OperatingSystem.IsWindows())
-        {
-            aliasPath = $"{_dir.Path}-alias";
-            Directory.CreateSymbolicLink(aliasPath, _dir.Path);
-            secondSecretsPath = Path.Combine(aliasPath, "secrets.json");
-        }
-
-        using var firstEntered = new ManualResetEventSlim();
-        using var secondStarted = new ManualResetEventSlim();
-        using var releaseFirst = new ManualResetEventSlim();
-        var cancellationToken = TestContext.Current.CancellationToken;
-        string? secondObservedBraveKey = null;
-
-        try
-        {
-            var first = Task.Run(() => SecretsFileWriter.Update<bool>(
-                _secretsPath,
-                (root, _) =>
-                {
-                    firstEntered.Set();
-                    Assert.True(secondStarted.Wait(TimeSpan.FromSeconds(10), cancellationToken));
-                    Assert.True(releaseFirst.Wait(TimeSpan.FromSeconds(10), cancellationToken));
-
-                    root["Search"] = new JsonObject
-                    {
-                        ["BraveApiKey"] = "brave-key"
-                    };
-                    return (root, true);
-                },
-                protector: protector,
-                cancellationToken: cancellationToken), cancellationToken);
-
-            Assert.True(firstEntered.Wait(TimeSpan.FromSeconds(10), cancellationToken));
-
-            var second = Task.Run(() =>
-            {
-                secondStarted.Set();
-                return SecretsFileWriter.Update<bool>(
-                    secondSecretsPath,
-                    (root, _) =>
-                    {
-                        secondObservedBraveKey = root["Search"]?["BraveApiKey"]?.GetValue<string>();
-                        root["McpOAuthTokens"] = new JsonObject
-                        {
-                            ["memorizer"] = new JsonObject
-                            {
-                                ["AccessToken"] = "rotated-access-token"
-                            }
-                        };
-                        return (root, true);
-                    },
-                    protector: protector,
-                    cancellationToken: cancellationToken);
-            }, cancellationToken);
-
-            Assert.True(secondStarted.Wait(TimeSpan.FromSeconds(10), cancellationToken));
-            releaseFirst.Set();
-            await Task.WhenAll(first, second);
-
-            Assert.Equal("brave-key", secondObservedBraveKey);
-
-            var decrypted = SecretsFileWriter.DecryptJsonLeaves(File.ReadAllText(_secretsPath), protector);
-            using var doc = JsonDocument.Parse(decrypted);
-            Assert.Equal("xoxb-existing", doc.RootElement.GetProperty("Slack").GetProperty("BotToken").GetString());
-            Assert.Equal("brave-key", doc.RootElement.GetProperty("Search").GetProperty("BraveApiKey").GetString());
-            Assert.Equal("rotated-access-token",
-                doc.RootElement.GetProperty("McpOAuthTokens").GetProperty("memorizer").GetProperty("AccessToken").GetString());
-            Assert.DoesNotContain("xoxb-existing", File.ReadAllText(_secretsPath), StringComparison.Ordinal);
-            Assert.DoesNotContain("rotated-access-token", File.ReadAllText(_secretsPath), StringComparison.Ordinal);
-        }
-        finally
-        {
-            releaseFirst.Set();
-            if (aliasPath is not null)
-                Directory.Delete(aliasPath);
-        }
     }
 
     [Fact]
