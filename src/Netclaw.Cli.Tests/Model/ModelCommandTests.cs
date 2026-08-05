@@ -479,6 +479,33 @@ public sealed class ModelCommandTests : IDisposable
         Assert.Equal(65536, main.GetProperty("ContextWindow").GetInt32());
     }
 
+    [Theory]
+    [InlineData("ContextWindow", "65536")]
+    [InlineData("InputModalities", "Text, Image")]
+    [InlineData("OutputModalities", "Text, Audio")]
+    public async Task Set_SameModelWithoutCapabilityOptions_PreservesStoredCapability(
+        string propertyName,
+        string expectedValue)
+    {
+        WriteConfig(WithMainEntry(new Dictionary<string, object>
+        {
+            ["Provider"] = "my-ollama",
+            ["ModelId"] = "qwen3:30b",
+            ["ContextWindow"] = 65536,
+            ["InputModalities"] = "Text, Image",
+            ["OutputModalities"] = "Text, Audio"
+        }));
+
+        var exitCode = await ModelCommand.RunAsync(
+            ["model", "set", "main", "my-ollama", "qwen3:30b"],
+            _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+        using var config = ReadConfigFile(_paths.NetclawConfigPath);
+        var main = ReadActiveModel(config, "Main");
+        Assert.Equal(expectedValue, main.GetProperty(propertyName).ToString());
+    }
+
     [Fact]
     public async Task Set_ClearContextWindow_RemovesStoredClamp()
     {

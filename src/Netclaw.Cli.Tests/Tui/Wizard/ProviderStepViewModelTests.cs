@@ -270,6 +270,62 @@ public sealed class ProviderStepViewModelTests : IDisposable
         Assert.False(main.ContainsKey("OutputModalities"));
     }
 
+    [Theory]
+    [InlineData("ContextWindow", "65536")]
+    [InlineData("InputModalities", "Text, Image")]
+    [InlineData("OutputModalities", "Text, Audio")]
+    public void ContributeConfig_SameModelWithoutCapabilityControls_PreservesStoredCapability(
+        string propertyName,
+        string expectedValue)
+    {
+        File.WriteAllText(_context.Paths.NetclawConfigPath, System.Text.Json.JsonSerializer.Serialize(
+            new Dictionary<string, object>
+            {
+                ["configVersion"] = 1,
+                ["Providers"] = new Dictionary<string, object>
+                {
+                    ["openai"] = new Dictionary<string, object>
+                    {
+                        ["Type"] = "openai",
+                        ["AuthMethod"] = "OAuthDevice"
+                    }
+                },
+                ["Models"] = new Dictionary<string, object>
+                {
+                    ["Main"] = new Dictionary<string, object>
+                    {
+                        ["Provider"] = "openai",
+                        ["ModelId"] = "gpt-new-codex",
+                        ["ContextWindow"] = 65536,
+                        ["InputModalities"] = "Text, Image",
+                        ["OutputModalities"] = "Text, Audio"
+                    }
+                }
+            }));
+
+        using var step = new ProviderStepViewModel(_registry, _fakeProbe);
+        step.SelectedProviderType = "OpenAI";
+        step.SelectedAuthMethod = AuthMethod.OAuthDevice;
+        step.SelectedModelId = "gpt-new-codex";
+        step.DiscoveredModels.Add(new DiscoveredModel
+        {
+            ModelId = new Netclaw.Configuration.ModelId("gpt-new-codex"),
+            ContextWindowTokens = 512000,
+            InputModalities = ModelModality.Text,
+            OutputModalities = ModelModality.Text,
+        });
+
+        var builder = new WizardConfigBuilder(_context.Paths);
+        step.ContributeConfig(builder);
+
+        var config = builder.BuildConfigDictionary();
+        var models = (Dictionary<string, object>)config["Models"];
+        var roles = (Dictionary<string, object>)models["Roles"];
+        var definitions = (Dictionary<string, object>)models["Definitions"];
+        var main = (Dictionary<string, object>)definitions[(string)roles["Main"]];
+        Assert.Equal(expectedValue, main[propertyName].ToString());
+    }
+
     [Fact]
     public void GitHubCopilotPublicHost_ContributeConfig_EmitsNoVendorOptions()
     {
