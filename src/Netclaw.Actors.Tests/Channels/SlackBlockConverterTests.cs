@@ -454,7 +454,31 @@ public class SlackBlockConverterTests
         var section = Assert.Single(rtb.Elements.OfType<RichTextSection>());
 
         var group = Assert.Single(section.Elements.OfType<RichTextUserGroup>());
-        Assert.Equal("subteam^S0123ABC", group.UserGroupId);
+        Assert.Equal("S0123ABC", group.UserGroupId);
+    }
+
+    [Fact]
+    public void UserGroupMention_WithLabel_ProducesRichTextUserGroup()
+    {
+        var blocks = SlackBlockConverter.Convert("Heads up <@subteam^S0123ABC|@eng-team>");
+
+        var rtb = Assert.Single(blocks.OfType<RichTextBlock>());
+        var section = Assert.Single(rtb.Elements.OfType<RichTextSection>());
+
+        var group = Assert.Single(section.Elements.OfType<RichTextUserGroup>());
+        Assert.Equal("S0123ABC", group.UserGroupId);
+    }
+
+    [Fact]
+    public void UserGroupMention_DocumentedBangForm_ProducesRichTextUserGroup()
+    {
+        var blocks = SlackBlockConverter.Convert("Heads up <!subteam^S0123ABC>");
+
+        var rtb = Assert.Single(blocks.OfType<RichTextBlock>());
+        var section = Assert.Single(rtb.Elements.OfType<RichTextSection>());
+
+        var group = Assert.Single(section.Elements.OfType<RichTextUserGroup>());
+        Assert.Equal("S0123ABC", group.UserGroupId);
     }
 
     [Fact]
@@ -467,6 +491,18 @@ public class SlackBlockConverterTests
 
         var channel = Assert.Single(section.Elements.OfType<RichTextChannel>());
         Assert.Equal("C0AM51E342X", channel.ChannelId);
+    }
+
+    [Fact]
+    public void ChannelMention_PrivateChannel_ProducesRichTextChannel()
+    {
+        var blocks = SlackBlockConverter.Convert("See <#G0AM51E342X|private>");
+
+        var rtb = Assert.Single(blocks.OfType<RichTextBlock>());
+        var section = Assert.Single(rtb.Elements.OfType<RichTextSection>());
+
+        var channel = Assert.Single(section.Elements.OfType<RichTextChannel>());
+        Assert.Equal("G0AM51E342X", channel.ChannelId);
     }
 
     [Fact]

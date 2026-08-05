@@ -377,11 +377,16 @@ public static partial class SlackBlockConverter
     [GeneratedRegex(@"<@([UW][0-9A-Z]+)(?:\|[^>]+)?>")]
     private static partial Regex UserMentionRegex();
 
-    // Slack user-group mention: <@subteam^S0123ABC>.
-    [GeneratedRegex(@"<@(subteam\^[S0-9A-Z]+)>")]
+    // Slack user-group mention: <!subteam^S0123ABC> (the form Slack
+    // documents and emits) or <@subteam^S0123ABC> (agent-style),
+    // optionally with a fallback label (<!subteam^S0123ABC|@eng-team>).
+    // Captures the bare group ID only — Slack's usergroup_id does not
+    // include the subteam^ prefix.
+    [GeneratedRegex(@"<[!@]subteam\^([0-9A-Z]+)(?:\|[^>]+)?>")]
     private static partial Regex UserGroupMentionRegex();
 
-    // Slack channel mention: <#C0123ABC>, optionally with a label.
-    [GeneratedRegex(@"<#(C[0-9A-Z]+)(?:\|[^>]+)?>")]
+    // Slack channel mention: <#C0123ABC> or <#G0123ABC> (private channels
+    // and group DMs), optionally with a label.
+    [GeneratedRegex(@"<#([CGD][0-9A-Z]+)(?:\|[^>]+)?>")]
     private static partial Regex ChannelMentionRegex();
 }
