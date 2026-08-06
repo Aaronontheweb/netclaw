@@ -18,8 +18,8 @@ public sealed class ToolAccessPolicy
     private readonly ToolConfig _toolConfig;
     private readonly EffectivePolicyDefaults _defaults;
     private readonly ToolAudienceProfileResolver _profileResolver;
-    private readonly ShellCommandPolicy? _shellCommandPolicy;
-    private readonly ToolPathPolicy? _toolPathPolicy;
+    private readonly ShellCommandPolicy _shellCommandPolicy;
+    private readonly ToolPathPolicy _toolPathPolicy;
     private readonly IShellTrustZonePolicy? _shellTrustZonePolicy;
     private readonly IToolApprovalMatcher _fileApprovalMatcher;
     private readonly FeatureGates _featureGates;
@@ -28,13 +28,20 @@ public sealed class ToolAccessPolicy
     public ToolAccessPolicy(
         ToolConfig toolConfig,
         EffectivePolicyDefaults defaults,
-        ShellCommandPolicy? shellCommandPolicy = null,
+        ShellCommandPolicy shellCommandPolicy,
+        ToolPathPolicy toolPathPolicy,
         IToolApprovalMatcher? fileApprovalMatcher = null,
-        ToolPathPolicy? toolPathPolicy = null,
         FeatureGates? featureGates = null,
         IShellTrustZonePolicy? shellTrustZonePolicy = null,
         SafeVerbList? safeVerbs = null)
     {
+        // Security controls: the shell deny-list and the protected-path policy
+        // gate what commands may run. A null here silently disables the check
+        // (see hard-deny and CommandReferencesDeniedPath below), so require them
+        // — the type system, not a call-site convention, guarantees they exist.
+        ArgumentNullException.ThrowIfNull(shellCommandPolicy);
+        ArgumentNullException.ThrowIfNull(toolPathPolicy);
+
         _toolConfig = toolConfig;
         _defaults = defaults;
         _profileResolver = new ToolAudienceProfileResolver(toolConfig);
@@ -135,7 +142,7 @@ public sealed class ToolAccessPolicy
             return ToolAccessDecision.Deny("shell_requires_personal_context");
 
         var shellCommand = ExtractShellCommand(arguments);
-        if (_shellCommandPolicy is not null && shellCommand is not null)
+        if (shellCommand is not null)
         {
             var hardDenyDecision = _shellCommandPolicy.Evaluate(shellCommand);
             if (!hardDenyDecision.Allowed)
@@ -148,7 +155,7 @@ public sealed class ToolAccessPolicy
         // an active project, session, or inherited directory.
         var workingDirectory = context.ResolveShellCwd(ExtractWorkingDirectory(arguments));
         if (shellCommand is not null
-            && _toolPathPolicy?.CommandReferencesDeniedPath(shellCommand, workingDirectory) == true)
+            && _toolPathPolicy.CommandReferencesDeniedPath(shellCommand, workingDirectory))
             return ToolAccessDecision.Deny("shell_references_protected_path");
 
         // Non-interactive channels: sandbox shell commands to trust zone paths.
