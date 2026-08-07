@@ -395,7 +395,7 @@ public static class ShellApprovalCases
             // socket) trips ContainsSymlinkEntry and fails the glob closed,
             // which is correct behavior but not what this case exercises.
             "external-glob-does-not-reuse-project-grant",
-            Bash($"rm {TemporaryFile(Path.Join("netclaw-ext-glob", "*.bak"))}"),
+            Bash($"rm {TemporaryFile("netclaw-ext-glob/*.bak")}"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "rm"),
             ExpectedApproval.Require(["rm"])),
         Case(
