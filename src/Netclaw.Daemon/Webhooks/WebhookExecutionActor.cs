@@ -51,6 +51,7 @@ internal sealed class WebhookExecutionActor : ReceiveActor
 
         Receive<ExecutionStarted>(_ => { });
         Receive<ExecutionOutput>(HandleOutput);
+        Receive<OutputStreamTerminated>(HandleOutputStreamTerminated);
         Receive<ReceiveTimeout>(_ =>
         {
             _log.Warning(
@@ -83,7 +84,8 @@ internal sealed class WebhookExecutionActor : ReceiveActor
                     Filter = OutputFilter.TextStreaming | OutputFilter.ToolCalls,
                     PromptOverlay = _invocation.Route.BuildPromptOverlay()
                 },
-                output => self.Tell(new ExecutionOutput(output)));
+                output => self.Tell(new ExecutionOutput(output)),
+                failure => self.Tell(new OutputStreamTerminated(failure)));
 
             await inputQueue.OfferAsync(new ChannelInput
             {
@@ -137,6 +139,15 @@ internal sealed class WebhookExecutionActor : ReceiveActor
         }
     }
 
+    private void HandleOutputStreamTerminated(OutputStreamTerminated terminated)
+    {
+        if (_completed)
+            return;
+
+        var reason = terminated.Failure?.Message ?? "Session output ended without a terminal result.";
+        ReportAndStop(false, reason);
+    }
+
     private void ReportAndStop(bool success, string? errorMessage)
     {
         if (_completed)
@@ -182,4 +193,5 @@ internal sealed class WebhookExecutionActor : ReceiveActor
 
     private sealed record ExecutionStarted;
     private sealed record ExecutionOutput(SessionOutput Output);
+    private sealed record OutputStreamTerminated(Exception? Failure);
 }

@@ -199,6 +199,18 @@ public sealed record ReminderDefinition
     public bool Enabled { get; set; } = true;
 
     /// <summary>
+    /// Number of consecutive failed execution attempts for this reminder.
+    /// A successful attempt resets this value.
+    /// </summary>
+    public int ConsecutiveFailures { get; set; }
+
+    /// <summary>
+    /// Terminal result for a retained one-shot reminder.
+    /// Null means that the reminder can still run.
+    /// </summary>
+    public ReminderTerminalOutcome? TerminalOutcome { get; set; }
+
+    /// <summary>
     /// Deferred shadow field for selecting specialized agent behavior.
     /// Tracked by issue #147.
     /// </summary>
@@ -252,6 +264,12 @@ public sealed record ReminderDefinition
         get => ExpiresAtMs is not null ? DateTimeOffset.FromUnixTimeMilliseconds(ExpiresAtMs.Value) : null;
         set => ExpiresAtMs = value?.ToUnixTimeMilliseconds();
     }
+}
+
+public enum ReminderTerminalOutcome
+{
+    Completed,
+    Failed
 }
 
 /// <summary>
@@ -413,10 +431,8 @@ public sealed record GetReminderStatusQuery(ReminderId Id) : IReminderQuery, INo
 /// <summary>
 /// Response to <see cref="GetReminderStatusQuery"/>: per-reminder health for an
 /// operator — whether the reminder exists/is enabled, whether an execution is in
-/// flight right now, when it next fires, the consecutive-failure and
-/// skipped-duplicate counts (in-memory since daemon start), and recent run
-/// history. Lets <c>netclaw reminder status</c> answer "is this reminder healthy
-/// or is it silently failing/skipping?" — the gap that hid #1492.
+/// flight right now, when it next fires, the durable failure count, the
+/// in-memory overlap count, and recent run history.
 /// </summary>
 public sealed record ReminderStatusResponse(
     ReminderId Id,
@@ -426,6 +442,8 @@ public sealed record ReminderStatusResponse(
     DateTimeOffset? NextFire,
     int ConsecutiveFailures,
     int SkippedDuplicates,
+    ReminderTerminalOutcome? TerminalOutcome,
+    ReminderOccurrenceInfo? Occurrence,
     IReadOnlyList<HistoryRecord> RecentHistory) : IReminderResponse, INoSerializationVerificationNeeded;
 
 }
@@ -442,7 +460,9 @@ public sealed record ReminderInfo(
     bool Enabled,
     string? AgentDefinitionId,
     TrustAudience? Audience,
-    DateTimeOffset? ExpiresAt = null) : INoSerializationVerificationNeeded;
+    DateTimeOffset? ExpiresAt = null,
+    int ConsecutiveFailures = 0,
+    ReminderTerminalOutcome? TerminalOutcome = null) : INoSerializationVerificationNeeded;
 
 // ── Internal messages ──
 
@@ -453,7 +473,25 @@ internal sealed record ReminderExecutionCompleted(
     Guid ExecutionId,
     ReminderId Id,
     bool Success,
-    string? ErrorMessage = null) : INoSerializationVerificationNeeded;
+    string? ErrorMessage = null,
+    bool OccurrenceTerminal = false) : INoSerializationVerificationNeeded;
+
+internal sealed record ReminderExecutionTerminated(
+    Guid ExecutionId,
+    ReminderId Id) : INoSerializationVerificationNeeded;
+
+/// <summary>
+/// Durable state for the most relevant Akka.Reminders occurrence.
+/// </summary>
+public sealed record ReminderOccurrenceInfo(
+    DateTimeOffset DueTimeUtc,
+    DateTimeOffset? NextAttemptAtUtc,
+    int AttemptCount,
+    string? LastFailureReason,
+    string CompletionStatus,
+    DateTimeOffset? DeliveryDeadlineUtc,
+    DateTimeOffset? AckDeadlineUtc,
+    DateTimeOffset? CompletedAtUtc) : INoSerializationVerificationNeeded;
 
 // ── Execution history ──
 

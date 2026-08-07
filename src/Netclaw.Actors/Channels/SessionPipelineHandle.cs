@@ -150,13 +150,34 @@ public sealed class SessionPipelineHandle
     /// <summary>
     /// Pipeline creation for fire-and-forget execution actors that use
     /// <see cref="Source.Queue{T}(int,OverflowStrategy)"/>, offer input once, and complete.
-    /// Does not wire stream-terminated detection (the actor stops on <c>TurnCompleted</c>/<c>ErrorOutput</c>).
+    /// This compatibility overload keeps the prior stream lifecycle behavior.
+    /// </summary>
+    public Task<ISourceQueueWithComplete<ChannelInput>> InitializeWithQueueAsync(
+        IActorContext context,
+        SessionId sessionId,
+        SessionPipelineOptions options,
+        Action<SessionOutput> onOutput,
+        CancellationToken cancellationToken = default) =>
+        InitializeWithQueueAsync(
+            context,
+            sessionId,
+            options,
+            onOutput,
+            _ => { },
+            cancellationToken);
+
+    /// <summary>
+    /// Pipeline creation for fire-and-forget execution actors that use
+    /// <see cref="Source.Queue{T}(int,OverflowStrategy)"/>, offer input once, and complete.
+    /// Reports stream termination so the owner can fail a session that ends
+    /// without a terminal output.
     /// </summary>
     public async Task<ISourceQueueWithComplete<ChannelInput>> InitializeWithQueueAsync(
         IActorContext context,
         SessionId sessionId,
         SessionPipelineOptions options,
         Action<SessionOutput> onOutput,
+        Action<Exception?> onStreamTerminated,
         CancellationToken cancellationToken = default)
     {
         _log.Info("Initializing {0} execution pipeline", _materializerNamePrefix);
@@ -177,17 +198,46 @@ public sealed class SessionPipelineHandle
         // sessions don't leak the fault on teardown.
         StreamTaskObservation.ObserveSilently(inputQueue.WatchCompletionAsync());
 
-        _outputCompletion = materialized.Output
+        var outputTerminated = materialized.Output
             .WatchTermination((_, done) => done)
             .ToMaterialized(
                 Sink.ForEach<SessionOutput>(onOutput).ObservingFault(),
                 Keep.Left)
             .Run(materializer);
 
+        _outputCompletion = outputTerminated;
+
+        _ = ObserveTerminationAsync();
+
         _session = materialized;
 
         _log.Info("{0} execution pipeline initialized", _materializerNamePrefix);
         return inputQueue;
+
+        async Task ObserveTerminationAsync()
+        {
+            Exception? failure = null;
+            try
+            {
+                await outputTerminated.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+
+            try
+            {
+                onStreamTerminated(failure);
+            }
+            catch (Exception callbackException)
+            {
+                _log.Error(
+                    callbackException,
+                    "{0} onStreamTerminated callback threw",
+                    _materializerNamePrefix);
+            }
+        }
     }
 
     /// <summary>
