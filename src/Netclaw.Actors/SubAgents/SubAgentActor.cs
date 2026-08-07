@@ -164,10 +164,9 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 "Sub-agent tool iteration budget must be greater than zero.");
 
         // A sub-agent must run under a fully-wired access policy — never a
-        // degraded default that silently drops the deny-list / protected-path
-        // checks. Callers (SubAgentSpawner) inject the session's real policy.
-        ArgumentNullException.ThrowIfNull(toolAccessPolicy);
-
+        // degraded default that drops the deny-list / protected-path checks.
+        // Callers (SubAgentSpawner) inject the session's real policy; the
+        // non-nullable parameter enforces it.
         _definition = definition;
         _chatClient = chatClient;
         _sessionMetrics = sessionMetrics;

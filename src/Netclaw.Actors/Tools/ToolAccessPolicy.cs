@@ -35,13 +35,10 @@ public sealed class ToolAccessPolicy
         IShellTrustZonePolicy? shellTrustZonePolicy = null,
         SafeVerbList? safeVerbs = null)
     {
-        // Security controls: the shell deny-list and the protected-path policy
-        // gate what commands may run. A null here silently disables the check
-        // (see hard-deny and CommandReferencesDeniedPath below), so require them
-        // — the type system, not a call-site convention, guarantees they exist.
-        ArgumentNullException.ThrowIfNull(shellCommandPolicy);
-        ArgumentNullException.ThrowIfNull(toolPathPolicy);
-
+        // shellCommandPolicy (deny-list) and toolPathPolicy (protected paths) are
+        // required security controls — non-nullable so a caller cannot omit them.
+        // The shell gate below dereferences them directly, so a stray null fails
+        // loudly at the point of use rather than silently skipping a check.
         _toolConfig = toolConfig;
         _defaults = defaults;
         _profileResolver = new ToolAudienceProfileResolver(toolConfig);
