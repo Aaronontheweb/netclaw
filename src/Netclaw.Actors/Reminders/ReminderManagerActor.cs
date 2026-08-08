@@ -622,16 +622,26 @@ public sealed partial class ReminderManagerActor : ReceiveActor
 
         if (!HasSafeExecutionLease(envelope, _timeProvider.GetUtcNow()))
         {
-            _log.Warning(
-                "Reminder '{0}' does not have enough acknowledgement lease for a complete attempt.",
-                reminderId.Value);
-            if (definition.Schedule.Type != ReminderScheduleType.OneShot)
+            var isOneShot = definition.Schedule.Type == ReminderScheduleType.OneShot;
+            if (isOneShot)
+            {
+                _log.Warning(
+                    "Reminder '{0}' arrived too late to finish before its delivery deadline. Returning it to the scheduler for retry.",
+                    reminderId.Value);
+            }
+            else
+            {
+                _log.Warning(
+                    "Recurring reminder '{0}' arrived too late to finish before its delivery deadline. Skipping this occurrence.",
+                    reminderId.Value);
                 RecordSkippedDuplicate(reminderId, definition.Title, "lease");
+            }
+
             await SettleBlockedOccurrenceAsync(
                 definition,
                 envelope,
-                nack: definition.Schedule.Type == ReminderScheduleType.OneShot,
-                "The remaining acknowledgement lease cannot contain a complete execution attempt.");
+                nack: isOneShot,
+                "The reminder arrived too late to finish before its delivery deadline.");
             return;
         }
 
