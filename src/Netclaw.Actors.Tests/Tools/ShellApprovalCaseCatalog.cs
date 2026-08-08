@@ -274,10 +274,10 @@ public static class ShellApprovalCases
             Approvals.None,
             ExpectedApproval.Require(["cat"])),
         Case(
-            "safe-verb-namespaced-external-path-prompts",
+            "safe-verb-bash-provider-looking-relative-path-allows",
             Bash("cat filesystem::/etc/netclaw.secret"),
             Approvals.None,
-            ExpectedApproval.Require(["cat"])),
+            ExpectedApproval.Allow(ToolAllowReason.SafeVerbInTrustedScope)),
         Case(
             "safe-verb-external-redirect-prompts",
             Bash($"git status > {TemporaryFile("netclaw-approval-matrix.txt")}"),
@@ -469,6 +469,11 @@ public static class ShellApprovalCases
             Approvals.None,
             ExpectedApproval.Deny("hard_deny_self_destructive")),
         Case(
+            "hard-deny-dash-shell-blocks",
+            Bash("/bin/dash -c \"netclaw daemon stop\""),
+            Approvals.PersistentAnywhere("/bin/dash"),
+            ExpectedApproval.Deny("hard_deny_self_destructive")),
+        Case(
             "nested-shell-prompts-for-inner-command",
             Bash("bash -lc \"git push\""),
             Approvals.None,
@@ -531,6 +536,21 @@ public static class ShellApprovalCases
         Case(
             "fd-move-redirect-safe-verb-allows",
             Bash("git status 2>&1-"),
+            Approvals.None,
+            ExpectedApproval.Allow(ToolAllowReason.SafeVerbInTrustedScope)),
+        Case(
+            "combined-output-project-redirect-safe-verb-allows",
+            Bash("git status &> result.log"),
+            Approvals.None,
+            ExpectedApproval.Allow(ToolAllowReason.SafeVerbInTrustedScope)),
+        Case(
+            "combined-output-append-project-redirect-safe-verb-allows",
+            Bash("git status &>> result.log"),
+            Approvals.None,
+            ExpectedApproval.Allow(ToolAllowReason.SafeVerbInTrustedScope)),
+        Case(
+            "numeric-source-project-redirect-safe-verb-allows",
+            Bash("git status 3> result.log"),
             Approvals.None,
             ExpectedApproval.Allow(ToolAllowReason.SafeVerbInTrustedScope)),
         Case(

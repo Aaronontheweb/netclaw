@@ -1143,6 +1143,49 @@ public sealed class ShellApprovalMatcherPathExtractionTests
     }
 
     [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
+    public void ExtractCandidates_bundled_wrapper_inherits_outer_proven_cwd()
+    {
+        var candidate = Assert.Single(_matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            Args(
+                "cd /tmp && bash -lc \"cat relative.txt\"",
+                "/work")),
+            candidate => candidate.Verb == "cat");
+
+        Assert.Equal("/tmp", candidate.Directory);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
+    public void Redirect_to_symlink_target_fails_closed()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"netclaw-redirect-symlink-{Guid.NewGuid():N}");
+        var projectDirectory = Path.Combine(root, "project");
+        var externalDirectory = Path.Combine(root, "external");
+        var externalFile = Path.Combine(externalDirectory, "result.log");
+        var redirectTarget = Path.Combine(projectDirectory, "result.log");
+        Directory.CreateDirectory(projectDirectory);
+        Directory.CreateDirectory(externalDirectory);
+        File.WriteAllText(externalFile, "external");
+        File.CreateSymbolicLink(redirectTarget, externalFile);
+
+        try
+        {
+            var arguments = Args("git status > result.log", projectDirectory);
+
+            Assert.Empty(_matcher.ExtractCandidates(
+                new ToolName("shell_execute"),
+                arguments));
+            Assert.True(_matcher.IsMessy(
+                new ToolName("shell_execute"),
+                arguments));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
     public void ExtractCandidates_prefers_explicit_path_arg_over_cd_attribution()
     {
         // When a clause has its own anchored path argument, that wins —
