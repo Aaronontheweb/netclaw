@@ -9,6 +9,8 @@ PRD-008 requires durable failure records and an automatic pause after repeated f
 - A failed one-shot will remain enabled while another occurrence attempt is pending.
 - A completed or terminally failed one-shot will use a soft delete.
 - Netclaw will persist its reminder-level consecutive failure count.
+- The reminder manager will coordinate local state and Akka occurrence settlement.
+- Netclaw will not keep Akka.Reminders envelopes in an in-memory catch-up queue.
 - Reconciliation will use durable occurrence state and will never infer success from a past due time.
 - Reminder status output will show the durable occurrence attempt and terminal outcome.
 

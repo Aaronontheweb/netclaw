@@ -23,3 +23,12 @@
 - [x] 4.1 Add actor tests for retry, later success, poison pause, restart state, and reconciliation retention.
 - [x] 4.2 Update the `netclaw-operations` system skill and its version.
 - [x] 4.3 Run focused tests, the full affected suites, evals, Slopwatch, and file-header verification.
+
+## 5. Adversarial review corrections
+
+- [x] 5.1 Move Ack and Nack coordination to the reminder manager and add a child completion handshake.
+- [x] 5.2 Remove deferred envelope retention and apply explicit one-shot, reminder-series, duplicate, and lease policies.
+- [x] 5.3 Preserve terminal diagnostics after a failed enable request and record unexpected actor termination history.
+- [x] 5.4 Order local state writes before occurrence settlement and add recovery behavior for settlement faults.
+- [x] 5.5 Add actor, restart, lease, capacity, history, and endpoint regression tests.
+- [ ] 5.6 Run focused tests, the full solution, evals, Slopwatch, and file-header verification.

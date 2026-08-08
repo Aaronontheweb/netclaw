@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ReminderCommand.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -592,7 +592,7 @@ internal static class ReminderCommand
             Console.WriteLine($"Executing now:       {status.Executing}");
             Console.WriteLine($"Next fire:           {status.NextFire ?? "not scheduled"}");
             Console.WriteLine($"Consecutive fails:   {status.ConsecutiveFailures}");
-            Console.WriteLine($"Deferred overlaps:   {status.SkippedDuplicates}");
+            Console.WriteLine($"Skipped occurrences: {status.SkippedDuplicates}");
             Console.WriteLine($"Terminal outcome:    {status.TerminalOutcome ?? "none"}");
 
             if (status.Occurrence is { } occurrence)

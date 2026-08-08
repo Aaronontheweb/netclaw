@@ -23,8 +23,12 @@ internal sealed class ActiveExecutionTracker
     public void Add(
         ReminderId reminderId,
         Guid executionId,
-        ReminderEnvelope<ReminderPayload> envelope) =>
-        _executing.Add(reminderId, new ActiveReminderExecution(executionId, envelope));
+        ReminderEnvelope<ReminderPayload> envelope,
+        DateTimeOffset startedAt) =>
+        _executing.Add(reminderId, new ActiveReminderExecution(executionId, envelope, startedAt));
+
+    public bool TryGet(ReminderId reminderId, out ActiveReminderExecution execution) =>
+        _executing.TryGetValue(reminderId, out execution!);
 
     public bool TryRemove(
         ReminderId reminderId,
@@ -45,4 +49,5 @@ internal sealed class ActiveExecutionTracker
 
 internal sealed record ActiveReminderExecution(
     Guid ExecutionId,
-    ReminderEnvelope<ReminderPayload> Envelope);
+    ReminderEnvelope<ReminderPayload> Envelope,
+    DateTimeOffset StartedAt);

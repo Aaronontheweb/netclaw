@@ -15,3 +15,10 @@ Netclaw SHALL retain execution history when it soft-deletes a completed or faile
 - **GIVEN** a one-shot reaches its poison threshold
 - **WHEN** Netclaw disables it with outcome `Failed`
 - **THEN** all failure records remain available through reminder history
+
+#### Scenario: Execution actor stops before it reports an outcome
+
+- **GIVEN** a reminder execution actor stops before manager acceptance
+- **WHEN** DeathWatch reports the stop
+- **THEN** the manager appends a failed execution record
+- **AND** the failure record identifies the unexpected stop

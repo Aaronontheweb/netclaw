@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ReminderExecutionActorTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -20,6 +20,7 @@ using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Tests.Reminders;
 
+[Collection(ReminderActorTestCollection.Name)]
 public class ReminderExecutionActorTests : TestKit, IDisposable
 {
     private readonly DisposableTempDir _dir = new();
@@ -61,6 +62,39 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
         Assert.Equal("fail-test", completed.Id.Value);
         // Error message is the outer exception message
         Assert.Equal("outer failure", completed.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task Execution_waits_for_manager_acceptance_before_stop()
+    {
+        var pipeline = new FailingSessionPipeline(new InvalidOperationException("failed"));
+        var definition = CreateDefinition("settlement-handshake");
+        var probe = CreateTestProbe();
+        Sys.ActorOf(
+            Props.Create(() => new ParentProxy(
+                probe.Ref,
+                definition,
+                pipeline,
+                _historyStore,
+                acceptCompletion: false,
+                reportChild: true)),
+            "exec-handshake-parent");
+
+        var child = (await probe.ExpectMsgAsync<ChildCreated>(
+            TimeSpan.FromSeconds(5),
+            cancellationToken: TestContext.Current.CancellationToken)).Child;
+        Watch(child);
+
+        var completed = await probe.ExpectMsgAsync<ReminderExecutionCompleted>(
+            TimeSpan.FromSeconds(5),
+            cancellationToken: TestContext.Current.CancellationToken);
+        await ExpectNoMsgAsync(TimeSpan.FromMilliseconds(250), TestContext.Current.CancellationToken);
+
+        child.Tell(new ReminderExecutionAccepted(completed.ExecutionId));
+        await ExpectTerminatedAsync(
+            child,
+            TimeSpan.FromSeconds(5),
+            cancellationToken: TestContext.Current.CancellationToken);
     }
 
     [Fact]
@@ -370,21 +404,40 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
             IActorRef probe,
             ReminderDefinition definition,
             ISessionPipeline pipeline,
-            ReminderHistoryStore historyStore)
+            ReminderHistoryStore historyStore,
+            bool acceptCompletion = true,
+            bool reportChild = false)
         {
             var executionId = Guid.NewGuid();
-            Context.ActorOf(
+            var envelope = new Akka.Reminders.ReminderEnvelope<ReminderPayload>(
+                new Akka.Reminders.ReminderEntity(ReminderManagerActor.ShardRegionName, ReminderManagerActor.EntityId),
+                new Akka.Reminders.ReminderKey(definition.Id.Value),
+                definition.Schedule.FireAt ?? TimeProvider.System.GetUtcNow(),
+                Akka.Reminders.ReminderDeadline.Infinite,
+                new ReminderPayload { Id = definition.Id });
+            var child = Context.ActorOf(
                 ReminderExecutionActor.CreateProps(
                     executionId,
                     definition,
                     pipeline,
                     TimeProvider.System,
-                    historyStore),
+                    envelope),
                 "exec");
+            if (reportChild)
+                probe.Tell(new ChildCreated(child));
 
+            ReceiveAsync<ReminderExecutionCompleted>(async completed =>
+            {
+                await historyStore.AppendAsync(completed.Id, completed.History);
+                probe.Tell(completed);
+                if (acceptCompletion)
+                    Sender.Tell(new ReminderExecutionAccepted(completed.ExecutionId));
+            });
             ReceiveAny(msg => probe.Tell(msg));
         }
     }
+
+    private sealed record ChildCreated(IActorRef Child);
 
     /// <summary>Fake pipeline that throws a pre-configured exception on CreateAsync.</summary>
     private sealed class FailingSessionPipeline(Exception exception) : ISessionPipeline
@@ -638,4 +691,10 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
         Assert.False(records[0].Success);
         Assert.Equal("pipeline blew up", records[0].ErrorMessage);
     }
+}
+
+[CollectionDefinition(Name)]
+public sealed class ReminderActorTestCollection
+{
+    public const string Name = "Reminder actor tests";
 }

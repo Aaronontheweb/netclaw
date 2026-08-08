@@ -33,11 +33,27 @@ Netclaw persists `ConsecutiveFailures` in each reminder definition. Each failed 
 
 This value spans recurring occurrences. Akka.Reminders resets its attempt count for each new occurrence.
 
-### Every delivery mode delays the acknowledgment
+### The reminder manager coordinates settlement
 
-`ReminderManagerActor` passes the envelope to `ReminderExecutionActor` for all delivery kinds. The child acknowledges only after execution and required delivery succeed.
+`ReminderManagerActor` passes the envelope to `ReminderExecutionActor` for all delivery kinds. The child reports its outcome and waits for manager acceptance.
 
-The child sends a negative acknowledgement after a known failure. An actor crash leaves the occurrence unacknowledged, so the library timeout remains the final recovery path.
+The manager saves the history and reminder state before it settles a known failure. It then sends the negative acknowledgement.
+
+The manager resets the reminder failure count before it acknowledges a success. It records one-shot completion only after a successful acknowledgement.
+
+The manager replies to the child after settlement. The child stops only after this reply, so DeathWatch cannot replace an accepted result.
+
+An actor crash before an outcome leaves the occurrence unacknowledged. The manager records the crash and attempts a negative acknowledgement without risking its own lifecycle.
+
+### Capacity does not transfer occurrence ownership
+
+Netclaw does not retain a blocked Akka.Reminders envelope in an in-memory queue. A queue wait could consume the 70-minute acknowledgement lease.
+
+Netclaw negatively acknowledges a blocked one-shot. Akka.Reminders then owns its retry delay and attempt budget.
+
+Netclaw acknowledges and skips a blocked reminder-series occurrence. This rule prevents a catch-up queue and preserves the latest-only series policy.
+
+Netclaw ignores an exact duplicate of the active occurrence. The active execution remains the sole settlement owner.
 
 ### One-shot completion uses a soft delete
 
@@ -55,10 +71,13 @@ Netclaw sets the Akka acknowledgment timeout to 70 minutes. The execution actor 
 
 Known failures use negative acknowledgement and do not wait for the acknowledgment timeout.
 
+Netclaw starts an attempt only when the remaining envelope lease exceeds the maximum attempt duration plus a settlement margin.
+
 ## Risks / Trade-offs
 
 - **A daemon crash can delay retry for 70 minutes.** The long lease prevents duplicate LLM work during a valid one-hour attempt.
 - **At-least-once delivery can duplicate work.** The occurrence identity remains `(Entity, Key, DueTimeUtc)` and session identifiers use that stable due time.
+- **Netclaw and Akka.Reminders use separate stores.** Ordered writes and reconciliation provide convergence without a cross-store transaction.
 - **A custom Akka storage provider can lack status queries.** Netclaw uses the official SQLite provider and fails loudly if the capability is absent.
 - **Old JSON files lack the new fields.** Serializer defaults preserve active state and a zero failure count.
 

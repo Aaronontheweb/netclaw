@@ -82,16 +82,17 @@ as a plain-language notice to the reminder's **destination channel** (for
 reminder's output. This is bounded by the auto-disable threshold (at most a few
 notices plus the disabled notice), not the unbounded skip stream.
 
-A second fire waits in the deferred queue while the prior execution runs.
-Netclaw counts this event but does not post it to the channel. The status command
-shows the count:
+A one-shot that cannot start receives a negative acknowledgement. Akka.Reminders
+then controls its retry delay. Netclaw acknowledges and skips a blocked recurring
+occurrence. It does not keep a stale catch-up queue. The status command shows the
+skip count:
 
 ```
 netclaw reminder status <id>
 ```
 
 `status` shows the enabled state, the terminal outcome, and current execution
-state. It also shows the next fire, consecutive failures, deferred overlap count,
+state. It also shows the next fire, consecutive failures, skipped occurrence count,
 and recent history. For one-shots, it shows the durable occurrence state, attempt
 count, next retry time, and last failure reason.
 
