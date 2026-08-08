@@ -201,7 +201,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         string? workingDirectory = null)
     {
         var result = Analyzer.Analyze(command, workingDirectory);
-        return result.Failure == ShellAnalysisFailure.None && result.Clauses.Count > 0
+        return result.Failure == ShellAnalysisFailure.None && result.Commands.Count > 0
             ? result
             : null;
     }
@@ -219,8 +219,9 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         var seen = new HashSet<(string, string?)>();
         var candidates = new List<ApprovalCandidate>();
 
-        foreach (var clause in result.Clauses)
+        foreach (var occurrence in result.Commands)
         {
+            var clause = occurrence.Clause;
             // ShellSyntaxTree's greedy verb walk (SPEC §6.1) folds
             // lowercase-leading value tokens into the verb chain (`git tag
             // v0.4.2`, `git show aa211dcb`, `git checkout feature2`), while
@@ -241,7 +242,10 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
                 continue;
 
             var isSideEffectVerb = ShellTokenizer.SingleTokenSideEffectVerbs.Contains(verb);
-            var directories = ResolveClauseDirectories(clause, isSideEffectVerb, workingDirectory);
+            var directories = ResolveCommandDirectories(
+                occurrence,
+                isSideEffectVerb,
+                workingDirectory);
             if (directories is null)
                 return [];
 
@@ -256,15 +260,17 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         return candidates;
     }
 
-    private static IReadOnlyList<string?>? ResolveClauseDirectories(
-        ShellSyntaxTree.Clause clause,
+    private static IReadOnlyList<string?>? ResolveCommandDirectories(
+        ShellSyntaxTree.CommandOccurrence occurrence,
         bool isSideEffectVerb,
         string? workingDirectory)
     {
+        var clause = occurrence.Clause;
         var directories = new List<string?>();
-        var clauseWorkingDirectory = clause.Args
-            .FirstOrDefault(arg => arg.IsCwdAttribution)?.Resolved
-            ?? workingDirectory;
+        var cwdAttribution = clause.Args.FirstOrDefault(static arg => arg.IsCwdAttribution);
+        var clauseWorkingDirectory = ExactValue(occurrence.WorkingDirectory)
+            ?? cwdAttribution?.Resolved
+            ?? (cwdAttribution is null ? workingDirectory : null);
 
         // Each parser path is an authorization scope. A grant must cover all
         // scopes, or a later external path could hide behind an earlier local
@@ -292,20 +298,43 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             directories.Add(ShellTokenizer.ApplyFileParentRule(arg.Resolved));
         }
 
-        foreach (var redirect in clause.Redirects)
+        foreach (var redirect in occurrence.Redirects)
         {
-            var directory = ResolveRedirectDirectory(redirect);
-            if (directory is not null)
-                directories.Add(directory);
+            var redirectDirectories = ResolveRedirectDirectories(redirect);
+            if (redirectDirectories is null)
+                return null;
+
+            directories.AddRange(redirectDirectories);
         }
 
         if (directories.Count == 0)
         {
-            // A side-effect verb ignores cwd. Other verbs inherit a prior cd.
-            var cwdAttribution = isSideEffectVerb
-                ? null
-                : clause.Args.FirstOrDefault(a => a.IsCwdAttribution)?.Resolved;
-            directories.Add(cwdAttribution);
+            // A side-effect verb ignores cwd. Other verbs use the parser's
+            // exact state proof. An unresolved synthetic attribution means a
+            // preceding state change may have failed, so the outer cwd cannot
+            // safely substitute for it.
+            if (isSideEffectVerb)
+            {
+                directories.Add(null);
+            }
+            else if (cwdAttribution is not null)
+            {
+                var attributedDirectory = ExactValue(occurrence.WorkingDirectory)
+                    ?? cwdAttribution.Resolved;
+                if (string.IsNullOrWhiteSpace(attributedDirectory))
+                    return null;
+
+                directories.Add(attributedDirectory);
+            }
+            else if (!string.IsNullOrWhiteSpace(workingDirectory))
+            {
+                directories.Add(
+                    ExactValue(occurrence.WorkingDirectory) ?? workingDirectory);
+            }
+            else
+            {
+                directories.Add(null);
+            }
         }
 
         return directories.Distinct(StringComparer.Ordinal).ToList();
@@ -428,27 +457,67 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         }
     }
 
-    private static string? ResolveRedirectDirectory(ShellSyntaxTree.Redirect redirect)
+    private static string? ExactValue(ShellSyntaxTree.ShellValueDomain domain)
+        => domain.Kind == ShellSyntaxTree.ShellValueDomainKind.Exact
+            && domain.Values.Count == 1
+            ? domain.Values[0]
+            : null;
+
+    private static IReadOnlyList<string>? ResolveRedirectDirectories(
+        ShellSyntaxTree.RedirectAnalysis redirect)
     {
-        if (string.IsNullOrWhiteSpace(redirect.Target)
-            || IsHeredocRedirect(redirect)
-            || redirect.Target.StartsWith('&'))
+        if (!redirect.IsPathRelevant)
+            return [];
+
+        if (!redirect.IsComplete)
+            return null;
+
+        if (redirect.Target.Kind == ShellSyntaxTree.ShellValueDomainKind.Pattern)
+        {
+            var coveringDirectory = redirect.Target.CoveringDirectory;
+            return string.IsNullOrWhiteSpace(coveringDirectory)
+                || ContainsSymlinkEntry(coveringDirectory)
+                ? null
+                : [coveringDirectory];
+        }
+
+        if (redirect.Target.Kind is not (
+            ShellSyntaxTree.ShellValueDomainKind.Exact
+            or ShellSyntaxTree.ShellValueDomainKind.FiniteSet))
         {
             return null;
         }
 
-        // A dynamic target must still block an automatic side-effect grant.
-        if (redirect.IsDynamicSkip)
-            return redirect.Target;
+        var directories = new List<string>(redirect.Target.Values.Count);
+        foreach (var target in redirect.Target.Values)
+        {
+            if (string.IsNullOrWhiteSpace(target))
+                return null;
 
-        try
-        {
-            return Path.GetDirectoryName(redirect.Target) ?? redirect.Target;
+            try
+            {
+                var normalizedTarget = PathUtility.Normalize(target);
+                var pathRoot = Path.GetPathRoot(normalizedTarget);
+                if (string.IsNullOrWhiteSpace(pathRoot)
+                    || PathUtility.ContainsSymlinkSegment(pathRoot, normalizedTarget))
+                {
+                    return null;
+                }
+
+                directories.Add(Path.GetDirectoryName(normalizedTarget) ?? normalizedTarget);
+            }
+            catch (Exception ex) when (ex is ArgumentException
+                                       or IOException
+                                       or NotSupportedException
+                                       or PathTooLongException
+                                       or UnauthorizedAccessException
+                                       or System.Security.SecurityException)
+            {
+                return null;
+            }
         }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            return redirect.Target;
-        }
+
+        return directories;
     }
 
     /// <summary>
@@ -474,8 +543,9 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             var units = new List<string>();
             var current = new StringBuilder();
 
-            foreach (var clause in result.Clauses)
+            foreach (var occurrence in result.Commands)
             {
+                var clause = occurrence.Clause;
                 // AndIf / OrIf / Sequence (and the leading None clause) each
                 // open a fresh approval unit; Pipe clauses fold into the unit
                 // in progress. A bare newline produces Sequence, so multi-line
@@ -700,10 +770,35 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (analysis is null || analysis.HasDynamicSyntax)
             return true;
 
-        return analysis.Clauses
-            .SelectMany(static clause => clause.Args)
+        if (analysis.Commands
+            .SelectMany(static command => command.Clause.Args)
             .Where(static arg => arg.IsPath && arg.Kind == ShellSyntaxTree.ArgKind.Glob)
-            .Any(arg => ResolveGlobCoveringDirectory(arg, workingDirectory) is null);
+            .Any(arg => ResolveGlobCoveringDirectory(arg, workingDirectory) is null))
+        {
+            return true;
+        }
+
+        if (analysis.Commands.Any(command =>
+                ResolveCommandDirectories(
+                    command,
+                    IsSideEffectCommand(command),
+                    workingDirectory) is null))
+        {
+            return true;
+        }
+
+        return analysis.Commands
+            .SelectMany(static command => command.Redirects)
+            .Any(static redirect => ResolveRedirectDirectories(redirect) is null);
+    }
+
+    private static bool IsSideEffectCommand(ShellSyntaxTree.CommandOccurrence occurrence)
+    {
+        var clause = occurrence.Clause;
+        var parsedVerb = clause.Verb.CanonicalVerb
+            ?? string.Join(" ", TrimTrailingValueTokens(clause.Verb.Tokens));
+        var verb = ShellTokenizer.ApplyVerbShortCircuit(parsedVerb);
+        return ShellTokenizer.SingleTokenSideEffectVerbs.Contains(verb);
     }
 
     public string FormatForDisplay(ToolName toolName, IDictionary<string, object?>? arguments)
@@ -751,7 +846,8 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (result is null)
             return command;
 
-        if (result.Clauses.Any(c => c.IsSubshell || c.Redirects.Any(IsHeredocRedirect)))
+        if (result.Commands.Any(c =>
+            c.Clause.IsSubshell || c.Clause.Redirects.Any(IsHeredocRedirect)))
             return command;
 
         try
@@ -759,8 +855,9 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             var sb = new StringBuilder();
             var first = true;
 
-            foreach (var clause in result.Clauses)
+            foreach (var occurrence in result.Commands)
             {
+                var clause = occurrence.Clause;
                 if (!first)
                     sb.Append(ClauseOperatorText(clause.Operator));
                 first = false;

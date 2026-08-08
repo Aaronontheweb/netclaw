@@ -20,7 +20,7 @@
 | safe-verb-external-path-prompts | Personal | Project | Interactive | cat /etc/passwd | none | RequiresApproval | approval required | cat | No |
 | safe-verb-quoted-external-path-prompts | Personal | Project | Interactive | cat "/etc/netclaw.secret" | none | RequiresApproval | approval required | cat | No |
 | safe-verb-traversal-external-path-prompts | Personal | Project | Interactive | cat safe/../../../../../../etc/netclaw.secret | none | RequiresApproval | approval required | cat | No |
-| safe-verb-namespaced-external-path-prompts | Personal | Project | Interactive | cat filesystem::/etc/netclaw.secret | none | RequiresApproval | approval required | cat | No |
+| safe-verb-bash-provider-looking-relative-path-allows | Personal | Project | Interactive | cat filesystem::/etc/netclaw.secret | none | Allowed | SafeVerbInTrustedScope | none | Not applicable |
 | safe-verb-external-redirect-prompts | Personal | Project | Interactive | git status > {TempPath}netclaw-approval-matrix.txt | none | RequiresApproval | approval required | git status | No |
 | mutating-verb-project-prompts | Personal | Project | Interactive | git push | none | RequiresApproval | approval required | git push | No |
 | all-safe-compound-allows | Personal | Project | Interactive | git status && git log | none | Allowed | SafeVerbInTrustedScope | none | Not applicable |
@@ -56,6 +56,7 @@
 | three-step-release-prompts | Personal | Project | Interactive | git add . && git commit -m fix && git push origin dev | none | RequiresApproval | approval required | git add, git commit, git push origin dev | No |
 | hard-deny-pipeline-tail-blocks | Personal | Project | Interactive | echo safe \| netclaw daemon stop | none | Denied | hard_deny_self_destructive | none | Not applicable |
 | hard-deny-nested-shell-blocks | Personal | Project | Interactive | bash -lc "netclaw daemon stop" | none | Denied | hard_deny_self_destructive | none | Not applicable |
+| hard-deny-dash-shell-blocks | Personal | Project | Interactive | /bin/dash -c "netclaw daemon stop" | persistent[anywhere]:/bin/dash | Denied | hard_deny_self_destructive | none | Not applicable |
 | nested-shell-prompts-for-inner-command | Personal | Project | Interactive | bash -lc "git push" | none | RequiresApproval | approval required | git push | No |
 | nested-shell-inner-grant-allows | Personal | Project | Interactive | bash -lc "git push" | persistent[anywhere]:git push | Allowed | StoredApproval | none | Not applicable |
 | nested-shell-wrapper-grant-does-not-cover-inner-command | Personal | Project | Interactive | bash -lc "git push" | persistent[anywhere]:bash | RequiresApproval | approval required | git push | No |
@@ -69,6 +70,9 @@
 | fd-dup-redirect-safe-pipeline-allows | Personal | Project | Interactive | git log --oneline -5 2>&1 \| tail -20 | none | Allowed | SafeVerbInTrustedScope | none | Not applicable |
 | fd-close-redirect-safe-verb-allows | Personal | Project | Interactive | git status 2>&- | none | Allowed | SafeVerbInTrustedScope | none | Not applicable |
 | fd-move-redirect-safe-verb-allows | Personal | Project | Interactive | git status 2>&1- | none | Allowed | SafeVerbInTrustedScope | none | Not applicable |
+| combined-output-project-redirect-safe-verb-allows | Personal | Project | Interactive | git status &> result.log | none | Allowed | SafeVerbInTrustedScope | none | Not applicable |
+| combined-output-append-project-redirect-safe-verb-allows | Personal | Project | Interactive | git status &>> result.log | none | Allowed | SafeVerbInTrustedScope | none | Not applicable |
+| numeric-source-project-redirect-safe-verb-allows | Personal | Project | Interactive | git status 3> result.log | none | Allowed | SafeVerbInTrustedScope | none | Not applicable |
 | fd-dup-redirect-mutating-no-grant-prompts-not-messy | Personal | Project | Interactive | git push origin dev 2>&1 \| tail -2 | none | RequiresApproval | approval required | git push origin dev, tail | No |
 | dynamic-fd-redirect-fails-closed | Personal | Project | Interactive | git status 2>&$FD | none | RequiresApproval | approval required | none | Yes |
 | background-list-prompts-for-mutating-tail | Personal | Project | Interactive | git status & git push | none | RequiresApproval | approval required | none | Yes |
