@@ -111,6 +111,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     public static readonly ShellApprovalMatcher Instance = new();
 
     private static readonly ShellCommandAnalyzer Analyzer = ShellCommandAnalyzer.Bash;
+    private static readonly string[] MacOsSystemRootAliases = ["/etc", "/tmp", "/var"];
 
     public string GetApprovalModeKey(ToolName toolName, IDictionary<string, object?>? arguments)
         => toolName.Value;
@@ -300,7 +301,10 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
 
         foreach (var redirect in occurrence.Redirects)
         {
-            var redirectDirectories = ResolveRedirectDirectories(redirect);
+            var redirectDirectories = ResolveRedirectDirectories(
+                redirect,
+                clause,
+                clauseWorkingDirectory);
             if (redirectDirectories is null)
                 return null;
 
@@ -464,13 +468,23 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             : null;
 
     private static IReadOnlyList<string>? ResolveRedirectDirectories(
-        ShellSyntaxTree.RedirectAnalysis redirect)
+        ShellSyntaxTree.RedirectAnalysis redirect,
+        ShellSyntaxTree.Clause clause,
+        string? workingDirectory)
     {
         if (!redirect.IsPathRelevant)
             return [];
 
         if (!redirect.IsComplete)
             return null;
+
+        if (ContainsSymlinkBeforeLexicalNormalization(
+                clause,
+                redirect.RedirectIndex,
+                workingDirectory))
+        {
+            return null;
+        }
 
         if (redirect.Target.Kind == ShellSyntaxTree.ShellValueDomainKind.Pattern)
         {
@@ -497,9 +511,11 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             try
             {
                 var normalizedTarget = PathUtility.Normalize(target);
-                var pathRoot = Path.GetPathRoot(normalizedTarget);
-                if (string.IsNullOrWhiteSpace(pathRoot)
-                    || PathUtility.ContainsSymlinkSegment(pathRoot, normalizedTarget))
+                var symlinkBoundary = ResolveSymlinkBoundary(
+                    normalizedTarget,
+                    allowMacOsAliasEquality: false);
+                if (symlinkBoundary is null
+                    || PathUtility.ContainsSymlinkSegment(symlinkBoundary, normalizedTarget))
                 {
                     return null;
                 }
@@ -518,6 +534,169 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         }
 
         return directories;
+    }
+
+    private static bool ContainsSymlinkBeforeLexicalNormalization(
+        ShellSyntaxTree.Clause clause,
+        int redirectIndex,
+        string? workingDirectory)
+    {
+        if (redirectIndex < 0)
+            return true;
+
+        ShellSyntaxTree.ClauseElement? redirectElement = null;
+        var currentRedirectIndex = 0;
+        foreach (var element in clause.Elements)
+        {
+            if (element.Role != ShellSyntaxTree.ClauseElementRole.Redirect)
+                continue;
+
+            if (currentRedirectIndex == redirectIndex)
+            {
+                redirectElement = element;
+                break;
+            }
+
+            currentRedirectIndex++;
+        }
+
+        if (redirectElement is null
+            || !redirectElement.IsPath
+            || redirectElement.Kind == ShellSyntaxTree.ArgKind.DynamicSkip
+            || string.IsNullOrWhiteSpace(redirectElement.Value))
+        {
+            return true;
+        }
+
+        try
+        {
+            var authoredPath = redirectElement.Value;
+            var rooted = Path.IsPathRooted(authoredPath);
+            if (!rooted && string.IsNullOrWhiteSpace(workingDirectory))
+                return true;
+
+            if (rooted && authoredPath.StartsWith("//", StringComparison.Ordinal))
+                return true;
+
+            var root = rooted ? Path.GetPathRoot(authoredPath) : null;
+            if (rooted && string.IsNullOrWhiteSpace(root))
+                return true;
+
+            var remainder = rooted
+                ? authoredPath[root!.Length..]
+                : authoredPath;
+            var segments = remainder.Split(
+                Path.DirectorySeparatorChar,
+                StringSplitOptions.RemoveEmptyEntries);
+            var currentPath = root!;
+            if (!rooted)
+            {
+                currentPath = PathUtility.Normalize(workingDirectory!);
+                var workingDirectoryBoundary = ResolveSymlinkBoundary(
+                    currentPath,
+                    allowMacOsAliasEquality: true);
+                if (workingDirectoryBoundary is null
+                    || PathUtility.ContainsSymlinkSegment(
+                        workingDirectoryBoundary,
+                        currentPath))
+                {
+                    return true;
+                }
+
+                if ((authoredPath == "~"
+                     || authoredPath.StartsWith("~/", StringComparison.Ordinal))
+                    && segments.Contains("..", StringComparer.Ordinal))
+                {
+                    return true;
+                }
+
+                if (OperatingSystem.IsMacOS()
+                    && segments.Contains("..", StringComparer.Ordinal)
+                    && MacOsSystemRootAliases.Any(alias =>
+                        PathUtility.IsNormalizedWithinRoot(currentPath, alias)))
+                {
+                    return true;
+                }
+            }
+            var firstSegment = 0;
+
+            // A parent segment after a symlink has different semantics from
+            // lexical Path.GetFullPath normalization. Only skip macOS's stable
+            // root alias when no later parent traversal can observe its target.
+            if (rooted
+                && OperatingSystem.IsMacOS()
+                && segments.Length > 1
+                && !segments.Contains("..", StringComparer.Ordinal))
+            {
+                foreach (var alias in MacOsSystemRootAliases)
+                {
+                    if (segments[0].AsSpan().Equals(
+                            alias.AsSpan(1),
+                            StringComparison.Ordinal))
+                    {
+                        currentPath = alias;
+                        firstSegment = 1;
+                        break;
+                    }
+                }
+            }
+
+            for (var index = firstSegment; index < segments.Length; index++)
+            {
+                var segment = segments[index];
+                if (segment == ".")
+                    continue;
+
+                if (segment == "..")
+                {
+                    currentPath = Path.GetDirectoryName(currentPath) ?? currentPath;
+                    continue;
+                }
+
+                currentPath = Path.Combine(currentPath, segment);
+                if (!File.Exists(currentPath) && !Directory.Exists(currentPath))
+                    continue;
+
+                if ((File.GetAttributes(currentPath) & FileAttributes.ReparsePoint) != 0)
+                    return true;
+            }
+
+            return false;
+        }
+        catch (Exception ex) when (ex is ArgumentException
+                                   or IOException
+                                   or NotSupportedException
+                                   or PathTooLongException
+                                   or UnauthorizedAccessException
+                                   or System.Security.SecurityException)
+        {
+            return true;
+        }
+    }
+
+    private static string? ResolveSymlinkBoundary(
+        string normalizedPath,
+        bool allowMacOsAliasEquality)
+    {
+        var pathRoot = Path.GetPathRoot(normalizedPath);
+        if (string.IsNullOrWhiteSpace(pathRoot))
+            return null;
+
+        if (OperatingSystem.IsMacOS())
+        {
+            // macOS publishes these stable root aliases as symlinks into
+            // /private. They are outside application-controlled scope and
+            // appear in ordinary temp and system paths. Start below the alias
+            // so later, writable symlink segments still fail closed.
+            foreach (var alias in MacOsSystemRootAliases)
+            {
+                if ((allowMacOsAliasEquality || normalizedPath.Length > alias.Length)
+                    && PathUtility.IsNormalizedWithinRoot(normalizedPath, alias))
+                    return alias;
+            }
+        }
+
+        return pathRoot;
     }
 
     /// <summary>
@@ -787,9 +966,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             return true;
         }
 
-        return analysis.Commands
-            .SelectMany(static command => command.Redirects)
-            .Any(static redirect => ResolveRedirectDirectories(redirect) is null);
+        return false;
     }
 
     private static bool IsSideEffectCommand(ShellSyntaxTree.CommandOccurrence occurrence)
