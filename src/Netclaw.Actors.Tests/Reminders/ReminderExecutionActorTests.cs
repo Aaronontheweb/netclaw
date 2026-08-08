@@ -330,6 +330,9 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
         var completed = await probe.ExpectMsgAsync<ReminderExecutionCompleted>(
             TimeSpan.FromSeconds(5),
             cancellationToken: TestContext.Current.CancellationToken);
+        await pipeline.InputCompleted.WaitAsync(
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
 
         Assert.False(completed.Success);
         Assert.Contains("ended", completed.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
@@ -462,9 +465,12 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
     {
         private readonly TaskCompletionSource<ChannelInput> _inputCaptured =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _inputCompleted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public SessionPipelineOptions? CapturedOptions { get; private set; }
         public Task<ChannelInput> InputCaptured => _inputCaptured.Task;
+        public Task InputCompleted => _inputCompleted.Task;
 
         public Task<MaterializedSession> CreateAsync(
             SessionId sessionId,
@@ -480,7 +486,11 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
                 {
                     _inputCaptured.TrySetResult(ci);
                 })
-                .MapMaterializedValue<NotUsed>(_ => NotUsed.Instance);
+                .MapMaterializedValue<NotUsed>(completion =>
+                {
+                    _ = ObserveInputCompletionAsync(completion);
+                    return NotUsed.Instance;
+                });
 
             var outputs = outputFactory(sessionId).ToList();
             Source<SessionOutput, NotUsed> output = Source.UnfoldAsync<int, SessionOutput>(0, async state =>
@@ -503,6 +513,19 @@ public class ReminderExecutionActorTests : TestKit, IDisposable
             }
 
             return Task.FromResult(new MaterializedSession(captureInputSink, output, killSwitch));
+
+            async Task ObserveInputCompletionAsync(Task<Done> completion)
+            {
+                try
+                {
+                    await completion.ConfigureAwait(false);
+                    _inputCompleted.TrySetResult();
+                }
+                catch (Exception ex)
+                {
+                    _inputCompleted.TrySetException(ex);
+                }
+            }
         }
 
         public Task SendFeedbackAsync(IWithSessionId feedback, CancellationToken ct = default) =>

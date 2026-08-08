@@ -152,7 +152,7 @@ internal sealed class ReminderExecutionActor : ReceiveActor
                 $"ReminderExecution Initialized: execution_id={_executionId} reminder_id={_definition.Id} session_id={sessionId.Value} audience={audience} source=stored-definition");
 
             var self = Self;
-            var inputQueue = await _handle.InitializeWithQueueAsync(
+            var inputWriter = await _handle.InitializeWithChannelAsync(
                 Context,
                 sessionId,
                 new SessionPipelineOptions
@@ -161,11 +161,11 @@ internal sealed class ReminderExecutionActor : ReceiveActor
                     Filter = OutputFilter.TextStreaming | OutputFilter.ToolCalls
                 },
                 output => self.Tell(new ExecutionOutput(output)),
-                failure => self.Tell(new OutputStreamTerminated(failure)));
+                (_, failure) => self.Tell(new OutputStreamTerminated(failure)));
 
             var prompt = BuildPrompt(_definition);
 
-            await inputQueue.OfferAsync(new ChannelInput
+            await inputWriter.WriteAsync(new ChannelInput
             {
                 SenderId = new Protocol.SenderId("reminder-system"),
                 ChannelId = _definition.Delivery.Address,
@@ -185,7 +185,7 @@ internal sealed class ReminderExecutionActor : ReceiveActor
                     : null
             });
 
-            inputQueue.Complete();
+            inputWriter.Complete();
 
             // Arm the Mode A stall backstop: the pipeline now streams output to
             // this actor, each ExecutionOutput resets the ReceiveTimeout, and a
