@@ -645,6 +645,7 @@ public sealed class ShellApprovalMatcherPathExtractionTests
     /// runners instead of hiding the gap behind an early-return.
     /// </summary>
     public static bool IsPosix => !OperatingSystem.IsWindows();
+    public static bool IsMacOs => OperatingSystem.IsMacOS();
 
     [SlopwatchSuppress("SW001", "This theory verifies Bash parser path scopes, which do not apply to the Windows shell parser.")]
     [Theory(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
@@ -1182,6 +1183,133 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         finally
         {
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
+    public void Redirect_through_symlink_below_working_directory_fails_closed()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"netclaw-redirect-escape-{Guid.NewGuid():N}");
+        var projectDirectory = Path.Combine(root, "project");
+        var externalDirectory = Path.Combine(root, "external");
+        var linkDirectory = Path.Combine(projectDirectory, "link");
+        Directory.CreateDirectory(projectDirectory);
+        Directory.CreateDirectory(externalDirectory);
+        Directory.CreateSymbolicLink(linkDirectory, externalDirectory);
+
+        try
+        {
+            var arguments = Args("git status > link/result.log", projectDirectory);
+
+            Assert.Empty(_matcher.ExtractCandidates(
+                new ToolName("shell_execute"),
+                arguments));
+            Assert.True(_matcher.IsMessy(
+                new ToolName("shell_execute"),
+                arguments));
+        }
+        finally
+        {
+            Directory.Delete(linkDirectory);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
+    public void Redirect_through_symlink_before_parent_segment_fails_closed()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"netclaw-redirect-parent-{Guid.NewGuid():N}");
+        var projectDirectory = Path.Combine(root, "project");
+        var externalDirectory = Path.Combine(root, "external", "nested");
+        var linkDirectory = Path.Combine(projectDirectory, "link");
+        Directory.CreateDirectory(projectDirectory);
+        Directory.CreateDirectory(externalDirectory);
+        Directory.CreateSymbolicLink(linkDirectory, externalDirectory);
+
+        try
+        {
+            var arguments = Args("git status > link/../result.log", projectDirectory);
+
+            Assert.Empty(_matcher.ExtractCandidates(
+                new ToolName("shell_execute"),
+                arguments));
+            Assert.True(_matcher.IsMessy(
+                new ToolName("shell_execute"),
+                arguments));
+        }
+        finally
+        {
+            Directory.Delete(linkDirectory);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
+    public void Redirect_from_symlink_working_directory_fails_closed()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"netclaw-redirect-cwd-{Guid.NewGuid():N}");
+        var realProjectDirectory = Path.Combine(root, "real-project");
+        var linkProjectDirectory = Path.Combine(root, "link-project");
+        Directory.CreateDirectory(realProjectDirectory);
+        Directory.CreateSymbolicLink(linkProjectDirectory, realProjectDirectory);
+
+        try
+        {
+            var arguments = Args("git status > result.log", linkProjectDirectory);
+
+            Assert.Empty(_matcher.ExtractCandidates(
+                new ToolName("shell_execute"),
+                arguments));
+            Assert.True(_matcher.IsMessy(
+                new ToolName("shell_execute"),
+                arguments));
+        }
+        finally
+        {
+            Directory.Delete(linkProjectDirectory);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [SlopwatchSuppress("SW001", "This test verifies macOS system root aliases and runs on the macOS CI lane.")]
+    [Fact(SkipUnless = nameof(IsMacOs), Skip = "macOS root-alias semantics")]
+    public void Redirect_to_macos_root_alias_itself_fails_closed()
+    {
+        var arguments = Args("git status > /var", Path.GetTempPath());
+
+        Assert.Empty(_matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            arguments));
+        Assert.True(_matcher.IsMessy(
+            new ToolName("shell_execute"),
+            arguments));
+    }
+
+    [SlopwatchSuppress("SW001", "These tests verify macOS system root aliases and run on the macOS CI lane.")]
+    [Theory(SkipUnless = nameof(IsMacOs), Skip = "macOS root-alias semantics")]
+    [InlineData("git status > result.log", false)]
+    [InlineData("git status > ../result.log", true)]
+    public void Relative_redirect_from_macos_root_alias_handles_parent_traversal(
+        string command,
+        bool expectedMessy)
+    {
+        var arguments = Args(command, "/tmp");
+
+        Assert.Equal(expectedMessy, _matcher.IsMessy(
+            new ToolName("shell_execute"),
+            arguments));
+        if (expectedMessy)
+        {
+            Assert.Empty(_matcher.ExtractCandidates(
+                new ToolName("shell_execute"),
+                arguments));
+        }
+        else
+        {
+            var candidate = Assert.Single(_matcher.ExtractCandidates(
+                new ToolName("shell_execute"),
+                arguments));
+            Assert.Equal("/tmp", candidate.Directory);
         }
     }
 
