@@ -66,10 +66,11 @@ A known execution or delivery failure starts the Akka.Reminders retry policy.
 The retry uses bounded backoff and the same durable occurrence identity. A
 successful attempt resets the consecutive failure count.
 
-A one-shot reminder stays enabled while an occurrence can retry. A successful
-one-shot becomes disabled with a `Completed` outcome. A poison one-shot becomes
-disabled with a `Failed` outcome. Both definitions and their history remain
-available until an operator uses the permanent delete command.
+A one-shot reminder stays enabled while an occurrence can retry. After a
+successful acknowledgement, Netclaw deletes its definition and history. A poison
+one-shot becomes disabled with a `Failed` outcome. Its definition and history
+remain available until an operator uses the permanent delete command.
+Startup reconciliation also removes completed one-shots from prior versions.
 
 Each attempt has a 20-minute inactivity limit and a one-hour absolute limit.
 The durable acknowledgement lease is 70 minutes. A daemon crash therefore lets
@@ -254,6 +255,8 @@ Lifecycle:
   notification with the log path — relaunch if still needed.
 - Process exit (success or failure) delivers a result turn with exit code,
   output tail, and log path — even if the session was passivated mid-flight.
+- Netclaw retains every terminal job definition and its logs for 24 hours after
+  completion. The hourly cleanup sweep then deletes both artifact types.
 
 Monitoring a running job (e.g. waiting for a dev server to come up):
 
@@ -282,7 +285,8 @@ Rules:
   model server that takes minutes to respond) should run as background jobs.
 - The user must approve the command before it starts running in the background.
 - Maximum 5 concurrent background jobs; overflow queues FIFO.
-- Job definitions persist to `~/.netclaw/jobs/{id}.json`.
+- Job definitions persist to `~/.netclaw/jobs/{id}.json` until 24 hours after
+  the job reaches a terminal state.
 
 `check_background_job` is only available when shell execution is granted (same
 `shell` grant category). It validates that the requesting session matches the

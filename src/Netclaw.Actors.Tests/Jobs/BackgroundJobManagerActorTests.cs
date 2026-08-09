@@ -49,6 +49,31 @@ public class BackgroundJobManagerActorTests : TestKit
 
     private IActorRef GetManager() => ActorRegistry.For(Sys).Get<BackgroundJobManagerActorKey>();
 
+    private async Task<BackgroundJobManagerHealthResponse> RunTerminalSweepAsync(IActorRef manager)
+    {
+        // Both messages use the same sender, so the health response is a strict
+        // mailbox barrier after the sweep.
+        manager.Tell(BackgroundJobManagerActor.SweepTerminalJobs.Instance, TestActor);
+        manager.Tell(GetBackgroundJobManagerHealth.Instance, TestActor);
+        return await ExpectMsgAsync<BackgroundJobManagerHealthResponse>(
+            TimeSpan.FromSeconds(30), cancellationToken: TestContext.Current.CancellationToken);
+    }
+
+    private BackgroundJobDefinition MakeTerminalDefinition(string jobId, BackgroundJobStatus status, long completedAtMs) => new()
+    {
+        Id = new BackgroundJobId(jobId),
+        Command = "echo hello",
+        SessionId = new SessionId("test/thread"),
+        Rationale = "test run",
+        Status = status,
+        StartedAtMs = completedAtMs - 60_000,
+        CompletedAtMs = completedAtMs,
+        TimeoutSeconds = 60,
+        Audience = TrustAudience.Personal,
+        Boundary = TrustBoundary.Personal,
+        OriginChannelType = ChannelType.Tui
+    };
+
     private StartBackgroundJob MakeStartCommand(string command = "echo hello") => new()
     {
         Command = command,
@@ -363,5 +388,149 @@ public class BackgroundJobManagerActorTests : TestKit
             lock (_sync)
                 _alerts.Add(alert);
         }
+    }
+
+    [Fact]
+    public async Task TerminalSweep_DeletesJobPastRetentionWindow()
+    {
+        var manager = GetManager();
+        var pastWindowMs = TimeProvider.System.GetUtcNow()
+            .Subtract(BackgroundJobManagerActor.TerminalJobRetentionWindow)
+            .Subtract(TimeSpan.FromMinutes(1))
+            .ToUnixTimeMilliseconds();
+
+        _store.Save(MakeTerminalDefinition("sweep-past", BackgroundJobStatus.Completed, pastWindowMs));
+
+        await RunTerminalSweepAsync(manager);
+
+        Assert.Null(_store.Get(new BackgroundJobId("sweep-past")));
+    }
+
+    [Fact]
+    public async Task TerminalSweep_KeepsJobWithinRetentionWindow()
+    {
+        var manager = GetManager();
+        var recentMs = TimeProvider.System.GetUtcNow().ToUnixTimeMilliseconds();
+
+        _store.Save(MakeTerminalDefinition("sweep-recent", BackgroundJobStatus.Completed, recentMs));
+
+        await RunTerminalSweepAsync(manager);
+
+        Assert.NotNull(_store.Get(new BackgroundJobId("sweep-recent")));
+    }
+
+    [Fact]
+    public async Task TerminalSweep_DoesNotTouchNonTerminalJobs()
+    {
+        var manager = GetManager();
+        var pastWindowMs = TimeProvider.System.GetUtcNow()
+            .Subtract(BackgroundJobManagerActor.TerminalJobRetentionWindow)
+            .Subtract(TimeSpan.FromMinutes(1))
+            .ToUnixTimeMilliseconds();
+
+        // A Running job with a stale CompletedAtMs must never be swept — the
+        // status guard is independent of the timestamp.
+        _store.Save(MakeTerminalDefinition("sweep-running", BackgroundJobStatus.Running, pastWindowMs));
+        _store.Save(MakeTerminalDefinition("sweep-pending", BackgroundJobStatus.Pending, pastWindowMs));
+
+        await RunTerminalSweepAsync(manager);
+
+        Assert.NotNull(_store.Get(new BackgroundJobId("sweep-running")));
+        Assert.NotNull(_store.Get(new BackgroundJobId("sweep-pending")));
+    }
+
+    [Fact]
+    public async Task TerminalSweep_DeletesOutputLogWithDefinition()
+    {
+        var manager = GetManager();
+        var pastWindowMs = TimeProvider.System.GetUtcNow()
+            .Subtract(BackgroundJobManagerActor.TerminalJobRetentionWindow)
+            .Subtract(TimeSpan.FromMinutes(1))
+            .ToUnixTimeMilliseconds();
+        var jobId = new BackgroundJobId("sweep-log");
+
+        var outputLogPath = _store.GetOutputLogPath(jobId);
+        File.WriteAllText(outputLogPath, "some output");
+
+        _store.Save(MakeTerminalDefinition("sweep-log", BackgroundJobStatus.Failed, pastWindowMs));
+
+        await RunTerminalSweepAsync(manager);
+
+        Assert.Null(_store.Get(jobId));
+        Assert.False(File.Exists(outputLogPath));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(outputLogPath)));
+    }
+
+    [Fact]
+    public async Task TerminalSweep_CleanupFailureDoesNotRestartManagerAndLaterSweepRetries()
+    {
+        var manager = GetManager();
+        var pastWindowMs = TimeProvider.System.GetUtcNow()
+            .Subtract(BackgroundJobManagerActor.TerminalJobRetentionWindow)
+            .Subtract(TimeSpan.FromMinutes(1))
+            .ToUnixTimeMilliseconds();
+        var blocked = MakeTerminalDefinition("sweep-blocked", BackgroundJobStatus.Failed, pastWindowMs);
+        var removable = MakeTerminalDefinition("sweep-removable", BackgroundJobStatus.Completed, pastWindowMs);
+        _store.Save(blocked);
+        _store.Save(removable);
+
+        var blockedOutputPath = _store.GetOutputLogPathOnly(blocked.Id);
+        var blockedOutputDirectory = Path.GetDirectoryName(blockedOutputPath)!;
+        File.WriteAllText(blockedOutputDirectory, "path collision");
+        File.WriteAllText(_store.GetOutputLogPath(removable.Id), "completed output");
+
+        var active = await manager.Ask<BackgroundJobStarted>(
+            MakeStartCommand("sleep 60"),
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+
+        try
+        {
+            var health = await RunTerminalSweepAsync(manager);
+
+            Assert.Equal(1, health.ActiveJobCount);
+            Assert.NotNull(_store.Get(blocked.Id));
+            Assert.Null(_store.Get(removable.Id));
+
+            File.Delete(blockedOutputDirectory);
+            await RunTerminalSweepAsync(manager);
+
+            Assert.Null(_store.Get(blocked.Id));
+        }
+        finally
+        {
+            if (File.Exists(blockedOutputDirectory))
+                File.Delete(blockedOutputDirectory);
+
+            await manager.Ask<BackgroundJobCancelResponse>(
+                new CancelBackgroundJob(
+                    active.JobId,
+                    new SessionId("test/thread"),
+                    TrustAudience.Personal,
+                    TrustBoundary.Personal),
+                TimeSpan.FromSeconds(5),
+                TestContext.Current.CancellationToken);
+        }
+    }
+
+    [Fact]
+    public async Task TerminalSweep_KeepsTerminalJobWithMissingCompletionTime()
+    {
+        var manager = GetManager();
+        var pastWindowMs = TimeProvider.System.GetUtcNow()
+            .Subtract(BackgroundJobManagerActor.TerminalJobRetentionWindow)
+            .Subtract(TimeSpan.FromMinutes(1))
+            .ToUnixTimeMilliseconds();
+
+        var def = MakeTerminalDefinition("sweep-null-completed", BackgroundJobStatus.Failed, pastWindowMs);
+        def = def with { CompletedAtMs = null };
+        _store.Save(def);
+        var outputLogPath = _store.GetOutputLogPath(def.Id);
+        File.WriteAllText(outputLogPath, "diagnostic output");
+
+        await RunTerminalSweepAsync(manager);
+
+        Assert.NotNull(_store.Get(def.Id));
+        Assert.True(File.Exists(outputLogPath));
     }
 }
