@@ -31,6 +31,10 @@ namespace Netclaw.Daemon.Tests.Mcp;
 /// </summary>
 public sealed class SmokeMcpServerHttpHeaderTests
 {
+    private readonly ITestOutputHelper _output;
+
+    public SmokeMcpServerHttpHeaderTests(ITestOutputHelper output) => _output = output;
+
     [Fact]
     public async Task ConfiguredHeader_IsAttachedToOutboundMcpRequest()
     {
@@ -54,9 +58,17 @@ public sealed class SmokeMcpServerHttpHeaderTests
 
         var registry = new ToolRegistry();
         await using var harness = McpSmokeHarness.Create(
-            new Dictionary<string, McpServerEntry> { ["smoke-http"] = entry }, registry);
+            new Dictionary<string, McpServerEntry> { ["smoke-http"] = entry }, registry,
+            _output);
 
         await harness.Manager.StartAsync(ct);
+        // Deterministic completion signal: StartAsync awaits the whole connect
+        // attempt, so by the time it returns the manager has either published
+        // tools or recorded the failure with its real error message. Asserting
+        // Connected here turns an intermittent Windows CI connect failure into
+        // a failure that names the underlying error instead of a bare null on
+        // the tool lookup below.
+        harness.AssertConnected("smoke-http");
 
         var lastAuthHeader = registry.GetAllRegistrations()
             .Select(r => r.Tool)
@@ -90,9 +102,17 @@ public sealed class SmokeMcpServerHttpHeaderTests
 
         var registry = new ToolRegistry();
         await using var harness = McpSmokeHarness.Create(
-            new Dictionary<string, McpServerEntry> { ["smoke-http"] = entry }, registry);
+            new Dictionary<string, McpServerEntry> { ["smoke-http"] = entry }, registry,
+            _output);
 
         await harness.Manager.StartAsync(ct);
+        // Deterministic completion signal: StartAsync awaits the whole connect
+        // attempt, so by the time it returns the manager has either published
+        // tools or recorded the failure with its real error message. Asserting
+        // Connected here turns an intermittent Windows CI connect failure into
+        // a failure that names the underlying error instead of a bare null on
+        // the tool lookup below.
+        harness.AssertConnected("smoke-http");
 
         var lastUserAgent = registry.GetAllRegistrations()
             .Select(r => r.Tool)
@@ -138,9 +158,17 @@ public sealed class SmokeMcpServerHttpHeaderTests
 
         var registry = new ToolRegistry();
         await using var harness = McpSmokeHarness.Create(
-            new Dictionary<string, McpServerEntry> { ["smoke-http"] = entry }, registry);
+            new Dictionary<string, McpServerEntry> { ["smoke-http"] = entry }, registry,
+            _output);
 
         await harness.Manager.StartAsync(ct);
+        // Deterministic completion signal: StartAsync awaits the whole connect
+        // attempt, so by the time it returns the manager has either published
+        // tools or recorded the failure with its real error message. Asserting
+        // Connected here turns an intermittent Windows CI connect failure into
+        // a failure that names the underlying error instead of a bare null on
+        // the tool lookup below.
+        harness.AssertConnected("smoke-http");
 
         var lastAuthHeader = registry.GetAllRegistrations()
             .Select(r => r.Tool)
@@ -185,9 +213,17 @@ public sealed class SmokeMcpServerHttpHeaderTests
 
         var registry = new ToolRegistry();
         await using var harness = McpSmokeHarness.Create(
-            new Dictionary<string, McpServerEntry> { ["smoke-http"] = entry }, registry);
+            new Dictionary<string, McpServerEntry> { ["smoke-http"] = entry }, registry,
+            _output);
 
         await harness.Manager.StartAsync(ct);
+        // Deterministic completion signal: StartAsync awaits the whole connect
+        // attempt, so by the time it returns the manager has either published
+        // tools or recorded the failure with its real error message. Asserting
+        // Connected here turns an intermittent Windows CI connect failure into
+        // a failure that names the underlying error instead of a bare null on
+        // the tool lookup below.
+        harness.AssertConnected("smoke-http");
 
         var lastAuthHeader = registry.GetAllRegistrations()
             .Select(r => r.Tool)
