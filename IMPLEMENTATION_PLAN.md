@@ -110,6 +110,25 @@ the smallest repeatable manual script plus expected output.
 
 ## NOW
 
+### Priority: Keep MCP HTTP Protocol Fallback Deterministic
+
+**PRD:** `docs/prd/PRD-006-mcp-tool-integration.md`
+**Spec:** `openspec/specs/netclaw-mcp/spec.md`
+**Surface area:** MCP HTTP transport, daemon connections, CLI probes
+**Verification:** L1 plus the existing HTTP MCP smoke tests
+
+The MCP SDK can retain its discovery protocol version when probe cancellation
+selects the initialize fallback. Netclaw must not send that stale version in an
+initialize request.
+
+Done when:
+
+- [x] Daemon connections and CLI probes remove a retained protocol-version
+  header only from the initialize request.
+- [x] Discovery and established-session requests keep their protocol-version
+  header.
+- [x] Tests prove the header correction and preserve unrelated headers.
+
 ### Priority: Preserve The Daemon Working Directory
 
 **PRD:** `docs/prd/PRD-001-netclaw-mvp.md`
@@ -161,6 +180,10 @@ Done when:
   patterns, redirect alternatives, and redirect-source alternatives. The
   unchanged 225-test Bash, PowerShell 7, and Windows PowerShell 5.1 approval
   matrix passes locally.
+- [x] The expanded 244-test matrix covers command-substitution and PowerShell
+  execution-region behavior. Known command-owned regions reuse independently
+  matched host and body grants after Netclaw accounts for the parsed body.
+  Unknown receivers and incomplete region facts remain prompt-only.
 - [x] Unknown occurrences, cwd facts, wrappers, and redirects stay prompt-only.
   Static descriptor redirects no longer appear dynamic.
 - [x] The resolved POSIX `/dev/null` device does not create an approval
