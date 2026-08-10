@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------
+// -----------------------------------------------------------------------
 // <copyright file="ToolApprovalGateTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
@@ -638,7 +638,10 @@ public sealed class ToolApprovalGateTests
         var ctx = PersonalContext(supportsApproval: false);
 
         var decision = policy.AuthorizeInvocation(tool, ctx,
-            new Dictionary<string, object?> { ["command"] = $"cat {outsidePath}" });
+            new Dictionary<string, object?>
+            {
+                ["command"] = TestShellEnvironment.ReadFileCommand(outsidePath)
+            });
 
         Assert.False(decision.Allowed);
         Assert.Equal("shell_path_outside_trust_zone", decision.DenyReason);
@@ -657,7 +660,10 @@ public sealed class ToolApprovalGateTests
         var ctx = PersonalContext(supportsApproval: false);
 
         var decision = policy.AuthorizeInvocation(tool, ctx,
-            new Dictionary<string, object?> { ["command"] = $"cat {insidePath}" });
+            new Dictionary<string, object?>
+            {
+                ["command"] = TestShellEnvironment.ReadFileCommand(insidePath)
+            });
 
         // Path is within trust zone — proceeds to the approval gate (RequiresApproval)
         Assert.True(decision.NeedsApproval);
@@ -849,6 +855,7 @@ public sealed class ToolApprovalGateTests
 
     private static ToolAccessPolicy CreatePolicyWithTrustZone(IShellTrustZonePolicy trustZone)
     {
+        var environment = TestShellEnvironment.Current;
         var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
         config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
         {
@@ -865,8 +872,8 @@ public sealed class ToolApprovalGateTests
                 TrustAudience.Personal,
                 ShellExecutionMode.HostAllowed,
                 UsedStrictFallback: false),
-            shellCommandPolicy: new ShellCommandPolicy(),
-            toolPathPolicy: new ToolPathPolicy([]),
+            shellCommandPolicy: new ShellCommandPolicy(environment),
+            toolPathPolicy: new ToolPathPolicy(environment, []),
             shellTrustZonePolicy: trustZone);
     }
 
