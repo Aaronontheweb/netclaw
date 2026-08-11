@@ -8,6 +8,7 @@ using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
 using Netclaw.Actors.Sessions;
 using Netclaw.Configuration;
 using Netclaw.Daemon.Configuration;
@@ -117,6 +118,81 @@ public sealed class PipelineChatClientFactoryTests
             throw new HttpRequestException("transient", null, HttpStatusCode.TooManyRequests);
 
         yield return new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [new TextContent("ok")] };
+    }
+
+    [Fact]
+    public async Task Compose_wires_StreamStallGuard_soMidStreamStall_AbortsInSeconds_NotMinutes()
+    {
+        // End-to-end proof: a provider that streams a chunk and then goes silent (dead or
+        // half-open connection — no more tokens, no error, no close) surfaces a
+        // TimeoutException through the full Logging -> Retry -> StreamStallGuard -> leaf
+        // pipeline once the fast inactivity window elapses, not the slow per-call watchdog.
+        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var stallPolicy = _policy with { StreamInactivityTimeout = TimeSpan.FromSeconds(30) };
+        var attempts = 0;
+        var leaf = new FakeChatClient(streamHandler: (_, _, ct) =>
+        {
+            attempts++;
+            return YieldOneThenStallForever(ct);
+        });
+        var pipeline = PipelineChatClientFactory.Compose(leaf, stallPolicy, NullLoggerFactory.Instance, time);
+
+        await using var enumerator = pipeline
+            .GetStreamingResponseAsync([new ChatMessage(ChatRole.User, "hi")], cancellationToken: TestContext.Current.CancellationToken)
+            .GetAsyncEnumerator(TestContext.Current.CancellationToken);
+
+        Assert.True(await enumerator.MoveNextAsync()); // chunk1 flows through Logging -> Retry -> StreamStallGuard -> leaf
+
+        var pending = enumerator.MoveNextAsync().AsTask();
+        time.Advance(stallPolicy.StreamInactivityTimeout);
+
+        var ex = await Assert.ThrowsAsync<TimeoutException>(() => pending);
+        Assert.Contains("stall detected", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+        // Post-first-chunk: RetryingChatClient must not have silently re-issued the request.
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task Compose_wires_StreamStallGuard_soSlowButProgressingStream_CompletesNormally()
+    {
+        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var stallPolicy = _policy with { StreamInactivityTimeout = TimeSpan.FromSeconds(30) };
+        var gap = TimeSpan.FromSeconds(5);
+        var leaf = new FakeChatClient(streamHandler: (_, _, ct) => SlowButProgressing(time, gap, count: 4, ct));
+        var pipeline = PipelineChatClientFactory.Compose(leaf, stallPolicy, NullLoggerFactory.Instance, time);
+
+        await using var enumerator = pipeline
+            .GetStreamingResponseAsync([new ChatMessage(ChatRole.User, "hi")], cancellationToken: TestContext.Current.CancellationToken)
+            .GetAsyncEnumerator(TestContext.Current.CancellationToken);
+
+        for (var i = 0; i < 4; i++)
+        {
+            var pending = enumerator.MoveNextAsync().AsTask();
+            time.Advance(gap);
+            Assert.True(await pending);
+        }
+
+        Assert.False(await enumerator.MoveNextAsync());
+    }
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> YieldOneThenStallForever(
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        yield return new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [new TextContent("chunk1")] };
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        yield break; // unreachable — Task.Delay above only returns via cancellation
+    }
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> SlowButProgressing(
+        TimeProvider time, TimeSpan gap, int count,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            await Task.Delay(gap, time, cancellationToken);
+            yield return new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [new TextContent($"chunk{i}")] };
+        }
     }
 
     // Records, for each log call, the session id on the active scope stack — so a test can

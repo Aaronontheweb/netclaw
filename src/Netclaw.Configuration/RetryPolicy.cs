@@ -17,6 +17,20 @@ public sealed record RetryPolicy
     public TimeSpan MaxDelay { get; init; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
+    /// Maximum gap between streaming updates once a stream has started producing
+    /// output. Resets on every update — including content-free keepalives — so a
+    /// backend that paces real tokens slowly is not killed, only one that stops
+    /// emitting anything at all. Does not apply before the first update: time to
+    /// first byte stays governed by the coarser per-call watchdog, because a
+    /// self-hosted backend can be legitimately silent for minutes during cold
+    /// prefill. This is the fast detector for a stream that goes silent
+    /// mid-response — a dead or half-open connection that the coarse per-call
+    /// watchdog would otherwise take minutes to catch. Set to
+    /// <see cref="TimeSpan.Zero"/> to disable.
+    /// </summary>
+    public TimeSpan StreamInactivityTimeout { get; init; } = TimeSpan.FromSeconds(45);
+
+    /// <summary>
     /// Determines whether the given exception is transient and should be retried.
     /// Retries on: status-less network failures, 408/429/5xx responses (whether they
     /// surface as a raw <see cref="HttpRequestException"/> or are curated into a

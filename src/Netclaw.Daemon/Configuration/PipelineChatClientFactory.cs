@@ -11,10 +11,10 @@ namespace Netclaw.Daemon.Configuration;
 
 /// <summary>
 /// Builds the fully-composed middleware pipeline for a single <c>(provider, model)</c>:
-/// <c>Logging → Retry → VendorOptions → raw provider client</c>. The leaf
-/// (raw provider client plus any vendor-options wrap) comes from
-/// <see cref="ProviderPluginFactory"/>; this layer adds the cross-cutting Retry and
-/// Logging decorators via <see cref="ChatClientBuilder"/>.
+/// <c>Logging → Retry → StreamStallGuard → VendorOptions → raw provider client</c>. The
+/// leaf (raw provider client plus any vendor-options wrap) comes from
+/// <see cref="ProviderPluginFactory"/>; this layer adds the cross-cutting Retry,
+/// stream-stall detection, and Logging decorators via <see cref="ChatClientBuilder"/>.
 ///
 /// One pipeline is built per configured model; routing (selecting which pipeline to
 /// invoke per call) is a separate concern owned by the router.
@@ -46,7 +46,12 @@ public sealed class PipelineChatClientFactory
     /// middleware <b>order</b> can be asserted in isolation: <see cref="ChatClientBuilder"/>
     /// applies the <i>first-registered</i> factory outermost, so <see cref="LoggingChatClient"/>
     /// — which must capture the total elapsed time including retries — is registered
-    /// before <see cref="RetryingChatClient"/>.
+    /// before <see cref="RetryingChatClient"/>. <see cref="StreamStallGuardChatClient"/> is
+    /// registered innermost (directly around the leaf) so a mid-stream stall it detects is
+    /// classified through the same <see cref="RetryPolicy.ShouldRetry"/> rule as any other
+    /// transient failure — no separate retry path — even though it always reaches
+    /// <see cref="RetryingChatClient"/> post-first-chunk (see <see cref="StreamStallGuardChatClient"/>
+    /// remarks) and so propagates rather than silently re-issuing the request.
     /// </summary>
     internal static IChatClient Compose(
         IChatClient leaf,
@@ -56,10 +61,12 @@ public sealed class PipelineChatClientFactory
     {
         var loggingLogger = loggerFactory.CreateLogger<LoggingChatClient>();
         var retryLogger = loggerFactory.CreateLogger<RetryingChatClient>();
+        var stallGuardLogger = loggerFactory.CreateLogger<StreamStallGuardChatClient>();
 
         return new ChatClientBuilder(leaf)
             .Use(inner => new LoggingChatClient(inner, loggingLogger, timeProvider))
             .Use(inner => new RetryingChatClient(inner, retryPolicy, retryLogger, timeProvider))
+            .Use(inner => new StreamStallGuardChatClient(inner, retryPolicy, stallGuardLogger, timeProvider))
             .Build();
     }
 }
