@@ -91,6 +91,23 @@ public static partial class SessionProtocol
     }
 
     /// <summary>
+    /// A nonterminal tool update with stable call and turn correlation.
+    /// Requires <see cref="OutputFilter.ToolCalls"/>.
+    /// </summary>
+    public sealed record ToolActivityOutput : SessionOutput
+    {
+        public required ToolCallId CallId { get; init; }
+
+        public required ToolName ToolName { get; init; }
+
+        public required Protocol.TurnId TurnId { get; init; }
+
+        public required string Phase { get; init; }
+
+        public string? Summary { get; init; }
+    }
+
+    /// <summary>
     /// Token usage report for the completed turn.
     /// Requires <see cref="OutputFilter.Usage"/>.
     /// Includes context window metadata so subscribers can display usage
@@ -252,6 +269,18 @@ public static partial class SessionProtocol
     {
         public required SubAgents.AgentName AgentName { get; init; }
         public required SubAgents.SubAgentPhase Phase { get; init; }
+
+        /// <summary>Stable identity for one sub-agent run.</summary>
+        public SubAgentRunId? RunId { get; init; }
+
+        /// <summary>Tool call that owns this run. Null for a routed skill run.</summary>
+        public ToolCallId? ParentCallId { get; init; }
+
+        /// <summary>Safe activity phase for <see cref="SubAgents.SubAgentPhase.Activity"/>.</summary>
+        public string? ActivityPhase { get; init; }
+
+        /// <summary>Safe activity summary for <see cref="SubAgents.SubAgentPhase.Activity"/>.</summary>
+        public string? ActivitySummary { get; init; }
 
         /// <summary>Number of tools available to the subagent (on Started).</summary>
         public int ToolCount { get; init; }

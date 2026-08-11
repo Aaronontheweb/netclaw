@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System.Diagnostics;
 using System.Text.Json;
+using System.Threading.Channels;
 using Akka.Actor;
 using Akka.Event;
 using Akka.Hosting;
@@ -206,6 +207,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // Persistent state (immutable — replaced on each event)
     private SessionState _state = SessionState.Empty;
 
+    private readonly List<SessionTranscriptEntry> _settledTurnEntries = [];
+    private readonly Dictionary<string, ToolCallOutput> _transcriptToolCalls =
+        new(StringComparer.Ordinal);
+
     // Explicit state machine phase (metadata + validation layer over Become())
     private readonly SessionPhaseMachine _phase = new();
 
@@ -298,7 +303,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             if (offer.Snapshot is SessionSnapshot snapshot)
             {
-                _state = SessionState.FromSnapshot(snapshot);
+                _state = SessionState.FromSnapshot(snapshot)
+                    .KeepRecentTranscriptTurns(Math.Max(1, _config.Tuning.KeepRecentMessages));
                 if (snapshot.EligibleDeliveryTurnNumber is { } eligibleTurn)
                     _deliveryRetry.MarkEligible(eligibleTurn);
 
@@ -730,6 +736,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 TimestampMs = msg.TimestampMs,
                 AgentName = msg.AgentName,
                 Phase = msg.Phase,
+                RunId = msg.RunId,
+                ActivityPhase = msg.ActivityPhase,
+                ActivitySummary = msg.ActivitySummary,
                 ToolCount = msg.ToolCount,
                 Success = msg.Success ?? false,
                 Duration = msg.Duration ?? TimeSpan.Zero,
@@ -858,6 +867,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                     TimestampMs = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
                     AgentName = finding.AgentName,
                     Phase = Netclaw.Actors.SubAgents.SubAgentPhase.Completed,
+                    RunId = finding.RunId,
+                    ParentCallId = finding.ParentCallId,
                     Success = true,
                     Outcome = runSummary?.Outcome ?? SubAgentRunOutcome.Completed,
                     OutcomeReason = runSummary?.OutcomeReason,
@@ -895,6 +906,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 TimestampMs = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
                 AgentName = run.AgentName,
                 Phase = Netclaw.Actors.SubAgents.SubAgentPhase.Completed,
+                RunId = run.RunId,
+                ParentCallId = run.ParentCallId,
                 Success = run.Success,
                 Outcome = run.Outcome,
                 OutcomeReason = run.OutcomeReason,
@@ -1287,9 +1300,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                     CurrentMemoryAudience(),
                     msg.Summary)));
 
-            SaveSnapshot(BuildSnapshot());
-
-            EmitOutput(new CompactionOutput
+            var compactionOutput = new CompactionOutput
             {
                 SessionId = _sessionId,
                 MessagesBefore = msg.MessagesBefore,
@@ -1299,7 +1310,18 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 ContextWindowTokens = _model.ContextWindowTokens,
                 PreCompactionInputTokens = msg.PreCompactionInputTokens,
                 KeepCountUsed = msg.KeepCountUsed
-            });
+            };
+
+            _state = (_state with
+            {
+                RecentTranscript = _state.RecentTranscript.Add(
+                    SessionTranscriptEntryFactory.Compaction(
+                        compactionOutput,
+                        _activeTurnId?.Value))
+            }).KeepRecentTranscriptTurns(Math.Max(1, _config.Tuning.KeepRecentMessages));
+
+            SaveSnapshot(BuildSnapshot());
+            EmitOutput(compactionOutput);
 
             _log.Info("Compaction complete (before={MessagesBefore}, after={MessagesAfter})",
                 msg.MessagesBefore, _state.History.Count);
@@ -2005,6 +2027,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // from a non-actor thread.
         var subscriberSnapshot = _subscribers.Snapshot();
         var logActor = _logActor;
+        Action<ToolActivityOutput> emitToolActivityOutput = output =>
+        {
+            SessionSubscriberManager.Emit(subscriberSnapshot, output, OutputFilter.ToolCalls);
+            logActor?.Tell(output);
+        };
         Action<SubAgentOutput> emitSubAgentOutput = output =>
         {
             SessionSubscriberManager.Emit(subscriberSnapshot, output, OutputFilter.ToolCalls);
@@ -2051,6 +2078,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             ToolCalls = toolCalls,
             DefaultTimeout = new ToolExecutionTimeout(toolExecutionTimeout),
             ReplyTo = self,
+            EmitToolActivityOutput = emitToolActivityOutput,
             EmitSubAgentOutput = emitSubAgentOutput,
             ApprovalRequests = new ToolApprovalRequests(
                 _approvalChannel,
@@ -2087,6 +2115,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         var reply = ChatMessageConverter.FromAiMessage(lastMessage);
         var userMsg = _state.FindLastUserMessage();
+        var recordedAtMs = NowMs();
 
         // Track input token count for compaction threshold check
         if (usage?.InputTokenCount is > 0)
@@ -2103,9 +2132,18 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 Content = string.Empty
             },
             AssistantReply = reply,
-            RecordedAtMs = NowMs(),
+            RecordedAtMs = recordedAtMs,
             SourceReminderId = _currentTurnSource?.ReminderId,
-            SourceBackgroundJobId = _currentTurnSource?.BackgroundJobId
+            SourceBackgroundJobId = _currentTurnSource?.BackgroundJobId,
+            TranscriptEntries = BuildTurnTranscriptEntries(
+                userMsg ?? new SerializableChatMessage
+                {
+                    Role = Protocol.ChatRole.User,
+                    Content = string.Empty
+                },
+                reply,
+                usage,
+                recordedAtMs)
         };
 
         Persist(turnEvent, evt =>
@@ -2124,7 +2162,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 History = _state.History.Add(evt.AssistantReply),
                 TurnCount = _state.TurnCount + 1,
                 ProcessedReminderIds = processed
-            }).CompleteTurnBackgroundJobBookkeeping(evt.SourceBackgroundJobId);
+            }).AppendTranscript(evt)
+                .KeepRecentTranscriptTurns(Math.Max(1, _config.Tuning.KeepRecentMessages))
+                .CompleteTurnBackgroundJobBookkeeping(evt.SourceBackgroundJobId);
+
+            _settledTurnEntries.Clear();
+            _transcriptToolCalls.Clear();
 
             EmitResponseOutputs(lastMessage, usage, includeText: true, includeThinking: true);
             MaybeSnapshot();
@@ -2156,6 +2199,44 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             DrainBufferedMessagesOrBecomeReady();
         });
+    }
+
+    private IReadOnlyList<SessionTranscriptEntry> BuildTurnTranscriptEntries(
+        SerializableChatMessage userMessage,
+        SerializableChatMessage assistantReply,
+        UsageDetails? usage,
+        long recordedAtMs)
+    {
+        var turnId = _activeTurnId?.Value;
+        var extracted = SessionTranscriptExtractor.ExtractTurn(
+            _state.History,
+            userMessage,
+            assistantReply,
+            turnId,
+            recordedAtMs);
+        var entries = new List<SessionTranscriptEntry>();
+
+        entries.AddRange(extracted.Where(entry => entry.Type == SessionTranscriptEntryTypes.User));
+        entries.AddRange(_settledTurnEntries.OrderBy(entry => entry.TimestampMs));
+
+        var capturedToolIds = _settledTurnEntries
+            .Where(entry => entry.Type == SessionTranscriptEntryTypes.Tool && entry.CallId is not null)
+            .Select(entry => entry.CallId!)
+            .ToHashSet(StringComparer.Ordinal);
+        entries.AddRange(extracted.Where(entry =>
+            entry.Type == SessionTranscriptEntryTypes.Tool
+            && (entry.CallId is null || !capturedToolIds.Contains(entry.CallId))));
+        entries.AddRange(extracted.Where(entry => entry.Type == SessionTranscriptEntryTypes.Diagnostic));
+        entries.AddRange(extracted.Where(entry => entry.Type == SessionTranscriptEntryTypes.Assistant));
+
+        if (usage is not null)
+        {
+            entries.Add(SessionTranscriptEntryFactory.Usage(
+                BuildUsageOutput(usage, recordedAtMs),
+                turnId));
+        }
+
+        return entries;
     }
 
     private void DrainBufferedMessagesOrBecomeReady()
@@ -2317,6 +2398,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _deliveryRetry.Clear();
         _currentTurnSource = cmd.Source;
         BindTurnTelemetry(cmd.Source);
+        _settledTurnEntries.Clear();
+        _transcriptToolCalls.Clear();
         _currentTurnContext = TurnContext.FromMessageSource(
             _sessionId,
             _activeTurnId ?? new Protocol.TurnId(IdGen.ShortId()),
@@ -2460,6 +2543,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 TimestampMs = msg.TimestampMs,
                 AgentName = msg.AgentName,
                 Phase = msg.Phase,
+                RunId = msg.RunId,
+                ActivityPhase = msg.ActivityPhase,
+                ActivitySummary = msg.ActivitySummary,
                 ToolCount = msg.ToolCount,
                 Success = msg.Success ?? false,
                 Duration = msg.Duration ?? TimeSpan.Zero,
@@ -2491,7 +2577,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SessionId = _sessionId,
                 Title = _state.Title,
                 TurnCount = _state.TurnCount,
-                RecentMessages = SessionRecentMessageExtractor.Extract(_state.History)
+                RecentMessages = SessionRecentMessageExtractor.Extract(_state.History),
+                RecentTranscript = _state.RecentTranscript.Count > 0
+                    ? _state.RecentTranscript
+                    : null
             };
 
             // On re-join, only reply to the Sender (for Ask callers) — don't
@@ -3269,8 +3358,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             {
                 self.Tell(new RoutedSkillSubAgentActivity(
                     _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
+                    info.RunId,
                     new AgentName(info.AgentName),
-                    info.IsStarted ? SubAgentPhase.Started : SubAgentPhase.Completed,
+                    info.IsActivity
+                        ? SubAgentPhase.Activity
+                        : info.IsStarted ? SubAgentPhase.Started : SubAgentPhase.Completed,
+                    info.ActivityPhase,
+                    info.ActivitySummary,
                     info.ToolCount,
                     info.Success,
                     info.Duration,
@@ -3291,13 +3385,20 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SpawnChildActor = spawnChildActor,
             }, new ToolExecutionTimeout(_config.ToolExecutionTimeout), outputs);
 
-            var result = await _subAgentSpawner!.SpawnAsync(
+            var activityChannel = Channel.CreateUnbounded<ToolActivityUpdate>();
+            var spawnTask = _subAgentSpawner!.SpawnAsync(
                 profile,
                 task,
                 runtimeContext: null,
                 context.Invocation,
                 CancellationToken.None,
-                systemPromptOverlay: skillBody);
+                systemPromptOverlay: skillBody,
+                activitySink: activityChannel.Writer);
+
+            await foreach (var activity in activityChannel.Reader.ReadAllAsync())
+                _ = activity;
+
+            var result = await spawnTask;
 
             self.Tell(new RoutedSkillExecutionCompleted(skill.Name, profile.Name, result));
         }
@@ -3321,6 +3422,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         MergeSuccessfulSubAgentWorkingContext(msg.Result.Completion);
 
         var userMsg = _state.FindLastUserMessage();
+        var recordedAtMs = NowMs();
+        var assistantReply = new SerializableChatMessage
+        {
+            Role = Protocol.ChatRole.Assistant,
+            Content = msg.Result.Output
+        };
         var turnEvent = new TurnRecorded
         {
             SessionId = _sessionId,
@@ -3329,14 +3436,19 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 Role = Protocol.ChatRole.User,
                 Content = string.Empty
             },
-            AssistantReply = new SerializableChatMessage
-            {
-                Role = Protocol.ChatRole.Assistant,
-                Content = msg.Result.Output
-            },
-            RecordedAtMs = NowMs(),
+            AssistantReply = assistantReply,
+            RecordedAtMs = recordedAtMs,
             SourceReminderId = _currentTurnSource?.ReminderId,
-            SourceBackgroundJobId = _currentTurnSource?.BackgroundJobId
+            SourceBackgroundJobId = _currentTurnSource?.BackgroundJobId,
+            TranscriptEntries = BuildTurnTranscriptEntries(
+                userMsg ?? new SerializableChatMessage
+                {
+                    Role = Protocol.ChatRole.User,
+                    Content = string.Empty
+                },
+                assistantReply,
+                usage: null,
+                recordedAtMs)
         };
 
         Persist(turnEvent, evt =>
@@ -3355,7 +3467,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 History = _state.History.Add(evt.AssistantReply),
                 TurnCount = _state.TurnCount + 1,
                 ProcessedReminderIds = processed
-            }).CompleteTurnBackgroundJobBookkeeping(evt.SourceBackgroundJobId);
+            }).AppendTranscript(evt)
+                .KeepRecentTranscriptTurns(Math.Max(1, _config.Tuning.KeepRecentMessages))
+                .CompleteTurnBackgroundJobBookkeeping(evt.SourceBackgroundJobId);
+
+            _settledTurnEntries.Clear();
+            _transcriptToolCalls.Clear();
 
             EmitOutput(new TextOutput(msg.Result.Output)
             {
@@ -3481,15 +3598,18 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         var lastUser = _state.FindLastUserMessage();
         if (lastUser == evt.UserMessage)
         {
-            _state = (_state with
+            _state = ((_state with
             {
                 History = _state.History.Add(evt.AssistantReply),
                 TurnCount = _state.TurnCount + 1
-            }).CompleteTurnBackgroundJobBookkeeping(evt.SourceBackgroundJobId);
+            }).AppendTranscript(evt)
+                .KeepRecentTranscriptTurns(Math.Max(1, _config.Tuning.KeepRecentMessages)))
+                .CompleteTurnBackgroundJobBookkeeping(evt.SourceBackgroundJobId);
             return;
         }
 
-        _state = _state.Apply(evt);
+        _state = _state.Apply(evt)
+            .KeepRecentTranscriptTurns(Math.Max(1, _config.Tuning.KeepRecentMessages));
     }
 
     private void ApplyToolBatchStarted(ToolBatchStarted evt)
@@ -3778,6 +3898,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     {
         _sessionMetrics?.RecordTokenUsage(usage.InputTokenCount ?? 0, usage.OutputTokenCount ?? 0);
 
+        EmitOutput(BuildUsageOutput(usage, NowMs()), OutputFilter.Usage);
+    }
+
+    private UsageOutput BuildUsageOutput(UsageDetails usage, long timestampMs)
+    {
+
         var contextWindow = _model.ContextWindowTokens;
         double? usagePercent = usage.InputTokenCount.HasValue && contextWindow > 0
             ? (double)usage.InputTokenCount.Value / contextWindow
@@ -3792,9 +3918,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         double? predictedPerSec = additional is not null && additional.TryGetValue("predicted_tok_per_sec_x100", out var pps)
             ? pps / 100.0 : null;
 
-        EmitOutput(new UsageOutput
+        return new UsageOutput
         {
             SessionId = _sessionId,
+            TimestampMs = timestampMs,
             InputTokens = usage.InputTokenCount,
             OutputTokens = usage.OutputTokenCount,
             TotalTokens = usage.TotalTokenCount,
@@ -3803,8 +3930,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             ContextWindowTokens = contextWindow,
             UsagePercent = usagePercent,
             PromptMs = promptMs,
-            PredictedPerSecond = predictedPerSec,
-        }, OutputFilter.Usage);
+            PredictedPerSecond = predictedPerSec
+        };
     }
 
     /// <summary>
@@ -4497,9 +4624,48 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _pendingToolInteractions.Clear();
         _resolvedToolApprovals.Clear();
         ClearApprovalTurnState();
-        _state = _state.AddErrorReply(errorMessage);
 
         var correlationId = Guid.NewGuid();
+        var recordedAtMs = NowMs();
+        var userMessage = _state.FindLastUserMessage() ?? new SerializableChatMessage
+        {
+            Role = Protocol.ChatRole.User,
+            Content = string.Empty
+        };
+        var assistantReply = new SerializableChatMessage
+        {
+            Role = Protocol.ChatRole.Assistant,
+            Content = errorMessage
+        };
+        var errorOutput = new ErrorOutput
+        {
+            SessionId = _sessionId,
+            TimestampMs = recordedAtMs,
+            Message = errorMessage,
+            Category = category,
+            CorrelationId = correlationId,
+            Cause = cause
+        };
+
+        _settledTurnEntries.Add(SessionTranscriptEntryFactory.Error(
+            errorOutput,
+            _activeTurnId?.Value));
+        var turnEvent = new TurnRecorded
+        {
+            SessionId = _sessionId,
+            UserMessage = userMessage,
+            AssistantReply = assistantReply,
+            RecordedAtMs = recordedAtMs,
+            SourceReminderId = _currentTurnSource?.ReminderId,
+            SourceBackgroundJobId = _currentTurnSource?.BackgroundJobId,
+            TranscriptEntries = BuildTurnTranscriptEntries(
+                userMessage,
+                assistantReply,
+                usage: null,
+                recordedAtMs)
+        };
+
+        _state = _state.AddErrorReply(errorMessage);
 
         TurnLog().Error(cause,
             "turn_failed category={Category} correlationId={CorrelationId} message={Message}",
@@ -4507,30 +4673,60 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             correlationId,
             errorMessage);
 
-        EmitOutput(new ErrorOutput
+        Persist(turnEvent, evt =>
         {
-            SessionId = _sessionId,
-            Message = errorMessage,
-            Category = category,
-            CorrelationId = correlationId,
-            Cause = cause
-        });
-        EmitOutput(new TurnCompleted
-        {
-            SessionId = _sessionId,
-            TurnNumber = new TurnNumber(_state.TurnCount),
-            Outcome = TurnOutcome.Failed,
-            SourceReminderId = _currentTurnSource?.ReminderId
-        });
+            var processed = _state.ProcessedReminderIds;
+            if (evt.SourceReminderId is { } reminderId && !string.IsNullOrEmpty(reminderId.Value))
+                processed = processed.Add(reminderId);
 
-        DrainBufferedMessagesOrBecomeReady();
+            _state = (_state with { ProcessedReminderIds = processed })
+                .AppendTranscript(evt)
+                .KeepRecentTranscriptTurns(Math.Max(1, _config.Tuning.KeepRecentMessages))
+                .CompleteTurnBackgroundJobBookkeeping(evt.SourceBackgroundJobId);
+            _settledTurnEntries.Clear();
+            _transcriptToolCalls.Clear();
+
+            EmitOutput(errorOutput);
+            EmitOutput(new TurnCompleted
+            {
+                SessionId = _sessionId,
+                TurnNumber = new TurnNumber(_state.TurnCount),
+                Outcome = TurnOutcome.Failed,
+                SourceReminderId = _currentTurnSource?.ReminderId
+            });
+
+            DrainBufferedMessagesOrBecomeReady();
+        });
     }
 
     private void EmitOutput(SessionOutput output, OutputFilter requiredFlag = OutputFilter.None)
     {
+        CaptureSettledTranscriptEntry(output);
         _subscribers.Emit(output, requiredFlag);
         _logActor?.Tell(output);
         _observerActor?.Tell(output);
+    }
+
+    private void CaptureSettledTranscriptEntry(SessionOutput output)
+    {
+        var turnId = _activeTurnId?.Value;
+        switch (output)
+        {
+            case ToolCallOutput call:
+                _transcriptToolCalls[call.CallId.Value] = call;
+                break;
+            case ToolResultOutput result:
+                _transcriptToolCalls.TryGetValue(result.CallId.Value, out var storedCall);
+                _settledTurnEntries.Add(SessionTranscriptEntryFactory.Tool(storedCall, result, turnId));
+                _transcriptToolCalls.Remove(result.CallId.Value);
+                break;
+            case SubAgentOutput { Phase: SubAgents.SubAgentPhase.Completed } subAgent:
+                _settledTurnEntries.Add(SessionTranscriptEntryFactory.SubAgent(subAgent, turnId));
+                break;
+            case FileOutput file:
+                _settledTurnEntries.Add(SessionTranscriptEntryFactory.File(file, turnId));
+                break;
+        }
     }
 
     private async Task PersistApprovalCandidatesAsync(
@@ -4662,6 +4858,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                     TimestampMs = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
                     AgentName = finding.AgentName,
                     Phase = Netclaw.Actors.SubAgents.SubAgentPhase.Completed,
+                    RunId = finding.RunId,
+                    ParentCallId = finding.ParentCallId,
                     Success = true,
                     Outcome = runSummary?.Outcome ?? SubAgentRunOutcome.Completed,
                     OutcomeReason = runSummary?.OutcomeReason,
@@ -4699,6 +4897,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 TimestampMs = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds(),
                 AgentName = run.AgentName,
                 Phase = Netclaw.Actors.SubAgents.SubAgentPhase.Completed,
+                RunId = run.RunId,
+                ParentCallId = run.ParentCallId,
                 Success = run.Success,
                 Outcome = run.Outcome,
                 OutcomeReason = run.OutcomeReason,
@@ -4905,8 +5105,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private sealed record RoutedSkillSubAgentActivity(
         long TimestampMs,
+        SubAgentRunId RunId,
         AgentName AgentName,
         SubAgentPhase Phase,
+        string? ActivityPhase,
+        string? ActivitySummary,
         int ToolCount,
         bool? Success,
         TimeSpan? Duration,

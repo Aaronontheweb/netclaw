@@ -129,6 +129,103 @@ internal static class NetclawProtoMapper
         MediaReferences = proto.MediaReferences.Select(FromProto).ToArray()
     };
 
+    // ── SessionTranscriptEntry ──
+
+    internal static Proto.SessionTranscriptEntryProto ToProto(SessionTranscriptEntry entry)
+    {
+        var proto = new Proto.SessionTranscriptEntryProto
+        {
+            Type = entry.Type,
+            TimestampMs = entry.TimestampMs
+        };
+
+        if (entry.TurnId is not null) proto.TurnId = entry.TurnId;
+        if (entry.Role is not null) proto.Role = entry.Role;
+        if (entry.Text is not null) proto.Text = entry.Text;
+        if (entry.CallId is not null) proto.CallId = entry.CallId;
+        if (entry.ToolName is not null) proto.ToolName = entry.ToolName;
+        if (entry.ArgumentsJson is not null) proto.ArgumentsJson = entry.ArgumentsJson;
+        if (entry.Result is not null) proto.Result = entry.Result;
+        if (entry.RunId is not null) proto.RunId = entry.RunId;
+        if (entry.ParentCallId is not null) proto.ParentCallId = entry.ParentCallId;
+        if (entry.AgentName is not null) proto.AgentName = entry.AgentName;
+        if (entry.Outcome is not null) proto.Outcome = entry.Outcome;
+        if (entry.OutcomeReason is not null) proto.OutcomeReason = entry.OutcomeReason;
+        if (entry.DurationMs is not null) proto.DurationMs = entry.DurationMs.Value;
+        if (entry.FindingsCount is not null) proto.FindingsCount = entry.FindingsCount.Value;
+        if (entry.MemoryDecision is not null) proto.MemoryDecision = entry.MemoryDecision;
+        if (entry.MemoryDecisionReason is not null) proto.MemoryDecisionReason = entry.MemoryDecisionReason;
+        if (entry.FilePath is not null) proto.FilePath = entry.FilePath;
+        if (entry.FileName is not null) proto.FileName = entry.FileName;
+        if (entry.MimeType is not null) proto.MimeType = entry.MimeType;
+        if (entry.ErrorMessage is not null) proto.ErrorMessage = entry.ErrorMessage;
+        if (entry.ErrorDetail is not null) proto.ErrorDetail = entry.ErrorDetail;
+        if (entry.ErrorCorrelationId is not null) proto.ErrorCorrelationId = entry.ErrorCorrelationId;
+        if (entry.ErrorCategory is not null) proto.ErrorCategory = entry.ErrorCategory;
+        if (entry.InputTokens is not null) proto.InputTokens = entry.InputTokens.Value;
+        if (entry.OutputTokens is not null) proto.OutputTokens = entry.OutputTokens.Value;
+        if (entry.TotalTokens is not null) proto.TotalTokens = entry.TotalTokens.Value;
+        if (entry.CachedInputTokens is not null) proto.CachedInputTokens = entry.CachedInputTokens.Value;
+        if (entry.ReasoningTokens is not null) proto.ReasoningTokens = entry.ReasoningTokens.Value;
+        if (entry.ContextWindowTokens is not null) proto.ContextWindowTokens = entry.ContextWindowTokens.Value;
+        if (entry.UsagePercent is not null) proto.UsagePercent = entry.UsagePercent.Value;
+        if (entry.PromptMs is not null) proto.PromptMs = entry.PromptMs.Value;
+        if (entry.PredictedPerSecond is not null) proto.PredictedPerSecond = entry.PredictedPerSecond.Value;
+        if (entry.MessagesBefore is not null) proto.MessagesBefore = entry.MessagesBefore.Value;
+        if (entry.MessagesAfter is not null) proto.MessagesAfter = entry.MessagesAfter.Value;
+        if (entry.ToolResultsCleared is not null) proto.ToolResultsCleared = entry.ToolResultsCleared.Value;
+        if (entry.Summarized is not null) proto.Summarized = entry.Summarized.Value;
+        if (entry.PreCompactionInputTokens is not null)
+            proto.PreCompactionInputTokens = entry.PreCompactionInputTokens.Value;
+        if (entry.KeepCountUsed is not null) proto.KeepCountUsed = entry.KeepCountUsed.Value;
+
+        return proto;
+    }
+
+    internal static SessionTranscriptEntry FromProto(Proto.SessionTranscriptEntryProto proto) => new()
+    {
+        Type = proto.Type,
+        TurnId = proto.HasTurnId ? proto.TurnId : null,
+        TimestampMs = proto.TimestampMs,
+        Role = proto.HasRole ? proto.Role : null,
+        Text = proto.HasText ? proto.Text : null,
+        CallId = proto.HasCallId ? proto.CallId : null,
+        ToolName = proto.HasToolName ? proto.ToolName : null,
+        ArgumentsJson = proto.HasArgumentsJson ? proto.ArgumentsJson : null,
+        Result = proto.HasResult ? proto.Result : null,
+        RunId = proto.HasRunId ? proto.RunId : null,
+        ParentCallId = proto.HasParentCallId ? proto.ParentCallId : null,
+        AgentName = proto.HasAgentName ? proto.AgentName : null,
+        Outcome = proto.HasOutcome ? proto.Outcome : null,
+        OutcomeReason = proto.HasOutcomeReason ? proto.OutcomeReason : null,
+        DurationMs = proto.HasDurationMs ? proto.DurationMs : null,
+        FindingsCount = proto.HasFindingsCount ? proto.FindingsCount : null,
+        MemoryDecision = proto.HasMemoryDecision ? proto.MemoryDecision : null,
+        MemoryDecisionReason = proto.HasMemoryDecisionReason ? proto.MemoryDecisionReason : null,
+        FilePath = proto.HasFilePath ? proto.FilePath : null,
+        FileName = proto.HasFileName ? proto.FileName : null,
+        MimeType = proto.HasMimeType ? proto.MimeType : null,
+        ErrorMessage = proto.HasErrorMessage ? proto.ErrorMessage : null,
+        ErrorDetail = proto.HasErrorDetail ? proto.ErrorDetail : null,
+        ErrorCorrelationId = proto.HasErrorCorrelationId ? proto.ErrorCorrelationId : null,
+        ErrorCategory = proto.HasErrorCategory ? proto.ErrorCategory : null,
+        InputTokens = proto.HasInputTokens ? proto.InputTokens : null,
+        OutputTokens = proto.HasOutputTokens ? proto.OutputTokens : null,
+        TotalTokens = proto.HasTotalTokens ? proto.TotalTokens : null,
+        CachedInputTokens = proto.HasCachedInputTokens ? proto.CachedInputTokens : null,
+        ReasoningTokens = proto.HasReasoningTokens ? proto.ReasoningTokens : null,
+        ContextWindowTokens = proto.HasContextWindowTokens ? proto.ContextWindowTokens : null,
+        UsagePercent = proto.HasUsagePercent ? proto.UsagePercent : null,
+        PromptMs = proto.HasPromptMs ? proto.PromptMs : null,
+        PredictedPerSecond = proto.HasPredictedPerSecond ? proto.PredictedPerSecond : null,
+        MessagesBefore = proto.HasMessagesBefore ? proto.MessagesBefore : null,
+        MessagesAfter = proto.HasMessagesAfter ? proto.MessagesAfter : null,
+        ToolResultsCleared = proto.HasToolResultsCleared ? proto.ToolResultsCleared : null,
+        Summarized = proto.HasSummarized ? proto.Summarized : null,
+        PreCompactionInputTokens = proto.HasPreCompactionInputTokens ? proto.PreCompactionInputTokens : null,
+        KeepCountUsed = proto.HasKeepCountUsed ? proto.KeepCountUsed : null
+    };
+
     // ── SendUserMessage ──
 
     internal static Proto.SendUserMessageProto ToProto(SendUserMessage cmd)
@@ -166,6 +263,7 @@ internal static class NetclawProtoMapper
             proto.SourceReminderId = reminderId.Value;
         if (evt.SourceBackgroundJobId is { } backgroundJobId)
             proto.SourceBackgroundJobId = backgroundJobId.Value;
+        proto.TranscriptEntries.AddRange(evt.TranscriptEntries.Select(ToProto));
         return proto;
     }
 
@@ -176,7 +274,8 @@ internal static class NetclawProtoMapper
         AssistantReply = FromProto(proto.AssistantReply),
         RecordedAtMs = proto.RecordedAtMs,
         SourceReminderId = proto.HasSourceReminderId ? new ReminderId(proto.SourceReminderId) : (ReminderId?)null,
-        SourceBackgroundJobId = proto.HasSourceBackgroundJobId ? new BackgroundJobId(proto.SourceBackgroundJobId) : (BackgroundJobId?)null
+        SourceBackgroundJobId = proto.HasSourceBackgroundJobId ? new BackgroundJobId(proto.SourceBackgroundJobId) : (BackgroundJobId?)null,
+        TranscriptEntries = proto.TranscriptEntries.Select(FromProto).ToArray()
     };
 
     // ── SessionTitleSet ──
@@ -489,6 +588,7 @@ internal static class NetclawProtoMapper
         if (snap.WorkingContext is not null)
             proto.WorkingContext = ToProto(snap.WorkingContext);
         proto.History.AddRange(snap.History.Select(ToProto));
+        proto.RecentTranscript.AddRange(snap.RecentTranscript.Select(ToProto));
         proto.ActiveBackgroundJobs.AddRange(snap.ActiveBackgroundJobs.Select(ToProto));
         proto.AdoptedContextRecords.AddRange(snap.AdoptedContextRecords.Select(ToAdoptedContextSnapshotRecord));
         return proto;
@@ -503,6 +603,7 @@ internal static class NetclawProtoMapper
             : null,
         WorkingContext = proto.WorkingContext is not null ? FromProto(proto.WorkingContext) : null,
         History = proto.History.Select(FromProto).ToArray(),
+        RecentTranscript = proto.RecentTranscript.Select(FromProto).ToArray(),
         ActiveBackgroundJobs = proto.ActiveBackgroundJobs.Select(FromProto).ToArray(),
         AdoptedContextRecords = proto.AdoptedContextRecords.Select(FromAdoptedContextSnapshotRecord).ToArray()
     };
@@ -553,22 +654,22 @@ internal static class NetclawProtoMapper
 
     private static Proto.SessionSnapshotProto.Types.AdoptedContextSnapshotRecord.Types.AdoptedContextSnapshotMessage
         ToAdoptedContextSnapshotMessage(SessionSnapshot.AdoptedContextSnapshotRecord.AdoptedContextSnapshotMessage m) => new()
-    {
-        MessageId = m.MessageId,
-        SenderId = m.SenderId.Value,
-        TimestampMs = m.TimestampMs,
-        AuthorityAtInclusion = m.AuthorityAtInclusion
-    };
+        {
+            MessageId = m.MessageId,
+            SenderId = m.SenderId.Value,
+            TimestampMs = m.TimestampMs,
+            AuthorityAtInclusion = m.AuthorityAtInclusion
+        };
 
     private static SessionSnapshot.AdoptedContextSnapshotRecord.AdoptedContextSnapshotMessage
         FromAdoptedContextSnapshotMessage(
             Proto.SessionSnapshotProto.Types.AdoptedContextSnapshotRecord.Types.AdoptedContextSnapshotMessage proto) => new()
-    {
-        MessageId = proto.MessageId,
-        SenderId = new SenderId(proto.SenderId),
-        TimestampMs = proto.TimestampMs,
-        AuthorityAtInclusion = proto.AuthorityAtInclusion
-    };
+            {
+                MessageId = proto.MessageId,
+                SenderId = new SenderId(proto.SenderId),
+                TimestampMs = proto.TimestampMs,
+                AuthorityAtInclusion = proto.AuthorityAtInclusion
+            };
 
     // ── WorkingContext ──
 
@@ -732,21 +833,21 @@ internal static class NetclawProtoMapper
 
     private static Proto.AdoptedContextRecordedProto.Types.AdoptedMessageRecordProto ToAdoptedMessageRecord(
         AdoptedContextRecorded.AdoptedMessageRecord m) => new()
-    {
-        MessageId = m.MessageId,
-        SenderId = m.SenderId.Value,
-        TimestampMs = m.TimestampMs,
-        AuthorityAtInclusion = m.AuthorityAtInclusion
-    };
+        {
+            MessageId = m.MessageId,
+            SenderId = m.SenderId.Value,
+            TimestampMs = m.TimestampMs,
+            AuthorityAtInclusion = m.AuthorityAtInclusion
+        };
 
     private static AdoptedContextRecorded.AdoptedMessageRecord FromAdoptedMessageRecord(
         Proto.AdoptedContextRecordedProto.Types.AdoptedMessageRecordProto proto) => new()
-    {
-        MessageId = proto.MessageId,
-        SenderId = new SenderId(proto.SenderId),
-        TimestampMs = proto.TimestampMs,
-        AuthorityAtInclusion = proto.AuthorityAtInclusion
-    };
+        {
+            MessageId = proto.MessageId,
+            SenderId = new SenderId(proto.SenderId),
+            TimestampMs = proto.TimestampMs,
+            AuthorityAtInclusion = proto.AuthorityAtInclusion
+        };
 
     // ── CursorAdvanced ──
 

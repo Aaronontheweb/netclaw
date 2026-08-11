@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Security;
 using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Protocol;
@@ -19,6 +20,7 @@ public static class SessionOutputTypes
     public const string Thinking = "thinking";
     public const string ThinkingDelta = "thinking_delta";
     public const string ToolCall = "tool_call";
+    public const string ToolActivity = "tool_activity";
     public const string ToolResult = "tool_result";
     public const string Usage = "usage";
     public const string TurnCompleted = "turn_completed";
@@ -66,6 +68,9 @@ public sealed record SessionOutputDto
     public string? ToolName { get; init; }
     public string? ArgumentsJson { get; init; }
     public string? Result { get; init; }
+    public string? TurnId { get; init; }
+    public string? ActivityPhase { get; init; }
+    public string? ActivitySummary { get; init; }
 
     // Usage
     public long? InputTokens { get; init; }
@@ -97,6 +102,8 @@ public sealed record SessionOutputDto
     // Compaction
     public int? MessagesBefore { get; init; }
     public int? MessagesAfter { get; init; }
+    public bool? ToolResultsCleared { get; init; }
+    public bool? Summarized { get; init; }
     public long? PreCompactionInputTokens { get; init; }
     public int? KeepCountUsed { get; init; }
 
@@ -104,23 +111,29 @@ public sealed record SessionOutputDto
     public string? Title { get; init; }
     public int? TurnCount { get; init; }
     public List<ChatMessageDto>? RecentMessages { get; init; }
+    public List<SessionTranscriptEntry>? RecentTranscript { get; init; }
 
     // Tool Interaction
     public string? InteractionKind { get; init; }
     public string? InteractionDisplayText { get; init; }
     public string? RequesterSenderId { get; init; }
+    public string? InteractionRequesterPrincipal { get; init; }
     public List<string>? InteractionPatterns { get; init; }
     public List<string>? InteractionCandidateVerbs { get; init; }
+    public List<ApprovalCandidate>? InteractionCandidates { get; init; }
     public string? InteractionCwd { get; init; }
     public bool? InteractionIsMessy { get; init; }
     public List<ToolInteractionOption>? InteractionOptions { get; init; }
     public bool? InteractionHasAdoptedContext { get; init; }
     public bool? InteractionHasThirdPartyAdoptedContext { get; init; }
     public List<string>? InteractionAdoptedSpeakerIds { get; init; }
+    public bool? InteractionPersistedAdoptedContext { get; init; }
 
     // SubAgent
     public string? AgentName { get; init; }
     public string? Phase { get; init; }
+    public string? RunId { get; init; }
+    public string? ParentCallId { get; init; }
     public int? ToolCountSub { get; init; }
     public bool? SubAgentSuccess { get; init; }
     public string? SubAgentOutcome { get; init; }

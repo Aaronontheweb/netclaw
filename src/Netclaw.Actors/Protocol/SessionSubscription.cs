@@ -25,7 +25,10 @@ public enum OutputFilter
     /// <summary><see cref="ThinkingOutput"/> — reasoning/thinking tokens.</summary>
     Thinking = 1 << 1,
 
-    /// <summary><see cref="ToolCallOutput"/> and <see cref="ToolResultOutput"/> — tool interactions.</summary>
+    /// <summary>
+    /// <see cref="ToolCallOutput"/>, <see cref="ToolActivityOutput"/>,
+    /// <see cref="ToolResultOutput"/>, and <see cref="SubAgentOutput"/>.
+    /// </summary>
     ToolCalls = 1 << 2,
 
     /// <summary><see cref="UsageOutput"/> — token counts and context window consumption.</summary>
@@ -109,4 +112,9 @@ public sealed record SessionJoined : SessionOutput
     /// Null for brand-new sessions. Populated from persisted history.
     /// </summary>
     public IReadOnlyList<ChatMessageDto>? RecentMessages { get; init; }
+
+    /// <summary>
+    /// Recent settled structured entries. Null for a new or legacy session.
+    /// </summary>
+    public IReadOnlyList<SessionTranscriptEntry>? RecentTranscript { get; init; }
 }

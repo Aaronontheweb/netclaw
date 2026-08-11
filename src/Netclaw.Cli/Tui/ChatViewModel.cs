@@ -180,7 +180,7 @@ public partial class ChatViewModel : ReactiveViewModel
     /// <summary>
     /// Submit user text to the session pipeline.
     /// </summary>
-    public async Task SubmitAsync(string text)
+    public virtual async Task SubmitAsync(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
             return;
@@ -394,6 +394,14 @@ public partial class ChatViewModel : ReactiveViewModel
         IsGenerating.Value = false;
         StatusMessage.Value = "Approval required";
         RequestRedraw();
+    }
+
+    /// <summary>
+    /// Test seam that publishes a session output without a daemon connection.
+    /// </summary>
+    internal void PublishOutputForTesting(SessionOutput output)
+    {
+        _outputSubject.OnNext(output);
     }
 
     /// <summary>

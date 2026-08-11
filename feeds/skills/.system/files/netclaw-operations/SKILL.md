@@ -25,6 +25,7 @@ a reference file — load the one matching the user's intent with
 | How tool arguments are validated | [Tool argument validation](#tool-argument-validation) |
 | Handle very large tool output | [Large tool output](#large-tool-output) |
 | Understand approval prompts | [Approval Prompts](#approval-prompts) |
+| Use the interactive chat TUI | `skill_read_resource('netclaw-operations', 'references/chat.md')` |
 | Update identity / where facts go (identity vs memory) | [Identity](#identity) |
 | Work on a project, switch projects | `skill_read_resource('netclaw-operations', 'references/projects.md')` |
 | Discover MCP / available tools | `skill_read_resource('netclaw-operations', 'references/tools.md')` |

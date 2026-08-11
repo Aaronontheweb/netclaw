@@ -133,6 +133,84 @@ public sealed class SerializationRoundTripTests : TestKit
     }
 
     [Fact]
+    public void TurnRecorded_round_trips_structured_transcript_entries()
+    {
+        var original = new TurnRecorded
+        {
+            SessionId = new SessionId("test/transcript"),
+            UserMessage = new SerializableChatMessage { Role = ChatRole.User, Content = "Check it" },
+            AssistantReply = new SerializableChatMessage { Role = ChatRole.Assistant, Content = "Done" },
+            RecordedAtMs = 1_700_000_000_000,
+            TranscriptEntries =
+            [
+                new SessionTranscriptEntry
+                {
+                    Type = SessionTranscriptEntryTypes.Tool,
+                    TurnId = "turn-1",
+                    TimestampMs = 1_700_000_000_001,
+                    CallId = "call-1",
+                    ToolName = "shell_execute",
+                    ArgumentsJson = "{\"command\":\"dotnet test\"}",
+                    Result = "Passed"
+                },
+                new SessionTranscriptEntry
+                {
+                    Type = SessionTranscriptEntryTypes.Usage,
+                    TurnId = "turn-1",
+                    TimestampMs = 1_700_000_000_002,
+                    InputTokens = 10,
+                    OutputTokens = 4,
+                    TotalTokens = 14,
+                    CachedInputTokens = 3,
+                    ReasoningTokens = 2,
+                    ContextWindowTokens = 4096,
+                    UsagePercent = 0.25,
+                    PromptMs = 12.5,
+                    PredictedPerSecond = 44.2
+                },
+                new SessionTranscriptEntry
+                {
+                    Type = SessionTranscriptEntryTypes.Error,
+                    TurnId = "turn-1",
+                    TimestampMs = 1_700_000_000_003,
+                    ErrorMessage = "Failed",
+                    ErrorDetail = "detail",
+                    ErrorCorrelationId = "correlation",
+                    ErrorCategory = "provider_failure"
+                }
+            ]
+        };
+
+        var result = RoundTrip(original);
+
+        Assert.Equal(original.TranscriptEntries, result.TranscriptEntries);
+    }
+
+    [Fact]
+    public void Old_TurnRecorded_proto_reads_with_an_empty_transcript()
+    {
+        var proto = new Serialization.Proto.TurnRecordedProto
+        {
+            SessionId = new Serialization.Proto.SessionIdProto { Value = "test/legacy" },
+            UserMessage = new Serialization.Proto.SerializableChatMessageProto
+            {
+                Role = Serialization.Proto.ChatRole.User,
+                Content = "Hello"
+            },
+            AssistantReply = new Serialization.Proto.SerializableChatMessageProto
+            {
+                Role = Serialization.Proto.ChatRole.Assistant,
+                Content = "Hi"
+            },
+            RecordedAtMs = 1_700_000_000_000
+        };
+
+        var result = NetclawProtoMapper.FromProto(proto);
+
+        Assert.Empty(result.TranscriptEntries);
+    }
+
+    [Fact]
     public void TurnRecorded_round_trips_preserving_value_object_source_ids()
     {
         var original = new TurnRecorded
@@ -785,6 +863,42 @@ public sealed class SerializationRoundTripTests : TestKit
 
         var result = RoundTrip(wrapped);
         Assert.Null(result.EligibleDeliveryTurnNumber);
+    }
+
+    [Fact]
+    public void SessionSnapshot_round_trips_recent_transcript()
+    {
+        var wrapped = new SessionSnapshot
+        {
+            TurnCount = 1,
+            History = [],
+            RecentTranscript =
+            [
+                new SessionTranscriptEntry
+                {
+                    Type = SessionTranscriptEntryTypes.File,
+                    TurnId = "turn-1",
+                    TimestampMs = 99,
+                    FilePath = "/tmp/report.txt",
+                    FileName = "report.txt",
+                    MimeType = "text/plain"
+                }
+            ]
+        };
+
+        var result = RoundTrip(wrapped);
+
+        Assert.Equal(wrapped.RecentTranscript, result.RecentTranscript);
+    }
+
+    [Fact]
+    public void Old_SessionSnapshot_proto_reads_with_an_empty_transcript()
+    {
+        var proto = new Serialization.Proto.SessionSnapshotProto { TurnCount = 2 };
+
+        var result = NetclawProtoMapper.FromProto(proto);
+
+        Assert.Empty(result.RecentTranscript);
     }
 
     [Fact]

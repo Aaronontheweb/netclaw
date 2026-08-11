@@ -116,10 +116,7 @@ public class ToolBatchHistoryWedgeTests : LlmSessionTestBase
             m => m is TurnCompleted { Outcome: TurnOutcome.Failed }, TimeSpan.FromSeconds(10),
             cancellationToken: ct);
 
-        // Turn 2: a follow-up user message forces a fresh provider request whose
-        // assembled messages ARE the conversation history (the error reply is
-        // in-memory only and never persisted, so this is the only way to observe
-        // the ordering the provider would see).
+        // Turn 2 forces a fresh provider request with the prior history.
         await sessionManager.Ask<CommandAck>(new SendUserMessage
         {
             SessionId = sessionId,
@@ -128,6 +125,9 @@ public class ToolBatchHistoryWedgeTests : LlmSessionTestBase
 
         await subscriber.FishForMessageAsync<object>(
             m => m is TextOutput, TimeSpan.FromSeconds(10), cancellationToken: ct);
+        await subscriber.FishForMessageAsync<object>(
+            m => m is TurnCompleted { Outcome: TurnOutcome.Completed }, TimeSpan.FromSeconds(10),
+            cancellationToken: ct);
 
         // The last provider request is turn 2's; its messages are the assembled
         // history including turn 1's tool_calls message, tool results, and the
@@ -169,6 +169,16 @@ public class ToolBatchHistoryWedgeTests : LlmSessionTestBase
             + $"tool-result messages answering every call id. Expected [{string.Join(",", expectedIds)}] "
             + $"but the contiguous run covered [{string.Join(",", answeredIds)}]. "
             + $"Assembled roles: {string.Join(" -> ", assembled.Select(m => m.Role.Value))}");
+
+        var resumed = await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(5), ct);
+        Assert.Contains(resumed.RecentTranscript!, entry =>
+            entry.Type == SessionTranscriptEntryTypes.Tool && entry.CallId == "call-A");
+        Assert.Contains(resumed.RecentTranscript!, entry =>
+            entry.Type == SessionTranscriptEntryTypes.Error);
     }
 }
 
