@@ -1410,7 +1410,11 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
     /// so an operator-pinned OAuthClientId is never discarded behind their back.
     /// </summary>
     private static bool IsInvalidClientFailure(Exception ex)
-        => ex.Message.Contains("invalid_client", StringComparison.OrdinalIgnoreCase)
+        // SDK 2.1's discover probe swallows the token endpoint's 400 invalid_client as a
+        // protocol-fallback signal, so OAuthClientRejectionHandler re-throws it as this type
+        // before the SDK can hide it. The message check below still covers a raw SDK failure.
+        => ex is McpOAuthClientRejectedException
+           || ex.Message.Contains("invalid_client", StringComparison.OrdinalIgnoreCase)
            // A registration is bound to the issuer that granted it. When the resource server
            // moves to a new issuer, SDK 2.0 refuses to reuse the old one and offers no remedy
            // of its own, so the stale identity has to go or every retry repeats the failure.
