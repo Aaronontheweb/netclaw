@@ -1,0 +1,755 @@
+// -----------------------------------------------------------------------
+// <copyright file="InlineChatPageTests.cs" company="Petabridge, LLC">
+//      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
+// </copyright>
+// -----------------------------------------------------------------------
+using System.Threading.Channels;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
+using Netclaw.Actors.Protocol;
+using Netclaw.Actors.SubAgents;
+using Netclaw.Cli.Daemon;
+using Netclaw.Cli.Tui;
+using Netclaw.Configuration;
+using Netclaw.Tools;
+using Termina;
+using Termina.Clipboard;
+using Termina.Hosting;
+using Termina.Input;
+using Termina.Terminal;
+using Xunit;
+using static Netclaw.Actors.Sessions.SessionProtocol;
+
+namespace Netclaw.Cli.Tests.Tui;
+
+public sealed class InlineChatPageTests
+{
+    private static readonly SessionId SessionId = new("test/chat");
+
+    [Fact]
+    public async Task ShiftEnter_AddsNewline_AndEnterSubmitsExactText()
+    {
+        await using var harness = CreateHarness();
+        var runTask = harness.StartAsync();
+
+        harness.Input.EnqueueString("first line");
+        harness.Input.EnqueueKey(ConsoleKey.Enter, shift: true);
+        harness.Input.EnqueueString("second line");
+        harness.Input.EnqueueKey(ConsoleKey.Enter);
+
+        var submitted = await harness.ViewModel.ReadSubmissionAsync(harness.Cancellation.Token);
+
+        Assert.Equal("first line\nsecond line", submitted);
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("second line"));
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task HistoryDown_RestoresTheSavedDraft()
+    {
+        await using var harness = CreateHarness();
+        var runTask = harness.StartAsync();
+
+        harness.Input.EnqueueString("previous prompt");
+        harness.Input.EnqueueKey(ConsoleKey.Enter);
+        Assert.Equal("previous prompt",
+            await harness.ViewModel.ReadSubmissionAsync(harness.Cancellation.Token));
+
+        harness.Input.EnqueueString("saved draft");
+        harness.Input.EnqueueKey(ConsoleKey.UpArrow);
+        harness.Input.EnqueueKey(ConsoleKey.DownArrow);
+        harness.Input.EnqueueKey(ConsoleKey.Enter);
+
+        Assert.Equal("saved draft",
+            await harness.ViewModel.ReadSubmissionAsync(harness.Cancellation.Token));
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task DoubleEscape_ClearsRecalledInput()
+    {
+        await using var harness = CreateHarness();
+        var runTask = harness.StartAsync();
+
+        harness.Input.EnqueueString("previous prompt");
+        harness.Input.EnqueueKey(ConsoleKey.Enter);
+        _ = await harness.ViewModel.ReadSubmissionAsync(harness.Cancellation.Token);
+        harness.Input.EnqueueKey(ConsoleKey.UpArrow);
+        harness.Input.EnqueueKey(ConsoleKey.Escape);
+        harness.Input.EnqueueKey(ConsoleKey.Escape);
+        harness.Input.EnqueueString("replacement");
+        harness.Input.EnqueueKey(ConsoleKey.Enter);
+
+        Assert.Equal("replacement",
+            await harness.ViewModel.ReadSubmissionAsync(harness.Cancellation.Token));
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task OneEscape_DoesNotClearInput()
+    {
+        await using var harness = CreateHarness();
+        var runTask = harness.StartAsync();
+
+        harness.Input.EnqueueString("keep this");
+        harness.Input.EnqueueKey(ConsoleKey.Escape);
+        harness.Input.EnqueueKey(ConsoleKey.Enter);
+
+        Assert.Equal("keep this",
+            await harness.ViewModel.ReadSubmissionAsync(harness.Cancellation.Token));
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task MultilinePaste_SubmitsTheExactOriginalText()
+    {
+        await using var harness = CreateHarness();
+        var runTask = harness.StartAsync();
+        const string pasted = "first pasted line\nsecond pasted line";
+
+        harness.Events.Enqueue(new PasteEvent(pasted));
+        harness.Events.Enqueue(new KeyPressed(
+            new ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false)));
+
+        Assert.Equal(pasted,
+            await harness.ViewModel.ReadSubmissionAsync(harness.Cancellation.Token));
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task Approval_BlocksPasteFromTheHiddenComposer()
+    {
+        await using var harness = CreateHarness(approval: BuildApproval());
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Decision Gate"));
+
+        harness.Events.Enqueue(new PasteEvent("blocked paste"));
+        harness.Events.Enqueue(new KeyPressed(
+            new ConsoleKeyInfo('\0', ConsoleKey.O, false, false, true)));
+        await harness.WaitUntilAsync(() => harness.ViewModel.IsApprovalDetailVisible.Value);
+        harness.Input.EnqueueKey(ConsoleKey.Escape);
+        _ = await harness.ViewModel.ReadApprovalAsync(harness.Cancellation.Token);
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Composer"));
+
+        harness.Input.EnqueueString("safe prompt");
+        harness.Input.EnqueueKey(ConsoleKey.Enter);
+        Assert.Equal("safe prompt",
+            await harness.ViewModel.ReadSubmissionAsync(harness.Cancellation.Token));
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task CtrlO_KeepsTheApprovalSelection()
+    {
+        var approval = BuildApproval();
+        await using var harness = CreateHarness(approval: approval);
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Decision Gate"));
+
+        harness.Input.EnqueueKey(ConsoleKey.DownArrow);
+        harness.Input.EnqueueKey(ConsoleKey.O, control: true);
+        harness.Input.EnqueueKey(ConsoleKey.Enter);
+
+        Assert.Equal(ApprovalOptionKeys.ApproveSession,
+            await harness.ViewModel.ReadApprovalAsync(harness.Cancellation.Token));
+        Assert.True(harness.ViewModel.IsApprovalDetailVisible.Value);
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task Escape_DeniesAnApproval()
+    {
+        await using var harness = CreateHarness(approval: BuildApproval());
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Decision Gate"));
+
+        harness.Input.EnqueueKey(ConsoleKey.Escape);
+
+        Assert.Equal(ApprovalOptionKeys.Deny,
+            await harness.ViewModel.ReadApprovalAsync(harness.Cancellation.Token));
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task CtrlO_ShowsApprovalSecurityContext()
+    {
+        var approval = BuildApproval() with
+        {
+            Patterns = ["dotnet"],
+            CandidateVerbs = ["dotnet"],
+            Cwd = "/work/netclaw",
+            IsMessy = true,
+            HasAdoptedContext = true,
+            HasThirdPartyAdoptedContext = true,
+            PersistedAdoptedContext = true
+        };
+        await using var harness = CreateHarness(approval: approval);
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Decision Gate"));
+
+        harness.Input.EnqueueKey(ConsoleKey.O, control: true);
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Directory: /work/netclaw"));
+
+        var screen = harness.Terminal.ToString();
+        Assert.Contains("Patterns: dotnet", screen, StringComparison.Ordinal);
+        Assert.Contains("Verbs: dotnet", screen, StringComparison.Ordinal);
+        Assert.Contains("Complex command", screen, StringComparison.Ordinal);
+        Assert.Contains("third-party context", screen, StringComparison.Ordinal);
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task ApprovalDetail_PreservesSelectionAndScrollPositionAcrossCollapse()
+    {
+        var detail = string.Join('\n', Enumerable.Range(0, 40).Select(index => $"command line {index}"));
+        var approval = BuildApproval() with { DisplayText = detail };
+        await using var harness = CreateHarness(approval: approval, height: 24);
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Decision Gate"));
+
+        harness.Input.EnqueueKey(ConsoleKey.DownArrow);
+        harness.Input.EnqueueKey(ConsoleKey.O, control: true);
+        await harness.WaitUntilAsync(() => harness.Page.ApprovalDetailCanScrollDown);
+        harness.Input.EnqueueKey(ConsoleKey.PageDown);
+        await harness.WaitUntilAsync(() => harness.Page.ApprovalDetailScrollOffset > 0);
+        var offset = harness.Page.ApprovalDetailScrollOffset;
+
+        harness.Input.EnqueueKey(ConsoleKey.O, control: true);
+        await harness.WaitUntilAsync(() => !harness.ViewModel.IsApprovalDetailVisible.Value);
+        Assert.Equal(offset, harness.Page.ApprovalDetailScrollOffset);
+        harness.Input.EnqueueKey(ConsoleKey.O, control: true);
+        await harness.WaitUntilAsync(() => harness.ViewModel.IsApprovalDetailVisible.Value);
+        Assert.Equal(offset, harness.Page.ApprovalDetailScrollOffset);
+
+        harness.Input.EnqueueKey(ConsoleKey.Enter);
+        Assert.Equal(ApprovalOptionKeys.ApproveSession,
+            await harness.ViewModel.ReadApprovalAsync(harness.Cancellation.Token));
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task Generation_HidesTheComposerAndClearsFocus()
+    {
+        await using var harness = CreateHarness();
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Composer"));
+        Assert.NotNull(harness.Focus.CurrentFocus);
+
+        harness.ViewModel.IsGenerating.Value = true;
+        harness.ViewModel.StatusMessage.Value = "Generating...";
+        await harness.WaitUntilAsync(() =>
+            harness.Terminal.Contains("Generating")
+            && harness.Terminal.Contains("Work active")
+            && !harness.Terminal.Contains("Composer")
+            && harness.Focus.CurrentFocus is null);
+
+        harness.ViewModel.IsGenerating.Value = false;
+        harness.ViewModel.StatusMessage.Value = "Ready";
+        await harness.WaitUntilAsync(() =>
+            harness.Terminal.Contains("Composer") && harness.Focus.CurrentFocus is not null);
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task StableTranscript_UsesPrimaryScrollbackWithoutAnOuterBorder()
+    {
+        var output = new TextOutput("A stable answer")
+        {
+            SessionId = SessionId,
+            TimestampMs = 0
+        };
+        await using var harness = CreateHarness(outputs: [output]);
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("A stable answer"));
+
+        Assert.Equal("NETCLAW", harness.Terminal.GetLine(0));
+        Assert.Equal("A stable answer", harness.Terminal.GetLine(1));
+        Assert.DoesNotContain('│', harness.Terminal.GetLine(1));
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task ActivityDeck_ShowsParallelToolsThoughtAndSubAgent()
+    {
+        var outputs = new SessionOutput[]
+        {
+            new ThinkingDeltaOutput("Compare both results")
+            {
+                SessionId = SessionId,
+                TimestampMs = 1
+            },
+            ToolCall("call-a", "search", 2),
+            ToolCall("call-b", "fetch", 3),
+            new ToolActivityOutput
+            {
+                SessionId = SessionId,
+                TimestampMs = 4,
+                CallId = new ToolCallId("call-b"),
+                ToolName = new ToolName("fetch"),
+                TurnId = new TurnId("turn-1"),
+                Phase = "running",
+                Summary = "documentation"
+            },
+            new SubAgentOutput
+            {
+                SessionId = SessionId,
+                TimestampMs = 5,
+                AgentName = new AgentName("reviewer"),
+                Phase = SubAgentPhase.Activity,
+                RunId = new SubAgentRunId("run-a"),
+                ParentCallId = new ToolCallId("call-a"),
+                ActivityPhase = "reviewing",
+                ActivitySummary = "API surface"
+            }
+        };
+        await using var harness = CreateHarness(outputs: outputs);
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() =>
+            harness.Terminal.Contains("Compare both results")
+            && harness.Terminal.Contains("search")
+            && harness.Terminal.Contains("fetch")
+            && harness.Terminal.Contains("reviewer"));
+
+        var screen = harness.Terminal.ToString();
+        Assert.Contains("TOOL  search", screen, StringComparison.Ordinal);
+        Assert.Contains("TOOL  fetch", screen, StringComparison.Ordinal);
+        Assert.Contains("AGENT  reviewer", screen, StringComparison.Ordinal);
+        Assert.DoesNotContain("Composer", screen, StringComparison.Ordinal);
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task Inspector_ShowsTheCompleteSemanticToolResult()
+    {
+        var outputs = new SessionOutput[]
+        {
+            ToolCall("call-a", "search", 1),
+            new ToolResultOutput
+            {
+                SessionId = SessionId,
+                TimestampMs = 2,
+                CallId = new ToolCallId("call-a"),
+                ToolName = new ToolName("search"),
+                Result = "compact line\ncomplete hidden line"
+            }
+        };
+        await using var harness = CreateHarness(outputs: outputs);
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("compact line"));
+
+        Assert.DoesNotContain("complete hidden line", harness.Terminal.ToString(), StringComparison.Ordinal);
+        harness.Input.EnqueueKey(ConsoleKey.O, control: true);
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("complete hidden line"));
+
+        Assert.Contains("Arguments: {\"call\":\"call-a\"}",
+            harness.Terminal.ToString(), StringComparison.Ordinal);
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task Inspector_DefersNewStableBlocksUntilItCloses()
+    {
+        var first = new TextOutput("first answer")
+        {
+            SessionId = SessionId,
+            TimestampMs = 1
+        };
+        await using var harness = CreateHarness(outputs: [first]);
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("first answer"));
+        harness.Input.EnqueueKey(ConsoleKey.O, control: true);
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("INSPECTOR"));
+
+        harness.ViewModel.Emit(new TextOutput("queued answer")
+        {
+            SessionId = SessionId,
+            TimestampMs = 2
+        });
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("1/2"));
+        Assert.DoesNotContain("queued answer", harness.Terminal.ToString(), StringComparison.Ordinal);
+
+        harness.Input.EnqueueKey(ConsoleKey.O, control: true);
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("queued answer"));
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task Inspector_EventCopyUsesCompleteSemanticText()
+    {
+        var outputs = new SessionOutput[]
+        {
+            ToolCall("call-a", "search", 1),
+            new ToolResultOutput
+            {
+                SessionId = SessionId,
+                TimestampMs = 2,
+                CallId = new ToolCallId("call-a"),
+                ToolName = new ToolName("search"),
+                Result = "first line\n\x1b[31mcomplete result\x1b[0m"
+            }
+        };
+        await using var harness = CreateHarness(outputs: outputs);
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("first line"));
+        harness.Input.EnqueueKey(ConsoleKey.O, control: true);
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("INSPECTOR"));
+
+        harness.Input.EnqueueKey(ConsoleKey.Y);
+        await harness.WaitUntilAsync(() => harness.Clipboard.LastCopiedText is not null);
+
+        var copied = harness.Clipboard.LastCopiedText!;
+        Assert.Contains("complete result", copied, StringComparison.Ordinal);
+        Assert.Contains("Arguments: {\"call\":\"call-a\"}", copied, StringComparison.Ordinal);
+        Assert.DoesNotContain('\x1b', copied);
+        Assert.DoesNotContain('│', copied);
+        Assert.DoesNotContain('╭', copied);
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task Inspector_ShiftYCopiesTheCompleteTurnInOrder()
+    {
+        var joined = new SessionJoined
+        {
+            SessionId = SessionId,
+            TimestampMs = 1,
+            TurnCount = 1,
+            RecentTranscript =
+            [
+                new SessionTranscriptEntry
+                {
+                    Type = SessionTranscriptEntryTypes.User,
+                    Text = "check status",
+                    TurnId = "turn-1"
+                },
+                new SessionTranscriptEntry
+                {
+                    Type = SessionTranscriptEntryTypes.Tool,
+                    ToolName = "status",
+                    CallId = "call-a",
+                    Result = "healthy",
+                    TurnId = "turn-1"
+                },
+                new SessionTranscriptEntry
+                {
+                    Type = SessionTranscriptEntryTypes.Assistant,
+                    Text = "all healthy",
+                    TurnId = "turn-1"
+                }
+            ]
+        };
+        await using var harness = CreateHarness(outputs: [joined]);
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("all healthy"));
+        harness.Input.EnqueueKey(ConsoleKey.O, control: true);
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("INSPECTOR"));
+
+        harness.Input.EnqueueKey(ConsoleKey.Y, shift: true);
+        await harness.WaitUntilAsync(() => harness.Clipboard.LastCopiedText is not null);
+
+        var copied = harness.Clipboard.LastCopiedText!;
+        Assert.True(copied.IndexOf("check status", StringComparison.Ordinal)
+                    < copied.IndexOf("healthy", StringComparison.Ordinal));
+        Assert.True(copied.IndexOf("healthy", StringComparison.Ordinal)
+                    < copied.IndexOf("all healthy", StringComparison.Ordinal));
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task Inspector_CopyFailureStaysVisibleAndKeepsTheEvent()
+    {
+        var output = new TextOutput("copy target")
+        {
+            SessionId = SessionId,
+            TimestampMs = 1
+        };
+        await using var harness = CreateHarness(outputs: [output], clipboardSucceeds: false);
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("copy target"));
+        harness.Input.EnqueueKey(ConsoleKey.O, control: true);
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("INSPECTOR"));
+
+        harness.Input.EnqueueKey(ConsoleKey.Y);
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Copy failed"));
+
+        harness.Input.EnqueueKey(ConsoleKey.Y);
+        await harness.WaitUntilAsync(() => harness.Clipboard.CopyCount == 2);
+        Assert.Equal("NETCLAW\ncopy target", harness.Clipboard.LastCopiedText);
+        await harness.StopAsync(runTask);
+    }
+
+    [Theory]
+    [InlineData(40)]
+    [InlineData(60)]
+    [InlineData(80)]
+    [InlineData(120)]
+    public async Task CommonWidths_KeepTheComposerAndStatusVisible(int width)
+    {
+        await using var harness = CreateHarness(width: width);
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Composer"));
+
+        var screen = harness.Terminal.ToString();
+        Assert.Contains("NETCLAW", screen, StringComparison.Ordinal);
+        Assert.Contains("Composer", screen, StringComparison.Ordinal);
+        Assert.Contains("Enter", screen, StringComparison.Ordinal);
+        await harness.StopAsync(runTask);
+    }
+
+    private static ToolCallOutput ToolCall(string callId, string name, long timestamp) => new()
+    {
+        SessionId = SessionId,
+        TimestampMs = timestamp,
+        CallId = new ToolCallId(callId),
+        ToolName = new ToolName(name),
+        ArgumentsJson = $"{{\"call\":\"{callId}\"}}"
+    };
+
+    private static ToolInteractionRequest BuildApproval() => new()
+    {
+        SessionId = SessionId,
+        TimestampMs = 1,
+        Kind = "approval",
+        CallId = new ToolCallId("approval-call"),
+        ToolName = new ToolName("shell_execute"),
+        DisplayText = "dotnet test src/Netclaw.Cli.Tests",
+        Options =
+        [
+            new ToolInteractionOption(
+                ApprovalOptionKeys.ApproveOnceKey,
+                ApprovalOptionKeys.ApproveOnceLabel),
+            new ToolInteractionOption(
+                ApprovalOptionKeys.ApproveSessionKey,
+                ApprovalOptionKeys.ApproveSessionLabel),
+            new ToolInteractionOption(
+                ApprovalOptionKeys.DenyKey,
+                ApprovalOptionKeys.DenyLabel)
+        ]
+    };
+
+    private static InlineHarness CreateHarness(
+        IReadOnlyList<SessionOutput>? outputs = null,
+        ToolInteractionRequest? approval = null,
+        bool clipboardSucceeds = true,
+        int width = 120,
+        int height = 40)
+    {
+        var terminal = new VirtualTerminal(width, height);
+        var input = new VirtualInputSource();
+        var events = new TestEventInputSource();
+        var clipboard = new TestClipboardService(clipboardSucceeds);
+        var time = new FakeTimeProvider(
+            new DateTimeOffset(2026, 8, 11, 12, 0, 0, TimeSpan.Zero));
+        TestChatViewModel? viewModel = null;
+        InlineChatPage? page = null;
+
+        var services = new ServiceCollection();
+        services.AddSingleton<IAnsiTerminal>(terminal);
+        services.AddSingleton<TimeProvider>(time);
+        services.AddSingleton<IClipboardService>(clipboard);
+        services.AddTerminaVirtualInput(input);
+        services.AddSingleton<IInputSource>(events);
+        services.AddTermina("/chat", builder =>
+        {
+            builder.ConfigureRuntime(options =>
+            {
+                options.PresentationMode = TerminalPresentationMode.Inline;
+                options.ScrollInputMode = ScrollInputMode.NativeTerminal;
+            });
+            builder.RegisterRoute<InlineChatPage, ChatViewModel>(
+                "/chat",
+                serviceProvider => page = new InlineChatPage(
+                    serviceProvider.GetRequiredService<IAnsiTerminal>(),
+                    serviceProvider.GetRequiredService<IInlineOutput>(),
+                    serviceProvider.GetRequiredService<IClipboardService>(),
+                    serviceProvider.GetRequiredService<TimeProvider>()),
+                _ => viewModel = new TestChatViewModel(outputs ?? [], approval));
+        });
+
+        var provider = services.BuildServiceProvider();
+        var app = provider.GetRequiredService<TerminaApplication>();
+        return new InlineHarness(
+            provider,
+            terminal,
+            input,
+            events,
+            clipboard,
+            app.Focus,
+            page!,
+            app,
+            viewModel!);
+    }
+
+    private sealed class InlineHarness : IAsyncDisposable
+    {
+        private readonly ServiceProvider _provider;
+
+        public InlineHarness(
+            ServiceProvider provider,
+            VirtualTerminal terminal,
+            VirtualInputSource input,
+            TestEventInputSource events,
+            TestClipboardService clipboard,
+            IFocusManager focus,
+            InlineChatPage page,
+            TerminaApplication app,
+            TestChatViewModel viewModel)
+        {
+            _provider = provider;
+            Terminal = terminal;
+            Input = input;
+            Events = events;
+            Clipboard = clipboard;
+            Focus = focus;
+            Page = page;
+            App = app;
+            ViewModel = viewModel;
+        }
+
+        public VirtualTerminal Terminal { get; }
+
+        public VirtualInputSource Input { get; }
+
+        public TestEventInputSource Events { get; }
+
+        public TestClipboardService Clipboard { get; }
+
+        public IFocusManager Focus { get; }
+
+        public InlineChatPage Page { get; }
+
+        public TerminaApplication App { get; }
+
+        public TestChatViewModel ViewModel { get; }
+
+        public CancellationTokenSource Cancellation { get; } = new(TimeSpan.FromSeconds(10));
+
+        private Task? RunTask { get; set; }
+
+        public Task StartAsync()
+        {
+            RunTask = App.RunAsync(Cancellation.Token);
+            return RunTask;
+        }
+
+        public async Task StopAsync(Task runTask)
+        {
+            Input.EnqueueKey(ConsoleKey.Q, control: true);
+            await runTask;
+        }
+
+        public async Task WaitUntilAsync(Func<bool> condition)
+        {
+            while (!condition())
+            {
+                if (RunTask is { IsCompleted: true })
+                    await RunTask;
+                Cancellation.Token.ThrowIfCancellationRequested();
+                await Task.Yield();
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            Cancellation.Cancel();
+            Cancellation.Dispose();
+            await _provider.DisposeAsync();
+        }
+    }
+
+    private sealed class TestChatViewModel : ChatViewModel
+    {
+        private readonly IReadOnlyList<SessionOutput> _outputs;
+        private readonly ToolInteractionRequest? _approval;
+        private readonly Channel<string> _submissions = Channel.CreateUnbounded<string>();
+        private readonly Channel<string> _approvalSelections = Channel.CreateUnbounded<string>();
+
+        public TestChatViewModel(
+            IReadOnlyList<SessionOutput> outputs,
+            ToolInteractionRequest? approval)
+            : base(
+                new DaemonClient("http://127.0.0.1:1"),
+                TimeProvider.System,
+                new ModelCapabilities { ModelId = "test-model" },
+                new ChatNavigationState(),
+                new NetclawPaths())
+        {
+            _outputs = outputs;
+            _approval = approval;
+        }
+
+        protected override Task InitializeSessionAsync() => Task.CompletedTask;
+
+        public override void OnActivated()
+        {
+            base.OnActivated();
+            foreach (var output in _outputs)
+                PublishOutputForTesting(output);
+            if (_approval is not null)
+                SeedPendingInteractionForTesting(_approval);
+        }
+
+        public override Task SubmitAsync(string text)
+        {
+            _submissions.Writer.TryWrite(text);
+            return Task.CompletedTask;
+        }
+
+        protected override Task SubmitInteractionSelectionAsync(string selectedKey)
+        {
+            _approvalSelections.Writer.TryWrite(selectedKey);
+            PublishOutputForTesting(new TurnCompleted
+            {
+                SessionId = SessionId,
+                TimestampMs = 10,
+                TurnNumber = new TurnNumber(1),
+                Outcome = TurnOutcome.Completed
+            });
+            return Task.CompletedTask;
+        }
+
+        public ValueTask<string> ReadSubmissionAsync(CancellationToken cancellationToken) =>
+            _submissions.Reader.ReadAsync(cancellationToken);
+
+        public ValueTask<string> ReadApprovalAsync(CancellationToken cancellationToken) =>
+            _approvalSelections.Reader.ReadAsync(cancellationToken);
+
+        public void Emit(SessionOutput output)
+        {
+            PublishOutputForTesting(output);
+        }
+    }
+
+    private sealed class TestEventInputSource : IInputSource
+    {
+        private readonly Channel<object> _events = Channel.CreateUnbounded<object>();
+
+        public void Enqueue(IInputEvent input)
+        {
+            _events.Writer.TryWrite(input);
+        }
+
+        public async Task RunAsync(
+            ChannelWriter<object> writer,
+            CancellationToken cancellationToken)
+        {
+            await foreach (var input in _events.Reader.ReadAllAsync(cancellationToken))
+                await writer.WriteAsync(input, cancellationToken);
+        }
+    }
+
+    private sealed class TestClipboardService(bool succeeds) : IClipboardService
+    {
+        public string? LastCopiedText { get; private set; }
+
+        public int CopyCount { get; private set; }
+
+        public bool Copy(string text)
+        {
+            CopyCount++;
+            LastCopiedText = text;
+            return succeeds;
+        }
+    }
+}

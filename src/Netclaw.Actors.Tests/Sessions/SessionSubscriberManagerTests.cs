@@ -86,4 +86,39 @@ public sealed class SessionSubscriberManagerTests : TestKit
         await original.ExpectMsgAsync<ToolResultOutput>(cancellationToken: TestContext.Current.CancellationToken);
         await replacement.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
     }
+
+    [Fact]
+    public async Task Tool_and_subagent_activity_require_the_tool_calls_filter()
+    {
+        var manager = new SessionSubscriberManager();
+        var restricted = CreateTestProbe("restricted");
+        var full = CreateTestProbe("full");
+        var sessionId = new SessionId("channel/thread");
+
+        manager.AddOrUpdate(restricted.Ref, OutputFilter.Text | OutputFilter.Files);
+        manager.AddOrUpdate(full.Ref, OutputFilter.Full);
+
+        manager.Emit(new ToolActivityOutput
+        {
+            SessionId = sessionId,
+            CallId = new ToolCallId("call-1"),
+            ToolName = new ToolName("shell_execute"),
+            TurnId = new TurnId("turn-1"),
+            Phase = "stdout",
+            Summary = "one line"
+        }, OutputFilter.ToolCalls);
+        manager.Emit(new SubAgentOutput
+        {
+            SessionId = sessionId,
+            AgentName = new Netclaw.Actors.SubAgents.AgentName("diagnostics"),
+            Phase = Netclaw.Actors.SubAgents.SubAgentPhase.Activity,
+            RunId = new SubAgentRunId("run-1"),
+            ParentCallId = new ToolCallId("call-1"),
+            ActivityPhase = "testing"
+        }, OutputFilter.ToolCalls);
+
+        await full.ExpectMsgAsync<ToolActivityOutput>(cancellationToken: TestContext.Current.CancellationToken);
+        await full.ExpectMsgAsync<SubAgentOutput>(cancellationToken: TestContext.Current.CancellationToken);
+        await restricted.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
+    }
 }

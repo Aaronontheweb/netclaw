@@ -4,7 +4,9 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Netclaw.Actors.Reminders;
+using Netclaw.Configuration;
 using Netclaw.Media;
+using Netclaw.Security;
 using Netclaw.Tools;
 using static Netclaw.Actors.Sessions.SessionProtocol;
 
@@ -58,6 +60,18 @@ public static class SessionOutputDtoMapper
             CallId = msg.CallId.Value,
             ToolName = msg.ToolName.Value,
             ArgumentsJson = msg.ArgumentsJson
+        },
+
+        ToolActivityOutput msg => new SessionOutputDto
+        {
+            Type = SessionOutputTypes.ToolActivity,
+            SessionId = msg.SessionId.Value,
+            TimestampMs = msg.TimestampMs,
+            CallId = msg.CallId.Value,
+            ToolName = msg.ToolName.Value,
+            TurnId = msg.TurnId.Value,
+            ActivityPhase = msg.Phase,
+            ActivitySummary = msg.Summary
         },
 
         ToolResultOutput msg => new SessionOutputDto
@@ -133,6 +147,10 @@ public static class SessionOutputDtoMapper
             TimestampMs = msg.TimestampMs,
             AgentName = msg.AgentName.Value,
             Phase = msg.Phase.ToString().ToLowerInvariant(),
+            RunId = msg.RunId?.Value,
+            ParentCallId = msg.ParentCallId?.Value,
+            ActivityPhase = msg.ActivityPhase,
+            ActivitySummary = msg.ActivitySummary,
             ToolCountSub = msg.ToolCount,
             SubAgentSuccess = msg.Success,
             SubAgentOutcome = msg.Phase == SubAgents.SubAgentPhase.Completed
@@ -184,7 +202,8 @@ public static class SessionOutputDtoMapper
             TimestampMs = msg.TimestampMs,
             Title = msg.Title,
             TurnCount = msg.TurnCount,
-            RecentMessages = msg.RecentMessages?.Select(m => new ChatMessageDto(m.Role, m.Content)).ToList()
+            RecentMessages = msg.RecentMessages?.Select(m => new ChatMessageDto(m.Role, m.Content)).ToList(),
+            RecentTranscript = msg.RecentTranscript?.ToList()
         },
 
         ToolInteractionRequest msg => new SessionOutputDto
@@ -197,14 +216,17 @@ public static class SessionOutputDtoMapper
             ToolName = msg.ToolName.Value,
             InteractionDisplayText = msg.DisplayText,
             RequesterSenderId = msg.RequesterSenderId?.Value,
+            InteractionRequesterPrincipal = msg.RequesterPrincipal?.ToString(),
             InteractionPatterns = [.. msg.Patterns],
             InteractionCandidateVerbs = [.. msg.CandidateVerbs],
+            InteractionCandidates = [.. msg.Candidates],
             InteractionCwd = msg.Cwd,
             InteractionIsMessy = msg.IsMessy,
             InteractionOptions = [.. msg.Options],
             InteractionHasAdoptedContext = msg.HasAdoptedContext,
             InteractionHasThirdPartyAdoptedContext = msg.HasThirdPartyAdoptedContext,
-            InteractionAdoptedSpeakerIds = [.. msg.AdoptedSpeakerIds]
+            InteractionAdoptedSpeakerIds = [.. msg.AdoptedSpeakerIds],
+            InteractionPersistedAdoptedContext = msg.PersistedAdoptedContext
         },
 
         _ => new SessionOutputDto
@@ -248,6 +270,16 @@ public static class SessionOutputDtoMapper
                 CallId = new Netclaw.Tools.ToolCallId(dto.CallId ?? string.Empty),
                 ToolName = new Netclaw.Tools.ToolName(dto.ToolName ?? "unknown"),
                 ArgumentsJson = dto.ArgumentsJson
+            },
+            SessionOutputTypes.ToolActivity => new ToolActivityOutput
+            {
+                SessionId = sessionId,
+                TimestampMs = dto.TimestampMs,
+                CallId = new ToolCallId(dto.CallId ?? string.Empty),
+                ToolName = new ToolName(dto.ToolName ?? "unknown"),
+                TurnId = new TurnId(dto.TurnId ?? string.Empty),
+                Phase = dto.ActivityPhase ?? "active",
+                Summary = dto.ActivitySummary
             },
             SessionOutputTypes.ToolResult => new ToolResultOutput
             {
@@ -335,7 +367,8 @@ public static class SessionOutputDtoMapper
                 TimestampMs = dto.TimestampMs,
                 Title = dto.Title,
                 TurnCount = dto.TurnCount ?? 0,
-                RecentMessages = dto.RecentMessages
+                RecentMessages = dto.RecentMessages,
+                RecentTranscript = dto.RecentTranscript
             },
             SessionOutputTypes.ToolInteraction => new ToolInteractionRequest
             {
@@ -346,14 +379,22 @@ public static class SessionOutputDtoMapper
                 ToolName = new Netclaw.Tools.ToolName(dto.ToolName ?? "unknown"),
                 DisplayText = dto.InteractionDisplayText ?? string.Empty,
                 RequesterSenderId = dto.RequesterSenderId is { } rsid ? new SenderId(rsid) : null,
+                RequesterPrincipal = Enum.TryParse<PrincipalClassification>(
+                    dto.InteractionRequesterPrincipal,
+                    ignoreCase: true,
+                    out var requesterPrincipal)
+                        ? requesterPrincipal
+                        : null,
                 HasAdoptedContext = dto.InteractionHasAdoptedContext ?? false,
                 HasThirdPartyAdoptedContext = dto.InteractionHasThirdPartyAdoptedContext ?? false,
                 AdoptedSpeakerIds = dto.InteractionAdoptedSpeakerIds ?? [],
                 Patterns = dto.InteractionPatterns ?? [],
                 CandidateVerbs = dto.InteractionCandidateVerbs ?? [],
+                Candidates = dto.InteractionCandidates ?? [],
                 Cwd = dto.InteractionCwd,
                 IsMessy = dto.InteractionIsMessy ?? false,
-                Options = dto.InteractionOptions ?? []
+                Options = dto.InteractionOptions ?? [],
+                PersistedAdoptedContext = dto.InteractionPersistedAdoptedContext ?? false
             },
             _ => new ErrorOutput
             {
@@ -361,7 +402,7 @@ public static class SessionOutputDtoMapper
                 TimestampMs = dto.TimestampMs,
                 Message = $"Unknown output type from daemon: {dto.Type}"
             }
-            };
+        };
     }
 
     private static SubAgentRunOutcome ParseSubAgentOutcome(string? value, bool? success)
@@ -375,9 +416,12 @@ public static class SessionOutputDtoMapper
 
     private static SubAgentOutput MapSubAgentOutput(SessionOutputDto dto, SessionId sessionId)
     {
-        var phase = dto.Phase?.Equals("completed", StringComparison.OrdinalIgnoreCase) == true
-            ? SubAgents.SubAgentPhase.Completed
-            : SubAgents.SubAgentPhase.Started;
+        var phase = dto.Phase?.ToLowerInvariant() switch
+        {
+            "completed" => SubAgents.SubAgentPhase.Completed,
+            "activity" => SubAgents.SubAgentPhase.Activity,
+            _ => SubAgents.SubAgentPhase.Started
+        };
 
         return new SubAgentOutput
         {
@@ -385,6 +429,10 @@ public static class SessionOutputDtoMapper
             TimestampMs = dto.TimestampMs,
             AgentName = new SubAgents.AgentName(dto.AgentName ?? "unknown"),
             Phase = phase,
+            RunId = string.IsNullOrWhiteSpace(dto.RunId) ? null : new SubAgentRunId(dto.RunId),
+            ParentCallId = string.IsNullOrWhiteSpace(dto.ParentCallId) ? null : new ToolCallId(dto.ParentCallId),
+            ActivityPhase = dto.ActivityPhase,
+            ActivitySummary = dto.ActivitySummary,
             ToolCount = dto.ToolCountSub ?? 0,
             Success = dto.SubAgentSuccess ?? false,
             Outcome = phase == SubAgents.SubAgentPhase.Completed

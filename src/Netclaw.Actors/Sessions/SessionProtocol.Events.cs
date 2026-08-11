@@ -50,6 +50,11 @@ public static partial class SessionProtocol
         public BackgroundJobId? SourceBackgroundJobId { get; init; }
 
         public IReadOnlyList<InputId> ConsumedInputIds { get; init; } = [];
+        /// <summary>
+        /// Settled structured entries for this turn. Empty for legacy records.
+        /// </summary>
+        public IReadOnlyList<SessionTranscriptEntry> TranscriptEntries { get; init; } =
+            Array.Empty<SessionTranscriptEntry>();
 
         public DateTimeOffset RecordedAt => DateTimeOffset.FromUnixTimeMilliseconds(RecordedAtMs);
 
