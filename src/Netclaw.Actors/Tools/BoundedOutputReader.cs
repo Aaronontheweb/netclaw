@@ -33,13 +33,31 @@ internal static class BoundedOutputReader
     /// cap (reads the whole stream). Returns the captured text and whether it was
     /// truncated.
     /// </summary>
+    /// <remarks>
+    /// A cancelled <paramref name="ct"/> stops the read and returns whatever was
+    /// captured so far, instead of throwing. Callers pass a real, boundable token
+    /// (not <see cref="CancellationToken.None"/>): a process pipe reaches EOF only
+    /// when every process holding its write end closes it, and a forked or
+    /// backgrounded grandchild (a daemon, a `cmd &amp;` job) can hold that write
+    /// end open long after the direct child process has exited. Without a way to
+    /// stop the read, the drain would hang for the grandchild's full life span.
+    /// </remarks>
     public static async Task<(string Text, bool Truncated)> DrainToWindowAsync(
         TextReader reader, int budget, CancellationToken ct)
     {
         if (budget <= 0)
         {
-            var all = await reader.ReadToEndAsync(ct);
-            return (all, false);
+            try
+            {
+                var all = await reader.ReadToEndAsync(ct);
+                return (all, false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // ReadToEndAsync has no partial-read API, so a cancellation here
+                // returns nothing captured rather than hanging past the bound.
+                return (string.Empty, true);
+            }
         }
 
         var acc = new BoundedOutputAccumulator(budget);
@@ -50,6 +68,11 @@ internal static class BoundedOutputReader
             int read;
             while ((read = await reader.ReadAsync(buf.AsMemory(), ct)) > 0)
                 acc.Append(buf.AsSpan(0, read));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The source never reached EOF within the caller's bound. Return
+            // whatever was captured instead of discarding it or hanging.
         }
         finally
         {

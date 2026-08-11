@@ -18,6 +18,7 @@ public class ShellToolTests
     private readonly ShellTool _tool = CreateTool();
 
     public static bool IsWindows => OperatingSystem.IsWindows();
+    public static bool IsPosix => !OperatingSystem.IsWindows();
 
     private static ShellTool CreateTool(ToolConfig? config = null)
     {
@@ -145,6 +146,33 @@ public class ShellToolTests
         var result = await tool.ExecuteAsync(args, context, CancellationToken.None);
 
         Assert.Contains("timed out", result);
+    }
+
+    [SlopwatchSuppress("SW001", "Reproduces a backgrounded child holding the pipe open; the case needs POSIX `&` semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "Requires POSIX background-job (`&`) semantics.")]
+    public async Task Direct_process_exit_with_backgrounded_child_holding_pipe_open_returns_promptly()
+    {
+        // The direct bash process exits at once. The backgrounded sleep
+        // inherits stdout/stderr and holds the pipe write end open for its
+        // own life span — the same shape as a self-daemonizing process, for
+        // example nginx. The tool must return once bash exits. It must not
+        // wait for the still-running child.
+        var tool = CreateTool();
+        var args = ToolInput.Create("Command", "sleep 20 & exit 0");
+        var context = TestToolExecutionContext.CreateBound("test/thread", Path.GetTempPath(), new TestToolExecutionContextOptions
+        {
+            Audience = TrustAudience.Personal,
+            ExecutionTimeout = new ToolExecutionTimeout(TimeSpan.FromSeconds(90))
+        });
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var result = await tool.ExecuteAsync(args, context, TestContext.Current.CancellationToken);
+        stopwatch.Stop();
+
+        Assert.Contains("Exit code: 0", result);
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(5),
+            $"The tool must return soon after the direct process exits. It took {stopwatch.Elapsed}.");
     }
 
     [Fact]
