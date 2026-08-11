@@ -157,6 +157,26 @@ For example, a healthy feed can update while another feed returns HTTP 500. The 
 A rejected skill retains its prior bytes and receipt. Other accepted skills from that feed can still update.
 Download failures do not create security alerts. This change does not alter the existing scanner or alert policy.
 
+### 8) Interactive Chat
+
+- `netclaw chat [--session <id>]`
+
+Behavior:
+
+- starts a Termina application with `Inline` presentation
+- selects `NativeTerminal` scroll input
+- leaves settled output in the primary terminal buffer
+- exits any full-screen session picker before chat starts
+- fails visibly when inline mode cannot start
+- never selects full-screen chat as a silent fallback
+
+Setup, config, provider, model, and session picker applications retain
+`FullScreen` presentation.
+
+The chat composer uses bare `Enter` for submit and `Shift+Enter` for a newline.
+A pending approval owns input before the composer. `Ctrl+O` changes approval
+detail without a decision.
+
 ## Output and Exit Codes
 
 - default output: human readable text
@@ -173,6 +193,7 @@ Download failures do not create security alerts. This change does not alter the 
 - read-only default for all inspection commands
 - mutating commands require explicit confirmation or `--yes`, except `skill sync`; that command explicitly requests the existing daemon job
 - no command may silently broaden exposure policy
+- no TUI command may silently change its terminal presentation mode
 
 ## Onboarding State Persistence
 
