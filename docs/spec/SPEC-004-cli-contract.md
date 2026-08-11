@@ -94,6 +94,26 @@ Behavior:
 - smoke test command runs optional live integration checks outside CI-required
   test suite
 
+### 7) Interactive Chat
+
+- `netclaw chat [--session <id>]`
+
+Behavior:
+
+- starts a Termina application with `Inline` presentation
+- selects `NativeTerminal` scroll input
+- leaves settled output in the primary terminal buffer
+- exits any full-screen session picker before chat starts
+- fails visibly when inline mode cannot start
+- never selects full-screen chat as a silent fallback
+
+Setup, config, provider, model, and session picker applications retain
+`FullScreen` presentation.
+
+The chat composer uses bare `Enter` for submit and `Shift+Enter` for a newline.
+A pending approval owns input before the composer. `Ctrl+O` changes approval
+detail without a decision.
+
 ## Output and Exit Codes
 
 - default output: human readable text
@@ -110,6 +130,7 @@ Behavior:
 - read-only default for all inspection commands
 - mutating commands require explicit confirmation or `--yes`
 - no command may silently broaden exposure policy
+- no TUI command may silently change its terminal presentation mode
 
 ## Onboarding State Persistence
 
