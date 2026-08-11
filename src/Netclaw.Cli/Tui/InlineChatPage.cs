@@ -299,11 +299,15 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         content.WithChild(new TextNode(help)
             .WithForeground(Color.Gray));
 
-        return new PanelNode()
+        var panel = new PanelNode()
             .WithBorder(BorderStyle.Single)
             .WithBorderColor(Color.BrightBlue)
             .WithContent(content)
-            .Height(Math.Max(8, _terminal.Height - 1));
+            .Height(Math.Max(8, _terminal.Height - 4));
+
+        return Layouts.Vertical()
+            .WithChild(Layouts.Empty().Height(1))
+            .WithChild(panel);
     }
 
     private static string RemoveDuplicateInspectorLabel(string text, string label)
@@ -552,10 +556,8 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     private ILayoutNode BuildStatusLine()
     {
         var status = ViewModel.StatusMessage.Value;
-        var usage = _state.Transcript.LastOrDefault(block => block.Kind == ChatBlockKind.Usage)?.Summary;
         var keys = StatusKeys(_terminal.Width, _state.PendingApproval is not null, ShowsComposer(_state));
-        var usagePart = usage is null || _terminal.Width < 120 ? string.Empty : $" · {usage}";
-        var text = ChatPresentationRenderer.OneLine($" {status} · {keys}{usagePart}", _terminal.Width);
+        var text = ChatPresentationRenderer.OneLine($" {status} · {keys}", _terminal.Width);
         return new TextNode(text).WithForeground(StatusColor(status));
     }
 
