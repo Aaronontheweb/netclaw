@@ -87,4 +87,24 @@ public sealed class SessionConfigDefaultsTests
 
         Assert.Equal(0.8, bound.Tuning.CompactionThreshold);
     }
+
+    [Fact]
+    public void BindFromConfiguration_binds_nested_StreamingRetryPolicy_StreamInactivityTimeout()
+    {
+        // Cross-boundary contract: an operator-set Session:Tuning:StreamingRetryPolicy
+        // value (schema-validated as a HH:mm:ss string) must reach the RetryPolicy
+        // record StreamStallGuardChatClient actually reads at runtime.
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Session:Tuning:StreamingRetryPolicy:MaxRetries"] = "5",
+                ["Session:Tuning:StreamingRetryPolicy:StreamInactivityTimeout"] = "00:01:30"
+            })
+            .Build();
+
+        var bound = SessionConfig.BindFromConfiguration(config.GetSection("Session"));
+
+        Assert.Equal(5, bound.Tuning.StreamingRetryPolicy.MaxRetries);
+        Assert.Equal(TimeSpan.FromMinutes(1.5), bound.Tuning.StreamingRetryPolicy.StreamInactivityTimeout);
+    }
 }

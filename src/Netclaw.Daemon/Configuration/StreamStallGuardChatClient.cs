@@ -6,6 +6,7 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Netclaw.Actors.Sessions.Pipelines;
 using Netclaw.Configuration;
 
 namespace Netclaw.Daemon.Configuration;
@@ -17,12 +18,21 @@ namespace Netclaw.Daemon.Configuration;
 /// with no more tokens, no error, and no close — the actor-level watchdog still
 /// catches this eventually, but only after burning most of its budget.
 /// <para>
-/// Only the gap <b>after</b> the first update is bounded. Time to first byte is left
-/// to the existing, more generous per-call watchdog, because a self-hosted backend
-/// can be legitimately silent for minutes during cold prefill with no keepalive to
-/// reset a tighter timer. Once streaming starts, every update — including a
+/// Only the gap <b>after</b> the first <i>substantive</i> update is bounded — the
+/// same distinction <see cref="StreamingResponseReader.IsSubstantiveUpdate"/> and
+/// <c>ProcessingWatchdog</c> already draw, reused here rather than re-derived. Time to
+/// first substantive output is left to the existing, more generous per-call watchdog,
+/// because a self-hosted backend can be legitimately silent for minutes during cold
+/// prefill, and a content-free keepalive or reasoning-only delta must not promote a
+/// cold prefill into the tight budget. Once armed, every later update — including a
 /// content-free keepalive — resets the inactivity clock, so a slow-but-alive stream
 /// is never falsely aborted.
+/// </para>
+/// <para>
+/// The timer measures provider silence only. It is disarmed immediately after each
+/// update arrives and re-armed only just before asking for the next one, so time a
+/// downstream consumer spends holding an already-yielded update is never counted
+/// against the provider.
 /// </para>
 /// <para>
 /// Sits directly below <see cref="RetryingChatClient"/> in the composed pipeline
@@ -67,8 +77,8 @@ public sealed class StreamStallGuardChatClient : DelegatingChatClient
         }
 
         using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        // Not armed until the first update arrives (see class remarks) — the initial
-        // due time is infinite.
+        // Not armed until the first substantive update arrives (see class remarks) —
+        // the initial due time is infinite.
         using var timer = _timeProvider.CreateTimer(
             static state => ((CancellationTokenSource)state!).Cancel(),
             stallCts,
@@ -77,12 +87,12 @@ public sealed class StreamStallGuardChatClient : DelegatingChatClient
 
         var enumerator = base.GetStreamingResponseAsync(messages, options, stallCts.Token)
             .GetAsyncEnumerator(stallCts.Token);
-        var seenFirstUpdate = false;
+        var armed = false;
         try
         {
             while (true)
             {
-                if (seenFirstUpdate)
+                if (armed)
                     timer.Change(_inactivityTimeout, Timeout.InfiniteTimeSpan);
 
                 bool hasNext;
@@ -99,16 +109,24 @@ public sealed class StreamStallGuardChatClient : DelegatingChatClient
                     // the actor's existing TimeoutException -> ErrorCategory.Timeout
                     // classification, unchanged.
                     _logger.LogWarning(
-                        "LLM stream stalled — no update for {TimeoutSeconds:F0}s after the first delta, aborting",
+                        "LLM stream stalled — no update for {TimeoutSeconds:F0}s after the first substantive delta, aborting",
                         _inactivityTimeout.TotalSeconds);
                     throw new TimeoutException(
-                        $"LLM stream produced no update for {_inactivityTimeout.TotalSeconds:F0}s after the first delta (stall detected)");
+                        $"LLM stream produced no update for {_inactivityTimeout.TotalSeconds:F0}s after the first substantive delta (stall detected)");
                 }
+
+                // The provider produced something (or ended cleanly) within the window —
+                // disarm before yielding so the timer never also measures how long the
+                // downstream consumer holds this update. It is re-armed above, just
+                // before the next MoveNextAsync, so it measures provider silence only.
+                timer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
 
                 if (!hasNext)
                     yield break;
 
-                seenFirstUpdate = true;
+                if (!armed && StreamingResponseReader.IsSubstantiveUpdate(enumerator.Current))
+                    armed = true;
+
                 yield return enumerator.Current;
             }
         }

@@ -591,6 +591,40 @@ public sealed class ConfigSchemaDoctorCheckTests
     }
 
     [Fact]
+    public async Task ReturnsPass_WhenSessionTuningStreamingRetryPolicySet()
+    {
+        // Session.Tuning.StreamingRetryPolicy (including the mid-stream inactivity
+        // guard's StreamInactivityTimeout) must be settable by an operator — it is
+        // not enough for it to bind correctly; Session.Tuning uses
+        // additionalProperties: false, so the schema must list it explicitly.
+        var basePath = CreateTempBasePath();
+        var paths = new NetclawPaths(basePath);
+        paths.EnsureDirectoriesExist();
+
+        await File.WriteAllTextAsync(paths.NetclawConfigPath,
+            """
+            {
+              "configVersion": 1,
+              "Session": {
+                "Tuning": {
+                  "StreamingRetryPolicy": {
+                    "MaxRetries": 5,
+                    "BaseDelay": "00:00:02",
+                    "MaxDelay": "00:01:00",
+                    "StreamInactivityTimeout": "00:00:00"
+                  }
+                }
+              }
+            }
+            """, TestContext.Current.CancellationToken);
+
+        var check = new ConfigSchemaDoctorCheck(paths);
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Pass, result.Severity);
+    }
+
+    [Fact]
     public async Task ReturnsError_WhenStaleSessionMaxToolCallsPerTurnPresent()
     {
         // Regression guard for the rename: the old MaxToolCallsPerTurn property

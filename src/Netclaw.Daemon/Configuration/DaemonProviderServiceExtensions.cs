@@ -72,8 +72,8 @@ public static class DaemonProviderServiceExtensions
         // (Session:Tuning:StreamingRetryPolicy), defaulting to the standard policy.
         services.AddSingleton(retryPolicy ?? new RetryPolicy());
 
-        // Composes the cross-cutting middleware (Logging → Retry) around each provider
-        // pipeline via ChatClientBuilder.
+        // Composes the cross-cutting middleware (Logging → Retry → StreamStallGuard)
+        // around each provider pipeline via ChatClientBuilder.
         services.AddSingleton(sp => new PipelineChatClientFactory(
             sp.GetRequiredService<ProviderPluginFactory>(),
             sp.GetRequiredService<RetryPolicy>(),

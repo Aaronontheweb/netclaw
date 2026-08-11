@@ -103,6 +103,70 @@ public sealed class StreamStallGuardChatClientTests
     }
 
     [Fact]
+    public async Task KeepaliveOnlyUpdates_DoNotArmTheGuard_BeforeAnySubstantiveContent()
+    {
+        // Content-free keepalives (e.g. llama-server's prompt_progress heartbeat)
+        // must not arm the tight inactivity timer — only a substantive update
+        // (StreamingResponseReader.IsSubstantiveUpdate) may promote it. Two keepalives
+        // arrive, then the provider takes a long-but-legitimate time (a cold prefill,
+        // not a stall) to produce the first substantive delta: crossing what would be
+        // the inactivity window must not abort it, because no substantive content has
+        // arrived yet to arm the guard.
+        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var prefillDelay = Policy.StreamInactivityTimeout * 4;
+        var leaf = new FakeChatClient(streamHandler: (_, _, ct) => KeepaliveTwiceThenDelayedSubstantive(time, prefillDelay, ct));
+        var client = new StreamStallGuardChatClient(leaf, Policy, NullLogger.Instance, time);
+
+        await using var enumerator = client
+            .GetStreamingResponseAsync([new ChatMessage(ChatRole.User, "hi")], cancellationToken: TestContext.Current.CancellationToken)
+            .GetAsyncEnumerator(TestContext.Current.CancellationToken);
+
+        Assert.True(await enumerator.MoveNextAsync()); // keepalive 1 — non-substantive
+        Assert.True(await enumerator.MoveNextAsync()); // keepalive 2 — still non-substantive
+
+        var pending = enumerator.MoveNextAsync().AsTask();
+
+        // Cross well past what would be the inactivity window if a keepalive had
+        // (wrongly) armed the guard — the leaf is still legitimately working (a long
+        // cold prefill), not stalled.
+        time.Advance(Policy.StreamInactivityTimeout * 2);
+        Assert.False(pending.IsCompleted);
+
+        // Finish the (legitimately long) prefill — the first substantive update still
+        // arrives cleanly, proving a keepalive never armed the guard.
+        time.Advance(prefillDelay - Policy.StreamInactivityTimeout * 2);
+        Assert.True(await pending);
+    }
+
+    [Fact]
+    public async Task SlowConsumer_HoldingAnUpdate_DoesNotCountAgainstTheInactivityWindow()
+    {
+        // The inactivity timer must measure provider silence only, not how long the
+        // downstream consumer holds an already-yielded update before asking for the
+        // next one. Two substantive chunks arm and then satisfy the guard once; the
+        // consumer then sits on chunk2 far longer than the inactivity window before
+        // requesting chunk3 — that gap must not be held against the provider, which
+        // answers chunk3 promptly once asked.
+        var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var leaf = new FakeChatClient(streamHandler: (_, _, ct) => YieldThreeQuickly(ct));
+        var client = new StreamStallGuardChatClient(leaf, Policy, NullLogger.Instance, time);
+
+        await using var enumerator = client
+            .GetStreamingResponseAsync([new ChatMessage(ChatRole.User, "hi")], cancellationToken: TestContext.Current.CancellationToken)
+            .GetAsyncEnumerator(TestContext.Current.CancellationToken);
+
+        Assert.True(await enumerator.MoveNextAsync()); // chunk1 — arms the guard
+        Assert.True(await enumerator.MoveNextAsync()); // chunk2 — the wait for this one was itself timer-guarded
+
+        // Consumer holds chunk2 far longer than the inactivity window before asking
+        // for chunk3. The timer that guarded the (already-satisfied) wait for chunk2
+        // must have been disarmed on arrival — it must not still be counting down.
+        time.Advance(Policy.StreamInactivityTimeout * 10);
+
+        Assert.True(await enumerator.MoveNextAsync()); // chunk3 — must still succeed, not a false abort
+    }
+
+    [Fact]
     public async Task ZeroTimeout_DisablesTheGuard()
     {
         var time = new FakeTimeProvider(DateTimeOffset.UtcNow);
@@ -158,5 +222,32 @@ public sealed class StreamStallGuardChatClientTests
     {
         await Task.Delay(delay, time, cancellationToken);
         yield return new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [new TextContent("first")] };
+    }
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> KeepaliveTwiceThenDelayedSubstantive(
+        TimeProvider time, TimeSpan delay,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        // A content-free keepalive: no text/thinking/tool-call content and no finish
+        // reason, matching StreamingResponseReader.IsSubstantiveUpdate's "false" case.
+        yield return new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [] };
+        yield return new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [] };
+
+        await Task.Delay(delay, time, cancellationToken);
+        yield return new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [new TextContent("first substantive")] };
+    }
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> YieldThreeQuickly(
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await Task.Yield();
+        cancellationToken.ThrowIfCancellationRequested();
+        yield return new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [new TextContent("chunk1")] };
+        await Task.Yield();
+        cancellationToken.ThrowIfCancellationRequested();
+        yield return new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [new TextContent("chunk2")] };
+        await Task.Yield();
+        cancellationToken.ThrowIfCancellationRequested();
+        yield return new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [new TextContent("chunk3")] };
     }
 }

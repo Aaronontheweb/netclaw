@@ -263,6 +263,34 @@
               "minimum": 0,
               "default": 2000,
               "description": "Character budget for memory content injected by automatic recall per turn. Items are admitted in rank order until the budget is exhausted; whole items are dropped, never truncated. Set to 0 to disable."
+            },
+            "StreamingRetryPolicy": {
+              "type": "object",
+              "description": "Retry policy for transient streaming LLM failures (5xx, 429), plus the mid-stream inactivity guard. Only pre-first-chunk failures are retried; mid-stream failures are not, because the partial response cannot be reconstructed.",
+              "properties": {
+                "MaxRetries": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "default": 3,
+                  "description": "Maximum retry attempts for a transient streaming failure."
+                },
+                "BaseDelay": {
+                  "type": "string",
+                  "default": "00:00:01",
+                  "description": "Base retry backoff delay in HH:mm:ss format, before jitter and exponential growth."
+                },
+                "MaxDelay": {
+                  "type": "string",
+                  "default": "00:00:30",
+                  "description": "Retry backoff delay cap in HH:mm:ss format."
+                },
+                "StreamInactivityTimeout": {
+                  "type": "string",
+                  "default": "00:00:45",
+                  "description": "Maximum gap between streaming updates once a stream has started producing substantive output, in HH:mm:ss format. Resets on every later update, including a content-free keepalive. Does not apply before the first substantive update — time to first substantive output stays governed by the coarser per-call watchdog. Set to 00:00:00 to disable this guard."
+                }
+              },
+              "additionalProperties": false
             }
           },
           "additionalProperties": false
