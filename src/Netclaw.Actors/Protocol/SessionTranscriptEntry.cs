@@ -45,6 +45,8 @@ public sealed record SessionTranscriptEntry
 
     public string? ArgumentsJson { get; init; }
 
+    public string? Rationale { get; init; }
+
     public string? BatchId { get; init; }
 
     public int? BatchSize { get; init; }

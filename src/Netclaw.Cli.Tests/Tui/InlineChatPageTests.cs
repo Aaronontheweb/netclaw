@@ -410,6 +410,12 @@ public sealed class InlineChatPageTests
     {
         var outputs = new SessionOutput[]
         {
+            new SessionJoined
+            {
+                SessionId = SessionId,
+                TimestampMs = 0,
+                TurnCount = 0
+            },
             new ThinkingDeltaOutput("Compare both results")
             {
                 SessionId = SessionId,
@@ -448,10 +454,16 @@ public sealed class InlineChatPageTests
             && harness.Terminal.Contains("reviewer"));
 
         var screen = harness.Terminal.ToString();
-        Assert.Contains("Tool  search", screen, StringComparison.Ordinal);
-        Assert.Contains("Tool  fetch", screen, StringComparison.Ordinal);
+        Assert.Contains("Inspect call-a", screen, StringComparison.Ordinal);
+        Assert.Contains("Inspect call-b", screen, StringComparison.Ordinal);
+        Assert.Contains("· search", screen, StringComparison.Ordinal);
+        Assert.Contains("· fetch", screen, StringComparison.Ordinal);
         Assert.Contains("Agent  reviewer", screen, StringComparison.Ordinal);
         Assert.Contains("MESSAGE", screen, StringComparison.Ordinal);
+        Assert.True(screen.IndexOf("Inspect call-a", StringComparison.Ordinal)
+                    < screen.IndexOf("connected", StringComparison.Ordinal));
+        Assert.True(screen.IndexOf("connected", StringComparison.Ordinal)
+                    < screen.IndexOf("MESSAGE", StringComparison.Ordinal));
         await harness.StopAsync(runTask);
     }
 
@@ -572,8 +584,9 @@ public sealed class InlineChatPageTests
         };
         await using var harness = CreateHarness(outputs: outputs);
         var runTask = harness.StartAsync();
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("compact line"));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Inspect call-a"));
 
+        Assert.DoesNotContain("compact line", harness.Terminal.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain("complete hidden line", harness.Terminal.ToString(), StringComparison.Ordinal);
         harness.Input.EnqueueKey(ConsoleKey.O, control: true);
         await harness.WaitUntilAsync(() =>
@@ -685,7 +698,7 @@ public sealed class InlineChatPageTests
         };
         await using var harness = CreateHarness(outputs: outputs);
         var runTask = harness.StartAsync();
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("first line"));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Inspect call-a"));
         harness.Input.EnqueueKey(ConsoleKey.O, control: true);
         await harness.WaitUntilAsync(() => harness.Terminal.Contains("INSPECTOR"));
 
@@ -821,6 +834,7 @@ public sealed class InlineChatPageTests
         TimestampMs = timestamp,
         CallId = new ToolCallId(callId),
         ToolName = new ToolName(name),
+        Rationale = $"Inspect {callId}",
         ArgumentsJson = $"{{\"call\":\"{callId}\"}}"
     };
 

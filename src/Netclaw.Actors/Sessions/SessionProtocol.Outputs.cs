@@ -76,6 +76,9 @@ public static partial class SessionProtocol
         /// <summary>Number of calls in the model tool-call batch.</summary>
         public int BatchSize { get; init; } = 1;
 
+        /// <summary>The model-supplied intent for this call.</summary>
+        public string? Rationale { get; init; }
+
         /// <summary>
         /// Tool arguments as a JSON string. Kept opaque at the protocol level —
         /// tool executors parse based on their schema.

@@ -254,6 +254,8 @@
       white-space: pre-wrap;
     }
 
+    .reply-passage + .reply-passage { margin-top: 15px; }
+
     .work-trace {
       margin: 7px 0 10px;
       padding: 9px 11px;
@@ -540,6 +542,7 @@
     <div class="controls" aria-label="Mock-up controls">
       <div class="control-group" aria-label="State">
         <button class="state-button active" data-state="active">Active</button>
+        <button class="state-button" data-state="sequence">Sequence</button>
         <button class="state-button" data-state="approval">Approval</button>
         <button class="state-button" data-state="settled">Settled</button>
       </div>
@@ -570,15 +573,6 @@
         </div>
 
         <section class="screen show-regions" data-screen="active">
-          <div class="session-strip region">
-            <span class="region-tag">Session Strip</span>
-            <span class="brand">NETCLAW</span>
-            <span class="session-name">Casual Greeting Exchange</span>
-            <span class="optional">deepseek-v4-flash-dspark</span>
-            <span class="optional">18%</span>
-            <span class="connection optional">connected</span>
-          </div>
-
           <div class="transcript region">
             <span class="region-tag">Transcript</span>
             <div class="speaker-line"><span class="speaker you">You</span><span>13:35</span></div>
@@ -624,6 +618,95 @@
             <div class="preview">Then tell me which setting wins.</div>
           </div>
 
+          <div class="session-strip region">
+            <span class="region-tag">Session Strip</span>
+            <span class="brand">NETCLAW</span>
+            <span class="session-name">Casual Greeting Exchange</span>
+            <span class="optional">deepseek-v4-flash-dspark</span>
+            <span class="optional">18%</span>
+            <span class="connection optional">connected</span>
+          </div>
+
+          <div class="composer region">
+            <span class="region-tag">Composer</span>
+            <div class="composer-title">MESSAGE</div>
+            <div class="composer-input">Ask Netclaw...</div>
+          </div>
+
+          <div class="pulse-line region">
+            <span class="region-tag">Pulse Line</span>
+            <span class="pulse thinking-pulse">Thinking.</span>
+            <span class="keys">Enter send&nbsp;&nbsp; Shift+Enter newline&nbsp;&nbsp; Esc x2 clear&nbsp;&nbsp; <span class="less-important">Ctrl+O inspect&nbsp;&nbsp; Ctrl+Q quit</span></span>
+          </div>
+        </section>
+
+        <section class="screen" data-screen="sequence" hidden>
+          <div class="transcript region">
+            <span class="region-tag">Transcript</span>
+            <div class="speaker-line"><span class="speaker you">You</span><span>13:41</span></div>
+            <div class="prompt-surface region">
+              <span class="region-tag">Prompt Surface</span>
+              Which Netclaw binary is active, and does it match this source tree?
+            </div>
+
+            <div class="reply-stack region">
+              <span class="region-tag">Reply Stack</span>
+              <div class="speaker-line">
+                <span class="speaker netclaw">Netclaw</span><span>13:41</span><span class="state">LIVE</span>
+              </div>
+
+              <div class="reply-passage region">
+                <span class="region-tag">Reply Passage 1</span>
+                <div class="reply-prose">I found the installed binary. It reports version 2.47.0.</div>
+                <div class="work-trace region">
+                  <span class="region-tag">Work Trace 1</span>
+                  <div class="work-title"><strong>Completed work</strong><span>1 call</span></div>
+                  <div class="tool-row done">
+                    <span class="glyph">✓</span>
+                    <span><span class="action">Check the installed Netclaw version</span> <span class="detail optional">· shell_execute</span></span>
+                    <span class="duration">0.2s</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="reply-passage region">
+                <span class="region-tag">Reply Passage 2</span>
+                <div class="reply-prose">The source tree can differ from that binary. I will compare its package and release metadata.</div>
+                <div class="work-trace region">
+                  <span class="region-tag">Work Trace 2</span>
+                  <div class="work-title"><strong>Current work</strong><span>2 active · 1 complete</span></div>
+                  <div class="parallel-label">Parallel work · 3 calls</div>
+                  <div class="tool-row child done">
+                    <span class="glyph">✓</span>
+                    <span><span class="action">Read the package version</span> <span class="detail optional">· file_read</span></span>
+                    <span class="duration">0.1s</span>
+                  </div>
+                  <div class="tool-row child">
+                    <span class="glyph spinner">/</span>
+                    <span><span class="action">Read the release notes</span> <span class="detail optional">· file_read</span></span>
+                    <span class="duration">0.6s</span>
+                  </div>
+                  <div class="flyby">Scanning the current release section...</div>
+                  <div class="tool-row child">
+                    <span class="glyph spinner">/</span>
+                    <span><span class="action">Compare the published daemon</span> <span class="detail optional">· shell_execute</span></span>
+                    <span class="duration">0.6s</span>
+                  </div>
+                  <div class="flyby">Reading assembly and file versions...</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="session-strip region">
+            <span class="region-tag">Session Strip</span>
+            <span class="brand">NETCLAW</span>
+            <span class="session-name">Local Binary Audit</span>
+            <span class="optional">deepseek-v4-flash-dspark</span>
+            <span class="optional">19%</span>
+            <span class="connection optional">connected</span>
+          </div>
+
           <div class="composer region">
             <span class="region-tag">Composer</span>
             <div class="composer-title">MESSAGE</div>
@@ -638,15 +721,6 @@
         </section>
 
         <section class="screen" data-screen="approval" hidden>
-          <div class="session-strip region">
-            <span class="region-tag">Session Strip</span>
-            <span class="brand">NETCLAW</span>
-            <span class="session-name">Casual Greeting Exchange</span>
-            <span class="optional">deepseek-v4-flash-dspark</span>
-            <span class="optional">18%</span>
-            <span class="connection optional">connected</span>
-          </div>
-
           <div class="transcript region">
             <span class="region-tag">Transcript</span>
             <div class="speaker-line"><span class="speaker you">You</span><span>13:35</span></div>
@@ -685,6 +759,15 @@
             </div>
           </div>
 
+          <div class="session-strip region">
+            <span class="region-tag">Session Strip</span>
+            <span class="brand">NETCLAW</span>
+            <span class="session-name">Casual Greeting Exchange</span>
+            <span class="optional">deepseek-v4-flash-dspark</span>
+            <span class="optional">18%</span>
+            <span class="connection optional">connected</span>
+          </div>
+
           <div class="pulse-line decision region">
             <span class="region-tag">Pulse Line</span>
             <span class="pulse">Decision needed</span>
@@ -693,15 +776,6 @@
         </section>
 
         <section class="screen" data-screen="settled" hidden>
-          <div class="session-strip region">
-            <span class="region-tag">Session Strip</span>
-            <span class="brand">NETCLAW</span>
-            <span class="session-name">Casual Greeting Exchange</span>
-            <span class="optional">deepseek-v4-flash-dspark</span>
-            <span class="optional">19%</span>
-            <span class="connection optional">connected</span>
-          </div>
-
           <div class="transcript region">
             <span class="region-tag">Transcript</span>
             <div class="speaker-line"><span class="speaker you">You</span><span>13:35</span></div>
@@ -722,6 +796,15 @@ The named model definition overrides the provider default.</div>
 
             <div class="speaker-line"><span class="speaker you">You</span><span>13:36</span></div>
             <div class="prompt-surface">Then tell me which setting wins.</div>
+          </div>
+
+          <div class="session-strip region">
+            <span class="region-tag">Session Strip</span>
+            <span class="brand">NETCLAW</span>
+            <span class="session-name">Casual Greeting Exchange</span>
+            <span class="optional">deepseek-v4-flash-dspark</span>
+            <span class="optional">19%</span>
+            <span class="connection optional">connected</span>
           </div>
 
           <div class="composer region">
@@ -758,12 +841,25 @@ The named model definition overrides the provider default.</div>
           <code>Transcript</code><span>Immutable terminal scrollback.</span>
           <code>Prompt Surface</code><span>One user message.</span>
           <code>Reply Stack</code><span>One complete Netclaw reply.</span>
+          <code>Reply Passage</code><span>One model step with its prose and work.</span>
           <code>Work Trace</code><span>Transient tools and sub-agents.</span>
           <code>Decision Sheet</code><span>Approval context and choices.</span>
           <code>Queue Shelf</code><span>Prompts that wait for the next Turn.</span>
           <code>Composer</code><span>Persistent message input.</span>
           <code>Pulse Line</code><span>Wait state and valid keys.</span>
         </div>
+      </section>
+
+      <section class="note-card">
+        <h2>Chronology contract</h2>
+        <p>The Reply Stack keeps the order that the operator experienced.</p>
+        <ul>
+          <li>A completed call remains as a receipt while later calls run.</li>
+          <li>New model prose starts a new Reply Passage in the same Turn.</li>
+          <li>The next Work Trace follows the prose that explains that work.</li>
+          <li>Parallel calls share one group and retain separate states.</li>
+          <li>The settled Turn replaces all transient rows with one receipt.</li>
+        </ul>
       </section>
 
       <section class="note-card">
@@ -784,14 +880,14 @@ The named model definition overrides the provider default.</div>
       <section class="note-card">
         <h2>Appearance matrix</h2>
         <table class="matrix">
-          <thead><tr><th>Region</th><th>Active</th><th>Approval</th><th>Settled</th></tr></thead>
+          <thead><tr><th>Region</th><th>Active</th><th>Sequence</th><th>Approval</th><th>Settled</th></tr></thead>
           <tbody>
-            <tr><td>Reply Stack</td><td class="yes">Live</td><td class="yes">Paused</td><td class="yes">Frozen</td></tr>
-            <tr><td>Work Trace</td><td class="yes">Expanded</td><td class="yes">Expanded</td><td class="no">Receipt</td></tr>
-            <tr><td>Decision Sheet</td><td class="no">Hidden</td><td class="yes">Visible</td><td class="no">Hidden</td></tr>
-            <tr><td>Queue Shelf</td><td class="yes">If queued</td><td class="no">Hidden</td><td class="no">Promoted</td></tr>
-            <tr><td>Composer</td><td class="yes">Visible</td><td class="no">Hidden</td><td class="yes">Visible</td></tr>
-            <tr><td>Pulse animation</td><td class="yes">Runs</td><td class="no">Stopped</td><td class="no">Ready</td></tr>
+            <tr><td>Reply Stack</td><td class="yes">Live</td><td class="yes">Live</td><td class="yes">Paused</td><td class="yes">Frozen</td></tr>
+            <tr><td>Work Trace</td><td class="yes">Expanded</td><td class="yes">Per passage</td><td class="yes">Expanded</td><td class="no">Receipt</td></tr>
+            <tr><td>Decision Sheet</td><td class="no">Hidden</td><td class="no">Hidden</td><td class="yes">Visible</td><td class="no">Hidden</td></tr>
+            <tr><td>Queue Shelf</td><td class="yes">If queued</td><td class="yes">If queued</td><td class="no">Hidden</td><td class="no">Promoted</td></tr>
+            <tr><td>Composer</td><td class="yes">Visible</td><td class="yes">Visible</td><td class="no">Hidden</td><td class="yes">Visible</td></tr>
+            <tr><td>Pulse animation</td><td class="yes">Runs</td><td class="yes">Runs</td><td class="no">Stopped</td><td class="no">Ready</td></tr>
           </tbody>
         </table>
       </section>
@@ -816,8 +912,9 @@ The named model definition overrides the provider default.</div>
         <h2>Fragment budget</h2>
         <ul>
           <li>One Prompt Surface per user message.</li>
-          <li>One Reply Stack per Netclaw response.</li>
-          <li>One Work Trace inside the live Reply Stack.</li>
+          <li>One Reply Stack per user Turn.</li>
+          <li>One Reply Passage per model step.</li>
+          <li>One Work Trace per passage that uses tools.</li>
           <li>One Composer or one Decision Sheet. Never both.</li>
           <li>No event-level cards in settled scrollback.</li>
         </ul>
@@ -847,10 +944,11 @@ The named model definition overrides the provider default.</div>
     const replayButton = document.getElementById('replay-button');
     const stateNames = {
       active: 'Active reply with a queued prompt',
+      sequence: 'Completed and active work across model steps',
       approval: 'Approval inside the requesting reply',
       settled: 'One immutable settled Turn'
     };
-    const flowStates = ['active', 'approval', 'settled'];
+    const flowStates = ['active', 'sequence', 'approval', 'settled'];
     let currentState = 'active';
     let replayTimer = null;
     let spinnerFrame = 0;
@@ -871,6 +969,9 @@ The named model definition overrides the provider default.</div>
       stateButtons.forEach(button => button.classList.toggle('active', button.dataset.state === state));
       stateTitle.textContent = stateNames[state];
     }
+
+    const requestedState = new URLSearchParams(window.location.search).get('state');
+    if (requestedState && Object.hasOwn(stateNames, requestedState)) setState(requestedState);
 
     stateButtons.forEach(button => button.addEventListener('click', () => {
       stopReplay();
@@ -914,16 +1015,16 @@ The named model definition overrides the provider default.</div>
     });
 
     window.setInterval(() => {
-      if (currentState !== 'active') return;
+      if (currentState !== 'active' && currentState !== 'sequence') return;
       spinnerFrame = (spinnerFrame + 1) % spinnerFrames.length;
-      document.querySelectorAll('[data-screen="active"] .spinner')
+      document.querySelectorAll(`[data-screen="${currentState}"] .spinner`)
         .forEach(element => { element.textContent = spinnerFrames[spinnerFrame]; });
     }, 140);
 
     window.setInterval(() => {
-      if (currentState !== 'active') return;
+      if (currentState !== 'active' && currentState !== 'sequence') return;
       pulseFrame = (pulseFrame + 1) % pulseFrames.length;
-      document.querySelectorAll('[data-screen="active"] .thinking-pulse')
+      document.querySelectorAll(`[data-screen="${currentState}"] .thinking-pulse`)
         .forEach(element => { element.textContent = pulseFrames[pulseFrame]; });
     }, 460);
 

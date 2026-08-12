@@ -40,6 +40,28 @@ public sealed class ChatPresentationReducerTests
     }
 
     [Fact]
+    public void Tool_rationale_is_the_work_title_and_arguments_do_not_supply_a_fallback()
+    {
+        var withRationale = ToolCall("call-a", "search", 1) with
+        {
+            Rationale = "Find the relevant source"
+        };
+        var state = Apply(ChatPresentationState.Empty, withRationale);
+
+        Assert.Equal("Find the relevant source", state.Tools["call-a"].Rationale);
+
+        state = Apply(state, ToolResult("call-a", "result-a", 2));
+        var completed = Assert.Single(state.Transcript);
+        Assert.Contains("Find the relevant source", completed.Summary, StringComparison.Ordinal);
+
+        state = Apply(state, ToolCall("call-b", "search", 3));
+        state = Apply(state, ToolResult("call-b", "result-b", 4));
+        var missing = state.Transcript[^1];
+        Assert.Contains("No rationale supplied", missing.Summary, StringComparison.Ordinal);
+        Assert.DoesNotContain("call-b", missing.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Parallel_tool_batch_commits_one_durable_group()
     {
         var first = ToolCall("call-a", "search", 1) with { BatchId = "batch-1", BatchSize = 2 };
@@ -181,6 +203,7 @@ public sealed class ChatPresentationReducerTests
                     Type = SessionTranscriptEntryTypes.Tool,
                     CallId = "call-1",
                     ToolName = "status",
+                    Rationale = "Check service health",
                     Result = "healthy"
                 }
             ]
@@ -189,6 +212,8 @@ public sealed class ChatPresentationReducerTests
         Assert.DoesNotContain(state.Transcript, block => block.Summary == "legacy text");
         Assert.Contains(state.Transcript, block =>
             block.Kind == ChatBlockKind.Tool && block.SemanticText.Contains("healthy", StringComparison.Ordinal));
+        Assert.Contains(state.Transcript, block =>
+            block.Kind == ChatBlockKind.Tool && block.Summary.Contains("Check service health", StringComparison.Ordinal));
     }
 
     [Fact]

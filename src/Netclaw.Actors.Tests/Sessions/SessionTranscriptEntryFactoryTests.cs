@@ -26,6 +26,7 @@ public sealed class SessionTranscriptEntryFactoryTests
             TimestampMs = 10,
             CallId = new ToolCallId("call-1"),
             ToolName = new ToolName("shell_execute"),
+            Rationale = "Verify the source tree",
             ArgumentsJson = "{\"command\":\"dotnet test\"}"
         };
         var tool = SessionTranscriptEntryFactory.Tool(call, new ToolResultOutput
@@ -98,6 +99,7 @@ public sealed class SessionTranscriptEntryFactoryTests
         Assert.Equal("dotnet test", System.Text.Json.JsonDocument.Parse(tool.ArgumentsJson!).RootElement
             .GetProperty("command").GetString());
         Assert.Equal("Passed", tool.Result);
+        Assert.Equal("Verify the source tree", tool.Rationale);
         Assert.Equal("run-1", subAgent.RunId);
         Assert.Equal("partial", subAgent.Outcome);
         Assert.Equal("report.txt", file.FileName);

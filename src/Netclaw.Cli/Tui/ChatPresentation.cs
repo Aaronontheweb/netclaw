@@ -41,6 +41,7 @@ internal sealed record ChatPresentationBlock(
 internal sealed record ToolActivityPresentation(
     string CallId,
     string ToolName,
+    string? Rationale,
     string? ArgumentsJson,
     string Phase,
     string? Summary,
@@ -359,6 +360,7 @@ internal static class ChatPresentationReducer
         var tool = new ToolActivityPresentation(
             output.CallId.Value,
             output.ToolName.Value,
+            output.Rationale,
             output.ArgumentsJson,
             "queued",
             null,
@@ -377,6 +379,7 @@ internal static class ChatPresentationReducer
             : new ToolActivityPresentation(
                 key,
                 output.ToolName.Value,
+                null,
                 null,
                 output.Phase,
                 output.Summary,
@@ -404,6 +407,7 @@ internal static class ChatPresentationReducer
         state.Tools.TryGetValue(output.CallId.Value, out var active);
         var detail = string.Join('\n', new[]
         {
+            active?.Rationale is null ? null : $"Rationale: {active.Rationale}",
             active?.ArgumentsJson is null ? null : $"Arguments: {active.ArgumentsJson}",
             $"Result: {output.Result}"
         }.Where(value => value is not null));
@@ -411,7 +415,7 @@ internal static class ChatPresentationReducer
             $"tool:{output.CallId.Value}",
             ChatBlockKind.Tool,
             "TOOL",
-            $"{output.ToolName.Value} completed  {FirstLine(output.Result)}",
+            $"{ToolWorkTitle(active?.Rationale)}  · {output.ToolName.Value}",
             $"Tool: {output.ToolName.Value}\nCall: {output.CallId.Value}\n{detail}",
             output.TimestampMs,
             active?.TurnId ?? state.CurrentTurnId,
@@ -601,7 +605,7 @@ internal static class ChatPresentationReducer
         var summary = kind switch
         {
             ChatBlockKind.User or ChatBlockKind.Assistant => entry.Text ?? string.Empty,
-            ChatBlockKind.Tool => $"{entry.ToolName ?? "unknown"} completed  {FirstLine(entry.Result)}",
+            ChatBlockKind.Tool => $"{ToolWorkTitle(entry.Rationale)}  · {entry.ToolName ?? "unknown"}",
             ChatBlockKind.Approval => $"{entry.ToolName ?? "unknown"}  {ApprovalDecisionText(entry.ApprovalSelectedKey)}",
             ChatBlockKind.SubAgent => $"{entry.AgentName ?? "sub-agent"}  {entry.Outcome ?? "complete"}",
             ChatBlockKind.File => $"{entry.FileName ?? "file"}  {entry.FilePath}",
@@ -712,6 +716,7 @@ internal static class ChatPresentationReducer
     {
         SessionTranscriptEntryTypes.User or SessionTranscriptEntryTypes.Assistant => entry.Text ?? string.Empty,
         SessionTranscriptEntryTypes.Tool => $"Tool: {entry.ToolName ?? "unknown"}\nCall: {entry.CallId ?? "unknown"}"
+                                            + (entry.Rationale is null ? string.Empty : $"\nRationale: {entry.Rationale}")
                                             + (entry.ArgumentsJson is null ? string.Empty : $"\nArguments: {entry.ArgumentsJson}")
                                             + $"\nResult: {entry.Result ?? string.Empty}",
         SessionTranscriptEntryTypes.Approval => $"Tool: {entry.ToolName ?? "unknown"}\nCall: {entry.CallId ?? "unknown"}"
@@ -750,6 +755,10 @@ internal static class ChatPresentationReducer
         ChatBlockKind.Compaction => "CONTEXT",
         _ => "DIAGNOSTIC"
     };
+
+    private static string ToolWorkTitle(string? rationale) => string.IsNullOrWhiteSpace(rationale)
+        ? "No rationale supplied"
+        : rationale.Trim();
 
     private static string FirstLine(string? text)
     {

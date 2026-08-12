@@ -38,10 +38,11 @@ The Reply Block is the unit of comprehension, settlement, inspection, and copy.
 
 | Region | Purpose | Lifetime |
 |--------|---------|----------|
-| Session Strip | Shows the session, model, context, and connection | Live |
+| Session Strip | Shows the session, model, context, and connection | Persistent bottom dock |
 | Transcript | Holds immutable settled Turns | Terminal scrollback |
 | Turn | Groups one user prompt and one Reply Block | Settled after the reply ends |
 | Reply Block | Owns Netclaw prose and all work for one Turn | Live, then immutable |
+| Reply Passage | Groups one model step with its prose and Work Trace | Nested in the Reply Block |
 | Work Trace | Shows transient thought, tool, and sub-agent activity | Nested in the Reply Block |
 | Decision Sheet | Owns one approval request and its choices | Nested in the Reply Block |
 | Queue Shelf | Shows prompts that wait behind the current Turn | Live |
@@ -97,7 +98,9 @@ The Reply Block starts when the session accepts a user prompt.
 The block stays live until the Turn ends.
 Assistant deltas extend prose inside the same block.
 
-The Work Trace uses short verb-first descriptions.
+The Work Trace uses the model-supplied tool rationale as each action title.
+The tool name remains secondary metadata.
+The client does not infer an action title from tool arguments.
 It does not expose raw JSON in the Transcript.
 
 Examples:
@@ -125,6 +128,20 @@ Failures remain visible because they can change the reply meaning.
 
 The Inspector retains each call identity, argument, result, duration, and parent relation.
 
+## Chronology Grammar
+
+One Reply Block can contain multiple Reply Passages.
+Each Reply Passage represents one model step in the tool loop.
+New model prose starts the next passage without starting a new user Turn.
+
+A completed call remains visible as a receipt while later calls remain active.
+Parallel calls share one group and retain separate lifecycle states.
+The final settled Turn replaces transient Work Trace rows with one compact receipt.
+
+The current session contract preserves order between model steps.
+It does not preserve exact text and tool order inside one model response.
+That capability requires an additive ordered-segment contract.
+
 ## Composer and Queue Grammar
 
 The Composer stays visible while the model or a tool works.
@@ -138,6 +155,10 @@ A Decision Sheet is the only state that hides the Composer.
 This exception prevents prompt text from reaching an approval control.
 
 ## Pulse Grammar
+
+The Session Strip stays in the persistent bottom dock.
+It stays beside the Composer or Decision Sheet in that dock.
+The Pulse Line remains the bottom row.
 
 The bottom-left Pulse Line shows model wait state with this exact sequence:
 
@@ -164,8 +185,6 @@ The Pulse Line uses these state words:
 ## ASCII Mockup: Live Reply with a Queued Prompt
 
 ```text
-NETCLAW  Casual Greeting Exchange  deepseek-v4-flash-dspark  18%  connected
-
 You  13:35
   Find the configured context window.
 
@@ -181,6 +200,8 @@ Netclaw  13:35                                                     LIVE
 
 Queued  1
   Then tell me which setting wins.
+
+NETCLAW  Casual Greeting Exchange  deepseek-v4-flash-dspark  18%  connected
 
 MESSAGE
   Ask Netclaw...
@@ -207,6 +228,8 @@ Netclaw  13:35
   The main model uses a 131,072-token context window.
   The named model definition overrides the provider default.
 
+NETCLAW  Casual Greeting Exchange  deepseek-v4-flash-dspark  19%  connected
+
 MESSAGE
   Ask Netclaw...
 
@@ -219,13 +242,13 @@ Individual tool cards do not enter the Transcript.
 ## ASCII Mockup: Decision Sheet
 
 ```text
-NETCLAW  Casual Greeting Exchange  deepseek-v4-flash-dspark  18%  connected
-
 You  13:35
   Find the configured context window.
 
 Netclaw  13:35                                                     WAITING
   I need permission to inspect a protected session path.
+
+NETCLAW  Casual Greeting Exchange  deepseek-v4-flash-dspark  18%  connected
 
   Approval required
     Requester  Netclaw

@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Netclaw.Actors.Protocol;
+using Netclaw.Tools;
 
 namespace Netclaw.Actors.Sessions;
 
@@ -81,6 +82,7 @@ internal static class SessionTranscriptExtractor
                         CallId = callId.Value,
                         ToolName = message.Name ?? call?.Name.Value ?? "unknown",
                         ArgumentsJson = call?.ArgumentsJson,
+                        Rationale = ToolCallMeta.Parse(call?.MetaJson)?.Rationale,
                         Result = message.Content
                     });
                     calls.Remove(callId.Value);

@@ -8,16 +8,29 @@ Use these keys:
 - `Enter` sends the prompt.
 - `Shift+Enter` adds a new line.
 - `Up` and `Down` recall prompts and restore the current draft.
-- `Esc Esc` clears the prompt.
+- `Esc x2` clears the prompt.
 - `Ctrl+O` opens the Inspector when chat is idle.
 - `Y` copies one Inspector event. `Shift+Y` copies its complete turn.
 - `Ctrl+O` expands or collapses an approval detail view.
 - `Esc` denies an approval. It also closes the Inspector.
 - `Ctrl+Q` exits chat.
 
-The Composer disappears while a turn or an approval gate is active. Wait for
-the Composer before you enter another prompt. The activity deck shows thought,
-tool, parallel call, and subagent state.
+The Composer stays available while the model or a tool works. A prompt that you
+send during active work enters the Queue Shelf for the next turn. An approval
+gate replaces the Composer until the user makes a decision.
+
+The Session Strip stays in the persistent bottom dock with the Composer or
+approval gate. The Pulse Line stays at the bottom and shows the current wait
+state.
+
+The Work Trace keeps tools inside the current Netclaw Reply Block. Each tool
+uses the model-supplied rationale as its primary title. The tool name remains
+secondary detail. Safe activity summaries can replace fly-by text while a tool
+runs. Parallel calls remain separate rows with separate states.
+
+New model prose after a tool result starts a new Reply Passage in the same user
+turn. A completed call remains visible as a compact receipt while later work
+continues. The final settled turn replaces transient work with a short receipt.
 
 The Inspector shows complete semantic event text. It omits display borders from
 copy output. A failed copy keeps the event selected and shows a visible error.

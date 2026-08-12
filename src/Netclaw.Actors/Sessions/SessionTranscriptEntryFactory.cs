@@ -21,6 +21,7 @@ internal static class SessionTranscriptEntryFactory
             CallId = result.CallId.Value,
             ToolName = result.ToolName.Value,
             ArgumentsJson = call?.ArgumentsJson,
+            Rationale = call?.Rationale,
             BatchId = call?.BatchId,
             BatchSize = call?.BatchSize,
             Result = result.Result

@@ -121,6 +121,7 @@ message SessionTranscriptEntryProto {
   optional string batch_id = 41;
   optional int32 batch_size = 42;
   optional string approval_selected_key = 43;
+  optional string rationale = 44;
 }
 
 // ── Commands ──

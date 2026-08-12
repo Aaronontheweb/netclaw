@@ -1937,15 +1937,25 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // Persist tool calls exactly as the executor will interpret them (schema-aware
         // meta extraction), so recorded history matches what actually runs — a near-miss
         // meta key is stripped + captured in MetaJson, not left raw with an empty meta.
+        var toolMetadata = new Dictionary<string, ToolCallMeta?>(StringComparer.Ordinal);
         var assistantMsg = ChatMessageConverter.FromAiMessage(
             lastMessage,
-            interpretToolCall: _toolExecutor is { } toolExec
-                ? tc =>
+            interpretToolCall: tc =>
+            {
+                ToolCallMeta? meta;
+                IDictionary<string, object?>? cleanedArguments;
+                if (_toolExecutor is { } toolExec)
                 {
-                    var (meta, cleaned) = toolExec.PrepareToolCall(tc);
-                    return (meta, cleaned.Arguments);
+                    var prepared = toolExec.PrepareToolCall(tc);
+                    meta = prepared.Meta;
+                    toolMetadata[tc.CallId] = meta;
+                    return (meta, prepared.Cleaned.Arguments);
                 }
-        : null);
+
+                (meta, cleanedArguments) = ChatMessageConverter.ExtractMeta(tc.Arguments);
+                toolMetadata[tc.CallId] = meta;
+                return (meta, cleanedArguments);
+            });
         var userMsg = _state.FindLastUserMessage() ?? new SerializableChatMessage
         {
             Role = Protocol.ChatRole.User,
@@ -1968,6 +1978,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             EmitAndDispatchToolBatch(
                 lastMessage,
                 toolCalls,
+                toolMetadata,
                 usage,
                 preparedCycleBatch,
                 cycleDecision);
@@ -1977,6 +1988,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private void EmitAndDispatchToolBatch(
         AiChatMessage lastMessage,
         List<FunctionCallContent> toolCalls,
+        IReadOnlyDictionary<string, ToolCallMeta?> toolMetadata,
         UsageDetails? usage,
         PreparedToolCycleBatch preparedCycleBatch,
         ToolCycleDecision cycleDecision)
@@ -2020,7 +2032,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 ToolName = new ToolName(tc.Name),
                 ArgumentsJson = argsJson,
                 BatchId = batchId,
-                BatchSize = Math.Max(1, toolCalls.Count)
+                BatchSize = Math.Max(1, toolCalls.Count),
+                Rationale = toolMetadata[tc.CallId]?.Rationale
             }, OutputFilter.ToolCalls);
         }
 
@@ -4160,6 +4173,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                         ToolName = new ToolName(toolCall.Name),
                         BatchId = batchId,
                         BatchSize = Math.Max(1, toolCalls.Count),
+                        Rationale = ExtractToolCallRationale(toolCall),
                         ArgumentsJson = toolCall.Arguments is not null
                             ? JsonSerializer.Serialize(toolCall.Arguments)
                             : null
@@ -4199,6 +4213,15 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             TurnNumber = new TurnNumber(_state.TurnCount),
             SourceReminderId = _currentTurnSource?.ReminderId
         });
+    }
+
+    private string? ExtractToolCallRationale(FunctionCallContent toolCall)
+    {
+        if (_toolExecutor is { } toolExecutor)
+            return toolExecutor.PrepareToolCall(toolCall).Meta?.Rationale;
+
+        var (meta, _) = ChatMessageConverter.ExtractMeta(toolCall.Arguments);
+        return meta?.Rationale;
     }
 
     private void EmitUsageOutput(UsageDetails usage)
