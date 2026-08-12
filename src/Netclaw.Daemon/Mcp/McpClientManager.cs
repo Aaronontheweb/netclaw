@@ -1329,7 +1329,19 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         if (IsAuthFailure(ex))
         {
             if (!hasCachedTokens && entry.Transport is not "stdio" && hasOAuthRuntimeHints)
-                return CreateAwaitingAuthStatus(serverName, errorAt);
+            {
+                // "Awaiting auth" -- which sends the operator to `netclaw mcp auth` -- is only
+                // correct for a genuine OAuth challenge: a Bearer WWW-Authenticate response (or
+                // discoverable protected-resource metadata) that drove the SDK's OAuth handler
+                // to throw. A server that simply denies the connection with a bare 401/403 and
+                // no OAuth challenge reaches us as a plain transport HttpRequestException;
+                // reporting that as pending authorization hides the real access-control / host /
+                // URL error behind a dead-end auth prompt, so surface it as a transport failure
+                // carrying the HTTP status instead.
+                return IsOAuthChallenge(ex)
+                    ? CreateAwaitingAuthStatus(serverName, errorAt)
+                    : CreateUnreachableStatus(serverName, ex, errorAt);
+            }
 
             return CreateAuthFailedStatus(
                 serverName,
@@ -1503,6 +1515,35 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             return true;
 
         return ex.InnerException is not null && IsAuthFailure(ex.InnerException);
+    }
+
+    /// <summary>
+    /// Distinguishes a genuine OAuth challenge from a bare transport 401/403. The MCP SDK
+    /// only engages its OAuth handler when the server answers with a Bearer
+    /// <c>WWW-Authenticate</c> challenge (or discoverable protected-resource metadata); when
+    /// that handler cannot complete it throws an <see cref="McpException"/> naming the Bearer
+    /// scheme, and Netclaw's own flow raises an in-progress signal. A server that simply
+    /// denies access with a plain 401/403 -- no OAuth challenge -- reaches us instead as an
+    /// <see cref="HttpRequestException"/>, and is deliberately not treated as pending
+    /// authorization so the real transport error surfaces rather than a dead-end
+    /// <c>netclaw mcp auth</c> prompt.
+    /// </summary>
+    private static bool IsOAuthChallenge(Exception ex)
+    {
+        if (ex is McpOAuthAuthorizationInProgressException)
+            return true;
+
+        // Positive OAuth signals only. The bare words "unauthorized"/"forbidden" are avoided
+        // on purpose: they also appear in the message and body of a non-OAuth 401/403.
+        var message = ex.Message;
+        if (message.Contains("unauthorized response with 'Bearer'", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("AuthorizationCallbackHandler", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("invalid_token", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("token expired", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return ex.InnerException is not null && IsOAuthChallenge(ex.InnerException);
     }
 
     /// <summary>
