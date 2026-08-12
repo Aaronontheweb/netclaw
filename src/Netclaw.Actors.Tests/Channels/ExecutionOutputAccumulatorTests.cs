@@ -53,6 +53,34 @@ public sealed class ExecutionOutputAccumulatorTests
     }
 
     [Fact]
+    public void TextStreamDiscarded_preserves_an_earlier_completed_calls_text_but_discards_only_the_dead_calls_partial()
+    {
+        var acc = new ExecutionOutputAccumulator(TestNotifyTool);
+
+        // Call 1: streams a preamble, then completes (a tool round) — TextOutput
+        // marks the call boundary and commits the preamble (see D1 in the review).
+        acc.ProcessOutput(new TextDeltaOutput("Checking the files now. ") { SessionId = TestSessionId });
+        acc.ProcessOutput(new TextOutput("Checking the files now. ") { SessionId = TestSessionId });
+
+        // Call 2: streams two real deltas, then dies mid-stream and is discarded.
+        acc.ProcessOutput(new TextDeltaOutput("stalled chunk one ") { SessionId = TestSessionId });
+        acc.ProcessOutput(new TextDeltaOutput("STALLED_PARTIAL_MARKER") { SessionId = TestSessionId });
+        acc.ProcessOutput(new TextStreamDiscarded { SessionId = TestSessionId });
+
+        // Resumed call streams the real final answer.
+        acc.ProcessOutput(new TextDeltaOutput("Done: the answer is X.") { SessionId = TestSessionId });
+        acc.ProcessOutput(new TextOutput("Done: the answer is X.") { SessionId = TestSessionId });
+
+        // Before the fix, TextStreamDiscarded cleared the whole turn-scoped
+        // buffer, wiping call 1's already-completed preamble along with call 2's
+        // dead partial. The result must keep call 1's text AND the resumed
+        // answer, with none of the dead call's partial.
+        var result = acc.GetAccumulatedText();
+        Assert.Equal("Checking the files now. Done: the answer is X.", result);
+        Assert.DoesNotContain("STALLED_PARTIAL_MARKER", result, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TextStreamDiscarded_lets_TextOutput_repopulate_after_discard()
     {
         var acc = new ExecutionOutputAccumulator(TestNotifyTool);

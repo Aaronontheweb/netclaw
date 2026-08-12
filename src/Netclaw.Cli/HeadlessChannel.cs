@@ -36,11 +36,23 @@ public sealed class HeadlessChannel : IChannel
     private readonly ILogger<HeadlessChannel> _logger;
 
     private bool _isConnected;
-    private bool _receivedTextDeltaInCurrentTurn;
+
+    // Whether the CURRENT (not-yet-completed) LLM call has streamed a delta.
+    // Reset at every call boundary — a TextOutput (call completed) or a
+    // TextStreamDiscarded (call died) — so it never leaks across calls in the
+    // same turn.
+    private bool _receivedTextDeltaInCurrentCall;
     private bool _receivedThinkingDeltaInCurrentTurn;
 
     // JSON output accumulation
     private readonly StringBuilder _responseBuffer = new();
+
+    // Length of _responseBuffer already committed by an earlier call's
+    // TextOutput this turn. TextStreamDiscarded truncates back to this point
+    // instead of clearing the whole buffer, so a later call's discard cannot
+    // erase an earlier COMPLETED call's text (see the TextStreamDiscarded case
+    // in HandleOutput).
+    private int _responseBufferCommittedLength;
     private readonly List<JsonToolCall> _toolCalls = [];
     private JsonUsage? _usage;
     private string? _resolvedSessionId;
@@ -192,23 +204,31 @@ public sealed class HeadlessChannel : IChannel
                 break;
 
             case TextOutput msg:
-                if (_receivedTextDeltaInCurrentTurn)
+                // TextOutput marks one LLM call's text as complete, whether that
+                // call ended in tool calls (a preamble) or the final answer. Commit
+                // everything accumulated for it — via deltas, or (when the call
+                // never streamed one, e.g. a single-chunk response) via msg.Text
+                // directly — so a LATER call's discard can never erase it.
+                if (_receivedTextDeltaInCurrentCall)
                 {
                     Log(log, $"ASSISTANT_FINAL: {msg.Text}");
-                    break;
                 }
-
-                if (_jsonOutput)
-                    _responseBuffer.Append(msg.Text);
                 else
-                    Console.WriteLine(msg.Text);
-                Log(log, $"ASSISTANT: {msg.Text}");
+                {
+                    if (_jsonOutput)
+                        _responseBuffer.Append(msg.Text);
+                    else
+                        Console.WriteLine(msg.Text);
+                    Log(log, $"ASSISTANT: {msg.Text}");
+                }
+                _responseBufferCommittedLength = _responseBuffer.Length;
+                _receivedTextDeltaInCurrentCall = false;
                 break;
 
             case TextDeltaOutput msg:
-                if (!_receivedTextDeltaInCurrentTurn && _promptSentTicks > 0)
+                if (!_receivedTextDeltaInCurrentCall && _promptSentTicks > 0)
                     Interlocked.CompareExchange(ref _firstDeltaTicks, Stopwatch.GetTimestamp(), 0);
-                _receivedTextDeltaInCurrentTurn = true;
+                _receivedTextDeltaInCurrentCall = true;
                 if (_jsonOutput)
                     _responseBuffer.Append(msg.Delta);
                 else
@@ -217,21 +237,24 @@ public sealed class HeadlessChannel : IChannel
                 break;
 
             case TextStreamDiscarded:
-                // A timed-out call was discarded and is being re-issued. Clear the
-                // JSON envelope buffer so the resumed call's deltas do not
-                // concatenate onto the dead call's partial text (see
+                // A timed-out call was discarded. The actor re-issues it. Truncate
+                // the JSON envelope buffer back to the last committed call boundary
+                // — only the dead call's own, not-yet-committed text is removed.
+                // Text from an earlier call that already completed this turn (see
+                // the TextOutput case above) survives (see
                 // SessionProtocol.TextStreamDiscarded). A plain-text console stream
                 // cannot un-print what is already on screen, so mark the boundary
                 // instead — otherwise the two answers would read as one.
                 if (_jsonOutput)
                 {
-                    _responseBuffer.Clear();
+                    _responseBuffer.Remove(_responseBufferCommittedLength, _responseBuffer.Length - _responseBufferCommittedLength);
                 }
-                else if (_receivedTextDeltaInCurrentTurn)
+                else if (_receivedTextDeltaInCurrentCall)
                 {
                     Console.WriteLine();
                     Console.WriteLine("[response interrupted by a provider stall — retrying]");
                 }
+                _receivedTextDeltaInCurrentCall = false;
                 Log(log, "ASSISTANT_STREAM_DISCARDED");
                 break;
 
@@ -275,6 +298,16 @@ public sealed class HeadlessChannel : IChannel
                 break;
 
             case UsageOutput msg:
+                // discarded_est_in=/discarded_attempts= are the previous completed
+                // call's real, provider-reported input count, used as an honest
+                // proxy for a call that timed out and was discarded this turn — the
+                // provider likely billed for this input but never reported usage
+                // for it, so it is NOT included in the in=/total= figures. Omitted
+                // entirely (not printed as empty) when no resume happened this turn.
+                var discardedSuffix = msg.DiscardedResumeAttempts is > 0
+                    ? $" discarded_est_in={msg.DiscardedResumeEstimatedInputTokens} discarded_attempts={msg.DiscardedResumeAttempts}"
+                    : string.Empty;
+
                 if (_jsonOutput)
                 {
                     _usage = new JsonUsage
@@ -295,18 +328,11 @@ public sealed class HeadlessChannel : IChannel
                     // If the turn streamed text deltas, they did NOT end with a newline
                     // (each delta is Console.Write). Force the usage line onto its own
                     // line so downstream parsers (evals, humans) can anchor on ^[usage].
-                    if (_receivedTextDeltaInCurrentTurn)
+                    if (_receivedTextDeltaInCurrentCall)
                         Console.WriteLine();
-                    // discarded_est_in is a character-count estimate for calls that timed
-                    // out and were discarded this turn — the provider likely billed for
-                    // this input but never reported usage for it, so it is NOT included
-                    // in the in=/total= figures above. Omitted when no resume happened.
-                    var discardedSuffix = msg.DiscardedResumeAttempts is > 0
-                        ? $" discarded_est_in={msg.DiscardedResumeEstimatedInputTokens} discarded_attempts={msg.DiscardedResumeAttempts}"
-                        : string.Empty;
                     Console.WriteLine($"[usage] in={msg.InputTokens} out={msg.OutputTokens} total={msg.TotalTokens} cached={msg.CachedInputTokens} prompt_ms={msg.PromptMs} tok_s={msg.PredictedPerSecond}{discardedSuffix}");
                 }
-                Log(log, $"USAGE: in={msg.InputTokens} out={msg.OutputTokens} total={msg.TotalTokens} cached={msg.CachedInputTokens} reasoning={msg.ReasoningTokens} context_window={msg.ContextWindowTokens} prompt_ms={msg.PromptMs} predicted_tok_s={msg.PredictedPerSecond} discarded_est_in={msg.DiscardedResumeEstimatedInputTokens} discarded_attempts={msg.DiscardedResumeAttempts}");
+                Log(log, $"USAGE: in={msg.InputTokens} out={msg.OutputTokens} total={msg.TotalTokens} cached={msg.CachedInputTokens} reasoning={msg.ReasoningTokens} context_window={msg.ContextWindowTokens} prompt_ms={msg.PromptMs} predicted_tok_s={msg.PredictedPerSecond}{discardedSuffix}");
                 break;
 
             case ErrorOutput msg:
@@ -327,8 +353,9 @@ public sealed class HeadlessChannel : IChannel
                 }
                 Log(log, $"TURN_COMPLETED: turn={msg.TurnNumber}");
                 Log(log, "SESSION_ENDED");
-                _receivedTextDeltaInCurrentTurn = false;
+                _receivedTextDeltaInCurrentCall = false;
                 _receivedThinkingDeltaInCurrentTurn = false;
+                _responseBufferCommittedLength = 0;
                 break;
 
             case FileOutput msg:

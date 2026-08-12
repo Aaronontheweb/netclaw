@@ -37,8 +37,14 @@ public static partial class SessionProtocol
     }
 
     /// <summary>
-    /// User-facing text reply from the assistant.
-    /// Requires <see cref="OutputFilter.Text"/>.
+    /// User-facing text reply from the assistant. Marks the end of one LLM
+    /// call's text — the actor sends it once a call fully completes, whether
+    /// that call ended in tool calls (a preamble) or the final answer (see
+    /// <c>LlmSessionActor.EmitAndDispatchToolBatch</c> and
+    /// <c>LlmSessionActor.EmitResponseOutputs</c>). A subscriber that
+    /// accumulates <see cref="TextDeltaOutput"/> text across a turn can use
+    /// this message as the call-completion boundary. Requires
+    /// <see cref="OutputFilter.Text"/>.
     /// </summary>
     public sealed record TextOutput(string Text) : SessionOutput;
 
@@ -49,16 +55,26 @@ public static partial class SessionProtocol
     public sealed record TextDeltaOutput(string Delta) : SessionOutput;
 
     /// <summary>
-    /// A timed-out LLM call was discarded and the same call is being re-issued
-    /// (see <c>LlmSessionActor.TryResumeAfterTimeout</c>). The dead call may have
-    /// already sent one or more <see cref="TextDeltaOutput"/> events for this turn.
-    /// Any subscriber that concatenates <see cref="TextDeltaOutput"/> text for the
-    /// current turn MUST clear that buffer on receipt of this message — the
-    /// resumed call streams the full answer again from the start, so a buffer that
-    /// keeps the dead call's partial text would glue two unrelated answers
-    /// together. Lifecycle — always delivered regardless of <see cref="OutputFilter"/>,
-    /// so it reaches every buffering subscriber even one that filters on
-    /// <see cref="OutputFilter.Text"/> instead of <see cref="OutputFilter.TextStreaming"/>.
+    /// A timed-out LLM call was discarded. The actor re-issues the same call
+    /// (see <c>LlmSessionActor.TryResumeAfterTimeout</c>). The dead call may
+    /// have already sent one or more <see cref="TextDeltaOutput"/> events for
+    /// this turn.
+    /// <para>
+    /// A subscriber that accumulates <see cref="TextDeltaOutput"/> text across
+    /// a turn MUST follow two rules on receipt of this message:
+    /// </para>
+    /// <list type="bullet">
+    /// <item>Clear the dead call's own, not-yet-committed text.</item>
+    /// <item>Keep text from an earlier call that already reached its own
+    /// <see cref="TextOutput"/> completion boundary this turn (for example, a
+    /// tool-round preamble).</item>
+    /// </list>
+    /// The resumed call streams the full answer again, from the start. A
+    /// subscriber that keeps the dead call's partial text glues two unrelated
+    /// answers together. Lifecycle — always delivered regardless of
+    /// <see cref="OutputFilter"/>, so it reaches every buffering subscriber
+    /// even one that filters on <see cref="OutputFilter.Text"/> instead of
+    /// <see cref="OutputFilter.TextStreaming"/>.
     /// </summary>
     public sealed record TextStreamDiscarded : SessionOutput;
 
@@ -150,13 +166,16 @@ public static partial class SessionProtocol
         public double? PredictedPerSecond { get; init; }
 
         /// <summary>
-        /// Estimated input tokens sent to the provider by LLM calls that timed out
-        /// and were discarded this turn (see <c>LlmSessionActor.TryResumeAfterTimeout</c>).
-        /// A character-count estimate of the request that was sent, not a
-        /// provider-reported figure — the provider never returns usage for a call
-        /// that times out before completion. The provider likely still billed for
-        /// this input even though it is excluded from <see cref="InputTokens"/> and
-        /// <see cref="TotalTokens"/> above. Null when no call was discarded this turn.
+        /// Estimated input tokens billed for LLM calls that timed out and were
+        /// discarded this turn (see <c>LlmSessionActor.TryResumeAfterTimeout</c>).
+        /// The provider never returns real usage for a call that times out before
+        /// completion, so this is the real, provider-reported input count from the
+        /// most recently completed call this session — an honest proxy, not a
+        /// fabricated figure. The provider likely still billed for the discarded
+        /// call's input even though it is excluded from <see cref="InputTokens"/>
+        /// and <see cref="TotalTokens"/> above. Null when no call was discarded
+        /// this turn, or when no completed call has reported real usage yet this
+        /// session.
         /// </summary>
         public long? DiscardedResumeEstimatedInputTokens { get; init; }
 

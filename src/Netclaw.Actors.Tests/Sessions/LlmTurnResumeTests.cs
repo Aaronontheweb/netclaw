@@ -384,6 +384,124 @@ public sealed class LlmTurnResumeTests(ITestOutputHelper output) : LlmSessionTes
         AssertIdenticalTools(_chatClient.ReceivedOptions[1], _chatClient.ReceivedOptions[2]);
     }
 
+    [Fact]
+    public async Task Resumed_calls_discarded_estimate_uses_the_previous_completed_calls_real_input_count()
+    {
+        // D4: EstimateInputTokens re-stringified the whole message list on every
+        // ContinueFireLlmCall — a quadratic hot-path cost paid by every tool
+        // iteration to serve only the (rare) resume path. The fix reuses
+        // _lastInputTokenCount, the provider's REAL input count from the most
+        // recently completed call, as the honest proxy instead.
+        _chatClient.Behaviors.Enqueue(ResumeCallBehavior.InstantToolCall(
+            new FunctionCallContent("call-1", "web_search",
+                new Dictionary<string, object?> { ["query"] = "test query" }),
+            usage: new UsageDetails { InputTokenCount = 500, OutputTokenCount = 20 }));
+        // Post-tool follow-up stalls and times out.
+        _chatClient.Behaviors.Enqueue(ResumeCallBehavior.StallAfterDeltas("post-tool chunk one ", "post-tool chunk two"));
+        // The resume completes normally with its own (different, larger) usage —
+        // proving the reported estimate is call 1's real count, not call 3's.
+        _chatClient.Behaviors.Enqueue(ResumeCallBehavior.MultiDeltaTextThenComplete(
+            "Resumed ", "after tool call",
+            usage: new UsageDetails { InputTokenCount = 520, OutputTokenCount = 10 }));
+
+        var sessionId = new SessionId("turn-resume/discarded-estimate-real-proxy");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("resume-discarded-estimate-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Search for something"
+        }, TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+
+        // Drain the tool call/result from the first (successful) call, checking
+        // its usage carries the real 500-token count that the resume will proxy.
+        await subscriber.ExpectMsgAsync<ToolCallOutput>(TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
+        var firstUsage = await subscriber.FishForMessageAsync<object>(
+            m => m is UsageOutput, TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(500, Assert.IsType<UsageOutput>(firstUsage).InputTokens);
+        await subscriber.ExpectMsgAsync<ToolResultOutput>(TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
+
+        // Second call (post-tool) stalls; let the watchdog fire.
+        await _chatClient.WaitForStreamInvocationAsync(TestContext.Current.CancellationToken);
+        await subscriber.FishForMessageAsync<object>(
+            m => m is TextDeltaOutput d && d.Delta.Contains("post-tool chunk two", StringComparison.Ordinal),
+            TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
+        AdvanceScheduler(FirstTokenTimeout);
+
+        // Third call (the resume) completes cleanly.
+        await _chatClient.WaitForStreamInvocationAsync(TestContext.Current.CancellationToken);
+        var usage = await subscriber.FishForMessageAsync<object>(
+            m => m is UsageOutput, TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
+        var finalUsage = Assert.IsType<UsageOutput>(usage);
+
+        // The discarded call's estimate is the REAL input count from call 1 (the
+        // most recently completed call before the resume) — not a fabricated
+        // character-count guess of call 2's (larger, tool-result-laden) list, and
+        // not call 3's own (different) real count either.
+        Assert.Equal(500, finalUsage.DiscardedResumeEstimatedInputTokens);
+        Assert.Equal(1, finalUsage.DiscardedResumeAttempts);
+
+        var completed = await subscriber.ExpectMsgAsync<TurnCompleted>(TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(TurnOutcome.Completed, completed.Outcome);
+    }
+
+    [Fact]
+    public async Task Resumed_calls_discarded_estimate_is_null_when_no_prior_real_usage_exists()
+    {
+        // The session's FIRST call ever dies — no call has completed yet, so
+        // _lastInputTokenCount is still 0 (never set). D4: report that honestly
+        // as "no estimate" rather than fabricating a character-count guess.
+        _chatClient.Behaviors.Enqueue(ResumeCallBehavior.StallAfterDeltas("chunk one ", "chunk two"));
+        _chatClient.Behaviors.Enqueue(ResumeCallBehavior.MultiDeltaTextThenComplete(
+            "Resumed ", "answer",
+            usage: new UsageDetails { InputTokenCount = 300, OutputTokenCount = 5 }));
+
+        var sessionId = new SessionId("turn-resume/discarded-estimate-unknown");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("resume-discarded-estimate-null-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "hello"
+        }, TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+
+        await _chatClient.WaitForStreamInvocationAsync(TestContext.Current.CancellationToken);
+        await subscriber.FishForMessageAsync<object>(
+            m => m is TextDeltaOutput d && d.Delta.Contains("chunk two", StringComparison.Ordinal),
+            TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
+        AdvanceScheduler(FirstTokenTimeout);
+
+        await _chatClient.WaitForStreamInvocationAsync(TestContext.Current.CancellationToken);
+        var usage = await subscriber.FishForMessageAsync<object>(
+            m => m is UsageOutput, TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
+        var finalUsage = Assert.IsType<UsageOutput>(usage);
+
+        // No completed call ever reported real usage this session — the estimate
+        // must be null (an honest "unknown"), not a fabricated number, while the
+        // attempt count still reports 1.
+        Assert.Null(finalUsage.DiscardedResumeEstimatedInputTokens);
+        Assert.Equal(1, finalUsage.DiscardedResumeAttempts);
+
+        var completed = await subscriber.ExpectMsgAsync<TurnCompleted>(TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(TurnOutcome.Completed, completed.Outcome);
+    }
+
     /// <summary>
     /// Asserts two message lists are identical in role, text, and tool-call /
     /// tool-result content — used to prove a resumed call re-sends the exact same
@@ -436,8 +554,11 @@ public sealed class LlmTurnResumeTests(ITestOutputHelper output) : LlmSessionTes
 /// <see cref="SessionConfig.PrefillTimeout"/> and <see cref="SessionConfig.FirstTokenTimeout"/>
 /// to differ by an order of magnitude — <see cref="LlmTurnResumeTests"/> deliberately
 /// sets them equal so its tests do not depend on the watchdog's arm timeout. Covers
-/// H3: a resumed call must be armed on the promoted (tighter) budget, not the full
-/// prefill budget, so the retry budget cannot triple the time to a final failure.
+/// H3/D3: a resumed call carries the dead call's own <c>_anyContentStreamed</c>
+/// value forward — a call that already streamed substantive content stays on the
+/// promoted (tighter) budget through every keepalive that follows; a call that
+/// died during prefill with zero content stays on the full prefill budget instead
+/// of being cut short.
 /// </summary>
 public sealed class LlmTurnResumeWatchdogArmingTests(ITestOutputHelper output) : LlmSessionTestBase(output)
 {
@@ -459,6 +580,11 @@ public sealed class LlmTurnResumeWatchdogArmingTests(ITestOutputHelper output) :
         {
             PrefillTimeout = PrefillTimeout,
             FirstTokenTimeout = FirstTokenTimeout,
+            // Larger than PrefillTimeout so the prefill-stage-death test below can
+            // advance the scheduler all the way to PrefillTimeout without the
+            // keepalive-immune no-progress deadline (default 1200s = 20 minutes)
+            // firing first and masking which timer actually fired.
+            NoProgressTimeout = TimeSpan.FromHours(1),
             ToolExecutionTimeout = TimeSpan.FromSeconds(10),
             SidecarLlmTimeout = TimeSpan.FromSeconds(10),
             Tuning = new SessionTuning
@@ -476,19 +602,23 @@ public sealed class LlmTurnResumeWatchdogArmingTests(ITestOutputHelper output) :
     }
 
     [Fact]
-    public async Task Resumed_call_is_armed_on_promoted_budget_not_full_prefill_budget()
+    public async Task Resumed_call_after_midstream_stall_stays_on_promoted_budget_through_a_keepalive()
     {
         // First call: stall after two real deltas so its own watchdog promotes to
-        // FirstTokenTimeout before firing — a genuine stall, not an instant failure.
+        // FirstTokenTimeout before firing — a genuine mid-stream stall, not an
+        // instant failure. _anyContentStreamed is true when this call dies.
         _chatClient.Behaviors.Enqueue(ResumeCallBehavior.StallAfterDeltas("chunk one ", "chunk two"));
-        // Resumed call: stall from the very first update, with zero deltas ever
-        // streamed. This isolates the INITIAL watchdog arm timeout (what H3 fixes)
-        // from the two-phase promotion, which only kicks in once a delta arrives.
-        _chatClient.Behaviors.Enqueue(ResumeCallBehavior.StallImmediately());
+        // Resumed call: one content-free keepalive, then silence.
+        // StallImmediately() cannot catch the D3 regression — it never reaches
+        // OnStreamProgress at all, so it only proves the INITIAL arm value (which
+        // was already correct even with the bug). The bug only shows once the
+        // resumed call's watchdog is re-armed by a NON-substantive update: a
+        // substantive delta would "promote" correctly by accident.
+        _chatClient.Behaviors.Enqueue(ResumeCallBehavior.KeepaliveThenStall());
 
-        var sessionId = new SessionId("turn-resume/watchdog-arming");
+        var sessionId = new SessionId("turn-resume/watchdog-arming-keepalive");
         var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
-        var subscriber = CreateTestProbe("resume-arming-sub");
+        var subscriber = CreateTestProbe("resume-arming-keepalive-sub");
 
         await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
         {
@@ -509,17 +639,91 @@ public sealed class LlmTurnResumeWatchdogArmingTests(ITestOutputHelper output) :
             TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
         AdvanceScheduler(FirstTokenTimeout);
 
-        // The resume fires with zero deltas ever streamed. If it were armed on the
-        // full 30-minute prefill budget (the H3 bug), advancing only
-        // FirstTokenTimeout here would never fire its watchdog, and the bounded
-        // timeout inside WaitForStreamInvocationAsync (M4) would turn the resulting
-        // hang into a clear TimeoutException instead of blocking this test forever.
+        // Drain the discard signal the resume emits before re-firing — otherwise
+        // it sits unread in the probe's mailbox and trips the ExpectNoMsgAsync
+        // check below on an unrelated, already-delivered message.
+        await subscriber.FishForMessageAsync<object>(
+            m => m is TextStreamDiscarded, TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
         await _chatClient.WaitForStreamInvocationAsync(TestContext.Current.CancellationToken);
+
+        // The resumed call's keepalive carries no observable output (a
+        // content-free update never emits a TextDeltaOutput), so there is no
+        // SessionOutput to fish for as a synchronization signal here. Wait
+        // briefly on real wall-clock time for the invoker's fire-and-forget Tell
+        // to reach and be processed by the actor before probing the watchdog's
+        // re-arm — this is not a virtual-clock condition, just letting an
+        // in-process async handoff settle.
+        await subscriber.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300), cancellationToken: TestContext.Current.CancellationToken);
+
+        // If the keepalive incorrectly reverted the arm to the 30-minute prefill
+        // budget (the D3 bug), advancing only FirstTokenTimeout here would never
+        // fire the watchdog, and the bounded WaitForStreamInvocationAsync (M4)
+        // below would time out instead of observing the failure.
         AdvanceScheduler(FirstTokenTimeout);
 
         // Budget is 1: the resume's own watchdog expiry exhausts it, so the turn
-        // fails — proving the resumed call's watchdog fired at FirstTokenTimeout,
-        // not the 30-minute PrefillTimeout.
+        // fails — proving the resumed call's watchdog stayed armed at
+        // FirstTokenTimeout through the keepalive, not the 30-minute PrefillTimeout.
+        var error = await subscriber.FishForMessageAsync<object>(
+            m => m is ErrorOutput, TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(ErrorCategory.Timeout, Assert.IsType<ErrorOutput>(error).Category);
+
+        var completed = await subscriber.ExpectMsgAsync<TurnCompleted>(TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(TurnOutcome.Failed, completed.Outcome);
+        Assert.Equal(2, _chatClient.CallCount);
+    }
+
+    [Fact]
+    public async Task Resumed_call_after_prefill_stage_death_keeps_the_full_prefill_budget()
+    {
+        // First call: dies during prefill without streaming a single update — not
+        // even a keepalive. _anyContentStreamed is false (no evidence this
+        // provider is even alive) when the watchdog fires.
+        _chatClient.Behaviors.Enqueue(ResumeCallBehavior.StallImmediately());
+        // Resumed call: also dies during prefill with zero content.
+        _chatClient.Behaviors.Enqueue(ResumeCallBehavior.StallImmediately());
+
+        var sessionId = new SessionId("turn-resume/watchdog-arming-prefill-death");
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("resume-arming-prefill-death-sub");
+
+        await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+        await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        await sessionManager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "hello"
+        }, TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+
+        // First call dies at the full prefill budget — it is a fresh call, not a
+        // resume, so it is armed on PrefillTimeout regardless of D3.
+        await _chatClient.WaitForStreamInvocationAsync(TestContext.Current.CancellationToken);
+        AdvanceScheduler(PrefillTimeout);
+
+        // Drain the discard signal the resume emits before re-firing — otherwise
+        // it sits unread in the probe's mailbox and trips the ExpectNoMsgAsync
+        // check below on an unrelated, already-delivered message.
+        await subscriber.FishForMessageAsync<object>(
+            m => m is TextStreamDiscarded, TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
+        await _chatClient.WaitForStreamInvocationAsync(TestContext.Current.CancellationToken);
+
+        // Prove the resumed call is armed on the FULL prefill budget, not the
+        // promoted budget: advancing only FirstTokenTimeout must NOT fail the
+        // turn yet. If the fix incorrectly forced the promoted budget onto a
+        // call with no streamed evidence (the "ALSO" half of D3), this would
+        // already have failed by here.
+        AdvanceScheduler(FirstTokenTimeout);
+        await subscriber.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300), cancellationToken: TestContext.Current.CancellationToken);
+
+        // Advance the rest of the way to the full prefill budget — now it fires,
+        // exhausting the retry budget (1) and failing the turn.
+        AdvanceScheduler(PrefillTimeout - FirstTokenTimeout);
+
         var error = await subscriber.FishForMessageAsync<object>(
             m => m is ErrorOutput, TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(ErrorCategory.Timeout, Assert.IsType<ErrorOutput>(error).Category);
@@ -534,14 +738,15 @@ public sealed class LlmTurnResumeWatchdogArmingTests(ITestOutputHelper output) :
 /// One configured behavior for a single <see cref="ResumeTestChatClient"/> call,
 /// dequeued in call order.
 /// </summary>
-internal enum ResumeCallBehaviorKind { StallAfterDeltas, StallImmediately, InstantText, MultiDeltaTextThenComplete, InstantToolCall }
+internal enum ResumeCallBehaviorKind { StallAfterDeltas, StallImmediately, InstantText, MultiDeltaTextThenComplete, InstantToolCall, KeepaliveThenStall }
 
 internal sealed record ResumeCallBehavior(
     ResumeCallBehaviorKind Kind,
     string? Delta1 = null,
     string? Delta2 = null,
     string? Text = null,
-    FunctionCallContent? ToolCall = null)
+    FunctionCallContent? ToolCall = null,
+    UsageDetails? Usage = null)
 {
     /// <summary>
     /// Streams two substantive text deltas (needed so the session's
@@ -560,6 +765,20 @@ internal sealed record ResumeCallBehavior(
     public static ResumeCallBehavior StallImmediately()
         => new(ResumeCallBehaviorKind.StallImmediately);
 
+    /// <summary>
+    /// Streams one content-free keepalive update (empty <c>Contents</c>, no
+    /// finish reason — mirrors a provider heartbeat like llama.cpp's
+    /// <c>prompt_progress</c>) then hangs forever. Unlike
+    /// <see cref="StallImmediately"/>, this reaches
+    /// <c>ProcessingWatchdog.OnStreamProgress</c> once with a non-substantive
+    /// update — the only update kind that can expose a re-arm that reverts a
+    /// resumed call's promoted budget back to the full prefill budget (a
+    /// substantive delta would promote correctly by accident, and
+    /// <see cref="StallImmediately"/> never reaches the progress handler at all).
+    /// </summary>
+    public static ResumeCallBehavior KeepaliveThenStall()
+        => new(ResumeCallBehaviorKind.KeepaliveThenStall);
+
     public static ResumeCallBehavior InstantText(string text)
         => new(ResumeCallBehaviorKind.InstantText, Text: text);
 
@@ -567,12 +786,19 @@ internal sealed record ResumeCallBehavior(
     /// Streams two substantive text deltas (same buffered-first-delta
     /// requirement as <see cref="StallAfterDeltas"/>) and then completes
     /// normally. The final text is <paramref name="delta1"/> + <paramref name="delta2"/>.
+    /// An optional trailing <paramref name="usage"/> update lets a test prove
+    /// what a subsequent resume's discarded-token estimate is computed from.
     /// </summary>
-    public static ResumeCallBehavior MultiDeltaTextThenComplete(string delta1, string delta2)
-        => new(ResumeCallBehaviorKind.MultiDeltaTextThenComplete, Delta1: delta1, Delta2: delta2);
+    public static ResumeCallBehavior MultiDeltaTextThenComplete(string delta1, string delta2, UsageDetails? usage = null)
+        => new(ResumeCallBehaviorKind.MultiDeltaTextThenComplete, Delta1: delta1, Delta2: delta2, Usage: usage);
 
-    public static ResumeCallBehavior InstantToolCall(FunctionCallContent toolCall)
-        => new(ResumeCallBehaviorKind.InstantToolCall, ToolCall: toolCall);
+    /// <summary>
+    /// Dispatches a tool call and completes normally. An optional trailing
+    /// <paramref name="usage"/> update lets a test prove a LATER resume's
+    /// discarded-token estimate is the real count from THIS completed call.
+    /// </summary>
+    public static ResumeCallBehavior InstantToolCall(FunctionCallContent toolCall, UsageDetails? usage = null)
+        => new(ResumeCallBehaviorKind.InstantToolCall, ToolCall: toolCall, Usage: usage);
 }
 
 /// <summary>
@@ -658,15 +884,31 @@ internal sealed class ResumeTestChatClient : IChatClient
 
         _invocations.Writer.TryWrite(callNumber);
 
-        return behavior.Kind switch
+        var updates = behavior.Kind switch
         {
             ResumeCallBehaviorKind.StallAfterDeltas => StallAfterDeltasAsync(behavior.Delta1!, behavior.Delta2!),
             ResumeCallBehaviorKind.StallImmediately => TestStreamingHelpers.NeverCompletesAsync(cancellationToken),
+            ResumeCallBehaviorKind.KeepaliveThenStall => KeepaliveThenStallAsync(),
             ResumeCallBehaviorKind.InstantText => TestStreamingHelpers.ReturnTextAsync(behavior.Text!, cancellationToken),
             ResumeCallBehaviorKind.MultiDeltaTextThenComplete => MultiDeltaTextThenCompleteAsync(behavior.Delta1!, behavior.Delta2!),
             ResumeCallBehaviorKind.InstantToolCall => InstantToolCallAsync(behavior.ToolCall!, cancellationToken),
             _ => throw new InvalidOperationException($"Unhandled behavior kind {behavior.Kind}")
         };
+
+        // A behavior that never completes (a stall) never reaches the trailing
+        // usage update either — this only ever appends usage after a real
+        // completion, matching what a real provider does.
+        return AppendUsageIfPresent(updates, behavior.Usage);
+    }
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> AppendUsageIfPresent(
+        IAsyncEnumerable<ChatResponseUpdate> updates, UsageDetails? usage)
+    {
+        await foreach (var update in updates)
+            yield return update;
+
+        if (usage is not null)
+            yield return new ChatResponseUpdate { Contents = [new UsageContent(usage)] };
     }
 
     private static async IAsyncEnumerable<ChatResponseUpdate> StallAfterDeltasAsync(string delta1, string delta2)
@@ -681,6 +923,25 @@ internal sealed class ResumeTestChatClient : IChatClient
         yield return new ChatResponseUpdate
         {
             Contents = [new TextContent(delta2)]
+        };
+        await Task.Yield();
+
+        // Stream is now silent — never completes on its own; the actor's watchdog
+        // is the only thing that ends this turn.
+        var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await gate.Task;
+        yield break;
+    }
+
+    private static async IAsyncEnumerable<ChatResponseUpdate> KeepaliveThenStallAsync()
+    {
+        // Content-free keepalive — empty Contents, no finish reason. Mirrors a
+        // provider heartbeat that proves the socket is alive but carries no
+        // model output (see StreamingResponseReader.IsSubstantiveUpdate).
+        yield return new ChatResponseUpdate
+        {
+            Role = AiChatRole.Assistant,
+            Contents = []
         };
         await Task.Yield();
 

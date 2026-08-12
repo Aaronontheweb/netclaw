@@ -418,8 +418,8 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 break;
 
             case TextStreamDiscarded:
-                // A timed-out call was discarded and is being re-issued. Finalize the
-                // dead call's partial segment as interrupted (in place, so the
+                // A timed-out call was discarded. The actor re-issues it. Finalize
+                // the dead call's partial segment as interrupted (in place, so the
                 // history keeps a record of it) and untrack it — the next
                 // TextDeltaOutput from the resumed call starts a fresh segment, so
                 // the two answers never render as one (see

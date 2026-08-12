@@ -97,7 +97,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // Owns the exposed tool list (base + discovered) and lease-based eviction.
     private readonly DiscoveredToolCache _discoveredToolCache = new();
 
-    // Last observed input token count from LLM response (for compaction trigger)
+    // Last observed REAL input token count from a completed LLM response — drives
+    // the compaction trigger and, per TryResumeAfterTimeout, also doubles as the
+    // honest proxy for a discarded (never-completed) call's input size.
     private long _lastInputTokenCount;
 
     // When compaction triggers mid-tool-loop, the turn is still in-progress.
@@ -180,24 +182,17 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // them only while StartupContextInjected is false). See TryResumeAfterTimeout.
     private bool _startupContextPendingFirstDelivery;
 
-    // Character-count estimate of the input tokens in the message list most
-    // recently sent to the provider (see EstimateInputTokens). Refreshed on every
-    // ContinueFireLlmCall. TryResumeAfterTimeout reads it right before discarding
-    // the dead call so the turn's usage report can count what a completed call
-    // would have reported — the provider never returns real usage for a call that
-    // times out before completion.
-    private long _lastFiredCallEstimatedInputTokens;
-
-    // Set immediately before a FireLlmCall triggered by TryResumeAfterTimeout, and
-    // consumed by ContinueFireLlmCall to arm the watchdog on the promoted
-    // inter-delta budget (FirstTokenTimeout) instead of the full prefill budget.
-    // Safe as a plain field despite the async recall/working-context gap between
-    // FireLlmCall and ContinueFireLlmCall: only the LATEST FireLlmCall's
-    // continuation ever reaches ContinueFireLlmCall (ShouldApplyWorkingContextSnapshot
-    // discards stale ones by generation), and this flag is set right before the
-    // same FireLlmCall call that becomes "latest", so the two never desync. See
-    // TryResumeAfterTimeout.
-    private bool _resumeUsesPromotedWatchdogBudget;
+    // Set immediately before a FireLlmCall triggered by TryResumeAfterTimeout.
+    // FireLlmCall reads and clears it in the same synchronous step, before any
+    // async gap: when true, FireLlmCall skips its normal _anyContentStreamed
+    // reset, so the resumed call carries the dead call's own value forward
+    // instead of restarting the two-phase watchdog budget from scratch. A call
+    // that already streamed substantive content keeps the promoted (tighter)
+    // budget through the resumed call's keepalives; a call that died during
+    // prefill with zero content keeps the full prefill budget, so a genuinely
+    // slow failover prefill is not killed early. See TryResumeAfterTimeout,
+    // FireLlmCall, and ProcessingWatchdog.OnStreamProgress.
+    private bool _resumingAfterTimeout;
 
     // Guards against infinite compaction loops: if a post-compaction buffer drain
     // overflows again, fail the turn. Reset at the start of each new user turn.
@@ -2733,7 +2728,15 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             // injects a volatile system notice. The session stays usable.
         }
 
-        _anyContentStreamed = false;
+        // A resumed call carries the dead call's _anyContentStreamed forward
+        // instead of resetting it — see _resumingAfterTimeout and
+        // TryResumeAfterTimeout for why. Consumed here, synchronously, before any
+        // async gap, so there is no window for a later unrelated FireLlmCall to
+        // see a stale true value.
+        if (_resumingAfterTimeout)
+            _resumingAfterTimeout = false;
+        else
+            _anyContentStreamed = false;
         CancelAndDisposeLlmCts();
         _activeLlmCts = new CancellationTokenSource();
         _activeCallId++;
@@ -2905,7 +2908,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             ToolNameToLlmFacing: _toolRegistry is null ? null : _toolRegistry.ToLlmFacingName,
             SupportedInputModalities: _model.InputModalities));
         _startupContextInjected = true;
-        _lastFiredCallEstimatedInputTokens = EstimateInputTokens(messages);
 
         var self = Self;
         var client = _chatClient;
@@ -2919,15 +2921,19 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (!forceNoTools && exposedTools.Count > 0)
             options.Tools = [.. exposedTools];
 
-        // A resumed call is armed on the tighter promoted budget instead of the full
-        // prefill window: the dead call already reached this provider once this turn,
-        // so re-waiting the full cold-start budget on every resume would let the retry
-        // budget (default 2) triple the time to a final failure. A fresh call still
-        // gets the generous prefill budget since nothing is known about it yet.
-        var initialWatchdogTimeout = _resumeUsesPromotedWatchdogBudget
+        // The initial arm follows the same _anyContentStreamed rule as the
+        // in-stream promotion in HandleLlmResponseDeltaReceived (via
+        // ProcessingWatchdog.OnStreamProgress) and the watchdog-expiry error
+        // message below — one flag, one rule, everywhere the actor picks between
+        // the prefill and promoted budgets. FireLlmCall carries _anyContentStreamed
+        // forward on a resume instead of resetting it (see _resumingAfterTimeout),
+        // so a call that already streamed substantive content before stalling
+        // stays on the tighter promoted budget here and through every keepalive
+        // that follows; a call that died during prefill with zero content stays on
+        // the full prefill budget instead of being cut short on unproven ground.
+        var initialWatchdogTimeout = _anyContentStreamed
             ? _config.FirstTokenTimeout
             : _config.PrefillTimeout;
-        _resumeUsesPromotedWatchdogBudget = false;
         _watchdog.Start(ProcessingWatchdog.LlmCall, initialWatchdogTimeout, Timers, _config.NoProgressTimeout);
 
         TurnLog().Info("turn_llm_call_start messages={MessageCount} toolsEnabled={ToolsEnabled} forceNoTools={ForceNoTools} callId={CallId}",
@@ -2986,10 +2992,19 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         }
 
         _turnState.RecordTimeoutResume();
-        _turnState.RecordDiscardedResumeEstimatedInputTokens(_lastFiredCallEstimatedInputTokens);
+
+        // Honest proxy for the discarded call's real input size: the provider
+        // never reports usage for a call that times out before completion, but
+        // _lastInputTokenCount (the previous completed call's real, provider-
+        // reported count) already flows through this seam and approximates it far
+        // better than a fabricated guess. Null when no completed call has reported
+        // real usage yet this session (the discarded call was the first) — report
+        // that honestly instead of fabricating a number.
+        long? discardedEstimatedInputTokens = _lastInputTokenCount > 0 ? _lastInputTokenCount : null;
+        _turnState.RecordDiscardedResumeEstimatedInputTokens(discardedEstimatedInputTokens);
         TurnLog().Warning(cause,
             "turn_llm_timeout_resume source={Source} attempt={Attempt} budget={Budget} discardedEstimatedInputTokens={DiscardedEstimatedInputTokens}",
-            source, _turnState.TimeoutResumeCount, _config.Tuning.TimeoutResumeRetryBudget, _lastFiredCallEstimatedInputTokens);
+            source, _turnState.TimeoutResumeCount, _config.Tuning.TimeoutResumeRetryBudget, discardedEstimatedInputTokens);
 
         // Tell every delta-accumulating subscriber (headless JSON envelope, channel
         // execution accumulators, the chat TUI) to clear the dead call's partial text
@@ -3007,42 +3022,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _startupContextPendingFirstDelivery = false;
         }
 
-        _resumeUsesPromotedWatchdogBudget = true;
+        _resumingAfterTimeout = true;
         FireLlmCall(forceNoTools: _turnState.ForceNoToolsActive);
         return true;
-    }
-
-    /// <summary>
-    /// Rough character-count estimate (chars/4) of a request's input tokens. Used
-    /// only to report SOMETHING countable for a call that <see cref="TryResumeAfterTimeout"/>
-    /// discards — the provider never returns real usage for a call that times out
-    /// before completion. Not the authoritative <see cref="UsageOutput.InputTokens"/>
-    /// figure (that comes from provider-reported <c>UsageDetails</c> on a completed
-    /// response) — always surfaced as a separate, clearly labeled estimate on
-    /// <see cref="UsageOutput.DiscardedResumeEstimatedInputTokens"/> so it is never
-    /// silently blended into a real count.
-    /// </summary>
-    private static long EstimateInputTokens(List<AiChatMessage> messages)
-    {
-        long chars = 0;
-        foreach (var message in messages)
-        {
-            chars += message.Text.Length;
-            foreach (var content in message.Contents)
-            {
-                switch (content)
-                {
-                    case FunctionCallContent call:
-                        chars += call.Arguments is null ? 0 : JsonSerializer.Serialize(call.Arguments).Length;
-                        break;
-                    case FunctionResultContent result:
-                        chars += result.Result?.ToString()?.Length ?? 0;
-                        break;
-                }
-            }
-        }
-
-        return chars / 4;
     }
 
     private async Task<INoSerializationVerificationNeeded> CreateWorkingContextContinuationAsync(
