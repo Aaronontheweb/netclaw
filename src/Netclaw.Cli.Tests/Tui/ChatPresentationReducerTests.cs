@@ -119,11 +119,16 @@ public sealed class ChatPresentationReducerTests
         const string secondCallId = "parent-b/subagent-approval/approval-b";
         var state = Apply(ChatPresentationState.Empty, Approval(firstCallId, 1));
         state = Apply(state, Approval(secondCallId, 2));
+        state = Apply(state, Approval(firstCallId, 3));
+
+        Assert.Equal(2, state.PendingApprovalCount);
+        Assert.Equal(1, state.ApprovalQueuePosition(firstCallId));
+        Assert.Equal(2, state.ApprovalQueuePosition(secondCallId));
 
         state = Apply(state, new ApprovalOutcomeOutput
         {
             SessionId = SessionId,
-            TimestampMs = 3,
+            TimestampMs = 4,
             CallId = new ToolCallId(firstCallId),
             ToolName = new ToolName("shell_execute"),
             ParentCallId = "parent-a",
@@ -131,6 +136,7 @@ public sealed class ChatPresentationReducerTests
         });
 
         Assert.Equal(secondCallId, state.PendingApproval?.CallId.Value);
+        Assert.Equal(1, state.ApprovalQueuePosition(secondCallId));
         Assert.Empty(state.Transcript);
         var decision = Assert.Single(state.CompletedApprovals);
         Assert.True(decision.IsFailure);

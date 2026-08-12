@@ -266,6 +266,27 @@ Decision needed   Up/Down select  Enter confirm  Ctrl+O details  Esc deny
 The Decision Sheet stays inside the current Reply Block.
 The Sheet hides the Composer until the user makes a decision.
 
+## Serial Approval Queue
+
+Netclaw shows one Decision Sheet at a time.
+The queue head owns the sheet and keyboard input.
+Other approval requests stay in the Work Trace with a `Waiting` state.
+The sheet header shows `1 of N` when the queue contains multiple requests.
+Each choice targets one exact `CallId`.
+Netclaw waits for that approval outcome before it shows the next sheet.
+
+```text
+  Decision  List workspaces  · shell_execute  awaiting decision
+  Waiting   Run diagnostics  · shell_execute  decision 2 of 2
+
+  Approval required  1 of 2  Netclaw requests permission to run shell_execute
+```
+
+A grant does not resolve another queued request.
+The daemon can authorize a later request if a persistent grant covers it.
+A denial affects only the request in the current sheet.
+The next sheet keeps keyboard focus when it replaces the prior sheet.
+
 ## ASCII Mockup: Narrow Form at 48 Columns
 
 ```text
@@ -305,6 +326,7 @@ Composer --Enter--> Reply Block --Turn ends--> Settled Turn
 The Reply Block receives all events for the current Turn.
 The Composer remains live during model, tool, and sub-agent work.
 The Decision Sheet owns input before the Composer.
+The approval queue exposes only its head as a Decision Sheet.
 
 ## Content Rules
 
