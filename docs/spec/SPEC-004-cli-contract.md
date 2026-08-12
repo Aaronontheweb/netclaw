@@ -111,6 +111,9 @@ Setup, config, provider, model, and session picker applications retain
 `FullScreen` presentation.
 
 The chat composer uses bare `Enter` for submit and `Shift+Enter` for a newline.
+A model call does not disable or hide the composer. Later prompts enter the
+session actor queue while the current turn runs. The live region shows assistant
+text as each stream delta arrives.
 A pending approval owns input before the composer. `Ctrl+O` changes approval
 detail without a decision.
 

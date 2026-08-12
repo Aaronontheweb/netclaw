@@ -39,6 +39,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     private DynamicLayoutNode _liveRegion = null!;
     private SelectionListNode<string>? _approvalList;
     private ScrollableContainerNode? _approvalDetail;
+    private ScrollableContainerNode? _assistantStream;
     private CopyableTextNode? _inspectorCopyNode;
     private ScrollableContainerNode? _inspectorDetail;
     private string? _approvalCallId;
@@ -100,11 +101,9 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             .Subscribe(_ => _liveRegion.Invalidate())
             .DisposeWith(Subscriptions);
         ViewModel.IsGenerating
-            .Subscribe(isGenerating =>
+            .Subscribe(_ =>
             {
-                if (isGenerating)
-                    Focus.ClearFocus();
-                else if (ShowsComposer(_state))
+                if (ShowsComposer(_state))
                     Focus.SetFocus(_promptInput);
                 _liveRegion.Invalidate();
             })
@@ -277,7 +276,8 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             content.WithChild(Layouts.Empty().Height(1));
         content
             .WithChild(BuildSessionHeader())
-            .WithChild(BuildActivityDeck());
+            .WithChild(BuildActivityDeck())
+            .WithChild(BuildStreamingAssistant());
 
         if (_state.PendingApproval is not null)
             content.WithChild(BuildDecisionGate(_state.PendingApproval));
@@ -614,6 +614,35 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             .WithPadding(1)
             .WithContent(activity)
             .Width(ReadableWidth());
+    }
+
+    private ILayoutNode BuildStreamingAssistant()
+    {
+        if (string.IsNullOrEmpty(_state.AssistantText))
+            return Layouts.Empty();
+
+        var maximumHeight = Math.Max(4, Math.Min(14, _terminal.Height / 3));
+        _assistantStream ??= new ScrollableContainerNode()
+            .WithAutoScroll(AutoScrollPolicy.AlwaysTail)
+            .WithScrollbar(false);
+        _assistantStream.WithContent(
+            new TextNode(ChatPresentationRenderer.MarkdownToPlainText(
+                    _state.AssistantText))
+                .WithForeground(ChatVisualTheme.Text));
+        var content = Layouts.Vertical()
+            .WithChild(new TextNode("NETCLAW  LIVE")
+                .WithForeground(ChatVisualTheme.Primary)
+                .Bold())
+            .WithChild(_assistantStream.HeightAuto(
+                min: 1,
+                max: Math.Max(1, maximumHeight - 3)));
+        return new PanelNode()
+            .WithBorder(BorderStyle.None)
+            .WithBackground(ChatVisualTheme.Surface)
+            .WithPadding(1)
+            .WithContent(content)
+            .Width(ReadableWidth())
+            .HeightAuto(min: 4, max: maximumHeight);
     }
 
     private ILayoutNode BuildComposer()
@@ -1009,13 +1038,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     };
 
     private bool ShowsComposer(ChatPresentationState state) =>
-        state.PendingApproval is null
-        && !ViewModel.IsGenerating.Value
-        && !state.IsProcessing
-        && state.Tools.Count == 0
-        && state.SubAgents.Count == 0
-        && string.IsNullOrWhiteSpace(state.ThoughtText)
-        && string.IsNullOrWhiteSpace(state.AssistantText);
+        state.PendingApproval is null;
 }
 
 internal static partial class ChatPresentationRenderer
