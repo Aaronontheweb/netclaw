@@ -40,12 +40,12 @@
 
 ## 4. Termina Input, Scroll, and Copy Primitives
 
-- [ ] 4.1 Add a text-history cancellation API that restores the saved draft.
-- [ ] 4.2 Add typed-key tests for Up, Down, draft restoration, and history cancellation.
-- [ ] 4.3 Verify `Shift+Enter` across legacy, Kitty, and native raw input paths.
+- [x] 4.1 Add a text-history cancellation API that restores the saved draft.
+- [x] 4.2 Add typed-key tests for Up, Down, draft restoration, and history cancellation.
+- [x] 4.3 Verify `Shift+Enter` across legacy, Kitty, and native raw input paths.
 - [x] 4.4 Add a visible capability result when a terminal cannot distinguish `Shift+Enter`.
-- [ ] 4.5 Add dimension-free scroll operations that use the measured viewport.
-- [ ] 4.6 Preserve mouse coordinates on wheel input and test route selection.
+- [x] 4.5 Add dimension-free scroll operations that use the measured viewport.
+- [x] 4.6 Preserve mouse coordinates on wheel input and test route selection.
 - [x] 4.7 Add semantic copy data that remains separate from display glyphs.
 - [x] 4.8 Add clipboard failure output that preserves the selected semantic data.
 - [x] 4.9 Add headless tests that exclude borders, control bytes, and truncated display text from copied data.
@@ -87,7 +87,7 @@
 - [x] 7.7 Add concise live forms and immutable settled forms for each event lifecycle.
 - [x] 7.8 Add responsive layout rules and snapshots at 40, 60, 80, and 120 columns.
 - [ ] 7.9 Add tail-follow state, a new-event count, and an explicit return-to-tail action.
-- [ ] 7.10 Replace fixed scroll dimensions with the actual measured viewport.
+- [x] 7.10 Replace fixed scroll dimensions with the actual measured viewport.
 - [x] 7.11 Route all chat output through the inline output owner.
 - [x] 7.12 Add a visible diagnostic for an unsupported output type or invalid lifecycle transition.
 
@@ -112,7 +112,7 @@
 - [x] 9.2 Keep init, config, provider, model, and session picker applications in `FullScreen` mode.
 - [x] 9.3 Exit the session picker before a selected inline chat application starts.
 - [ ] 9.4 Show a visible error when the selected chat application cannot start.
-- [ ] 9.5 Restore cursor, input, mouse, paste, and terminal modes on normal, canceled, and failed exits.
+- [x] 9.5 Restore cursor, input, mouse, paste, and terminal modes on normal, canceled, and failed exits.
 - [x] 9.6 Add command tests that prove each application selects its required presentation mode.
 
 ## 10. Package and Cross-Repository Integration
