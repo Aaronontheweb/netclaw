@@ -26,7 +26,7 @@ the current defects.
 - Add prompt draft restoration and double-Escape prompt clearance.
 - Preserve complete event detail through an inspector and semantic copy path.
 - Preserve structured event chronology after session resume.
-- Add deterministic headless tests and a native chat smoke tape.
+- Add deterministic headless tests and disposable visual checkpoint videos.
 - Update `PRD-004` and the old TUI wireframe before implementation begins.
 - Reuse Netclaw issues `#577` and `#1338` for their original defects.
 - Reuse Termina issues `#45` and `#240` where their scopes match this work.
@@ -57,8 +57,8 @@ the current defects.
   activity output.
 - `session-resume`: Restores structured settled events instead of role and text
   content alone.
-- `netclaw-testing`: Requires event-contract coverage and native terminal proof
-  for the chat surface.
+- `netclaw-testing`: Requires event-contract coverage and disposable visual
+  proof for the chat surface.
 
 ## Impact
 
@@ -68,7 +68,7 @@ the current defects.
 - Session output records and SignalR DTOs gain additive correlation and detail
   fields.
 - Session resume gains a structured history representation.
-- Native smoke gains an interactive chat tape.
+- Development review gains temporary chat videos and selected frame images.
 - `PRD-004`, engineering specifications, and TUI wireframes change.
 
 ### Termina

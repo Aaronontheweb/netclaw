@@ -21,8 +21,21 @@ internal static class SessionTranscriptEntryFactory
             CallId = result.CallId.Value,
             ToolName = result.ToolName.Value,
             ArgumentsJson = call?.ArgumentsJson,
+            BatchId = call?.BatchId,
+            BatchSize = call?.BatchSize,
             Result = result.Result
         };
+
+    public static SessionTranscriptEntry Approval(ApprovalOutcomeOutput output, string? turnId) => new()
+    {
+        Type = SessionTranscriptEntryTypes.Approval,
+        TurnId = turnId,
+        TimestampMs = output.TimestampMs,
+        CallId = output.CallId.Value,
+        ParentCallId = output.ParentCallId,
+        ToolName = output.ToolName.Value,
+        ApprovalSelectedKey = output.SelectedKey.Value
+    };
 
     public static SessionTranscriptEntry SubAgent(SubAgentOutput output, string? turnId) => new()
     {

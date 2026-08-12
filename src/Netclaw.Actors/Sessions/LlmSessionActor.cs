@@ -2004,7 +2004,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             EmitOutput(new BufferFlush { SessionId = _sessionId }, OutputFilter.TextStreaming);
         }
 
-        // Emit tool call outputs to subscribers.
+        // One batch id lets clients group concurrent calls without changing each call id.
+        var batchId = toolCalls.Count > 1 ? toolCalls[0].CallId : string.Empty;
+
+        // Emit tool call outputs to subscribers and track for duplicate detection
         foreach (var tc in toolCalls)
         {
             var argsJson = tc.Arguments is not null
@@ -2015,7 +2018,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SessionId = _sessionId,
                 CallId = new ToolCallId(tc.CallId),
                 ToolName = new ToolName(tc.Name),
-                ArgumentsJson = argsJson
+                ArgumentsJson = argsJson,
+                BatchId = batchId,
+                BatchSize = Math.Max(1, toolCalls.Count)
             }, OutputFilter.ToolCalls);
         }
 
@@ -4134,6 +4139,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         bool includeText = true,
         bool includeThinking = true)
     {
+        var toolCalls = message.Contents.OfType<FunctionCallContent>().ToList();
+        var batchId = toolCalls.Count > 1 ? toolCalls[0].CallId : string.Empty;
         foreach (var content in message.Contents)
         {
             switch (content)
@@ -4151,6 +4158,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                         SessionId = _sessionId,
                         CallId = new ToolCallId(toolCall.CallId),
                         ToolName = new ToolName(toolCall.Name),
+                        BatchId = batchId,
+                        BatchSize = Math.Max(1, toolCalls.Count),
                         ArgumentsJson = toolCall.Arguments is not null
                             ? JsonSerializer.Serialize(toolCall.Arguments)
                             : null
@@ -4532,6 +4541,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 // Live-only prompts should release the blocked child task, not
                 // journal ToolApprovalResolved. After restart the child actor is
                 // gone, so a durable redrive would be misleading.
+                EmitApprovalOutcome(pending, msg);
                 approvalWait.Complete(answer);
                 TryReplyAck();
                 return;
@@ -4539,6 +4549,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             PersistApprovalResolved(pending, msg, answer, () =>
             {
+                EmitApprovalOutcome(pending, msg);
                 approvalWait.Complete(answer);
                 TryReplyAck();
             });
@@ -4637,6 +4648,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         PersistApprovalResolved(pending, msg, answer, () =>
         {
+            EmitApprovalOutcome(pending, msg);
             var outcome = TryRedriveToolBatchAfterApproval(callId);
             if (outcome == ApprovalRedriveOutcome.Failed)
             {
@@ -4991,10 +5003,27 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             case SubAgentOutput { Phase: SubAgents.SubAgentPhase.Completed } subAgent:
                 _settledTurnEntries.Add(SessionTranscriptEntryFactory.SubAgent(subAgent, turnId));
                 break;
+            case ApprovalOutcomeOutput approval:
+                _settledTurnEntries.Add(SessionTranscriptEntryFactory.Approval(approval, turnId));
+                break;
             case FileOutput file:
                 _settledTurnEntries.Add(SessionTranscriptEntryFactory.File(file, turnId));
                 break;
         }
+    }
+
+    private void EmitApprovalOutcome(PendingToolInteraction pending, ToolInteractionResponse response)
+    {
+        const string subAgentMarker = "/subagent-approval/";
+        var markerIndex = response.CallId.Value.IndexOf(subAgentMarker, StringComparison.Ordinal);
+        EmitOutput(new ApprovalOutcomeOutput
+        {
+            SessionId = _sessionId,
+            CallId = response.CallId,
+            ToolName = new ToolName(pending.ToolName),
+            SelectedKey = response.SelectedKey,
+            ParentCallId = markerIndex > 0 ? response.CallId.Value[..markerIndex] : string.Empty
+        });
     }
 
     private async Task PersistApprovalCandidatesAsync(

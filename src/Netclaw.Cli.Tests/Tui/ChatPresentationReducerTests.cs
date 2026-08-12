@@ -6,6 +6,7 @@
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.SubAgents;
 using Netclaw.Cli.Tui;
+using Netclaw.Media;
 using Netclaw.Tools;
 using Xunit;
 using static Netclaw.Actors.Sessions.SessionProtocol;
@@ -39,6 +40,20 @@ public sealed class ChatPresentationReducerTests
     }
 
     [Fact]
+    public void Parallel_tool_batch_commits_one_durable_group()
+    {
+        var first = ToolCall("call-a", "search", 1) with { BatchId = "batch-1", BatchSize = 2 };
+        var second = ToolCall("call-b", "fetch", 2) with { BatchId = "batch-1", BatchSize = 2 };
+
+        var state = Apply(ChatPresentationState.Empty, first);
+        state = Apply(state, second);
+
+        var group = Assert.Single(state.Transcript, block => block.Kind == ChatBlockKind.Parallel);
+        Assert.Contains("2 tool calls", group.Summary, StringComparison.Ordinal);
+        Assert.Contains("batch-1", state.CommittedToolBatches);
+    }
+
+    [Fact]
     public void Parallel_same_name_subagents_keep_distinct_run_rows()
     {
         var state = ChatPresentationState.Empty;
@@ -55,6 +70,41 @@ public sealed class ChatPresentationReducerTests
         Assert.False(state.SubAgents.ContainsKey("run-a"));
         Assert.True(state.SubAgents.ContainsKey("run-b"));
         Assert.Contains(state.Transcript, block => block.Key == "subagent:run-a");
+    }
+
+    [Fact]
+    public void Subagent_tool_identity_survives_the_approval_phase()
+    {
+        var state = Apply(ChatPresentationState.Empty, SubAgent("run-a", SubAgentPhase.Started, 1));
+        state = Apply(state, SubAgent("run-a", SubAgentPhase.Activity, 2, "running tools: shell_execute"));
+        state = Apply(state, SubAgent("run-a", SubAgentPhase.Activity, 3, "awaiting human approval"));
+
+        Assert.Equal("shell_execute", state.SubAgents["run-a"].ActiveToolName);
+        Assert.Equal("awaiting human approval", state.SubAgents["run-a"].Phase);
+    }
+
+    [Fact]
+    public void Approval_outcome_removes_only_its_request_and_commits_the_decision()
+    {
+        const string firstCallId = "parent-a/subagent-approval/approval-a";
+        const string secondCallId = "parent-b/subagent-approval/approval-b";
+        var state = Apply(ChatPresentationState.Empty, Approval(firstCallId, 1));
+        state = Apply(state, Approval(secondCallId, 2));
+
+        state = Apply(state, new ApprovalOutcomeOutput
+        {
+            SessionId = SessionId,
+            TimestampMs = 3,
+            CallId = new ToolCallId(firstCallId),
+            ToolName = new ToolName("shell_execute"),
+            ParentCallId = "parent-a",
+            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.Deny)
+        });
+
+        Assert.Equal(secondCallId, state.PendingApproval?.CallId.Value);
+        var decision = Assert.Single(state.Transcript, block => block.Kind == ChatBlockKind.Approval);
+        Assert.True(decision.IsFailure);
+        Assert.Contains("denied", decision.Summary, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -142,6 +192,35 @@ public sealed class ChatPresentationReducerTests
     }
 
     [Fact]
+    public void New_session_join_does_not_add_a_redundant_transcript_block()
+    {
+        var reduction = ChatPresentationReducer.Reduce(ChatPresentationState.Empty, new SessionJoined
+        {
+            SessionId = SessionId,
+            TimestampMs = 10,
+            TurnCount = 0
+        });
+
+        Assert.True(reduction.State.HasJoined);
+        Assert.Empty(reduction.State.Transcript);
+        Assert.Empty(reduction.Effects.OfType<ChatPresentationEffect.Commit>());
+    }
+
+    [Fact]
+    public void Session_title_updates_the_header_and_uses_a_title_block()
+    {
+        var reduction = ChatPresentationReducer.Reduce(ChatPresentationState.Empty, new SessionTitleOutput("Review the release")
+        {
+            SessionId = SessionId,
+            TimestampMs = 10
+        });
+
+        Assert.Equal("Review the release", reduction.State.SessionTitle);
+        var block = Assert.Single(reduction.Effects.OfType<ChatPresentationEffect.Commit>()).Block;
+        Assert.Equal("TITLE", block.Label);
+    }
+
+    [Fact]
     public void Unsupported_output_commits_a_visible_diagnostic()
     {
         var state = Apply(ChatPresentationState.Empty, new UnknownOutput
@@ -174,6 +253,79 @@ public sealed class ChatPresentationReducerTests
         Assert.Equal(2, state.Transcript.Count(block => block.Kind == ChatBlockKind.Diagnostic));
     }
 
+    [Fact]
+    public void Every_session_output_subtype_has_a_defined_reduction()
+    {
+        SessionOutput[] outputs =
+        [
+            new SessionJoined { SessionId = SessionId },
+            new TextOutput("answer") { SessionId = SessionId },
+            new TextDeltaOutput("part") { SessionId = SessionId },
+            new ThinkingOutput("reason") { SessionId = SessionId },
+            new ThinkingDeltaOutput("step") { SessionId = SessionId },
+            ToolCall("call-a", "search", 1),
+            ToolResult("call-a", "result", 2),
+            new ToolActivityOutput
+            {
+                SessionId = SessionId,
+                CallId = new ToolCallId("call-a"),
+                ToolName = new ToolName("search"),
+                TurnId = new TurnId("turn-a"),
+                Phase = "running"
+            },
+            new UsageOutput { SessionId = SessionId },
+            new TurnCompleted
+            {
+                SessionId = SessionId,
+                TurnNumber = new TurnNumber(1)
+            },
+            new SessionTitleOutput("title") { SessionId = SessionId },
+            new ErrorOutput { SessionId = SessionId, Message = "error" },
+            new FileOutput
+            {
+                SessionId = SessionId,
+                FilePath = "/tmp/report.txt",
+                FileName = "report.txt",
+                MimeType = new MimeType("text/plain")
+            },
+            SubAgent("run-a", SubAgentPhase.Started, 3),
+            new BufferFlush { SessionId = SessionId },
+            new ProcessingStateOutput(true) { SessionId = SessionId },
+            new CompactionOutput
+            {
+                SessionId = SessionId,
+                MessagesBefore = 10,
+                MessagesAfter = 4
+            },
+            Approval("approval-a", 4),
+            new ApprovalOutcomeOutput
+            {
+                SessionId = SessionId,
+                CallId = new ToolCallId("approval-a"),
+                ToolName = new ToolName("shell_execute"),
+                SelectedKey = ApprovalOptionKeys.ApproveOnceKey
+            }
+        ];
+
+        var discoveredTypes = typeof(SessionOutput).Assembly.GetTypes()
+            .Where(type => !type.IsAbstract && typeof(SessionOutput).IsAssignableFrom(type))
+            .Select(type => type.Name)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        var coveredTypes = outputs.Select(output => output.GetType().Name)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(discoveredTypes, coveredTypes);
+        foreach (var output in outputs)
+        {
+            var reduction = ChatPresentationReducer.Reduce(ChatPresentationState.Empty, output);
+            Assert.DoesNotContain(reduction.State.Transcript, block =>
+                block.Kind == ChatBlockKind.Diagnostic
+                && block.Summary.StartsWith("Unsupported session output", StringComparison.Ordinal));
+        }
+    }
+
     private static ChatPresentationState Apply(ChatPresentationState state, SessionOutput output) =>
         ChatPresentationReducer.Reduce(state, output).State;
 
@@ -193,6 +345,17 @@ public sealed class ChatPresentationReducerTests
         CallId = new ToolCallId(callId),
         ToolName = new ToolName("search"),
         Result = result
+    };
+
+    private static ToolInteractionRequest Approval(string callId, long timestamp) => new()
+    {
+        SessionId = SessionId,
+        TimestampMs = timestamp,
+        Kind = "approval",
+        CallId = new ToolCallId(callId),
+        ToolName = new ToolName("shell_execute"),
+        DisplayText = "dotnet test",
+        Options = [new ToolInteractionOption(ApprovalOptionKeys.DenyKey, ApprovalOptionKeys.DenyLabel)]
     };
 
     private static SubAgentOutput SubAgent(
