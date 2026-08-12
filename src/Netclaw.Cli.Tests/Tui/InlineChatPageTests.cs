@@ -87,6 +87,26 @@ public sealed class InlineChatPageTests
     }
 
     [Fact]
+    public async Task HistoryUp_RecallsThePreviousPrompt()
+    {
+        await using var harness = CreateHarness();
+        var runTask = harness.StartAsync();
+
+        harness.Input.EnqueueString("previous prompt");
+        harness.Input.EnqueueKey(ConsoleKey.Enter);
+        Assert.Equal("previous prompt",
+            await harness.ViewModel.ReadSubmissionAsync(harness.Cancellation.Token));
+
+        harness.Input.EnqueueString("saved draft");
+        harness.Input.EnqueueKey(ConsoleKey.UpArrow);
+        harness.Input.EnqueueKey(ConsoleKey.Enter);
+
+        Assert.Equal("previous prompt",
+            await harness.ViewModel.ReadSubmissionAsync(harness.Cancellation.Token));
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
     public async Task HistoryDown_RestoresTheSavedDraft()
     {
         await using var harness = CreateHarness();
