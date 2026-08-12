@@ -107,7 +107,7 @@ public sealed class StreamStallGuardChatClientTests
     {
         // Content-free keepalives (e.g. llama-server's prompt_progress heartbeat)
         // must not arm the tight inactivity timer — only a substantive update
-        // (StreamingResponseReader.IsSubstantiveUpdate) may promote it. Two keepalives
+        // (ChatStreamUpdateClassifier.IsSubstantiveUpdate) may promote it. Two keepalives
         // arrive, then the provider takes a long-but-legitimate time (a cold prefill,
         // not a stall) to produce the first substantive delta: crossing what would be
         // the inactivity window must not abort it, because no substantive content has
@@ -229,7 +229,7 @@ public sealed class StreamStallGuardChatClientTests
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         // A content-free keepalive: no text/thinking/tool-call content and no finish
-        // reason, matching StreamingResponseReader.IsSubstantiveUpdate's "false" case.
+        // reason, matching ChatStreamUpdateClassifier.IsSubstantiveUpdate's "false" case.
         yield return new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [] };
         yield return new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [] };
 

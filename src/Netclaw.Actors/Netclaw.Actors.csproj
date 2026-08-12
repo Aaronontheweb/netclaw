@@ -10,10 +10,6 @@
     <InternalsVisibleTo Include="Netclaw.Actors.Tests" />
     <InternalsVisibleTo Include="Netclaw.Daemon.Tests" />
     <InternalsVisibleTo Include="Netclaw.Benchmarks" />
-    <!-- netclawd (Netclaw.Daemon) reuses StreamingResponseReader.IsSubstantiveUpdate
-         so StreamStallGuardChatClient shares the one substantive-vs-keepalive rule
-         with ProcessingWatchdog instead of re-deriving it. -->
-    <InternalsVisibleTo Include="netclawd" />
   </ItemGroup>
 
   <ItemGroup>

@@ -21,13 +21,14 @@ public sealed record RetryPolicy
     /// substantive output. Once armed, resets on every later update — including
     /// content-free keepalives — so a backend that paces real tokens slowly is not
     /// killed, only one that stops emitting anything at all. Does not apply before
-    /// the first substantive update: a content-free keepalive or reasoning-only
-    /// delta never arms it, so time to first substantive output stays governed by
-    /// the coarser per-call watchdog, because a self-hosted backend can be
-    /// legitimately silent for minutes during cold prefill. This is the fast
-    /// detector for a stream that goes silent mid-response — a dead or half-open
-    /// connection that the coarse per-call watchdog would otherwise take minutes to
-    /// catch. Set to <see cref="TimeSpan.Zero"/> to disable.
+    /// the first substantive update. A reasoning delta with text is substantive and
+    /// arms it, the same as a text or tool-call delta; only a content-free keepalive
+    /// does not. Time to first substantive output stays governed by the coarser
+    /// per-call watchdog, because a self-hosted backend can be legitimately silent
+    /// for minutes during cold prefill. This is the fast detector for a stream that
+    /// goes silent mid-response — a dead or half-open connection that the coarse
+    /// per-call watchdog would otherwise take minutes to catch. Set to
+    /// <see cref="TimeSpan.Zero"/> to disable.
     /// </summary>
     public TimeSpan StreamInactivityTimeout { get; init; } = TimeSpan.FromSeconds(45);
 

@@ -19,14 +19,15 @@ namespace Netclaw.Daemon.Configuration;
 /// catches this eventually, but only after burning most of its budget.
 /// <para>
 /// Only the gap <b>after</b> the first <i>substantive</i> update is bounded — the
-/// same distinction <see cref="StreamingResponseReader.IsSubstantiveUpdate"/> and
+/// same distinction <see cref="ChatStreamUpdateClassifier.IsSubstantiveUpdate"/> and
 /// <c>ProcessingWatchdog</c> already draw, reused here rather than re-derived. Time to
 /// first substantive output is left to the existing, more generous per-call watchdog,
 /// because a self-hosted backend can be legitimately silent for minutes during cold
-/// prefill, and a content-free keepalive or reasoning-only delta must not promote a
-/// cold prefill into the tight budget. Once armed, every later update — including a
-/// content-free keepalive — resets the inactivity clock, so a slow-but-alive stream
-/// is never falsely aborted.
+/// prefill. A reasoning delta with text arms the tight budget, the same as a text or
+/// tool-call delta. Only a content-free keepalive — no text, no thinking, no tool
+/// call, and no finish reason — leaves the budget unarmed. Once armed, every later
+/// update — including a content-free keepalive — resets the inactivity clock, so a
+/// slow-but-alive stream is never falsely aborted.
 /// </para>
 /// <para>
 /// The timer measures provider silence only. It is disarmed immediately after each
@@ -124,7 +125,7 @@ public sealed class StreamStallGuardChatClient : DelegatingChatClient
                 if (!hasNext)
                     yield break;
 
-                if (!armed && StreamingResponseReader.IsSubstantiveUpdate(enumerator.Current))
+                if (!armed && ChatStreamUpdateClassifier.IsSubstantiveUpdate(enumerator.Current))
                     armed = true;
 
                 yield return enumerator.Current;

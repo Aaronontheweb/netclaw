@@ -46,6 +46,54 @@ internal readonly record struct StreamReadResult(
     StreamDiagnostics Diagnostics);
 
 /// <summary>
+/// Classifies a streaming LLM update as substantive model progress or a
+/// content-free keepalive. This is a small public contract because two
+/// independent watchdog layers, in two different assemblies, must agree on
+/// one rule: <see cref="StreamingResponseReader"/> (feeds
+/// <c>ProcessingWatchdog</c>'s main-session and sub-agent inter-delta
+/// budgets) and <c>Netclaw.Daemon.Configuration.StreamStallGuardChatClient</c>
+/// (the uniform mid-stream stall guard for every LLM call path, including the
+/// sidecar paths <c>ProcessingWatchdog</c> does not cover). A change to this
+/// predicate changes the arming behavior of BOTH watchdogs — verify both
+/// when this rule changes.
+/// </summary>
+public static class ChatStreamUpdateClassifier
+{
+    /// <summary>
+    /// True when an update represents real model progress. A finish reason, non-empty
+    /// text/thinking, a tool call, or any non-usage content all count. Only a
+    /// content-free heartbeat or a usage-only chunk (with no finish reason) is treated
+    /// as a non-substantive keepalive. A reasoning delta with text is substantive, the
+    /// same as a text or tool-call delta — it arms a two-phase watchdog's tight budget.
+    /// This mirrors the pre-extraction predicate so a provider that streams an
+    /// error/refusal or other non-text content before the first token is still
+    /// recognized as progress, not silently treated as a hang.
+    /// </summary>
+    public static bool IsSubstantiveUpdate(ChatResponseUpdate update)
+    {
+        if (update.FinishReason is not null)
+            return true;
+
+        foreach (var content in update.Contents)
+        {
+            switch (content)
+            {
+                case TextContent text when !string.IsNullOrEmpty(text.Text):
+                case TextReasoningContent reasoning when !string.IsNullOrEmpty(reasoning.Text):
+                case FunctionCallContent:
+                    return true;
+                case UsageContent:
+                    break;
+                default:
+                    return true;
+            }
+        }
+
+        return false;
+    }
+}
+
+/// <summary>
 /// Single owner of the streaming LLM consumption loop shared by the main-session
 /// (<see cref="SessionLlmInvoker"/>) and sub-agent (<c>SubAgentActor.InvokeLlmAsync</c>)
 /// paths. It owns the <c>await foreach</c>, per-update counting, the final
@@ -167,40 +215,9 @@ internal static class StreamingResponseReader
     /// </summary>
     internal static StreamUpdateClassification Classify(ChatResponseUpdate update, bool anySubstantiveSeen)
     {
-        var hasSubstantive = IsSubstantiveUpdate(update);
+        var hasSubstantive = ChatStreamUpdateClassifier.IsSubstantiveUpdate(update);
         return new StreamUpdateClassification(
             HasSubstantiveContent: hasSubstantive,
             IsFirstSubstantive: hasSubstantive && !anySubstantiveSeen);
-    }
-
-    /// <summary>
-    /// True when an update represents real model progress. A finish reason, non-empty
-    /// text/thinking, a tool call, or any non-usage content all count. Only a
-    /// content-free heartbeat or a usage-only chunk (with no finish reason) is treated
-    /// as a non-substantive keepalive. This mirrors the pre-extraction predicate so a
-    /// provider that streams an error/refusal or other non-text content before the
-    /// first token is still recognized as progress, not silently treated as a hang.
-    /// </summary>
-    internal static bool IsSubstantiveUpdate(ChatResponseUpdate update)
-    {
-        if (update.FinishReason is not null)
-            return true;
-
-        foreach (var content in update.Contents)
-        {
-            switch (content)
-            {
-                case TextContent text when !string.IsNullOrEmpty(text.Text):
-                case TextReasoningContent reasoning when !string.IsNullOrEmpty(reasoning.Text):
-                case FunctionCallContent:
-                    return true;
-                case UsageContent:
-                    break;
-                default:
-                    return true;
-            }
-        }
-
-        return false;
     }
 }
