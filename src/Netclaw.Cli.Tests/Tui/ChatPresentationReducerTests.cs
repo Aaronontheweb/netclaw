@@ -18,7 +18,7 @@ public sealed class ChatPresentationReducerTests
     private static readonly SessionId SessionId = new("test/chat");
 
     [Fact]
-    public void Parallel_tool_results_update_only_their_call_rows()
+    public void Parallel_tool_results_keep_stable_rows_until_the_turn_settles()
     {
         var state = ChatPresentationState.Empty;
         state = Apply(state, ToolCall("call-a", "search", 1));
@@ -27,16 +27,23 @@ public sealed class ChatPresentationReducerTests
         var second = ChatPresentationReducer.Reduce(state, ToolResult("call-b", "result-b", 3));
 
         Assert.True(second.State.Tools.ContainsKey("call-a"));
-        Assert.False(second.State.Tools.ContainsKey("call-b"));
-        var secondBlock = Assert.Single(second.Effects.OfType<ChatPresentationEffect.Commit>()).Block;
-        Assert.Equal("tool:call-b", secondBlock.Key);
-        Assert.Contains("result-b", secondBlock.SemanticText, StringComparison.Ordinal);
+        Assert.True(second.State.Tools.ContainsKey("call-b"));
+        Assert.Equal("completed", second.State.Tools["call-b"].Phase);
+        Assert.Equal("result-b", second.State.Tools["call-b"].Result);
+        Assert.Empty(second.Effects.OfType<ChatPresentationEffect.Commit>());
 
         var first = ChatPresentationReducer.Reduce(second.State, ToolResult("call-a", "result-a", 4));
 
-        Assert.Empty(first.State.Tools);
-        Assert.Equal(["tool:call-b", "tool:call-a"],
-            first.State.Transcript.Select(block => block.Key).ToArray());
+        Assert.Equal(2, first.State.Tools.Count);
+        Assert.All(first.State.Tools.Values, tool => Assert.NotNull(tool.CompletedAtMs));
+
+        var settled = ChatPresentationReducer.Reduce(first.State, CompletedTurn(5));
+
+        Assert.Empty(settled.State.Tools);
+        var reply = Assert.Single(settled.State.Transcript);
+        Assert.Equal(ChatBlockKind.Assistant, reply.Kind);
+        Assert.Contains("result-b", reply.SemanticText, StringComparison.Ordinal);
+        Assert.Contains("result-a", reply.SemanticText, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -51,18 +58,17 @@ public sealed class ChatPresentationReducerTests
         Assert.Equal("Find the relevant source", state.Tools["call-a"].Rationale);
 
         state = Apply(state, ToolResult("call-a", "result-a", 2));
-        var completed = Assert.Single(state.Transcript);
-        Assert.Contains("Find the relevant source", completed.Summary, StringComparison.Ordinal);
+        Assert.Equal("Find the relevant source", state.Tools["call-a"].Rationale);
 
-        state = Apply(state, ToolCall("call-b", "search", 3));
-        state = Apply(state, ToolResult("call-b", "result-b", 4));
-        var missing = state.Transcript[^1];
-        Assert.Contains("No rationale supplied", missing.Summary, StringComparison.Ordinal);
-        Assert.DoesNotContain("call-b", missing.Summary, StringComparison.Ordinal);
+        var missingState = Apply(ChatPresentationState.Empty, ToolCall("call-b", "search", 3));
+        missingState = Apply(missingState, ToolResult("call-b", "result-b", 4));
+        missingState = Apply(missingState, CompletedTurn(5));
+        var missing = Assert.Single(missingState.Transcript);
+        Assert.Contains("No rationale supplied", missing.SemanticText, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Parallel_tool_batch_commits_one_durable_group()
+    public void Parallel_tool_batch_stays_in_one_live_passage()
     {
         var first = ToolCall("call-a", "search", 1) with { BatchId = "batch-1", BatchSize = 2 };
         var second = ToolCall("call-b", "fetch", 2) with { BatchId = "batch-1", BatchSize = 2 };
@@ -70,9 +76,9 @@ public sealed class ChatPresentationReducerTests
         var state = Apply(ChatPresentationState.Empty, first);
         state = Apply(state, second);
 
-        var group = Assert.Single(state.Transcript, block => block.Kind == ChatBlockKind.Parallel);
-        Assert.Contains("2 tool calls", group.Summary, StringComparison.Ordinal);
-        Assert.Contains("batch-1", state.CommittedToolBatches);
+        var passage = Assert.Single(state.ReplyPassages);
+        Assert.Equal(["call-a", "call-b"], passage.ToolCallIds);
+        Assert.Empty(state.Transcript);
     }
 
     [Fact]
@@ -89,9 +95,10 @@ public sealed class ChatPresentationReducerTests
 
         state = Apply(state, SubAgent("run-a", SubAgentPhase.Completed, 4));
 
-        Assert.False(state.SubAgents.ContainsKey("run-a"));
+        Assert.True(state.SubAgents.ContainsKey("run-a"));
+        Assert.Equal("completed", state.SubAgents["run-a"].Phase);
         Assert.True(state.SubAgents.ContainsKey("run-b"));
-        Assert.Contains(state.Transcript, block => block.Key == "subagent:run-a");
+        Assert.Empty(state.Transcript);
     }
 
     [Fact]
@@ -124,7 +131,8 @@ public sealed class ChatPresentationReducerTests
         });
 
         Assert.Equal(secondCallId, state.PendingApproval?.CallId.Value);
-        var decision = Assert.Single(state.Transcript, block => block.Kind == ChatBlockKind.Approval);
+        Assert.Empty(state.Transcript);
+        var decision = Assert.Single(state.CompletedApprovals);
         Assert.True(decision.IsFailure);
         Assert.Contains("denied", decision.Summary, StringComparison.Ordinal);
     }
@@ -159,9 +167,8 @@ public sealed class ChatPresentationReducerTests
             TimestampMs = 4
         });
 
-        var thought = Assert.Single(state.Transcript);
-        Assert.Equal(ChatBlockKind.Thought, thought.Kind);
-        Assert.Equal("short reason", thought.Detail);
+        Assert.Empty(state.Transcript);
+        Assert.Equal("short reason", state.ThoughtText);
     }
 
     [Fact]
@@ -275,7 +282,53 @@ public sealed class ChatPresentationReducerTests
 
         Assert.Empty(state.Tools);
         Assert.Empty(state.SubAgents);
-        Assert.Equal(2, state.Transcript.Count(block => block.Kind == ChatBlockKind.Diagnostic));
+        Assert.Single(state.Transcript, block => block.Kind == ChatBlockKind.Assistant);
+        Assert.Single(state.Transcript, block => block.Kind == ChatBlockKind.Diagnostic);
+    }
+
+    [Fact]
+    public void Sequential_model_steps_settle_as_one_ordered_reply()
+    {
+        var state = Apply(ChatPresentationState.Empty, new TextDeltaOutput("I will inspect the source.")
+        {
+            SessionId = SessionId,
+            TimestampMs = 1
+        });
+        state = Apply(state, new TextOutput("I will inspect the source.")
+        {
+            SessionId = SessionId,
+            TimestampMs = 2
+        });
+        state = Apply(state, ToolCall("call-a", "search", 3) with
+        {
+            Rationale = "Find the source"
+        });
+        state = Apply(state, ToolResult("call-a", "source found", 4));
+        state = Apply(state, new TextDeltaOutput("The source confirms the behavior.")
+        {
+            SessionId = SessionId,
+            TimestampMs = 5
+        });
+        state = Apply(state, new TextOutput("The source confirms the behavior.")
+        {
+            SessionId = SessionId,
+            TimestampMs = 6
+        });
+
+        Assert.Equal(2, state.ReplyPassages.Count);
+        Assert.Empty(state.Transcript);
+        Assert.Equal("I will inspect the source.", state.ReplyPassages[0].Text);
+        Assert.Equal("The source confirms the behavior.", state.ReplyPassages[1].Text);
+        Assert.True(state.Tools.ContainsKey("call-a"));
+
+        state = Apply(state, CompletedTurn(7));
+
+        var reply = Assert.Single(state.Transcript);
+        Assert.True(reply.Summary.IndexOf("I will inspect", StringComparison.Ordinal)
+                    < reply.Summary.IndexOf("The source confirms", StringComparison.Ordinal));
+        Assert.Contains("Completed work  · 1 tool", reply.Summary, StringComparison.Ordinal);
+        Assert.Contains("Find the source", reply.SemanticText, StringComparison.Ordinal);
+        Assert.Empty(state.ReplyPassages);
     }
 
     [Fact]
@@ -370,6 +423,14 @@ public sealed class ChatPresentationReducerTests
         CallId = new ToolCallId(callId),
         ToolName = new ToolName("search"),
         Result = result
+    };
+
+    private static TurnCompleted CompletedTurn(long timestamp) => new()
+    {
+        SessionId = SessionId,
+        TimestampMs = timestamp,
+        TurnNumber = new TurnNumber(1),
+        Outcome = TurnOutcome.Completed
     };
 
     private static ToolInteractionRequest Approval(string callId, long timestamp) => new()

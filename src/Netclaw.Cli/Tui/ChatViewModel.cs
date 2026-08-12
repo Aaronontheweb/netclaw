@@ -37,6 +37,7 @@ public partial class ChatViewModel : ReactiveViewModel
 
     private readonly Subject<SessionOutput> _outputSubject = new();
     private readonly Queue<string> _pendingMessages = new();
+    private readonly Queue<string> _queuedTurnMessages = new();
     private readonly Queue<ToolInteractionRequest> _pendingInteractions = new();
 
     /// <summary>
@@ -65,6 +66,7 @@ public partial class ChatViewModel : ReactiveViewModel
     public ReactiveProperty<string?> SessionIdDisplay { get; } = new(null);
     public ReactiveProperty<string?> UsageDisplay { get; } = new(null);
     public ReactiveProperty<int> UiVersion { get; } = new(0);
+    internal ReactiveProperty<int> QueuedTurnMessageCount { get; } = new(0);
 
     /// <summary>
     /// When true, the approval prompt body renders in full inside the Input
@@ -138,6 +140,7 @@ public partial class ChatViewModel : ReactiveViewModel
                         _pendingInteractions.Clear();
                         RefreshApprovalOptions();
                         IsGenerating.Value = false;
+                        _ = SendNextQueuedTurnMessageAsync();
                         break;
                     case ErrorOutput:
                         _pendingInteractions.Clear();
@@ -195,6 +198,14 @@ public partial class ChatViewModel : ReactiveViewModel
             return;
         }
 
+        if (IsGenerating.Value)
+        {
+            _queuedTurnMessages.Enqueue(text);
+            QueuedTurnMessageCount.Value = _queuedTurnMessages.Count;
+            RequestRedraw();
+            return;
+        }
+
         if (!_sessionReady || !_daemonClient.IsConnected)
         {
             _pendingMessages.Enqueue(text);
@@ -230,6 +241,16 @@ public partial class ChatViewModel : ReactiveViewModel
     public virtual void RequestAppShutdown()
     {
         Shutdown();
+    }
+
+    private async Task SendNextQueuedTurnMessageAsync()
+    {
+        if (_queuedTurnMessages.Count == 0)
+            return;
+
+        var next = _queuedTurnMessages.Dequeue();
+        QueuedTurnMessageCount.Value = _queuedTurnMessages.Count;
+        await SubmitAsync(next);
     }
 
     private async Task SubmitInteractionResponseAsync(string text)
