@@ -104,6 +104,14 @@ public sealed class ExecutionOutputAccumulator
                 _sawTextDelta = true;
                 return OutputAction.Continue;
 
+            case TextStreamDiscarded:
+                // A timed-out call was discarded and is being re-issued — clear the
+                // dead call's partial text so the resumed call's deltas do not
+                // concatenate onto it. See SessionProtocol.TextStreamDiscarded.
+                _buffer.Clear();
+                _sawTextDelta = false;
+                return OutputAction.Continue;
+
             case TextOutput text:
                 if (!_sawTextDelta)
                     _buffer.Append(text.Text);

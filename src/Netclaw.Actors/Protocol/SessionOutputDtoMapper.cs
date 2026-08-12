@@ -34,6 +34,13 @@ public static class SessionOutputDtoMapper
             Text = msg.Delta
         },
 
+        TextStreamDiscarded msg => new SessionOutputDto
+        {
+            Type = SessionOutputTypes.TextStreamDiscarded,
+            SessionId = msg.SessionId.Value,
+            TimestampMs = msg.TimestampMs
+        },
+
         ThinkingOutput msg => new SessionOutputDto
         {
             Type = SessionOutputTypes.Thinking,
@@ -84,6 +91,8 @@ public static class SessionOutputDtoMapper
             UsagePercent = msg.UsagePercent,
             PromptMs = msg.PromptMs,
             PredictedPerSecond = msg.PredictedPerSecond,
+            DiscardedResumeEstimatedInputTokens = msg.DiscardedResumeEstimatedInputTokens,
+            DiscardedResumeAttempts = msg.DiscardedResumeAttempts,
         },
 
         TurnCompleted msg => new SessionOutputDto
@@ -228,6 +237,11 @@ public static class SessionOutputDtoMapper
                 SessionId = sessionId,
                 TimestampMs = dto.TimestampMs
             },
+            SessionOutputTypes.TextStreamDiscarded => new TextStreamDiscarded
+            {
+                SessionId = sessionId,
+                TimestampMs = dto.TimestampMs
+            },
             SessionOutputTypes.Thinking => new ThinkingOutput(dto.Text ?? string.Empty)
             {
                 SessionId = sessionId,
@@ -267,6 +281,8 @@ public static class SessionOutputDtoMapper
                 UsagePercent = dto.UsagePercent,
                 PromptMs = dto.PromptMs,
                 PredictedPerSecond = dto.PredictedPerSecond,
+                DiscardedResumeEstimatedInputTokens = dto.DiscardedResumeEstimatedInputTokens,
+                DiscardedResumeAttempts = dto.DiscardedResumeAttempts,
             },
             SessionOutputTypes.TurnCompleted => new TurnCompleted
             {

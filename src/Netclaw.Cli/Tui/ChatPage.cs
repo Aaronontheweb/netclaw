@@ -417,6 +417,25 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 _chatHistory.ScrollToBottom();
                 break;
 
+            case TextStreamDiscarded:
+                // A timed-out call was discarded and is being re-issued. Finalize the
+                // dead call's partial segment as interrupted (in place, so the
+                // history keeps a record of it) and untrack it — the next
+                // TextDeltaOutput from the resumed call starts a fresh segment, so
+                // the two answers never render as one (see
+                // SessionProtocol.TextStreamDiscarded).
+                if (_assistantSegmentId.Value != 0)
+                {
+                    _chatHistory.Replace(_assistantSegmentId,
+                        new StaticTextSegment($"Netclaw: {_assistantBuffer} [interrupted — retrying]", Color.BrightBlack),
+                        keepTracked: false);
+                    _assistantSegmentId = default;
+                    _assistantBuffer.Clear();
+                    _chatHistory.AppendLine("");
+                    _chatHistory.ScrollToBottom();
+                }
+                break;
+
             case ThinkingOutput:
                 // Hidden — reasoning output is too verbose for the chat view.
                 // TODO: collapsible thinking sections when Termina supports it.

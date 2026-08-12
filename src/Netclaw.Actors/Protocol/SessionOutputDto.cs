@@ -16,6 +16,7 @@ public static class SessionOutputTypes
 {
     public const string Text = "text";
     public const string TextDelta = "text_delta";
+    public const string TextStreamDiscarded = "text_stream_discarded";
     public const string Thinking = "thinking";
     public const string ThinkingDelta = "thinking_delta";
     public const string ToolCall = "tool_call";
@@ -77,6 +78,8 @@ public sealed record SessionOutputDto
     public double? UsagePercent { get; init; }
     public double? PromptMs { get; init; }
     public double? PredictedPerSecond { get; init; }
+    public long? DiscardedResumeEstimatedInputTokens { get; init; }
+    public int? DiscardedResumeAttempts { get; init; }
 
     // Turn Completed
     [System.Text.Json.Serialization.JsonConverter(typeof(NullableTurnNumberJsonConverter))]

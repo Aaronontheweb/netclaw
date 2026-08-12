@@ -49,6 +49,20 @@ public static partial class SessionProtocol
     public sealed record TextDeltaOutput(string Delta) : SessionOutput;
 
     /// <summary>
+    /// A timed-out LLM call was discarded and the same call is being re-issued
+    /// (see <c>LlmSessionActor.TryResumeAfterTimeout</c>). The dead call may have
+    /// already sent one or more <see cref="TextDeltaOutput"/> events for this turn.
+    /// Any subscriber that concatenates <see cref="TextDeltaOutput"/> text for the
+    /// current turn MUST clear that buffer on receipt of this message — the
+    /// resumed call streams the full answer again from the start, so a buffer that
+    /// keeps the dead call's partial text would glue two unrelated answers
+    /// together. Lifecycle — always delivered regardless of <see cref="OutputFilter"/>,
+    /// so it reaches every buffering subscriber even one that filters on
+    /// <see cref="OutputFilter.Text"/> instead of <see cref="OutputFilter.TextStreaming"/>.
+    /// </summary>
+    public sealed record TextStreamDiscarded : SessionOutput;
+
+    /// <summary>
     /// Thinking/reasoning tokens from the model (e.g., Claude extended thinking).
     /// Requires <see cref="OutputFilter.Thinking"/>.
     /// </summary>
@@ -134,6 +148,23 @@ public static partial class SessionProtocol
         /// Sourced from llama.cpp <c>timings.predicted_per_second</c>.
         /// </summary>
         public double? PredictedPerSecond { get; init; }
+
+        /// <summary>
+        /// Estimated input tokens sent to the provider by LLM calls that timed out
+        /// and were discarded this turn (see <c>LlmSessionActor.TryResumeAfterTimeout</c>).
+        /// A character-count estimate of the request that was sent, not a
+        /// provider-reported figure — the provider never returns usage for a call
+        /// that times out before completion. The provider likely still billed for
+        /// this input even though it is excluded from <see cref="InputTokens"/> and
+        /// <see cref="TotalTokens"/> above. Null when no call was discarded this turn.
+        /// </summary>
+        public long? DiscardedResumeEstimatedInputTokens { get; init; }
+
+        /// <summary>
+        /// Number of timed-out calls discarded and re-issued this turn. Null when
+        /// no resume happened this turn.
+        /// </summary>
+        public int? DiscardedResumeAttempts { get; init; }
     }
 
     /// <summary>

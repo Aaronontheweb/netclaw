@@ -264,6 +264,48 @@ public sealed class DaemonClientMappingTests
     }
 
     [Fact]
+    public void TextStreamDiscarded_roundtrips_through_dto()
+    {
+        var original = new TextStreamDiscarded
+        {
+            SessionId = new SessionId("signalr/test"),
+            TimestampMs = 779
+        };
+
+        var dto = SessionOutputDtoMapper.ToDto(original);
+        Assert.Equal(SessionOutputTypes.TextStreamDiscarded, dto.Type);
+        Assert.Equal("signalr/test", dto.SessionId);
+        Assert.Equal(779, dto.TimestampMs);
+
+        var roundTripped = DaemonClient.FromDto(dto);
+        var result = Assert.IsType<TextStreamDiscarded>(roundTripped);
+        Assert.Equal("signalr/test", result.SessionId.Value);
+        Assert.Equal(779, result.TimestampMs);
+    }
+
+    [Fact]
+    public void UsageOutput_roundtrips_discarded_resume_fields_through_dto()
+    {
+        var original = new UsageOutput
+        {
+            SessionId = new SessionId("signalr/test"),
+            TimestampMs = 780,
+            InputTokens = 100,
+            DiscardedResumeEstimatedInputTokens = 42,
+            DiscardedResumeAttempts = 2
+        };
+
+        var dto = SessionOutputDtoMapper.ToDto(original);
+        Assert.Equal(42, dto.DiscardedResumeEstimatedInputTokens);
+        Assert.Equal(2, dto.DiscardedResumeAttempts);
+
+        var roundTripped = DaemonClient.FromDto(dto);
+        var result = Assert.IsType<UsageOutput>(roundTripped);
+        Assert.Equal(42, result.DiscardedResumeEstimatedInputTokens);
+        Assert.Equal(2, result.DiscardedResumeAttempts);
+    }
+
+    [Fact]
     public void ProcessingStateOutput_roundtrips_through_dto()
     {
         var original = new ProcessingStateOutput(true)

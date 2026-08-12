@@ -268,7 +268,7 @@
               "type": "integer",
               "minimum": 0,
               "default": 2,
-              "description": "Per-turn budget for silent LLM call resumes after a mid-stream timeout. On a timeout with no tool call dispatched yet this turn, the session actor discards the dead call's partial output and re-issues the same call up to this many times before failing the turn. Set to 0 to disable resume."
+              "description": "Per-turn budget for LLM call resumes after a mid-stream timeout. On a timeout, the session actor discards the dead call's partial output and re-issues the same call, up to this many times per turn, then fails the turn. Applies to any call in the turn, including one after an earlier tool iteration completed. Set to 0 to disable resume."
             }
           },
           "additionalProperties": false

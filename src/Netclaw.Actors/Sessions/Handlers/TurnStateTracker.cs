@@ -55,6 +55,14 @@ internal sealed class TurnStateTracker
     /// </summary>
     public int TimeoutResumeCount { get; private set; }
 
+    /// <summary>
+    /// Estimated input tokens sent to the provider by every LLM call discarded via
+    /// a timeout resume this turn. The provider billed for this input even though
+    /// the call never completed and reported no usage — see
+    /// <c>LlmSessionActor.TryResumeAfterTimeout</c> for the estimation method.
+    /// </summary>
+    public long DiscardedResumeEstimatedInputTokens { get; private set; }
+
     private bool _budgetNudgeSent;
     private int _postToolEmptyResponseCount;
     private int _preToolEmptyResponseCount;
@@ -74,6 +82,7 @@ internal sealed class TurnStateTracker
         _toolCallCounts.Clear();
         _duplicateNudgeSent = false;
         TimeoutResumeCount = 0;
+        DiscardedResumeEstimatedInputTokens = 0;
     }
 
     /// <summary>
@@ -83,6 +92,15 @@ internal sealed class TurnStateTracker
     public void RecordTimeoutResume()
     {
         TimeoutResumeCount++;
+    }
+
+    /// <summary>
+    /// Add the discarded call's estimated input tokens to this turn's running
+    /// total. Called once per resume, right before the actor re-issues the call.
+    /// </summary>
+    public void RecordDiscardedResumeEstimatedInputTokens(long estimatedTokens)
+    {
+        DiscardedResumeEstimatedInputTokens += estimatedTokens;
     }
 
     /// <summary>

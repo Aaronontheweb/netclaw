@@ -31,6 +31,44 @@ public sealed class ExecutionOutputAccumulatorTests
     }
 
     [Fact]
+    public void TextStreamDiscarded_clears_multi_delta_accumulated_text()
+    {
+        var acc = new ExecutionOutputAccumulator(TestNotifyTool);
+
+        // A real multi-delta stall: two substantive deltas before the dead call
+        // is discarded — a single-delta fake would not exercise the accumulator's
+        // append path the way a real stalled provider stream does.
+        acc.ProcessOutput(new TextDeltaOutput("stalled chunk one ") { SessionId = TestSessionId });
+        acc.ProcessOutput(new TextDeltaOutput("STALLED_PARTIAL_MARKER") { SessionId = TestSessionId });
+
+        acc.ProcessOutput(new TextStreamDiscarded { SessionId = TestSessionId });
+
+        acc.ProcessOutput(new TextDeltaOutput("Resumed answer ") { SessionId = TestSessionId });
+        acc.ProcessOutput(new TextDeltaOutput("after timeout") { SessionId = TestSessionId });
+
+        // The delta-accumulated result must contain ONLY the resumed call's text —
+        // the dead call's partial content must not survive the discard.
+        Assert.Equal("Resumed answer after timeout", acc.GetAccumulatedText());
+        Assert.DoesNotContain("STALLED_PARTIAL_MARKER", acc.GetAccumulatedText(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TextStreamDiscarded_lets_TextOutput_repopulate_after_discard()
+    {
+        var acc = new ExecutionOutputAccumulator(TestNotifyTool);
+
+        acc.ProcessOutput(new TextDeltaOutput("stalled") { SessionId = TestSessionId });
+        acc.ProcessOutput(new TextStreamDiscarded { SessionId = TestSessionId });
+
+        // No further deltas — the resumed call's answer arrives as a single
+        // non-streamed TextOutput. Before the fix, _sawTextDelta stayed true from
+        // the dead call's delta, so this TextOutput would be silently ignored.
+        acc.ProcessOutput(new TextOutput("Resumed answer") { SessionId = TestSessionId });
+
+        Assert.Equal("Resumed answer", acc.GetAccumulatedText());
+    }
+
+    [Fact]
     public void TextOutput_accumulates_when_no_prior_delta()
     {
         var acc = new ExecutionOutputAccumulator(TestNotifyTool);

@@ -180,6 +180,25 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // them only while StartupContextInjected is false). See TryResumeAfterTimeout.
     private bool _startupContextPendingFirstDelivery;
 
+    // Character-count estimate of the input tokens in the message list most
+    // recently sent to the provider (see EstimateInputTokens). Refreshed on every
+    // ContinueFireLlmCall. TryResumeAfterTimeout reads it right before discarding
+    // the dead call so the turn's usage report can count what a completed call
+    // would have reported — the provider never returns real usage for a call that
+    // times out before completion.
+    private long _lastFiredCallEstimatedInputTokens;
+
+    // Set immediately before a FireLlmCall triggered by TryResumeAfterTimeout, and
+    // consumed by ContinueFireLlmCall to arm the watchdog on the promoted
+    // inter-delta budget (FirstTokenTimeout) instead of the full prefill budget.
+    // Safe as a plain field despite the async recall/working-context gap between
+    // FireLlmCall and ContinueFireLlmCall: only the LATEST FireLlmCall's
+    // continuation ever reaches ContinueFireLlmCall (ShouldApplyWorkingContextSnapshot
+    // discards stale ones by generation), and this flag is set right before the
+    // same FireLlmCall call that becomes "latest", so the two never desync. See
+    // TryResumeAfterTimeout.
+    private bool _resumeUsesPromotedWatchdogBudget;
+
     // Guards against infinite compaction loops: if a post-compaction buffer drain
     // overflows again, fail the turn. Reset at the start of each new user turn.
     private int _compactionOverflowRetryCount;
@@ -2886,6 +2905,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             ToolNameToLlmFacing: _toolRegistry is null ? null : _toolRegistry.ToLlmFacingName,
             SupportedInputModalities: _model.InputModalities));
         _startupContextInjected = true;
+        _lastFiredCallEstimatedInputTokens = EstimateInputTokens(messages);
 
         var self = Self;
         var client = _chatClient;
@@ -2899,7 +2919,16 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (!forceNoTools && exposedTools.Count > 0)
             options.Tools = [.. exposedTools];
 
-        _watchdog.Start(ProcessingWatchdog.LlmCall, _config.PrefillTimeout, Timers, _config.NoProgressTimeout);
+        // A resumed call is armed on the tighter promoted budget instead of the full
+        // prefill window: the dead call already reached this provider once this turn,
+        // so re-waiting the full cold-start budget on every resume would let the retry
+        // budget (default 2) triple the time to a final failure. A fresh call still
+        // gets the generous prefill budget since nothing is known about it yet.
+        var initialWatchdogTimeout = _resumeUsesPromotedWatchdogBudget
+            ? _config.FirstTokenTimeout
+            : _config.PrefillTimeout;
+        _resumeUsesPromotedWatchdogBudget = false;
+        _watchdog.Start(ProcessingWatchdog.LlmCall, initialWatchdogTimeout, Timers, _config.NoProgressTimeout);
 
         TurnLog().Info("turn_llm_call_start messages={MessageCount} toolsEnabled={ToolsEnabled} forceNoTools={ForceNoTools} callId={CallId}",
             messages.Count,
@@ -2921,23 +2950,29 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     /// message list from the unchanged <see cref="_state"/> and the same
     /// <see cref="TurnStateTracker.ForceNoToolsActive"/> flag the dead call used.
     /// <para>
-    /// Safety gate: only resumes when no tool call has been dispatched yet this turn
-    /// (<see cref="TurnStateTracker.ToolIterationCount"/> is 0). Tool-call dispatch
-    /// only happens once a call fully completes (<see cref="HandleLlmResponseReceived"/>),
-    /// so a call that itself timed out mid-stream can never have dispatched a tool
-    /// call — the gate instead guards the case where an EARLIER call in this turn's
-    /// tool loop already dispatched one before a LATER follow-up call stalled.
-    /// Re-issuing after that point risks double-executing the earlier tool call's
-    /// effects if a provider ever replayed committed context, so those turns fail as
-    /// before this feature existed.
+    /// Safety is structural, not gated on tool-iteration count. Tool dispatch only
+    /// happens in <see cref="HandleLlmResponseReceived"/>, on a fully completed
+    /// response, after the watchdog stops. A call that times out mid-stream never
+    /// reaches that handler, so it can never have dispatched a tool call this turn —
+    /// resume is safe to allow on any call, including one after an earlier tool
+    /// iteration completed. Netclaw runs all tools locally through
+    /// <see cref="Netclaw.Tools.IToolExecutor"/>; there is no provider-hosted tool
+    /// mechanism whose committed context a re-issued call could replay, so there is
+    /// no double-execution risk to guard against. Only the retry budget
+    /// (<see cref="Netclaw.Configuration.SessionTuning.TimeoutResumeRetryBudget"/>)
+    /// bounds resume.
     /// </para>
     /// </summary>
     private bool TryResumeAfterTimeout(TimeoutException cause, string source)
     {
-        if (_turnState.ToolIterationCount > 0)
+        // A coordinated daemon restart is draining this session so it can passivate
+        // cleanly. Resuming would keep the turn alive and block the drain — fail the
+        // turn immediately, exactly as every other mid-turn continuation does under
+        // restart drain (see the _restartDrainRequested checks in Processing/Compacting).
+        if (_restartDrainRequested)
         {
             TurnLog().Warning(cause,
-                "turn_llm_timeout_resume_blocked source={Source} reason=tool_call_already_dispatched",
+                "turn_llm_timeout_resume_blocked source={Source} reason=restart_drain_pending",
                 source);
             return false;
         }
@@ -2951,9 +2986,17 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         }
 
         _turnState.RecordTimeoutResume();
+        _turnState.RecordDiscardedResumeEstimatedInputTokens(_lastFiredCallEstimatedInputTokens);
         TurnLog().Warning(cause,
-            "turn_llm_timeout_resume source={Source} attempt={Attempt} budget={Budget}",
-            source, _turnState.TimeoutResumeCount, _config.Tuning.TimeoutResumeRetryBudget);
+            "turn_llm_timeout_resume source={Source} attempt={Attempt} budget={Budget} discardedEstimatedInputTokens={DiscardedEstimatedInputTokens}",
+            source, _turnState.TimeoutResumeCount, _config.Tuning.TimeoutResumeRetryBudget, _lastFiredCallEstimatedInputTokens);
+
+        // Tell every delta-accumulating subscriber (headless JSON envelope, channel
+        // execution accumulators, the chat TUI) to clear the dead call's partial text
+        // before the resumed call streams its own deltas — otherwise the two answers
+        // concatenate into one corrupted reply. Lifecycle output, so it reaches every
+        // subscriber regardless of their OutputFilter. See TextStreamDiscarded.
+        EmitOutput(new TextStreamDiscarded { SessionId = _sessionId });
 
         // Undo the dead call's speculative "startup context delivered" flip so the
         // resumed call's message list matches the one that just died exactly — see
@@ -2964,8 +3007,42 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _startupContextPendingFirstDelivery = false;
         }
 
+        _resumeUsesPromotedWatchdogBudget = true;
         FireLlmCall(forceNoTools: _turnState.ForceNoToolsActive);
         return true;
+    }
+
+    /// <summary>
+    /// Rough character-count estimate (chars/4) of a request's input tokens. Used
+    /// only to report SOMETHING countable for a call that <see cref="TryResumeAfterTimeout"/>
+    /// discards — the provider never returns real usage for a call that times out
+    /// before completion. Not the authoritative <see cref="UsageOutput.InputTokens"/>
+    /// figure (that comes from provider-reported <c>UsageDetails</c> on a completed
+    /// response) — always surfaced as a separate, clearly labeled estimate on
+    /// <see cref="UsageOutput.DiscardedResumeEstimatedInputTokens"/> so it is never
+    /// silently blended into a real count.
+    /// </summary>
+    private static long EstimateInputTokens(List<AiChatMessage> messages)
+    {
+        long chars = 0;
+        foreach (var message in messages)
+        {
+            chars += message.Text.Length;
+            foreach (var content in message.Contents)
+            {
+                switch (content)
+                {
+                    case FunctionCallContent call:
+                        chars += call.Arguments is null ? 0 : JsonSerializer.Serialize(call.Arguments).Length;
+                        break;
+                    case FunctionResultContent result:
+                        chars += result.Result?.ToString()?.Length ?? 0;
+                        break;
+                }
+            }
+        }
+
+        return chars / 4;
     }
 
     private async Task<INoSerializationVerificationNeeded> CreateWorkingContextContinuationAsync(
@@ -3886,6 +3963,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             UsagePercent = usagePercent,
             PromptMs = promptMs,
             PredictedPerSecond = predictedPerSec,
+            DiscardedResumeEstimatedInputTokens = _turnState.TimeoutResumeCount > 0
+                ? _turnState.DiscardedResumeEstimatedInputTokens
+                : null,
+            DiscardedResumeAttempts = _turnState.TimeoutResumeCount > 0
+                ? _turnState.TimeoutResumeCount
+                : null,
         }, OutputFilter.Usage);
     }
 

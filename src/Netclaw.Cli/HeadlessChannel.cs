@@ -52,6 +52,13 @@ public sealed class HeadlessChannel : IChannel
     public Actors.Channels.ChannelType ChannelType => Actors.Channels.ChannelType.Headless;
     public string DisplayName => "Headless Prompt";
 
+    /// <summary>
+    /// Test seam: the accumulated JSON envelope response buffer. Lets
+    /// <c>Netclaw.Cli.Tests</c> assert on the delta-accumulated result of a
+    /// sequence of <see cref="HandleOutput"/> calls without parsing stdout.
+    /// </summary>
+    internal string ResponseBufferForTesting => _responseBuffer.ToString();
+
     public ValueTask<ChannelHealth> GetHealthAsync(CancellationToken cancellationToken = default)
     {
         var health = _isConnected
@@ -171,7 +178,12 @@ public sealed class HeadlessChannel : IChannel
         }
     }
 
-    private void HandleOutput(SessionOutput output, StreamWriter? log)
+    /// <summary>
+    /// Dispatches one <see cref="SessionOutput"/> from the live daemon subscription.
+    /// Internal (not private) so <c>Netclaw.Cli.Tests</c> can drive it directly
+    /// without standing up a daemon connection.
+    /// </summary>
+    internal void HandleOutput(SessionOutput output, StreamWriter? log)
     {
         switch (output)
         {
@@ -202,6 +214,25 @@ public sealed class HeadlessChannel : IChannel
                 else
                     Console.Write(msg.Delta);
                 Log(log, $"ASSISTANT_DELTA: {msg.Delta}");
+                break;
+
+            case TextStreamDiscarded:
+                // A timed-out call was discarded and is being re-issued. Clear the
+                // JSON envelope buffer so the resumed call's deltas do not
+                // concatenate onto the dead call's partial text (see
+                // SessionProtocol.TextStreamDiscarded). A plain-text console stream
+                // cannot un-print what is already on screen, so mark the boundary
+                // instead — otherwise the two answers would read as one.
+                if (_jsonOutput)
+                {
+                    _responseBuffer.Clear();
+                }
+                else if (_receivedTextDeltaInCurrentTurn)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine("[response interrupted by a provider stall — retrying]");
+                }
+                Log(log, "ASSISTANT_STREAM_DISCARDED");
                 break;
 
             case ThinkingOutput msg:
@@ -255,6 +286,8 @@ public sealed class HeadlessChannel : IChannel
                         ReasoningTokens = msg.ReasoningTokens,
                         PromptMs = msg.PromptMs,
                         PredictedPerSecond = msg.PredictedPerSecond,
+                        DiscardedResumeEstimatedInputTokens = msg.DiscardedResumeEstimatedInputTokens,
+                        DiscardedResumeAttempts = msg.DiscardedResumeAttempts,
                     };
                 }
                 else
@@ -264,9 +297,16 @@ public sealed class HeadlessChannel : IChannel
                     // line so downstream parsers (evals, humans) can anchor on ^[usage].
                     if (_receivedTextDeltaInCurrentTurn)
                         Console.WriteLine();
-                    Console.WriteLine($"[usage] in={msg.InputTokens} out={msg.OutputTokens} total={msg.TotalTokens} cached={msg.CachedInputTokens} prompt_ms={msg.PromptMs} tok_s={msg.PredictedPerSecond}");
+                    // discarded_est_in is a character-count estimate for calls that timed
+                    // out and were discarded this turn — the provider likely billed for
+                    // this input but never reported usage for it, so it is NOT included
+                    // in the in=/total= figures above. Omitted when no resume happened.
+                    var discardedSuffix = msg.DiscardedResumeAttempts is > 0
+                        ? $" discarded_est_in={msg.DiscardedResumeEstimatedInputTokens} discarded_attempts={msg.DiscardedResumeAttempts}"
+                        : string.Empty;
+                    Console.WriteLine($"[usage] in={msg.InputTokens} out={msg.OutputTokens} total={msg.TotalTokens} cached={msg.CachedInputTokens} prompt_ms={msg.PromptMs} tok_s={msg.PredictedPerSecond}{discardedSuffix}");
                 }
-                Log(log, $"USAGE: in={msg.InputTokens} out={msg.OutputTokens} total={msg.TotalTokens} cached={msg.CachedInputTokens} reasoning={msg.ReasoningTokens} context_window={msg.ContextWindowTokens} prompt_ms={msg.PromptMs} predicted_tok_s={msg.PredictedPerSecond}");
+                Log(log, $"USAGE: in={msg.InputTokens} out={msg.OutputTokens} total={msg.TotalTokens} cached={msg.CachedInputTokens} reasoning={msg.ReasoningTokens} context_window={msg.ContextWindowTokens} prompt_ms={msg.PromptMs} predicted_tok_s={msg.PredictedPerSecond} discarded_est_in={msg.DiscardedResumeEstimatedInputTokens} discarded_attempts={msg.DiscardedResumeAttempts}");
                 break;
 
             case ErrorOutput msg:
@@ -394,5 +434,7 @@ public sealed class HeadlessChannel : IChannel
         public long? ReasoningTokens { get; init; }
         public double? PromptMs { get; init; }
         public double? PredictedPerSecond { get; init; }
+        public long? DiscardedResumeEstimatedInputTokens { get; init; }
+        public int? DiscardedResumeAttempts { get; init; }
     }
 }
