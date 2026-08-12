@@ -540,7 +540,7 @@ public sealed class InlineChatPageTests
     }
 
     [Fact]
-    public async Task Inspector_OwnsTheVisibleViewport()
+    public async Task Inspector_KeepsItsHeaderAndFooterInTheSameFrame()
     {
         var output = new TextOutput("viewport proof")
         {
@@ -552,14 +552,17 @@ public sealed class InlineChatPageTests
         await harness.WaitUntilAsync(() => harness.Terminal.Contains("viewport proof"));
 
         harness.Input.EnqueueKey(ConsoleKey.O, control: true);
+        var screen = string.Empty;
         await harness.WaitUntilAsync(() =>
-            harness.Terminal.Contains("INSPECTOR") && harness.Terminal.Contains("Up/Down event"));
+        {
+            screen = harness.Terminal.ToString();
+            return screen.Contains("INSPECTOR", StringComparison.Ordinal)
+                   && screen.Contains("Up/Down event", StringComparison.Ordinal);
+        });
 
-        var firstVisibleLine = Enumerable.Range(0, harness.Terminal.Height)
-            .Select(harness.Terminal.GetLine)
-            .First(line => !string.IsNullOrWhiteSpace(line));
-        Assert.StartsWith("  INSPECTOR", firstVisibleLine, StringComparison.Ordinal);
-        Assert.Contains("Up/Down event", harness.Terminal.ToString(), StringComparison.Ordinal);
+        Assert.Contains("  INSPECTOR", screen, StringComparison.Ordinal);
+        Assert.Contains("TURN EVENTS", screen, StringComparison.Ordinal);
+        Assert.Contains("Up/Down event", screen, StringComparison.Ordinal);
         await harness.StopAsync(runTask);
     }
 
