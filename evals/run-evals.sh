@@ -84,6 +84,7 @@ RESULTS_DB=""
 
 # Per-prompt state (set by run_prompt, read by assertion helpers)
 STDOUT_FILE=""
+STDERR_FILE=""
 DAEMON_LOG_LINES_BEFORE=0
 
 # ─── Prerequisites ────────────────────────────────────────────────────────────
@@ -136,7 +137,7 @@ check_prerequisites() {
     fi
 
     # Eval-owned temp roots: everything under $EVAL_HOME is torn down by the
-    # EXIT trap. $TMPDIR_EVAL holds per-prompt stdout captures.
+    # EXIT trap. $TMPDIR_EVAL holds per-prompt stdout and stderr captures.
     EVAL_HOME=$(mktemp -d -t netclaw-eval-home-XXXXXX)
     TMPDIR_EVAL=$(mktemp -d -t netclaw-eval-tmp-XXXXXX)
     RESULTS_DIR="$EVAL_HOME/evals"
@@ -198,7 +199,7 @@ cleanup_eval_env() {
     if [[ -n "${EVAL_CONTAINER_NAME:-}" ]]; then
         docker stop "$EVAL_CONTAINER_NAME" >/dev/null 2>&1 || true
     fi
-    # TMPDIR_EVAL only holds host-owned per-prompt stdout captures, so a
+    # TMPDIR_EVAL only holds host-owned per-prompt stdout/stderr captures, so a
     # plain rm always succeeds — no force_rmrf fallback needed.
     if [[ -n "${TMPDIR_EVAL:-}" && -d "$TMPDIR_EVAL" ]]; then
         rm -rf "$TMPDIR_EVAL"
@@ -238,10 +239,14 @@ archive_eval_run() {
         cp "$RESULTS_DB" "$archive_dir/results.db" 2>/dev/null || true
     fi
 
-    # Copy stdout captures
+    # Copy stdout and stderr captures. Both land in the same archive_dir/stdout
+    # directory — the stdout_*/stderr_* filename prefix already tells them apart,
+    # and keeping stderr alongside stdout means a failing run's diagnostics
+    # (denied approvals, daemon errors) are always one directory away.
     if [[ -n "${TMPDIR_EVAL:-}" && -d "$TMPDIR_EVAL" ]]; then
         mkdir -p "$archive_dir/stdout"
         cp "$TMPDIR_EVAL"/stdout_*.txt "$archive_dir/stdout/" 2>/dev/null || true
+        cp "$TMPDIR_EVAL"/stderr_*.txt "$archive_dir/stdout/" 2>/dev/null || true
     fi
 
     # Write run metadata, including the immutable image identity so before/after
@@ -762,7 +767,10 @@ check_daemon_alive() {
 run_prompt() {
     local prompt="$1"
     local output_format="${2:-text}"
-    STDOUT_FILE="$TMPDIR_EVAL/stdout_$(date +%s%N).txt"
+    local ts
+    ts="$(date +%s%N)"
+    STDOUT_FILE="$TMPDIR_EVAL/stdout_${ts}.txt"
+    STDERR_FILE="$TMPDIR_EVAL/stderr_${ts}.txt"
 
     # Record daemon log position before the prompt (the daemon writes to a
     # daily-rotating file at /root/.netclaw/logs/daemon-YYYY-MM-DD.log, and
@@ -780,10 +788,15 @@ run_prompt() {
         output_args+=(--json)
     fi
 
+    # Stdout and stderr go to separate files. A merged capture corrupts
+    # --json assertions: the CLI writes legitimate diagnostics (for example
+    # "[error] Unknown output type from daemon: ...") to stderr, and a
+    # trailing diagnostic line breaks jq's parse of the JSON envelope on
+    # stdout, producing a false eval failure rather than a real one.
     NETCLAW_DAEMON_ENDPOINT="http://127.0.0.1:$EVAL_PORT" \
     NETCLAW_HOME="$EVAL_HOME" \
         timeout "$PROMPT_TIMEOUT" "$NETCLAW_BIN" chat -p "${output_args[@]}" "$prompt" \
-        > "$STDOUT_FILE" 2>&1 || true
+        > "$STDOUT_FILE" 2> "$STDERR_FILE" || true
 
     # Brief pause for daemon log flush
     sleep 2
@@ -792,23 +805,34 @@ run_prompt() {
 ## Runs a prompt against an existing (or new) named session via `chat -p --resume`.
 ## Appends output to a per-turn file AND the shared STDOUT_FILE so existing
 ## assertion helpers (stdout_contains, etc.) see the full concatenated output.
+## Stderr is captured the same way, into a separate shared STDERR_FILE, so
+## stdout stays pure for assertions (see run_prompt for why that matters).
 ## Args: session_id, prompt
 run_prompt_resume() {
     local session_id="$1"
     local prompt="$2"
-    local turn_file="$TMPDIR_EVAL/stdout_$(date +%s%N)_turn.txt"
+    local ts
+    ts="$(date +%s%N)"
+    local turn_file="$TMPDIR_EVAL/stdout_${ts}_turn.txt"
+    local turn_stderr_file="$TMPDIR_EVAL/stderr_${ts}_turn.txt"
 
     if [[ ! -x "$NETCLAW_BIN" ]]; then
         echo "ERROR: eval CLI disappeared during the run: $NETCLAW_BIN" >&2
         exit 2
     fi
 
-    # First call in a multi-turn case: open a fresh shared STDOUT_FILE.
+    # First call in a multi-turn case: open fresh shared STDOUT_FILE/STDERR_FILE.
     if [[ -z "${MULTI_TURN_STDOUT_FILE:-}" ]]; then
         MULTI_TURN_STDOUT_FILE="$TMPDIR_EVAL/stdout_$(date +%s%N)_multi.txt"
         : > "$MULTI_TURN_STDOUT_FILE"
     fi
     STDOUT_FILE="$MULTI_TURN_STDOUT_FILE"
+
+    if [[ -z "${MULTI_TURN_STDERR_FILE:-}" ]]; then
+        MULTI_TURN_STDERR_FILE="$TMPDIR_EVAL/stderr_$(date +%s%N)_multi.txt"
+        : > "$MULTI_TURN_STDERR_FILE"
+    fi
+    STDERR_FILE="$MULTI_TURN_STDERR_FILE"
 
     if [[ -f "$DAEMON_LOG" ]]; then
         DAEMON_LOG_LINES_BEFORE=$(wc -l < "$DAEMON_LOG")
@@ -819,10 +843,11 @@ run_prompt_resume() {
     NETCLAW_DAEMON_ENDPOINT="http://127.0.0.1:$EVAL_PORT" \
     NETCLAW_HOME="$EVAL_HOME" \
         timeout "$PROMPT_TIMEOUT" "$NETCLAW_BIN" chat -p --resume "$session_id" "$prompt" \
-        > "$turn_file" 2>&1 || true
+        > "$turn_file" 2> "$turn_stderr_file" || true
 
-    # Append this turn's output to the shared file so assertions see all turns.
+    # Append this turn's output to the shared files so assertions see all turns.
     cat "$turn_file" >> "$STDOUT_FILE"
+    cat "$turn_stderr_file" >> "$STDERR_FILE"
 
     # Per-turn metrics — read the usage line from this turn's file only.
     LAST_TURN_USAGE_LINE=$(grep -ao '\[usage\].*' "$turn_file" 2>/dev/null | tail -1 || echo "")
@@ -857,6 +882,7 @@ run_multi_turn_case() {
         # Fresh session per run so runs don't pollute each other.
         local session_id="eval/${case_name}-run${run}-$$"
         MULTI_TURN_STDOUT_FILE=""
+        MULTI_TURN_STDERR_FILE=""
 
         local setup_fn="setup_${case_name}"
         if declare -f "$setup_fn" >/dev/null 2>&1; then
