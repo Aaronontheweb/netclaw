@@ -45,6 +45,47 @@ public sealed class InlineChatPageTests
         await harness.StopAsync(runTask);
     }
 
+    [Theory]
+    [InlineData(40)]
+    [InlineData(60)]
+    [InlineData(80)]
+    [InlineData(120)]
+    public async Task ModifiedEnterUnavailable_ShowsAVisibleCapabilityResult(int width)
+    {
+        await using var harness = CreateHarness(width: width);
+        var runTask = harness.StartAsync();
+
+        harness.Events.Enqueue(new TerminalInputCapabilitiesChanged(
+            new TerminalInputCapabilities(
+                TerminalCapabilityAvailability.Unavailable,
+                TerminalInputCapabilitySource.LegacyTerminal)));
+
+        try
+        {
+            await harness.WaitUntilAsync(() => harness.Terminal.Contains("Shift+Enter unavailable"));
+        }
+        catch (OperationCanceledException)
+        {
+            Assert.Fail($"Capability result was not visible. Screen:\n{harness.Terminal}");
+        }
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task ModifiedEnterAvailable_ShowsTheNewlineShortcut()
+    {
+        await using var harness = CreateHarness();
+        var runTask = harness.StartAsync();
+
+        harness.Events.Enqueue(new TerminalInputCapabilitiesChanged(
+            new TerminalInputCapabilities(
+                TerminalCapabilityAvailability.Available,
+                TerminalInputCapabilitySource.KittyKeyboardProtocol)));
+
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Shift+Enter newline"));
+        await harness.StopAsync(runTask);
+    }
+
     [Fact]
     public async Task HistoryDown_RestoresTheSavedDraft()
     {

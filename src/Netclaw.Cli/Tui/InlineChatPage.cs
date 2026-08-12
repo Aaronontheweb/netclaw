@@ -52,6 +52,8 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     private long? _lastEscapeTimestamp;
     private int _inspectorIndex;
     private bool _inspectorOpen;
+    private TerminalCapabilityAvailability _modifiedEnterKeySupport =
+        TerminalCapabilityAvailability.Unknown;
 
     public InlineChatPage(
         IAnsiTerminal terminal,
@@ -107,6 +109,13 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             .DisposeWith(Subscriptions);
         ViewModel.Input.OfType<IInputEvent, ResizeEvent>()
             .Subscribe(_ => _liveRegion.Invalidate())
+            .DisposeWith(Subscriptions);
+        ViewModel.Input.OfType<IInputEvent, TerminalInputCapabilitiesChanged>()
+            .Subscribe(capabilities =>
+            {
+                _modifiedEnterKeySupport = capabilities.Capabilities.ModifiedEnterKeySupport;
+                _liveRegion.Invalidate();
+            })
             .DisposeWith(Subscriptions);
     }
 
@@ -625,8 +634,17 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     private ILayoutNode BuildStatusLine()
     {
         var status = ViewModel.StatusMessage.Value;
-        var displayStatus = status == "Generating..." ? "Working…" : status;
-        var keys = StatusKeys(_terminal.Width, _state.PendingApproval is not null, ShowsComposer(_state));
+        var displayStatus = status switch
+        {
+            "Generating..." => "Working…",
+            "Connecting..." when _terminal.Width < 48 => "Connect",
+            _ => status
+        };
+        var keys = StatusKeys(
+            _terminal.Width,
+            _state.PendingApproval is not null,
+            ShowsComposer(_state),
+            _modifiedEnterKeySupport);
         var statusLine = Layouts.Horizontal()
             .WithChild(new TextNode($" {displayStatus}")
                 .WithForeground(StatusColor(status))
@@ -698,7 +716,11 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         return Math.Clamp(lineCount, 3, 10);
     }
 
-    private static string StatusKeys(int width, bool hasApproval, bool hasComposer)
+    private static string StatusKeys(
+        int width,
+        bool hasApproval,
+        bool hasComposer,
+        TerminalCapabilityAvailability modifiedEnterKeySupport)
     {
         if (hasApproval)
             return width >= 88
@@ -706,11 +728,36 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
                 : "↑↓ select · Enter confirm · Esc deny";
         if (!hasComposer)
             return width >= 70 ? "Ctrl+O inspect · Ctrl+Q quit" : "Ctrl+Q quit";
+
+        if (modifiedEnterKeySupport == TerminalCapabilityAvailability.Unavailable)
+        {
+            if (width >= 110)
+                return "Enter send · Shift+Enter unavailable · Esc Esc clear · Ctrl+O inspect · Ctrl+Q quit";
+
+            return width >= 66
+                ? "Enter send · Shift+Enter unavailable · Esc Esc clear"
+                : width >= 48
+                    ? "Enter send · Shift+Enter unavailable"
+                    : "Shift+Enter unavailable";
+        }
+
+        if (modifiedEnterKeySupport == TerminalCapabilityAvailability.Unknown)
+        {
+            if (width >= 110)
+                return "Enter send · Shift+Enter status pending · Esc Esc clear · Ctrl+O inspect · Ctrl+Q quit";
+
+            return width >= 66
+                ? "Enter send · Shift+Enter pending · Esc Esc clear"
+                : width >= 48
+                    ? "Enter send · Shift+Enter pending"
+                    : "Shift+Enter pending";
+        }
+
         if (width >= 110)
             return "Enter send · Shift+Enter newline · Esc Esc clear · Ctrl+O inspect · Ctrl+Q quit";
         return width >= 66
             ? "Enter send · Shift+Enter line · Esc Esc clear · Ctrl+O inspect"
-            : "Enter send · Shift+Enter line · Esc Esc clear";
+            : "Enter send · Shift+Enter line";
     }
 
     private static Color ActivityColor(string phase) => phase.ToLowerInvariant() switch
