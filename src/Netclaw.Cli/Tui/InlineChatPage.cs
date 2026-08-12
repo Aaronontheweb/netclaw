@@ -47,9 +47,11 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     private string? _inspectorBlockKey;
     private string? _inspectorCopyStatus;
     private int _inspectorRenderWidth;
+    private int _thinkingFrame;
     private ChatPresentationState _state = ChatPresentationState.Empty;
     private Task _commitTail = Task.CompletedTask;
     private readonly List<ChatPresentationBlock> _deferredInspectorCommits = [];
+    private readonly Queue<string> _queuedPromptDisplays = new();
     private long? _lastEscapeTimestamp;
     private int _inspectorIndex;
     private bool _inspectorOpen;
@@ -81,6 +83,17 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             .WithHistory(100)
             .WithNewlineModifier(ConsoleModifiers.Shift);
         _liveRegion = new DynamicLayoutNode(BuildLiveRegion);
+        var thinkingTimer = new System.Timers.Timer(500) { AutoReset = true };
+        thinkingTimer.Elapsed += (_, _) => Post(() =>
+        {
+            if (!ViewModel.IsGenerating.Value)
+                return;
+
+            _thinkingFrame = (_thinkingFrame + 1) % 3;
+            _liveRegion.Invalidate();
+        });
+        thinkingTimer.Start();
+        thinkingTimer.DisposeWith(Subscriptions);
 
         _promptInput.Submitted
             .Where(text => !string.IsNullOrWhiteSpace(text))
@@ -107,6 +120,9 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
                     Focus.SetFocus(_promptInput);
                 _liveRegion.Invalidate();
             })
+            .DisposeWith(Subscriptions);
+        ViewModel.QueuedTurnMessageCount
+            .Subscribe(count => Post(() => PromoteQueuedPrompt(count)))
             .DisposeWith(Subscriptions);
         ViewModel.Input.OfType<IInputEvent, ResizeEvent>()
             .Subscribe(_ => _liveRegion.Invalidate())
@@ -183,11 +199,33 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     {
         _promptInput.Clear();
         _lastEscapeTimestamp = null;
+        if (ViewModel.IsGenerating.Value)
+        {
+            _queuedPromptDisplays.Enqueue(text);
+            _liveRegion.Invalidate();
+            _ = ViewModel.SubmitAsync(text);
+            return;
+        }
+
         ApplyReduction(ChatPresentationReducer.RecordUserPrompt(
             _state,
             text,
             _timeProvider.GetUtcNow().ToUnixTimeMilliseconds()));
         _ = ViewModel.SubmitAsync(text);
+    }
+
+    private void PromoteQueuedPrompt(int queuedCount)
+    {
+        while (_queuedPromptDisplays.Count > queuedCount)
+        {
+            var prompt = _queuedPromptDisplays.Dequeue();
+            ApplyReduction(ChatPresentationReducer.RecordUserPrompt(
+                _state,
+                prompt,
+                _timeProvider.GetUtcNow().ToUnixTimeMilliseconds()));
+        }
+
+        _liveRegion.Invalidate();
     }
 
     private void ApplyOutput(SessionOutput output)
@@ -275,9 +313,9 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         if (_state.Transcript.Count > 0)
             content.WithChild(Layouts.Empty().Height(1));
         content
-            .WithChild(BuildActivityDeck())
-            .WithChild(BuildStreamingAssistant())
+            .WithChild(BuildLiveReplyBlock())
             .WithChild(BuildSessionHeader());
+        content.WithChild(BuildQueueShelf());
 
         if (_state.PendingApproval is not null)
             content.WithChild(BuildDecisionGate(_state.PendingApproval));
@@ -543,16 +581,52 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             .Height(1);
     }
 
-    private ILayoutNode BuildActivityDeck()
+    private ILayoutNode BuildQueueShelf()
     {
-        var rows = new List<ILayoutNode>();
+        if (_queuedPromptDisplays.Count == 0)
+            return Layouts.Empty();
+
+        var count = _queuedPromptDisplays.Count;
+        var label = count == 1 ? "1 message" : $"{count} messages";
+        var preview = ChatPresentationRenderer.OneLine(
+            _queuedPromptDisplays.Peek(),
+            Math.Max(20, ReadableWidth() - 20));
+        var content = Layouts.Horizontal()
+            .WithChild(new TextNode($"QUEUED  {label}  ")
+                .WithForeground(ChatVisualTheme.Muted)
+                .Bold())
+            .WithChild(new TextNode(preview)
+                .WithForeground(ChatVisualTheme.Text)
+                .Fill());
+        return new PanelNode()
+            .WithBorder(BorderStyle.None)
+            .WithBackground(ChatVisualTheme.Surface)
+            .WithPadding(1)
+            .WithContent(content)
+            .Width(ReadableWidth())
+            .Height(3);
+    }
+
+    private ILayoutNode BuildLiveReplyBlock()
+    {
+        var hasReply = _state.ReplyPassages.Count > 0
+                       || _state.Tools.Count > 0
+                       || _state.SubAgents.Count > 0
+                       || !string.IsNullOrWhiteSpace(_state.ThoughtText);
+        if (!hasReply)
+            return Layouts.Empty();
+
+        var reply = Layouts.Vertical()
+            .WithChild(new TextNode("NETCLAW  LIVE")
+                .WithForeground(ChatVisualTheme.Primary)
+                .Bold());
         var lineWidth = Math.Max(20, ReadableWidth() - 4);
         if (!string.IsNullOrWhiteSpace(_state.ThoughtText))
         {
-            rows.Add(new TextNode(ChatPresentationRenderer.OneLine(
-                    $"Thought  {_state.ThoughtText}",
+            reply.WithChild(new TextNode(ChatPresentationRenderer.OneLine(
+                    $"Reasoning  {_state.ThoughtText}",
                     lineWidth))
-                .WithForeground(ChatVisualTheme.Warning));
+                .WithForeground(ChatVisualTheme.Muted));
         }
 
         var agents = _state.SubAgents.Values
@@ -560,92 +634,114 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             .ThenBy(value => value.RunId, StringComparer.Ordinal)
             .ToList();
         var renderedAgents = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var tool in _state.Tools.Values
-                     .OrderBy(value => value.StartedAtMs)
-                     .ThenBy(value => value.CallId, StringComparer.Ordinal))
+        var renderedTools = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var passage in _state.ReplyPassages.OrderBy(value => value.Index))
         {
-            var childRuns = agents.Where(value => value.ParentCallId == tool.CallId).ToList();
-            var awaitsApproval = string.Equals(
-                _state.PendingApproval?.CallId.Value,
-                tool.CallId,
-                StringComparison.Ordinal);
-            var phase = awaitsApproval
-                ? "awaiting approval"
-                : childRuns.Count switch
-                {
-                    0 => tool.Phase,
-                    1 => $"orchestrating {childRuns[0].AgentName}",
-                    _ => $"orchestrating {childRuns.Count} agents"
-                };
-            var state = awaitsApproval ? "Decision" : ActivityState(tool.Phase);
-            var phaseText = !awaitsApproval && string.Equals(phase, tool.Phase, StringComparison.OrdinalIgnoreCase)
-                ? string.Empty
-                : $"  {phase}";
-            var summary = string.IsNullOrWhiteSpace(tool.Summary) ? string.Empty : $"  {tool.Summary}";
-            var action = string.IsNullOrWhiteSpace(tool.Rationale)
-                ? "No rationale supplied"
-                : tool.Rationale.Trim();
-            rows.Add(new TextNode(ChatPresentationRenderer.OneLine(
-                    $"{state,-8} {action}  · {tool.ToolName}{phaseText}{summary}",
-                    lineWidth))
-                .WithForeground(ActivityColor(tool.Phase)));
-
-            foreach (var run in childRuns)
+            if (!string.IsNullOrWhiteSpace(passage.Text))
             {
-                rows.Add(BuildAgentActivity(run, lineWidth));
-                renderedAgents.Add(run.RunId);
+                reply.WithChild(new TextNode(ChatPresentationRenderer.MarkdownToPlainText(passage.Text))
+                    .WithForeground(ChatVisualTheme.Text));
+            }
+
+            var passageTools = passage.ToolCallIds
+                .Select(callId => _state.Tools.GetValueOrDefault(callId))
+                .Where(tool => tool is not null)
+                .Cast<ToolActivityPresentation>()
+                .ToList();
+            if (passageTools.Count == 0)
+                continue;
+
+            reply.WithChild(new TextNode("Work trace")
+                .WithForeground(ChatVisualTheme.Muted));
+            foreach (var group in passageTools.GroupBy(tool =>
+                         tool.BatchSize > 1 && tool.BatchId.Length > 0
+                             ? tool.BatchId
+                             : tool.CallId))
+            {
+                var tools = group.ToList();
+                if (tools.Any(tool => tool.BatchSize > 1))
+                {
+                    var settled = tools.Count(tool => tool.CompletedAtMs is not null);
+                    reply.WithChild(new TextNode(
+                            $"Parallel work  · {settled}/{tools.Max(tool => tool.BatchSize)} complete")
+                        .WithForeground(ChatVisualTheme.Muted));
+                }
+
+                foreach (var tool in tools)
+                {
+                    reply.WithChild(BuildToolActivity(tool, agents, renderedAgents, lineWidth));
+                    renderedTools.Add(tool.CallId);
+                }
             }
         }
 
+        foreach (var tool in _state.Tools.Values
+                     .Where(tool => !renderedTools.Contains(tool.CallId))
+                     .OrderBy(tool => tool.StartedAtMs))
+        {
+            reply.WithChild(BuildToolActivity(tool, agents, renderedAgents, lineWidth));
+        }
         foreach (var run in agents.Where(value => !renderedAgents.Contains(value.RunId)))
-            rows.Add(BuildAgentActivity(run, lineWidth));
+            reply.WithChild(BuildAgentActivity(run, lineWidth));
 
-        if (rows.Count == 0 && _state.IsProcessing)
-            rows.Add(new TextNode("Working").WithForeground(ChatVisualTheme.Warning).Bold());
-
-        if (rows.Count == 0)
-            return Layouts.Empty();
-
-        var activity = Layouts.Vertical()
-            .WithChild(new TextNode("ACTIVITY").WithForeground(ChatVisualTheme.Primary).Bold());
-        foreach (var row in rows)
-            activity.WithChild(row);
-
-        return new PanelNode()
-            .WithBorder(BorderStyle.None)
-            .WithBackground(ChatVisualTheme.Surface)
-            .WithPadding(1)
-            .WithContent(activity)
-            .Width(ReadableWidth());
-    }
-
-    private ILayoutNode BuildStreamingAssistant()
-    {
-        if (string.IsNullOrEmpty(_state.AssistantText))
-            return Layouts.Empty();
-
-        var maximumHeight = Math.Max(4, Math.Min(14, _terminal.Height / 3));
+        var maximumHeight = Math.Max(5, Math.Min(18, _terminal.Height / 2));
         _assistantStream ??= new ScrollableContainerNode()
             .WithAutoScroll(AutoScrollPolicy.AlwaysTail)
             .WithScrollbar(false);
-        _assistantStream.WithContent(
-            new TextNode(ChatPresentationRenderer.MarkdownToPlainText(
-                    _state.AssistantText))
-                .WithForeground(ChatVisualTheme.Text));
-        var content = Layouts.Vertical()
-            .WithChild(new TextNode("NETCLAW  LIVE")
-                .WithForeground(ChatVisualTheme.Primary)
-                .Bold())
-            .WithChild(_assistantStream.HeightAuto(
-                min: 1,
-                max: Math.Max(1, maximumHeight - 3)));
+        _assistantStream.WithContent(reply);
+
         return new PanelNode()
             .WithBorder(BorderStyle.None)
             .WithBackground(ChatVisualTheme.Surface)
             .WithPadding(1)
-            .WithContent(content)
+            .WithContent(_assistantStream.HeightAuto(
+                min: 1,
+                max: Math.Max(1, maximumHeight - 2)))
             .Width(ReadableWidth())
-            .HeightAuto(min: 4, max: maximumHeight);
+            .HeightAuto(min: 3, max: maximumHeight);
+    }
+
+    private ILayoutNode BuildToolActivity(
+        ToolActivityPresentation tool,
+        IReadOnlyCollection<SubAgentActivityPresentation> agents,
+        ISet<string> renderedAgents,
+        int lineWidth)
+    {
+        var childRuns = agents.Where(value => value.ParentCallId == tool.CallId).ToList();
+        var awaitsApproval = string.Equals(
+            _state.PendingApproval?.CallId.Value,
+            tool.CallId,
+            StringComparison.Ordinal);
+        var phase = awaitsApproval
+            ? "awaiting approval"
+            : childRuns.Count switch
+            {
+                0 => tool.Phase,
+                1 => $"orchestrating {childRuns[0].AgentName}",
+                _ => $"orchestrating {childRuns.Count} agents"
+            };
+        var state = awaitsApproval ? "Decision" : ActivityState(tool.Phase);
+        if (string.Equals(state, "Live", StringComparison.Ordinal))
+            state = $"Live{new string('.', _thinkingFrame + 1)}";
+        var phaseText = !awaitsApproval && string.Equals(phase, tool.Phase, StringComparison.OrdinalIgnoreCase)
+            ? string.Empty
+            : $"  {phase}";
+        var summary = string.IsNullOrWhiteSpace(tool.Summary) ? string.Empty : $"  {tool.Summary}";
+        var action = string.IsNullOrWhiteSpace(tool.Rationale)
+            ? "No rationale supplied"
+            : tool.Rationale.Trim();
+        var rows = Layouts.Vertical()
+            .WithChild(new TextNode(ChatPresentationRenderer.OneLine(
+                    $"{state,-8} {action}  · {tool.ToolName}{phaseText}{summary}",
+                    lineWidth))
+                .WithForeground(ActivityColor(tool.Phase)));
+        foreach (var run in childRuns)
+        {
+            rows.WithChild(BuildAgentActivity(run, lineWidth));
+            renderedAgents.Add(run.RunId);
+        }
+
+        return rows;
     }
 
     private ILayoutNode BuildComposer()
@@ -778,7 +874,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         var status = ViewModel.StatusMessage.Value;
         var displayStatus = status switch
         {
-            "Generating..." => "Working",
+            "Generating..." => $"Thinking{new string('.', _thinkingFrame + 1)}",
             "Connecting..." when _terminal.Width < 48 => "Connect",
             _ => status
         };
@@ -790,10 +886,17 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             ViewModel.IsApprovalDetailVisible.Value,
             ShowsComposer(_state),
             _modifiedEnterKeySupport);
+        var statusNode = new TextNode(
+                string.Equals(status, "Generating...", StringComparison.Ordinal)
+                    ? displayStatus.PadRight(12)
+                    : displayStatus)
+            .WithForeground(StatusColor(status));
+        if (string.Equals(status, "Generating...", StringComparison.Ordinal))
+            statusNode.Width(12);
+        else
+            statusNode.WidthAuto();
         var statusLine = Layouts.Horizontal()
-            .WithChild(new TextNode(displayStatus)
-                .WithForeground(StatusColor(status))
-                .WidthAuto())
+            .WithChild(statusNode)
             .WithChild(new TextNode($"  {keys}")
                 .WithForeground(ChatVisualTheme.Muted)
                 .NoWrap()
@@ -929,7 +1032,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     {
         "queued" => ChatVisualTheme.Muted,
         "failed" or "error" or "denied" => ChatVisualTheme.Danger,
-        "completed" or "complete" => ChatVisualTheme.Success,
+        "completed" or "complete" => ChatVisualTheme.Muted,
         _ => ChatVisualTheme.Primary
     };
 

@@ -309,7 +309,7 @@ public sealed class InlineChatPageTests
         harness.ViewModel.IsGenerating.Value = true;
         harness.ViewModel.StatusMessage.Value = "Generating...";
         await harness.WaitUntilAsync(() =>
-            harness.Terminal.Contains("Working")
+            harness.Terminal.Contains("Thinking")
             && harness.Terminal.Contains("MESSAGE")
             && harness.Focus.CurrentFocus is not null);
 
@@ -318,6 +318,7 @@ public sealed class InlineChatPageTests
 
         Assert.Equal("queue this next",
             await harness.ViewModel.ReadSubmissionAsync(harness.Cancellation.Token));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("QUEUED  1 message"));
         await harness.StopAsync(runTask);
     }
 
@@ -584,16 +585,16 @@ public sealed class InlineChatPageTests
         };
         await using var harness = CreateHarness(outputs: outputs);
         var runTask = harness.StartAsync();
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Inspect call-a"));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Completed work"));
 
         Assert.DoesNotContain("compact line", harness.Terminal.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain("complete hidden line", harness.Terminal.ToString(), StringComparison.Ordinal);
         harness.Input.EnqueueKey(ConsoleKey.O, control: true);
-        await harness.WaitUntilAsync(() =>
-            harness.Terminal.Contains("Tool result")
-            && harness.Terminal.Contains("complete hidden line"));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("INSPECTOR"));
+        harness.Input.EnqueueKey(ConsoleKey.End);
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("complete hidden line"));
 
-        Assert.Contains("Tool result", harness.Terminal.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Reply", harness.Terminal.ToString(), StringComparison.Ordinal);
         Assert.Contains("complete hidden line", harness.Terminal.ToString(), StringComparison.Ordinal);
         Assert.Contains("Arguments: {\"call\":\"call-a\"}",
             harness.Terminal.ToString(), StringComparison.Ordinal);
@@ -673,6 +674,13 @@ public sealed class InlineChatPageTests
             SessionId = SessionId,
             TimestampMs = 2
         });
+        harness.ViewModel.Emit(new TurnCompleted
+        {
+            SessionId = SessionId,
+            TimestampMs = 3,
+            TurnNumber = new TurnNumber(2),
+            Outcome = TurnOutcome.Completed
+        });
         await harness.WaitUntilAsync(() => harness.Terminal.Contains("event 1 of 2"));
         Assert.DoesNotContain("queued answer", harness.Terminal.ToString(), StringComparison.Ordinal);
 
@@ -698,7 +706,7 @@ public sealed class InlineChatPageTests
         };
         await using var harness = CreateHarness(outputs: outputs);
         var runTask = harness.StartAsync();
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Inspect call-a"));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Completed work"));
         harness.Input.EnqueueKey(ConsoleKey.O, control: true);
         await harness.WaitUntilAsync(() => harness.Terminal.Contains("INSPECTOR"));
 
@@ -1025,6 +1033,18 @@ public sealed class InlineChatPageTests
             base.OnActivated();
             foreach (var output in _outputs)
                 PublishOutputForTesting(output);
+            if (_outputs.Count > 0
+                && !_outputs.Any(output => output is TurnCompleted)
+                && _outputs.Any(output => output is TextOutput or ToolResultOutput))
+            {
+                PublishOutputForTesting(new TurnCompleted
+                {
+                    SessionId = SessionId,
+                    TimestampMs = _outputs.Max(output => output.TimestampMs) + 1,
+                    TurnNumber = new TurnNumber(1),
+                    Outcome = TurnOutcome.Completed
+                });
+            }
             if (_approval is not null)
                 SeedPendingInteractionForTesting(_approval);
         }

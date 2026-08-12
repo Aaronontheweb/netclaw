@@ -48,7 +48,17 @@ internal sealed record ToolActivityPresentation(
     long StartedAtMs,
     string? TurnId,
     string BatchId,
-    int BatchSize);
+    int BatchSize,
+    int PassageIndex,
+    string? Result,
+    long? CompletedAtMs);
+
+internal sealed record ReplyPassagePresentation(
+    int Index,
+    long StartedAtMs,
+    string Text,
+    bool IsFinal,
+    ImmutableList<string> ToolCallIds);
 
 internal sealed record SubAgentActivityPresentation(
     string RunId,
@@ -57,7 +67,11 @@ internal sealed record SubAgentActivityPresentation(
     string Phase,
     string? Summary,
     long StartedAtMs,
-    string? ActiveToolName);
+    string? ActiveToolName,
+    long? CompletedAtMs,
+    string? Outcome,
+    string? Detail,
+    bool IsFailure);
 
 internal sealed record ChatPresentationState
 {
@@ -77,7 +91,9 @@ internal sealed record ChatPresentationState
     public ImmutableQueue<ToolInteractionRequest> PendingApprovals { get; init; } =
         ImmutableQueue<ToolInteractionRequest>.Empty;
 
-    public string AssistantText { get; init; } = string.Empty;
+    public ImmutableList<ChatPresentationBlock> CompletedApprovals { get; init; } = [];
+
+    public ImmutableList<ReplyPassagePresentation> ReplyPassages { get; init; } = [];
 
     public string ThoughtText { get; init; } = string.Empty;
 
@@ -122,20 +138,17 @@ internal static class ChatPresentationReducer
         var next = output switch
         {
             SessionJoined joined => ReduceJoined(state, joined, effects),
-            TextDeltaOutput textDelta => state with
-            {
-                AssistantText = state.AssistantText + textDelta.Delta
-            },
-            TextOutput text => CommitAssistant(state, text, effects),
+            TextDeltaOutput textDelta => AppendAssistantDelta(state, textDelta),
+            TextOutput text => FinalizeAssistantPassage(state, text),
             ThinkingDeltaOutput thoughtDelta => state with
             {
                 ThoughtText = state.ThoughtText + thoughtDelta.Delta
             },
-            ThinkingOutput thought => CommitThought(state, thought, effects),
-            ToolCallOutput toolCall => StartTool(state, toolCall, effects),
+            ThinkingOutput thought => FinalizeThought(state, thought),
+            ToolCallOutput toolCall => StartTool(state, toolCall),
             ToolActivityOutput activity => UpdateTool(state, activity),
-            ToolResultOutput toolResult => CompleteTool(state, toolResult, effects),
-            SubAgentOutput subAgent => ReduceSubAgent(state, subAgent, effects),
+            ToolResultOutput toolResult => CompleteTool(state, toolResult),
+            SubAgentOutput subAgent => ReduceSubAgent(state, subAgent),
             UsageOutput usage => CommitUsage(state, usage, effects),
             ErrorOutput error => Commit(state, ErrorBlock(error, state.CurrentTurnId), effects),
             FileOutput file => Commit(state, FileBlock(file, state.CurrentTurnId), effects),
@@ -145,7 +158,7 @@ internal static class ChatPresentationReducer
             TurnCompleted completed => CompleteTurn(state, completed, effects),
             ProcessingStateOutput processing => state with { IsProcessing = processing.IsProcessing },
             SessionTitleOutput title => CommitTitle(state, title, effects),
-            BufferFlush => FlushAssistant(state, output.TimestampMs, effects),
+            BufferFlush => FinalizeAssistantPassage(state, null),
             _ => Commit(state, DiagnosticBlock(
                 $"unsupported:{output.GetType().Name}:{output.TimestampMs}",
                 $"Unsupported session output: {output.GetType().Name}",
@@ -153,7 +166,8 @@ internal static class ChatPresentationReducer
                 state.CurrentTurnId), effects)
         };
 
-        if (output is TextDeltaOutput or ThinkingDeltaOutput or ToolCallOutput or ToolActivityOutput
+        if (output is TextDeltaOutput or TextOutput or ThinkingDeltaOutput or ThinkingOutput
+            or ToolCallOutput or ToolActivityOutput or ToolResultOutput
             or ProcessingStateOutput)
         {
             effects.Add(new ChatPresentationEffect.RefreshLiveRegion());
@@ -196,9 +210,24 @@ internal static class ChatPresentationReducer
 
         if (joined.RecentTranscript is { Count: > 0 })
         {
+            var restoredTurns = new HashSet<string>(StringComparer.Ordinal);
             for (var index = 0; index < joined.RecentTranscript.Count; index++)
             {
                 var entry = joined.RecentTranscript[index];
+                if (entry.TurnId is { Length: > 0 } turnId && IsReplyEntry(entry))
+                {
+                    if (restoredTurns.Add(turnId))
+                    {
+                        var turnEntries = joined.RecentTranscript
+                            .Where(candidate => string.Equals(candidate.TurnId, turnId, StringComparison.Ordinal)
+                                                && IsReplyEntry(candidate))
+                            .ToList();
+                        state = Commit(state, ResumeReplyBlock(turnId, turnEntries), effects);
+                    }
+
+                    continue;
+                }
+
                 if (entry is
                     {
                         Type: SessionTranscriptEntryTypes.Tool,
@@ -247,6 +276,59 @@ internal static class ChatPresentationReducer
         };
     }
 
+    private static bool IsReplyEntry(SessionTranscriptEntry entry) => entry.Type is
+        SessionTranscriptEntryTypes.Assistant
+        or SessionTranscriptEntryTypes.Tool
+        or SessionTranscriptEntryTypes.Approval
+        or SessionTranscriptEntryTypes.SubAgent;
+
+    private static ChatPresentationBlock ResumeReplyBlock(
+        string turnId,
+        IReadOnlyList<SessionTranscriptEntry> entries)
+    {
+        var prose = string.Join("\n\n", entries
+            .Where(entry => entry.Type == SessionTranscriptEntryTypes.Assistant)
+            .Select(entry => entry.Text?.Trim())
+            .Where(text => !string.IsNullOrEmpty(text)));
+        var toolCount = entries.Count(entry => entry.Type == SessionTranscriptEntryTypes.Tool);
+        var agentCount = entries.Count(entry => entry.Type == SessionTranscriptEntryTypes.SubAgent);
+        var decisionCount = entries.Count(entry => entry.Type == SessionTranscriptEntryTypes.Approval);
+        var receiptParts = new[]
+        {
+            CountLabel(toolCount, "tool", "tools"),
+            CountLabel(agentCount, "agent", "agents"),
+            CountLabel(decisionCount, "decision", "decisions")
+        }.Where(value => value.Length > 0).ToArray();
+        var receipt = receiptParts.Length == 0
+            ? string.Empty
+            : $"Completed work  · {string.Join("  · ", receiptParts)}";
+        var summary = string.Join("\n\n", new[] { prose, receipt }
+            .Where(value => value.Length > 0));
+        var detail = string.Join("\n\n", entries
+            .Select(entry => entry.Type == SessionTranscriptEntryTypes.Assistant
+                ? entry.Text ?? string.Empty
+                : ResumeDetail(entry))
+            .Where(value => value.Length > 0));
+        return new ChatPresentationBlock(
+            $"resume:reply:{turnId}",
+            ChatBlockKind.Assistant,
+            "NETCLAW",
+            summary,
+            detail.Length == 0 ? "NETCLAW" : $"NETCLAW\n{detail}",
+            entries.Min(entry => entry.TimestampMs),
+            turnId,
+            detail,
+            entries.Any(entry => string.Equals(entry.Outcome, "failed", StringComparison.OrdinalIgnoreCase)
+                                 || string.Equals(entry.ApprovalSelectedKey, ApprovalOptionKeys.Deny, StringComparison.Ordinal)));
+    }
+
+    private static string CountLabel(int count, string singular, string plural) => count switch
+    {
+        0 => string.Empty,
+        1 => $"1 {singular}",
+        _ => $"{count} {plural}"
+    };
+
     private static ChatPresentationState CommitTitle(
         ChatPresentationState state,
         SessionTitleOutput output,
@@ -277,85 +359,82 @@ internal static class ChatPresentationReducer
             effects);
     }
 
-    private static ChatPresentationState CommitAssistant(
+    private static ChatPresentationState AppendAssistantDelta(
         ChatPresentationState state,
-        TextOutput output,
-        List<ChatPresentationEffect> effects)
+        TextDeltaOutput output)
     {
-        var text = string.IsNullOrEmpty(output.Text) ? state.AssistantText : output.Text;
-        if (string.IsNullOrEmpty(text))
-            return state;
-
-        var block = new ChatPresentationBlock(
-            $"turn:{state.TurnNumber}:assistant",
-            ChatBlockKind.Assistant,
-            "NETCLAW",
-            text,
-            $"NETCLAW\n{text}",
-            output.TimestampMs,
-            state.CurrentTurnId,
-            text);
-        return Commit(state with { AssistantText = string.Empty }, block, effects);
+        var passages = EnsureOpenPassage(state.ReplyPassages, output.TimestampMs);
+        var passage = passages[^1];
+        return state with
+        {
+            ReplyPassages = passages.SetItem(passages.Count - 1, passage with
+            {
+                Text = passage.Text + output.Delta
+            })
+        };
     }
 
-    private static ChatPresentationState FlushAssistant(
+    private static ChatPresentationState FinalizeAssistantPassage(
         ChatPresentationState state,
-        long timestampMs,
-        List<ChatPresentationEffect> effects)
+        TextOutput? output)
     {
-        if (string.IsNullOrEmpty(state.AssistantText))
+        var text = output?.Text;
+        if (state.ReplyPassages.Count == 0)
+        {
+            if (string.IsNullOrEmpty(text))
+                return state;
+
+            return state with
+            {
+                ReplyPassages =
+                [new ReplyPassagePresentation(0, output!.TimestampMs, text, true, [])]
+            };
+        }
+
+        var passages = state.ReplyPassages;
+        var passage = passages[^1];
+        if (passage.IsFinal)
+        {
+            if (string.IsNullOrEmpty(text) || string.Equals(passage.Text, text, StringComparison.Ordinal))
+                return state;
+
+            var next = new ReplyPassagePresentation(
+                passages.Count,
+                output!.TimestampMs,
+                text,
+                true,
+                []);
+            return state with { ReplyPassages = passages.Add(next) };
+        }
+
+        var finalText = string.IsNullOrEmpty(text) ? passage.Text : text;
+        if (string.IsNullOrEmpty(finalText) && passage.ToolCallIds.Count == 0)
             return state;
 
-        var block = new ChatPresentationBlock(
-            $"turn:{state.TurnNumber}:assistant:preamble:{timestampMs}",
-            ChatBlockKind.Assistant,
-            "NETCLAW",
-            state.AssistantText,
-            $"NETCLAW\n{state.AssistantText}",
-            timestampMs,
-            state.CurrentTurnId,
-            state.AssistantText);
-        return Commit(state with { AssistantText = string.Empty }, block, effects);
+        return state with
+        {
+            ReplyPassages = passages.SetItem(passages.Count - 1, passage with
+            {
+                Text = finalText,
+                IsFinal = true
+            })
+        };
     }
 
-    private static ChatPresentationState CommitThought(
+    private static ChatPresentationState FinalizeThought(
         ChatPresentationState state,
-        ThinkingOutput output,
-        List<ChatPresentationEffect> effects)
+        ThinkingOutput output)
     {
         var text = string.IsNullOrEmpty(output.Text) ? state.ThoughtText : output.Text;
-        if (string.IsNullOrWhiteSpace(text))
-            return state with { ThoughtText = string.Empty };
-
-        var block = new ChatPresentationBlock(
-            $"turn:{state.TurnNumber}:thought:{output.TimestampMs}",
-            ChatBlockKind.Thought,
-            "THOUGHT",
-            FirstLine(text),
-            $"THOUGHT\n{text}",
-            output.TimestampMs,
-            state.CurrentTurnId,
-            text);
-        return Commit(state with { ThoughtText = string.Empty }, block, effects);
+        return state with { ThoughtText = text };
     }
 
     private static ChatPresentationState StartTool(
         ChatPresentationState state,
-        ToolCallOutput output,
-        List<ChatPresentationEffect> effects)
+        ToolCallOutput output)
     {
-        if (output.BatchSize > 1
-            && output.BatchId.Length > 0
-            && !state.CommittedToolBatches.Contains(output.BatchId))
-        {
-            state = CommitParallelGroup(
-                state,
-                output.BatchId,
-                output.BatchSize,
-                output.TimestampMs,
-                state.CurrentTurnId,
-                effects);
-        }
+        var passages = EnsureToolPassage(state, output.TimestampMs);
+        var passage = passages[^1];
 
         var tool = new ToolActivityPresentation(
             output.CallId.Value,
@@ -367,8 +446,16 @@ internal static class ChatPresentationReducer
             output.TimestampMs,
             state.CurrentTurnId,
             output.BatchId,
-            output.BatchSize);
-        return state with { Tools = state.Tools.SetItem(tool.CallId, tool) };
+            output.BatchSize,
+            passage.Index,
+            null,
+            null);
+        passage = passage with { ToolCallIds = passage.ToolCallIds.Add(tool.CallId) };
+        return state with
+        {
+            ReplyPassages = passages.SetItem(passages.Count - 1, passage),
+            Tools = state.Tools.SetItem(tool.CallId, tool)
+        };
     }
 
     private static ChatPresentationState UpdateTool(ChatPresentationState state, ToolActivityOutput output)
@@ -386,7 +473,10 @@ internal static class ChatPresentationReducer
                 output.TimestampMs,
                 output.TurnId.Value,
                 string.Empty,
-                1);
+                1,
+                state.ReplyPassages.Count == 0 ? 0 : state.ReplyPassages[^1].Index,
+                null,
+                null);
         return state with
         {
             CurrentTurnId = output.TurnId.Value,
@@ -401,32 +491,51 @@ internal static class ChatPresentationReducer
 
     private static ChatPresentationState CompleteTool(
         ChatPresentationState state,
-        ToolResultOutput output,
-        List<ChatPresentationEffect> effects)
+        ToolResultOutput output)
     {
-        state.Tools.TryGetValue(output.CallId.Value, out var active);
-        var detail = string.Join('\n', new[]
+        var key = output.CallId.Value;
+        var passages = state.ReplyPassages;
+        if (!state.Tools.TryGetValue(key, out var active))
         {
-            active?.Rationale is null ? null : $"Rationale: {active.Rationale}",
-            active?.ArgumentsJson is null ? null : $"Arguments: {active.ArgumentsJson}",
-            $"Result: {output.Result}"
-        }.Where(value => value is not null));
-        var block = new ChatPresentationBlock(
-            $"tool:{output.CallId.Value}",
-            ChatBlockKind.Tool,
-            "TOOL",
-            $"{ToolWorkTitle(active?.Rationale)}  · {output.ToolName.Value}",
-            $"Tool: {output.ToolName.Value}\nCall: {output.CallId.Value}\n{detail}",
-            output.TimestampMs,
-            active?.TurnId ?? state.CurrentTurnId,
-            detail);
-        return Commit(state with { Tools = state.Tools.Remove(output.CallId.Value) }, block, effects);
+            passages = EnsureToolPassage(state, output.TimestampMs);
+            var passage = passages[^1];
+            active = new ToolActivityPresentation(
+                key,
+                output.ToolName.Value,
+                null,
+                null,
+                "completed",
+                null,
+                output.TimestampMs,
+                state.CurrentTurnId,
+                string.Empty,
+                1,
+                passage.Index,
+                output.Result,
+                output.TimestampMs);
+            passage = passage with { ToolCallIds = passage.ToolCallIds.Add(key) };
+            passages = passages.SetItem(passages.Count - 1, passage);
+        }
+        else
+        {
+            active = active with
+            {
+                Phase = "completed",
+                Result = output.Result,
+                CompletedAtMs = output.TimestampMs
+            };
+        }
+
+        return state with
+        {
+            ReplyPassages = passages,
+            Tools = state.Tools.SetItem(key, active)
+        };
     }
 
     private static ChatPresentationState ReduceSubAgent(
         ChatPresentationState state,
-        SubAgentOutput output,
-        List<ChatPresentationEffect> effects)
+        SubAgentOutput output)
     {
         var key = output.RunId?.Value ?? $"legacy:{output.AgentName.Value}";
         if (output.Phase != Actors.SubAgents.SubAgentPhase.Completed)
@@ -440,7 +549,11 @@ internal static class ChatPresentationReducer
                     output.Phase.ToString().ToLowerInvariant(),
                     output.ActivitySummary,
                     output.TimestampMs,
-                    null);
+                    null,
+                    null,
+                    null,
+                    null,
+                    false);
             var activeToolName = ActiveSubAgentTool(output.ActivityPhase) ?? current.ActiveToolName;
             if (output.ActivityPhase is "processing tool results" or "calling the model")
                 activeToolName = null;
@@ -459,17 +572,33 @@ internal static class ChatPresentationReducer
         var detail = $"Run: {key}\nOutcome: {outcome}\nDuration: {output.Duration.TotalSeconds:F1}s"
                      + (output.OutcomeReason is null ? string.Empty : $"\nReason: {output.OutcomeReason.Value.Value}")
                      + (output.MemoryDecision is null ? string.Empty : $"\nMemory: {output.MemoryDecision}");
-        var block = new ChatPresentationBlock(
-            $"subagent:{key}",
-            ChatBlockKind.SubAgent,
-            "AGENT",
-            $"{output.AgentName.Value}  {outcome}  {output.Duration.TotalSeconds:F1}s",
-            $"Sub-agent: {output.AgentName.Value}\n{detail}",
-            output.TimestampMs,
-            state.CurrentTurnId,
-            detail,
-            output.Outcome == SubAgentRunOutcome.Failed);
-        return Commit(state with { SubAgents = state.SubAgents.Remove(key) }, block, effects);
+        var completed = state.SubAgents.TryGetValue(key, out var completedActive)
+            ? completedActive
+            : new SubAgentActivityPresentation(
+                key,
+                output.ParentCallId?.Value,
+                output.AgentName.Value,
+                "completed",
+                output.ActivitySummary,
+                output.TimestampMs,
+                null,
+                null,
+                null,
+                null,
+                false);
+        return state with
+        {
+            SubAgents = state.SubAgents.SetItem(key, completed with
+            {
+                Phase = "completed",
+                Summary = output.ActivitySummary,
+                ActiveToolName = null,
+                CompletedAtMs = output.TimestampMs,
+                Outcome = outcome,
+                Detail = detail,
+                IsFailure = output.Outcome == SubAgentRunOutcome.Failed
+            })
+        };
     }
 
     private static string? ActiveSubAgentTool(string? phase)
@@ -523,7 +652,11 @@ internal static class ChatPresentationReducer
             string.Equals(output.SelectedKey.Value, ApprovalOptionKeys.Deny, StringComparison.Ordinal));
         var remaining = ImmutableQueue.CreateRange(state.PendingApprovals.Where(request =>
             !string.Equals(request.CallId.Value, output.CallId.Value, StringComparison.Ordinal)));
-        state = Commit(state with { PendingApprovals = remaining }, block, effects);
+        state = state with
+        {
+            PendingApprovals = remaining,
+            CompletedApprovals = state.CompletedApprovals.Add(block)
+        };
         effects.Add(new ChatPresentationEffect.SetStatus(
             remaining.IsEmpty ? "Generating..." : "Approval required"));
         effects.Add(new ChatPresentationEffect.RefreshLiveRegion());
@@ -535,26 +668,23 @@ internal static class ChatPresentationReducer
         TurnCompleted completed,
         List<ChatPresentationEffect> effects)
     {
-        state = FlushAssistant(state, completed.TimestampMs, effects);
-        if (!string.IsNullOrWhiteSpace(state.ThoughtText))
+        state = FinalizeAssistantPassage(state, null);
+        var incompleteTools = state.Tools.Values
+            .Where(tool => tool.CompletedAtMs is null)
+            .OrderBy(tool => tool.StartedAtMs)
+            .ToList();
+
+        if (state.ReplyPassages.Count > 0
+            || state.Tools.Count > 0
+            || state.SubAgents.Count > 0
+            || state.CompletedApprovals.Count > 0)
         {
-            state = CommitThought(state, new ThinkingOutput(state.ThoughtText)
-            {
-                SessionId = completed.SessionId,
-                TimestampMs = completed.TimestampMs
-            }, effects);
+            state = Commit(state, BuildSettledReply(state, completed, incompleteTools), effects);
         }
 
-        foreach (var tool in state.Tools.Values.OrderBy(tool => tool.StartedAtMs))
-        {
-            state = Commit(state, DiagnosticBlock(
-                $"tool:{tool.CallId}:incomplete",
-                $"Tool '{tool.ToolName}' ended without a settled result.",
-                completed.TimestampMs,
-                tool.TurnId), effects);
-        }
-
-        foreach (var subAgent in state.SubAgents.Values.OrderBy(run => run.StartedAtMs))
+        foreach (var subAgent in state.SubAgents.Values
+                     .Where(run => run.CompletedAtMs is null)
+                     .OrderBy(run => run.StartedAtMs))
         {
             state = Commit(state, DiagnosticBlock(
                 $"subagent:{subAgent.RunId}:incomplete",
@@ -570,11 +700,163 @@ internal static class ChatPresentationReducer
         {
             Tools = state.Tools.Clear(),
             SubAgents = state.SubAgents.Clear(),
+            ReplyPassages = [],
+            ThoughtText = string.Empty,
             PendingApprovals = ImmutableQueue<ToolInteractionRequest>.Empty,
+            CompletedApprovals = [],
             IsProcessing = false,
             TurnNumber = Math.Max(state.TurnNumber + 1, completed.TurnNumber.Value + 1),
             CurrentTurnId = null
         };
+    }
+
+    private static ChatPresentationBlock BuildSettledReply(
+        ChatPresentationState state,
+        TurnCompleted completed,
+        IReadOnlyCollection<ToolActivityPresentation> incompleteTools)
+    {
+        var prose = string.Join("\n\n", state.ReplyPassages
+            .Select(passage => passage.Text.Trim())
+            .Where(text => text.Length > 0));
+        var completedToolCount = state.Tools.Count - incompleteTools.Count;
+        var toolReceipt = state.Tools.Count switch
+        {
+            0 => string.Empty,
+            1 when incompleteTools.Count == 0 => "1 tool",
+            _ when incompleteTools.Count == 0 => $"{state.Tools.Count} tools",
+            _ => $"{completedToolCount}/{state.Tools.Count} tools completed"
+        };
+        var completedAgentCount = state.SubAgents.Count(run => run.Value.CompletedAtMs is not null);
+        var agentReceipt = completedAgentCount switch
+        {
+            0 => string.Empty,
+            1 => "1 agent",
+            _ => $"{completedAgentCount} agents"
+        };
+        var approvalReceipt = state.CompletedApprovals.Count switch
+        {
+            0 => string.Empty,
+            1 => "1 decision",
+            _ => $"{state.CompletedApprovals.Count} decisions"
+        };
+        var receiptParts = new[] { toolReceipt, agentReceipt, approvalReceipt }
+            .Where(value => value.Length > 0)
+            .ToArray();
+        var receipt = receiptParts.Length == 0
+            ? string.Empty
+            : $"{(incompleteTools.Count == 0 ? "Completed work" : "Work stopped")}  · {string.Join("  · ", receiptParts)}";
+        var summary = string.Join("\n\n", new[] { prose, receipt }
+            .Where(value => value.Length > 0));
+
+        var detailParts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(state.ThoughtText))
+            detailParts.Add($"Reasoning:\n{state.ThoughtText.Trim()}");
+        if (state.Tools.Count > 0)
+        {
+            var toolDetail = state.Tools.Values
+                .OrderBy(tool => tool.PassageIndex)
+                .ThenBy(tool => tool.StartedAtMs)
+                .Select(ToolDetail);
+            detailParts.Add($"Work trace:\n{string.Join("\n\n", toolDetail)}");
+        }
+        if (state.SubAgents.Count > 0)
+        {
+            var agentDetail = state.SubAgents.Values
+                .OrderBy(run => run.StartedAtMs)
+                .Select(SubAgentDetail);
+            detailParts.Add($"Agent trace:\n{string.Join("\n\n", agentDetail)}");
+        }
+        if (state.CompletedApprovals.Count > 0)
+        {
+            detailParts.Add($"Decisions:\n{string.Join("\n\n", state.CompletedApprovals.Select(
+                approval => approval.Detail ?? approval.Summary))}");
+        }
+
+        var detail = string.Join("\n\n", new[] { prose }
+            .Concat(detailParts)
+            .Where(value => value.Length > 0));
+        var semanticText = detail.Length == 0 ? "NETCLAW" : $"NETCLAW\n{detail}";
+        var firstTimestamp = state.ReplyPassages.Count > 0
+            ? state.ReplyPassages[0].StartedAtMs
+            : state.Tools.Count > 0
+                ? state.Tools.Values.Min(tool => tool.StartedAtMs)
+                : state.SubAgents.Count > 0
+                    ? state.SubAgents.Values.Min(run => run.StartedAtMs)
+                    : state.CompletedApprovals.Min(approval => approval.TimestampMs);
+        return new ChatPresentationBlock(
+            $"turn:{state.TurnNumber}:reply",
+            ChatBlockKind.Assistant,
+            "NETCLAW",
+            summary,
+            semanticText,
+            firstTimestamp,
+            state.CurrentTurnId,
+            detail,
+            incompleteTools.Count > 0
+            || state.CompletedApprovals.Any(approval => approval.IsFailure)
+            || completed.Outcome == TurnOutcome.Failed);
+    }
+
+    private static string ToolDetail(ToolActivityPresentation tool)
+    {
+        var duration = tool.CompletedAtMs is { } completedAt
+            ? $"\nDuration: {Math.Max(0, completedAt - tool.StartedAtMs)} ms"
+            : string.Empty;
+        return $"{ToolWorkTitle(tool.Rationale)}\nTool: {tool.ToolName}\nCall: {tool.CallId}\nState: {tool.Phase}"
+               + (tool.ArgumentsJson is null ? string.Empty : $"\nArguments: {tool.ArgumentsJson}")
+               + (tool.Result is null ? string.Empty : $"\nResult: {tool.Result}")
+               + duration;
+    }
+
+    private static string SubAgentDetail(SubAgentActivityPresentation run) =>
+        $"{run.AgentName}\nRun: {run.RunId}\nState: {run.Outcome ?? run.Phase}"
+        + (run.Summary is null ? string.Empty : $"\nActivity: {run.Summary}")
+        + (run.Detail is null ? string.Empty : $"\n{run.Detail}");
+
+    private static ImmutableList<ReplyPassagePresentation> EnsureOpenPassage(
+        ImmutableList<ReplyPassagePresentation> passages,
+        long timestampMs)
+    {
+        if (passages.Count > 0 && !passages[^1].IsFinal)
+            return passages;
+
+        return passages.Add(new ReplyPassagePresentation(
+            passages.Count,
+            timestampMs,
+            string.Empty,
+            false,
+            []));
+    }
+
+    private static ImmutableList<ReplyPassagePresentation> EnsureToolPassage(
+        ChatPresentationState state,
+        long timestampMs)
+    {
+        if (state.ReplyPassages.Count == 0)
+        {
+            return
+            [
+                new ReplyPassagePresentation(0, timestampMs, string.Empty, true, [])
+            ];
+        }
+
+        var last = state.ReplyPassages[^1];
+        var hasActiveTool = last.ToolCallIds.Any(callId =>
+            state.Tools.TryGetValue(callId, out var tool) && tool.CompletedAtMs is null);
+        if (last.ToolCallIds.Count == 0 || hasActiveTool)
+        {
+            return state.ReplyPassages.SetItem(state.ReplyPassages.Count - 1, last with
+            {
+                IsFinal = true
+            });
+        }
+
+        return state.ReplyPassages.Add(new ReplyPassagePresentation(
+            state.ReplyPassages.Count,
+            timestampMs,
+            string.Empty,
+            true,
+            []));
     }
 
     private static ChatPresentationState Commit(
@@ -759,16 +1041,6 @@ internal static class ChatPresentationReducer
     private static string ToolWorkTitle(string? rationale) => string.IsNullOrWhiteSpace(rationale)
         ? "No rationale supplied"
         : rationale.Trim();
-
-    private static string FirstLine(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return "complete";
-
-        var end = text.IndexOfAny(['\r', '\n']);
-        var first = end < 0 ? text : text[..end];
-        return first.Length <= 100 ? first : string.Concat(first.AsSpan(0, 97), "...");
-    }
 
     private static ChatPresentationState CommitParallelGroup(
         ChatPresentationState state,
