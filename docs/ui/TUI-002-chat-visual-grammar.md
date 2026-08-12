@@ -185,7 +185,7 @@ Queued  1
 MESSAGE
   Ask Netclaw...
 
-Thinking..   Enter send  Shift+Enter newline  Esc Esc clear  Ctrl+O inspect
+Thinking..   Enter send  Shift+Enter newline  Esc x2 clear  Ctrl+O inspect
 ```
 
 The user sees prose first.
@@ -210,7 +210,7 @@ Netclaw  13:35
 MESSAGE
   Ask Netclaw...
 
-Ready   Enter send  Shift+Enter newline  Esc Esc clear  Ctrl+O inspect
+Ready   Enter send  Shift+Enter newline  Esc x2 clear  Ctrl+O inspect
 ```
 
 The settled Turn prints as one immutable block.
@@ -263,7 +263,7 @@ Queued  1
 MESSAGE
   Ask Netclaw...
 
-Thinking..   Enter send  Esc Esc clear
+Thinking..   Enter send  Esc x2 clear
 ```
 
 The narrow form removes the model, connection, duration, and tool kind first.
