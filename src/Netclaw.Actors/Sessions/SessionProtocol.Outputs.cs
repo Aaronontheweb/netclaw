@@ -45,8 +45,30 @@ public static partial class SessionProtocol
     /// accumulates <see cref="TextDeltaOutput"/> text across a turn can use
     /// this message as the call-completion boundary. Requires
     /// <see cref="OutputFilter.Text"/>.
+    /// <para>
+    /// EXCEPTION: <see cref="IsCallBoundary"/> is false for a small set of
+    /// channel-visible notices (approval-expired, wrong-requester,
+    /// unavailable-approval-option — see
+    /// <c>LlmSessionActor.EmitExpiredPromptNotice</c> and its siblings). These
+    /// notices can fire while an unrelated LLM call still streams. A
+    /// subscriber that tracks a call-boundary marker (a committed-length
+    /// offset, or a tracked segment) MUST NOT move that marker for a
+    /// <see cref="TextOutput"/> whose <see cref="IsCallBoundary"/> is false.
+    /// A later <see cref="TextStreamDiscarded"/> then finds nothing left to
+    /// remove, and the live call's dead partial text glues onto the next
+    /// call's answer.
+    /// </para>
     /// </summary>
-    public sealed record TextOutput(string Text) : SessionOutput;
+    public sealed record TextOutput(string Text) : SessionOutput
+    {
+        /// <summary>
+        /// True when this <see cref="TextOutput"/> marks the end of an LLM
+        /// call — the normal case. False only for the mid-stream notices
+        /// described above. The default is true, so every current emitter
+        /// keeps the call-boundary contract unchanged.
+        /// </summary>
+        public bool IsCallBoundary { get; init; } = true;
+    }
 
     /// <summary>
     /// Incremental text delta from the assistant while a turn is streaming.

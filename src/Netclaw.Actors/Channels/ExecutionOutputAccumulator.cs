@@ -128,11 +128,18 @@ public sealed class ExecutionOutputAccumulator
                 // TextOutput marks one LLM call's text as complete, whether that
                 // call ended in tool calls (a preamble) or the final answer. Commit
                 // everything accumulated for it so a LATER call's discard can never
-                // erase it.
+                // erase it. Some notices (approval-expired etc.) reuse TextOutput to
+                // reach the channel while an earlier call still streams.
+                // IsCallBoundary is false for those. They must not move the
+                // commit marker or clear the live call's delta flag (see
+                // SessionProtocol.TextOutput.IsCallBoundary).
                 if (!_sawTextDelta)
                     _buffer.Append(text.Text);
-                _committedLength = _buffer.Length;
-                _sawTextDelta = false;
+                if (text.IsCallBoundary)
+                {
+                    _committedLength = _buffer.Length;
+                    _sawTextDelta = false;
+                }
                 return OutputAction.Continue;
 
             case ToolResultOutput toolResult:

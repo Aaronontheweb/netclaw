@@ -119,6 +119,147 @@ public sealed class HeadlessChannelTests
         Assert.Equal("Resumed answer", channel.ResponseBufferForTesting);
     }
 
+    [Fact]
+    public void TextOutput_with_IsCallBoundary_false_does_not_move_the_commit_marker_past_a_live_calls_partial_text()
+    {
+        // F2: EmitExpiredPromptNotice/EmitWrongRequesterApprovalNotice/
+        // EmitUnavailableApprovalOptionNotice send a mid-stream TextOutput
+        // (IsCallBoundary = false) while another call still streams.
+        // Before the fix, ANY TextOutput advanced the commit marker over the
+        // live call's partial text; a subsequent stall+discard then found
+        // nothing left to remove, and the resumed call's answer glued onto
+        // the dead partial.
+        var channel = CreateChannel(jsonOutput: true);
+        var sessionId = new SessionId("headless/notice-mid-stream");
+
+        // Call: streams two real deltas.
+        channel.HandleOutput(new TextDeltaOutput("stalled chunk one ") { SessionId = sessionId }, null);
+        channel.HandleOutput(new TextDeltaOutput("STALLED_PARTIAL_MARKER") { SessionId = sessionId }, null);
+
+        // A notice fires mid-stream — a non-call-boundary TextOutput. Its own
+        // text is handled exactly as today (logged only, since a delta is
+        // already in flight); only its effect on the commit marker changes.
+        channel.HandleOutput(new TextOutput("That approval prompt has expired.")
+        {
+            SessionId = sessionId,
+            IsCallBoundary = false
+        }, null);
+
+        // The live call then dies and is discarded.
+        channel.HandleOutput(new TextStreamDiscarded { SessionId = sessionId }, null);
+
+        // Resumed call streams the real final answer.
+        channel.HandleOutput(new TextDeltaOutput("Done: the answer is X.") { SessionId = sessionId }, null);
+
+        Assert.Equal("Done: the answer is X.", channel.ResponseBufferForTesting);
+        Assert.DoesNotContain("STALLED_PARTIAL_MARKER", channel.ResponseBufferForTesting, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UsageOutput_starts_on_its_own_line_after_a_streamed_turn()
+    {
+        // F1 regression: the "any text printed this turn" flag was narrowed to
+        // a CALL-scoped flag that the final TextOutput always resets before
+        // UsageOutput arrives (the actor always emits text then usage for a
+        // completed call), so the newline guard never fired and [usage] glued
+        // onto the end of the streamed answer with no line break between them.
+        var channel = CreateChannel(jsonOutput: false);
+        var sessionId = new SessionId("headless/usage-newline");
+
+        using var stdout = new StringWriter();
+        var originalOut = Console.Out;
+        Console.SetOut(stdout);
+        try
+        {
+            channel.HandleOutput(new TextDeltaOutput("Hello ") { SessionId = sessionId }, null);
+            channel.HandleOutput(new TextDeltaOutput("world.") { SessionId = sessionId }, null);
+            channel.HandleOutput(new TextOutput("Hello world.") { SessionId = sessionId }, null);
+            channel.HandleOutput(new UsageOutput
+            {
+                SessionId = sessionId,
+                InputTokens = 10,
+                OutputTokens = 5,
+                TotalTokens = 15
+            }, null);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+        }
+
+        var output = stdout.ToString().Replace("\r\n", "\n", StringComparison.Ordinal);
+        Assert.DoesNotContain("world.[usage]", output, StringComparison.Ordinal);
+        Assert.Contains("\n[usage]", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UsageOutput_omits_discarded_est_in_when_null_but_keeps_discarded_attempts()
+    {
+        // F3: a resume can happen without any completed call in the session
+        // ever reporting real usage (see D4 in LlmSessionActor) — the
+        // estimate is then null. The console line must omit discarded_est_in=
+        // entirely rather than print it as an empty token, while
+        // discarded_attempts= (a real, always-known count) still prints.
+        var channel = CreateChannel(jsonOutput: false);
+        var sessionId = new SessionId("headless/discarded-null-estimate");
+
+        using var stdout = new StringWriter();
+        var originalOut = Console.Out;
+        Console.SetOut(stdout);
+        try
+        {
+            channel.HandleOutput(new UsageOutput
+            {
+                SessionId = sessionId,
+                InputTokens = 10,
+                OutputTokens = 5,
+                TotalTokens = 15,
+                DiscardedResumeEstimatedInputTokens = null,
+                DiscardedResumeAttempts = 1
+            }, null);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+        }
+
+        var output = stdout.ToString();
+        Assert.DoesNotContain("discarded_est_in=", output, StringComparison.Ordinal);
+        Assert.Contains("discarded_attempts=1", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void UsageOutput_prints_discarded_est_in_when_a_real_estimate_is_available()
+    {
+        // Companion to the null case above: once an earlier call in the
+        // session has reported real usage, the estimate must still print.
+        var channel = CreateChannel(jsonOutput: false);
+        var sessionId = new SessionId("headless/discarded-real-estimate");
+
+        using var stdout = new StringWriter();
+        var originalOut = Console.Out;
+        Console.SetOut(stdout);
+        try
+        {
+            channel.HandleOutput(new UsageOutput
+            {
+                SessionId = sessionId,
+                InputTokens = 10,
+                OutputTokens = 5,
+                TotalTokens = 15,
+                DiscardedResumeEstimatedInputTokens = 42,
+                DiscardedResumeAttempts = 2
+            }, null);
+        }
+        finally
+        {
+            Console.SetOut(originalOut);
+        }
+
+        var output = stdout.ToString();
+        Assert.Contains("discarded_est_in=42 discarded_attempts=2", output, StringComparison.Ordinal);
+    }
+
     private sealed class FakeApplicationLifetime : IHostApplicationLifetime
     {
         public CancellationToken ApplicationStarted => CancellationToken.None;

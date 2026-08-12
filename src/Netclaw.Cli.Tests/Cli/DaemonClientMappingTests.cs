@@ -213,6 +213,49 @@ public sealed class DaemonClientMappingTests
         Assert.Equal(2, result.FindingsCount);
     }
 
+    [Fact]
+    public void TextOutput_roundtrips_IsCallBoundary_false_through_dto()
+    {
+        // F2: the notice emitters (EmitExpiredPromptNotice and siblings) set
+        // IsCallBoundary = false on the wire so a resuming daemon client
+        // doesn't treat the notice as the live call's completion.
+        var original = new TextOutput("That approval prompt has expired.")
+        {
+            SessionId = new SessionId("signalr/test"),
+            TimestampMs = 900,
+            IsCallBoundary = false
+        };
+
+        var dto = SessionOutputDtoMapper.ToDto(original);
+        Assert.Equal(SessionOutputTypes.Text, dto.Type);
+        Assert.False(dto.IsCallBoundary);
+
+        var roundTripped = DaemonClient.FromDto(dto);
+        var result = Assert.IsType<TextOutput>(roundTripped);
+        Assert.False(result.IsCallBoundary);
+        Assert.Equal("That approval prompt has expired.", result.Text);
+    }
+
+    [Fact]
+    public void TextOutput_FromDto_defaults_IsCallBoundary_true_for_older_payloads_without_the_field()
+    {
+        // A daemon running an older version never sends IsCallBoundary on the
+        // wire — the field deserializes as null. It must default to true so
+        // every pre-existing TextOutput keeps the call-boundary contract.
+        var dto = new SessionOutputDto
+        {
+            Type = SessionOutputTypes.Text,
+            SessionId = "signalr/test",
+            TimestampMs = 901,
+            Text = "Full answer.",
+            IsCallBoundary = null
+        };
+
+        var output = DaemonClient.FromDto(dto);
+        var result = Assert.IsType<TextOutput>(output);
+        Assert.True(result.IsCallBoundary);
+    }
+
     [Theory]
     [InlineData(ErrorCategory.ToolFailure)]
     [InlineData(ErrorCategory.ProviderFailure)]

@@ -397,8 +397,17 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 // final full snapshot for compatibility. Finalize without duplicating.
                 if (_assistantSegmentId.Value != 0)
                 {
-                    FinalizeAssistantSegmentIfNeeded();
-                    _chatHistory.ScrollToBottom();
+                    // Some notices (approval-expired etc.) reuse TextOutput to reach
+                    // the chat while an earlier call still streams. IsCallBoundary
+                    // is false for those. They must not finalize (and untrack) the
+                    // live segment — the call keeps streaming, and its own
+                    // boundary TextOutput closes the segment later (see
+                    // SessionProtocol.TextOutput.IsCallBoundary).
+                    if (msg.IsCallBoundary)
+                    {
+                        FinalizeAssistantSegmentIfNeeded();
+                        _chatHistory.ScrollToBottom();
+                    }
                     break;
                 }
 

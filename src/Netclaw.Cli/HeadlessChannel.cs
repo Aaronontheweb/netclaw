@@ -40,8 +40,18 @@ public sealed class HeadlessChannel : IChannel
     // Whether the CURRENT (not-yet-completed) LLM call has streamed a delta.
     // Reset at every call boundary — a TextOutput (call completed) or a
     // TextStreamDiscarded (call died) — so it never leaks across calls in the
-    // same turn.
+    // same turn. Drives the buffer/commit logic in the TextOutput,
+    // TextDeltaOutput, and TextStreamDiscarded cases below.
     private bool _receivedTextDeltaInCurrentCall;
+
+    // True when any call in this turn streamed a delta. The first delta sets
+    // it. Only TurnCompleted clears it — a call boundary (TextOutput) does
+    // NOT reset it, unlike the call-scoped flag above. The pre-[usage]
+    // newline guard uses this flag only. The actor always sends a call's
+    // final TextOutput before UsageOutput, and that TextOutput resets the
+    // call-scoped flag. So only the turn-scoped flag can still tell
+    // UsageOutput whether the console cursor sits mid-line.
+    private bool _receivedTextDeltaInCurrentTurn;
     private bool _receivedThinkingDeltaInCurrentTurn;
 
     // JSON output accumulation
@@ -208,7 +218,12 @@ public sealed class HeadlessChannel : IChannel
                 // call ended in tool calls (a preamble) or the final answer. Commit
                 // everything accumulated for it — via deltas, or (when the call
                 // never streamed one, e.g. a single-chunk response) via msg.Text
-                // directly — so a LATER call's discard can never erase it.
+                // directly — so a LATER call's discard can never erase it. Some
+                // notices (approval-expired etc.) reuse TextOutput to reach the
+                // console while an earlier call still streams. IsCallBoundary
+                // is false for those. They must not move the commit marker or
+                // clear the live call's delta flag (see
+                // SessionProtocol.TextOutput.IsCallBoundary).
                 if (_receivedTextDeltaInCurrentCall)
                 {
                     Log(log, $"ASSISTANT_FINAL: {msg.Text}");
@@ -221,14 +236,18 @@ public sealed class HeadlessChannel : IChannel
                         Console.WriteLine(msg.Text);
                     Log(log, $"ASSISTANT: {msg.Text}");
                 }
-                _responseBufferCommittedLength = _responseBuffer.Length;
-                _receivedTextDeltaInCurrentCall = false;
+                if (msg.IsCallBoundary)
+                {
+                    _responseBufferCommittedLength = _responseBuffer.Length;
+                    _receivedTextDeltaInCurrentCall = false;
+                }
                 break;
 
             case TextDeltaOutput msg:
                 if (!_receivedTextDeltaInCurrentCall && _promptSentTicks > 0)
                     Interlocked.CompareExchange(ref _firstDeltaTicks, Stopwatch.GetTimestamp(), 0);
                 _receivedTextDeltaInCurrentCall = true;
+                _receivedTextDeltaInCurrentTurn = true;
                 if (_jsonOutput)
                     _responseBuffer.Append(msg.Delta);
                 else
@@ -302,10 +321,16 @@ public sealed class HeadlessChannel : IChannel
                 // call's real, provider-reported input count, used as an honest
                 // proxy for a call that timed out and was discarded this turn — the
                 // provider likely billed for this input but never reported usage
-                // for it, so it is NOT included in the in=/total= figures. Omitted
-                // entirely (not printed as empty) when no resume happened this turn.
+                // for it, so it is NOT included in the in=/total= figures. The whole
+                // suffix is omitted entirely (not printed as empty) when no resume
+                // happened this turn. discarded_est_in= alone drops when a resume
+                // happens but no completed call in this session reports a real
+                // estimate yet (see D4 in LlmSessionActor). discarded_attempts=
+                // still prints — that count is always real.
                 var discardedSuffix = msg.DiscardedResumeAttempts is > 0
-                    ? $" discarded_est_in={msg.DiscardedResumeEstimatedInputTokens} discarded_attempts={msg.DiscardedResumeAttempts}"
+                    ? msg.DiscardedResumeEstimatedInputTokens is { } estimatedInputTokens
+                        ? $" discarded_est_in={estimatedInputTokens} discarded_attempts={msg.DiscardedResumeAttempts}"
+                        : $" discarded_attempts={msg.DiscardedResumeAttempts}"
                     : string.Empty;
 
                 if (_jsonOutput)
@@ -328,7 +353,11 @@ public sealed class HeadlessChannel : IChannel
                     // If the turn streamed text deltas, they did NOT end with a newline
                     // (each delta is Console.Write). Force the usage line onto its own
                     // line so downstream parsers (evals, humans) can anchor on ^[usage].
-                    if (_receivedTextDeltaInCurrentCall)
+                    // Turn-scoped, not call-scoped: TextOutput (the call's completion
+                    // marker) always arrives before UsageOutput and resets the
+                    // call-scoped flag. Only the turn-scoped flag still shows
+                    // whether the console cursor sits mid-line.
+                    if (_receivedTextDeltaInCurrentTurn)
                         Console.WriteLine();
                     Console.WriteLine($"[usage] in={msg.InputTokens} out={msg.OutputTokens} total={msg.TotalTokens} cached={msg.CachedInputTokens} prompt_ms={msg.PromptMs} tok_s={msg.PredictedPerSecond}{discardedSuffix}");
                 }
@@ -354,6 +383,7 @@ public sealed class HeadlessChannel : IChannel
                 Log(log, $"TURN_COMPLETED: turn={msg.TurnNumber}");
                 Log(log, "SESSION_ENDED");
                 _receivedTextDeltaInCurrentCall = false;
+                _receivedTextDeltaInCurrentTurn = false;
                 _receivedThinkingDeltaInCurrentTurn = false;
                 _responseBufferCommittedLength = 0;
                 break;

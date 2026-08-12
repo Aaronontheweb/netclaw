@@ -298,6 +298,48 @@ public sealed class ChatPageTests
     }
 
     [Fact]
+    public async Task NoticeTextOutput_DuringLiveStream_DoesNotFinalizeOrCorruptTheLiveSegment()
+    {
+        // F2: EmitExpiredPromptNotice/EmitWrongRequesterApprovalNotice/
+        // EmitUnavailableApprovalOptionNotice send a mid-stream TextOutput
+        // (IsCallBoundary = false) while another call still streams.
+        // Before the fix, ANY TextOutput finalized the live assistant segment
+        // early — rendering the dead call's partial text as if it were the
+        // complete answer and untracking the segment, so the later discard
+        // found nothing to mark interrupted and the resumed call's deltas
+        // started a brand-new segment instead of replacing the corrupted one.
+        var testSessionId = new SessionId("chat-page/notice-mid-stream");
+        var outputSequence = new SessionOutput[]
+        {
+            new TextDeltaOutput("stalled chunk one ") { SessionId = testSessionId },
+            new TextDeltaOutput("STALLED_PARTIAL_MARKER") { SessionId = testSessionId },
+            new TextOutput("That approval prompt has expired.")
+            {
+                SessionId = testSessionId,
+                IsCallBoundary = false
+            },
+            new TextStreamDiscarded { SessionId = testSessionId },
+            new TextDeltaOutput("Resumed answer ") { SessionId = testSessionId },
+            new TextDeltaOutput("after timeout") { SessionId = testSessionId },
+        };
+
+        var (terminal, app, _) = CreateHeadlessApp(seed: null, out var input, outputSequence: outputSequence);
+        input.EnqueueKey(ConsoleKey.Q, false, false, true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+
+        var screen = terminal.ToString();
+
+        Assert.True(screen.Contains("Resumed answer after timeout", StringComparison.Ordinal),
+            $"Expected the resumed call's text on screen. Screen:\n{terminal}");
+        Assert.False(screen.Contains("STALLED_PARTIAL_MARKERResumed", StringComparison.Ordinal),
+            $"Expected the dead call's partial text to NOT be glued directly onto the resumed answer. Screen:\n{terminal}");
+        Assert.True(screen.Contains("interrupted", StringComparison.Ordinal),
+            $"Expected the dead call's segment to still be marked as interrupted after the mid-stream notice. Screen:\n{terminal}");
+    }
+
+    [Fact]
     public async Task DenyPendingInteraction_NoDenyOption_DoesNotSubmit()
     {
         // If an approval interaction somehow lacks a deny option, denying must

@@ -62,6 +62,13 @@ public sealed record SessionOutputDto
     // Text / Thinking
     public string? Text { get; init; }
 
+    /// <summary>
+    /// Mirrors <see cref="SessionProtocol.TextOutput.IsCallBoundary"/>. Null on
+    /// the wire (older payloads, or non-Text output types) maps back to true —
+    /// see <see cref="SessionOutputDtoMapper.FromDto"/>.
+    /// </summary>
+    public bool? IsCallBoundary { get; init; }
+
     // Tool Call / Tool Result
     public string? CallId { get; init; }
     public string? ToolName { get; init; }

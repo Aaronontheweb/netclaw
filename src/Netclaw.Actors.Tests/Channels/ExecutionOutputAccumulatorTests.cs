@@ -97,6 +97,36 @@ public sealed class ExecutionOutputAccumulatorTests
     }
 
     [Fact]
+    public void TextOutput_with_IsCallBoundary_false_does_not_move_the_commit_marker_past_a_live_calls_partial_text()
+    {
+        // F2: EmitExpiredPromptNotice/EmitWrongRequesterApprovalNotice/
+        // EmitUnavailableApprovalOptionNotice send a mid-stream TextOutput
+        // (IsCallBoundary = false) while another call still streams.
+        // Before the fix, ANY TextOutput advanced the commit marker over the
+        // live call's partial text; a subsequent stall+discard then found
+        // nothing left to remove, and the resumed call's answer glued onto
+        // the dead partial.
+        var acc = new ExecutionOutputAccumulator(TestNotifyTool);
+
+        acc.ProcessOutput(new TextDeltaOutput("stalled chunk one ") { SessionId = TestSessionId });
+        acc.ProcessOutput(new TextDeltaOutput("STALLED_PARTIAL_MARKER") { SessionId = TestSessionId });
+
+        acc.ProcessOutput(new TextOutput("That approval prompt has expired.")
+        {
+            SessionId = TestSessionId,
+            IsCallBoundary = false
+        });
+
+        acc.ProcessOutput(new TextStreamDiscarded { SessionId = TestSessionId });
+
+        acc.ProcessOutput(new TextDeltaOutput("Done: the answer is X.") { SessionId = TestSessionId });
+
+        var result = acc.GetAccumulatedText();
+        Assert.Equal("Done: the answer is X.", result);
+        Assert.DoesNotContain("STALLED_PARTIAL_MARKER", result, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TextOutput_accumulates_when_no_prior_delta()
     {
         var acc = new ExecutionOutputAccumulator(TestNotifyTool);

@@ -23,7 +23,8 @@ public static class SessionOutputDtoMapper
             Type = SessionOutputTypes.Text,
             SessionId = msg.SessionId.Value,
             TimestampMs = msg.TimestampMs,
-            Text = msg.Text
+            Text = msg.Text,
+            IsCallBoundary = msg.IsCallBoundary
         },
 
         TextDeltaOutput msg => new SessionOutputDto
@@ -230,7 +231,8 @@ public static class SessionOutputDtoMapper
             SessionOutputTypes.Text => new TextOutput(dto.Text ?? string.Empty)
             {
                 SessionId = sessionId,
-                TimestampMs = dto.TimestampMs
+                TimestampMs = dto.TimestampMs,
+                IsCallBoundary = dto.IsCallBoundary ?? true
             },
             SessionOutputTypes.TextDelta => new TextDeltaOutput(dto.Text ?? string.Empty)
             {

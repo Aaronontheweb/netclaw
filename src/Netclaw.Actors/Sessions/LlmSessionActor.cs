@@ -3978,13 +3978,17 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     /// Emits the channel-visible "approval prompt expired" notice. Used when a
     /// tool interaction response cannot be honored — fail loud instead of
     /// silently dropping the click (constitution: no silent fallbacks).
+    /// IsCallBoundary is false. This notice can fire while an unrelated LLM
+    /// call still streams. It must not move a subscriber's call-boundary
+    /// marker (see SessionProtocol.TextOutput.IsCallBoundary).
     /// </summary>
     private void EmitExpiredPromptNotice()
         => EmitOutput(new TextOutput(
             "That approval prompt has expired — the session moved on or restarted. "
             + "Please re-issue the request and I'll ask again if approval is needed.")
         {
-            SessionId = _sessionId
+            SessionId = _sessionId,
+            IsCallBoundary = false
         }, OutputFilter.Text);
 
     /// <summary>
@@ -4084,18 +4088,24 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         }
     }
 
+    // IsCallBoundary is false. This notice can fire while an unrelated LLM
+    // call still streams. It must not move a subscriber's call-boundary
+    // marker (see SessionProtocol.TextOutput.IsCallBoundary).
     private void EmitWrongRequesterApprovalNotice()
         => EmitOutput(new TextOutput(
             "Approval response ignored: only the requesting user can approve this tool action.")
         {
-            SessionId = _sessionId
+            SessionId = _sessionId,
+            IsCallBoundary = false
         }, OutputFilter.Text);
 
+    // IsCallBoundary is false — see EmitWrongRequesterApprovalNotice above.
     private void EmitUnavailableApprovalOptionNotice()
         => EmitOutput(new TextOutput(
             "Approval response ignored: that option is not available for this tool action.")
         {
-            SessionId = _sessionId
+            SessionId = _sessionId,
+            IsCallBoundary = false
         }, OutputFilter.Text);
 
     private bool TryResolveTextApprovalResponse(
