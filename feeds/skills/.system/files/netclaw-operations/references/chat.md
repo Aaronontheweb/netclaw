@@ -19,6 +19,12 @@ The Composer stays available while the model or a tool works. A prompt that you
 send during active work enters the Queue Shelf for the next turn. An approval
 gate replaces the Composer until the user makes a decision.
 
+Netclaw shows one approval gate at a time. Parallel approval requests enter one
+serial queue. The queue head owns the gate and keyboard input. Other requests
+stay visible in the Work Trace with a `Waiting` state. A decision targets one
+exact tool call. Netclaw waits for its outcome before it shows the next gate.
+A persistent grant can let the daemon authorize a later queued request.
+
 The Session Strip stays in the persistent bottom dock with the Composer or
 approval gate. The Pulse Line stays at the bottom and shows the current wait
 state.

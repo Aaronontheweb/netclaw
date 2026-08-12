@@ -15,6 +15,7 @@ using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Tui;
 using Netclaw.Configuration;
 using Netclaw.Daemon.Gateway;
+using Netclaw.Tools;
 using R3;
 using Xunit;
 using static Netclaw.Actors.Sessions.SessionProtocol;
@@ -119,6 +120,70 @@ public sealed class DaemonClientSessionTests
 
         Assert.Equal(("call-2", ApprovalOptionKeys.ApproveSession), state.LastInteractionResponse);
     }
+
+    [Fact]
+    public async Task ChatViewModel_keeps_queue_head_until_approval_outcome_arrives()
+    {
+        var transport = new FakeDaemonHubTransport();
+        await using var client = new DaemonClient(
+            "http://127.0.0.1:1",
+            transport,
+            reconnectDelays: [TimeSpan.Zero]);
+        using var viewModel = new ChatViewModel(
+            client,
+            TimeProvider.System,
+            new ModelCapabilities { ModelId = "test-model" },
+            new ChatNavigationState(),
+            new NetclawPaths());
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var subscription = viewModel.SessionIdDisplay.Subscribe(value =>
+        {
+            if (string.Equals(value, "fake/session", StringComparison.Ordinal))
+                ready.TrySetResult();
+        });
+
+        viewModel.OnActivated();
+        await ready.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        var first = Approval("call-a", 1);
+        var second = Approval("call-b", 2);
+        viewModel.SeedPendingInteractionForTesting(first);
+        viewModel.SeedPendingInteractionForTesting(second);
+
+        await viewModel.SubmitInteractionOptionAsync(first.CallId, ApprovalOptionKeys.ApproveOnceLabel);
+
+        Assert.Equal("call-a", viewModel.CurrentInteraction?.CallId.Value);
+        Assert.Contains(transport.Invocations, invocation =>
+            string.Equals(invocation.Method, "RespondToInteraction", StringComparison.Ordinal));
+
+        transport.PushOutput(SessionOutputDtoMapper.ToDto(new ApprovalOutcomeOutput
+        {
+            SessionId = new SessionId("fake/session"),
+            TimestampMs = 3,
+            CallId = first.CallId,
+            ToolName = first.ToolName,
+            SelectedKey = ApprovalOptionKeys.ApproveOnceKey
+        }));
+
+        Assert.Equal("call-b", viewModel.CurrentInteraction?.CallId.Value);
+        Assert.Equal("Approval required", viewModel.StatusMessage.Value);
+    }
+
+    private static ToolInteractionRequest Approval(string callId, long timestampMs) => new()
+    {
+        SessionId = new SessionId("fake/session"),
+        TimestampMs = timestampMs,
+        Kind = "approval",
+        CallId = new ToolCallId(callId),
+        ToolName = new ToolName("shell_execute"),
+        DisplayText = $"inspect {callId}",
+        Options =
+        [
+            new ToolInteractionOption(
+                ApprovalOptionKeys.ApproveOnceKey,
+                ApprovalOptionKeys.ApproveOnceLabel),
+            new ToolInteractionOption(ApprovalOptionKeys.DenyKey, ApprovalOptionKeys.DenyLabel)
+        ]
+    };
 
     // port: 0 (default) lets Kestrel bind a free ephemeral port and hold it for the
     // host's lifetime; callers read the actual port back via TestNetworkHelpers.GetBoundPort.

@@ -9,6 +9,7 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Cli.Daemon;
 using Netclaw.Configuration;
+using Netclaw.Tools;
 using R3;
 using Termina.Reactive;
 using static Netclaw.Actors.Sessions.SessionProtocol;
@@ -48,6 +49,7 @@ public partial class ChatViewModel : ReactiveViewModel
     /// (prompt re-presented for retry) alike.
     /// </summary>
     private bool _isSubmittingInteraction;
+    private string? _submittedInteractionCallId;
     private IDisposable? _daemonOutputSubscription;
     private IDisposable? _daemonConnectionSubscription;
     // Per-session USAGE log writer. Mirrors HeadlessChannel's writer so the
@@ -131,19 +133,39 @@ public partial class ChatViewModel : ReactiveViewModel
                 switch (output)
                 {
                     case ToolInteractionRequest interaction:
-                        _pendingInteractions.Enqueue(interaction);
+                        EnqueuePendingInteraction(interaction);
                         RefreshApprovalOptions();
                         IsGenerating.Value = false;
                         StatusMessage.Value = "Approval required";
                         break;
+                    case ApprovalOutcomeOutput outcome:
+                        RemovePendingInteraction(outcome.CallId.Value);
+                        if (string.Equals(
+                                _submittedInteractionCallId,
+                                outcome.CallId.Value,
+                                StringComparison.Ordinal))
+                        {
+                            _submittedInteractionCallId = null;
+                            _isSubmittingInteraction = false;
+                        }
+                        RefreshApprovalOptions();
+                        IsGenerating.Value = _pendingInteractions.Count == 0;
+                        StatusMessage.Value = _pendingInteractions.Count == 0
+                            ? "Generating..."
+                            : "Approval required";
+                        break;
                     case TurnCompleted:
                         _pendingInteractions.Clear();
+                        _submittedInteractionCallId = null;
+                        _isSubmittingInteraction = false;
                         RefreshApprovalOptions();
                         IsGenerating.Value = false;
                         _ = SendNextQueuedTurnMessageAsync();
                         break;
                     case ErrorOutput:
                         _pendingInteractions.Clear();
+                        _submittedInteractionCallId = null;
+                        _isSubmittingInteraction = false;
                         RefreshApprovalOptions();
                         IsGenerating.Value = false;
                         break;
@@ -274,37 +296,29 @@ public partial class ChatViewModel : ReactiveViewModel
             return;
         }
 
-        var pending = _pendingInteractions.Peek();
-
-        try
-        {
-            await _daemonClient.EnsureSessionAsync(DaemonClient.TuiChannelType);
-            await _daemonClient.RespondToInteractionAsync(pending.CallId.Value, selectedKey);
-
-            _pendingInteractions.Dequeue();
-            RefreshApprovalOptions();
-            IsGenerating.Value = _pendingInteractions.Count == 0;
-            StatusMessage.Value = _pendingInteractions.Count == 0
-                ? "Generating..."
-                : "Approval required";
-            RequestRedraw();
-        }
-        catch (Exception ex)
-        {
-            _sessionReady = false;
-            IsGenerating.Value = false;
-            StatusMessage.Value = $"Approval response failed ({ex.Message}). Reconnecting...";
-            RequestRedraw();
-            _ = ConnectUntilReadyAsync();
-        }
+        await SubmitInteractionSelectionAsync(selectedKey);
     }
 
     public Task SubmitInteractionOptionAsync(string optionLabel)
     {
-        if (CurrentInteraction is null)
+        if (CurrentInteraction is not { } interaction)
             return Task.CompletedTask;
 
-        var option = CurrentInteraction.Options.FirstOrDefault(candidate =>
+        return SubmitInteractionOptionAsync(interaction.CallId, optionLabel);
+    }
+
+    internal Task SubmitInteractionOptionAsync(ToolCallId expectedCallId, string optionLabel)
+    {
+        if (CurrentInteraction is not { } interaction
+            || !string.Equals(
+                interaction.CallId.Value,
+                expectedCallId.Value,
+                StringComparison.Ordinal))
+        {
+            return Task.CompletedTask;
+        }
+
+        var option = interaction.Options.FirstOrDefault(candidate =>
             string.Equals(candidate.Label, optionLabel, StringComparison.Ordinal));
         if (option is null)
             return Task.CompletedTask;
@@ -322,10 +336,24 @@ public partial class ChatViewModel : ReactiveViewModel
     /// </summary>
     internal virtual Task DenyPendingInteractionAsync()
     {
-        if (CurrentInteraction is null)
+        if (CurrentInteraction is not { } interaction)
             return Task.CompletedTask;
 
-        var denyOption = CurrentInteraction.Options.FirstOrDefault(candidate =>
+        return DenyPendingInteractionAsync(interaction.CallId);
+    }
+
+    internal Task DenyPendingInteractionAsync(ToolCallId expectedCallId)
+    {
+        if (CurrentInteraction is not { } interaction
+            || !string.Equals(
+                interaction.CallId.Value,
+                expectedCallId.Value,
+                StringComparison.Ordinal))
+        {
+            return Task.CompletedTask;
+        }
+
+        var denyOption = interaction.Options.FirstOrDefault(candidate =>
             string.Equals(candidate.Key.Value, ApprovalOptionKeys.Deny, StringComparison.Ordinal));
         if (denyOption is null)
             return Task.CompletedTask;
@@ -414,7 +442,7 @@ public partial class ChatViewModel : ReactiveViewModel
     internal void SeedPendingInteractionForTesting(ToolInteractionRequest interaction)
     {
         _outputSubject.OnNext(interaction);
-        _pendingInteractions.Enqueue(interaction);
+        EnqueuePendingInteraction(interaction);
         RefreshApprovalOptions();
         IsGenerating.Value = false;
         StatusMessage.Value = "Approval required";
@@ -597,29 +625,52 @@ public partial class ChatViewModel : ReactiveViewModel
         try
         {
             _isSubmittingInteraction = true;
+            _submittedInteractionCallId = pending.CallId.Value;
             await _daemonClient.EnsureSessionAsync(DaemonClient.TuiChannelType);
             await _daemonClient.RespondToInteractionAsync(pending.CallId.Value, selectedKey);
 
-            _pendingInteractions.Dequeue();
-            RefreshApprovalOptions();
-            IsGenerating.Value = _pendingInteractions.Count == 0;
-            StatusMessage.Value = _pendingInteractions.Count == 0
-                ? "Generating..."
-                : "Approval required";
-            RequestRedraw();
+            if (string.Equals(
+                    _submittedInteractionCallId,
+                    pending.CallId.Value,
+                    StringComparison.Ordinal))
+            {
+                StatusMessage.Value = "Submitting decision...";
+                RequestRedraw();
+            }
         }
         catch (Exception ex)
         {
+            _submittedInteractionCallId = null;
+            _isSubmittingInteraction = false;
             _sessionReady = false;
             IsGenerating.Value = false;
             StatusMessage.Value = $"Approval response failed ({ex.Message}). Reconnecting...";
             RequestRedraw();
             _ = ConnectUntilReadyAsync();
         }
-        finally
+    }
+
+    private void EnqueuePendingInteraction(ToolInteractionRequest interaction)
+    {
+        if (_pendingInteractions.Any(pending => string.Equals(
+                pending.CallId.Value,
+                interaction.CallId.Value,
+                StringComparison.Ordinal)))
         {
-            _isSubmittingInteraction = false;
+            return;
         }
+
+        _pendingInteractions.Enqueue(interaction);
+    }
+
+    private void RemovePendingInteraction(string callId)
+    {
+        var remaining = _pendingInteractions
+            .Where(pending => !string.Equals(pending.CallId.Value, callId, StringComparison.Ordinal))
+            .ToArray();
+        _pendingInteractions.Clear();
+        foreach (var pending in remaining)
+            _pendingInteractions.Enqueue(pending);
     }
 
     private void RefreshApprovalOptions()

@@ -111,6 +111,22 @@ internal sealed record ChatPresentationState
 
     public ToolInteractionRequest? PendingApproval =>
         PendingApprovals.IsEmpty ? null : PendingApprovals.Peek();
+
+    public int PendingApprovalCount => PendingApprovals.Count();
+
+    public int ApprovalQueuePosition(string callId)
+    {
+        var position = 1;
+        foreach (var approval in PendingApprovals)
+        {
+            if (string.Equals(approval.CallId.Value, callId, StringComparison.Ordinal))
+                return position;
+
+            position++;
+        }
+
+        return 0;
+    }
 }
 
 internal abstract record ChatPresentationEffect
@@ -617,6 +633,9 @@ internal static class ChatPresentationReducer
         ToolInteractionRequest approval,
         List<ChatPresentationEffect> effects)
     {
+        if (state.ApprovalQueuePosition(approval.CallId.Value) > 0)
+            return state;
+
         effects.Add(new ChatPresentationEffect.ShowApproval(approval));
         effects.Add(new ChatPresentationEffect.SetStatus("Approval required"));
         effects.Add(new ChatPresentationEffect.RefreshLiveRegion());

@@ -232,6 +232,56 @@ public sealed class InlineChatPageTests
     }
 
     [Fact]
+    public async Task ParallelApprovals_ShowOneDecisionGateAndQueueTheRemainingRequests()
+    {
+        var firstApproval = BuildApproval() with
+        {
+            CallId = new ToolCallId("call-a"),
+            DisplayText = "first protected command"
+        };
+        var secondApproval = BuildApproval() with
+        {
+            CallId = new ToolCallId("call-b"),
+            DisplayText = "second protected command"
+        };
+        var outputs = new SessionOutput[]
+        {
+            ToolCall("call-a", "shell_execute", 1),
+            ToolCall("call-b", "shell_execute", 2),
+            firstApproval,
+            secondApproval
+        };
+        await using var harness = CreateHarness(outputs: outputs);
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() =>
+            harness.Terminal.Contains("Approval required  1 of 2")
+            && harness.Terminal.Contains("first protected command")
+            && harness.Terminal.Contains("Waiting"));
+
+        var firstScreen = harness.Terminal.ToString();
+        Assert.Contains("Decision Inspect call-a", firstScreen, StringComparison.Ordinal);
+        Assert.Contains("Waiting  Inspect call-b", firstScreen, StringComparison.Ordinal);
+        Assert.DoesNotContain("second protected command", firstScreen, StringComparison.Ordinal);
+
+        harness.ViewModel.Emit(new ApprovalOutcomeOutput
+        {
+            SessionId = SessionId,
+            TimestampMs = 3,
+            CallId = new ToolCallId("call-a"),
+            ToolName = new ToolName("shell_execute"),
+            SelectedKey = ApprovalOptionKeys.ApproveOnceKey
+        });
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("second protected command"));
+
+        var secondScreen = harness.Terminal.ToString();
+        Assert.DoesNotContain("Approval required  1 of 2", secondScreen, StringComparison.Ordinal);
+        Assert.Contains("Approval required  Netclaw", secondScreen, StringComparison.Ordinal);
+        Assert.Contains("Decision Inspect call-b", secondScreen, StringComparison.Ordinal);
+        Assert.NotNull(harness.Focus.CurrentFocus);
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
     public async Task CtrlO_ShowsApprovalSecurityContext()
     {
         var approval = BuildApproval() with
@@ -539,6 +589,53 @@ public sealed class InlineChatPageTests
             .Select(index => harness.Terminal.GetLine(index).TrimEnd().Length)
             .Max();
         Assert.InRange(longestLine, 1, 120);
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task ParallelSubagentApprovals_ShowDecisionAndWaitingStates()
+    {
+        var outputs = new SessionOutput[]
+        {
+            new SubAgentOutput
+            {
+                SessionId = SessionId,
+                TimestampMs = 1,
+                AgentName = new AgentName("reviewer-a"),
+                Phase = SubAgentPhase.Started,
+                RunId = new SubAgentRunId("run-a"),
+                ParentCallId = new ToolCallId("parent-a")
+            },
+            new SubAgentOutput
+            {
+                SessionId = SessionId,
+                TimestampMs = 2,
+                AgentName = new AgentName("reviewer-b"),
+                Phase = SubAgentPhase.Started,
+                RunId = new SubAgentRunId("run-b"),
+                ParentCallId = new ToolCallId("parent-b")
+            },
+            BuildApproval() with
+            {
+                CallId = new ToolCallId("parent-a/subagent-approval/approval-a")
+            },
+            BuildApproval() with
+            {
+                CallId = new ToolCallId("parent-b/subagent-approval/approval-b")
+            }
+        };
+        await using var harness = CreateHarness(outputs: outputs);
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() =>
+            harness.Terminal.Contains("Approval required  1 of 2")
+            && harness.Terminal.Contains("reviewer-a")
+            && harness.Terminal.Contains("reviewer-b"));
+
+        var screen = harness.Terminal.ToString();
+        Assert.Contains("Decision Agent  reviewer-a", screen, StringComparison.Ordinal);
+        Assert.Contains("Waiting  Agent  reviewer-b", screen, StringComparison.Ordinal);
+        Assert.Contains("reviewer-a requests permission", screen, StringComparison.Ordinal);
+        Assert.DoesNotContain("reviewer-b requests permission", screen, StringComparison.Ordinal);
         await harness.StopAsync(runTask);
     }
 

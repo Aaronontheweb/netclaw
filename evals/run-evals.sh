@@ -1105,6 +1105,7 @@ assert_skill_chat_tui_knowledge() {
         && stdout_contains 'Queue Shelf' \
         && stdout_contains 'Session Strip' \
         && stdout_contains 'Pulse Line' \
+        && stdout_contains 'one.*approval\|approval.*one' \
         && stdout_no_skill_file_read_called
 }
 
@@ -1923,9 +1924,9 @@ run_all() {
         "My session seems broken, help me fix it" \
         "Debug my Netclaw session"
 
-    run_case skill_chat_tui_knowledge "knows the chat queue and bottom dock" \
-        "While netclaw chat is busy, can I send another message? Where does it go, and which named regions remain in the bottom dock? Use the exact UI region names." \
-        "Explain prompt queue behavior during active Netclaw work. Name the persistent session and wait-state rows at the bottom."
+    run_case skill_chat_tui_knowledge "knows the chat queue, approvals, and bottom dock" \
+        "While netclaw chat is busy, where does another message go? Name the bottom regions. Also explain how parallel approvals appear." \
+        "Explain prompt queue and parallel approval behavior. Name the persistent session and wait-state rows at the bottom."
 
     run_case skill_citation_search "performs web search when asked" \
         "Search the web for the latest Akka.NET release" \

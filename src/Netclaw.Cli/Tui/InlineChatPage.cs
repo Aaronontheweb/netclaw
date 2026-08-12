@@ -237,6 +237,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     {
         var hadComposer = ShowsComposer(_state);
         var hadApproval = _state.PendingApproval is not null;
+        var priorApprovalCallId = _state.PendingApproval?.CallId.Value;
         _state = reduction.State;
 
         foreach (var effect in reduction.Effects)
@@ -259,7 +260,11 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
 
         var hasApproval = _state.PendingApproval is not null;
         var hasComposer = ShowsComposer(_state);
-        if (hadApproval != hasApproval || hadComposer != hasComposer)
+        var approvalHeadChanged = !string.Equals(
+            priorApprovalCallId,
+            _state.PendingApproval?.CallId.Value,
+            StringComparison.Ordinal);
+        if (hadApproval != hasApproval || hadComposer != hasComposer || approvalHeadChanged)
         {
             if (!hasApproval)
                 ClearApprovalList();
@@ -708,22 +713,29 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         int lineWidth)
     {
         var childRuns = agents.Where(value => value.ParentCallId == tool.CallId).ToList();
-        var awaitsApproval = string.Equals(
-            _state.PendingApproval?.CallId.Value,
-            tool.CallId,
-            StringComparison.Ordinal);
-        var phase = awaitsApproval
-            ? "awaiting approval"
+        var approvalPosition = _state.ApprovalQueuePosition(tool.CallId);
+        var isCurrentApproval = approvalPosition == 1;
+        var waitsForApproval = approvalPosition > 1;
+        var phase = isCurrentApproval
+            ? "awaiting decision"
+            : waitsForApproval
+                ? $"decision {approvalPosition} of {_state.PendingApprovalCount}"
             : childRuns.Count switch
             {
                 0 => tool.Phase,
                 1 => $"orchestrating {childRuns[0].AgentName}",
                 _ => $"orchestrating {childRuns.Count} agents"
             };
-        var state = awaitsApproval ? "Decision" : ActivityState(tool.Phase);
+        var state = isCurrentApproval
+            ? "Decision"
+            : waitsForApproval
+                ? "Waiting"
+                : ActivityState(tool.Phase);
         if (string.Equals(state, "Live", StringComparison.Ordinal))
             state = $"Live{new string('.', _thinkingFrame + 1)}";
-        var phaseText = !awaitsApproval && string.Equals(phase, tool.Phase, StringComparison.OrdinalIgnoreCase)
+        var phaseText = !isCurrentApproval
+                        && !waitsForApproval
+                        && string.Equals(phase, tool.Phase, StringComparison.OrdinalIgnoreCase)
             ? string.Empty
             : $"  {phase}";
         var summary = string.IsNullOrWhiteSpace(tool.Summary) ? string.Empty : $"  {tool.Summary}";
@@ -734,7 +746,11 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             .WithChild(new TextNode(ChatPresentationRenderer.OneLine(
                     $"{state,-8} {action}  · {tool.ToolName}{phaseText}{summary}",
                     lineWidth))
-                .WithForeground(ActivityColor(tool.Phase)));
+                .WithForeground(isCurrentApproval
+                    ? ChatVisualTheme.Warning
+                    : waitsForApproval
+                        ? ChatVisualTheme.Muted
+                        : ActivityColor(tool.Phase)));
         foreach (var run in childRuns)
         {
             rows.WithChild(BuildAgentActivity(run, lineWidth));
@@ -768,11 +784,14 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         var maximumHeight = ViewModel.IsApprovalDetailVisible.Value
             ? detailHeight + approval.Options.Count + 4
             : approval.Options.Count + 5;
+        var queuePosition = _state.PendingApprovalCount > 1
+            ? $"  1 of {_state.PendingApprovalCount}"
+            : string.Empty;
         var header = new PanelNode()
             .WithBorder(BorderStyle.None)
             .WithBackground(ChatVisualTheme.ApprovalHeader)
             .WithContent(new TextNode(
-                    $"Approval required  {ChatPresentationRenderer.ApprovalPath(_state, approval)}")
+                    $"Approval required{queuePosition}  {ChatPresentationRenderer.ApprovalPath(_state, approval)}")
                 .WithForeground(ChatVisualTheme.Warning)
                 .Bold())
             .Height(1);
@@ -830,7 +849,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
                     var option = approval.Options.FirstOrDefault(candidate =>
                         string.Equals(ApprovalOptionLabel(candidate), selected[0], StringComparison.Ordinal));
                     if (option is not null)
-                        _ = ViewModel.SubmitInteractionOptionAsync(option.Label);
+                        _ = ViewModel.SubmitInteractionOptionAsync(approval.CallId, option.Label);
                 }
             })
             .DisposeWith(_approvalSubscriptions);
@@ -926,16 +945,33 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             .WithChild(Layouts.Empty().Fill());
     }
 
-    private static ILayoutNode BuildAgentActivity(SubAgentActivityPresentation run, int lineWidth)
+    private ILayoutNode BuildAgentActivity(SubAgentActivityPresentation run, int lineWidth)
     {
+        var approvalPosition = SubAgentApprovalQueuePosition(run);
+        var isCurrentApproval = approvalPosition == 1;
+        var waitsForApproval = approvalPosition > 1;
         var summary = string.IsNullOrWhiteSpace(run.Summary) ? string.Empty : $"  {run.Summary}";
         var prefix = run.ParentCallId is null ? "  " : "    ";
+        var state = isCurrentApproval
+            ? "Decision"
+            : waitsForApproval
+                ? "Waiting"
+                : ActivityState(run.Phase);
+        var phase = isCurrentApproval
+            ? "awaiting decision"
+            : waitsForApproval
+                ? $"decision {approvalPosition} of {_state.PendingApprovalCount}"
+                : run.Phase;
         var rows = new List<ILayoutNode>
         {
             new TextNode(ChatPresentationRenderer.OneLine(
-                    $"{prefix}{ActivityState(run.Phase),-8} Agent  {run.AgentName}  {run.Phase}{summary}",
+                    $"{prefix}{state,-8} Agent  {run.AgentName}  {phase}{summary}",
                     lineWidth))
-                .WithForeground(ActivityColor(run.Phase))
+                .WithForeground(isCurrentApproval
+                    ? ChatVisualTheme.Warning
+                    : waitsForApproval
+                        ? ChatVisualTheme.Muted
+                        : ActivityColor(run.Phase))
         };
         if (run.ActiveToolName is not null)
         {
@@ -947,6 +983,29 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         }
 
         return Layouts.Vertical([.. rows]);
+    }
+
+    private int SubAgentApprovalQueuePosition(SubAgentActivityPresentation run)
+    {
+        if (run.ParentCallId is null)
+            return 0;
+
+        const string marker = "/subagent-approval/";
+        var position = 1;
+        foreach (var approval in _state.PendingApprovals)
+        {
+            var callId = approval.CallId.Value;
+            var markerIndex = callId.IndexOf(marker, StringComparison.Ordinal);
+            if (markerIndex > 0
+                && string.Equals(callId[..markerIndex], run.ParentCallId, StringComparison.Ordinal))
+            {
+                return position;
+            }
+
+            position++;
+        }
+
+        return 0;
     }
 
     private string BuildApprovalDetail(ToolInteractionRequest approval)
@@ -1102,10 +1161,10 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
 
     private void HandleEscape()
     {
-        if (_state.PendingApproval is not null)
+        if (_state.PendingApproval is { } approval)
         {
             _lastEscapeTimestamp = null;
-            _ = ViewModel.DenyPendingInteractionAsync();
+            _ = ViewModel.DenyPendingInteractionAsync(approval.CallId);
             return;
         }
 
