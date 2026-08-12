@@ -84,6 +84,9 @@ public class ShellToolStreamingTests
         Assert.NotNull(completion);
         Assert.Contains("Exit code: 0", completion.Result);
         Assert.Contains("hello", completion.Result);
+        // A normal command reaches EOF cleanly. The result must not carry a
+        // grace-cut marker that tells the agent the capture is incomplete.
+        Assert.DoesNotContain("background process", completion.Result);
 
         // At least one activity item should carry the output
         Assert.NotEmpty(activities);
@@ -164,6 +167,11 @@ public class ShellToolStreamingTests
         Assert.True(
             stopwatch.Elapsed < TimeSpan.FromSeconds(5),
             $"The tool must return soon after the direct process exits. It took {stopwatch.Elapsed}.");
+
+        // The grace window cut the drain before EOF. The backgrounded sleep
+        // process still holds the pipe open. The result must show this cut,
+        // not a capture that looks complete.
+        Assert.Contains("background process", completion.Result);
     }
 
     [Fact]

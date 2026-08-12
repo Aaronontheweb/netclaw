@@ -9,6 +9,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Channels;
+using Microsoft.Extensions.Logging;
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
@@ -39,6 +40,7 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
     private readonly ToolPathPolicy _pathPolicy;
     private readonly ShellCommandPolicy _commandPolicy;
     private readonly ShellExecutionEnvironment _environment;
+    private readonly ILogger? _logger;
 
     public record Params(
         [param: Description("The shell command to execute.")] string Command,
@@ -46,11 +48,16 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
             "Run the command in this directory. Prefer this argument to an inline cd. Omit it to use the session project or scratch directory.")]
         string? WorkingDirectory = null);
 
-    public ShellTool(ToolConfig config, ToolPathPolicy pathPolicy, ShellCommandPolicy commandPolicy)
+    public ShellTool(
+        ToolConfig config,
+        ToolPathPolicy pathPolicy,
+        ShellCommandPolicy commandPolicy,
+        ILogger<ShellTool>? logger = null)
     {
         _config = config;
         _pathPolicy = pathPolicy;
         _commandPolicy = commandPolicy;
+        _logger = logger;
         if (!ReferenceEquals(pathPolicy.Environment, commandPolicy.Environment))
         {
             throw new ArgumentException(
@@ -211,8 +218,8 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
             // waiting on it — see the comment above drainCts.
             drainCts.CancelAfter(PostExitDrainGrace);
 
-            var (stdoutText, _) = await stdoutTask;
-            var (stderrText, _) = await stderrTask;
+            var (stdoutText, _, stdoutGraceCut) = await stdoutTask;
+            var (stderrText, _, stderrGraceCut) = await stderrTask;
 
             // Assemble the raw combined output (stdout then stderr). Each stream was
             // drained to MaxOutputChars, so the concatenation can be up to 2x — re-window
@@ -231,6 +238,9 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
             }
 
             var captured = BoundedOutputReader.Window(combined.ToString(), _config.MaxOutputChars);
+            if (stdoutGraceCut || stderrGraceCut)
+                captured = AppendGraceCutMarker(captured, args.Command);
+
             return $"Exit code: {process.ExitCode}{Environment.NewLine}{captured}";
         }
     }
@@ -416,7 +426,12 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
                     await relayActivities;
                 }
 
-                try { await Task.WhenAll(drainStdout, drainStderr); }
+                var graceCut = false;
+                try
+                {
+                    var drainCancelled = await Task.WhenAll(drainStdout, drainStderr);
+                    graceCut = drainCancelled[0] || drainCancelled[1];
+                }
                 catch (Exception ex) when (ex is IOException or ObjectDisposedException)
                 {
                     Debug.WriteLine($"shell_execute: pipe drain aborted — {ex.Message}");
@@ -436,6 +451,9 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
                 }
 
                 var captured = BoundedOutputReader.Window(combined.ToString(), _config.MaxOutputChars);
+                if (graceCut)
+                    captured = AppendGraceCutMarker(captured, args.Command);
+
                 output.TryWrite(new ToolCompletedUpdate(
                     $"Exit code: {process.ExitCode}{Environment.NewLine}{captured}"));
             }
@@ -484,6 +502,29 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
     // output time to flush before the drain stops waiting for EOF.
     private static readonly TimeSpan PostExitDrainGrace = TimeSpan.FromMilliseconds(500);
 
+    // The tool appends this text when the post-exit grace window cuts a drain
+    // before EOF. At that point a background child may still hold the pipe
+    // open, so the capture can be silently partial. The log warning alone
+    // does not solve this: the agent that reads the tool result never sees
+    // the log. This marker puts the cut in the result text, where the agent
+    // sees it.
+    private static readonly string GraceCutMarker =
+        $"{Environment.NewLine}Note: a background process held the output pipe open. "
+        + "The tool did not capture output after this point.";
+
+    private void LogGraceCut(string command)
+        => _logger?.LogWarning(
+            "shell_execute command exited but a background child held the output pipe open past the " +
+            "{GraceMs}ms grace window; the remaining stream was not captured. Command: {Command}",
+            PostExitDrainGrace.TotalMilliseconds,
+            command);
+
+    private string AppendGraceCutMarker(string captured, string command)
+    {
+        LogGraceCut(command);
+        return captured + GraceCutMarker;
+    }
+
     private static async Task RelayActivitiesAsync(
         ChannelReader<ToolActivityUpdate> reader,
         ChannelWriter<ToolCallUpdate> output,
@@ -502,7 +543,14 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
         }
     }
 
-    private static async Task DrainPipeToChannelAsync(
+    /// <summary>
+    /// Drains one pipe into <paramref name="accumulator"/> and the live activity
+    /// channel. Returns true when <paramref name="ct"/> cancelled the read before
+    /// the pipe reached EOF. The caller uses this flag to mark a grace-cut — the
+    /// same signal that <see cref="BoundedOutputReader.DrainToWindowAsync"/>
+    /// returns for the non-streaming path.
+    /// </summary>
+    private static async Task<bool> DrainPipeToChannelAsync(
         TextReader pipe,
         BoundedOutputAccumulator accumulator,
         ChannelWriter<ToolActivityUpdate> channel,
@@ -512,6 +560,7 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
         var buf = ArrayPool<char>.Shared.Rent(4096);
         var coalesced = new StringBuilder(4096);
         var lastFlush = Stopwatch.GetTimestamp();
+        var cancelled = false;
         try
         {
             try
@@ -537,6 +586,7 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
                 // backgrounded or daemonized grandchild that inherited the write
                 // end after the direct process exited. Stop reading; whatever is
                 // already buffered still gets flushed below.
+                cancelled = true;
             }
 
             if (coalesced.Length > 0)
@@ -546,9 +596,11 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
         {
             ArrayPool<char>.Shared.Return(buf, clearArray: true);
         }
+
+        return cancelled;
     }
 
-    private static async Task KillAndDrainAsync(Process process, Task drainStdout, Task drainStderr)
+    private static async Task KillAndDrainAsync(Process process, Task<bool> drainStdout, Task<bool> drainStderr)
     {
         try { process.Kill(entireProcessTree: true); }
         catch (InvalidOperationException ex)

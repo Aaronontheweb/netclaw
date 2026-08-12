@@ -92,6 +92,9 @@ public class ShellToolTests
 
         Assert.Contains("hello", result);
         Assert.Contains("Exit code: 0", result);
+        // A normal command reaches EOF cleanly. The result must not carry a
+        // grace-cut marker that tells the agent the capture is incomplete.
+        Assert.DoesNotContain("background process", result);
     }
 
     [SlopwatchSuppress("SW001", "This native fallback test requires Windows PowerShell 5.1.")]
@@ -173,6 +176,11 @@ public class ShellToolTests
         Assert.True(
             stopwatch.Elapsed < TimeSpan.FromSeconds(5),
             $"The tool must return soon after the direct process exits. It took {stopwatch.Elapsed}.");
+
+        // The grace window cut the drain before EOF. The backgrounded sleep
+        // process still holds the pipe open. The result must show this cut,
+        // not a capture that looks complete.
+        Assert.Contains("background process", result);
     }
 
     [Fact]
