@@ -252,9 +252,17 @@ public sealed class InlineChatPageTests
         await harness.WaitUntilAsync(() => harness.Terminal.Contains("Decision Gate"));
 
         harness.Input.EnqueueKey(ConsoleKey.O, control: true);
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Directory: /work/netclaw"));
+        var screen = string.Empty;
+        await harness.WaitUntilAsync(() =>
+        {
+            screen = harness.Terminal.ToString();
+            return screen.Contains("Patterns: dotnet", StringComparison.Ordinal)
+                   && screen.Contains("Verbs: dotnet", StringComparison.Ordinal)
+                   && screen.Contains("Directory: /work/netclaw", StringComparison.Ordinal)
+                   && screen.Contains("Complex command", StringComparison.Ordinal)
+                   && screen.Contains("third-party context", StringComparison.Ordinal);
+        });
 
-        var screen = harness.Terminal.ToString();
         Assert.Contains("Patterns: dotnet", screen, StringComparison.Ordinal);
         Assert.Contains("Verbs: dotnet", screen, StringComparison.Ordinal);
         Assert.Contains("Complex command", screen, StringComparison.Ordinal);
