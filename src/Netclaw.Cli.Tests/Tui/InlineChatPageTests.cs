@@ -299,7 +299,7 @@ public sealed class InlineChatPageTests
     }
 
     [Fact]
-    public async Task Generation_HidesTheComposerAndClearsFocus()
+    public async Task Generation_KeepsTheComposerFocusedAndAcceptsAQueuedPrompt()
     {
         await using var harness = CreateHarness();
         var runTask = harness.StartAsync();
@@ -310,13 +310,62 @@ public sealed class InlineChatPageTests
         harness.ViewModel.StatusMessage.Value = "Generating...";
         await harness.WaitUntilAsync(() =>
             harness.Terminal.Contains("Working")
-            && !harness.Terminal.Contains("MESSAGE")
-            && harness.Focus.CurrentFocus is null);
+            && harness.Terminal.Contains("MESSAGE")
+            && harness.Focus.CurrentFocus is not null);
 
-        harness.ViewModel.IsGenerating.Value = false;
-        harness.ViewModel.StatusMessage.Value = "Ready";
+        harness.Input.EnqueueString("queue this next");
+        harness.Input.EnqueueKey(ConsoleKey.Enter);
+
+        Assert.Equal("queue this next",
+            await harness.ViewModel.ReadSubmissionAsync(harness.Cancellation.Token));
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task AssistantText_UpdatesAsEachStreamDeltaArrives()
+    {
+        await using var harness = CreateHarness();
+        var runTask = harness.StartAsync();
+
+        harness.ViewModel.Emit(new TextDeltaOutput("The first")
+        {
+            SessionId = SessionId,
+            TimestampMs = 1
+        });
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("The first"));
+
+        harness.ViewModel.Emit(new TextDeltaOutput(" streamed reply")
+        {
+            SessionId = SessionId,
+            TimestampMs = 2
+        });
         await harness.WaitUntilAsync(() =>
-            harness.Terminal.Contains("MESSAGE") && harness.Focus.CurrentFocus is not null);
+            harness.Terminal.Contains("The first streamed reply")
+            && harness.Terminal.Contains("MESSAGE"));
+
+        var screen = harness.Terminal.ToString();
+        Assert.Contains("NETCLAW  LIVE", screen, StringComparison.Ordinal);
+        Assert.Contains("MESSAGE", screen, StringComparison.Ordinal);
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task LongAssistantStream_KeepsTheComposerVisible()
+    {
+        await using var harness = CreateHarness(height: 20);
+        var runTask = harness.StartAsync();
+
+        harness.ViewModel.Emit(new TextDeltaOutput(string.Join(
+            '\n',
+            Enumerable.Range(1, 30).Select(index => $"stream line {index}")))
+        {
+            SessionId = SessionId,
+            TimestampMs = 1
+        });
+
+        await harness.WaitUntilAsync(() =>
+            harness.Terminal.Contains("stream line 30")
+            && harness.Terminal.Contains("MESSAGE"));
         await harness.StopAsync(runTask);
     }
 
@@ -402,7 +451,7 @@ public sealed class InlineChatPageTests
         Assert.Contains("Tool  search", screen, StringComparison.Ordinal);
         Assert.Contains("Tool  fetch", screen, StringComparison.Ordinal);
         Assert.Contains("Agent  reviewer", screen, StringComparison.Ordinal);
-        Assert.DoesNotContain("MESSAGE", screen, StringComparison.Ordinal);
+        Assert.Contains("MESSAGE", screen, StringComparison.Ordinal);
         await harness.StopAsync(runTask);
     }
 
