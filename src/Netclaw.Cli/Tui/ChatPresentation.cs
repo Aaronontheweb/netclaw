@@ -411,7 +411,7 @@ internal static class ChatPresentationReducer
             $"tool:{output.CallId.Value}",
             ChatBlockKind.Tool,
             "TOOL",
-            $"✓ {output.ToolName.Value} · {FirstLine(output.Result)}",
+            $"{output.ToolName.Value} completed  {FirstLine(output.Result)}",
             $"Tool: {output.ToolName.Value}\nCall: {output.CallId.Value}\n{detail}",
             output.TimestampMs,
             active?.TurnId ?? state.CurrentTurnId,
@@ -459,7 +459,7 @@ internal static class ChatPresentationReducer
             $"subagent:{key}",
             ChatBlockKind.SubAgent,
             "AGENT",
-            $"{output.AgentName.Value} · {outcome} · {output.Duration.TotalSeconds:F1}s",
+            $"{output.AgentName.Value}  {outcome}  {output.Duration.TotalSeconds:F1}s",
             $"Sub-agent: {output.AgentName.Value}\n{detail}",
             output.TimestampMs,
             state.CurrentTurnId,
@@ -511,7 +511,7 @@ internal static class ChatPresentationReducer
             $"approval:{output.CallId.Value}:{output.TimestampMs}",
             ChatBlockKind.Approval,
             "APPROVAL",
-            $"{path} · {decision}",
+            $"{path}  {decision}",
             $"Approval: {path}\n{detail}",
             output.TimestampMs,
             state.CurrentTurnId,
@@ -601,10 +601,10 @@ internal static class ChatPresentationReducer
         var summary = kind switch
         {
             ChatBlockKind.User or ChatBlockKind.Assistant => entry.Text ?? string.Empty,
-            ChatBlockKind.Tool => $"✓ {entry.ToolName ?? "unknown"} · {FirstLine(entry.Result)}",
-            ChatBlockKind.Approval => $"{entry.ToolName ?? "unknown"} · {ApprovalDecisionText(entry.ApprovalSelectedKey)}",
-            ChatBlockKind.SubAgent => $"{entry.AgentName ?? "sub-agent"} · {entry.Outcome ?? "complete"}",
-            ChatBlockKind.File => $"{entry.FileName ?? "file"} · {entry.FilePath}",
+            ChatBlockKind.Tool => $"{entry.ToolName ?? "unknown"} completed  {FirstLine(entry.Result)}",
+            ChatBlockKind.Approval => $"{entry.ToolName ?? "unknown"}  {ApprovalDecisionText(entry.ApprovalSelectedKey)}",
+            ChatBlockKind.SubAgent => $"{entry.AgentName ?? "sub-agent"}  {entry.Outcome ?? "complete"}",
+            ChatBlockKind.File => $"{entry.FileName ?? "file"}  {entry.FilePath}",
             ChatBlockKind.Error => entry.ErrorMessage ?? "Unknown error",
             ChatBlockKind.Usage => UsageSummary(entry),
             ChatBlockKind.Compaction => $"{entry.MessagesBefore ?? 0} → {entry.MessagesAfter ?? 0} messages",
@@ -626,9 +626,9 @@ internal static class ChatPresentationReducer
 
     private static ChatPresentationBlock UsageBlock(UsageOutput usage, string? turnId)
     {
-        var summary = $"{usage.InputTokens ?? 0} in · {usage.OutputTokens ?? 0} out"
-                      + (usage.ReasoningTokens is > 0 ? $" · {usage.ReasoningTokens} thought" : string.Empty)
-                      + (usage.UsagePercent is not null ? $" · {usage.UsagePercent:P0} context" : string.Empty);
+        var summary = $"{usage.InputTokens ?? 0} in  {usage.OutputTokens ?? 0} out"
+                      + (usage.ReasoningTokens is > 0 ? $"  {usage.ReasoningTokens} thought" : string.Empty)
+                      + (usage.UsagePercent is not null ? $"  {usage.UsagePercent:P0} context" : string.Empty);
         var detail = $"Input tokens: {usage.InputTokens ?? 0}\nOutput tokens: {usage.OutputTokens ?? 0}"
                      + $"\nCached input tokens: {usage.CachedInputTokens ?? 0}"
                      + $"\nReasoning tokens: {usage.ReasoningTokens ?? 0}"
@@ -668,7 +668,7 @@ internal static class ChatPresentationReducer
             $"file:{file.TimestampMs}:{file.FilePath}",
             ChatBlockKind.File,
             "FILE",
-            $"{file.FileName} · {file.MimeType.Value}",
+            $"{file.FileName}  {file.MimeType.Value}",
             detail,
             file.TimestampMs,
             turnId,
@@ -732,8 +732,8 @@ internal static class ChatPresentationReducer
     };
 
     private static string UsageSummary(SessionTranscriptEntry entry) =>
-        $"{entry.InputTokens ?? 0} in · {entry.OutputTokens ?? 0} out"
-        + (entry.ReasoningTokens is > 0 ? $" · {entry.ReasoningTokens} thought" : string.Empty);
+        $"{entry.InputTokens ?? 0} in  {entry.OutputTokens ?? 0} out"
+        + (entry.ReasoningTokens is > 0 ? $"  {entry.ReasoningTokens} thought" : string.Empty);
 
     private static string Label(ChatBlockKind kind) => kind switch
     {
