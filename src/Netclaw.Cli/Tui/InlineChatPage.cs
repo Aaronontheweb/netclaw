@@ -898,27 +898,27 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         if (modifiedEnterKeySupport == TerminalCapabilityAvailability.Unavailable)
         {
             if (width >= 110)
-                return "Enter send  Esc Esc clear  Ctrl+O inspect  Ctrl+Q quit";
+                return "Enter send  Esc x2 clear  Ctrl+O inspect  Ctrl+Q quit";
 
             return width >= 66
-                ? "Enter send  Esc Esc clear"
+                ? "Enter send  Esc x2 clear"
                 : "Enter send";
         }
 
         if (modifiedEnterKeySupport == TerminalCapabilityAvailability.Unknown)
         {
             if (width >= 110)
-                return "Enter send  Esc Esc clear  Ctrl+O inspect  Ctrl+Q quit";
+                return "Enter send  Esc x2 clear  Ctrl+O inspect  Ctrl+Q quit";
 
             return width >= 66
-                ? "Enter send  Esc Esc clear"
+                ? "Enter send  Esc x2 clear"
                 : "Enter send";
         }
 
         if (width >= 110)
-            return "Enter send  Shift+Enter newline  Esc Esc clear  Ctrl+O inspect  Ctrl+Q quit";
+            return "Enter send  Shift+Enter newline  Esc x2 clear  Ctrl+O inspect  Ctrl+Q quit";
         return width >= 66
-            ? "Enter send  Shift+Enter line  Esc Esc clear  Ctrl+O inspect"
+            ? "Enter send  Shift+Enter line  Esc x2 clear  Ctrl+O inspect"
             : "Enter send  Shift+Enter line";
     }
 

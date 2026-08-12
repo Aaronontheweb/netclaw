@@ -159,7 +159,7 @@ The failure is a deterministic path assertion. I can prepare a fix.
 ┌ prompt ───────────────────────────────────────────────────────────────────────────────────────────┐
 │ Ask Netclaw…                                                                                     │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-Enter send  Shift+Enter newline  ↑↓ history  Esc Esc clear  Ctrl+Q quit
+Enter send  Shift+Enter newline  ↑↓ history  Esc x2 clear  Ctrl+Q quit
 ```
 
 ### Active Turn at 80 Columns
