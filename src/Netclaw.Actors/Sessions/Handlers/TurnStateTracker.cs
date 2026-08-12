@@ -48,6 +48,13 @@ internal sealed class TurnStateTracker
     public int ToolIterationCount { get; private set; }
     public bool ForceNoToolsActive { get; set; }
 
+    /// <summary>
+    /// Number of timeout-triggered LLM call resumes used so far this turn. Compared
+    /// against <see cref="Netclaw.Configuration.SessionTuning.TimeoutResumeRetryBudget"/>
+    /// by the actor before resuming again.
+    /// </summary>
+    public int TimeoutResumeCount { get; private set; }
+
     private bool _budgetNudgeSent;
     private int _postToolEmptyResponseCount;
     private int _preToolEmptyResponseCount;
@@ -66,6 +73,16 @@ internal sealed class TurnStateTracker
         ForceNoToolsActive = false;
         _toolCallCounts.Clear();
         _duplicateNudgeSent = false;
+        TimeoutResumeCount = 0;
+    }
+
+    /// <summary>
+    /// Record a timeout-triggered LLM call resume. Called by the actor after it
+    /// decides to re-issue a timed-out call.
+    /// </summary>
+    public void RecordTimeoutResume()
+    {
+        TimeoutResumeCount++;
     }
 
     /// <summary>

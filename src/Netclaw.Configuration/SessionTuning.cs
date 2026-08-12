@@ -135,4 +135,15 @@ public sealed record SessionTuning
     /// are not retried because the partial response cannot be reconstructed.
     /// </summary>
     public RetryPolicy StreamingRetryPolicy { get; init; } = new();
+
+    /// <summary>
+    /// Per-turn budget for silent LLM call resumes after a mid-stream timeout
+    /// (the watchdog's inter-delta/no-progress deadline, or a transport
+    /// <see cref="TimeoutException"/>). On a timeout with no tool call
+    /// dispatched yet this turn, the session actor discards the dead call's
+    /// partial output and re-issues the same call up to this many times
+    /// before it fails the turn. Set to 0 to disable resume and fail on the
+    /// first timeout, matching pre-resume behavior.
+    /// </summary>
+    public int TimeoutResumeRetryBudget { get; init; } = 2;
 }

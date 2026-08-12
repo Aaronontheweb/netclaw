@@ -172,6 +172,14 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // Startup context layers: injected on first LLM call, re-injected after compaction
     private bool _startupContextInjected;
 
+    // True when the in-flight call's own ContinueFireLlmCall() invocation was the
+    // one that flipped _startupContextInjected false→true. A timeout resume rolls
+    // this back before re-firing so the resumed call's message list is
+    // byte-identical to the one that just died — otherwise the OnceAtStart context
+    // layers would silently vanish from the retry (SessionMessageAssembler renders
+    // them only while StartupContextInjected is false). See TryResumeAfterTimeout.
+    private bool _startupContextPendingFirstDelivery;
+
     // Guards against infinite compaction loops: if a post-compaction buffer drain
     // overflows again, fail the turn. Reset at the start of each new user turn.
     private int _compactionOverflowRetryCount;
@@ -662,6 +670,16 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 return;
             }
 
+            // A timeout that surfaced directly as a TimeoutException (not routed
+            // through the watchdog's own cancellation — e.g. a transport-level
+            // request timeout firing before our watchdog budget elapses) gets the
+            // same bounded resume as the watchdog path below.
+            if (msg.Cause is TimeoutException llmCallFailedTimeout
+                && TryResumeAfterTimeout(llmCallFailedTimeout, "llm_call_failed"))
+            {
+                return;
+            }
+
             // Transient-failure retry is owned entirely by the transport
             // (RetryingChatClient, pre-first-chunk) and is already exhausted by the time
             // the failure reaches here, so a failed turn is terminal.
@@ -711,6 +729,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             _log.Error("Processing watchdog expired for operation {OperationName} (opId={OperationId}, noProgress={NoProgress})",
                 msg.OperationName, msg.OperationId, msg.NoProgress);
+
+            if (TryResumeAfterTimeout(timeoutCause, "watchdog"))
+                return;
+
             var errorMessage = ExtractLlmErrorMessage(timeoutCause);
             FailCurrentTurn(errorMessage, timeoutCause, ErrorCategory.Timeout);
         });
@@ -1273,6 +1295,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _state = _state.Apply(evt);
             _lastInputTokenCount = 0;
             _startupContextInjected = false;
+            _startupContextPendingFirstDelivery = false;
             _recallManager.ResetForCompaction();
             _discoveredToolCache.EvictAll();
 
@@ -2843,6 +2866,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // startup injection complete after the first call to preserve the
         // existing OnceAtStart semantics.
         var skillHint = BuildSkillHint();
+        _startupContextPendingFirstDelivery = !_startupContextInjected;
         var messages = SessionMessageAssembler.Assemble(new ContextAssemblyInput(
             State: _state,
             ContextLayers: _contextLayers,
@@ -2884,6 +2908,64 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _activeCallId);
 
         _ = SessionLlmInvoker.InvokeAsync(client, messages, options, self, _activeCallId, _sessionId, _activeLlmCts!.Token);
+    }
+
+    /// <summary>
+    /// Bounded, turn-scoped resume after an LLM call times out mid-stream. The dead
+    /// call's partial output is discarded by construction: streamed deltas only ever
+    /// reach transient UI output (<see cref="HandleLlmResponseDeltaReceived"/>) and
+    /// the invoker's local buffer (<c>StreamingResponseReader</c>) — nothing from a
+    /// call that never reaches <see cref="HandleLlmResponseReceived"/> is written to
+    /// <see cref="_state"/>, so there is nothing to roll back there. Resuming means
+    /// re-issuing the exact same call: <see cref="FireLlmCall"/> reassembles the
+    /// message list from the unchanged <see cref="_state"/> and the same
+    /// <see cref="TurnStateTracker.ForceNoToolsActive"/> flag the dead call used.
+    /// <para>
+    /// Safety gate: only resumes when no tool call has been dispatched yet this turn
+    /// (<see cref="TurnStateTracker.ToolIterationCount"/> is 0). Tool-call dispatch
+    /// only happens once a call fully completes (<see cref="HandleLlmResponseReceived"/>),
+    /// so a call that itself timed out mid-stream can never have dispatched a tool
+    /// call — the gate instead guards the case where an EARLIER call in this turn's
+    /// tool loop already dispatched one before a LATER follow-up call stalled.
+    /// Re-issuing after that point risks double-executing the earlier tool call's
+    /// effects if a provider ever replayed committed context, so those turns fail as
+    /// before this feature existed.
+    /// </para>
+    /// </summary>
+    private bool TryResumeAfterTimeout(TimeoutException cause, string source)
+    {
+        if (_turnState.ToolIterationCount > 0)
+        {
+            TurnLog().Warning(cause,
+                "turn_llm_timeout_resume_blocked source={Source} reason=tool_call_already_dispatched",
+                source);
+            return false;
+        }
+
+        if (_turnState.TimeoutResumeCount >= _config.Tuning.TimeoutResumeRetryBudget)
+        {
+            TurnLog().Warning(cause,
+                "turn_llm_timeout_resume_budget_exhausted source={Source} attempts={Attempts} budget={Budget}",
+                source, _turnState.TimeoutResumeCount, _config.Tuning.TimeoutResumeRetryBudget);
+            return false;
+        }
+
+        _turnState.RecordTimeoutResume();
+        TurnLog().Warning(cause,
+            "turn_llm_timeout_resume source={Source} attempt={Attempt} budget={Budget}",
+            source, _turnState.TimeoutResumeCount, _config.Tuning.TimeoutResumeRetryBudget);
+
+        // Undo the dead call's speculative "startup context delivered" flip so the
+        // resumed call's message list matches the one that just died exactly — see
+        // _startupContextPendingFirstDelivery.
+        if (_startupContextPendingFirstDelivery)
+        {
+            _startupContextInjected = false;
+            _startupContextPendingFirstDelivery = false;
+        }
+
+        FireLlmCall(forceNoTools: _turnState.ForceNoToolsActive);
+        return true;
     }
 
     private async Task<INoSerializationVerificationNeeded> CreateWorkingContextContinuationAsync(

@@ -52,6 +52,13 @@ public sealed class SessionConfigDefaultsTests
     }
 
     [Fact]
+    public void Timeout_resume_retry_budget_defaults_to_2()
+    {
+        var tuning = new SessionTuning();
+        Assert.Equal(2, tuning.TimeoutResumeRetryBudget);
+    }
+
+    [Fact]
     public void BindFromConfiguration_supports_legacy_root_level_tuning_keys()
     {
         var config = new ConfigurationBuilder()
