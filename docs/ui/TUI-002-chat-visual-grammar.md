@@ -90,6 +90,7 @@ Raw thought text remains available in the Inspector when policy allows it.
 ### Approval
 
 An approval uses an amber cell background at the top of the Decision Gate.
+The header names the requester and the requested action.
 The gate has no border glyphs.
 The command uses a separate code surface.
 Each decision uses a text label with an inverse selected state.
@@ -103,6 +104,8 @@ The hint row lists only controls that work in the current terminal.
 
 ### Inspector
 
+The Inspector owns the visible viewport while it is open.
+The transcript returns when the user closes the Inspector.
 The Inspector uses two background surfaces at wide widths.
 The left surface lists semantic events.
 The right surface shows complete safe detail.
