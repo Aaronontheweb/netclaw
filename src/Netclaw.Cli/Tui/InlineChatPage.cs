@@ -284,7 +284,8 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         else if (ShowsComposer(_state))
             content.WithChild(BuildComposer());
 
-        return content.WithChild(BuildStatusLine());
+        content.WithChild(BuildStatusLine());
+        return WithViewportMargin(content);
     }
 
     private ILayoutNode BuildInspector()
@@ -331,7 +332,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
                 "Y copy event  Shift+Y copy turn")
             .WithForeground(ChatVisualTheme.Muted));
 
-        var inspectorHeight = Math.Clamp(_terminal.Height - 14, 8, 32);
+        var inspectorHeight = Math.Max(6, _terminal.Height - 3);
         var detailPanel = new PanelNode()
             .WithBorder(BorderStyle.None)
             .WithBackground(ChatVisualTheme.Surface)
@@ -359,14 +360,16 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             .WithBorder(BorderStyle.None)
             .WithBackground(ChatVisualTheme.HeaderSurface)
             .WithContent(new TextNode(
-                    $" INSPECTOR  {_state.SessionTitle ?? "current turn"}  event {_inspectorIndex + 1} of {_state.Transcript.Count}")
+                    $"INSPECTOR  {_state.SessionTitle ?? "current turn"}  event {_inspectorIndex + 1} of {_state.Transcript.Count}")
                 .WithForeground(ChatVisualTheme.Primary)
                 .Bold())
             .Height(1);
-        return Layouts.Vertical()
+        var inspector = Layouts.Vertical()
             .WithChild(inspectorHeader)
             .WithChild(inspectorBody)
-            .WithChild(new TextNode(help).WithForeground(ChatVisualTheme.Muted));
+            .WithChild(new TextNode(help).WithForeground(ChatVisualTheme.Muted))
+            .Width(ReadableWidth());
+        return WithViewportMargin(inspector);
     }
 
     private ILayoutNode BuildInspectorEventList(int width, int height)
@@ -527,8 +530,8 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             ? $"  {connectionPart}"
             : string.Empty;
         var headerText = _terminal.Width < 60
-            ? $" NETCLAW  {connectionPart}"
-            : $" NETCLAW  {sessionPart}{modelPart}{contextPart}{daemonPart}";
+            ? $"NETCLAW  {connectionPart}"
+            : $"NETCLAW  {sessionPart}{modelPart}{contextPart}{daemonPart}";
         var header = new TextNode(headerText)
             .WithForeground(ChatVisualTheme.Primary)
             .Bold();
@@ -562,15 +565,25 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
                      .ThenBy(value => value.CallId, StringComparer.Ordinal))
         {
             var childRuns = agents.Where(value => value.ParentCallId == tool.CallId).ToList();
-            var phase = childRuns.Count switch
-            {
-                0 => tool.Phase,
-                1 => $"orchestrating {childRuns[0].AgentName}",
-                _ => $"orchestrating {childRuns.Count} agents"
-            };
+            var awaitsApproval = string.Equals(
+                _state.PendingApproval?.CallId.Value,
+                tool.CallId,
+                StringComparison.Ordinal);
+            var phase = awaitsApproval
+                ? "awaiting approval"
+                : childRuns.Count switch
+                {
+                    0 => tool.Phase,
+                    1 => $"orchestrating {childRuns[0].AgentName}",
+                    _ => $"orchestrating {childRuns.Count} agents"
+                };
+            var state = awaitsApproval ? "Decision" : ActivityState(tool.Phase);
+            var phaseText = !awaitsApproval && string.Equals(phase, tool.Phase, StringComparison.OrdinalIgnoreCase)
+                ? string.Empty
+                : $"  {phase}";
             var summary = string.IsNullOrWhiteSpace(tool.Summary) ? string.Empty : $"  {tool.Summary}";
             rows.Add(new TextNode(ChatPresentationRenderer.OneLine(
-                    $"{ActivityState(tool.Phase),-8} Tool  {tool.ToolName}  {phase}{summary}",
+                    $"{state,-8} Tool  {tool.ToolName}{phaseText}{summary}",
                     lineWidth))
                 .WithForeground(ActivityColor(tool.Phase)));
 
@@ -631,7 +644,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             .WithBorder(BorderStyle.None)
             .WithBackground(ChatVisualTheme.ApprovalHeader)
             .WithContent(new TextNode(
-                    $" Approval required  {ChatPresentationRenderer.ApprovalPath(_state, approval)}")
+                    $"Approval required  {ChatPresentationRenderer.ApprovalPath(_state, approval)}")
                 .WithForeground(ChatVisualTheme.Warning)
                 .Bold())
             .Height(1);
@@ -733,10 +746,12 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         var status = ViewModel.StatusMessage.Value;
         var displayStatus = status switch
         {
-            "Generating..." => "Working…",
+            "Generating..." => "Working",
             "Connecting..." when _terminal.Width < 48 => "Connect",
             _ => status
         };
+        if (_state.PendingApproval is not null)
+            displayStatus = "Decision needed";
         var keys = StatusKeys(
             _terminal.Width,
             _state.PendingApproval is not null,
@@ -758,7 +773,23 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             .WithChild(Layouts.Empty().Fill());
     }
 
-    private int ReadableWidth() => Math.Min(_terminal.Width, MaximumReadableWidth);
+    private int ReadableWidth() => Math.Min(
+        Math.Max(1, _terminal.Width - ViewportLeftMargin()),
+        MaximumReadableWidth);
+
+    private int ViewportLeftMargin() => _terminal.Width >= 60 ? 2 : 0;
+
+    private ILayoutNode WithViewportMargin(ILayoutNode content)
+    {
+        var margin = ViewportLeftMargin();
+        if (margin == 0)
+            return content;
+
+        return Layouts.Horizontal()
+            .WithChild(Layouts.Empty().Width(margin))
+            .WithChild(content)
+            .WithChild(Layouts.Empty().Fill());
+    }
 
     private static ILayoutNode BuildAgentActivity(SubAgentActivityPresentation run, int lineWidth)
     {
@@ -783,9 +814,14 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         return Layouts.Vertical([.. rows]);
     }
 
-    private static string BuildApprovalDetail(ToolInteractionRequest approval)
+    private string BuildApprovalDetail(ToolInteractionRequest approval)
     {
-        var lines = new List<string> { approval.DisplayText };
+        var lines = new List<string>
+        {
+            $"Requester: {ChatPresentationRenderer.ApprovalRequester(_state, approval)}",
+            $"Action: Run {approval.ToolName.Value}",
+            approval.DisplayText
+        };
         if (approval.Patterns.Count > 0)
             lines.Add($"Patterns: {string.Join(", ", approval.Patterns)}");
         if (approval.CandidateVerbs.Count > 0)
@@ -805,7 +841,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             ChatViewModel.MaxExpandedApprovalBodyChars);
     }
 
-    private static int ApprovalDetailHeight(ToolInteractionRequest approval, int width)
+    private int ApprovalDetailHeight(ToolInteractionRequest approval, int width)
     {
         var contentWidth = Math.Max(1, width - 2);
         var lineCount = BuildApprovalDetail(approval)
@@ -833,25 +869,21 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         if (modifiedEnterKeySupport == TerminalCapabilityAvailability.Unavailable)
         {
             if (width >= 110)
-                return "Enter send  Shift+Enter unavailable  Esc Esc clear  Ctrl+O inspect  Ctrl+Q quit";
+                return "Enter send  Esc Esc clear  Ctrl+O inspect  Ctrl+Q quit";
 
             return width >= 66
-                ? "Enter send  Shift+Enter unavailable  Esc Esc clear"
-                : width >= 48
-                    ? "Enter send  Shift+Enter unavailable"
-                    : "Shift+Enter unavailable";
+                ? "Enter send  Esc Esc clear"
+                : "Enter send";
         }
 
         if (modifiedEnterKeySupport == TerminalCapabilityAvailability.Unknown)
         {
             if (width >= 110)
-                return "Enter send  Shift+Enter status pending  Esc Esc clear  Ctrl+O inspect  Ctrl+Q quit";
+                return "Enter send  Esc Esc clear  Ctrl+O inspect  Ctrl+Q quit";
 
             return width >= 66
-                ? "Enter send  Shift+Enter pending  Esc Esc clear"
-                : width >= 48
-                    ? "Enter send  Shift+Enter pending"
-                    : "Shift+Enter pending";
+                ? "Enter send  Esc Esc clear"
+                : "Enter send";
         }
 
         if (width >= 110)
@@ -1023,7 +1055,10 @@ internal static partial class ChatPresentationRenderer
                 .WithChild(Layouts.Empty().Fill());
         }
 
-        var stableBlock = Layouts.Vertical()
+        var stableBlock = Layouts.Vertical();
+        if (block.Kind == ChatBlockKind.Assistant)
+            stableBlock.WithChild(Layouts.Empty().Height(1));
+        stableBlock
             .WithChild(heading)
             .WithChild(content)
             .WithChild(new TextNode(string.Empty));
@@ -1132,17 +1167,25 @@ internal static partial class ChatPresentationRenderer
         ChatPresentationState state,
         ToolInteractionRequest approval)
     {
+        var requester = ApprovalRequester(state, approval);
+        return $"{requester} requests permission to run {approval.ToolName.Value}";
+    }
+
+    public static string ApprovalRequester(
+        ChatPresentationState state,
+        ToolInteractionRequest approval)
+    {
         const string subAgentMarker = "/subagent-approval/";
         var markerIndex = approval.CallId.Value.IndexOf(subAgentMarker, StringComparison.Ordinal);
         if (markerIndex <= 0)
-            return approval.ToolName.Value;
+            return "Netclaw";
 
         var parentCallId = approval.CallId.Value[..markerIndex];
         var requester = state.SubAgents.Values.FirstOrDefault(run =>
             string.Equals(run.ParentCallId, parentCallId, StringComparison.Ordinal));
         return requester is null
-            ? $"sub-agent / {approval.ToolName.Value}"
-            : $"{requester.AgentName} / {approval.ToolName.Value}";
+            ? "A sub-agent"
+            : requester.AgentName;
     }
 
     private static Color LabelColor(ChatPresentationBlock block) => block.Kind switch
