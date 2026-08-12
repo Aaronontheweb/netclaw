@@ -580,7 +580,11 @@ public sealed class InlineChatPageTests
         await harness.WaitUntilAsync(() => harness.Terminal.Contains("INSPECTOR"));
 
         var screen = harness.Terminal.ToString();
-        Assert.Contains("every\nexpandable", screen, StringComparison.Ordinal);
+        Assert.Contains("expandable", screen, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Accessibility reviewers verify every expandable control before release.",
+            screen,
+            StringComparison.Ordinal);
         Assert.DoesNotContain("expanda\nble", screen, StringComparison.Ordinal);
         await harness.StopAsync(runTask);
     }
