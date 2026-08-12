@@ -340,7 +340,13 @@
       overflow: hidden;
     }
 
-    .pulse-line .pulse { min-width: 86px; color: var(--decision); }
+    .pulse-line .pulse {
+      flex: 0 0 12ch;
+      width: 12ch;
+      padding-right: 1ch;
+      color: var(--decision);
+      white-space: pre;
+    }
     .pulse-line.ready .pulse { color: var(--human); }
     .pulse-line.decision .pulse { color: var(--decision); }
     .pulse-line .keys { color: #687184; }
@@ -766,7 +772,7 @@ The named model definition overrides the provider default.</div>
         <table class="matrix">
           <thead><tr><th>Element</th><th>Motion</th><th>Stops when</th></tr></thead>
           <tbody>
-            <tr><td>Pulse Line</td><td><code>Thinking.</code> dots</td><td>Decision, error, or idle</td></tr>
+            <tr><td>Pulse Line</td><td><code>Thinking.</code> dots in a fixed 12-character slot</td><td>Decision, error, or idle</td></tr>
             <tr><td>Tool glyph</td><td><code>/ - \\ |</code> in place</td><td>Tool settles</td></tr>
             <tr><td>Fly-by text</td><td>Safe action text replaces in place</td><td>Tool settles</td></tr>
             <tr><td>Composer caret</td><td>Slow blink</td><td>Decision owns input</td></tr>
