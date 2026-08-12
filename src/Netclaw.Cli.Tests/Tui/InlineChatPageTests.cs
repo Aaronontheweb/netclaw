@@ -183,7 +183,7 @@ public sealed class InlineChatPageTests
     {
         await using var harness = CreateHarness(approval: BuildApproval());
         var runTask = harness.StartAsync();
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Decision Gate"));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Approval required"));
 
         harness.Events.Enqueue(new PasteEvent("blocked paste"));
         harness.Events.Enqueue(new KeyPressed(
@@ -191,7 +191,7 @@ public sealed class InlineChatPageTests
         await harness.WaitUntilAsync(() => harness.ViewModel.IsApprovalDetailVisible.Value);
         harness.Input.EnqueueKey(ConsoleKey.Escape);
         _ = await harness.ViewModel.ReadApprovalAsync(harness.Cancellation.Token);
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Composer"));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("MESSAGE"));
 
         harness.Input.EnqueueString("safe prompt");
         harness.Input.EnqueueKey(ConsoleKey.Enter);
@@ -206,7 +206,7 @@ public sealed class InlineChatPageTests
         var approval = BuildApproval();
         await using var harness = CreateHarness(approval: approval);
         var runTask = harness.StartAsync();
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Decision Gate"));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Approval required"));
 
         harness.Input.EnqueueKey(ConsoleKey.DownArrow);
         harness.Input.EnqueueKey(ConsoleKey.O, control: true);
@@ -223,9 +223,11 @@ public sealed class InlineChatPageTests
     {
         await using var harness = CreateHarness(approval: BuildApproval());
         var runTask = harness.StartAsync();
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Decision Gate"));
-        Assert.Contains("This chat — until this chat ends", harness.Terminal.ToString(), StringComparison.Ordinal);
-        Assert.Contains("Deny — do not run", harness.Terminal.ToString(), StringComparison.Ordinal);
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Approval required"));
+        var screen = harness.Terminal.ToString();
+        Assert.Contains("This chat — until this chat ends", screen, StringComparison.Ordinal);
+        Assert.Contains("Deny — do not run", screen, StringComparison.Ordinal);
+        AssertHasNoDecorativeTrim(screen);
 
         harness.Input.EnqueueKey(ConsoleKey.Escape);
 
@@ -249,7 +251,7 @@ public sealed class InlineChatPageTests
         };
         await using var harness = CreateHarness(approval: approval);
         var runTask = harness.StartAsync();
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Decision Gate"));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Approval required"));
 
         harness.Input.EnqueueKey(ConsoleKey.O, control: true);
         var screen = string.Empty;
@@ -277,7 +279,7 @@ public sealed class InlineChatPageTests
         var approval = BuildApproval() with { DisplayText = detail };
         await using var harness = CreateHarness(approval: approval, height: 24);
         var runTask = harness.StartAsync();
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Decision Gate"));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Approval required"));
 
         harness.Input.EnqueueKey(ConsoleKey.DownArrow);
         harness.Input.EnqueueKey(ConsoleKey.O, control: true);
@@ -304,20 +306,20 @@ public sealed class InlineChatPageTests
     {
         await using var harness = CreateHarness();
         var runTask = harness.StartAsync();
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Composer"));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("MESSAGE"));
         Assert.NotNull(harness.Focus.CurrentFocus);
 
         harness.ViewModel.IsGenerating.Value = true;
         harness.ViewModel.StatusMessage.Value = "Generating...";
         await harness.WaitUntilAsync(() =>
             harness.Terminal.Contains("Working…")
-            && !harness.Terminal.Contains("Composer")
+            && !harness.Terminal.Contains("MESSAGE")
             && harness.Focus.CurrentFocus is null);
 
         harness.ViewModel.IsGenerating.Value = false;
         harness.ViewModel.StatusMessage.Value = "Ready";
         await harness.WaitUntilAsync(() =>
-            harness.Terminal.Contains("Composer") && harness.Focus.CurrentFocus is not null);
+            harness.Terminal.Contains("MESSAGE") && harness.Focus.CurrentFocus is not null);
         await harness.StopAsync(runTask);
     }
 
@@ -333,9 +335,9 @@ public sealed class InlineChatPageTests
         var runTask = harness.StartAsync();
         await harness.WaitUntilAsync(() => harness.Terminal.Contains("A stable answer"));
 
-        Assert.Equal("NETCLAW", harness.Terminal.GetLine(0));
-        Assert.Equal("A stable answer", harness.Terminal.GetLine(1));
-        Assert.DoesNotContain('│', harness.Terminal.GetLine(1));
+        Assert.Equal("  Netclaw", harness.Terminal.GetLine(0));
+        Assert.Equal("  A stable answer", harness.Terminal.GetLine(1));
+        AssertHasNoDecorativeTrim(harness.Terminal.ToString());
         await harness.StopAsync(runTask);
     }
 
@@ -399,10 +401,10 @@ public sealed class InlineChatPageTests
             && harness.Terminal.Contains("reviewer"));
 
         var screen = harness.Terminal.ToString();
-        Assert.Contains("TOOL  search", screen, StringComparison.Ordinal);
-        Assert.Contains("TOOL  fetch", screen, StringComparison.Ordinal);
-        Assert.Contains("AGENT  reviewer", screen, StringComparison.Ordinal);
-        Assert.DoesNotContain("Composer", screen, StringComparison.Ordinal);
+        Assert.Contains("Tool  search", screen, StringComparison.Ordinal);
+        Assert.Contains("Tool  fetch", screen, StringComparison.Ordinal);
+        Assert.Contains("Agent  reviewer", screen, StringComparison.Ordinal);
+        Assert.DoesNotContain("MESSAGE", screen, StringComparison.Ordinal);
         await harness.StopAsync(runTask);
     }
 
@@ -443,11 +445,11 @@ public sealed class InlineChatPageTests
         };
         await using var harness = CreateHarness(outputs: outputs);
         var runTask = harness.StartAsync();
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("TOOL  shell_execute"));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Tool  shell_execute"));
 
         var screen = harness.Terminal.ToString();
-        Assert.True(screen.IndexOf("AGENT  interface-reviewer", StringComparison.Ordinal)
-                    < screen.IndexOf("TOOL  shell_execute", StringComparison.Ordinal));
+        Assert.True(screen.IndexOf("Agent  interface-reviewer", StringComparison.Ordinal)
+                    < screen.IndexOf("Tool  shell_execute", StringComparison.Ordinal));
         Assert.Contains("awaiting human approval", screen, StringComparison.Ordinal);
         await harness.StopAsync(runTask);
     }
@@ -471,7 +473,7 @@ public sealed class InlineChatPageTests
         await using var harness = CreateHarness(outputs: [output], approval: approval, width: 160);
         var runTask = harness.StartAsync();
         await harness.WaitUntilAsync(() =>
-            harness.Terminal.Contains("interface-reviewer › shell_execute"));
+            harness.Terminal.Contains("interface-reviewer / shell_execute"));
 
         var longestLine = Enumerable.Range(0, harness.Terminal.Height)
             .Select(index => harness.Terminal.GetLine(index).TrimEnd().Length)
@@ -528,13 +530,14 @@ public sealed class InlineChatPageTests
         Assert.DoesNotContain("complete hidden line", harness.Terminal.ToString(), StringComparison.Ordinal);
         harness.Input.EnqueueKey(ConsoleKey.O, control: true);
         await harness.WaitUntilAsync(() =>
-            harness.Terminal.Contains("RAW DETAIL")
+            harness.Terminal.Contains("Tool result")
             && harness.Terminal.Contains("complete hidden line"));
 
-        Assert.Contains("RAW DETAIL", harness.Terminal.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Tool result", harness.Terminal.ToString(), StringComparison.Ordinal);
         Assert.Contains("complete hidden line", harness.Terminal.ToString(), StringComparison.Ordinal);
         Assert.Contains("Arguments: {\"call\":\"call-a\"}",
             harness.Terminal.ToString(), StringComparison.Ordinal);
+        AssertHasNoDecorativeTrim(harness.Terminal.ToString());
         await harness.StopAsync(runTask);
     }
 
@@ -579,7 +582,7 @@ public sealed class InlineChatPageTests
             SessionId = SessionId,
             TimestampMs = 2
         });
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("1/2"));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("event 1 of 2"));
         Assert.DoesNotContain("queued answer", harness.Terminal.ToString(), StringComparison.Ordinal);
 
         harness.Input.EnqueueKey(ConsoleKey.O, control: true);
@@ -701,12 +704,13 @@ public sealed class InlineChatPageTests
     {
         await using var harness = CreateHarness(width: width);
         var runTask = harness.StartAsync();
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Composer"));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("MESSAGE"));
 
         var screen = harness.Terminal.ToString();
-        Assert.Contains("netclaw", screen, StringComparison.Ordinal);
-        Assert.Contains("Composer", screen, StringComparison.Ordinal);
+        Assert.Contains("NETCLAW", screen, StringComparison.Ordinal);
+        Assert.Contains("MESSAGE", screen, StringComparison.Ordinal);
         Assert.Contains("Enter", screen, StringComparison.Ordinal);
+        AssertHasNoDecorativeTrim(screen);
         await harness.StopAsync(runTask);
     }
 
@@ -721,9 +725,10 @@ public sealed class InlineChatPageTests
         };
         await using var harness = CreateHarness(outputs: [joined], width: 40);
         var runTask = harness.StartAsync();
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("●"));
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("connected"));
 
-        Assert.Contains("netclaw  ●", harness.Terminal.ToString(), StringComparison.Ordinal);
+        Assert.Contains("NETCLAW", harness.Terminal.ToString(), StringComparison.Ordinal);
+        Assert.Contains("connected", harness.Terminal.ToString(), StringComparison.Ordinal);
         await harness.StopAsync(runTask);
     }
 
@@ -735,6 +740,13 @@ public sealed class InlineChatPageTests
         ToolName = new ToolName(name),
         ArgumentsJson = $"{{\"call\":\"{callId}\"}}"
     };
+
+    private static void AssertHasNoDecorativeTrim(string screen)
+    {
+        const string decorativeTrim = "╭╮╰╯┌┐└┘│─╷╵█░▒▓✓◌↳";
+        foreach (var character in decorativeTrim)
+            Assert.DoesNotContain(character, screen);
+    }
 
     private static ToolInteractionRequest BuildApproval() => new()
     {
