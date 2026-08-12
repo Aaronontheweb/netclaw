@@ -303,7 +303,9 @@ public sealed class InlineChatPageTests
         await harness.WaitUntilAsync(() =>
         {
             screen = harness.Terminal.ToString();
-            return screen.Contains("Patterns: dotnet", StringComparison.Ordinal)
+            return screen.Contains("Requester: Netclaw", StringComparison.Ordinal)
+                   && screen.Contains("Action: Run shell_execute", StringComparison.Ordinal)
+                   && screen.Contains("Patterns: dotnet", StringComparison.Ordinal)
                    && screen.Contains("Verbs: dotnet", StringComparison.Ordinal)
                    && screen.Contains("Directory: /work/netclaw", StringComparison.Ordinal)
                    && screen.Contains("Complex command", StringComparison.Ordinal)
