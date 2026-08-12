@@ -1099,6 +1099,15 @@ assert_skill_operations_diagnostics() {
     stdout_contains '\[tool:call\]'
 }
 
+assert_skill_chat_tui_knowledge() {
+    daemon_log_skill_loaded_via_skill_tool 'netclaw-operations' \
+        && stdout_tool_called 'skill_read_resource' \
+        && stdout_contains 'Queue Shelf' \
+        && stdout_contains 'Session Strip' \
+        && stdout_contains 'Pulse Line' \
+        && stdout_no_skill_file_read_called
+}
+
 assert_skill_citation_search() {
     # Model should actually search when asked to search.
     stdout_contains '\[tool:call\] web_search'
@@ -1913,6 +1922,10 @@ run_all() {
         "Something is wrong with my session, can you diagnose it?" \
         "My session seems broken, help me fix it" \
         "Debug my Netclaw session"
+
+    run_case skill_chat_tui_knowledge "knows the chat queue and bottom dock" \
+        "While netclaw chat is busy, can I send another message? Where does it go, and which named regions remain in the bottom dock? Use the exact UI region names." \
+        "Explain prompt queue behavior during active Netclaw work. Name the persistent session and wait-state rows at the bottom."
 
     run_case skill_citation_search "performs web search when asked" \
         "Search the web for the latest Akka.NET release" \

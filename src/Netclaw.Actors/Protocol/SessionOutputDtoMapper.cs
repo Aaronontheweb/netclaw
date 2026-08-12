@@ -61,7 +61,8 @@ public static class SessionOutputDtoMapper
             ToolName = msg.ToolName.Value,
             ArgumentsJson = msg.ArgumentsJson,
             ToolBatchId = msg.BatchId,
-            ToolBatchSize = msg.BatchSize
+            ToolBatchSize = msg.BatchSize,
+            ToolRationale = msg.Rationale
         },
 
         ToolActivityOutput msg => new SessionOutputDto
@@ -283,7 +284,8 @@ public static class SessionOutputDtoMapper
                 ToolName = new Netclaw.Tools.ToolName(dto.ToolName ?? "unknown"),
                 ArgumentsJson = dto.ArgumentsJson,
                 BatchId = dto.ToolBatchId ?? string.Empty,
-                BatchSize = dto.ToolBatchSize ?? 1
+                BatchSize = dto.ToolBatchSize ?? 1,
+                Rationale = dto.ToolRationale
             },
             SessionOutputTypes.ToolActivity => new ToolActivityOutput
             {

@@ -275,9 +275,9 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         if (_state.Transcript.Count > 0)
             content.WithChild(Layouts.Empty().Height(1));
         content
-            .WithChild(BuildSessionHeader())
             .WithChild(BuildActivityDeck())
-            .WithChild(BuildStreamingAssistant());
+            .WithChild(BuildStreamingAssistant())
+            .WithChild(BuildSessionHeader());
 
         if (_state.PendingApproval is not null)
             content.WithChild(BuildDecisionGate(_state.PendingApproval));
@@ -582,8 +582,11 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
                 ? string.Empty
                 : $"  {phase}";
             var summary = string.IsNullOrWhiteSpace(tool.Summary) ? string.Empty : $"  {tool.Summary}";
+            var action = string.IsNullOrWhiteSpace(tool.Rationale)
+                ? "No rationale supplied"
+                : tool.Rationale.Trim();
             rows.Add(new TextNode(ChatPresentationRenderer.OneLine(
-                    $"{state,-8} Tool  {tool.ToolName}{phaseText}{summary}",
+                    $"{state,-8} {action}  · {tool.ToolName}{phaseText}{summary}",
                     lineWidth))
                 .WithForeground(ActivityColor(tool.Phase)));
 

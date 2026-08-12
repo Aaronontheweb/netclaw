@@ -151,6 +151,7 @@ public sealed class SerializationRoundTripTests : TestKit
                     CallId = "call-1",
                     ToolName = "shell_execute",
                     ArgumentsJson = "{\"command\":\"dotnet test\"}",
+                    Rationale = "Verify the source tree",
                     Result = "Passed",
                     BatchId = "batch-1",
                     BatchSize = 2
@@ -208,6 +209,7 @@ public sealed class SerializationRoundTripTests : TestKit
             CallId = new ToolCallId("call-1"),
             ToolName = new ToolName("search"),
             ArgumentsJson = "{}",
+            Rationale = "Find the relevant source",
             BatchId = "batch-1",
             BatchSize = 2
         };
@@ -215,6 +217,16 @@ public sealed class SerializationRoundTripTests : TestKit
             SessionOutputDtoMapper.FromDto(SessionOutputDtoMapper.ToDto(tool)));
         Assert.Equal("batch-1", toolResult.BatchId);
         Assert.Equal(2, toolResult.BatchSize);
+        Assert.Equal("Find the relevant source", toolResult.Rationale);
+
+        var oldToolResult = Assert.IsType<ToolCallOutput>(SessionOutputDtoMapper.FromDto(new SessionOutputDto
+        {
+            Type = SessionOutputTypes.ToolCall,
+            SessionId = "test/wire",
+            CallId = "old-call",
+            ToolName = "search"
+        }));
+        Assert.Null(oldToolResult.Rationale);
 
         var approval = new ApprovalOutcomeOutput
         {

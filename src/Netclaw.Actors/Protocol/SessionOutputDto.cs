@@ -74,6 +74,7 @@ public sealed record SessionOutputDto
     public string? ActivitySummary { get; init; }
     public string? ToolBatchId { get; init; }
     public int? ToolBatchSize { get; init; }
+    public string? ToolRationale { get; init; }
 
     // Usage
     public long? InputTokens { get; init; }

@@ -181,6 +181,7 @@ internal static class NetclawProtoMapper
         if (entry.BatchId is not null) proto.BatchId = entry.BatchId;
         if (entry.BatchSize is not null) proto.BatchSize = entry.BatchSize.Value;
         if (entry.ApprovalSelectedKey is not null) proto.ApprovalSelectedKey = entry.ApprovalSelectedKey;
+        if (entry.Rationale is not null) proto.Rationale = entry.Rationale;
 
         return proto;
     }
@@ -229,7 +230,8 @@ internal static class NetclawProtoMapper
         KeepCountUsed = proto.HasKeepCountUsed ? proto.KeepCountUsed : null,
         BatchId = proto.HasBatchId ? proto.BatchId : null,
         BatchSize = proto.HasBatchSize ? proto.BatchSize : null,
-        ApprovalSelectedKey = proto.HasApprovalSelectedKey ? proto.ApprovalSelectedKey : null
+        ApprovalSelectedKey = proto.HasApprovalSelectedKey ? proto.ApprovalSelectedKey : null,
+        Rationale = proto.HasRationale ? proto.Rationale : null
     };
 
     // ── SendUserMessage ──
