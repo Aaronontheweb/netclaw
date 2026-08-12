@@ -147,6 +147,8 @@ Thinking.  →  Thinking..  →  Thinking...
 
 The pulse continues until text, work, a decision, an error, or completion changes the state.
 The right side shows only keys that work in the current state.
+The pulse reserves a fixed 12-character slot with one character of right padding.
+Only the dots change, so the key hints and the complete row remain stationary.
 
 The Pulse Line uses these state words:
 
