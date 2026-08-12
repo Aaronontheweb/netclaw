@@ -43,7 +43,7 @@
 - [ ] 4.1 Add a text-history cancellation API that restores the saved draft.
 - [ ] 4.2 Add typed-key tests for Up, Down, draft restoration, and history cancellation.
 - [ ] 4.3 Verify `Shift+Enter` across legacy, Kitty, and native raw input paths.
-- [ ] 4.4 Add a visible capability result when a terminal cannot distinguish `Shift+Enter`.
+- [x] 4.4 Add a visible capability result when a terminal cannot distinguish `Shift+Enter`.
 - [ ] 4.5 Add dimension-free scroll operations that use the measured viewport.
 - [ ] 4.6 Preserve mouse coordinates on wheel input and test route selection.
 - [x] 4.7 Add semantic copy data that remains separate from display glyphs.
