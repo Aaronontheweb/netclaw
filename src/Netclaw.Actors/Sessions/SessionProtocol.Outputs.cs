@@ -70,6 +70,12 @@ public static partial class SessionProtocol
 
         public required ToolName ToolName { get; init; }
 
+        /// <summary>Stable identity for the model tool-call batch.</summary>
+        public string BatchId { get; init; } = string.Empty;
+
+        /// <summary>Number of calls in the model tool-call batch.</summary>
+        public int BatchSize { get; init; } = 1;
+
         /// <summary>
         /// Tool arguments as a JSON string. Kept opaque at the protocol level —
         /// tool executors parse based on their schema.
@@ -470,6 +476,25 @@ public static partial class SessionProtocol
         /// True when adopted-context provenance was preserved in stored approval state.
         /// </summary>
         public bool PersistedAdoptedContext { get; init; }
+    }
+
+    /// <summary>
+    /// A tool approval decision that the session accepted.
+    /// Lifecycle — always delivered so interactive clients can settle the gate.
+    /// </summary>
+    public sealed record ApprovalOutcomeOutput : SessionOutput
+    {
+        public required ToolCallId CallId { get; init; }
+
+        public required ToolName ToolName { get; init; }
+
+        public required ApprovalOptionKey SelectedKey { get; init; }
+
+        /// <summary>
+        /// Parent tool call for a relayed sub-agent approval.
+        /// An empty value identifies a direct session tool request.
+        /// </summary>
+        public string ParentCallId { get; init; } = string.Empty;
     }
 
     /// <summary>

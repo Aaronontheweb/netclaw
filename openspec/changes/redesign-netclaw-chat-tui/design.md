@@ -32,7 +32,7 @@ It also affects users who depend on terminal scrollback, keyboard input, approva
 - Add safe prompt history cancellation and semantic copy.
 - Restore structured settled history after a session resume.
 - Preserve released API, wire, persistence, and full-screen behavior.
-- Prove the terminal contract with deterministic and native tests.
+- Prove behavior with deterministic tests and disposable visual checkpoints.
 
 **Non-Goals:**
 
@@ -290,7 +290,7 @@ The inspector will use the same redaction and control-character policy as semant
 This choice keeps the inline transcript quiet without data loss.
 It also avoids a large bordered panel in the primary scrollback.
 
-### D12: Prove both compatibility and terminal behavior
+### D12: Prove compatibility and review the visual grammar
 
 Termina tests will approve the public API surface for the released baseline and the new surface.
 They will verify the numeric values of all changed enums.
@@ -306,9 +306,14 @@ They will cover structured resume and old payload conversion.
 Typed-key tests will cover `Shift+Enter`, history draft restoration, double Escape, and approval priority.
 They will use `TimeProvider` and will not use time delays.
 
-The native smoke harness will cover the inline chat path.
-The validation matrix will include Linux, macOS, Windows Terminal, and tmux.
-The matrix will cover mouse wheel scroll, resize, selection, paste, `Ctrl+O`, cancellation, and process exit.
+Three disposable video checkpoints will cover the inline chat path.
+They will cover the core chat, rich activity with approval, and the Inspector.
+The last checkpoint will also cover narrow width and resize behavior.
+
+Each tape will stay under `/tmp` and outside the repository.
+Each review will use the video and selected lossless frame images.
+The reviewer will record material visual defects before the next checkpoint.
+The tapes will not become CI assets or permanent smoke tests.
 
 ## Actor Boundaries and Persistence
 
@@ -365,7 +370,7 @@ The actor will rebuild a bounded transcript from journal events and snapshots.
 10. Add new session output records and complete SignalR mappings.
 11. Add structured timeline read support and legacy fixtures.
 12. Enable structured timeline writes after the read tests pass.
-13. Add typed-key, headless, responsive, and native smoke proof.
+13. Add typed-key, headless, responsive, and disposable visual proof.
 14. Run Slopwatch, file-header verification, and the required smoke suite.
 15. Verify the OpenSpec change before archive.
 

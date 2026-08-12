@@ -160,7 +160,11 @@ public partial class ChatViewModel : ReactiveViewModel
                     IsGenerating.Value = false;
                 }
 
-                if (evt.State is DaemonConnectionState.Connected)
+                // The initial connect path owns the first session attach.
+                // A later Connected event restores an existing attached session.
+                if (evt.State is DaemonConnectionState.Connected
+                    && SessionIdDisplay.Value is not null
+                    && !_sessionReady)
                 {
                     _ = EnsureSessionAndFlushAsync();
                 }

@@ -151,13 +151,25 @@ public sealed class SerializationRoundTripTests : TestKit
                     CallId = "call-1",
                     ToolName = "shell_execute",
                     ArgumentsJson = "{\"command\":\"dotnet test\"}",
-                    Result = "Passed"
+                    Result = "Passed",
+                    BatchId = "batch-1",
+                    BatchSize = 2
+                },
+                new SessionTranscriptEntry
+                {
+                    Type = SessionTranscriptEntryTypes.Approval,
+                    TurnId = "turn-1",
+                    TimestampMs = 1_700_000_000_002,
+                    CallId = "call-approval",
+                    ParentCallId = "call-1",
+                    ToolName = "shell_execute",
+                    ApprovalSelectedKey = ApprovalOptionKeys.Deny
                 },
                 new SessionTranscriptEntry
                 {
                     Type = SessionTranscriptEntryTypes.Usage,
                     TurnId = "turn-1",
-                    TimestampMs = 1_700_000_000_002,
+                    TimestampMs = 1_700_000_000_003,
                     InputTokens = 10,
                     OutputTokens = 4,
                     TotalTokens = 14,
@@ -172,7 +184,7 @@ public sealed class SerializationRoundTripTests : TestKit
                 {
                     Type = SessionTranscriptEntryTypes.Error,
                     TurnId = "turn-1",
-                    TimestampMs = 1_700_000_000_003,
+                    TimestampMs = 1_700_000_000_004,
                     ErrorMessage = "Failed",
                     ErrorDetail = "detail",
                     ErrorCorrelationId = "correlation",
@@ -184,6 +196,39 @@ public sealed class SerializationRoundTripTests : TestKit
         var result = RoundTrip(original);
 
         Assert.Equal(original.TranscriptEntries, result.TranscriptEntries);
+    }
+
+    [Fact]
+    public void Session_output_DTO_round_trips_parallel_and_approval_fields()
+    {
+        var tool = new ToolCallOutput
+        {
+            SessionId = new SessionId("test/wire"),
+            TimestampMs = 1,
+            CallId = new ToolCallId("call-1"),
+            ToolName = new ToolName("search"),
+            ArgumentsJson = "{}",
+            BatchId = "batch-1",
+            BatchSize = 2
+        };
+        var toolResult = Assert.IsType<ToolCallOutput>(
+            SessionOutputDtoMapper.FromDto(SessionOutputDtoMapper.ToDto(tool)));
+        Assert.Equal("batch-1", toolResult.BatchId);
+        Assert.Equal(2, toolResult.BatchSize);
+
+        var approval = new ApprovalOutcomeOutput
+        {
+            SessionId = new SessionId("test/wire"),
+            TimestampMs = 2,
+            CallId = new ToolCallId("call-approval"),
+            ToolName = new ToolName("shell_execute"),
+            ParentCallId = "call-1",
+            SelectedKey = ApprovalOptionKeys.DenyKey
+        };
+        var approvalResult = Assert.IsType<ApprovalOutcomeOutput>(
+            SessionOutputDtoMapper.FromDto(SessionOutputDtoMapper.ToDto(approval)));
+        Assert.Equal("call-1", approvalResult.ParentCallId);
+        Assert.Equal(ApprovalOptionKeys.DenyKey, approvalResult.SelectedKey);
     }
 
     [Fact]

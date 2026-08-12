@@ -55,21 +55,22 @@ multiline paste. Time-based key sequences SHALL use `TimeProvider`.
   window
 - **THEN** the input clears without `Task.Delay` or `Thread.Sleep`
 
-### Requirement: Native chat smoke proves the terminal contract
+### Requirement: Disposable visual checkpoints prove the chat grammar
 
-The native smoke harness SHALL run the real published CLI and SHALL prove chat
-startup, typed input, multiline input, paste, approval detail, prompt recall,
-double Escape, resize, interruption, and clean shutdown.
+Development review SHALL use temporary video tapes outside the repository.
+These tapes SHALL not enter CI or the permanent smoke suite.
 
-The Termina dependency SHALL provide separate native proof for primary-buffer
-scrollback, native selection, Linux, macOS, Windows Terminal, and tmux.
+The review SHALL cover the core chat, rich activity with approval, and the
+Inspector with responsive layout. Each review SHALL retain a video and selected
+frame images as temporary proof.
 
-#### Scenario: Native inline chat flow
+#### Scenario: Visual checkpoint review
 
-- **WHEN** the `netclaw chat` native tape runs against a deterministic daemon
-- **THEN** the tape proves the primary chat flow through semantic anchors
-- **AND** each nontrivial action has an assertion
-- **AND** the tape uses no fixed sleep
+- **WHEN** a developer reaches one of the three visual checkpoints
+- **THEN** a temporary tape runs the real published CLI against a test daemon
+- **AND** the developer reviews the video and selected frame images
+- **AND** the developer records material visual defects before the next checkpoint
+- **AND** no checkpoint tape becomes a CI or repository asset
 
 #### Scenario: Full-screen regression suite
 

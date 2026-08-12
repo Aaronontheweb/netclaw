@@ -33,6 +33,7 @@ public static class SessionOutputTypes
     public const string Compaction = "compaction";
     public const string SessionJoined = "session_joined";
     public const string ToolInteraction = "tool_interaction";
+    public const string ApprovalOutcome = "approval_outcome";
     public const string Unknown = "unknown";
 }
 
@@ -71,6 +72,8 @@ public sealed record SessionOutputDto
     public string? TurnId { get; init; }
     public string? ActivityPhase { get; init; }
     public string? ActivitySummary { get; init; }
+    public string? ToolBatchId { get; init; }
+    public int? ToolBatchSize { get; init; }
 
     // Usage
     public long? InputTokens { get; init; }
@@ -128,6 +131,10 @@ public sealed record SessionOutputDto
     public bool? InteractionHasThirdPartyAdoptedContext { get; init; }
     public List<string>? InteractionAdoptedSpeakerIds { get; init; }
     public bool? InteractionPersistedAdoptedContext { get; init; }
+
+    // Approval Outcome
+    public string? ApprovalSelectedKey { get; init; }
+    public string? ApprovalParentCallId { get; init; }
 
     // SubAgent
     public string? AgentName { get; init; }

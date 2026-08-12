@@ -31,8 +31,8 @@ tests can validate real provider integrations.
 
 ## Chat TUI Proof Matrix
 
-The chat redesign requires deterministic headless proof and native terminal
-proof. Unit tests alone cannot satisfy this contract.
+The chat redesign requires deterministic headless proof and visual review.
+Unit tests alone cannot validate the visual grammar.
 
 Headless tests SHALL cover:
 
@@ -44,9 +44,13 @@ Headless tests SHALL cover:
 - `Shift+Enter`, history draft restore, and double Escape with virtual time
 - approval priority, `Ctrl+O`, detail scroll, paste, and semantic copy
 
-The native Netclaw tape SHALL use the published CLI. It SHALL cover startup,
-typed input, paste, resize, approval detail, prompt recall, interruption, and
-clean exit. Each action SHALL use a semantic anchor and no fixed delay.
+Development review SHALL use three disposable video checkpoints outside the
+repository. The checkpoints SHALL cover the core chat, rich activity with
+approval, and the Inspector with responsive layout.
+
+Each checkpoint SHALL produce a temporary video and selected lossless frame
+images. A developer SHALL review these files and record material visual defects.
+The tapes SHALL not enter CI or the permanent smoke suite.
 
 The Termina package SHALL provide separate primary-buffer proof for Linux,
 macOS, Windows Terminal, and tmux. The proof SHALL cover resize, paste,

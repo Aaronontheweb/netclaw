@@ -126,12 +126,12 @@
 
 ## 11. Verification and Completion
 
-- [ ] 11.1 Add headless tests that inject every `SessionOutput` subtype.
+- [x] 11.1 Add headless tests that inject every `SessionOutput` subtype.
 - [x] 11.2 Add typed-key tests for prompt, paste, history, Escape, approval, inspector, and copy flows.
-- [ ] 11.3 Add a native chat smoke tape with typed input, paste, wheel input, resize, approval, and exit recovery.
+- [x] 11.3 Record and review the three disposable visual checkpoint videos outside the repository.
 - [x] 11.4 Run `./scripts/smoke/run-smoke.sh light` and retain the result.
 - [x] 11.5 Run the focused Netclaw actor, protocol, CLI, and TUI test suites.
-- [ ] 11.6 Run `dotnet slopwatch analyze` in each repository that contains code changes.
+- [x] 11.6 Run `dotnet slopwatch analyze` in each repository that contains code changes.
 - [x] 11.7 Run `./scripts/Add-FileHeaders.ps1 -Verify` for Netclaw C# changes.
 - [ ] 11.8 Verify each issue acceptance criterion against tests or native evidence.
 - [ ] 11.9 Run OpenSpec verification and resolve every mismatch.

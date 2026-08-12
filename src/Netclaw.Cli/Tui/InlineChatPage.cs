@@ -3,8 +3,13 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Globalization;
+using System.Text;
+using System.Text.RegularExpressions;
+using Netclaw.Actors.Protocol;
 using R3;
 using Termina.Clipboard;
+using Termina.Components.Streaming;
 using Termina.Input;
 using Termina.Layout;
 using Termina.Reactive;
@@ -21,6 +26,7 @@ namespace Netclaw.Cli.Tui;
 public sealed class InlineChatPage : ReactivePage<ChatViewModel>
 {
     private static readonly TimeSpan DoubleEscapeWindow = TimeSpan.FromMilliseconds(500);
+    private const int MaximumReadableWidth = 120;
 
     private readonly IAnsiTerminal _terminal;
     private readonly IInlineOutput _inlineOutput;
@@ -39,6 +45,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     private string? _approvalDetailCallId;
     private string? _inspectorBlockKey;
     private string? _inspectorCopyStatus;
+    private int _inspectorRenderWidth;
     private ChatPresentationState _state = ChatPresentationState.Empty;
     private Task _commitTail = Task.CompletedTask;
     private readonly List<ChatPresentationBlock> _deferredInspectorCommits = [];
@@ -267,14 +274,23 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     private ILayoutNode BuildInspector()
     {
         var block = _state.Transcript[_inspectorIndex];
-        if (_inspectorDetail is null || _inspectorBlockKey != block.Key)
+        var detailWidth = Math.Max(1, ReadableWidth() - 4);
+        if (_inspectorDetail is null
+            || _inspectorBlockKey != block.Key
+            || _inspectorRenderWidth != detailWidth)
         {
             _inspectorBlockKey = block.Key;
+            _inspectorRenderWidth = detailWidth;
             _inspectorDetail ??= new ScrollableContainerNode()
                 .WithAutoScroll(AutoScrollPolicy.None)
                 .WithScrollbar(true);
             var semanticText = ChatPresentationRenderer.SemanticCopyText(block.SemanticText);
             var displayText = RemoveDuplicateInspectorLabel(semanticText, block.Label);
+            if (block.Kind == ChatBlockKind.Assistant)
+            {
+                displayText = ChatPresentationRenderer.MarkdownToPlainText(displayText);
+                displayText = WordWrapInspectorText(displayText, detailWidth);
+            }
             _inspectorCopyNode = new CopyableTextNode(_clipboardService, displayText)
                 .WithSemanticContent(semanticText)
                 .WithHint(null);
@@ -282,7 +298,8 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             _inspectorDetail.ScrollToTop();
         }
 
-        var heading = $" INSPECTOR  {_inspectorIndex + 1}/{_state.Transcript.Count}  {block.Label}";
+        var detailLabel = block.Kind == ChatBlockKind.Tool ? "  RAW DETAIL" : string.Empty;
+        var heading = $" INSPECTOR  {_inspectorIndex + 1}/{_state.Transcript.Count}  {block.Label}{detailLabel}";
         var content = Layouts.Vertical()
             .WithChild(new TextNode(heading).WithForeground(Color.BrightBlue).Bold())
             .WithChild(_inspectorDetail.Fill());
@@ -295,7 +312,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         }
         var help = _terminal.Width >= 86
             ? " ↑↓ event · PgUp/PgDn detail · Y event · Shift+Y turn · Ctrl+O/Esc close"
-            : " ↑↓ event · PgUp/PgDn detail · Y copy · Esc close";
+            : " ↑↓ event · Pg scroll · Y event · Shift+Y turn · Esc close";
         content.WithChild(new TextNode(help)
             .WithForeground(Color.Gray));
 
@@ -303,11 +320,15 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             .WithBorder(BorderStyle.Single)
             .WithBorderColor(Color.BrightBlue)
             .WithContent(content)
+            .Width(ReadableWidth())
             .Height(Math.Max(8, _terminal.Height - 4));
 
-        return Layouts.Vertical()
+        var inspector = Layouts.Vertical()
             .WithChild(Layouts.Empty().Height(1))
             .WithChild(panel);
+        return Layouts.Horizontal()
+            .WithChild(inspector)
+            .WithChild(Layouts.Empty().Fill());
     }
 
     private static string RemoveDuplicateInspectorLabel(string text, string label)
@@ -317,6 +338,10 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             ? text[prefix.Length..]
             : text;
     }
+
+    private static string WordWrapInspectorText(string text, int width) => string.Join(
+        '\n',
+        WordWrapper.WrapLines(text.ReplaceLineEndings("\n").Split('\n'), width));
 
     private bool HandleInspectorInput(ConsoleKeyInfo keyInfo)
     {
@@ -414,11 +439,18 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     private ILayoutNode BuildSessionHeader()
     {
         var session = ViewModel.SessionIdDisplay.Value;
+        var connectionCue = _state.HasJoined ? "●" : "○";
         var sessionPart = string.IsNullOrWhiteSpace(session)
-            ? "new session"
-            : ChatPresentationRenderer.CompactIdentity(session, 30);
-        var modelPart = _terminal.Width >= 72 ? $"  model {ViewModel.ModelId}" : string.Empty;
-        return new TextNode($" NETCLAW  {sessionPart}{modelPart}")
+            ? "connecting"
+            : $"session {_state.SessionTitle ?? ChatPresentationRenderer.CompactIdentity(session, 30)}";
+        var modelPart = _terminal.Width >= 100 ? $"  model {ViewModel.ModelId}" : string.Empty;
+        var contextPart = _terminal.Width >= 110 && _state.ContextUsagePercent is { } usage
+            ? $"  context {Math.Round(usage * 100, MidpointRounding.AwayFromZero).ToString(CultureInfo.InvariantCulture)}%"
+            : string.Empty;
+        var daemonPart = _terminal.Width >= 140
+            ? _state.HasJoined ? "  daemon connected" : "  daemon connecting"
+            : string.Empty;
+        return new TextNode($" netclaw  {connectionCue} {sessionPart}{modelPart}{contextPart}{daemonPart}")
             .WithForeground(Color.BrightBlue)
             .Bold();
     }
@@ -426,7 +458,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     private ILayoutNode BuildActivityDeck()
     {
         var rows = new List<ILayoutNode>();
-        var lineWidth = Math.Max(20, _terminal.Width - 2);
+        var lineWidth = Math.Max(20, ReadableWidth() - 2);
         if (!string.IsNullOrWhiteSpace(_state.ThoughtText))
         {
             rows.Add(new TextNode(ChatPresentationRenderer.OneLine(
@@ -444,13 +476,20 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
                      .OrderBy(value => value.StartedAtMs)
                      .ThenBy(value => value.CallId, StringComparer.Ordinal))
         {
+            var childRuns = agents.Where(value => value.ParentCallId == tool.CallId).ToList();
+            var phase = childRuns.Count switch
+            {
+                0 => tool.Phase,
+                1 => $"orchestrating {childRuns[0].AgentName}",
+                _ => $"orchestrating {childRuns.Count} agents"
+            };
             var summary = string.IsNullOrWhiteSpace(tool.Summary) ? string.Empty : $"  {tool.Summary}";
             rows.Add(new TextNode(ChatPresentationRenderer.OneLine(
-                    $" ◌ TOOL  {tool.ToolName}  {tool.Phase}{summary}",
+                    $" ◌ TOOL  {tool.ToolName}  {phase}{summary}",
                     lineWidth))
                 .WithForeground(ActivityColor(tool.Phase)));
 
-            foreach (var run in agents.Where(value => value.ParentCallId == tool.CallId))
+            foreach (var run in childRuns)
             {
                 rows.Add(BuildAgentActivity(run, lineWidth));
                 renderedAgents.Add(run.RunId);
@@ -466,24 +505,35 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         return rows.Count == 0 ? Layouts.Empty() : Layouts.Vertical([.. rows]);
     }
 
-    private ILayoutNode BuildComposer() => new PanelNode()
-        .WithTitle("Composer")
-        .WithBorder(BorderStyle.Rounded)
-        .WithBorderColor(Color.Cyan)
-        .WithContent(_promptInput)
-        .HeightAuto(min: 3, max: Math.Max(3, Math.Min(10, _terminal.Height / 3)));
+    private ILayoutNode BuildComposer()
+    {
+        var composer = new PanelNode()
+            .WithTitle("Composer")
+            .WithBorder(BorderStyle.Rounded)
+            .WithBorderColor(Color.Cyan)
+            .WithContent(_promptInput)
+            .Width(ReadableWidth())
+            .HeightAuto(min: 3, max: Math.Max(3, Math.Min(10, _terminal.Height / 3)));
+        return Layouts.Horizontal()
+            .WithChild(composer)
+            .WithChild(Layouts.Empty().Fill());
+    }
 
     private ILayoutNode BuildDecisionGate(ToolInteractionRequest approval)
     {
-        var width = Math.Max(20, _terminal.Width - 4);
+        var width = Math.Max(20, ReadableWidth() - 4);
+        var detailHeight = ApprovalDetailHeight(approval, width);
+        var maximumHeight = ViewModel.IsApprovalDetailVisible.Value
+            ? detailHeight + approval.Options.Count + 4
+            : approval.Options.Count + 5;
         var gate = Layouts.Vertical()
-            .WithChild(new TextNode($" APPROVAL  {approval.ToolName.Value}")
+            .WithChild(new TextNode($" APPROVAL  {ChatPresentationRenderer.ApprovalPath(_state, approval)}")
                 .WithForeground(Color.Yellow)
                 .Bold());
         if (ViewModel.IsApprovalDetailVisible.Value)
         {
             gate.WithChild(EnsureApprovalDetail(approval)
-                .Height(Math.Clamp(_terminal.Height / 4, 3, 10)));
+                .Height(detailHeight));
         }
         else
         {
@@ -496,17 +546,21 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         gate
             .WithChild(new TextNode(
                     ViewModel.IsApprovalDetailVisible.Value
-                        ? " PgUp/PgDn scroll · Ctrl+O collapse · Escape deny"
-                        : " Ctrl+O expand · Escape deny")
+                        ? " PgUp/PgDn scroll · Ctrl+O close details · Escape deny"
+                        : " Ctrl+O details · Escape deny")
                 .WithForeground(Color.Gray))
             .WithChild(EnsureApprovalList());
 
-        return new PanelNode()
+        var panel = new PanelNode()
             .WithTitle("Decision Gate")
             .WithBorder(BorderStyle.Rounded)
             .WithBorderColor(Color.Yellow)
             .WithContent(gate)
-            .HeightAuto(min: 6, max: Math.Max(8, _terminal.Height / 2));
+            .Width(ReadableWidth())
+            .HeightAuto(min: 6, max: Math.Max(6, Math.Min(maximumHeight, _terminal.Height / 2)));
+        return Layouts.Horizontal()
+            .WithChild(panel)
+            .WithChild(Layouts.Empty().Fill());
     }
 
     private SelectionListNode<string> EnsureApprovalList()
@@ -518,14 +572,19 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
 
         ClearApprovalList();
         _approvalCallId = approval.CallId.Value;
-        _approvalList = Layouts.SelectionList(approval.Options.Select(option => option.Label).ToList())
+        _approvalList = Layouts.SelectionList(approval.Options.Select(ApprovalOptionLabel).ToList())
             .WithMode(SelectionMode.Single)
             .WithHighlightColors(Color.Black, Color.Yellow);
         _approvalList.SelectionConfirmed
             .Subscribe(selected =>
             {
                 if (selected.Count > 0)
-                    _ = ViewModel.SubmitInteractionOptionAsync(selected[0]);
+                {
+                    var option = approval.Options.FirstOrDefault(candidate =>
+                        string.Equals(ApprovalOptionLabel(candidate), selected[0], StringComparison.Ordinal));
+                    if (option is not null)
+                        _ = ViewModel.SubmitInteractionOptionAsync(option.Label);
+                }
             })
             .DisposeWith(_approvalSubscriptions);
         return _approvalList;
@@ -539,6 +598,16 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         _approvalDetail = null;
         _approvalDetailCallId = null;
     }
+
+    private static string ApprovalOptionLabel(ToolInteractionOption option) => option.Key.Value switch
+    {
+        ApprovalOptionKeys.ApproveOnce => $"{option.Label} — only this request",
+        ApprovalOptionKeys.ApproveSession => $"{option.Label} — until this chat ends",
+        ApprovalOptionKeys.ApproveAlways => $"{option.Label} — this tool in this folder",
+        ApprovalOptionKeys.ApproveEverywhere => $"{option.Label} — this tool in any folder",
+        ApprovalOptionKeys.Deny => $"{option.Label} — do not run",
+        _ => option.Label
+    };
 
     private ScrollableContainerNode EnsureApprovalDetail(ToolInteractionRequest approval)
     {
@@ -556,19 +625,46 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     private ILayoutNode BuildStatusLine()
     {
         var status = ViewModel.StatusMessage.Value;
+        var displayStatus = status == "Generating..." ? "Working…" : status;
         var keys = StatusKeys(_terminal.Width, _state.PendingApproval is not null, ShowsComposer(_state));
-        var text = ChatPresentationRenderer.OneLine($" {status} · {keys}", _terminal.Width);
-        return new TextNode(text).WithForeground(StatusColor(status));
+        var statusLine = Layouts.Horizontal()
+            .WithChild(new TextNode($" {displayStatus}")
+                .WithForeground(StatusColor(status))
+                .WidthAuto())
+            .WithChild(new TextNode($" · {keys}")
+                .WithForeground(Color.Gray)
+                .NoWrap()
+                .Fill())
+            .Width(ReadableWidth())
+            .Height(1);
+        return Layouts.Horizontal()
+            .WithChild(statusLine)
+            .WithChild(Layouts.Empty().Fill());
     }
+
+    private int ReadableWidth() => Math.Min(_terminal.Width, MaximumReadableWidth);
 
     private static ILayoutNode BuildAgentActivity(SubAgentActivityPresentation run, int lineWidth)
     {
         var summary = string.IsNullOrWhiteSpace(run.Summary) ? string.Empty : $"  {run.Summary}";
         var prefix = run.ParentCallId is null ? " ↳" : "   ↳";
-        return new TextNode(ChatPresentationRenderer.OneLine(
-                $"{prefix} AGENT  {run.AgentName}  {run.Phase}{summary}",
-                lineWidth))
-            .WithForeground(ActivityColor(run.Phase));
+        var rows = new List<ILayoutNode>
+        {
+            new TextNode(ChatPresentationRenderer.OneLine(
+                    $"{prefix} AGENT  {run.AgentName}  {run.Phase}{summary}",
+                    lineWidth))
+                .WithForeground(ActivityColor(run.Phase))
+        };
+        if (run.ActiveToolName is not null)
+        {
+            var toolPrefix = run.ParentCallId is null ? "   ↳" : "     ↳";
+            rows.Add(new TextNode(ChatPresentationRenderer.OneLine(
+                    $"{toolPrefix} TOOL  {run.ActiveToolName}  {run.Phase}",
+                    lineWidth))
+                .WithForeground(ActivityColor(run.Phase)));
+        }
+
+        return Layouts.Vertical([.. rows]);
     }
 
     private static string BuildApprovalDetail(ToolInteractionRequest approval)
@@ -593,14 +689,23 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             ChatViewModel.MaxExpandedApprovalBodyChars);
     }
 
+    private static int ApprovalDetailHeight(ToolInteractionRequest approval, int width)
+    {
+        var contentWidth = Math.Max(1, width - 2);
+        var lineCount = BuildApprovalDetail(approval)
+            .Split('\n')
+            .Sum(line => Math.Max(1, (line.Length + contentWidth - 1) / contentWidth));
+        return Math.Clamp(lineCount, 3, 10);
+    }
+
     private static string StatusKeys(int width, bool hasApproval, bool hasComposer)
     {
         if (hasApproval)
             return width >= 88
-                ? "↑↓ select · Enter confirm · Ctrl+O detail · Esc deny · Ctrl+Q quit"
+                ? "↑↓ select · Enter confirm · Ctrl+O details · Esc deny · Ctrl+Q quit"
                 : "↑↓ select · Enter confirm · Esc deny";
         if (!hasComposer)
-            return width >= 70 ? "Work active · Ctrl+O inspect · Ctrl+Q quit" : "Work active · Ctrl+Q quit";
+            return width >= 70 ? "Ctrl+O inspect · Ctrl+Q quit" : "Ctrl+Q quit";
         if (width >= 110)
             return "Enter send · Shift+Enter newline · Esc Esc clear · Ctrl+O inspect · Ctrl+Q quit";
         return width >= 66
@@ -680,7 +785,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         && string.IsNullOrWhiteSpace(state.AssistantText);
 }
 
-internal static class ChatPresentationRenderer
+internal static partial class ChatPresentationRenderer
 {
     public static ILayoutNode BuildStableBlock(ChatPresentationBlock block, int width)
     {
@@ -688,16 +793,26 @@ internal static class ChatPresentationRenderer
             ? DateTimeOffset.FromUnixTimeMilliseconds(block.TimestampMs).ToString("HH:mm")
             : string.Empty;
         var timePart = string.IsNullOrEmpty(timestamp) ? string.Empty : $"  {timestamp}";
-        var body = block.Summary;
+        var body = block.Kind == ChatBlockKind.Assistant
+            ? MarkdownToPlainText(block.Summary)
+            : block.Summary;
+
+        var bodyNode = new TextNode(VisibleControlText(body, 16_000))
+            .WithForeground(BodyColor(block))
+            .Width(Math.Min(width, MaximumReadableWidth));
+        var bodyRow = Layouts.Horizontal()
+            .WithChild(bodyNode)
+            .WithChild(Layouts.Empty().Fill());
 
         return Layouts.Vertical()
             .WithChild(new TextNode($"{block.Label}{timePart}")
                 .WithForeground(LabelColor(block))
                 .Bold())
-            .WithChild(new TextNode(VisibleControlText(body, 16_000))
-                .WithForeground(BodyColor(block)))
+            .WithChild(bodyRow)
             .WithChild(new TextNode(string.Empty));
     }
+
+    private const int MaximumReadableWidth = 120;
 
     public static string OneLine(string? text, int maximumLength)
     {
@@ -735,6 +850,31 @@ internal static class ChatPresentationRenderer
 
     public static string SemanticCopyText(string text) => VisibleControlText(text, int.MaxValue);
 
+    public static string MarkdownToPlainText(string markdown)
+    {
+        var output = new StringBuilder(markdown.Length);
+        var inCodeFence = false;
+        foreach (var sourceLine in markdown.ReplaceLineEndings("\n").Split('\n'))
+        {
+            var trimmed = sourceLine.TrimStart();
+            if (trimmed.StartsWith("```", StringComparison.Ordinal)
+                || trimmed.StartsWith("~~~", StringComparison.Ordinal))
+            {
+                inCodeFence = !inCodeFence;
+                continue;
+            }
+
+            var line = inCodeFence
+                ? $"  {sourceLine}"
+                : MarkdownLineToPlainText(sourceLine);
+            if (output.Length > 0)
+                output.Append('\n');
+            output.Append(line);
+        }
+
+        return output.ToString();
+    }
+
     public static string BuildSemanticTurn(
         IReadOnlyList<ChatPresentationBlock> transcript,
         int selectedIndex)
@@ -764,6 +904,23 @@ internal static class ChatPresentationRenderer
             ? identity
             : $"…{identity[^Math.Max(1, maximumLength - 1)..]}";
 
+    public static string ApprovalPath(
+        ChatPresentationState state,
+        ToolInteractionRequest approval)
+    {
+        const string subAgentMarker = "/subagent-approval/";
+        var markerIndex = approval.CallId.Value.IndexOf(subAgentMarker, StringComparison.Ordinal);
+        if (markerIndex <= 0)
+            return approval.ToolName.Value;
+
+        var parentCallId = approval.CallId.Value[..markerIndex];
+        var requester = state.SubAgents.Values.FirstOrDefault(run =>
+            string.Equals(run.ParentCallId, parentCallId, StringComparison.Ordinal));
+        return requester is null
+            ? $"sub-agent › {approval.ToolName.Value}"
+            : $"{requester.AgentName} › {approval.ToolName.Value}";
+    }
+
     private static Color LabelColor(ChatPresentationBlock block) => block.Kind switch
     {
         ChatBlockKind.User => Color.Cyan,
@@ -771,6 +928,7 @@ internal static class ChatPresentationRenderer
         ChatBlockKind.Thought => Color.Yellow,
         ChatBlockKind.Tool when block.IsFailure => Color.Red,
         ChatBlockKind.Tool => Color.Green,
+        ChatBlockKind.Parallel => Color.BrightCyan,
         ChatBlockKind.SubAgent when block.IsFailure => Color.Red,
         ChatBlockKind.SubAgent => Color.Green,
         ChatBlockKind.Approval => Color.Yellow,
@@ -785,7 +943,44 @@ internal static class ChatPresentationRenderer
     private static Color BodyColor(ChatPresentationBlock block) => block.Kind switch
     {
         ChatBlockKind.Error or ChatBlockKind.Diagnostic => Color.Red,
+        ChatBlockKind.Approval when block.IsFailure => Color.Red,
         ChatBlockKind.Usage or ChatBlockKind.Compaction => Color.Gray,
         _ => Color.White
     };
+
+    private static string MarkdownLineToPlainText(string sourceLine)
+    {
+        var line = HeadingPrefixRegex().Replace(sourceLine, string.Empty);
+        line = QuotePrefixRegex().Replace(line, "│ ");
+        line = BulletPrefixRegex().Replace(line, "$1• ");
+        line = MarkdownLinkRegex().Replace(line, "$1 <$2>");
+        line = InlineCodeRegex().Replace(line, "$1");
+        line = StrongRegex().Replace(line, "$2");
+        line = StrikeRegex().Replace(line, "$1");
+        return EmphasisRegex().Replace(line, "$2");
+    }
+
+    [GeneratedRegex(@"^[ \t]{0,3}#{1,6}[ \t]+")]
+    private static partial Regex HeadingPrefixRegex();
+
+    [GeneratedRegex(@"^[ \t]{0,3}>[ \t]?")]
+    private static partial Regex QuotePrefixRegex();
+
+    [GeneratedRegex(@"^([ \t]*)[-+*][ \t]+")]
+    private static partial Regex BulletPrefixRegex();
+
+    [GeneratedRegex(@"\[([^\]\r\n]+)\]\(([^)\r\n]+)\)")]
+    private static partial Regex MarkdownLinkRegex();
+
+    [GeneratedRegex(@"`([^`\r\n]+)`")]
+    private static partial Regex InlineCodeRegex();
+
+    [GeneratedRegex(@"(\*\*|__)(?=\S)(.+?\S)\1")]
+    private static partial Regex StrongRegex();
+
+    [GeneratedRegex(@"~~(?=\S)(.+?\S)~~")]
+    private static partial Regex StrikeRegex();
+
+    [GeneratedRegex(@"(?<!\w)([*_])(?=\S)(.+?\S)\1(?!\w)")]
+    private static partial Regex EmphasisRegex();
 }

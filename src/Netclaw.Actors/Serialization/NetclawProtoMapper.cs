@@ -178,6 +178,9 @@ internal static class NetclawProtoMapper
         if (entry.PreCompactionInputTokens is not null)
             proto.PreCompactionInputTokens = entry.PreCompactionInputTokens.Value;
         if (entry.KeepCountUsed is not null) proto.KeepCountUsed = entry.KeepCountUsed.Value;
+        if (entry.BatchId is not null) proto.BatchId = entry.BatchId;
+        if (entry.BatchSize is not null) proto.BatchSize = entry.BatchSize.Value;
+        if (entry.ApprovalSelectedKey is not null) proto.ApprovalSelectedKey = entry.ApprovalSelectedKey;
 
         return proto;
     }
@@ -223,7 +226,10 @@ internal static class NetclawProtoMapper
         ToolResultsCleared = proto.HasToolResultsCleared ? proto.ToolResultsCleared : null,
         Summarized = proto.HasSummarized ? proto.Summarized : null,
         PreCompactionInputTokens = proto.HasPreCompactionInputTokens ? proto.PreCompactionInputTokens : null,
-        KeepCountUsed = proto.HasKeepCountUsed ? proto.KeepCountUsed : null
+        KeepCountUsed = proto.HasKeepCountUsed ? proto.KeepCountUsed : null,
+        BatchId = proto.HasBatchId ? proto.BatchId : null,
+        BatchSize = proto.HasBatchSize ? proto.BatchSize : null,
+        ApprovalSelectedKey = proto.HasApprovalSelectedKey ? proto.ApprovalSelectedKey : null
     };
 
     // ── SendUserMessage ──

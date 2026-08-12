@@ -118,6 +118,9 @@ message SessionTranscriptEntryProto {
   optional string error_detail = 38;
   optional double prompt_ms = 39;
   optional double predicted_per_second = 40;
+  optional string batch_id = 41;
+  optional int32 batch_size = 42;
+  optional string approval_selected_key = 43;
 }
 
 // ── Commands ──

@@ -59,7 +59,9 @@ public static class SessionOutputDtoMapper
             TimestampMs = msg.TimestampMs,
             CallId = msg.CallId.Value,
             ToolName = msg.ToolName.Value,
-            ArgumentsJson = msg.ArgumentsJson
+            ArgumentsJson = msg.ArgumentsJson,
+            ToolBatchId = msg.BatchId,
+            ToolBatchSize = msg.BatchSize
         },
 
         ToolActivityOutput msg => new SessionOutputDto
@@ -228,6 +230,17 @@ public static class SessionOutputDtoMapper
             InteractionPersistedAdoptedContext = msg.PersistedAdoptedContext
         },
 
+        ApprovalOutcomeOutput msg => new SessionOutputDto
+        {
+            Type = SessionOutputTypes.ApprovalOutcome,
+            SessionId = msg.SessionId.Value,
+            TimestampMs = msg.TimestampMs,
+            CallId = msg.CallId.Value,
+            ToolName = msg.ToolName.Value,
+            ApprovalSelectedKey = msg.SelectedKey.Value,
+            ApprovalParentCallId = msg.ParentCallId
+        },
+
         _ => new SessionOutputDto
         {
             Type = SessionOutputTypes.Unknown,
@@ -268,7 +281,9 @@ public static class SessionOutputDtoMapper
                 TimestampMs = dto.TimestampMs,
                 CallId = new Netclaw.Tools.ToolCallId(dto.CallId ?? string.Empty),
                 ToolName = new Netclaw.Tools.ToolName(dto.ToolName ?? "unknown"),
-                ArgumentsJson = dto.ArgumentsJson
+                ArgumentsJson = dto.ArgumentsJson,
+                BatchId = dto.ToolBatchId ?? string.Empty,
+                BatchSize = dto.ToolBatchSize ?? 1
             },
             SessionOutputTypes.ToolActivity => new ToolActivityOutput
             {
@@ -393,6 +408,15 @@ public static class SessionOutputDtoMapper
                 IsMessy = dto.InteractionIsMessy ?? false,
                 Options = dto.InteractionOptions ?? [],
                 PersistedAdoptedContext = dto.InteractionPersistedAdoptedContext ?? false
+            },
+            SessionOutputTypes.ApprovalOutcome => new ApprovalOutcomeOutput
+            {
+                SessionId = sessionId,
+                TimestampMs = dto.TimestampMs,
+                CallId = new ToolCallId(dto.CallId ?? string.Empty),
+                ToolName = new ToolName(dto.ToolName ?? "unknown"),
+                SelectedKey = new ApprovalOptionKey(dto.ApprovalSelectedKey ?? ApprovalOptionKeys.Deny),
+                ParentCallId = dto.ApprovalParentCallId ?? string.Empty
             },
             _ => new ErrorOutput
             {

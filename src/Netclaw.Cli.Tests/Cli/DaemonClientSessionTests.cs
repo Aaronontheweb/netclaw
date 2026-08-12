@@ -9,8 +9,11 @@ using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.AI;
 using Netclaw.Actors.Protocol;
 using Netclaw.Cli.Daemon;
+using Netclaw.Cli.Tui;
+using Netclaw.Configuration;
 using Netclaw.Daemon.Gateway;
 using R3;
 using Xunit;
@@ -52,6 +55,39 @@ public sealed class DaemonClientSessionTests
         await client2.SendAsync("hello-resumed", TestContext.Current.CancellationToken);
 
         await outputReceived.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task ChatViewModel_initial_resume_uses_one_session_attach()
+    {
+        using var host = await StartFakeHubAsync();
+        var port = TestNetworkHelpers.GetBoundPort(host);
+        var state = host.Services.GetRequiredService<FakeSessionState>();
+        await using var seedClient = new DaemonClient($"http://127.0.0.1:{port}");
+        var sessionId = await seedClient.CreateSessionAsync(
+            Netclaw.Actors.Channels.ChannelType.Tui,
+            TestContext.Current.CancellationToken);
+        state.ResetEnsureCount();
+
+        await using var client = new DaemonClient($"http://127.0.0.1:{port}");
+        var navigation = new ChatNavigationState { ResumeSessionId = sessionId };
+        using var viewModel = new ChatViewModel(
+            client,
+            TimeProvider.System,
+            new ModelCapabilities { ModelId = "test-model" },
+            navigation,
+            new NetclawPaths());
+        var attached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var subscription = viewModel.SessionIdDisplay.Subscribe(value =>
+        {
+            if (string.Equals(value, sessionId, StringComparison.Ordinal))
+                attached.TrySetResult();
+        });
+
+        viewModel.OnActivated();
+        await attached.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, state.EnsureCount);
     }
 
     [Fact]
@@ -110,11 +146,13 @@ public sealed class DaemonClientSessionTests
         private readonly HashSet<string> _sessions = [];
         private readonly Dictionary<string, string> _connectionSessions = [];
         public (string CallId, string SelectedKey)? LastInteractionResponse { get; private set; }
+        public int EnsureCount { get; private set; }
 
         public SessionEnsureResultDto Ensure(string connectionId, string? sessionId)
         {
             lock (_gate)
             {
+                EnsureCount++;
                 if (!string.IsNullOrWhiteSpace(sessionId) && _sessions.Contains(sessionId))
                 {
                     _connectionSessions[connectionId] = sessionId;
@@ -126,6 +164,12 @@ public sealed class DaemonClientSessionTests
                 _connectionSessions[connectionId] = created;
                 return new SessionEnsureResultDto(created, true);
             }
+        }
+
+        public void ResetEnsureCount()
+        {
+            lock (_gate)
+                EnsureCount = 0;
         }
 
         public bool IsAttached(string connectionId, string sessionId)

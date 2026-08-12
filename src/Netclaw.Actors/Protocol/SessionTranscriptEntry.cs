@@ -18,6 +18,7 @@ public static class SessionTranscriptEntryTypes
     public const string Error = "error";
     public const string Usage = "usage";
     public const string Compaction = "compaction";
+    public const string Approval = "approval";
     public const string Legacy = "legacy";
     public const string Diagnostic = "diagnostic";
 }
@@ -44,6 +45,10 @@ public sealed record SessionTranscriptEntry
 
     public string? ArgumentsJson { get; init; }
 
+    public string? BatchId { get; init; }
+
+    public int? BatchSize { get; init; }
+
     public string? Result { get; init; }
 
     public string? RunId { get; init; }
@@ -55,6 +60,8 @@ public sealed record SessionTranscriptEntry
     public string? Outcome { get; init; }
 
     public string? OutcomeReason { get; init; }
+
+    public string? ApprovalSelectedKey { get; init; }
 
     public double? DurationMs { get; init; }
 
