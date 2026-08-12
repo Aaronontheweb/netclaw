@@ -50,7 +50,7 @@ public sealed class InlineChatPageTests
     [InlineData(60)]
     [InlineData(80)]
     [InlineData(120)]
-    public async Task ModifiedEnterUnavailable_ShowsAVisibleCapabilityResult(int width)
+    public async Task ModifiedEnterUnavailable_OmitsTheUnavailableShortcut(int width)
     {
         await using var harness = CreateHarness(width: width);
         var runTask = harness.StartAsync();
@@ -60,14 +60,8 @@ public sealed class InlineChatPageTests
                 TerminalCapabilityAvailability.Unavailable,
                 TerminalInputCapabilitySource.LegacyTerminal)));
 
-        try
-        {
-            await harness.WaitUntilAsync(() => harness.Terminal.Contains("Shift+Enter unavailable"));
-        }
-        catch (OperationCanceledException)
-        {
-            Assert.Fail($"Capability result was not visible. Screen:\n{harness.Terminal}");
-        }
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("Enter send"));
+        Assert.DoesNotContain("Shift+Enter", harness.Terminal.ToString(), StringComparison.Ordinal);
         await harness.StopAsync(runTask);
     }
 
@@ -225,6 +219,7 @@ public sealed class InlineChatPageTests
         var runTask = harness.StartAsync();
         await harness.WaitUntilAsync(() => harness.Terminal.Contains("Approval required"));
         var screen = harness.Terminal.ToString();
+        Assert.Contains("Netclaw requests permission to run shell_execute", screen, StringComparison.Ordinal);
         Assert.Contains("This chat — until this chat ends", screen, StringComparison.Ordinal);
         Assert.Contains("Deny — do not run", screen, StringComparison.Ordinal);
         AssertHasNoDecorativeTrim(screen);
@@ -267,6 +262,8 @@ public sealed class InlineChatPageTests
 
         Assert.Contains("Patterns: dotnet", screen, StringComparison.Ordinal);
         Assert.Contains("Verbs: dotnet", screen, StringComparison.Ordinal);
+        Assert.Contains("Requester: Netclaw", screen, StringComparison.Ordinal);
+        Assert.Contains("Action: Run shell_execute", screen, StringComparison.Ordinal);
         Assert.Contains("Complex command", screen, StringComparison.Ordinal);
         Assert.Contains("third-party context", screen, StringComparison.Ordinal);
         await harness.StopAsync(runTask);
@@ -312,7 +309,7 @@ public sealed class InlineChatPageTests
         harness.ViewModel.IsGenerating.Value = true;
         harness.ViewModel.StatusMessage.Value = "Generating...";
         await harness.WaitUntilAsync(() =>
-            harness.Terminal.Contains("Working…")
+            harness.Terminal.Contains("Working")
             && !harness.Terminal.Contains("MESSAGE")
             && harness.Focus.CurrentFocus is null);
 
@@ -335,8 +332,9 @@ public sealed class InlineChatPageTests
         var runTask = harness.StartAsync();
         await harness.WaitUntilAsync(() => harness.Terminal.Contains("A stable answer"));
 
-        Assert.Equal("  Netclaw", harness.Terminal.GetLine(0));
-        Assert.Equal("  A stable answer", harness.Terminal.GetLine(1));
+        Assert.Equal(string.Empty, harness.Terminal.GetLine(0));
+        Assert.Equal("  Netclaw", harness.Terminal.GetLine(1));
+        Assert.Equal("  A stable answer", harness.Terminal.GetLine(2));
         AssertHasNoDecorativeTrim(harness.Terminal.ToString());
         await harness.StopAsync(runTask);
     }
@@ -473,7 +471,7 @@ public sealed class InlineChatPageTests
         await using var harness = CreateHarness(outputs: [output], approval: approval, width: 160);
         var runTask = harness.StartAsync();
         await harness.WaitUntilAsync(() =>
-            harness.Terminal.Contains("interface-reviewer / shell_execute"));
+            harness.Terminal.Contains("interface-reviewer requests permission to run shell_execute"));
 
         var longestLine = Enumerable.Range(0, harness.Terminal.Height)
             .Select(index => harness.Terminal.GetLine(index).TrimEnd().Length)
@@ -538,6 +536,30 @@ public sealed class InlineChatPageTests
         Assert.Contains("Arguments: {\"call\":\"call-a\"}",
             harness.Terminal.ToString(), StringComparison.Ordinal);
         AssertHasNoDecorativeTrim(harness.Terminal.ToString());
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task Inspector_OwnsTheVisibleViewport()
+    {
+        var output = new TextOutput("viewport proof")
+        {
+            SessionId = SessionId,
+            TimestampMs = 1
+        };
+        await using var harness = CreateHarness(outputs: [output], width: 120, height: 24);
+        var runTask = harness.StartAsync();
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("viewport proof"));
+
+        harness.Input.EnqueueKey(ConsoleKey.O, control: true);
+        await harness.WaitUntilAsync(() =>
+            harness.Terminal.Contains("INSPECTOR") && harness.Terminal.Contains("Up/Down event"));
+
+        var firstVisibleLine = Enumerable.Range(0, harness.Terminal.Height)
+            .Select(harness.Terminal.GetLine)
+            .First(line => !string.IsNullOrWhiteSpace(line));
+        Assert.StartsWith("  INSPECTOR", firstVisibleLine, StringComparison.Ordinal);
+        Assert.Contains("Up/Down event", harness.Terminal.ToString(), StringComparison.Ordinal);
         await harness.StopAsync(runTask);
     }
 
@@ -710,6 +732,11 @@ public sealed class InlineChatPageTests
         Assert.Contains("NETCLAW", screen, StringComparison.Ordinal);
         Assert.Contains("MESSAGE", screen, StringComparison.Ordinal);
         Assert.Contains("Enter", screen, StringComparison.Ordinal);
+        var header = Enumerable.Range(0, harness.Terminal.Height)
+            .Select(harness.Terminal.GetLine)
+            .First(line => line.Contains("NETCLAW", StringComparison.Ordinal));
+        if (width >= 60)
+            Assert.StartsWith("  NETCLAW", header, StringComparison.Ordinal);
         AssertHasNoDecorativeTrim(screen);
         await harness.StopAsync(runTask);
     }
