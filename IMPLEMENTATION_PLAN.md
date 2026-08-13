@@ -1,6 +1,6 @@
 # Netclaw Implementation Plan
 
-Last updated: 2026-08-10
+Last updated: 2026-08-11
 
 This is the execution plan for Netclaw. Autonomous agents and RALPH-style loops
 SHALL work from `NOW` by default. `NEXT` and `LATER` work belongs in
@@ -164,11 +164,21 @@ Done when:
   coordinator and actor protocol, per-candidate coverage, real and intent
   scopes, token-boundary grants, reviewed policy catalog, bounded trace,
   migration, and validation tasks.
-- [ ] The maintainer approves the ShellSyntaxTree 0.3.1 API names and the
+- [x] The maintainer approves the ShellSyntaxTree 0.3.1 API names and the
   use of separate authored-source facts for approval matching before
   implementation.
-- [ ] The maintainer approves whether simple v2 grants gain token-prefix
+- [x] The maintainer approves whether simple v2 grants gain token-prefix
   authority during schema-3 migration or remain exact until re-approved.
+- [x] Approval-store schema 3 uses closed shell token-prefix, shell legacy-exact,
+  and non-shell exact forms. Version-2 conversion keeps prior shell authority
+  exact, creates a byte-identical backup, and fails closed on invalid data or
+  storage errors.
+- [x] New reusable shell grants use ShellSyntaxTree token facts with explicit
+  Bash or PowerShell identity. Distinct command occurrences remain visible
+  through actor checks, one-time keys, persisted events, and subagent prompts.
+- [x] CLI and TUI list and revoke typed phrases with unambiguous labels. The
+  native approvals tape proves version-2 conversion, non-shell label display,
+  and revoke behavior against a published binary.
 - [ ] The policy pipeline replaces the shell branches in `ToolAccessPolicy`
   and `ShellApprovalMatcher`; any retained legacy scan is deny-only and cannot
   authorize, create candidates, or widen scope.
@@ -198,13 +208,29 @@ Done when:
   root from one-command `WorkingDirectory` scope, prevent redundant project
   switches, and preserve `cd` when directory mutation is the requested shell
   behavior.
-- [x] Unknown non-path argument data does not make a structurally complete
-  shell command complex. Dynamic identities, paths, and redirects stay strict.
+- [x] Reviewed-safe shell work beneath an undeclared cwd returns a
+  `set_working_directory` correction to the agent before any user prompt. The
+  original tool call remains unchanged; the shared directory policy must accept
+  the exact non-temp cwd, while unsafe phrases, outside paths, Public sessions,
+  and unavailable scope tools retain normal approval behavior.
+- [x] Bounded non-path `IntegerRange` and `Concatenation` data do not make a
+  complete shell command complex. Unknown values, identities, paths, and
+  redirects stay strict.
 - [x] Sanitized behavioral eval cases cover early project declaration,
   one-command typed scope, failed-path recovery, and deliberate inline `cd`.
-- [ ] Run the new behavioral eval cases against a configured model provider.
-  The local eval provider type, endpoint, and model ID were unset for this
-  slice; syntax and ShellCheck validation passed.
+- [x] The session-scratch model-guidance eval passed 4/5 against the configured
+  `deepseek-v4-flash-dspark` endpoint. This measures headless path preference;
+  deterministic actor tests own interactive correction and approval proof.
+- [x] Explicit `WorkingDirectory=/tmp` and deliberate inline `cd /tmp` evals
+  remain in the corpus so a platform-temp requirement is not rewritten.
+- [x] Eligible interactive Personal shell work at the shared platform-temp root
+  receives a typed session-scratch correction before parent or subagent
+  approval. The original call remains in history. One exact later retry offers
+  only Once or Deny and creates no reusable temp authority. Headless behavior,
+  Team/Public denial, hard-deny rules, dynamic syntax, protected paths, and
+  native PowerShell causal scope stay strict.
+- [ ] Define automated session-directory cleanup in a separate OpenSpec before
+  adding retention or deletion behavior.
 - [ ] A constrained executable grammar proves any future safe `sed` form. The
   `-n` option alone is not proof because a `sed` program can write files or
   execute commands.
@@ -215,6 +241,10 @@ Done when:
   patterns, redirect alternatives, and redirect-source alternatives. The
   unchanged 225-test Bash, PowerShell 7, and Windows PowerShell 5.1 approval
   matrix passes locally.
+- [x] Netclaw resolves ShellSyntaxTree `0.3.2` for the separate authored-source
+  and path-shape facts introduced in 0.3.1. This store-v3 slice preserves those parser token facts
+  without executable-private command rules; later parent tasks consume the new
+  value-domain facts in the coordinator.
 - [x] The expanded 247-test matrix covers command-substitution and PowerShell
   execution-region behavior. Known command-owned regions reuse independently
   matched host and body grants after Netclaw accounts for the parsed body.
@@ -237,17 +267,17 @@ Done when:
 - [x] A constrained stdin grammar allows a complete literal heredoc or bounded
   here string only for argument-free `cat`. Unknown data, expanding heredocs,
   arguments, wrappers, interpreters, and stored grants stay strict.
-- [ ] Netclaw interprets bounded loop arguments only after the maintainer
-  accepts ShellSyntaxTree 0.3.1's separate authored-source projection for
-  approval matching. Effective runtime values remain unknown when hidden
-  ambient Bash attributes can transform them.
+- [x] Netclaw interprets bounded non-path loop arguments through
+  ShellSyntaxTree 0.3.2's separate authored-source projection for approval
+  analysis. Effective runtime values retain priority, and path-bearing loop
+  arguments remain strict.
   - [x] The approval matrix pins inherited and same-language child loops as
     complex under the canonical unknown-state contract for Bash, PowerShell 7,
     and Windows PowerShell 5.1. It also proves that a stored command grant
     cannot cover an unproved loop-dependent argument.
-  - [ ] Netclaw adopts `AuthoredValue`, positive authored path evidence,
-    bounded status concatenation, and the typed consumer boundary after the
-    paired package release.
+  - [x] Netclaw adopts bounded non-path `AuthoredValue`, status concatenation,
+    and the typed consumer boundary. Positive authored path evidence remains a
+    separate strict-policy task.
 
 ### Priority: Use Native PowerShell on Windows
 
