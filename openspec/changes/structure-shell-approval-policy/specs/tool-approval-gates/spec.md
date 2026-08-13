@@ -410,9 +410,8 @@ contain canonical shell, match kind, immutable verb-token array, optional
 absolute directory, and creation timestamp. Null directory SHALL mean global.
 
 On first successful version-2 load, the daemon SHALL back up the original file.
-Plain whitespace-separated unquoted atoms SHALL migrate according to the
-maintainer-approved authority choice. Quoted, escaped, or ambiguous strings
-SHALL migrate as exact-only legacy phrases. A structurally valid v2 entry whose
+Every valid version-2 shell phrase SHALL migrate as an exact-only legacy
+phrase. No migrated phrase SHALL gain token-prefix authority. A valid v2 entry whose
 phrase contains controls or cannot be represented safely SHALL be omitted with
 a bounded migration diagnostic and SHALL NOT authorize. A structurally invalid
 v2 file SHALL fail as a whole. The version-3 write SHALL be atomic.
@@ -544,6 +543,33 @@ paths SHALL retain existing strict checks.
 - **WHEN** every earlier stage passes
 - **THEN** safe policy covers that candidate
 
+#### Scenario: Undeclared project scope returns an agent correction
+
+- **GIVEN** every shell candidate has a reviewed-safe phrase
+- **AND** every effective directory is beneath the exact shell cwd
+- **AND** the cwd is outside the declared session and project roots
+- **AND** the cwd is not the platform temporary root
+- **AND** `set_working_directory` is available to the agent
+- **AND** the same filesystem policy used by `set_working_directory` accepts
+  the exact cwd without substitution
+- **WHEN** policy would otherwise request user approval
+- **THEN** the system returns a scope-declaration correction to the agent
+- **AND** it does not execute the command or request user approval
+- **AND** the correction tells the agent to declare the exact cwd and retry the
+  exact command unchanged
+
+#### Scenario: Scope correction cannot hide unsafe work
+
+- **GIVEN** any candidate lacks reviewed-safe phrase coverage
+- **OR** any effective directory is outside the exact shell cwd
+- **OR** the audience is Public
+- **OR** the cwd is the platform temporary root
+- **OR** `set_working_directory` is unavailable
+- **OR** `set_working_directory` policy would reject or substitute the cwd
+- **WHEN** policy evaluates the call
+- **THEN** the scope-declaration correction does not apply
+- **AND** the normal approval or deny result remains
+
 #### Scenario: Unsafe argument surface excludes whole phrase
 
 - **GIVEN** any accepted argument can write or execute
@@ -580,7 +606,7 @@ SHALL NOT allow, create candidates, create persistent options, or widen scope.
 
 #### Scenario: Static loop exposes authored candidates
 
-- **GIVEN** ShellSyntaxTree 0.3.1 reports D14 authored values and the existing
+- **GIVEN** ShellSyntaxTree 0.3.2 reports D14 authored values and the existing
   parser-owned `Argument.IsPath` role
 - **WHEN** the maintainer-approved authored-source policy evaluates it
 - **THEN** finite `cat` paths are checked individually
@@ -646,7 +672,7 @@ ShellSyntaxTree analysis.
 
 PowerShell SHALL use the selected dialect and `PwshInitialStateMode.Unknown`.
 Netclaw SHALL use effective values for runtime and deny policy. It MAY use
-ShellSyntaxTree 0.3.1 authored values only for the explicitly approved approval
+ShellSyntaxTree 0.3.2 authored values only for the explicitly approved approval
 perspective. Unknown policy-relevant values SHALL not create reusable or safe
 coverage.
 

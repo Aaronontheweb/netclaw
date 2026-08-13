@@ -88,6 +88,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly ModelInputMediaBuffer _mediaBuffer = new();
     private MessageSource? _currentTurnSource;
     private TurnContext? _currentTurnContext;
+    private readonly SessionScratchCorrectionState _sessionScratchCorrections = new();
     private bool _processingStateActive;
     private ApprovalTurnState _approvalTurnState = ApprovalTurnState.None;
     private readonly ToolRegistry? _fullRegistry;
@@ -926,6 +927,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 Result = result.Content ?? string.Empty
             }, OutputFilter.ToolCalls);
         }
+
+        foreach (var change in msg.ScratchCorrectionChanges)
+            _sessionScratchCorrections.Apply(change);
 
         // Processes all results, including failed tool calls. RecentFiles tracks
         // interaction intent, not successful reads only.
@@ -1973,7 +1977,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private void DispatchToolBatch(
         List<FunctionCallContent> toolCalls,
         IReadOnlyDictionary<string, IReadOnlyList<string>>? oneTimeApprovalPreSeed = null,
-        IReadOnlyDictionary<string, ApprovalDecision>? decisionOverride = null)
+        IReadOnlyDictionary<string, ApprovalDecision>? decisionOverride = null,
+        IReadOnlyDictionary<string, string>? sessionScratchDenialDirectories = null)
     {
         _activeToolBatch.Start(toolCalls);
 
@@ -2022,7 +2027,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // pipeline's deny-path hint logic can run without a policy lookup.
         // The hint is suppressed for audiences that cannot call the tool
         // (Public, audience profiles that explicitly drop it).
-        var setWorkingDirectoryAvailable = IsSetWorkingDirectoryAvailable();
+        var setWorkingDirectoryTool = GetExposedSetWorkingDirectoryTool();
+        var setWorkingDirectoryAvailable = setWorkingDirectoryTool is not null;
 
         CancelAndDisposeToolExecutionCts();
         _activeToolExecutionCts = new CancellationTokenSource();
@@ -2052,11 +2058,17 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 new ToolExecutionTimeout(Timeout.InfiniteTimeSpan)),
             BackgroundJobs = backgroundJobs,
             SetWorkingDirectoryAvailable = setWorkingDirectoryAvailable,
+            CanDeclareWorkingDirectory = setWorkingDirectoryTool is null
+                ? null
+                : setWorkingDirectoryTool.CanDeclare,
             StreamResults = true,
             OneTimeApprovalPreSeed = oneTimeApprovalPreSeed
                 ?? new Dictionary<string, IReadOnlyList<string>>(),
             DecisionOverrides = decisionOverride
                 ?? new Dictionary<string, ApprovalDecision>(),
+            SessionScratchDenialDirectories = sessionScratchDenialDirectories
+                ?? new Dictionary<string, string>(),
+            ScratchCorrections = _sessionScratchCorrections.Snapshot(),
             CancellationToken = toolExecutionCt
         };
 
@@ -2301,6 +2313,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void ContinueIncomingUserMessage(SendUserMessage cmd)
     {
+        _sessionScratchCorrections.Clear();
         _deliveryRetry.Clear();
         _currentTurnSource = cmd.Source;
         BindTurnTelemetry(cmd.Source);
@@ -3000,14 +3013,16 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     /// at the tool, so emitting it on a Public-audience turn that cannot call
     /// the tool would be misleading.
     /// </summary>
-    private bool IsSetWorkingDirectoryAvailable()
+    private SetWorkingDirectoryTool? GetExposedSetWorkingDirectoryTool()
     {
         if (_toolAccessPolicy is null || _fullRegistry is null)
-            return false;
+            return null;
 
         var registration = _fullRegistry.GetRegistrationByToolName(SetWorkingDirectoryTool.ToolName);
-        return registration is not null
-               && _toolAccessPolicy.IsToolExposed(registration, _currentTrustContext);
+        return registration?.Tool is SetWorkingDirectoryTool tool
+               && _toolAccessPolicy.IsToolExposed(registration, _currentTrustContext)
+            ? tool
+            : null;
     }
 
 
@@ -3545,6 +3560,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             OptionKeys = msg.Options.Select(o => o.Key.Value).ToArray(),
             Candidates = msg.Candidates,
             TurnContext = _currentTurnContext?.ToRecord(),
+            SessionScratchDirectory = dispatch.SessionScratchDirectory,
             RequestedAtMs = NowMs()
         };
 
@@ -3590,7 +3606,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             turnContext,
             restoreFailure,
             evt.OptionKeys,
-            evt.Candidates);
+            evt.Candidates,
+            evt.SessionScratchDirectory);
         _resolvedToolApprovals.Remove(evt.CallId);
 
         if (persistApprovalState && turnContext is not null)
@@ -3630,6 +3647,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void ClearApprovalTurnState()
     {
+        _sessionScratchCorrections.Clear();
         _approvalTurnState = ApprovalTurnState.None;
         _currentTurnContext = null;
     }
@@ -4321,6 +4339,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // we abandon the parked batch instead of replaying side effects.
         var preSeed = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
         var decisionOverride = new Dictionary<string, ApprovalDecision>(StringComparer.Ordinal);
+        var sessionScratchDenialDirectories = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var call in assistantMessage.ToolCalls)
         {
             if (!_resolvedToolApprovals.TryGetValue(call.CallId.Value, out var resolved))
@@ -4348,12 +4367,18 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 // history stays well-formed, but the reconstructed dispatch
                 // must not execute the tool or ask for approval again.
                 decisionOverride[call.CallId.Value] = resolved.Decision;
+                if (resolved.Decision == ApprovalDecision.Denied
+                    && resolved.Pending.SessionScratchDirectory is { Length: > 0 } scratchDirectory)
+                {
+                    sessionScratchDenialDirectories[call.CallId.Value] = scratchDirectory;
+                }
             }
         }
 
         return new ApprovalRedrivePlan(
             preSeed.Count == 0 ? null : preSeed,
-            decisionOverride.Count == 0 ? null : decisionOverride);
+            decisionOverride.Count == 0 ? null : decisionOverride,
+            sessionScratchDenialDirectories.Count == 0 ? null : sessionScratchDenialDirectories);
     }
 
     /// <summary>
@@ -4423,7 +4448,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         DispatchToolBatch(
             toolCalls,
             oneTimeApprovalPreSeed: redrivePlan.OneTimeApprovalPreSeed,
-            decisionOverride: redrivePlan.DecisionOverride);
+            decisionOverride: redrivePlan.DecisionOverride,
+            sessionScratchDenialDirectories: redrivePlan.SessionScratchDenialDirectories);
         return true;
     }
 
@@ -4552,13 +4578,33 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // through here just feeds the filter that drops standalone verbs
         // with no path arg (curl, gh, git status).
         var sessionDirectory = GetSessionDirectory();
+        var grantContext = ApprovalGrantContext.FromDecision(
+            decision,
+            pending.Cwd,
+            sessionDirectory);
+
+        if (_approvalService is IStructuredToolApprovalService structuredApprovalService)
+        {
+            var grants = ApprovalBucketBuilder.BuildGrants(
+                pending.Candidates,
+                grantContext);
+            if (grants.Count > 0)
+            {
+                await structuredApprovalService.RecordApprovalCandidatesAsync(
+                    (ToolApprovalSessionId)_sessionId.Value,
+                    audience,
+                    new ToolName(pending.ToolName),
+                    grants,
+                    persistent,
+                    ct);
+            }
+
+            return;
+        }
 
         var grouping = ApprovalBucketBuilder.Build(
             pending.Candidates,
-            persistent,
-            globalWildcard,
-            pending.Cwd,
-            sessionDirectory);
+            grantContext);
 
         foreach (var (key, verbs) in grouping)
         {
@@ -4599,6 +4645,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void ProcessToolCallResult(Pipelines.ToolCallResult result)
     {
+        _sessionScratchCorrections.Apply(result.ScratchCorrectionChange);
         TrackStartedBackgroundJob(result.StartedBackgroundJob);
 
         var emittedRunIds = new HashSet<SubAgentRunId>();

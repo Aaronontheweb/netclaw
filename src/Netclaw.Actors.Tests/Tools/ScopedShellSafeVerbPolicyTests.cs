@@ -217,12 +217,18 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     public void Git_ls_tree_operand_normalizes_to_read_only_verb()
     {
         var policy = new ScopedShellSafeVerbPolicy(VerbList("git ls-tree"));
-        var candidate = new ApprovalCandidate("git ls-tree feature", _projectDir);
+        var candidate = new ApprovalCandidate("git ls-tree feature", _projectDir)
+        {
+            Shell = ApprovalShell.Bash,
+            VerbTokens = Array.AsReadOnly(["git", "ls-tree", "feature"]),
+        };
 
         var normalized = policy.NormalizeCandidate(candidate);
 
         Assert.Equal("git ls-tree", normalized.Verb);
         Assert.Equal(_projectDir, normalized.Directory);
+        Assert.Equal(["git", "ls-tree", "feature"], normalized.VerbTokens);
+        Assert.Equal(ApprovalShell.Bash, normalized.Shell);
     }
 
     [Fact]
@@ -283,5 +289,55 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
         var candidates = new[] { new ApprovalCandidate("cat", _outsideDir) };
 
         Assert.False(policy.AllShortCircuit(candidates, _projectDir, ctx));
+    }
+
+    [Fact]
+    public void Reviewed_safe_work_under_cwd_can_request_project_declaration()
+    {
+        var nested = Path.Combine(_outsideDir, "src");
+        Directory.CreateDirectory(nested);
+        var policy = new ScopedShellSafeVerbPolicy(VerbList("head", "wc"));
+        var ctx = PersonalContext(projectDir: _projectDir);
+        var candidates = new[]
+        {
+            new ApprovalCandidate("head", nested),
+            new ApprovalCandidate("wc", _outsideDir)
+        };
+
+        Assert.True(policy.CanShortCircuitAfterProjectDeclaration(candidates, _outsideDir, ctx));
+    }
+
+    [Fact]
+    public void Unsafe_work_cannot_request_project_declaration()
+    {
+        var policy = new ScopedShellSafeVerbPolicy(VerbList("head"));
+        var ctx = PersonalContext(projectDir: _projectDir);
+        var candidates = new[]
+        {
+            new ApprovalCandidate("head", _outsideDir),
+            new ApprovalCandidate("rm", _outsideDir)
+        };
+
+        Assert.False(policy.CanShortCircuitAfterProjectDeclaration(candidates, _outsideDir, ctx));
+    }
+
+    [Fact]
+    public void Explicit_path_outside_cwd_cannot_request_project_declaration()
+    {
+        var policy = new ScopedShellSafeVerbPolicy(VerbList("head"));
+        var ctx = PersonalContext(projectDir: _projectDir);
+        var candidates = new[] { new ApprovalCandidate("head", _projectDir) };
+
+        Assert.False(policy.CanShortCircuitAfterProjectDeclaration(candidates, _outsideDir, ctx));
+    }
+
+    [Fact]
+    public void Public_session_cannot_request_project_declaration()
+    {
+        var policy = new ScopedShellSafeVerbPolicy(VerbList("head"));
+        var ctx = PublicContext(projectDir: _projectDir);
+        var candidates = new[] { new ApprovalCandidate("head", _outsideDir) };
+
+        Assert.False(policy.CanShortCircuitAfterProjectDeclaration(candidates, _outsideDir, ctx));
     }
 }
