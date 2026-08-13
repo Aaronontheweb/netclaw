@@ -127,6 +127,39 @@ public sealed class McpClientManagerStatusTests
     }
 
     [Fact]
+    public void BuildConnectionFailureStatus_ForStdioSpawnFailureWithEmbeddedStatusLikeDigits_ReturnsUnreachable()
+    {
+        var entry = new McpServerEntry
+        {
+            Transport = "stdio",
+            Command = "netclaw-missing-mcp-server-632401b4aa2f4c1e9c1b2a3d4e5f6789",
+            Enabled = true,
+        };
+
+        // A stdio process-spawn failure carries the command name inside its message. The
+        // command name is caller-supplied config data, not an HTTP signal, and can
+        // coincidentally embed digits that look like a status code -- here "401" inside
+        // the GUID suffix. No HTTP request ever occurs for stdio, so this must never be
+        // misread as an HTTP 401 failure.
+        var spawnFailure = new IOException(
+            $"An error occurred trying to start process '{entry.Command}' with working " +
+            "directory '/tmp'. No such file or directory");
+
+        var status = McpClientManager.BuildConnectionFailureStatus(
+            new McpServerName("notifications"),
+            entry,
+            spawnFailure,
+            hasCachedTokens: false,
+            hasOAuthRuntimeHints: false,
+            ErrorAt);
+
+        Assert.Equal(McpConnectionState.Unreachable, status.State);
+        Assert.Equal("Failed to reach MCP server. Check daemon logs for details.", status.ErrorMessage);
+        Assert.DoesNotContain("401", status.ErrorMessage, StringComparison.Ordinal);
+        Assert.Equal(ErrorAt, status.LastErrorAt);
+    }
+
+    [Fact]
     public void PublicErrorsNeverIncludeProviderBodySecrets()
     {
         const string providerBody = "code=oauth-code access_token=token-value client_secret=secret-value";
