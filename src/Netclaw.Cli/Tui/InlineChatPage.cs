@@ -48,6 +48,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     private string? _inspectorCopyStatus;
     private int _inspectorRenderWidth;
     private int _thinkingFrame;
+    private bool _assistantTailPaused;
     private ChatPresentationState _state = ChatPresentationState.Empty;
     private Task _commitTail = Task.CompletedTask;
     private readonly List<ChatPresentationBlock> _deferredInspectorCommits = [];
@@ -187,6 +188,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             if (keyInfo.Key == ConsoleKey.PageUp && _assistantStream.CanScrollUp)
             {
                 _assistantStream.PageUp();
+                _assistantTailPaused = true;
                 _liveRegion.Invalidate();
                 return true;
             }
@@ -202,6 +204,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             if (keyInfo.Key == ConsoleKey.End && IsAssistantTailPaused())
             {
                 _assistantStream.ScrollToBottom();
+                _assistantTailPaused = false;
                 _unseenAssistantEvents.Clear();
                 _liveRegion.Invalidate();
                 return true;
@@ -255,7 +258,12 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
 
         var scrollable = (IScrollable)_assistantStream;
         if (mouseScroll.Delta > 0)
+        {
+            var offset = _assistantStream.ScrollOffset;
             scrollable.ScrollUp(3);
+            if (_assistantStream.ScrollOffset != offset)
+                _assistantTailPaused = true;
+        }
         else if (mouseScroll.Delta < 0)
             scrollable.ScrollDown(3);
         else
@@ -299,6 +307,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     {
         if (output is TurnCompleted)
         {
+            _assistantTailPaused = false;
             _unseenAssistantEvents.Clear();
             return;
         }
@@ -334,13 +343,29 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         return passage.IsFinal ? passage.Index + 1 : passage.Index;
     }
 
-    private bool IsAssistantTailPaused() =>
-        _assistantStream is { CanScrollDown: true, IsNearBottom: false };
+    private bool IsAssistantTailPaused() => _assistantTailPaused;
 
     private void ResumeAssistantTailIfAtBottom()
     {
         if (_assistantStream?.CanScrollDown == false)
+        {
+            _assistantTailPaused = false;
             _unseenAssistantEvents.Clear();
+        }
+    }
+
+    private void SynchronizeAssistantTailState()
+    {
+        if (_assistantStream is null)
+            return;
+
+        if (_assistantStream is { CanScrollDown: true, IsNearBottom: false })
+        {
+            _assistantTailPaused = true;
+            return;
+        }
+
+        ResumeAssistantTailIfAtBottom();
     }
 
     private void ApplyReduction(ChatReduction reduction)
@@ -833,9 +858,17 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             reply.WithChild(BuildAgentPull(pull, lineWidth));
 
         var maximumHeight = Math.Max(5, Math.Min(18, _terminal.Height / 2));
-        _assistantStream ??= new ScrollableContainerNode()
-            .WithAutoScroll(AutoScrollPolicy.TailWhenAtBottom)
-            .WithScrollbar(false);
+        if (_assistantStream is null)
+        {
+            _assistantStream = new ScrollableContainerNode()
+                .WithScrollbar(false);
+            _assistantStream.Invalidated
+                .Subscribe(_ => SynchronizeAssistantTailState())
+                .DisposeWith(Subscriptions);
+        }
+        _assistantStream.AutoScroll = _assistantTailPaused
+            ? AutoScrollPolicy.None
+            : AutoScrollPolicy.AlwaysTail;
         _assistantStream.WithContent(reply);
 
         return new PanelNode()
