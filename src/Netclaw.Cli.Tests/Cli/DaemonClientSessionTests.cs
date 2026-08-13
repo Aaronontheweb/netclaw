@@ -175,6 +175,7 @@ public sealed class DaemonClientSessionTests
         using var viewModel = CreateViewModel(client);
         await ActivateAsync(viewModel);
         viewModel.IsGenerating.Value = true;
+        viewModel.StatusMessage.Value = "Generating...";
 
         await Task.WhenAll(
             viewModel.SubmitAsync("prompt A"),
@@ -187,6 +188,7 @@ public sealed class DaemonClientSessionTests
             .ToList();
         Assert.Equal(["prompt A", "prompt B", "prompt C"], sends);
         Assert.Equal(3, viewModel.QueuedTurnMessageCount.Value);
+        Assert.Equal("Generating...", viewModel.StatusMessage.Value);
 
         transport.PushOutput(SessionOutputDtoMapper.ToDto(new TurnCompleted
         {

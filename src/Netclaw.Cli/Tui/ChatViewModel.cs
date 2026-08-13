@@ -212,7 +212,6 @@ public partial class ChatViewModel : ReactiveViewModel
     {
         var count = Interlocked.Increment(ref _queuedTurnMessageCount);
         QueuedTurnMessageCount.Value = count;
-        StatusMessage.Value = $"Queued {count} message(s).";
         RequestRedraw();
     }
 
