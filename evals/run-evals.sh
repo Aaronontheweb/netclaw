@@ -1234,8 +1234,12 @@ assert_memory_checkpoint_enqueue() {
 assert_memory_recall_filters() {
     # After overfetch fix: at least one candidate selection should reduce the set.
     daemon_log_tail | awk '
-        match($0, /rawCount=([0-9]+).*selectedCount=([0-9]+)/, m) {
-            if ((m[1] + 0) > (m[2] + 0)) {
+        match($0, /rawCount=[0-9]+/) {
+            raw = substr($0, RSTART + 9, RLENGTH - 9) + 0
+            if (match($0, /selectedCount=[0-9]+/)) {
+                selected = substr($0, RSTART + 14, RLENGTH - 14) + 0
+            }
+            if (raw > selected) {
                 found = 1
             }
         }
