@@ -453,9 +453,9 @@ public sealed class InlineChatPageTests
         var runTask = harness.StartAsync();
         await harness.WaitUntilAsync(() => harness.Terminal.Contains("A stable answer"));
 
-        Assert.Equal(string.Empty, harness.Terminal.GetLine(0));
-        Assert.Equal("  Netclaw", harness.Terminal.GetLine(1));
-        Assert.Equal("  A stable answer", harness.Terminal.GetLine(2));
+        Assert.Equal("  Netclaw", harness.Terminal.GetLine(0));
+        Assert.Equal("  A stable answer", harness.Terminal.GetLine(1));
+        Assert.Equal(string.Empty, harness.Terminal.GetLine(2));
         AssertHasNoDecorativeTrim(harness.Terminal.ToString());
         await harness.StopAsync(runTask);
     }
