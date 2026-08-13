@@ -92,6 +92,51 @@ public sealed class DaemonClientSessionTests
     }
 
     [Fact]
+    public async Task ChatViewModel_retains_the_resume_id_after_a_transient_attach_failure()
+    {
+        const string resumedSessionId = "signalr/resume-target";
+        var requestedSessionIds = new List<string?>();
+        var failFirstAttach = true;
+        var transport = new FakeDaemonHubTransport
+        {
+            EnsureSessionResponder = args =>
+            {
+                var requested = args[0] as string;
+                requestedSessionIds.Add(requested);
+                if (failFirstAttach)
+                {
+                    failFirstAttach = false;
+                    throw new IOException("test attach failure");
+                }
+
+                return new SessionEnsureResultDto(resumedSessionId, false);
+            }
+        };
+        await using var client = new DaemonClient(
+            "http://127.0.0.1:1",
+            transport,
+            reconnectDelays: [TimeSpan.Zero]);
+        using var viewModel = new ChatViewModel(
+            client,
+            TimeProvider.System,
+            new ModelCapabilities { ModelId = "test-model" },
+            new ChatNavigationState { ResumeSessionId = resumedSessionId },
+            new NetclawPaths());
+        var attached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var subscription = viewModel.SessionIdDisplay.Subscribe(value =>
+        {
+            if (string.Equals(value, resumedSessionId, StringComparison.Ordinal))
+                attached.TrySetResult();
+        });
+
+        viewModel.OnActivated();
+        await attached.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.True(requestedSessionIds.Count >= 2);
+        Assert.All(requestedSessionIds, requested => Assert.Equal(resumedSessionId, requested));
+    }
+
+    [Fact]
     public async Task RespondToInteractionAsync_invokes_hub_method()
     {
         using var host = await StartFakeHubAsync();
@@ -244,6 +289,47 @@ public sealed class DaemonClientSessionTests
             .ToList();
         Assert.Equal(["retain this prompt", "retain this prompt"], sends);
         Assert.Equal(1, viewModel.QueuedTurnMessageCount.Value);
+    }
+
+    [Fact]
+    public async Task ChatViewModel_retains_the_queue_head_when_a_reconnect_flush_fails()
+    {
+        var accepted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sendAttempts = 0;
+        var transport = new FakeDaemonHubTransport
+        {
+            VoidInvokeHook = (method, _, _) =>
+            {
+                if (!string.Equals(method, "SendMessage", StringComparison.Ordinal))
+                    return Task.CompletedTask;
+
+                if (Interlocked.Increment(ref sendAttempts) < 3)
+                    throw new IOException("test rejection");
+
+                accepted.TrySetResult();
+                return Task.CompletedTask;
+            }
+        };
+        await using var client = new DaemonClient(
+            "http://127.0.0.1:1",
+            transport,
+            reconnectDelays: [TimeSpan.Zero]);
+        using var viewModel = CreateViewModel(client);
+        await ActivateAsync(viewModel);
+        viewModel.IsGenerating.Value = true;
+
+        await viewModel.SubmitAsync("retain the queue head");
+        await accepted.Task.WaitAsync(TimeSpan.FromSeconds(8), TestContext.Current.CancellationToken);
+
+        var sends = transport.Invocations
+            .Where(invocation => string.Equals(invocation.Method, "SendMessage", StringComparison.Ordinal))
+            .Select(invocation => Assert.IsType<string>(invocation.Args[1]))
+            .ToList();
+        Assert.Equal(
+            ["retain the queue head", "retain the queue head", "retain the queue head"],
+            sends);
+        Assert.Equal(1, viewModel.QueuedTurnMessageCount.Value);
+        Assert.True(viewModel.IsGenerating.Value);
     }
 
     private static ChatViewModel CreateViewModel(DaemonClient client) => new(

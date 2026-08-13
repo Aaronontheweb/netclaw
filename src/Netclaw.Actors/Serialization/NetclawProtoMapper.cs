@@ -272,6 +272,7 @@ internal static class NetclawProtoMapper
         if (evt.SourceBackgroundJobId is { } backgroundJobId)
             proto.SourceBackgroundJobId = backgroundJobId.Value;
         proto.TranscriptEntries.AddRange(evt.TranscriptEntries.Select(ToProto));
+        proto.UserMessages.AddRange(evt.UserMessages.Select(ToProto));
         return proto;
     }
 
@@ -283,7 +284,8 @@ internal static class NetclawProtoMapper
         RecordedAtMs = proto.RecordedAtMs,
         SourceReminderId = proto.HasSourceReminderId ? new ReminderId(proto.SourceReminderId) : (ReminderId?)null,
         SourceBackgroundJobId = proto.HasSourceBackgroundJobId ? new BackgroundJobId(proto.SourceBackgroundJobId) : (BackgroundJobId?)null,
-        TranscriptEntries = proto.TranscriptEntries.Select(FromProto).ToArray()
+        TranscriptEntries = proto.TranscriptEntries.Select(FromProto).ToArray(),
+        UserMessages = proto.UserMessages.Select(FromProto).ToArray()
     };
 
     // ── SessionTitleSet ──
@@ -331,18 +333,24 @@ internal static class NetclawProtoMapper
 
     // ── Tool batch / approval events ──
 
-    internal static Proto.ToolBatchStartedProto ToProto(ToolBatchStarted evt) => new()
+    internal static Proto.ToolBatchStartedProto ToProto(ToolBatchStarted evt)
     {
-        SessionId = ToProto(evt.SessionId),
-        UserMessage = ToProto(evt.UserMessage),
-        AssistantMessage = ToProto(evt.AssistantMessage),
-        StartedAtMs = evt.StartedAtMs
-    };
+        var proto = new Proto.ToolBatchStartedProto
+        {
+            SessionId = ToProto(evt.SessionId),
+            UserMessage = ToProto(evt.UserMessage),
+            AssistantMessage = ToProto(evt.AssistantMessage),
+            StartedAtMs = evt.StartedAtMs
+        };
+        proto.UserMessages.AddRange(evt.UserMessages.Select(ToProto));
+        return proto;
+    }
 
     internal static ToolBatchStarted FromProto(Proto.ToolBatchStartedProto proto) => new()
     {
         SessionId = FromProto(proto.SessionId),
         UserMessage = FromProto(proto.UserMessage),
+        UserMessages = proto.UserMessages.Select(FromProto).ToArray(),
         AssistantMessage = FromProto(proto.AssistantMessage),
         StartedAtMs = proto.StartedAtMs
     };

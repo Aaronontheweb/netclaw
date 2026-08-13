@@ -76,6 +76,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     // Transient state (not persisted)
     private readonly List<SendUserMessage> _buffer = [];
+    private readonly List<SerializableChatMessage> _currentTurnUserMessages = [];
     // In-flight reminder/background-job dedup (transient; rebuilt from journal on recovery).
     private readonly InFlightTurnDedup _inFlightDedup = new();
     private readonly SessionSubscriberManager _subscribers = new();
@@ -1009,12 +1010,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             TurnLog().Info("turn_mid_loop_buffer_drain count={BufferCount} iteration={Iteration}",
                 _buffer.Count, _turnState.ToolIterationCount);
-            foreach (var buffered in _buffer)
-            {
-                var refs = buffered.MediaReferences.Count > 0 ? buffered.MediaReferences : null;
-                _state = _state.AddUserMessage(buffered.Content, refs);
-            }
-            _buffer.Clear();
+            AppendBufferedUserMessages();
         }
 
         switch (budgetStatus)
@@ -1393,6 +1389,14 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 Content = candidate.Content ?? string.Empty,
                 MediaReferences = candidate.MediaReferences
             });
+            for (var userIndex = _currentTurnUserMessages.Count - 1; userIndex >= 0; userIndex--)
+            {
+                if (!ReferenceEquals(_currentTurnUserMessages[userIndex], candidate))
+                    continue;
+
+                _currentTurnUserMessages.RemoveAt(userIndex);
+                break;
+            }
             _state = _state with { History = _state.History.GetRange(0, i) };
             return;
         }
@@ -1424,12 +1428,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (hadBufferedMessages)
         {
             _log.Info("Post-compaction: draining {BufferCount} buffered message(s)", _buffer.Count);
-            foreach (var buffered in _buffer)
-            {
-                var refs = buffered.MediaReferences.Count > 0 ? buffered.MediaReferences : null;
-                _state = _state.AddUserMessage(buffered.Content, refs);
-            }
-            _buffer.Clear();
+            AppendBufferedUserMessages();
         }
 
         if (resumeToolLoop || hadBufferedMessages)
@@ -1887,6 +1886,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             SessionId = _sessionId,
             UserMessage = userMsg,
+            UserMessages = SnapshotCurrentTurnUserMessages(userMsg),
             AssistantMessage = assistantMsg,
             StartedAtMs = NowMs()
         }, evt =>
@@ -2148,6 +2148,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 Role = Protocol.ChatRole.User,
                 Content = string.Empty
             },
+            UserMessages = SnapshotCurrentTurnUserMessages(userMsg),
             AssistantReply = reply,
             RecordedAtMs = recordedAtMs,
             SourceReminderId = _currentTurnSource?.ReminderId,
@@ -2185,6 +2186,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             _settledTurnEntries.Clear();
             _transcriptToolCalls.Clear();
+            _currentTurnUserMessages.Clear();
 
             EmitResponseOutputs(lastMessage, usage, includeText: true, includeThinking: true);
             MaybeSnapshot();
@@ -2225,9 +2227,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         long recordedAtMs)
     {
         var turnId = _activeTurnId?.Value;
+        var transcriptStart = _currentTurnUserMessages.Count > 0
+            ? _currentTurnUserMessages[0]
+            : userMessage;
         var extracted = SessionTranscriptExtractor.ExtractTurn(
             _state.History,
-            userMessage,
+            transcriptStart,
             assistantReply,
             turnId,
             recordedAtMs);
@@ -2256,6 +2261,17 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         return entries;
     }
 
+    private IReadOnlyList<SerializableChatMessage> SnapshotCurrentTurnUserMessages(
+        SerializableChatMessage? fallback)
+    {
+        if (_currentTurnUserMessages.Count > 0)
+            return _currentTurnUserMessages.ToArray();
+
+        return fallback is null
+            ? Array.Empty<SerializableChatMessage>()
+            : [fallback];
+    }
+
     private void DrainBufferedMessagesOrBecomeReady()
     {
         if (_restartDrainRequested)
@@ -2269,13 +2285,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (_buffer.Count > 0)
         {
             TurnLog().Info("turn_buffer_drain count={BufferCount}", _buffer.Count);
-            foreach (var buffered in _buffer)
-            {
-                var refs = buffered.MediaReferences.Count > 0 ? buffered.MediaReferences : null;
-                _state = _state.AddUserMessage(buffered.Content, refs);
-            }
-
-            _buffer.Clear();
+            AppendBufferedUserMessages();
             _recallManager.ResetForNewTurn(); // New user input — resolve recall fresh
             FireLlmCall();
             // Already in Processing — no transition needed, just fired a new LLM call
@@ -2284,6 +2294,18 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         ClearApprovalTurnState();
         TransitionTo(SessionPhase.Ready);
+    }
+
+    private void AppendBufferedUserMessages()
+    {
+        foreach (var buffered in _buffer)
+        {
+            var refs = buffered.MediaReferences.Count > 0 ? buffered.MediaReferences : null;
+            _state = _state.AddUserMessage(buffered.Content, refs);
+            _currentTurnUserMessages.Add(_state.History[^1]);
+        }
+
+        _buffer.Clear();
     }
 
     private void HandleDeliveryFailedWhenReady(DeliveryFailed msg)
@@ -2449,6 +2471,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _observerActor?.Tell(cmd);
 
         _turnState.ResetForNewTurn();
+        _currentTurnUserMessages.Clear();
         _discoveredToolCache.PrepareForNewTurn(
             _config.Tuning.DiscoveredToolRetentionTurns,
             _config.Tuning.DiscoveredToolMaxCount,
@@ -2458,6 +2481,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             return;
 
         _state = _state.AddUserMessage(userContent, mediaRefs.Count > 0 ? mediaRefs : null);
+        _currentTurnUserMessages.Add(_state.History[^1]);
         TryReplyAck();
         _recallManager.ResetForNewTurn();
         _compactionOverflowRetryCount = 0;
@@ -3247,6 +3271,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             : remainder;
 
         _state = _state.AddUserMessage(effectiveUserContent, mediaRefs.Count > 0 ? mediaRefs : null);
+        _currentTurnUserMessages.Add(_state.History[^1]);
         TryReplyAck();
         _recallManager.ResetForNewTurn();
 
@@ -3349,6 +3374,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             : remainder;
 
         _state = _state.AddUserMessage(effectiveTask, mediaRefs.Count > 0 ? mediaRefs : null);
+        _currentTurnUserMessages.Add(_state.History[^1]);
         TryReplyAck();
         _recallManager.ResetForNewTurn();
 
@@ -3453,6 +3479,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 Role = Protocol.ChatRole.User,
                 Content = string.Empty
             },
+            UserMessages = SnapshotCurrentTurnUserMessages(userMsg),
             AssistantReply = assistantReply,
             RecordedAtMs = recordedAtMs,
             SourceReminderId = _currentTurnSource?.ReminderId,
@@ -3490,6 +3517,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             _settledTurnEntries.Clear();
             _transcriptToolCalls.Clear();
+            _currentTurnUserMessages.Clear();
 
             EmitOutput(new TextOutput(msg.Result.Output)
             {
@@ -3622,11 +3650,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             }).AppendTranscript(evt)
                 .KeepRecentTranscriptTurns(Math.Max(1, _config.Tuning.KeepRecentMessages)))
                 .CompleteTurnBackgroundJobBookkeeping(evt.SourceBackgroundJobId);
+            _currentTurnUserMessages.Clear();
             return;
         }
 
         _state = _state.Apply(evt)
             .KeepRecentTranscriptTurns(Math.Max(1, _config.Tuning.KeepRecentMessages));
+        _currentTurnUserMessages.Clear();
     }
 
     private void ApplyToolBatchStarted(ToolBatchStarted evt)
@@ -3637,8 +3667,15 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void ApplyToolBatchHistory(ToolBatchStarted evt)
     {
-        if (_state.FindLastUserMessage() != evt.UserMessage)
-            _state = _state with { History = _state.History.Add(evt.UserMessage) };
+        if (_currentTurnUserMessages.Count == 0)
+        {
+            var userMessages = evt.UserMessages.Count > 0
+                ? evt.UserMessages
+                : [evt.UserMessage];
+            if (_state.FindLastUserMessage() != userMessages[^1])
+                _state = _state with { History = _state.History.AddRange(userMessages) };
+            _currentTurnUserMessages.AddRange(userMessages);
+        }
 
         if (!_state.History.Contains(evt.AssistantMessage))
             _state = _state with { History = _state.History.Add(evt.AssistantMessage) };
@@ -4688,6 +4725,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             SessionId = _sessionId,
             UserMessage = userMessage,
+            UserMessages = SnapshotCurrentTurnUserMessages(userMessage),
             AssistantReply = assistantReply,
             RecordedAtMs = recordedAtMs,
             SourceReminderId = _currentTurnSource?.ReminderId,
@@ -4719,6 +4757,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 .CompleteTurnBackgroundJobBookkeeping(evt.SourceBackgroundJobId);
             _settledTurnEntries.Clear();
             _transcriptToolCalls.Clear();
+            _currentTurnUserMessages.Clear();
 
             EmitOutput(errorOutput);
             EmitOutput(new TurnCompleted
@@ -5060,12 +5099,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             TurnLog().Info("turn_mid_loop_buffer_drain count={BufferCount} iteration={Iteration}",
                 _buffer.Count, _turnState.ToolIterationCount);
-            foreach (var buffered in _buffer)
-            {
-                var refs = buffered.MediaReferences.Count > 0 ? buffered.MediaReferences : null;
-                _state = _state.AddUserMessage(buffered.Content, refs);
-            }
-            _buffer.Clear();
+            AppendBufferedUserMessages();
         }
 
         switch (budgetStatus)

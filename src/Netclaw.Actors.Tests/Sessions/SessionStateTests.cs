@@ -53,6 +53,59 @@ public class SessionStateTests
     }
 
     [Fact]
+    public void Apply_TurnRecorded_restores_all_batched_user_messages()
+    {
+        var state = SessionState.Empty.Apply(new TurnRecorded
+        {
+            SessionId = TestSessionId,
+            UserMessage = new SerializableChatMessage { Role = ChatRole.User, Content = "Second" },
+            UserMessages =
+            [
+                new SerializableChatMessage { Role = ChatRole.User, Content = "First" },
+                new SerializableChatMessage { Role = ChatRole.User, Content = "Second" }
+            ],
+            AssistantReply = new SerializableChatMessage { Role = ChatRole.Assistant, Content = "Done" },
+            RecordedAtMs = 42
+        });
+
+        Assert.Equal(
+            ["First", "Second", "Done"],
+            state.History.Select(message => message.Content));
+        Assert.Equal(
+            [SessionTranscriptEntryTypes.User, SessionTranscriptEntryTypes.User, SessionTranscriptEntryTypes.Assistant],
+            state.RecentTranscript.Select(entry => entry.Type));
+        Assert.Equal(
+            ["First", "Second", "Done"],
+            state.RecentTranscript.Select(entry => entry.Text));
+        Assert.Equal(1, state.TurnCount);
+    }
+
+    [Fact]
+    public void Turn_checkpoint_keeps_all_batched_user_messages()
+    {
+        var turn = new TurnRecorded
+        {
+            SessionId = TestSessionId,
+            UserMessage = new SerializableChatMessage { Role = ChatRole.User, Content = "Second" },
+            UserMessages =
+            [
+                new SerializableChatMessage { Role = ChatRole.User, Content = "First" },
+                new SerializableChatMessage { Role = ChatRole.User, Content = "Second" }
+            ],
+            AssistantReply = new SerializableChatMessage { Role = ChatRole.Assistant, Content = "Done" }
+        };
+
+        var checkpoint = SessionMemoryCheckpointFactory.ForTurnComplete(
+            TestSessionId,
+            turn,
+            "trusted-instance",
+            "personal");
+
+        Assert.Equal("First\n\nSecond", checkpoint.UserContent);
+        Assert.Equal("User: First\n\nSecond\nAssistant: Done", checkpoint.Content);
+    }
+
+    [Fact]
     public void Apply_TurnRecorded_is_cumulative()
     {
         var state = SessionState.Empty;

@@ -133,6 +133,50 @@ public sealed class SerializationRoundTripTests : TestKit
     }
 
     [Fact]
+    public void TurnRecorded_round_trips_all_user_messages_in_order()
+    {
+        var original = new TurnRecorded
+        {
+            SessionId = new SessionId("test/user-message-batch"),
+            UserMessage = new SerializableChatMessage { Role = ChatRole.User, Content = "Second" },
+            UserMessages =
+            [
+                new SerializableChatMessage { Role = ChatRole.User, Content = "First" },
+                new SerializableChatMessage { Role = ChatRole.User, Content = "Second" }
+            ],
+            AssistantReply = new SerializableChatMessage { Role = ChatRole.Assistant, Content = "Done" },
+            RecordedAtMs = 42
+        };
+
+        var result = RoundTrip(original);
+
+        Assert.Equal(["First", "Second"], result.UserMessages.Select(message => message.Content));
+        Assert.Equal("Second", result.UserMessage.Content);
+    }
+
+    [Fact]
+    public void ToolBatchStarted_round_trips_all_user_messages_in_order()
+    {
+        var original = new ToolBatchStarted
+        {
+            SessionId = new SessionId("test/tool-user-message-batch"),
+            UserMessage = new SerializableChatMessage { Role = ChatRole.User, Content = "Second" },
+            UserMessages =
+            [
+                new SerializableChatMessage { Role = ChatRole.User, Content = "First" },
+                new SerializableChatMessage { Role = ChatRole.User, Content = "Second" }
+            ],
+            AssistantMessage = new SerializableChatMessage { Role = ChatRole.Assistant, Content = "" },
+            StartedAtMs = 42
+        };
+
+        var result = RoundTrip(original);
+
+        Assert.Equal(["First", "Second"], result.UserMessages.Select(message => message.Content));
+        Assert.Equal("Second", result.UserMessage.Content);
+    }
+
+    [Fact]
     public void TurnRecorded_round_trips_structured_transcript_entries()
     {
         var original = new TurnRecorded

@@ -792,6 +792,26 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
             followUpUserMessages.TakeLast(2));
 
         await subscriber.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300), cancellationToken: TestContext.Current.CancellationToken);
+
+        var escapedId = Uri.EscapeDataString(sessionId.Value);
+        var child = await Sys.ActorSelection($"/user/session-manager/{escapedId}")
+            .ResolveOne(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+        Watch(child);
+        Sys.Stop(child);
+        await ExpectTerminatedAsync(child, cancellationToken: TestContext.Current.CancellationToken);
+
+        var recoverySubscriber = CreateTestProbe("adapter-batch-recovery");
+        var recovered = await sessionManager.Ask<SessionJoined>(new JoinSession(recoverySubscriber)
+        {
+            SessionId = sessionId,
+            Filter = OutputFilter.Full
+        }, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await recoverySubscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Contains(recovered.RecentTranscript!, entry =>
+            entry.Type == SessionTranscriptEntryTypes.User && entry.Text == "Second message");
+        Assert.Contains(recovered.RecentTranscript!, entry =>
+            entry.Type == SessionTranscriptEntryTypes.User && entry.Text == "Third message");
     }
 
     [Fact]

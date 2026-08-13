@@ -106,9 +106,13 @@ public sealed record SessionState
         // Background-job dedup/remove/prune is delegated to the single shared
         // helper so the replay path here and the live turn-completion path in
         // LlmSessionActor cannot drift.
+        var userMessages = evt.UserMessages.Count > 0
+            ? evt.UserMessages
+            : [evt.UserMessage];
+
         return (AppendTranscript(evt) with
         {
-            History = History.Add(evt.UserMessage).Add(evt.AssistantReply),
+            History = History.AddRange(userMessages).Add(evt.AssistantReply),
             TurnCount = TurnCount + 1,
             ProcessedReminderIds = processedReminders
         }).CompleteTurnBackgroundJobBookkeeping(evt.SourceBackgroundJobId);
@@ -116,10 +120,13 @@ public sealed record SessionState
 
     public SessionState AppendTranscript(TurnRecorded evt)
     {
+        var userMessages = evt.UserMessages.Count > 0
+            ? evt.UserMessages
+            : [evt.UserMessage];
         var entries = evt.TranscriptEntries.Count > 0
             ? evt.TranscriptEntries
             : SessionTranscriptExtractor.Extract(
-                [evt.UserMessage, evt.AssistantReply],
+                userMessages.Append(evt.AssistantReply),
                 timestampMs: evt.RecordedAtMs);
 
         return this with { RecentTranscript = RecentTranscript.AddRange(entries) };

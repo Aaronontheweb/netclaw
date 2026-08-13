@@ -142,6 +142,7 @@ message TurnRecordedProto {
   optional string source_reminder_id = 5;
   optional string source_background_job_id = 6;
   repeated SessionTranscriptEntryProto transcript_entries = 7;
+  repeated SerializableChatMessageProto user_messages = 8;
 }
 
 message SessionTitleSetProto {
@@ -165,6 +166,7 @@ message ToolBatchStartedProto {
   SerializableChatMessageProto user_message = 2;
   SerializableChatMessageProto assistant_message = 3;
   int64 started_at_ms = 4;
+  repeated SerializableChatMessageProto user_messages = 5;
 }
 
 message ToolCallRecordedProto {
