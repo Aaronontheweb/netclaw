@@ -142,7 +142,7 @@ check_prerequisites() {
     if command -v sqlite3 >/dev/null 2>&1; then
         RESULTS_DB="$RESULTS_DIR/results.db"
     fi
-    DAEMON_LOG="$EVAL_HOME/logs/daemon-$(date +%F).log"
+    DAEMON_LOG="$EVAL_HOME/logs/daemon-$(date -u +%F).log"
 
     trap 'cleanup_eval_env' EXIT
 }
@@ -763,7 +763,6 @@ check_daemon_alive() {
     fi
 }
 
-
 run_prompt() {
     local prompt="$1"
     local output_format="${2:-text}"
@@ -772,9 +771,7 @@ run_prompt() {
     STDOUT_FILE="$TMPDIR_EVAL/stdout_${ts}.txt"
     STDERR_FILE="$TMPDIR_EVAL/stderr_${ts}.txt"
 
-    # Record daemon log position before the prompt (the daemon writes to a
-    # daily-rotating file at /root/.netclaw/logs/daemon-YYYY-MM-DD.log, and
-    # the container bind-mounts that directory from $EVAL_HOME/logs).
+    # Record the UTC daemon log position before the prompt.
     if [[ -f "$DAEMON_LOG" ]]; then
         DAEMON_LOG_LINES_BEFORE=$(wc -l < "$DAEMON_LOG")
     else
