@@ -282,20 +282,16 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     }
 
     [Theory]
-    [InlineData("grep -f {0}/patterns ./data.txt", "grep")]
-    [InlineData("wc --files0-from={0}/list", "wc")]
-    [InlineData("du --exclude-from={0}/patterns ./data", "du")]
-    [InlineData("realpath --relative-to={0} ./data", "realpath")]
+    [InlineData("grep -f /external/patterns ./data.txt", "grep")]
+    [InlineData("wc --files0-from=/external/list", "wc")]
+    [InlineData("du --exclude-from=/external/patterns ./data", "du")]
+    [InlineData("realpath --relative-to=/external ./data", "realpath")]
     public void Path_shaped_option_operand_outside_safe_root_stays_strict(
-        string commandTemplate,
+        string command,
         string phrase)
     {
         var policy = new ScopedShellSafeVerbPolicy(VerbList(phrase));
         var ctx = PersonalContext(projectDir: _projectDir);
-        var command = string.Format(
-            System.Globalization.CultureInfo.InvariantCulture,
-            commandTemplate,
-            _outsideDir);
         var matcher = new ShellApprovalMatcher(ShellExecutionEnvironmentDefaults.Bash);
         var candidates = matcher.ExtractCandidates(
             new ToolName("shell_execute"),
