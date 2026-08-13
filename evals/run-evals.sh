@@ -158,7 +158,7 @@ check_prerequisites() {
     if command -v sqlite3 >/dev/null 2>&1; then
         RESULTS_DB="$RESULTS_DIR/results.db"
     fi
-    DAEMON_LOG="$EVAL_HOME/logs/daemon-$(date +%F).log"
+    DAEMON_LOG="$EVAL_HOME/logs/daemon-$(date -u +%F).log"
 
     trap 'cleanup_eval_env' EXIT
 }
@@ -894,7 +894,6 @@ check_daemon_alive() {
         exit 2
     fi
 }
-
 
 run_prompt() {
     local prompt="$1"
