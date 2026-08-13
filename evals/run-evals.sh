@@ -3219,6 +3219,7 @@ main() {
         echo "ERROR: CLI binary not found at '$NETCLAW_BIN'" >&2
         exit 1
     fi
+    NETCLAW_VER=$("$NETCLAW_BIN" --version 2>/dev/null | head -1 || echo "unknown")
 
     NETCLAW_VER=$("$NETCLAW_BIN" --version 2>/dev/null | head -1 || echo "unknown")
 
