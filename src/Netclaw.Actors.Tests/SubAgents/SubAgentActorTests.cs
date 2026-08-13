@@ -777,7 +777,11 @@ public class SubAgentActorTests : TestKit
             new FunctionCallContent(
                 declarationCallId,
                 SetWorkingDirectoryTool.ToolName,
-                new Dictionary<string, object?> { ["Path"] = worktree }),
+                new Dictionary<string, object?>
+                {
+                    ["Path"] = worktree,
+                    ["_rationale"] = "Declare the project directory before the next inspection."
+                }),
             ProjectScopeCall(retryCallId, worktree)
         ]);
         var approvalBridge = supportsApproval
@@ -833,7 +837,11 @@ public class SubAgentActorTests : TestKit
             new FunctionCallContent(
                 "call-control-project",
                 SetWorkingDirectoryTool.ToolName,
-                new Dictionary<string, object?> { ["Path"] = controlledDirectory })
+                new Dictionary<string, object?>
+                {
+                    ["Path"] = controlledDirectory,
+                    ["_rationale"] = "Verify that the project scope rejects control characters."
+                })
         ]);
         var promptProvider = new ProjectPromptProvider(controlledDirectory, projectGuidance);
         var actor = Sys.ActorOf(SubAgentActor.CreatePropsWithProjectInstructionProvider(
@@ -1414,7 +1422,8 @@ public class SubAgentActorTests : TestKit
         => new(callId, ShellTool.ToolName, new Dictionary<string, object?>
         {
             ["Command"] = "grep -rn 'Metric' tests src; cat tests/project.csproj",
-            ["WorkingDirectory"] = workingDirectory
+            ["WorkingDirectory"] = workingDirectory,
+            ["_rationale"] = "Inspect the project metric sources."
         });
 
     private static string? GetLastToolResult(FakeChatClient fakeClient, string callId)
