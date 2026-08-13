@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using Akka.Actor;
 using Akka.Hosting;
+using System.Collections.Concurrent;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Netclaw.Actors.Hosting;
@@ -197,11 +198,14 @@ public class ToolBatchHistoryWedgeTests : LlmSessionTestBase
 /// </summary>
 internal sealed class PartialFailureToolExecutor : IToolExecutor
 {
+    private readonly ConcurrentDictionary<string, int> _interpretCounts = new(StringComparer.Ordinal);
+
     public HashSet<string> FailInterpretForCallIds { get; } = new(StringComparer.Ordinal);
 
     public ToolCallInterpretation InterpretToolCall(FunctionCallContent toolCall)
     {
-        if (FailInterpretForCallIds.Contains(toolCall.CallId))
+        var invocation = _interpretCounts.AddOrUpdate(toolCall.CallId, 1, static (_, count) => count + 1);
+        if (FailInterpretForCallIds.Contains(toolCall.CallId) && invocation > 1)
             throw new InvalidOperationException(
                 $"simulated interpret failure for {toolCall.CallId}");
 
