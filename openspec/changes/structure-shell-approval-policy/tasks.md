@@ -4,29 +4,29 @@
   approval fact. Effective facts retain runtime semantics.
 - [x] 1.2 Keep all v2 grants exact until the user approves a new token-prefix
   grant.
-- [ ] 1.3 Keep `evidence/approval-matrix.json` byte-identical to the paired
+- [x] 1.3 Keep `evidence/approval-matrix.json` byte-identical to the paired
   ShellSyntaxTree artifact.
-- [ ] 1.4 Add `evidence/netclaw-policy-fixtures.json` with exact structured
+- [x] 1.4 Add `evidence/netclaw-policy-fixtures.json` with exact structured
   candidates, phrases, scopes, grant and safe inputs, coverage, ordered trace,
   and outcome for D02, D03, D07, D08, D09, D10, D11, D14, D17, and D18; tests
   must load explicit authority defaults and fields, not branch on IDs.
 - [ ] 1.5 Add adversarial dynamic identity, redirect, protected path, prefix
   collision, runtime loop, wrapper, provider, and unsafe-catalog cases.
-- [ ] 1.6 Run the PII audit and manually inspect every command and fixture.
+- [x] 1.6 Run the PII audit and manually inspect every command and fixture.
 
 ## 2. Typed coordinator and actor protocol
 
-- [ ] 2.1 Snapshot immutable preflight facts from existing
+- [x] 2.1 Snapshot immutable preflight facts from existing
   `ToolExecutionContext`, `ToolRunScope`, `ToolApprovalAttempt`, and
   `ShellExecutionEnvironment`; preserve `OneTimeApprovalKeys` exact-set
   semantics and do not add a parallel context or scalar retry key.
-- [ ] 2.2 Add one coordinator that runs synchronous preflight, sends one actor
+- [x] 2.2 Add one coordinator that runs synchronous preflight, sends one actor
   batch request, and completes policy without a second grant scan.
-- [ ] 2.3 Add `ShellApprovalMatchRequest` and `ShellApprovalMatchResult` to
+- [x] 2.3 Add `ShellApprovalMatchRequest` and `ShellApprovalMatchResult` to
   `ToolApprovalActor`; match inherited session and persistent snapshots
   atomically, return typed persistent-store status, and leave one-time state in
   `ToolApprovalAttempt`.
-- [ ] 2.4 Route `DispatchingToolExecutor` through the coordinator without
+- [x] 2.4 Route `DispatchingToolExecutor` through the coordinator without
   changing the original source, argument object, or tool history.
 - [ ] 2.5 Preserve session-pipeline pending-request persistence,
   stale/duplicate response rejection and recovery; preserve exact-set one-time
@@ -38,17 +38,22 @@
   candidate construction, noninteractive trust-zone enforcement, actor match,
   safe policy, exact-set one-time matching, and prompt completion in the
   specified order.
-- [ ] 3.2 Track coverage per candidate; allow only when all candidates are
+- [x] 3.2 Track coverage per candidate; allow only when all candidates are
   covered and call-level invariants pass.
-- [ ] 3.3 Make internal exceptions, invalid enums, duplicate candidate IDs,
+- [x] 3.3 Make internal exceptions, invalid enums, duplicate candidate IDs,
   mismatched actor results, and impossible transitions terminal deny.
-- [ ] 3.4 Allow fully one-time/session/safe-covered calls when persistent state
-  is unavailable; deny with `ApprovalStoreUnavailable` instead of prompting
-  when any candidate still depends on that state.
+- [x] 3.4 Allow calls covered by one-time or session authority and
+  approval-exempt side effects when persistent state is unavailable. Also allow
+  reviewed-safe phrase coverage for an interactive run. Deny with
+  `ApprovalStoreUnavailable` rather than open a prompt when any candidate still
+  depends on persistent state.
 - [ ] 3.5 Let expected unresolved shell input offer only one-time approval and
   deny; never create a reusable candidate.
 - [ ] 3.6 Keep legacy token scans deny-only and prove they cannot authorize,
   create persistence choices, or widen scope.
+- [x] 3.7 Apply reviewed-safe phrase coverage only when interactive approval is
+  available. Prove that unattended calls need explicit one-time or stored-grant
+  authority while approval-exempt side effects keep their current behavior.
 
 ## 4. Typed grant phrases and persistence
 
@@ -83,10 +88,16 @@
   checks as separate effects.
 - [ ] 5.6 Preserve native PowerShell provider checks, including strict
   `Get-Content Env:SECRET` behavior.
-- [ ] 5.7 Return an agent scope-declaration correction before a user prompt
-  only when each reviewed-safe candidate remains beneath the exact shell cwd
-  and the shared `set_working_directory` policy accepts that non-temp cwd;
-  preserve the authored call and tool history.
+- [x] 5.7 Return an agent scope-declaration correction before a parent-session
+  or subagent user prompt only when each reviewed-safe candidate remains
+  beneath the exact shell cwd and the registered `set_working_directory` tool
+  accepts that non-temp cwd; preserve the authored call and tool history, and
+  retain the approval bridge when the tool is absent or rejects the cwd. Apply
+  a successful child declaration to later child contexts, reload project
+  instructions, and keep the parent project unchanged. Reject NUL, CR, and LF
+  at the shared declaration boundary; prove the tool returns a bounded error
+  without a child-scope or prompt update. Prove a headless declaration prevents
+  a repeated correction but does not grant authority to the unchanged retry.
 
 ## 6. Bash causal approval intent
 
@@ -100,28 +111,29 @@
 - [ ] 6.5 Keep native PowerShell causal scope strict and record native Windows
   expected results.
 
-## 7. ShellSyntaxTree 0.3.1 facts through 0.3.2
+## 7. ShellSyntaxTree 0.3.1 facts through 0.3.3
 
 - [x] 7.1 Upgrade the central package to public 0.3.2, which includes the
   0.3.1 authored-source facts and keeps same-language child shells strict.
 - [x] 7.2 Consume effective `Value` for runtime checks and approved
   `AuthoredValue` only for the documented approval perspective.
 - [x] 7.3 Treat `IntegerRange` and `Concatenation` as bounded scalar data only.
-- [ ] 7.4 Check every effective or authored finite value whose existing
-  `Argument.IsPath` is true through `ToolPathPolicy`; treat
-  `AuthoredPathShape` as lexical-only and keep unknown path values strict.
+- [x] 7.4 Check every finite effective value whose `Argument.IsPath` is true
+  through `ToolPathPolicy`. Check each ShellSyntaxTree 0.3.3 `Exact` or
+  `FiniteSet` `AuthoredFileSystemValue` through the same policy. Treat
+  `AuthoredPathShape` as lexical-only. Keep unknown path values strict.
 - [x] 7.5 Delete the broad Bash environment-variable relaxation and its
   superseded tests.
-- [ ] 7.6 Pin exact D02, D10, and D14 input-to-coverage results.
+- [x] 7.6 Pin exact D02, D10, and D14 input-to-coverage results.
 
 ## 8. Trace, guides, and behavioral evals
 
-- [ ] 8.1 Emit the capped trace schema and enforce control/bidi escaping,
+- [x] 8.1 Emit the capped trace schema and enforce control/bidi escaping,
   secret redaction, and truncation.
-- [ ] 8.2 Append actor grant rows without a second scan; project near-miss logs
+- [x] 8.2 Append actor grant rows without a second scan; project near-miss logs
   from the same trace.
-- [ ] 8.3 Keep trace data out of model prompts and session journals.
-- [ ] 8.4 Update consumer and operator guides with complete input, facts,
+- [x] 8.3 Keep trace data out of model prompts and session journals.
+- [x] 8.4 Update consumer and operator guides with complete input, facts,
   coverage, trace, and output examples.
 - [ ] 8.5 Update the `netclaw-operations` skill and deterministic approval evals
   for schema 3 and the authored-source boundary.

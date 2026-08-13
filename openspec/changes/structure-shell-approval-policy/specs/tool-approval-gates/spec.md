@@ -21,12 +21,18 @@ own or inspect one-time approval state. The coordinator SHALL import actor
 coverage, apply safe policy to still-uncovered candidates, validate the
 invocation-owned one-time set exactly, and SHALL NOT rescan grants.
 
+Reviewed-safe phrase coverage SHALL cover a candidate only when the run has
+interactive approval capability. A run without that capability SHALL require
+explicit one-time, session, or persistent authority for every candidate that
+is not an approval-exempt side effect.
+
 The actor result SHALL include typed persistent-store status. An absent store
 file SHALL be ready with an empty snapshot. Expected corruption or migration
 failure SHALL be unavailable. Completion SHALL allow a call fully covered by
-one-time, session, or reviewed-safe authority without persistent state. If any
-candidate remains uncovered and persistent state was unavailable, completion
-SHALL return terminal `ApprovalStoreUnavailable` instead of a prompt.
+one-time, session, approval-exempt side effects, or, for an interactive run,
+reviewed-safe phrase coverage without persistent state. If any candidate
+remains uncovered and persistent state was unavailable, completion SHALL
+return terminal `ApprovalStoreUnavailable` instead of a prompt.
 
 `ToolApprovalAttempt` SHALL remain owner of one-time invocation state.
 `ToolApprovalActor` SHALL remain owner of session and persistent grants. The
@@ -49,10 +55,27 @@ a fact that no current type represents.
 #### Scenario: Independent coverage survives unavailable persistence
 
 - **GIVEN** the persistent store is unavailable
+- **AND** interactive approval capability is available
 - **AND** session and reviewed-safe coverage jointly cover every candidate
 - **WHEN** completion evaluates the actor result
 - **THEN** the call is allowed
 - **AND** no persisted grant is assumed
+
+#### Scenario: Reviewed-safe policy does not grant headless authority
+
+- **GIVEN** interactive approval capability is unavailable
+- **AND** a complete candidate is in the reviewed-safe catalog
+- **WHEN** no one-time, session, or persistent grant covers that candidate
+- **THEN** the candidate remains uncovered
+- **AND** the caller follows the current unsupported-channel denial path
+
+#### Scenario: Explicit grant covers a headless candidate
+
+- **GIVEN** interactive approval capability is unavailable
+- **AND** a session or persistent grant covers a complete candidate
+- **WHEN** completion evaluates the call
+- **THEN** the explicit grant covers that candidate
+- **AND** reviewed-safe policy adds no authority
 
 #### Scenario: Uncovered candidate fails closed when persistence is unavailable
 
@@ -245,12 +268,21 @@ expected per-candidate coverage, ordered trace rows, and final outcome for the
 policy-owned acceptance cases. Tests SHALL load those fields directly and
 SHALL NOT branch on Dxx identifiers to manufacture expected results.
 
-Fixture defaults SHALL explicitly provide tool name, audience, approval mode,
-interactive capability, session identity and safe root, project safe root,
-inherited cwd, and persistent-store status. Each case SHALL provide canonical
-shell environment and initial cwd. Every stored grant SHALL carry a canonical
-shell tag. D02, D03, D07, D08, D09, D10, D11, D14, D17, and D18 SHALL be exact
-executable fixtures.
+Fixture defaults SHALL explicitly provide:
+
+- tool name, audience, and approval mode;
+- interactive capability;
+- session identity and safe root;
+- project safe root and inherited cwd;
+- persistent-store status; and
+- a fixed clock.
+
+Each case SHALL provide canonical shell environment and initial cwd. Parser facts SHALL use
+command indexes. Policy facts SHALL use stable candidate IDs. Every stored
+grant SHALL carry a canonical shell tag. D02, D03, D07, D08, D09, D10, D11,
+D14, D17, and D18 SHALL be exact executable fixtures. Tests SHALL deserialize
+the schema through source-generated `System.Text.Json` metadata and reject
+unknown members.
 
 Additional adversarial rows SHALL cover dynamic identity, deny-only wrappers,
 redirects, protected paths, prefix collisions, runtime iterators, PowerShell
@@ -558,6 +590,45 @@ paths SHALL retain existing strict checks.
 - **AND** the correction tells the agent to declare the exact cwd and retry the
   exact command unchanged
 
+#### Scenario: Subagent scope correction precedes parent approval
+
+- **GIVEN** a subagent submits eligible reviewed-safe shell work beneath an
+  undeclared cwd
+- **AND** its registered `set_working_directory` tool accepts that exact cwd
+- **WHEN** policy would otherwise open the parent approval bridge
+- **THEN** the subagent returns the same scope-declaration correction as a
+  parent session
+- **AND** it does not execute the shell command or request parent approval
+- **AND** the authored tool call remains unchanged in model history
+
+#### Scenario: Subagent declaration applies to the unchanged retry
+
+- **GIVEN** a subagent received a scope-declaration correction
+- **WHEN** it calls `set_working_directory` with the exact suggested cwd
+- **THEN** the child replaces its local project-scope snapshot
+- **AND** it reloads project instructions before the next model call
+- **AND** an unchanged eligible shell retry uses the declared child scope
+- **AND** the child does not replace the parent project directory
+
+#### Scenario: Headless subagent declaration does not grant authority
+
+- **GIVEN** a headless subagent received a scope-declaration correction
+- **AND** it successfully declared the exact suggested cwd
+- **WHEN** it retries the unchanged shell call
+- **THEN** the declared child scope prevents another correction
+- **AND** the retry follows ordinary headless authority rules
+- **AND** the declaration does not grant reviewed-safe, session, or persistent
+  authority
+
+#### Scenario: Subagent keeps the approval bridge when scope cannot change
+
+- **GIVEN** a subagent submits eligible reviewed-safe shell work beneath an
+  undeclared cwd
+- **AND** `set_working_directory` is absent or rejects that cwd
+- **WHEN** policy requires approval
+- **THEN** the scope-declaration correction does not apply
+- **AND** the existing parent approval bridge handles the request
+
 #### Scenario: Scope correction cannot hide unsafe work
 
 - **GIVEN** any candidate lacks reviewed-safe phrase coverage
@@ -567,7 +638,8 @@ paths SHALL retain existing strict checks.
 - **OR** `set_working_directory` is unavailable
 - **OR** `set_working_directory` policy would reject or substitute the cwd
 - **WHEN** policy evaluates the call
-- **THEN** the scope-declaration correction does not apply
+- **THEN** the scope-declaration correction does not apply in a parent session
+  or subagent
 - **AND** the normal approval or deny result remains
 
 #### Scenario: Unsafe argument surface excludes whole phrase
@@ -601,15 +673,29 @@ Authorization SHALL use canonical ShellSyntaxTree completeness rather than a
 second control-flow tokenizer. Supported static loops SHALL expose candidates.
 Unsupported branches and runtime-generated loops SHALL remain strict.
 
+An effective finite argument SHALL enter path policy when the parser-owned
+`Argument.IsPath` role is true. ShellSyntaxTree 0.3.3 `Exact` and `FiniteSet`
+`AuthoredFileSystemValue` facts SHALL also enter path policy. Unknown and all
+other alternatives SHALL stay strict. `AuthoredPathShape` SHALL NOT substitute
+for the stronger fact or create file authority.
+
 A legacy scanner MAY add a denial when canonical analysis is incomplete. It
 SHALL NOT allow, create candidates, create persistent options, or widen scope.
 
-#### Scenario: Static loop exposes authored candidates
+#### Scenario: ShellSyntaxTree 0.3.2 keeps D14 path coverage strict
 
-- **GIVEN** ShellSyntaxTree 0.3.2 reports D14 authored values and the existing
-  parser-owned `Argument.IsPath` role
+- **GIVEN** ShellSyntaxTree 0.3.2 reports D14 finite authored values
+- **AND** its effective argument has `Argument.IsPath` false
 - **WHEN** the maintainer-approved authored-source policy evaluates it
-- **THEN** finite `cat` paths are checked individually
+- **THEN** the authored values do not create file authority
+- **AND** lexical `AuthoredPathShape` does not cover the candidate
+
+#### Scenario: ShellSyntaxTree 0.3.3 unlocks finite D14 path checks
+
+- **GIVEN** ShellSyntaxTree 0.3.3 reports a finite D14
+  `AuthoredFileSystemValue`
+- **WHEN** the maintainer-approved authored-source policy evaluates it
+- **THEN** each finite `cat` path passes `ToolPathPolicy`
 - **AND** the presence of `for` alone does not force a prompt
 
 #### Scenario: Runtime iterator stays one-time
@@ -672,9 +758,9 @@ ShellSyntaxTree analysis.
 
 PowerShell SHALL use the selected dialect and `PwshInitialStateMode.Unknown`.
 Netclaw SHALL use effective values for runtime and deny policy. It MAY use
-ShellSyntaxTree 0.3.2 authored values only for the explicitly approved approval
-perspective. Unknown policy-relevant values SHALL not create reusable or safe
-coverage.
+authored values only for the approved approval perspective. It SHALL route
+ShellSyntaxTree 0.3.3 authored filesystem values through path policy. Unknown
+policy-relevant values SHALL not create reusable or safe coverage.
 
 Deny-only defensive scans MAY deny incomplete input but SHALL never authorize
 it.

@@ -1326,9 +1326,16 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         bool hasOAuthRuntimeHints,
         DateTimeOffset errorAt)
     {
+        // A stdio server is a local child process: no HTTP request is ever made for it, so
+        // no HTTP status can genuinely appear in its failure. The spawn-failure message
+        // routinely embeds caller-supplied data -- the command name, a working directory --
+        // that can coincidentally look like a status code (e.g. a GUID substring landing on
+        // "401"), so status sniffing is skipped outright for this transport.
+        var isStdioTransport = entry.Transport is "stdio";
+
         if (IsAuthFailure(ex))
         {
-            if (!hasCachedTokens && entry.Transport is not "stdio" && hasOAuthRuntimeHints)
+            if (!hasCachedTokens && !isStdioTransport && hasOAuthRuntimeHints)
             {
                 // "Awaiting auth" -- which sends the operator to `netclaw mcp auth` -- is only
                 // correct for a genuine OAuth challenge: a Bearer WWW-Authenticate response (or
@@ -1340,7 +1347,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                 // carrying the HTTP status instead.
                 return IsOAuthChallenge(ex)
                     ? CreateAwaitingAuthStatus(serverName, errorAt)
-                    : CreateUnreachableStatus(serverName, ex, errorAt);
+                    : CreateUnreachableStatus(serverName, ex, errorAt, isStdioTransport);
             }
 
             return CreateAuthFailedStatus(
@@ -1350,7 +1357,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                 errorAt);
         }
 
-        return CreateUnreachableStatus(serverName, ex, errorAt);
+        return CreateUnreachableStatus(serverName, ex, errorAt, isStdioTransport);
     }
 
     internal static McpServerStatus CreateAwaitingAuthStatus(
@@ -1387,17 +1394,18 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
     internal static McpServerStatus CreateUnreachableStatus(
         McpServerName serverName,
         Exception ex,
-        DateTimeOffset errorAt)
+        DateTimeOffset errorAt,
+        bool isStdioTransport)
         => new(
             serverName,
             McpConnectionState.Unreachable,
             0,
-            GetSafeConnectionFailure(ex),
+            GetSafeConnectionFailure(ex, isStdioTransport),
             errorAt);
 
-    private static string GetSafeConnectionFailure(Exception ex)
+    private static string GetSafeConnectionFailure(Exception ex, bool isStdioTransport)
     {
-        var status = FindHttpStatus(ex);
+        var status = isStdioTransport ? null : FindHttpStatus(ex);
         if (status is not null)
             return $"MCP server request failed (HTTP {(int)status.Value} {status.Value}).";
         if (ex is TimeoutException or TaskCanceledException)
@@ -1625,6 +1633,17 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         }
     }
 
+    /// <summary>
+    /// Reads an HTTP status from an exception chain. Only two anchored shapes are trusted: a
+    /// typed <see cref="HttpRequestException.StatusCode"/>, and the literal "status {Name}" /
+    /// "HTTP {code}" text the MCP SDK and .NET's own <c>HttpClient</c> use when they report one
+    /// (see the SDK's <c>HttpResponseMessageExtensions.CreateHttpRequestException</c> and
+    /// <see cref="McpOAuthClientRegistrar"/>, both of which set the typed status too). A bare
+    /// digit or word match (e.g. <c>Contains("401")</c>) is deliberately not used: exception
+    /// messages routinely embed caller-supplied data -- command names, file paths, GUIDs -- and
+    /// a coincidental "401"/"403" substring there would misreport an unrelated failure as an
+    /// HTTP auth rejection.
+    /// </summary>
     private static HttpStatusCode? FindHttpStatus(Exception ex)
     {
         if (ex is HttpRequestException { StatusCode: { } status })
@@ -1635,12 +1654,6 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                 || ex.Message.Contains($"HTTP {(int)candidate}", StringComparison.OrdinalIgnoreCase))
                 return candidate;
         }
-        if (ex.Message.Contains("403", StringComparison.Ordinal)
-            || ex.Message.Contains("Forbidden", StringComparison.OrdinalIgnoreCase))
-            return HttpStatusCode.Forbidden;
-        if (ex.Message.Contains("401", StringComparison.Ordinal)
-            || ex.Message.Contains("Unauthorized", StringComparison.OrdinalIgnoreCase))
-            return HttpStatusCode.Unauthorized;
         return ex.InnerException is null ? null : FindHttpStatus(ex.InnerException);
     }
 

@@ -29,40 +29,24 @@ internal sealed class ToolApprovalActor : ReceiveActor
 
         Receive<GetUnapprovedPatterns>(msg =>
         {
-            // Snapshot the persisted approvals once per message — every
-            // pattern in the same call evaluates against the same on-disk
-            // state, and Load() does a synchronous file read + JSON parse
-            // each call. For a compound shell with N candidate verbs this
-            // collapses N reads into 1.
-            IReadOnlyList<ApprovalEntry> approved = [];
-            ApprovalStoreFailure? storeFailure = null;
-            if (_persistentStore is not null)
-            {
-                var load = _persistentStore.TryLoad();
-                ReportMigrationOmissions();
-                if (load is ApprovalStoreLoadResult.Ready ready &&
-                    ready.Data.Audiences.TryGetValue(msg.Audience.ToWireValue(), out var tools) &&
-                    tools.TryGetValue(msg.ToolName.Value, out var entries))
-                {
-                    approved = entries;
-                }
-                else if (load is ApprovalStoreLoadResult.Unavailable unavailable)
-                {
-                    storeFailure = unavailable.Failure;
-                }
-            }
+            var snapshot = LoadPersistentSnapshot(msg.Audience, msg.ToolName);
 
             var unapproved = new List<string>(msg.Candidates.Count);
             var candidateChecks = new List<ToolApprovalCandidateCheck>(msg.Candidates.Count);
             var approvedMatches = new List<ToolApprovalMatch>(msg.Candidates.Count);
             foreach (var candidate in msg.Candidates)
             {
-                var match = MatchApproval(msg.SessionId, msg.Audience, msg.ToolName, candidate, msg.Cwd, approved);
+                var match = MatchApproval(
+                    msg.SessionId,
+                    msg.Audience,
+                    msg.ToolName,
+                    candidate,
+                    msg.Cwd,
+                    snapshot.Approvals);
                 candidateChecks.Add(new ToolApprovalCandidateCheck(candidate, match));
                 if (match is null)
                 {
                     unapproved.Add(candidate.Verb);
-                    LogApprovalNearMisses(msg.ToolName, candidate, msg.Cwd, approved);
                     continue;
                 }
 
@@ -73,8 +57,40 @@ internal sealed class ToolApprovalActor : ReceiveActor
                 new ToolApprovalCheckResult(unapproved, approvedMatches)
                 {
                     CandidateChecks = candidateChecks,
-                    PersistentStoreFailure = storeFailure
+                    PersistentStoreFailure = snapshot.Failure
                 }));
+        });
+
+        Receive<MatchShellCandidates>(msg =>
+        {
+            var snapshot = LoadPersistentSnapshot(msg.Audience, msg.ToolName);
+            var candidateMatches = new List<ShellGrantCandidateMatch>(msg.Candidates.Count);
+            foreach (var candidate in msg.Candidates)
+            {
+                var grantEvaluation = EvaluateShellApproval(
+                    msg.SessionId,
+                    msg.Audience,
+                    msg.ToolName,
+                    candidate.Candidate,
+                    candidate.RealDirectory,
+                    snapshot.Approvals);
+                candidateMatches.Add(new ShellGrantCandidateMatch(
+                    candidate.CandidateId,
+                    grantEvaluation.Match,
+                    grantEvaluation.Coverage,
+                    grantEvaluation.NearMisses)
+                {
+                    GrantCreatedAt = grantEvaluation.GrantCreatedAt
+                });
+            }
+
+            var storeStatus = snapshot.Failure is { } failure
+                ? (PersistentGrantStoreStatus)new PersistentGrantStoreStatus.Unavailable(failure)
+                : new PersistentGrantStoreStatus.Ready();
+            Sender.Tell(new ShellApprovalMatchResponse(
+                new ShellApprovalMatchResult(
+                    storeStatus,
+                    Array.AsReadOnly(candidateMatches.ToArray()))));
         });
 
         Receive<RecordToolApproval>(msg =>
@@ -186,6 +202,27 @@ internal sealed class ToolApprovalActor : ReceiveActor
     public static Props CreateProps(ToolApprovalStore? persistentStore = null)
         => Props.Create(() => new ToolApprovalActor(persistentStore));
 
+    private PersistentApprovalSnapshot LoadPersistentSnapshot(
+        TrustAudience audience,
+        ToolName toolName)
+    {
+        if (_persistentStore is null)
+            return new PersistentApprovalSnapshot([], Failure: null);
+
+        var load = _persistentStore.TryLoad();
+        ReportMigrationOmissions();
+        if (load is ApprovalStoreLoadResult.Ready ready
+            && ready.Data.Audiences.TryGetValue(audience.ToWireValue(), out var tools)
+            && tools.TryGetValue(toolName.Value, out var entries))
+        {
+            return new PersistentApprovalSnapshot(entries, Failure: null);
+        }
+
+        return load is ApprovalStoreLoadResult.Unavailable unavailable
+            ? new PersistentApprovalSnapshot([], unavailable.Failure)
+            : new PersistentApprovalSnapshot([], Failure: null);
+    }
+
     private ToolApprovalMatch? MatchApproval(SessionId? sessionId, TrustAudience audience, ToolName toolName, ApprovalCandidate candidate, string? cwd, IReadOnlyList<ApprovalEntry> persistedApprovals)
     {
         if (sessionId.HasValue &&
@@ -193,6 +230,47 @@ internal sealed class ToolApprovalActor : ReceiveActor
             return new ToolApprovalMatch(candidate.Verb, "session", "this chat");
 
         return MatchPersistedEntry(toolName, candidate, cwd, persistedApprovals);
+    }
+
+    private ShellActorGrantEvaluation EvaluateShellApproval(
+        SessionId? sessionId,
+        TrustAudience audience,
+        ToolName toolName,
+        ApprovalCandidate candidate,
+        string? cwd,
+        IReadOnlyList<ApprovalEntry> persistedApprovals)
+    {
+        if (sessionId.HasValue
+            && IsSessionApproved(sessionId.Value, audience, toolName, candidate))
+        {
+            return new ShellActorGrantEvaluation(
+                new ToolApprovalMatch(candidate.Verb, "session", "this chat"),
+                ShellCoverageKind.Session,
+                GrantCreatedAt: null,
+                NearMisses: []);
+        }
+
+        var evaluation = ApprovalPatternMatching.EvaluateShellApproval(
+            candidate,
+            cwd,
+            persistedApprovals,
+            maximumNearMisses: 1);
+        if (evaluation.MatchedEntry is { } entry)
+        {
+            return new ShellActorGrantEvaluation(
+                new ToolApprovalMatch(candidate.Verb, "persistent", entry.FormatScope()),
+                entry.Directory is null
+                    ? ShellCoverageKind.PersistentGlobal
+                    : ShellCoverageKind.PersistentFolder,
+                entry.CreatedAt,
+                NearMisses: []);
+        }
+
+        return new ShellActorGrantEvaluation(
+            Match: null,
+            Coverage: null,
+            GrantCreatedAt: null,
+            evaluation.NearMisses);
     }
 
     private bool IsSessionApproved(
@@ -352,39 +430,18 @@ internal sealed class ToolApprovalActor : ReceiveActor
         return null;
     }
 
-    /// <summary>
-    /// Emits a diagnostic when a shell pattern is prompted for despite a
-    /// persisted grant existing for the same verb — the operator's
-    /// "I already approved this" case. Read-only: it does not affect the
-    /// gate decision. Non-shell tools authorize on a verb match alone, so a
-    /// same-verb persisted entry would have approved them; nothing to explain.
-    /// </summary>
-    private void LogApprovalNearMisses(ToolName toolName, ApprovalCandidate candidate, string? cwd, IReadOnlyList<ApprovalEntry> approved)
-    {
-        if (!string.Equals(toolName.Value, ShellTool.ToolName, StringComparison.Ordinal))
-            return;
-
-        var nearMisses = ApprovalPatternMatching.ExplainShellNearMisses(
-            candidate.Verb, candidate.Directory, cwd, approved);
-
-        foreach (var miss in nearMisses)
-        {
-            _log.Info(
-                "approval_near_miss tool={ToolName} verb={CandidateVerb} candidate_dir={CandidateDirectory} cwd={Cwd}",
-                toolName.Value,
-                candidate.Verb,
-                candidate.Directory ?? "(none)",
-                cwd ?? "(none)");
-            _log.Info(
-                "approval_near_miss grant={GrantScope} grant_created_at={GrantCreatedAt} reason={Reason}",
-                miss.Grant.FormatScope(),
-                miss.Grant.CreatedAt?.ToString("u") ?? "unknown",
-                miss.Describe());
-        }
-    }
-
     private static string BuildSessionKey(SessionId sessionId, TrustAudience audience)
         => $"{sessionId.Value}|{audience.ToWireValue()}";
+
+    private sealed record PersistentApprovalSnapshot(
+        IReadOnlyList<ApprovalEntry> Approvals,
+        ApprovalStoreFailure? Failure);
+
+    private sealed record ShellActorGrantEvaluation(
+        ToolApprovalMatch? Match,
+        ShellCoverageKind? Coverage,
+        DateTimeOffset? GrantCreatedAt,
+        IReadOnlyList<ShellApprovalNearMiss> NearMisses);
 }
 
 internal sealed record ToolApprovalRecorded(ApprovalStoreFailure? Failure)
