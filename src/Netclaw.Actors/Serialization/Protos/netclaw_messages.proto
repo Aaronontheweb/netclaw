@@ -143,6 +143,7 @@ message TurnRecordedProto {
   optional string source_background_job_id = 6;
   repeated string consumed_input_ids = 7;
   repeated SessionTranscriptEntryProto transcript_entries = 8;
+  repeated SerializableChatMessageProto user_messages = 9;
 }
 
 message InputAdmittedProto {
@@ -184,6 +185,7 @@ message ToolBatchStartedProto {
   SerializableChatMessageProto assistant_message = 3;
   int64 started_at_ms = 4;
   repeated string consumed_input_ids = 5;
+  repeated SerializableChatMessageProto user_messages = 6;
 }
 
 message ToolCallRecordedProto {

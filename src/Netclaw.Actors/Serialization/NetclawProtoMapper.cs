@@ -278,6 +278,7 @@ internal static class NetclawProtoMapper
             proto.SourceBackgroundJobId = backgroundJobId.Value;
         proto.ConsumedInputIds.AddRange(evt.ConsumedInputIds.Select(static id => id.Value));
         proto.TranscriptEntries.AddRange(evt.TranscriptEntries.Select(ToProto));
+        proto.UserMessages.AddRange(evt.UserMessages.Select(ToProto));
         return proto;
     }
 
@@ -290,7 +291,8 @@ internal static class NetclawProtoMapper
         SourceReminderId = proto.HasSourceReminderId ? new ReminderId(proto.SourceReminderId) : (ReminderId?)null,
         SourceBackgroundJobId = proto.HasSourceBackgroundJobId ? new BackgroundJobId(proto.SourceBackgroundJobId) : (BackgroundJobId?)null,
         ConsumedInputIds = proto.ConsumedInputIds.Select(static id => new InputId(id)).ToArray(),
-        TranscriptEntries = proto.TranscriptEntries.Select(FromProto).ToArray()
+        TranscriptEntries = proto.TranscriptEntries.Select(FromProto).ToArray(),
+        UserMessages = proto.UserMessages.Select(FromProto).ToArray()
     };
 
     internal static Proto.InputAdmittedProto ToProto(InputAdmitted evt)
@@ -396,6 +398,7 @@ internal static class NetclawProtoMapper
             StartedAtMs = evt.StartedAtMs
         };
         proto.ConsumedInputIds.AddRange(evt.ConsumedInputIds.Select(static id => id.Value));
+        proto.UserMessages.AddRange(evt.UserMessages.Select(ToProto));
         return proto;
     }
 
@@ -403,6 +406,7 @@ internal static class NetclawProtoMapper
     {
         SessionId = FromProto(proto.SessionId),
         UserMessage = FromProto(proto.UserMessage),
+        UserMessages = proto.UserMessages.Select(FromProto).ToArray(),
         AssistantMessage = FromProto(proto.AssistantMessage),
         StartedAtMs = proto.StartedAtMs,
         ConsumedInputIds = proto.ConsumedInputIds.Select(static id => new InputId(id)).ToArray()
