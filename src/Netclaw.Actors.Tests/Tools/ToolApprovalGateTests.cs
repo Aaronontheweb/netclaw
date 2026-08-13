@@ -990,36 +990,27 @@ public sealed class ToolApprovalGateTests
     public void Shell_relative_path_command_extracts_verb_chain_without_directory_roots()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var logs = Path.Combine(root, "logs");
-        Directory.CreateDirectory(logs);
+        const string root = "/netclaw-approval-test/workspace";
 
-        try
-        {
-            var args = ToolInput.Create(
-                "Command", "grep timeout logs/app.log | wc -l",
-                "WorkingDirectory", root);
+        var args = ToolInput.Create(
+            "Command", "grep timeout logs/app.log | wc -l",
+            "WorkingDirectory", root);
 
-            var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+        var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
 
-            Assert.True(decision.NeedsApproval);
-            // Pipelines stay inside one approval unit, so the candidate is
-            // the verb chain of the unit's first command (path-aware
-            // "grep <first-arg>").
-            Assert.Contains(decision.ApprovalContext!.CandidateVerbs, v => v.StartsWith("grep", StringComparison.Ordinal));
-            // Button labels are fixed; Slack's 76-char and Discord's 80-char
-            // button caps make dynamic labels structurally unsafe.
-            Assert.Equal(
-                ApprovalOptionKeys.ApproveSessionLabel,
-                decision.ApprovalContext.Options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveSession).Label);
-            Assert.Equal(
-                ApprovalOptionKeys.ApproveAlwaysLabel,
-                decision.ApprovalContext.Options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveAlways).Label);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
+        Assert.True(decision.NeedsApproval);
+        // Pipelines stay inside one approval unit, so the candidate is
+        // the verb chain of the unit's first command (path-aware
+        // "grep <first-arg>").
+        Assert.Contains(decision.ApprovalContext!.CandidateVerbs, v => v.StartsWith("grep", StringComparison.Ordinal));
+        // Button labels are fixed; Slack's 76-char and Discord's 80-char
+        // button caps make dynamic labels structurally unsafe.
+        Assert.Equal(
+            ApprovalOptionKeys.ApproveSessionLabel,
+            decision.ApprovalContext.Options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveSession).Label);
+        Assert.Equal(
+            ApprovalOptionKeys.ApproveAlwaysLabel,
+            decision.ApprovalContext.Options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveAlways).Label);
     }
 
     [Fact]
@@ -1087,10 +1078,63 @@ public sealed class ToolApprovalGateTests
         var narrowed = ToolAccessPolicy.NarrowShellApprovalContext(
             original,
             [candidate],
-            sessionDirectory: null);
+            sessionDirectory: null,
+            ShellPathStyle.Posix);
 
         Assert.Equal(
             [ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.Deny],
             narrowed.Options.Select(static option => option.Key.Value));
+    }
+
+    [Theory]
+    [InlineData("/", ShellPathStyle.Posix, false)]
+    [InlineData("/etc", ShellPathStyle.Posix, false)]
+    [InlineData("/home/user", ShellPathStyle.Posix, true)]
+    [InlineData("/home//user", ShellPathStyle.Posix, false)]
+    [InlineData("/etc/..", ShellPathStyle.Posix, false)]
+    [InlineData("relative/repo", ShellPathStyle.Posix, false)]
+    [InlineData(@"C:\", ShellPathStyle.Windows, false)]
+    [InlineData(@"C:\Windows", ShellPathStyle.Windows, false)]
+    [InlineData(@"C:\Users\user", ShellPathStyle.Windows, true)]
+    [InlineData(@"C:\Users\\user", ShellPathStyle.Windows, false)]
+    [InlineData(@"\\server\share", ShellPathStyle.Windows, false)]
+    [InlineData(@"\\server\share\folder", ShellPathStyle.Windows, false)]
+    [InlineData(@"\\server\share\folder\repo", ShellPathStyle.Windows, true)]
+    [InlineData("\\\\ser\nver\\share\\folder\\repo", ShellPathStyle.Windows, false)]
+    [InlineData("\\\\server\\sha\nre\\folder\\repo", ShellPathStyle.Windows, false)]
+    [InlineData(@"\\server\\share\folder\repo", ShellPathStyle.Windows, false)]
+    [InlineData(@"\\server\..\folder\repo", ShellPathStyle.Windows, false)]
+    [InlineData(@"\\.\share\folder\repo", ShellPathStyle.Windows, false)]
+    [InlineData(@"\\?\C:\folder\repo", ShellPathStyle.Windows, false)]
+    [InlineData("\\\\server\\share\\folder\\repo\\", ShellPathStyle.Windows, false)]
+    [InlineData(@"C:\work", (ShellPathStyle)999, false)]
+    public void Narrow_shell_context_uses_root_relative_scope_depth(
+        string cwd,
+        ShellPathStyle pathStyle,
+        bool offersAlwaysHere)
+    {
+        var candidate = new ApprovalCandidate("git status", cwd)
+        {
+            Shell = ApprovalShell.Bash,
+            VerbTokens = ["git", "status"]
+        };
+        var original = new ToolApprovalContext(
+            "shell_execute",
+            "git status",
+            ["git status"],
+            ["git status"],
+            [],
+            Cwd: cwd,
+            Candidates: [candidate]);
+
+        var narrowed = ToolAccessPolicy.NarrowShellApprovalContext(
+            original,
+            [candidate],
+            sessionDirectory: null,
+            pathStyle);
+
+        Assert.Equal(
+            offersAlwaysHere,
+            narrowed.Options.Any(option => option.Key.Value == ApprovalOptionKeys.ApproveAlways));
     }
 }

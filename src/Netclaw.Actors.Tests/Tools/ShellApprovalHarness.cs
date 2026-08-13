@@ -28,7 +28,8 @@ internal sealed record ObservedApproval(
 internal sealed record ShellApprovalHarnessScope(
     string ProjectDirectory,
     string SessionDirectory,
-    string InvocationSessionId);
+    string InvocationSessionId,
+    IReadOnlyList<string> OneTimeApprovalKeys);
 
 internal sealed class ShellApprovalHarness : IAsyncDisposable
 {
@@ -101,7 +102,7 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
         var approvalProjectDirectory = scope?.ProjectDirectory ?? projectDirectory;
         var approvalSessionDirectory = scope?.SessionDirectory ?? sessionDirectory;
         var approvalExternalDirectory = externalDirectory;
-        if (environment.PathStyle == ShellPathStyle.Windows)
+        if (environment.PathStyle == ShellPathStyle.Windows && scope is null)
         {
             var windowsRoot = $"C:/netclaw-approval-matrix/{Guid.NewGuid():N}";
             approvalProjectDirectory = $"{windowsRoot}/project";
@@ -207,6 +208,12 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
                 ProjectDirectory = approvalProjectDirectory,
                 InteractiveApproval = TestToolExecutionContext.InteractiveApproval(invocation.Interactive)
             });
+        if (scope?.OneTimeApprovalKeys is { Count: > 0 } oneTimeApprovalKeys)
+        {
+            context.Approval.SeedOneTimeApproval(
+                ShellTool.ToolName,
+                oneTimeApprovalKeys);
+        }
 
         return new ShellApprovalHarness(
             rootDirectory,
