@@ -1414,7 +1414,7 @@ static void WriteChatHelp()
     Console.WriteLine("  Enter               Send the prompt");
     Console.WriteLine("  Shift+Enter         Add a line to the prompt");
     Console.WriteLine("  Up / Down           Recall prompts and restore the current draft");
-    Console.WriteLine("  Esc Esc             Clear the prompt");
+    Console.WriteLine("  Esc x2              Clear the prompt");
     Console.WriteLine("  Ctrl+O              Open the Inspector or expand an approval");
     Console.WriteLine("  Y / Shift+Y         Copy an Inspector event or its complete turn");
     Console.WriteLine("  Ctrl+Q              Exit chat");
