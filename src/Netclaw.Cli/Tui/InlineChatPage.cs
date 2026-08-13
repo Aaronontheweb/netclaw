@@ -51,7 +51,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     private ChatPresentationState _state = ChatPresentationState.Empty;
     private Task _commitTail = Task.CompletedTask;
     private readonly List<ChatPresentationBlock> _deferredInspectorCommits = [];
-    private readonly Queue<string> _queuedPromptDisplays = new();
+    private readonly List<QueuedPromptDisplay> _queuedPromptDisplays = [];
     private long? _lastEscapeTimestamp;
     private int _inspectorIndex;
     private bool _inspectorOpen;
@@ -120,9 +120,6 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
                     Focus.SetFocus(_promptInput);
                 _liveRegion.Invalidate();
             })
-            .DisposeWith(Subscriptions);
-        ViewModel.QueuedTurnMessageCount
-            .Subscribe(count => Post(() => PromoteQueuedPrompt(count)))
             .DisposeWith(Subscriptions);
         ViewModel.Input.OfType<IInputEvent, ResizeEvent>()
             .Subscribe(_ => _liveRegion.Invalidate())
@@ -199,11 +196,12 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     {
         _promptInput.Clear();
         _lastEscapeTimestamp = null;
+        var messageId = ChatViewModel.CreateUserMessageId();
         if (ViewModel.IsGenerating.Value)
         {
-            _queuedPromptDisplays.Enqueue(text);
+            _queuedPromptDisplays.Add(new QueuedPromptDisplay(messageId, text, false));
             _liveRegion.Invalidate();
-            _ = ViewModel.SubmitAsync(text);
+            _ = ViewModel.SubmitAsync(text, messageId);
             return;
         }
 
@@ -211,25 +209,35 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             _state,
             text,
             _timeProvider.GetUtcNow().ToUnixTimeMilliseconds()));
-        _ = ViewModel.SubmitAsync(text);
+        _ = ViewModel.SubmitAsync(text, messageId);
     }
 
-    private void PromoteQueuedPrompt(int queuedCount)
+    private void ApplyMessageLifecycle(SessionOutput output)
     {
-        while (_queuedPromptDisplays.Count > queuedCount)
+        switch (output)
         {
-            var prompt = _queuedPromptDisplays.Dequeue();
-            ApplyReduction(ChatPresentationReducer.RecordUserPrompt(
-                _state,
-                prompt,
-                _timeProvider.GetUtcNow().ToUnixTimeMilliseconds()));
+            case UserMessageQueuedOutput queued:
+            {
+                var index = _queuedPromptDisplays.FindIndex(prompt =>
+                    string.Equals(prompt.MessageId, queued.MessageId, StringComparison.Ordinal));
+                if (index >= 0)
+                    _queuedPromptDisplays[index] = _queuedPromptDisplays[index] with { IsAccepted = true };
+                break;
+            }
+            case UserMessagesPulledOutput pulled:
+            {
+                var pulledIds = pulled.Messages
+                    .Select(message => message.MessageId)
+                    .ToHashSet(StringComparer.Ordinal);
+                _queuedPromptDisplays.RemoveAll(prompt => pulledIds.Contains(prompt.MessageId));
+                break;
+            }
         }
-
-        _liveRegion.Invalidate();
     }
 
     private void ApplyOutput(SessionOutput output)
     {
+        ApplyMessageLifecycle(output);
         ApplyReduction(ChatPresentationReducer.Reduce(_state, output));
     }
 
@@ -320,6 +328,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         var hasLiveReply = _state.ReplyPassages.Count > 0
                            || _state.Tools.Count > 0
                            || _state.SubAgents.Count > 0
+                           || _state.AgentPulls.Count > 0
                            || !string.IsNullOrWhiteSpace(_state.ThoughtText);
         content.WithChild(BuildLiveReplyBlock());
         if (hasLiveReply)
@@ -611,9 +620,10 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         foreach (var prompt in _queuedPromptDisplays)
         {
             var preview = ChatPresentationRenderer.OneLine(
-                prompt,
-                Math.Max(20, ReadableWidth() - 8));
-            content.WithChild(new TextNode($"{index,2}  {preview}")
+                prompt.Text,
+                Math.Max(20, ReadableWidth() - 18));
+            var state = prompt.IsAccepted ? "queued" : "sending";
+            content.WithChild(new TextNode($"{index,2}  {state,-7}  {preview}")
                 .WithForeground(ChatVisualTheme.Text));
             index++;
         }
@@ -632,6 +642,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         var hasReply = _state.ReplyPassages.Count > 0
                        || _state.Tools.Count > 0
                        || _state.SubAgents.Count > 0
+                       || _state.AgentPulls.Count > 0
                        || !string.IsNullOrWhiteSpace(_state.ThoughtText);
         if (!hasReply)
             return Layouts.Empty();
@@ -655,6 +666,12 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             .ToList();
         var renderedAgents = new HashSet<string>(StringComparer.Ordinal);
         var renderedTools = new HashSet<string>(StringComparer.Ordinal);
+        var renderedPulls = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var pull in _state.AgentPulls.Where(pull => pull.AfterPassageIndex < 0))
+        {
+            reply.WithChild(BuildAgentPull(pull, lineWidth));
+            renderedPulls.Add(pull.BatchId);
+        }
         foreach (var passage in _state.ReplyPassages.OrderBy(value => value.Index))
         {
             if (!string.IsNullOrWhiteSpace(passage.Text))
@@ -693,6 +710,13 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
                     renderedTools.Add(tool.CallId);
                 }
             }
+
+            foreach (var pull in _state.AgentPulls.Where(pull =>
+                         pull.AfterPassageIndex == passage.Index))
+            {
+                reply.WithChild(BuildAgentPull(pull, lineWidth));
+                renderedPulls.Add(pull.BatchId);
+            }
         }
 
         foreach (var tool in _state.Tools.Values
@@ -703,6 +727,8 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         }
         foreach (var run in agents.Where(value => !renderedAgents.Contains(value.RunId)))
             reply.WithChild(BuildAgentActivity(run, lineWidth));
+        foreach (var pull in _state.AgentPulls.Where(pull => !renderedPulls.Contains(pull.BatchId)))
+            reply.WithChild(BuildAgentPull(pull, lineWidth));
 
         var maximumHeight = Math.Max(5, Math.Min(18, _terminal.Height / 2));
         _assistantStream ??= new ScrollableContainerNode()
@@ -719,6 +745,23 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
                 max: Math.Max(1, maximumHeight - 2)))
             .Width(ReadableWidth())
             .HeightAuto(min: 3, max: maximumHeight);
+    }
+
+    private static ILayoutNode BuildAgentPull(AgentPullPresentation pull, int lineWidth)
+    {
+        var countLabel = pull.Messages.Count == 1 ? "1 message" : $"{pull.Messages.Count} messages";
+        var rows = Layouts.Vertical()
+            .WithChild(new TextNode($"Pulled by agent  · {countLabel}")
+                .WithForeground(ChatVisualTheme.Muted));
+        foreach (var message in pull.Messages)
+        {
+            rows.WithChild(new TextNode(ChatPresentationRenderer.OneLine(
+                    $"  {message.Content}",
+                    lineWidth))
+                .WithForeground(ChatVisualTheme.Text));
+        }
+
+        return rows;
     }
 
     private ILayoutNode BuildToolActivity(
@@ -1219,6 +1262,8 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
 
     private bool ShowsComposer(ChatPresentationState state) =>
         state.PendingApproval is null;
+
+    private sealed record QueuedPromptDisplay(string MessageId, string Text, bool IsAccepted);
 }
 
 internal static partial class ChatPresentationRenderer

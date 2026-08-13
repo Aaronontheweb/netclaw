@@ -347,6 +347,37 @@ public static partial class SessionProtocol
     }
 
     /// <summary>
+    /// Signals that the session actor accepted a user message into its active-turn buffer.
+    /// Requires <see cref="OutputFilter.MessageLifecycle"/>.
+    /// </summary>
+    public sealed record UserMessageQueuedOutput : SessionOutput
+    {
+        public required string MessageId { get; init; }
+
+        public required Protocol.TurnId TurnId { get; init; }
+
+        public required int QueueDepth { get; init; }
+    }
+
+    /// <summary>
+    /// One user message that the agent pulled from the active-turn buffer.
+    /// </summary>
+    public sealed record PulledUserMessage(string MessageId, string Content);
+
+    /// <summary>
+    /// Signals that the session actor pulled one ordered user-message batch into model context.
+    /// Requires <see cref="OutputFilter.MessageLifecycle"/>.
+    /// </summary>
+    public sealed record UserMessagesPulledOutput : SessionOutput
+    {
+        public required string BatchId { get; init; }
+
+        public required Protocol.TurnId TurnId { get; init; }
+
+        public required IReadOnlyList<PulledUserMessage> Messages { get; init; }
+    }
+
+    /// <summary>
     /// Session context was compacted to stay within the context window.
     /// Lifecycle — always delivered regardless of <see cref="OutputFilter"/>.
     /// </summary>

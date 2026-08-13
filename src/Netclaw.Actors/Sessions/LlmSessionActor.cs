@@ -508,6 +508,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _deliveryRetry.Clear();
             _log.Info("Buffering user message (LLM call in progress)");
             _buffer.Add(cmd);
+            EmitUserMessageQueued(cmd);
             TryReplyAck();
         });
 
@@ -1164,6 +1165,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
             _log.Info("Buffering user message (compaction in progress)");
             _buffer.Add(cmd);
+            EmitUserMessageQueued(cmd);
             TryReplyAck();
         });
 
@@ -2298,6 +2300,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void AppendBufferedUserMessages()
     {
+        var pulledMessages = _buffer
+            .Where(buffered => !string.IsNullOrWhiteSpace(buffered.Source?.MessageId))
+            .Select(buffered => new PulledUserMessage(
+                buffered.Source!.MessageId!,
+                buffered.Content))
+            .ToArray();
+
         foreach (var buffered in _buffer)
         {
             var refs = buffered.MediaReferences.Count > 0 ? buffered.MediaReferences : null;
@@ -2306,6 +2315,35 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         }
 
         _buffer.Clear();
+
+        if (pulledMessages.Length == 0)
+            return;
+
+        var turnId = _activeTurnId
+            ?? throw new InvalidOperationException("A buffered message batch requires an active turn identity.");
+        EmitOutput(new UserMessagesPulledOutput
+        {
+            SessionId = _sessionId,
+            BatchId = IdGen.ShortId(),
+            TurnId = turnId,
+            Messages = pulledMessages
+        }, OutputFilter.MessageLifecycle);
+    }
+
+    private void EmitUserMessageQueued(SendUserMessage cmd)
+    {
+        if (string.IsNullOrWhiteSpace(cmd.Source?.MessageId))
+            return;
+
+        var turnId = _activeTurnId
+            ?? throw new InvalidOperationException("A queued message requires an active turn identity.");
+        EmitOutput(new UserMessageQueuedOutput
+        {
+            SessionId = _sessionId,
+            MessageId = cmd.Source.MessageId,
+            TurnId = turnId,
+            QueueDepth = _buffer.Count
+        }, OutputFilter.MessageLifecycle);
     }
 
     private void HandleDeliveryFailedWhenReady(DeliveryFailed msg)

@@ -30,6 +30,8 @@ public static class SessionOutputTypes
     public const string SubAgent = "subagent";
     public const string BufferFlush = "buffer_flush";
     public const string ProcessingState = "processing_state";
+    public const string UserMessageQueued = "user_message_queued";
+    public const string UserMessagesPulled = "user_messages_pulled";
     public const string Compaction = "compaction";
     public const string SessionJoined = "session_joined";
     public const string ToolInteraction = "tool_interaction";
@@ -42,6 +44,11 @@ public static class SessionOutputTypes
 /// Used to replay recent history when resuming a session.
 /// </summary>
 public sealed record ChatMessageDto(string Role, string Content);
+
+/// <summary>
+/// One user message in an agent-pull receipt.
+/// </summary>
+public sealed record PulledUserMessageDto(string MessageId, string Content);
 
 /// <summary>
 /// Wire-safe DTO for session output. Flattens the discriminated union
@@ -102,6 +109,12 @@ public sealed record SessionOutputDto
     // Processing State
     public bool? IsProcessing { get; init; }
     public bool? ProcessingStateRequired { get; init; }
+
+    // User message lifecycle
+    public string? MessageId { get; init; }
+    public int? QueueDepth { get; init; }
+    public string? MessageBatchId { get; init; }
+    public List<PulledUserMessageDto>? PulledUserMessages { get; init; }
 
     // Compaction
     public int? MessagesBefore { get; init; }

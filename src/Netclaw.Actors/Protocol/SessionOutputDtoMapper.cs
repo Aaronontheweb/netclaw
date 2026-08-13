@@ -183,6 +183,28 @@ public static class SessionOutputDtoMapper
             ProcessingStateRequired = msg.IsRequired
         },
 
+        UserMessageQueuedOutput msg => new SessionOutputDto
+        {
+            Type = SessionOutputTypes.UserMessageQueued,
+            SessionId = msg.SessionId.Value,
+            TimestampMs = msg.TimestampMs,
+            MessageId = msg.MessageId,
+            TurnId = msg.TurnId.Value,
+            QueueDepth = msg.QueueDepth
+        },
+
+        UserMessagesPulledOutput msg => new SessionOutputDto
+        {
+            Type = SessionOutputTypes.UserMessagesPulled,
+            SessionId = msg.SessionId.Value,
+            TimestampMs = msg.TimestampMs,
+            MessageBatchId = msg.BatchId,
+            TurnId = msg.TurnId.Value,
+            PulledUserMessages = msg.Messages
+                .Select(message => new PulledUserMessageDto(message.MessageId, message.Content))
+                .ToList()
+        },
+
         CompactionOutput msg => new SessionOutputDto
         {
             Type = SessionOutputTypes.Compaction,
@@ -364,6 +386,25 @@ public static class SessionOutputDtoMapper
                 TimestampMs = dto.TimestampMs,
                 IsRequired = dto.ProcessingStateRequired ?? false
             },
+            SessionOutputTypes.UserMessageQueued => new UserMessageQueuedOutput
+            {
+                SessionId = sessionId,
+                TimestampMs = dto.TimestampMs,
+                MessageId = RequireLifecycleValue(dto.MessageId, nameof(dto.MessageId)),
+                TurnId = new TurnId(RequireLifecycleValue(dto.TurnId, nameof(dto.TurnId))),
+                QueueDepth = dto.QueueDepth
+                    ?? throw new InvalidOperationException("A queue lifecycle event requires a queue depth.")
+            },
+            SessionOutputTypes.UserMessagesPulled => new UserMessagesPulledOutput
+            {
+                SessionId = sessionId,
+                TimestampMs = dto.TimestampMs,
+                BatchId = RequireLifecycleValue(dto.MessageBatchId, nameof(dto.MessageBatchId)),
+                TurnId = new TurnId(RequireLifecycleValue(dto.TurnId, nameof(dto.TurnId))),
+                Messages = RequirePulledMessages(dto.PulledUserMessages)
+                    .Select(message => new PulledUserMessage(message.MessageId, message.Content))
+                    .ToList()
+            },
             SessionOutputTypes.Compaction => new CompactionOutput
             {
                 SessionId = sessionId,
@@ -436,6 +477,23 @@ public static class SessionOutputDtoMapper
             return parsed;
 
         return success == false ? SubAgentRunOutcome.Failed : SubAgentRunOutcome.Completed;
+    }
+
+    private static string RequireLifecycleValue(string? value, string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            throw new InvalidOperationException($"A message lifecycle event requires '{fieldName}'.");
+        return value;
+    }
+
+    private static IReadOnlyList<PulledUserMessageDto> RequirePulledMessages(
+        IReadOnlyList<PulledUserMessageDto>? messages)
+    {
+        if (messages is null || messages.Count == 0)
+            throw new InvalidOperationException("An agent pull event requires at least one message.");
+        if (messages.Any(message => string.IsNullOrWhiteSpace(message.MessageId)))
+            throw new InvalidOperationException("An agent pull event requires each message identity.");
+        return messages;
     }
 
     private static SubAgentOutput MapSubAgentOutput(SessionOutputDto dto, SessionId sessionId)

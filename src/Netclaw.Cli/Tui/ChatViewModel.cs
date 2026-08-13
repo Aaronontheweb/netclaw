@@ -37,11 +37,13 @@ public partial class ChatViewModel : ReactiveViewModel
     private string? _initialMessage;
 
     private readonly Subject<SessionOutput> _outputSubject = new();
-    private readonly Queue<string> _pendingMessages = new();
+    private readonly Queue<PendingUserMessage> _pendingMessages = new();
     private readonly object _pendingMessagesGate = new();
     private readonly SemaphoreSlim _sessionAttachGate = new(1, 1);
     private readonly Queue<ToolInteractionRequest> _pendingInteractions = new();
-    private int _queuedTurnMessageCount;
+    private readonly object _queuedTurnMessagesGate = new();
+    private readonly HashSet<string> _queuedTurnMessageIds = new(StringComparer.Ordinal);
+    private int _legacyQueuedTurnMessageCount;
 
     /// <summary>
     /// True while an interaction response is in flight to the daemon. Guards
@@ -161,18 +163,23 @@ public partial class ChatViewModel : ReactiveViewModel
                         _submittedInteractionCallId = null;
                         _isSubmittingInteraction = false;
                         RefreshApprovalOptions();
-                        var promotedCount = PromoteQueuedTurnMessages();
-                        IsGenerating.Value = promotedCount > 0;
-                        StatusMessage.Value = promotedCount > 0
+                        var queuedCount = CompleteLegacyQueuedTurnMessages();
+                        IsGenerating.Value = queuedCount > 0;
+                        StatusMessage.Value = queuedCount > 0
                             ? "Generating..."
                             : "Ready";
+                        break;
+                    case UserMessagesPulledOutput pulled:
+                        RecordPulledTurnMessages(pulled.Messages);
+                        IsGenerating.Value = true;
+                        StatusMessage.Value = "Generating...";
                         break;
                     case ErrorOutput:
                         _pendingInteractions.Clear();
                         _submittedInteractionCallId = null;
                         _isSubmittingInteraction = false;
                         RefreshApprovalOptions();
-                        IsGenerating.Value = Volatile.Read(ref _queuedTurnMessageCount) > 0;
+                        IsGenerating.Value = GetQueuedTurnMessageCount() > 0;
                         break;
                 }
 
@@ -213,7 +220,17 @@ public partial class ChatViewModel : ReactiveViewModel
     /// <summary>
     /// Submit user text to the session pipeline.
     /// </summary>
-    public virtual async Task SubmitAsync(string text)
+    public virtual Task SubmitAsync(string text) => SubmitCoreAsync(text, null);
+
+    public virtual Task SubmitAsync(string text, string messageId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(messageId);
+        return SubmitCoreAsync(text, messageId);
+    }
+
+    internal static string CreateUserMessageId() => $"tui:{Guid.NewGuid():N}";
+
+    private async Task SubmitCoreAsync(string text, string? messageId)
     {
         if (string.IsNullOrWhiteSpace(text))
             return;
@@ -226,9 +243,10 @@ public partial class ChatViewModel : ReactiveViewModel
 
         var isActiveTurnPrompt = IsGenerating.Value;
         if (isActiveTurnPrompt)
-            AddQueuedTurnMessage();
+            AddQueuedTurnMessage(messageId);
 
-        if (TryEnqueuePendingMessageWhenUnavailable(text, out var pendingCount))
+        var pendingMessage = new PendingUserMessage(text, messageId);
+        if (TryEnqueuePendingMessageWhenUnavailable(pendingMessage, out var pendingCount))
         {
             IsGenerating.Value = isActiveTurnPrompt;
             IsInputEnabled.Value = true;
@@ -246,12 +264,12 @@ public partial class ChatViewModel : ReactiveViewModel
 
         try
         {
-            await _daemonClient.SendAsync(text);
+            await SendUserMessageAsync(pendingMessage);
         }
         catch (Exception ex)
         {
             IsInputEnabled.Value = true;
-            SetNotReadyAndEnqueuePendingMessage(text);
+            SetNotReadyAndEnqueuePendingMessage(pendingMessage);
             StatusMessage.Value = $"Send failed ({ex.Message}). Reconnecting...";
             RequestRedraw();
             _ = ConnectUntilReadyAsync();
@@ -263,18 +281,53 @@ public partial class ChatViewModel : ReactiveViewModel
         Shutdown();
     }
 
-    private void AddQueuedTurnMessage()
+    private void AddQueuedTurnMessage(string? messageId)
     {
-        var count = Interlocked.Increment(ref _queuedTurnMessageCount);
+        int count;
+        lock (_queuedTurnMessagesGate)
+        {
+            if (messageId is null)
+                _legacyQueuedTurnMessageCount++;
+            else if (!_queuedTurnMessageIds.Add(messageId))
+                throw new InvalidOperationException($"The queued message ID '{messageId}' is not unique.");
+
+            count = _legacyQueuedTurnMessageCount + _queuedTurnMessageIds.Count;
+        }
+
         QueuedTurnMessageCount.Value = count;
         RequestRedraw();
     }
 
-    private int PromoteQueuedTurnMessages()
+    private void RecordPulledTurnMessages(IReadOnlyList<PulledUserMessage> pulledMessages)
     {
-        var count = Interlocked.Exchange(ref _queuedTurnMessageCount, 0);
-        QueuedTurnMessageCount.Value = 0;
-        return count;
+        int remaining;
+        lock (_queuedTurnMessagesGate)
+        {
+            foreach (var pulled in pulledMessages)
+                _queuedTurnMessageIds.Remove(pulled.MessageId);
+            remaining = _legacyQueuedTurnMessageCount + _queuedTurnMessageIds.Count;
+        }
+
+        QueuedTurnMessageCount.Value = remaining;
+    }
+
+    private int CompleteLegacyQueuedTurnMessages()
+    {
+        int remaining;
+        lock (_queuedTurnMessagesGate)
+        {
+            _legacyQueuedTurnMessageCount = 0;
+            remaining = _queuedTurnMessageIds.Count;
+        }
+
+        QueuedTurnMessageCount.Value = remaining;
+        return remaining;
+    }
+
+    private int GetQueuedTurnMessageCount()
+    {
+        lock (_queuedTurnMessagesGate)
+            return _legacyQueuedTurnMessageCount + _queuedTurnMessageIds.Count;
     }
 
     private async Task SubmitInteractionResponseAsync(string text)
@@ -590,7 +643,7 @@ public partial class ChatViewModel : ReactiveViewModel
 
             while (true)
             {
-                string? pending;
+                PendingUserMessage? pending;
                 lock (_pendingMessagesGate)
                 {
                     pending = _pendingMessages.Count == 0
@@ -600,11 +653,11 @@ public partial class ChatViewModel : ReactiveViewModel
 
                 if (pending is not null)
                 {
-                    await _daemonClient.SendAsync(pending);
+                    await SendUserMessageAsync(pending);
                     lock (_pendingMessagesGate)
                     {
                         if (_pendingMessages.Count == 0
-                            || !string.Equals(_pendingMessages.Peek(), pending, StringComparison.Ordinal))
+                            || _pendingMessages.Peek() != pending)
                         {
                             throw new InvalidOperationException("The pending message queue changed during its ordered flush.");
                         }
@@ -666,7 +719,7 @@ public partial class ChatViewModel : ReactiveViewModel
             _sessionReady = value;
     }
 
-    private bool TryEnqueuePendingMessageWhenUnavailable(string text, out int pendingCount)
+    private bool TryEnqueuePendingMessageWhenUnavailable(PendingUserMessage message, out int pendingCount)
     {
         lock (_pendingMessagesGate)
         {
@@ -676,20 +729,26 @@ public partial class ChatViewModel : ReactiveViewModel
                 return false;
             }
 
-            _pendingMessages.Enqueue(text);
+            _pendingMessages.Enqueue(message);
             pendingCount = _pendingMessages.Count;
             return true;
         }
     }
 
-    private void SetNotReadyAndEnqueuePendingMessage(string text)
+    private void SetNotReadyAndEnqueuePendingMessage(PendingUserMessage message)
     {
         lock (_pendingMessagesGate)
         {
             _sessionReady = false;
-            _pendingMessages.Enqueue(text);
+            _pendingMessages.Enqueue(message);
         }
     }
+
+    private Task SendUserMessageAsync(PendingUserMessage message) => message.MessageId is null
+        ? _daemonClient.SendAsync(message.Text)
+        : _daemonClient.SendWithIdAsync(message.Text, message.MessageId);
+
+    private sealed record PendingUserMessage(string Text, string? MessageId);
 
     protected virtual async Task SubmitInteractionSelectionAsync(string selectedKey)
     {

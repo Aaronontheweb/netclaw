@@ -214,7 +214,7 @@ public sealed class DaemonClientSessionTests
     }
 
     [Fact]
-    public async Task ChatViewModel_sends_all_active_turn_prompts_to_the_session_buffer()
+    public async Task ChatViewModel_keeps_prompts_until_the_agent_pulls_each_identity()
     {
         var transport = new FakeDaemonHubTransport();
         await using var client = new DaemonClient(
@@ -227,15 +227,19 @@ public sealed class DaemonClientSessionTests
         viewModel.StatusMessage.Value = "Generating...";
 
         await Task.WhenAll(
-            viewModel.SubmitAsync("prompt A"),
-            viewModel.SubmitAsync("prompt B"),
-            viewModel.SubmitAsync("prompt C"));
+            viewModel.SubmitAsync("prompt A", "tui:a"),
+            viewModel.SubmitAsync("prompt B", "tui:b"),
+            viewModel.SubmitAsync("prompt C", "tui:c"));
 
         var sends = transport.Invocations
-            .Where(invocation => string.Equals(invocation.Method, "SendMessage", StringComparison.Ordinal))
-            .Select(invocation => Assert.IsType<string>(invocation.Args[1]))
+            .Where(invocation => string.Equals(invocation.Method, "SendMessageWithId", StringComparison.Ordinal))
+            .Select(invocation => (
+                Id: Assert.IsType<string>(invocation.Args[1]),
+                Text: Assert.IsType<string>(invocation.Args[2])))
             .ToList();
-        Assert.Equal(["prompt A", "prompt B", "prompt C"], sends);
+        Assert.Equal(
+            [("tui:a", "prompt A"), ("tui:b", "prompt B"), ("tui:c", "prompt C")],
+            sends);
         Assert.Equal(3, viewModel.QueuedTurnMessageCount.Value);
         Assert.Equal("Generating...", viewModel.StatusMessage.Value);
 
@@ -247,10 +251,45 @@ public sealed class DaemonClientSessionTests
             Outcome = TurnOutcome.Completed
         }));
 
-        Assert.Equal(0, viewModel.QueuedTurnMessageCount.Value);
+        Assert.Equal(3, viewModel.QueuedTurnMessageCount.Value);
         Assert.True(viewModel.IsGenerating.Value);
         Assert.Equal(3, transport.Invocations.Count(invocation =>
-            string.Equals(invocation.Method, "SendMessage", StringComparison.Ordinal)));
+            string.Equals(invocation.Method, "SendMessageWithId", StringComparison.Ordinal)));
+
+        transport.PushOutput(SessionOutputDtoMapper.ToDto(new UserMessagesPulledOutput
+        {
+            SessionId = new SessionId("fake/session"),
+            TimestampMs = 2,
+            BatchId = "other-client-batch",
+            TurnId = new Netclaw.Actors.Protocol.TurnId("turn-2"),
+            Messages = [new PulledUserMessage("other:message", "Other client prompt")]
+        }));
+        Assert.Equal(3, viewModel.QueuedTurnMessageCount.Value);
+
+        transport.PushOutput(SessionOutputDtoMapper.ToDto(new UserMessagesPulledOutput
+        {
+            SessionId = new SessionId("fake/session"),
+            TimestampMs = 3,
+            BatchId = "batch-1",
+            TurnId = new Netclaw.Actors.Protocol.TurnId("turn-2"),
+            Messages =
+            [
+                new PulledUserMessage("tui:a", "prompt A"),
+                new PulledUserMessage("tui:b", "prompt B")
+            ]
+        }));
+        Assert.Equal(1, viewModel.QueuedTurnMessageCount.Value);
+
+        transport.PushOutput(SessionOutputDtoMapper.ToDto(new UserMessagesPulledOutput
+        {
+            SessionId = new SessionId("fake/session"),
+            TimestampMs = 4,
+            BatchId = "batch-2",
+            TurnId = new Netclaw.Actors.Protocol.TurnId("turn-2"),
+            Messages = [new PulledUserMessage("tui:c", "prompt C")]
+        }));
+        Assert.Equal(0, viewModel.QueuedTurnMessageCount.Value);
+        Assert.True(viewModel.IsGenerating.Value);
     }
 
     [Fact]

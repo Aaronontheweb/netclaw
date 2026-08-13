@@ -288,6 +288,51 @@ public sealed class SerializationRoundTripTests : TestKit
     }
 
     [Fact]
+    public void Session_output_DTO_round_trips_user_message_lifecycle_fields()
+    {
+        var queued = new UserMessageQueuedOutput
+        {
+            SessionId = new SessionId("test/wire"),
+            TimestampMs = 3,
+            MessageId = "tui:message-1",
+            TurnId = new Netclaw.Actors.Protocol.TurnId("turn-3"),
+            QueueDepth = 2
+        };
+        var queuedResult = Assert.IsType<UserMessageQueuedOutput>(
+            SessionOutputDtoMapper.FromDto(SessionOutputDtoMapper.ToDto(queued)));
+        Assert.Equal(queued.MessageId, queuedResult.MessageId);
+        Assert.Equal(queued.TurnId, queuedResult.TurnId);
+        Assert.Equal(queued.QueueDepth, queuedResult.QueueDepth);
+
+        var pulled = new UserMessagesPulledOutput
+        {
+            SessionId = new SessionId("test/wire"),
+            TimestampMs = 4,
+            BatchId = "batch-3",
+            TurnId = new Netclaw.Actors.Protocol.TurnId("turn-3"),
+            Messages =
+            [
+                new PulledUserMessage("tui:message-1", "First correction"),
+                new PulledUserMessage("tui:message-2", "Second correction")
+            ]
+        };
+        var pulledResult = Assert.IsType<UserMessagesPulledOutput>(
+            SessionOutputDtoMapper.FromDto(SessionOutputDtoMapper.ToDto(pulled)));
+        Assert.Equal(pulled.BatchId, pulledResult.BatchId);
+        Assert.Equal(pulled.TurnId, pulledResult.TurnId);
+        Assert.Equal(pulled.Messages, pulledResult.Messages);
+
+        Assert.Throws<InvalidOperationException>(() => SessionOutputDtoMapper.FromDto(
+            new SessionOutputDto
+            {
+                Type = SessionOutputTypes.UserMessagesPulled,
+                SessionId = "test/wire",
+                MessageBatchId = "batch-4",
+                TurnId = "turn-4"
+            }));
+    }
+
+    [Fact]
     public void Old_TurnRecorded_proto_reads_with_an_empty_transcript()
     {
         var proto = new Serialization.Proto.TurnRecordedProto
