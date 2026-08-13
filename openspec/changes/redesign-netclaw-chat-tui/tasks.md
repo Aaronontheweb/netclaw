@@ -62,8 +62,8 @@
 - [x] 5.8 Prove that Slack and other restricted subscribers do not receive the new activity.
 - [x] 5.9 Prove that transient activity does not enter model context or the actor journal.
 - [x] 5.10 Add DTO round-trip and old-payload fixtures for all additive fields.
-- [ ] 5.11 Reject a missing, blank, or non-string rationale at the shared execution preflight.
-- [ ] 5.12 Prove rejection, sibling isolation, no approval request, and legacy transcript compatibility.
+- [x] 5.11 Reject a missing, blank, or non-string rationale at the shared execution preflight.
+- [x] 5.12 Prove rejection, sibling isolation, no approval request, and legacy transcript compatibility.
 
 ## 6. Structured Session Resume
 

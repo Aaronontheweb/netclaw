@@ -428,6 +428,8 @@ internal sealed class SessionToolExecutionPipeline
         string? sessionScratchDenialDirectory,
         ModelInputBatchBudget modelInputBudget)
     {
+        var originalToolCall = tc;
+
         // Single execution-preflight seam, shared with the sub-agent path via
         // IToolExecutor.InterpretToolCall: validate the ORIGINAL arguments (parse
         // sentinel, invalid/ambiguous meta values, unrecognized keys) and, on
@@ -685,7 +687,7 @@ internal sealed class SessionToolExecutionPipeline
             }
 
             resultText = await ExecuteToolAttemptAsync(
-                _executor, tc, context, timeout, _timeProvider, EmitToolActivity, batch.CancellationToken);
+                _executor, originalToolCall, context, timeout, _timeProvider, EmitToolActivity, batch.CancellationToken);
             sw.Stop();
 
         }
@@ -825,7 +827,7 @@ internal sealed class SessionToolExecutionPipeline
                 }
 
                 resultText = await ExecuteToolAttemptAsync(
-                    _executor, tc, context, timeout, _timeProvider, EmitToolActivity, batch.CancellationToken);
+                    _executor, originalToolCall, context, timeout, _timeProvider, EmitToolActivity, batch.CancellationToken);
                 sw.Stop();
 
             }
