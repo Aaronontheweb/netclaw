@@ -1367,6 +1367,8 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
             SenderId = new SenderId("local-user")
         }, ActorRefs.Nobody);
 
+        await ExpectApprovalOutcomeAsync(subscriberB, callId, ApprovalOptionKeys.Deny);
+
         var toolResult = await subscriberB.ExpectMsgAsync<ToolResultOutput>(
             TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
         await subscriberB.ExpectMsgAsync<TextOutput>(

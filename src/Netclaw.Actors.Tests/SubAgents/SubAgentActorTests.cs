@@ -1406,7 +1406,8 @@ public class SubAgentActorTests : TestKit
         => new(callId, ShellTool.ToolName, new Dictionary<string, object?>
         {
             ["Command"] = "gh api repos/example/project",
-            ["WorkingDirectory"] = "/tmp"
+            ["WorkingDirectory"] = "/tmp",
+            ["_rationale"] = "Verify the session scratch correction."
         });
 
     private static FunctionCallContent ProjectScopeCall(string callId, string workingDirectory)
