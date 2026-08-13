@@ -482,6 +482,92 @@ public sealed class InlineChatPageTests
     }
 
     [Fact]
+    public async Task MouseWheelUp_PausesTailFollowUntilEnd()
+    {
+        await using var harness = CreateHarness(height: 20);
+        var runTask = harness.StartAsync();
+
+        harness.ViewModel.Emit(new TextDeltaOutput(string.Join(
+            '\n',
+            Enumerable.Range(1, 30).Select(index => $"stream line {index}")))
+        {
+            SessionId = SessionId,
+            TimestampMs = 1
+        });
+        await harness.WaitUntilAsync(() =>
+            harness.Terminal.Contains("stream line 30")
+            && harness.Page.AssistantScrollOffset > 0);
+
+        harness.Events.Enqueue(new MouseScrollEvent(+1) { X = 3, Y = 1 });
+        await harness.WaitUntilAsync(() => harness.Page.AssistantCanScrollDown);
+        var pausedOffset = harness.Page.AssistantScrollOffset;
+
+        harness.ViewModel.Emit(new TextDeltaOutput("\nstream line 31")
+        {
+            SessionId = SessionId,
+            TimestampMs = 2
+        });
+        harness.ViewModel.Emit(new TextDeltaOutput("\nstream line 32")
+        {
+            SessionId = SessionId,
+            TimestampMs = 3
+        });
+        await harness.WaitUntilAsync(() =>
+            harness.Page.UnseenAssistantEventCount == 1
+            && harness.Terminal.Contains("1 new event"));
+
+        Assert.Equal(pausedOffset, harness.Page.AssistantScrollOffset);
+        harness.Input.EnqueueKey(ConsoleKey.End);
+        await harness.WaitUntilAsync(() =>
+            !harness.Page.AssistantCanScrollDown
+            && harness.Page.UnseenAssistantEventCount == 0
+            && harness.Terminal.Contains("stream line 32"));
+
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
+    public async Task PageUp_GroupsUpdatesByWorkItem()
+    {
+        await using var harness = CreateHarness(height: 20);
+        var runTask = harness.StartAsync();
+
+        harness.ViewModel.Emit(new TextDeltaOutput(string.Join(
+            '\n',
+            Enumerable.Range(1, 30).Select(index => $"stream line {index}")))
+        {
+            SessionId = SessionId,
+            TimestampMs = 1
+        });
+        await harness.WaitUntilAsync(() => harness.Page.AssistantScrollOffset > 0);
+
+        harness.Input.EnqueueKey(ConsoleKey.PageUp);
+        await harness.WaitUntilAsync(() => harness.Page.AssistantCanScrollDown);
+        harness.ViewModel.Emit(ToolCall("call-tail", "shell_execute", 2));
+        harness.ViewModel.Emit(new ToolActivityOutput
+        {
+            SessionId = SessionId,
+            TimestampMs = 3,
+            CallId = new ToolCallId("call-tail"),
+            ToolName = new ToolName("shell_execute"),
+            TurnId = new Netclaw.Actors.Protocol.TurnId("turn-1"),
+            Phase = "running",
+            Summary = "Inspect the repository."
+        });
+
+        await harness.WaitUntilAsync(() =>
+            harness.Page.UnseenAssistantEventCount == 1
+            && harness.Terminal.Contains("1 new event"));
+
+        for (var index = 0; index < 5; index++)
+            harness.Input.EnqueueKey(ConsoleKey.PageDown);
+        await harness.WaitUntilAsync(() =>
+            !harness.Page.AssistantCanScrollDown
+            && harness.Page.UnseenAssistantEventCount == 0);
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
     public async Task StableTranscript_UsesPrimaryScrollbackWithoutAnOuterBorder()
     {
         var output = new TextOutput("A stable answer")
