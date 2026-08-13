@@ -1159,7 +1159,12 @@ static async Task RunAsync(string[] args)
     }
 
     using (var app = webBuilder.Build())
-        await RunTerminaHostAsync(app);
+    {
+        if (mode == "chat")
+            await RunChatHostAsync(app);
+        else
+            await RunTerminaHostAsync(app);
+    }
 
     if (mode == "sessions" && navState.ChatLaunchRequested)
         await RunInlineChatHostAsync(args, navState.ResumeSessionId);
@@ -1184,7 +1189,18 @@ static async Task RunInlineChatHostAsync(string[] args, string? resumeSessionId)
     });
 
     using var app = builder.Build();
-    await RunTerminaHostAsync(app);
+    await RunChatHostAsync(app);
+}
+
+static async Task RunChatHostAsync(IHost host)
+{
+    var started = await ChatHostGuard.TryRunAsync(
+        () => RunTerminaHostAsync(host),
+        Console.Error,
+        WriteCrashLog);
+
+    if (!started)
+        Environment.ExitCode = 1;
 }
 
 static void ConfigureNativeSelection(TerminaBuilder termina)
