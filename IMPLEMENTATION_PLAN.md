@@ -182,6 +182,21 @@ Done when:
 - [ ] The policy pipeline replaces the shell branches in `ToolAccessPolicy`
   and `ShellApprovalMatcher`; any retained legacy scan is deny-only and cannot
   authorize, create candidates, or widen scope.
+- [x] Shell calls pass through one coordinator. It snapshots immutable parser
+  and run-scope facts, requests one typed actor batch, and composes grant and
+  reviewed-safe coverage per candidate before one final result.
+- [x] The actor response preserves stable candidate IDs and typed persistent
+  store status. Duplicate IDs, mismatched facts, impossible grant states, and
+  internal stage faults deny without a prompt.
+- [x] The shell coordinator returns a typed operator trace with at most 256
+  rows. Each row uses enum facts, a call-local candidate ID, a redacted
+  executable basename, grant scope, and grant time. The actor derives a match
+  or one near miss from one store snapshot pass. Raw paths, command text,
+  arguments, secrets, prompts, and session events never receive trace data.
+- [x] The approval runbook documents the complete parser-fact-to-policy flow,
+  bounded status and finite-loop examples, partial candidate coverage, and a
+  trace-first operator diagnostic procedure. The source-generated fixture
+  replay pins current D02, D10, and D14 coordinator behavior.
 - [ ] The bundled safe catalog removes every executable whose accepted
   arguments can write, delete, execute code, or mutate a remote service through
   executable argv interpretation. Redirect, parser-owned path/provider, and
@@ -196,6 +211,9 @@ Done when:
   can persist.
 - [x] A prompt excludes candidates that existing session or persistent grants
   already cover, while it preserves exact directory-scoped occurrences.
+- [x] Reviewed-safe phrases grant no implicit authority to a headless, reminder,
+  or webhook run. Unattended candidates need explicit one-time or stored-grant
+  authority; approval-exempt shell side effects retain their bounded exception.
 - [x] A one-time retry is bound to the exact prompted candidate set, including
   each effective directory, across live, sub-agent, and redrive paths.
 - [x] External paths, mismatched grants, dynamic syntax, and hard-deny rules
@@ -208,11 +226,15 @@ Done when:
   root from one-command `WorkingDirectory` scope, prevent redundant project
   switches, and preserve `cd` when directory mutation is the requested shell
   behavior.
-- [x] Reviewed-safe shell work beneath an undeclared cwd returns a
-  `set_working_directory` correction to the agent before any user prompt. The
-  original tool call remains unchanged; the shared directory policy must accept
-  the exact non-temp cwd, while unsafe phrases, outside paths, Public sessions,
-  and unavailable scope tools retain normal approval behavior.
+- [x] Reviewed-safe shell work beneath an undeclared cwd returns the same
+  `set_working_directory` correction in parent sessions and subagents before
+  any user prompt. The original tool call remains unchanged. The registered
+  tool must accept the exact non-temp cwd; unsafe phrases, outside paths,
+  Public sessions, and unavailable scope tools retain normal approval behavior.
+  A successful child declaration updates only the child scope, reloads its
+  project instructions, and leaves the parent project unchanged. Headless
+  declarations prevent repeated corrections but do not grant execution
+  authority.
 - [x] Bounded non-path `IntegerRange` and `Concatenation` data do not make a
   complete shell command complex. Unknown values, identities, paths, and
   redirects stay strict.
@@ -245,6 +267,12 @@ Done when:
   and path-shape facts introduced in 0.3.1. This store-v3 slice preserves those parser token facts
   without executable-private command rules; later parent tasks consume the new
   value-domain facts in the coordinator.
+- [x] Netclaw consumes public ShellSyntaxTree `0.3.3` for the parser-owned
+  authored filesystem domain. Local code accepts only `Exact` and `FiniteSet`.
+  It checks each value through path policy and keeps unsafe transforms strict.
+  The Release build and all 7,138 runnable tests pass. The suite reports 15
+  expected platform or opt-in skips. Adversarial review and all required CI
+  checks passed before merge.
 - [x] The expanded 247-test matrix covers command-substitution and PowerShell
   execution-region behavior. Known command-owned regions reuse independently
   matched host and body grants after Netclaw accounts for the parsed body.

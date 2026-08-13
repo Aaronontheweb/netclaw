@@ -265,15 +265,45 @@ authority outside code review. At minimum `find`, `awk`, `rg`, and `sort` are
 not eligible. Production code has no flag-specific exceptions. The existing
 `git ls-tree` special case is deleted.
 
-### 7. Consume ShellSyntaxTree 0.3.1 facts through 0.3.2 explicitly
+Parent sessions and subagents consume the same project-scope correction before
+they open an approval request. The correction is available only when the
+registered `set_working_directory` tool accepts the exact suggested directory
+under its normal filesystem policy. A subagent returns the correction as the
+tool result and leaves the authored call in history. If the tool is absent or
+rejects the directory, the subagent keeps the existing parent approval bridge
+path.
+
+A headless subagent may receive this model-facing correction even though it
+cannot open an approval bridge. After a successful declaration, the unchanged
+retry follows the ordinary headless authority rules. The declared root prevents
+another correction; it does not grant reviewed-safe or stored authority.
+
+A successful child `set_working_directory` call replaces only the child run's
+immutable project-scope snapshot. It reloads project instructions through the
+same prompt provider and rebuilds the child's system prompt before the next
+model call. Later child tool calls use the new scope. The child reports the
+local scope in its result, but the parent merge keeps its existing rule: child
+project selection does not replace the parent project directory.
+
+The shared `set_working_directory` validation rejects NUL, CR, and LF before
+filesystem resolution. This rule applies to both execution and the eligibility
+probe. An invalid path returns a bounded error and cannot enter model history,
+child scope, or project-instruction lookup as a successful declaration.
+
+### 7. Consume ShellSyntaxTree 0.3.1 facts through 0.3.3 explicitly
 
 Netclaw uses effective `AnalyzedArgument.Value` for runtime-sensitive checks.
 It may use `AuthoredValue` for approval matching only after the maintainer
 accepts that ambient Bash attributes, ambient `IFS`, and field splitting are
 outside the approval claim. The existing parser-owned `Argument.IsPath`
-contract decides whether a value is path-relevant. Every effective or authored
-finite value for an `IsPath` argument still passes `ToolPathPolicy`; an unknown
-path-relevant value stays strict.
+contract decides whether an effective value is path-relevant. Every finite
+effective value for an `IsPath` argument still passes `ToolPathPolicy`; an
+unknown path-relevant value stays strict.
+
+ShellSyntaxTree 0.3.3 publishes D14's finite `AuthoredFileSystemValue`. Netclaw
+accepts only `Exact` and `FiniteSet`. Each value enters `ToolPathPolicy` and the
+approval scope check. Unknown and all other alternatives stay strict. Netclaw
+does not infer the role from an executable's private grammar.
 
 `AuthoredPathShape` is lexical shape only. It may make review stricter, but it
 never establishes that an executable treats an argument as a filesystem
@@ -330,9 +360,11 @@ inputs, expected coverage, the ordered bounded trace, and final outcome for the
 policy-owned acceptance cases. Tests load these structured fields directly;
 they do not branch on Dxx IDs or derive expectations from prose.
 
-The fixture's top-level defaults are executable inputs, not test conventions:
-tool name, audience, approval mode, interactive capability, session identity
-and safe root, project safe root, inherited cwd, and persistent-store status.
+The fixture's top-level defaults are executable inputs, not test conventions.
+They include tool, audience, approval mode, interactive capability, session,
+safe roots, inherited cwd, store status, and a fixed clock. Parser facts use
+command indexes. Policy rows use stable candidate
+IDs because one parser occurrence can project a different policy cardinality.
 Each case supplies its canonical shell environment, initial cwd, and every
 stored grant includes its canonical shell tag. The exact executable cases are
 D02, D03, D07, D08, D09, D10, D11, D14, D17, and D18.
@@ -341,11 +373,13 @@ Complete D03 example:
 
 ```text
 Input: cd /tmp && gh api ... > slopwatch.log 2>&1; wc -c slopwatch.log; head -100 slopwatch.log
-Preflight: candidates C0=cd, C1=gh api, C2=wc, C3=head; intent=/tmp
-Actor: C0=PersistentGlobal, C1=PersistentGlobal, C2/C3=Uncovered
-Safe policy: C2=ReviewedSafePolicy, C3=ReviewedSafePolicy
-Final: Allow(AllCandidatesCovered)
+Preflight: unresolved approval scope; no reusable candidate rows
+Trace: Completion/RequiresApproval/UncoveredCandidates
+Final: RequiresApproval(IsMessy=true)
 ```
+
+This current result remains explicit evidence debt. The fixture does not claim
+that a future session-scratch correction or stronger parser fact already exists.
 
 ## Risks / Trade-offs
 
