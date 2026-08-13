@@ -91,6 +91,8 @@ The design uses no more than three emphasis colors in one region.
 - Child tools and sub-agents use a six-cell indent.
 - The Composer uses two text rows plus the Pulse Line.
 - A settled Turn uses one blank line before the next Turn.
+- A speaker change uses one blank line between the settled blocks.
+- The bottom dock uses one blank line between its stacked interactive surfaces.
 
 ## Reply Block Grammar
 
@@ -102,6 +104,8 @@ The Work Trace uses the model-supplied tool rationale as each action title.
 The tool name remains secondary metadata.
 The client does not infer an action title from tool arguments.
 It does not expose raw JSON in the Transcript.
+A new tool call without a rationale fails before tool dispatch.
+An old transcript entry can show that its rationale is unavailable.
 
 Examples:
 
@@ -149,7 +153,9 @@ Enter sends a later prompt to the session queue.
 The Queue Shelf shows each accepted prompt above the Composer.
 
 The Queue Shelf does not interrupt the current Reply Block.
-The prompt enters the next Turn after the current Turn ends.
+All displayed prompts enter the next model call in FIFO order.
+The session actor promotes the complete set together after the current Turn.
+The client does not send one queued prompt after each completed Turn.
 
 A Decision Sheet is the only state that hides the Composer.
 This exception prevents prompt text from reaching an approval control.
@@ -318,7 +324,7 @@ It keeps the speaker, action, outcome, queue, input, and decision state.
 ```text
 Composer --Enter--> Reply Block --Turn ends--> Settled Turn
     |                    |                         |
-    |                    +--tool--> Work Trace     +--> next queued Turn
+    |                    +--tool--> Work Trace     +--> one queued batch
     |                    +--approval--> Decision Sheet
     +--Enter while live--> Queue Shelf
 ```

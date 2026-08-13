@@ -130,11 +130,11 @@ the current live region.
 | Session Header | Shows session, model, context, and connection state | Printed when context changes |
 | Transcript | Holds immutable settled Turns | Terminal scrollback |
 | Turn | Groups one prompt with its settled events and reply | Immutable after settlement |
-| Live Deck | Replaces the Composer during active work | Mutable live region |
+| Live Deck | Shows current work above the bottom dock | Mutable live region |
 | Activity Group | Groups parallel tools and sub-agents for one turn | Live until every row settles |
 | Event Row | Shows one event identity, phase, summary, and detail state | Live or settled |
 | Decision Gate | Replaces the Composer for a pending approval | Live until a decision |
-| Composer | Accepts the next prompt | Live while idle |
+| Composer | Accepts the next prompt | Live except during a decision |
 | Hint Line | Shows only valid actions for the current mode | Live |
 | Inspector | Shows complete safe detail for one event or Turn | Temporary full-screen view |
 
@@ -178,10 +178,18 @@ ACTIVITY  2 active · 1 complete
   ● tool   read failure log                                  0.8s  #call-c
 
 Working…  Ctrl+C interrupt  Ctrl+O detail  Ctrl+Q quit
+
+QUEUED  2 messages
+  1  Also inspect the failed test history.
+  2  Then propose the smallest deterministic fix.
+
+MESSAGE
+  Ask Netclaw…
 ```
 
-The Live Deck replaces the Composer during an active turn. The first release
-does not accept prompt type-ahead.
+The Live Deck shows current work above the bottom dock. The Composer remains
+available during an active turn. The Queue Shelf shows every accepted prompt.
+The session actor includes the complete FIFO set in one follow-up model call.
 
 ### Decision Gate at 80 Columns
 
@@ -245,11 +253,11 @@ available through the Inspector and semantic copy.
 ### Flow Control
 
 ```
-Composer --Enter--> Live Deck --settled events--> Transcript --ready--> Composer
-                         |
-                         +--approval--> Decision Gate --decision--> Live Deck
-                         |
-                         +--inspect--> Inspector --close--> queued output commit
+Composer --Enter--> Live Deck --settled events--> Transcript
+    |                    |
+    |                    +--approval--> Decision Gate --decision--> Live Deck
+    |                    +--inspect--> Inspector --close--> queued output commit
+    +--Enter while live--> Queue Shelf --turn end--> one FIFO follow-up call
 ```
 
 Settled events print once in chronological order. A settled event never returns

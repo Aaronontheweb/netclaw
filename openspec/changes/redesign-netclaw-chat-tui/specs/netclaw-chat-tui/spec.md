@@ -40,12 +40,12 @@ SHALL NOT require fixed full-screen coordinates.
 - **AND** the settled Transcript has no outer border
 - **AND** the Composer shows the current input contract
 
-#### Scenario: Active turn replaces the Composer
+#### Scenario: Active turn retains the Composer
 
 - **WHEN** a submitted turn remains active
-- **THEN** the Live Deck replaces the Composer
-- **AND** the Hint Line shows only active-turn actions
-- **AND** the first prototype accepts no prompt type-ahead
+- **THEN** the Live Deck shows current work above the bottom dock
+- **AND** the Composer remains available for later prompts
+- **AND** the Hint Line shows the active input actions
 
 ### Requirement: Settled transcript content is immutable
 
@@ -192,6 +192,45 @@ original content after its compact display summary.
 - **GIVEN** a nonempty Composer owns input
 - **WHEN** the operator presses Escape once and the window expires
 - **THEN** the prompt text remains unchanged
+
+### Requirement: Active-turn prompts form one follow-up batch
+
+The client SHALL send each prompt through the current session input path while
+the current turn remains active. The session actor SHALL retain each accepted
+prompt in FIFO order. The Queue Shelf SHALL show every retained prompt.
+
+At the next turn boundary, the session actor SHALL drain the complete retained
+set before one follow-up model call. It SHALL NOT start one model call for each
+retained prompt. The client SHALL remove the complete promoted set from the
+Queue Shelf together.
+
+If a send fails before admission, the client SHALL retain that prompt for the
+ordered reconnect path. It SHALL show the reconnect state and SHALL NOT discard
+the prompt.
+
+#### Scenario: Three prompts join one follow-up model call
+
+- **GIVEN** one model call remains active
+- **WHEN** the operator submits prompts A, B, and C
+- **THEN** the session actor retains A, B, and C in that order
+- **AND** the Queue Shelf shows A, B, and C
+- **AND** one follow-up model call includes A, B, and C in that order
+- **AND** no separate model call starts for B or C
+
+#### Scenario: Current turn completes
+
+- **GIVEN** the Queue Shelf shows prompts A, B, and C
+- **WHEN** the current turn completes
+- **THEN** the complete displayed set leaves the Queue Shelf together
+- **AND** the settled transcript retains A, B, and C in FIFO order
+
+#### Scenario: Queued prompt send fails
+
+- **GIVEN** the operator submits a prompt during an active turn
+- **WHEN** session ingress rejects or cannot deliver the prompt
+- **THEN** the client retains the prompt for ordered reconnect delivery
+- **AND** the client shows a visible reconnect state
+- **AND** the client does not report successful admission
 
 ### Requirement: Inspector and copy use semantic event data
 

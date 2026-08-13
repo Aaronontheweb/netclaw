@@ -29,6 +29,8 @@ It also affects users who depend on terminal scrollback, keyboard input, approva
 - Keep settled transcript content immutable and easy to select.
 - Preserve approval context and the current `Ctrl+O` detail control.
 - Use `Shift+Enter` for a newline and `Enter` for prompt submission.
+- Keep the Composer available during active work and show all queued prompts.
+- Preserve the session actor's FIFO batch for active-turn prompts.
 - Add safe prompt history cancellation and semantic copy.
 - Restore structured settled history after a session resume.
 - Preserve released API, wire, persistence, and full-screen behavior.
@@ -40,7 +42,6 @@ It also affects users who depend on terminal scrollback, keyboard input, approva
 - Change the default mode for a current Termina application.
 - Provide terminal-native search or scrollback inside full-screen mode.
 - Persist transient tool progress or raw thought text in model context.
-- Support prompt type-ahead during an active turn in the first release.
 - Make terminal-native selection omit arbitrary characters in a selected row.
 - Change the daemon execution engine or its actor ownership model.
 
@@ -232,6 +233,18 @@ Netclaw will configure the current text area with `WithNewlineModifier(ConsoleMo
 Bare `Enter` will submit the prompt.
 The native input path must preserve `Shift+Enter` through Kitty keyboard input or raw input.
 
+The Composer will remain visible while a model, tool, or sub-agent works.
+Each later prompt will use the current `SendMessage` path immediately.
+The session actor will remain the batch owner.
+Its `Processing` handler will retain accepted prompts in FIFO order.
+The actor will drain the full buffer before one follow-up model call.
+The client will not send one queued prompt after each completed turn.
+
+The Queue Shelf will show each prompt that waits behind the current turn.
+A successful current-turn completion will promote the full displayed set.
+A failed send will keep its prompt for the current reconnect path.
+The reconnect path will retain FIFO order and will not discard a queue entry.
+
 Termina will add a prompt-history cancellation API if the current component cannot restore drafts.
 The new API will not change a current text-area method signature.
 Netclaw will use it for Up and Down history navigation.
@@ -315,6 +328,24 @@ Each review will use the video and selected lossless frame images.
 The reviewer will record material visual defects before the next checkpoint.
 The tapes will not become CI assets or permanent smoke tests.
 
+### D13: Enforce rationale at the shared execution preflight
+
+Every generated tool schema already marks `_rationale` as a required string.
+Some providers can still omit it from a tool call.
+The shared executor preflight will reject a missing, blank, or non-string value.
+The rejection will become the tool result for that call.
+The tool will not execute and no approval prompt will appear.
+The next model step can issue a corrected call with a rationale.
+
+The validation will apply to new execution only.
+Persistence extraction and transcript reads will continue to accept a null
+rationale from old records. The TUI will mark that old value as unavailable.
+It will not infer intent from tool arguments.
+
+Parallel tool calls will retain per-call failure isolation.
+A call without rationale will fail before dispatch.
+A compliant sibling call can still execute.
+
 ## Actor Boundaries and Persistence
 
 The session actor will remain the owner of session lifecycle and durable state.
@@ -340,6 +371,7 @@ The actor will rebuild a bounded transcript from journal events and snapshots.
 - An invalid approval payload will block the decision and show an error.
 - A clipboard failure will retain the selected data and show a visible error.
 - A client disconnect will retain durable actor state and discard only transient UI state.
+- A prompt send failure will retain the prompt for ordered reconnect delivery.
 - A process failure will rely on the current session recovery path and the settled timeline.
 - A resize proof failure will block inline mode release for that terminal class.
 
@@ -390,7 +422,6 @@ An operator must select a different mode or package version explicitly.
 ## Open Questions
 
 - Which cursor sequence set remains reliable after primary-buffer resize on each supported terminal?
-- Should the first release hide the composer for every active turn?
 - Should the inspector always use a temporary alternate buffer?
 - Which settled thought summary can the product policy retain?
 - Which terminal versions will define the supported native matrix?
