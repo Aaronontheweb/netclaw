@@ -139,7 +139,7 @@ public sealed class ShellPolicyEvidenceFixtureTests(ShellApprovalMatrixFixture f
     private static SafeVerbList CreateSafeVerbs(PolicyFixtureCase policyCase)
     {
         if (policyCase.Available.SafePhrases.Any(phrase =>
-                phrase.Proof != "ReadOnlyForAllArguments"))
+                phrase.Proof != "ReviewedDiagnostic"))
         {
             throw new InvalidDataException("The fixture has an unsupported safe-phrase proof.");
         }
