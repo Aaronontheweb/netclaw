@@ -17,6 +17,7 @@ using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Reminders;
 using Netclaw.Actors.Tests.Hosting;
 using Netclaw.Configuration;
+using Netclaw.Tests.Utilities;
 using Xunit;
 using static Netclaw.Actors.Sessions.SessionProtocol;
 using static Netclaw.Actors.Reminders.ReminderProtocol;
@@ -550,9 +551,10 @@ public class ReminderManagerActorTests : TestKit
     [Fact]
     public async Task Startup_emits_alert_for_legacy_reminder_missing_trust_fields()
     {
+        using var directory = new DisposableTempDir();
         const string reminderId = "legacy-reminder-alert";
         var now = TimeProvider.System.GetUtcNow();
-        var paths = new NetclawPaths(_basePath);
+        var paths = new NetclawPaths(directory.Path);
         paths.EnsureDirectoriesExist();
         var filePath = Path.Combine(paths.RemindersDirectory, $"{Uri.EscapeDataString(reminderId)}.json");
         File.WriteAllText(filePath, $$"""
@@ -574,7 +576,7 @@ public class ReminderManagerActorTests : TestKit
         var pipeline = new SessionPipeline(
             Sys,
             new RequiredActor<SessionManagerActorKey>(ActorRegistry.For(Sys)),
-            new NetclawPaths(Path.Combine(Path.GetTempPath(), $"netclaw-test-{Guid.NewGuid():N}")));
+            paths);
         var defaults = new EffectivePolicyDefaults(
             DeploymentPosture.Team, TrustAudience.Team, ShellExecutionMode.Off, false);
 
@@ -590,32 +592,14 @@ public class ReminderManagerActorTests : TestKit
                 NullReminderChannelNotifier.Instance)),
             "legacy-reminder-alert-manager");
 
-        // The legacy-schema alert is emitted synchronously inside PreStart, and
-        // an actor processes mailbox messages only AFTER PreStart completes — so
-        // a successful health reply is a deterministic signal that PreStart (and
-        // the emit) has run. Awaiting that signal replaces a wall-clock
-        // AwaitAssertAsync(5s) poll that flaked under heavy parallel CI load: when
-        // the shared ThreadPool is saturated, PreStart can be scheduled later than
-        // a fixed 5s budget, leaving the sink empty when the poll gives up. The
-        // generous Ask timeout absorbs that scheduling latency without polling —
-        // it returns as soon as the actor is ready.
         await manager.Ask<ReminderHealthResponse>(
             GetReminderHealthQuery.Instance,
             TimeSpan.FromSeconds(30),
             TestContext.Current.CancellationToken);
 
-        // Keep the Ask as the startup barrier (it absorbs dispatcher
-        // scheduling latency under parallel CI load), but poll the sink
-        // instead of trusting a one-shot post-Ask read: the health reply
-        // proves PreStart completed, not that the alert reached the sink.
-        // This test has flaked on CI twice (#1405, #1844) with an empty
-        // sink immediately after a successful Ask reply.
-        await AwaitAssertAsync(() =>
-        {
-            Assert.Contains(sink.Alerts, alert =>
-                alert.Category == AlertType.ReminderSchemaDropped
-                && alert.Summary.Contains(reminderId, StringComparison.Ordinal));
-        }, duration: TimeSpan.FromSeconds(30), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Contains(sink.Alerts, alert =>
+            alert.Category == AlertType.ReminderSchemaDropped
+            && alert.Summary.Contains(reminderId, StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -1426,6 +1410,137 @@ public class ReminderManagerActorTests : TestKit
         {
             Receive<DeliverTrustedSessionTurn>(msg => probe.Tell(msg));
         }
+    }
+
+    // ── Scheduling-failure surfacing (Tier 1 hardening) ──
+    //
+    // A syntactically valid cron that never occurs (Feb 30) drives a deterministic
+    // scheduling failure through the "no future occurrence" branch — no host, clock,
+    // or timezone dependency. Definitions are written straight to the store to
+    // simulate a persisted reminder whose schedule became unschedulable, then
+    // reconcile is asked to restore it.
+
+    [Fact]
+    public async Task Reconcile_surfaces_scheduling_failure_and_counts_it()
+    {
+        var manager = await GetManagerAsync();
+
+        // Drain PreStart's reconcile (it ran against an empty store) so the write
+        // below is bumped exactly once by our explicit reconcile.
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        var definition = CreateCronDefinition("sched-fail", "0 0 30 2 *");
+        _definitionStore.Save(definition);
+
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        var after = _definitionStore.Get(definition.Id);
+        Assert.NotNull(after);
+        Assert.Equal(1, after!.ConsecutiveFailures);
+        Assert.True(after.Enabled); // one failure is well below the threshold
+        Assert.Contains(_notificationSink.Alerts, a =>
+            a.Category == AlertType.ReminderScheduleFailed && a.Source == definition.Id.Value);
+    }
+
+    [Fact]
+    public async Task Consecutive_scheduling_failures_auto_disable_and_alert_critical()
+    {
+        var manager = await GetManagerAsync();
+
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        // One below threshold; the next scheduling failure crosses it.
+        var definition = CreateCronDefinition(
+            "sched-disable", "0 0 30 2 *",
+            consecutiveFailures: ReminderManagerActor.FailurePauseThreshold - 1);
+        _definitionStore.Save(definition);
+
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        var after = _definitionStore.Get(definition.Id);
+        Assert.NotNull(after);
+        Assert.Equal(ReminderManagerActor.FailurePauseThreshold, after!.ConsecutiveFailures);
+        Assert.False(after.Enabled);
+        Assert.Equal(ReminderTerminalOutcome.Failed, after.TerminalOutcome);
+        Assert.Contains(_notificationSink.Alerts, a =>
+            a.Category == AlertType.ReminderAutoDisabled
+            && a.Source == definition.Id.Value
+            && a.Severity == AlertSeverity.Critical);
+    }
+
+    [Fact]
+    public async Task Scheduling_failure_installs_no_timer()
+    {
+        // Anti-pattern guard: a reminder that cannot compute an occurrence must
+        // install no schedule. It never silently falls back to a bogus fire time.
+        var manager = await GetManagerAsync();
+
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        var definition = CreateCronDefinition("sched-none", "0 0 30 2 *");
+        _definitionStore.Save(definition);
+
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        var status = await manager.Ask<ReminderStatusResponse>(
+            new GetReminderStatusQuery(definition.Id), TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.True(status.Found);
+        Assert.Null(status.NextFire); // no timer installed
+        Assert.True(status.ConsecutiveFailures >= 1);
+    }
+
+    [Fact]
+    public async Task Health_failed_count_includes_scheduling_failures()
+    {
+        var manager = await GetManagerAsync();
+
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        _definitionStore.Save(CreateCronDefinition("sched-health", "0 0 30 2 *"));
+
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        var health = await manager.Ask<ReminderHealthResponse>(
+            GetReminderHealthQuery.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, health.FailedCount);
+    }
+
+    private static ReminderDefinition CreateCronDefinition(
+        string name, string cron, int consecutiveFailures = 0)
+    {
+        var id = new ReminderId($"{name}-{Guid.NewGuid():N}"[..20]);
+        var now = TimeProvider.System.GetUtcNow();
+
+        return new ReminderDefinition
+        {
+            Id = id,
+            Title = name,
+            Instructions = "Cron scheduling-failure test",
+            Delivery = new ReminderDelivery { Kind = DeliveryKind.Channel, Transport = "slack", Address = "#general" },
+            DeliveryInstructions = "Reply in-thread with concise status.",
+            Schedule = new ReminderSchedule
+            {
+                Type = ReminderScheduleType.Cron,
+                CronExpression = cron
+            },
+            Audience = TrustAudience.Team,
+            Boundary = TrustBoundary.Team,
+            Enabled = true,
+            ConsecutiveFailures = consecutiveFailures,
+            CreatedBy = "test",
+            CreatedAt = now,
+            UpdatedAt = now
+        };
     }
 
     private static ReminderDefinition CreateDefinition(string name, string instructions)
