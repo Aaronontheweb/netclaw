@@ -32,7 +32,8 @@ settlement, complete detail, and responsive layout without a live provider.
 
 Headless typed-key tests SHALL cover submit, `Shift+Enter`, prompt history,
 draft restoration, double Escape, approval denial, `Ctrl+O`, detail scroll, and
-multiline paste. Time-based key sequences SHALL use `TimeProvider`.
+multiline paste. They SHALL also cover the active-turn Queue Shelf and the
+session actor's FIFO batch. Time-based key sequences SHALL use `TimeProvider`.
 
 #### Scenario: Shift Enter does not submit
 
@@ -54,6 +55,22 @@ multiline paste. Time-based key sequences SHALL use `TimeProvider`.
 - **WHEN** the test sends two Escape keys inside the configured virtual-time
   window
 - **THEN** the input clears without `Task.Delay` or `Thread.Sleep`
+
+#### Scenario: Active-turn prompts use one model call
+
+- **GIVEN** one model call remains active
+- **WHEN** the typed-key test submits three later prompts
+- **THEN** the Queue Shelf shows all three prompts in FIFO order
+- **AND** the session actor test observes one follow-up model call
+- **AND** that model call contains all three prompts in FIFO order
+
+#### Scenario: Missing rationale fails before tool dispatch
+
+- **GIVEN** a new tool call omits `_rationale`
+- **WHEN** the shared execution preflight validates the call
+- **THEN** the test executor receives no invocation
+- **AND** the model receives a correction result for that call
+- **AND** no approval request occurs
 
 ### Requirement: Disposable visual checkpoints prove the chat grammar
 

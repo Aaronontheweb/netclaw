@@ -62,6 +62,8 @@
 - [x] 5.8 Prove that Slack and other restricted subscribers do not receive the new activity.
 - [x] 5.9 Prove that transient activity does not enter model context or the actor journal.
 - [x] 5.10 Add DTO round-trip and old-payload fixtures for all additive fields.
+- [ ] 5.11 Reject a missing, blank, or non-string rationale at the shared execution preflight.
+- [ ] 5.12 Prove rejection, sibling isolation, no approval request, and legacy transcript compatibility.
 
 ## 6. Structured Session Resume
 
@@ -105,6 +107,9 @@
 - [x] 8.10 Queue inline output while the inspector owns the terminal and commit it after exit.
 - [x] 8.11 Add semantic copy for an event and a complete turn.
 - [x] 8.12 Add visible copy errors and keep the selected data after a failure.
+- [x] 8.13 Keep the Composer visible and show every active-turn prompt in the Queue Shelf.
+- [x] 8.14 Send active-turn prompts through the current session buffer and promote the full FIFO set together.
+- [x] 8.15 Prove that three active-turn prompts produce one ordered follow-up model call.
 
 ## 9. Netclaw Command Integration
 

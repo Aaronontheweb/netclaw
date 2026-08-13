@@ -322,7 +322,9 @@ interactive TUI for agent conversations. The TUI SHALL:
 - Keep the settled transcript borderless in native terminal scrollback
 - Show model name, token usage, and context percentage in the Session Header
 - Use bare `Enter` to submit and `Shift+Enter` to add a newline
-- Keep the Composer active while the agent works and send later prompts to the session queue
+- Keep the Composer active while the agent works
+- Show every later prompt in the ordered Queue Shelf
+- Send all later prompts through the session queue for one FIFO follow-up model call
 - Show assistant text as each streaming delta arrives
 - Restore a saved draft after prompt history reaches its newest entry
 - Clear prompt text only after two Escape keys inside a `TimeProvider` window

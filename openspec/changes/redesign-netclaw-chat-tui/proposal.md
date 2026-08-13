@@ -23,6 +23,12 @@ the current defects.
 - Keep Termina full-screen mode as the default for existing applications.
 - Preserve compact and expanded approval states with `Ctrl+O`.
 - Use `Shift+Enter` for a newline and bare `Enter` for prompt submission.
+- Keep the Composer available during active work and show each later prompt in
+  an ordered Queue Shelf.
+- Send active-turn prompts through the current session input path so the actor
+  includes the full FIFO set in one follow-up model call.
+- Reject each new tool call that lacks its required model rationale before
+  tool dispatch.
 - Add prompt draft restoration and double-Escape prompt clearance.
 - Preserve complete event detail through an inspector and semantic copy path.
 - Preserve structured event chronology after session resume.
@@ -37,7 +43,6 @@ the current defects.
 - A replacement for terminal-native scrollback or search in inline mode.
 - A new daemon-side execution engine.
 - Persistence of ephemeral tool progress in model context or the actor journal.
-- Background prompt type-ahead during an active turn in the first prototype.
 - A change to the default presentation mode for existing Termina applications.
 
 ## Capabilities
@@ -57,6 +62,8 @@ the current defects.
   activity output.
 - `session-resume`: Restores structured settled events instead of role and text
   content alone.
+- `tool-call-metadata`: Enforces the required rationale on new tool calls while
+  old transcript data remains readable.
 - `netclaw-testing`: Requires event-contract coverage and disposable visual
   proof for the chat surface.
 

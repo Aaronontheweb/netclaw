@@ -112,7 +112,9 @@ Setup, config, provider, model, and session picker applications retain
 
 The chat composer uses bare `Enter` for submit and `Shift+Enter` for a newline.
 A model call does not disable or hide the composer. Later prompts enter the
-session actor queue while the current turn runs. The live region shows assistant
+session actor queue while the current turn runs. The actor retains all accepted
+prompts in FIFO order and includes them in one follow-up model call. The client
+does not start one turn for each queued prompt. The live region shows assistant
 text as each stream delta arrives.
 A pending approval owns input before the composer. `Ctrl+O` changes approval
 detail without a decision.
