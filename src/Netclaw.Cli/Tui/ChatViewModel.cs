@@ -38,8 +38,8 @@ public partial class ChatViewModel : ReactiveViewModel
 
     private readonly Subject<SessionOutput> _outputSubject = new();
     private readonly Queue<string> _pendingMessages = new();
-    private readonly Queue<string> _queuedTurnMessages = new();
     private readonly Queue<ToolInteractionRequest> _pendingInteractions = new();
+    private int _queuedTurnMessageCount;
 
     /// <summary>
     /// True while an interaction response is in flight to the daemon. Guards
@@ -159,15 +159,18 @@ public partial class ChatViewModel : ReactiveViewModel
                         _submittedInteractionCallId = null;
                         _isSubmittingInteraction = false;
                         RefreshApprovalOptions();
-                        IsGenerating.Value = false;
-                        _ = SendNextQueuedTurnMessageAsync();
+                        var promotedCount = PromoteQueuedTurnMessages();
+                        IsGenerating.Value = promotedCount > 0;
+                        StatusMessage.Value = promotedCount > 0
+                            ? "Generating..."
+                            : "Ready";
                         break;
                     case ErrorOutput:
                         _pendingInteractions.Clear();
                         _submittedInteractionCallId = null;
                         _isSubmittingInteraction = false;
                         RefreshApprovalOptions();
-                        IsGenerating.Value = false;
+                        IsGenerating.Value = Volatile.Read(ref _queuedTurnMessageCount) > 0;
                         break;
                 }
 
@@ -182,7 +185,6 @@ public partial class ChatViewModel : ReactiveViewModel
                     or DaemonConnectionState.TransportClosed)
                 {
                     _sessionReady = false;
-                    IsGenerating.Value = false;
                 }
 
                 // The initial connect path owns the first session attach.
@@ -220,13 +222,9 @@ public partial class ChatViewModel : ReactiveViewModel
             return;
         }
 
-        if (IsGenerating.Value)
-        {
-            _queuedTurnMessages.Enqueue(text);
-            QueuedTurnMessageCount.Value = _queuedTurnMessages.Count;
-            RequestRedraw();
-            return;
-        }
+        var isActiveTurnPrompt = IsGenerating.Value;
+        if (isActiveTurnPrompt)
+            AddQueuedTurnMessage();
 
         if (!_sessionReady || !_daemonClient.IsConnected)
         {
@@ -239,18 +237,18 @@ public partial class ChatViewModel : ReactiveViewModel
             return;
         }
 
-        IsGenerating.Value = true;
-        StatusMessage.Value = "Generating...";
+        if (!isActiveTurnPrompt)
+        {
+            IsGenerating.Value = true;
+            StatusMessage.Value = "Generating...";
+        }
 
         try
         {
-            await _daemonClient.EnsureSessionAsync(DaemonClient.TuiChannelType);
-
             await _daemonClient.SendAsync(text);
         }
         catch (Exception ex)
         {
-            IsGenerating.Value = false;
             _sessionReady = false;
             IsInputEnabled.Value = true;
             _pendingMessages.Enqueue(text);
@@ -265,14 +263,19 @@ public partial class ChatViewModel : ReactiveViewModel
         Shutdown();
     }
 
-    private async Task SendNextQueuedTurnMessageAsync()
+    private void AddQueuedTurnMessage()
     {
-        if (_queuedTurnMessages.Count == 0)
-            return;
+        var count = Interlocked.Increment(ref _queuedTurnMessageCount);
+        QueuedTurnMessageCount.Value = count;
+        StatusMessage.Value = $"Queued {count} message(s).";
+        RequestRedraw();
+    }
 
-        var next = _queuedTurnMessages.Dequeue();
-        QueuedTurnMessageCount.Value = _queuedTurnMessages.Count;
-        await SubmitAsync(next);
+    private int PromoteQueuedTurnMessages()
+    {
+        var count = Interlocked.Exchange(ref _queuedTurnMessageCount, 0);
+        QueuedTurnMessageCount.Value = 0;
+        return count;
     }
 
     private async Task SubmitInteractionResponseAsync(string text)
@@ -530,6 +533,7 @@ public partial class ChatViewModel : ReactiveViewModel
         SessionIdDisplay.Dispose();
         UsageDisplay.Dispose();
         UiVersion.Dispose();
+        QueuedTurnMessageCount.Dispose();
         IsApprovalDetailVisible.Dispose();
         base.Dispose();
     }

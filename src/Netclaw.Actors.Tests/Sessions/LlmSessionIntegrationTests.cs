@@ -783,6 +783,14 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
         // Only two LLM calls total
         Assert.Equal(2, _fakeChatClient.CallCount);
 
+        var followUpUserMessages = _fakeChatClient.ReceivedMessages[1]
+            .Where(message => message.Role == Microsoft.Extensions.AI.ChatRole.User)
+            .Select(message => message.Text)
+            .ToList();
+        Assert.Equal(
+            ["Second message", "Third message"],
+            followUpUserMessages.TakeLast(2));
+
         await subscriber.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300), cancellationToken: TestContext.Current.CancellationToken);
     }
 

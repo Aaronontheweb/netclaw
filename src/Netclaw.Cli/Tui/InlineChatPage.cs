@@ -317,10 +317,20 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         var content = Layouts.Vertical();
         if (_state.Transcript.Count > 0)
             content.WithChild(Layouts.Empty().Height(1));
-        content
-            .WithChild(BuildLiveReplyBlock())
-            .WithChild(BuildSessionHeader());
-        content.WithChild(BuildQueueShelf());
+        var hasLiveReply = _state.ReplyPassages.Count > 0
+                           || _state.Tools.Count > 0
+                           || _state.SubAgents.Count > 0
+                           || !string.IsNullOrWhiteSpace(_state.ThoughtText);
+        content.WithChild(BuildLiveReplyBlock());
+        if (hasLiveReply)
+            content.WithChild(Layouts.Empty().Height(1));
+        content.WithChild(BuildSessionHeader());
+        if (_queuedPromptDisplays.Count > 0)
+        {
+            content
+                .WithChild(BuildQueueShelf())
+                .WithChild(Layouts.Empty().Height(1));
+        }
 
         if (_state.PendingApproval is not null)
             content.WithChild(BuildDecisionGate(_state.PendingApproval));
@@ -593,23 +603,28 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
 
         var count = _queuedPromptDisplays.Count;
         var label = count == 1 ? "1 message" : $"{count} messages";
-        var preview = ChatPresentationRenderer.OneLine(
-            _queuedPromptDisplays.Peek(),
-            Math.Max(20, ReadableWidth() - 20));
-        var content = Layouts.Horizontal()
-            .WithChild(new TextNode($"QUEUED  {label}  ")
+        var content = Layouts.Vertical()
+            .WithChild(new TextNode($"QUEUED  {label}")
                 .WithForeground(ChatVisualTheme.Muted)
-                .Bold())
-            .WithChild(new TextNode(preview)
-                .WithForeground(ChatVisualTheme.Text)
-                .Fill());
+                .Bold());
+        var index = 1;
+        foreach (var prompt in _queuedPromptDisplays)
+        {
+            var preview = ChatPresentationRenderer.OneLine(
+                prompt,
+                Math.Max(20, ReadableWidth() - 8));
+            content.WithChild(new TextNode($"{index,2}  {preview}")
+                .WithForeground(ChatVisualTheme.Text));
+            index++;
+        }
+
         return new PanelNode()
             .WithBorder(BorderStyle.None)
             .WithBackground(ChatVisualTheme.Surface)
             .WithPadding(1)
             .WithContent(content)
             .Width(ReadableWidth())
-            .Height(3);
+            .Height(count + 3);
     }
 
     private ILayoutNode BuildLiveReplyBlock()
@@ -1243,13 +1258,10 @@ internal static partial class ChatPresentationRenderer
                 .WithChild(Layouts.Empty().Fill());
         }
 
-        var stableBlock = Layouts.Vertical();
-        if (block.Kind == ChatBlockKind.Assistant)
-            stableBlock.WithChild(Layouts.Empty().Height(1));
-        stableBlock
+        var stableBlock = Layouts.Vertical()
             .WithChild(heading)
             .WithChild(content)
-            .WithChild(new TextNode(string.Empty));
+            .WithChild(Layouts.Empty().Height(1));
         if (leftMargin == 0)
             return stableBlock;
 

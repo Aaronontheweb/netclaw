@@ -168,6 +168,102 @@ public sealed class DaemonClientSessionTests
         Assert.Equal("Approval required", viewModel.StatusMessage.Value);
     }
 
+    [Fact]
+    public async Task ChatViewModel_sends_all_active_turn_prompts_to_the_session_buffer()
+    {
+        var transport = new FakeDaemonHubTransport();
+        await using var client = new DaemonClient(
+            "http://127.0.0.1:1",
+            transport,
+            reconnectDelays: [TimeSpan.Zero]);
+        using var viewModel = CreateViewModel(client);
+        await ActivateAsync(viewModel);
+        viewModel.IsGenerating.Value = true;
+
+        await Task.WhenAll(
+            viewModel.SubmitAsync("prompt A"),
+            viewModel.SubmitAsync("prompt B"),
+            viewModel.SubmitAsync("prompt C"));
+
+        var sends = transport.Invocations
+            .Where(invocation => string.Equals(invocation.Method, "SendMessage", StringComparison.Ordinal))
+            .Select(invocation => Assert.IsType<string>(invocation.Args[1]))
+            .ToList();
+        Assert.Equal(["prompt A", "prompt B", "prompt C"], sends);
+        Assert.Equal(3, viewModel.QueuedTurnMessageCount.Value);
+
+        transport.PushOutput(SessionOutputDtoMapper.ToDto(new TurnCompleted
+        {
+            SessionId = new SessionId("fake/session"),
+            TimestampMs = 1,
+            TurnNumber = new TurnNumber(1),
+            Outcome = TurnOutcome.Completed
+        }));
+
+        Assert.Equal(0, viewModel.QueuedTurnMessageCount.Value);
+        Assert.True(viewModel.IsGenerating.Value);
+        Assert.Equal(3, transport.Invocations.Count(invocation =>
+            string.Equals(invocation.Method, "SendMessage", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task ChatViewModel_retries_a_rejected_active_turn_prompt_without_loss()
+    {
+        var accepted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var sendAttempts = 0;
+        var transport = new FakeDaemonHubTransport
+        {
+            VoidInvokeHook = (method, _, _) =>
+            {
+                if (!string.Equals(method, "SendMessage", StringComparison.Ordinal))
+                    return Task.CompletedTask;
+
+                if (Interlocked.Increment(ref sendAttempts) == 1)
+                    throw new IOException("test rejection");
+
+                accepted.TrySetResult();
+                return Task.CompletedTask;
+            }
+        };
+        await using var client = new DaemonClient(
+            "http://127.0.0.1:1",
+            transport,
+            reconnectDelays: [TimeSpan.Zero]);
+        using var viewModel = CreateViewModel(client);
+        await ActivateAsync(viewModel);
+        viewModel.IsGenerating.Value = true;
+
+        await viewModel.SubmitAsync("retain this prompt");
+        await accepted.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        var sends = transport.Invocations
+            .Where(invocation => string.Equals(invocation.Method, "SendMessage", StringComparison.Ordinal))
+            .Select(invocation => Assert.IsType<string>(invocation.Args[1]))
+            .ToList();
+        Assert.Equal(["retain this prompt", "retain this prompt"], sends);
+        Assert.Equal(1, viewModel.QueuedTurnMessageCount.Value);
+    }
+
+    private static ChatViewModel CreateViewModel(DaemonClient client) => new(
+        client,
+        TimeProvider.System,
+        new ModelCapabilities { ModelId = "test-model" },
+        new ChatNavigationState(),
+        new NetclawPaths());
+
+    private static async Task ActivateAsync(ChatViewModel viewModel)
+    {
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var subscription = viewModel.SessionIdDisplay.Subscribe(value =>
+        {
+            if (string.Equals(value, "fake/session", StringComparison.Ordinal))
+                ready.TrySetResult();
+        });
+
+        viewModel.OnActivated();
+        await ready.Task.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+    }
+
     private static ToolInteractionRequest Approval(string callId, long timestampMs) => new()
     {
         SessionId = new SessionId("fake/session"),

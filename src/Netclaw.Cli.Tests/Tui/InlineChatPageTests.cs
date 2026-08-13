@@ -351,7 +351,7 @@ public sealed class InlineChatPageTests
     }
 
     [Fact]
-    public async Task Generation_KeepsTheComposerFocusedAndAcceptsAQueuedPrompt()
+    public async Task Generation_ShowsEveryQueuedPromptInOrder()
     {
         await using var harness = CreateHarness();
         var runTask = harness.StartAsync();
@@ -365,12 +365,31 @@ public sealed class InlineChatPageTests
             && harness.Terminal.Contains("MESSAGE")
             && harness.Focus.CurrentFocus is not null);
 
-        harness.Input.EnqueueString("queue this next");
-        harness.Input.EnqueueKey(ConsoleKey.Enter);
+        string[] prompts = ["queue this first", "queue this second", "queue this third"];
+        foreach (var prompt in prompts)
+        {
+            harness.Input.EnqueueString(prompt);
+            harness.Input.EnqueueKey(ConsoleKey.Enter);
+        }
 
-        Assert.Equal("queue this next",
-            await harness.ViewModel.ReadSubmissionAsync(harness.Cancellation.Token));
-        await harness.WaitUntilAsync(() => harness.Terminal.Contains("QUEUED  1 message"));
+        foreach (var prompt in prompts)
+        {
+            Assert.Equal(prompt,
+                await harness.ViewModel.ReadSubmissionAsync(harness.Cancellation.Token));
+        }
+
+        await harness.WaitUntilAsync(() =>
+            harness.Terminal.Contains("QUEUED  3 messages")
+            && harness.Terminal.Contains("1  queue this first")
+            && harness.Terminal.Contains("2  queue this second")
+            && harness.Terminal.Contains("3  queue this third"));
+        var screen = harness.Terminal.ToString();
+        Assert.True(
+            screen.IndexOf("queue this first", StringComparison.Ordinal)
+            < screen.IndexOf("queue this second", StringComparison.Ordinal));
+        Assert.True(
+            screen.IndexOf("queue this second", StringComparison.Ordinal)
+            < screen.IndexOf("queue this third", StringComparison.Ordinal));
         await harness.StopAsync(runTask);
     }
 
