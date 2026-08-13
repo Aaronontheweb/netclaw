@@ -482,6 +482,36 @@ public sealed class InlineChatPageTests
     }
 
     [Fact]
+    public async Task LargeStreamUpdate_StaysAtTheTailWithoutAnUnseenBadge()
+    {
+        await using var harness = CreateHarness(height: 20);
+        var runTask = harness.StartAsync();
+
+        harness.ViewModel.Emit(new TextDeltaOutput(string.Join(
+            '\n',
+            Enumerable.Range(1, 12).Select(index => $"stream line {index}")))
+        {
+            SessionId = SessionId,
+            TimestampMs = 1
+        });
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("stream line 12"));
+
+        harness.ViewModel.Emit(new TextDeltaOutput("\n" + string.Join(
+            '\n',
+            Enumerable.Range(13, 30).Select(index => $"stream line {index}")))
+        {
+            SessionId = SessionId,
+            TimestampMs = 2
+        });
+        await harness.WaitUntilAsync(() => harness.Terminal.Contains("stream line 42"));
+
+        Assert.False(harness.Page.AssistantCanScrollDown);
+        Assert.Equal(0, harness.Page.UnseenAssistantEventCount);
+        Assert.DoesNotContain("new events", harness.Terminal.ToString(), StringComparison.Ordinal);
+        await harness.StopAsync(runTask);
+    }
+
+    [Fact]
     public async Task MouseWheelUp_PausesTailFollowUntilEnd()
     {
         await using var harness = CreateHarness(height: 20);
