@@ -76,6 +76,7 @@ public sealed record SessionOutputDto
     public string? ToolName { get; init; }
     public string? ArgumentsJson { get; init; }
     public string? Result { get; init; }
+    public string? ToolFailureCode { get; init; }
     public string? TurnId { get; init; }
     public string? ActivityPhase { get; init; }
     public string? ActivitySummary { get; init; }

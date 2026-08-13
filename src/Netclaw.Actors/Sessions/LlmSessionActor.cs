@@ -939,7 +939,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 SessionId = _sessionId,
                 CallId = toolCallId,
                 ToolName = new ToolName(result.Name ?? "unknown"),
-                Result = result.Content ?? string.Empty
+                Result = result.Content ?? string.Empty,
+                FailureCode = msg.ToolFailureCodes.GetValueOrDefault(toolCallId.Value)
             }, OutputFilter.ToolCalls);
         }
 
@@ -1013,6 +1014,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 _buffer.Count, _turnState.ToolIterationCount);
             AppendBufferedUserMessages();
         }
+
+        var invalidRationaleCount = msg.ToolResults.Count(result =>
+            Pipelines.ToolCallMetaExtractor.IsRequiredRationaleRejection(result.Content));
+        if (StopToolsAfterInvalidRationale(invalidRationaleCount, msg.ToolResults.Count))
+            return;
 
         switch (budgetStatus)
         {
@@ -1860,6 +1866,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // meta extraction), so recorded history matches what actually runs — a near-miss
         // meta key is stripped + captured in MetaJson, not left raw with an empty meta.
         var toolMetadata = new Dictionary<string, ToolCallMeta?>(StringComparer.Ordinal);
+        var toolFailureCodes = new Dictionary<string, string>(StringComparer.Ordinal);
         var assistantMsg = ChatMessageConverter.FromAiMessage(
             lastMessage,
             interpretToolCall: tc =>
@@ -1868,10 +1875,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 IDictionary<string, object?>? cleanedArguments;
                 if (_toolExecutor is { } toolExec)
                 {
-                    var prepared = toolExec.PrepareToolCall(tc);
-                    meta = prepared.Meta;
+                    var interpretation = toolExec.InterpretToolCall(tc);
+                    if (interpretation.Rejection is { } rejection)
+                        toolFailureCodes[tc.CallId] = rejection.DenyReason;
+                    meta = interpretation.Meta;
                     toolMetadata[tc.CallId] = meta;
-                    return (meta, prepared.Cleaned.Arguments);
+                    return (meta, interpretation.Cleaned.Arguments);
                 }
 
                 (meta, cleanedArguments) = ChatMessageConverter.ExtractMeta(tc.Arguments);
@@ -1894,7 +1903,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         }, evt =>
         {
             ApplyToolBatchStarted(evt);
-            EmitAndDispatchToolBatch(lastMessage, toolCalls, toolMetadata, usage);
+            EmitAndDispatchToolBatch(lastMessage, toolCalls, toolMetadata, toolFailureCodes, usage);
         });
     }
 
@@ -1939,6 +1948,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         AiChatMessage lastMessage,
         List<FunctionCallContent> toolCalls,
         IReadOnlyDictionary<string, ToolCallMeta?> toolMetadata,
+        IReadOnlyDictionary<string, string> toolFailureCodes,
         UsageDetails? usage)
     {
 
@@ -1981,7 +1991,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 ArgumentsJson = argsJson,
                 BatchId = batchId,
                 BatchSize = Math.Max(1, toolCalls.Count),
-                Rationale = toolMetadata[tc.CallId]?.Rationale
+                Rationale = toolMetadata[tc.CallId]?.Rationale,
+                FailureCode = toolFailureCodes.GetValueOrDefault(tc.CallId)
             }, OutputFilter.ToolCalls);
 
             // Duplicate tool call detection: hash tool name + args
@@ -3731,7 +3742,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         var alreadyRecorded = false;
         if (evt.ToolResult.ToolCallId is { } toolCallId)
         {
-            _activeToolBatch.RecordCompleted(toolCallId.Value);
+            _activeToolBatch.RecordCompleted(evt.ToolResult);
 
             if (ParkedToolBatchHistory.HasToolResult(_state.History, toolCallId.Value))
                 alreadyRecorded = true;
@@ -5053,7 +5064,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             SessionId = _sessionId,
             CallId = toolCallId,
             ToolName = new ToolName(toolMessage.Name ?? "unknown"),
-            Result = toolMessage.Content ?? string.Empty
+            Result = toolMessage.Content ?? string.Empty,
+            FailureCode = result.FailureCode
         }, OutputFilter.ToolCalls);
 
         var updatedContext = WorkingContextUpdater.UpdateFromToolResults(
@@ -5140,6 +5152,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             AppendBufferedUserMessages();
         }
 
+        if (StopToolsAfterInvalidRationale(_activeToolBatch.InvalidRationaleCount, resultCount))
+            return;
+
         switch (budgetStatus)
         {
             case ToolBudgetStatus.Exhausted exhausted:
@@ -5170,6 +5185,25 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _turnState.ToolIterationCount, _turnState.ToolCallCount, _config.MaxToolIterationsPerTurn, resultCount);
         MarkApprovalRunningAfterRedrive();
         FireLlmCall();
+    }
+
+    private bool StopToolsAfterInvalidRationale(int invalidRationaleCount, int resultCount)
+    {
+        if (_turnState.EvaluateInvalidRationaleResults(invalidRationaleCount, resultCount)
+            is not InvalidRationaleAction.StopTools stop)
+        {
+            return false;
+        }
+
+        TurnLog().Warning(
+            "turn_invalid_rationale_limit_reached consecutiveIterations=3 resultCount={ResultCount}",
+            resultCount);
+        _state = _state.AddSystemNudge(stop.NudgeText);
+        _pendingToolInteractions.Clear();
+        _resolvedToolApprovals.Clear();
+        ClearActiveToolBatchTracking();
+        FireLlmCall(forceNoTools: true);
+        return true;
     }
 
     private void PersistAdoptedContextIfNeeded(MessageSource? source)

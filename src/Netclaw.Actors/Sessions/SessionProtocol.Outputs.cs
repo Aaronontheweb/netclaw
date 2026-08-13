@@ -79,6 +79,9 @@ public static partial class SessionProtocol
         /// <summary>The model-supplied intent for this call.</summary>
         public string? Rationale { get; init; }
 
+        /// <summary>The stable preflight failure code, or null for a valid request.</summary>
+        public string? FailureCode { get; init; }
+
         /// <summary>
         /// Tool arguments as a JSON string. Kept opaque at the protocol level —
         /// tool executors parse based on their schema.
@@ -97,6 +100,9 @@ public static partial class SessionProtocol
         public required ToolName ToolName { get; init; }
 
         public required string Result { get; init; }
+
+        /// <summary>The stable preflight failure code, or null after execution.</summary>
+        public string? FailureCode { get; init; }
     }
 
     /// <summary>

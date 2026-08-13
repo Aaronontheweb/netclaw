@@ -62,7 +62,8 @@ public static class SessionOutputDtoMapper
             ArgumentsJson = msg.ArgumentsJson,
             ToolBatchId = msg.BatchId,
             ToolBatchSize = msg.BatchSize,
-            ToolRationale = msg.Rationale
+            ToolRationale = msg.Rationale,
+            ToolFailureCode = msg.FailureCode
         },
 
         ToolActivityOutput msg => new SessionOutputDto
@@ -84,7 +85,8 @@ public static class SessionOutputDtoMapper
             TimestampMs = msg.TimestampMs,
             CallId = msg.CallId.Value,
             ToolName = msg.ToolName.Value,
-            Result = msg.Result
+            Result = msg.Result,
+            ToolFailureCode = msg.FailureCode
         },
 
         UsageOutput msg => new SessionOutputDto
@@ -307,7 +309,8 @@ public static class SessionOutputDtoMapper
                 ArgumentsJson = dto.ArgumentsJson,
                 BatchId = dto.ToolBatchId ?? string.Empty,
                 BatchSize = dto.ToolBatchSize ?? 1,
-                Rationale = dto.ToolRationale
+                Rationale = dto.ToolRationale,
+                FailureCode = dto.ToolFailureCode
             },
             SessionOutputTypes.ToolActivity => new ToolActivityOutput
             {
@@ -325,7 +328,8 @@ public static class SessionOutputDtoMapper
                 TimestampMs = dto.TimestampMs,
                 CallId = new Netclaw.Tools.ToolCallId(dto.CallId ?? string.Empty),
                 ToolName = new Netclaw.Tools.ToolName(dto.ToolName ?? "unknown"),
-                Result = dto.Result ?? string.Empty
+                Result = dto.Result ?? string.Empty,
+                FailureCode = dto.ToolFailureCode
             },
             SessionOutputTypes.Usage => new UsageOutput
             {

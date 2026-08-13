@@ -263,6 +263,19 @@ public sealed class SerializationRoundTripTests : TestKit
         Assert.Equal(2, toolResult.BatchSize);
         Assert.Equal("Find the relevant source", toolResult.Rationale);
 
+        var rejectedToolResult = new ToolResultOutput
+        {
+            SessionId = new SessionId("test/wire"),
+            TimestampMs = 2,
+            CallId = new ToolCallId("call-rejected"),
+            ToolName = new ToolName("search"),
+            Result = "The tool was not executed.",
+            FailureCode = "invalid_rationale"
+        };
+        var rejectedResult = Assert.IsType<ToolResultOutput>(
+            SessionOutputDtoMapper.FromDto(SessionOutputDtoMapper.ToDto(rejectedToolResult)));
+        Assert.Equal("invalid_rationale", rejectedResult.FailureCode);
+
         var oldToolResult = Assert.IsType<ToolCallOutput>(SessionOutputDtoMapper.FromDto(new SessionOutputDto
         {
             Type = SessionOutputTypes.ToolCall,

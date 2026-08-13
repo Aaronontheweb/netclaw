@@ -68,6 +68,30 @@ public sealed class ChatPresentationReducerTests
     }
 
     [Fact]
+    public void Invalid_rationale_result_marks_the_tool_request_as_rejected()
+    {
+        var state = Apply(ChatPresentationState.Empty, ToolCall("call-a", "search", 1) with
+        {
+            FailureCode = "invalid_rationale"
+        });
+        Assert.Equal("rejected", state.Tools["call-a"].Phase);
+
+        state = Apply(state, ToolResult("call-a", "The tool was not executed.", 2) with
+        {
+            FailureCode = "invalid_rationale"
+        });
+
+        var tool = state.Tools["call-a"];
+        Assert.Equal("rejected", tool.Phase);
+        Assert.Equal("Rejected tool request · rationale missing",
+            ChatPresentationReducer.ToolWorkTitle(tool));
+
+        state = Apply(state, CompletedTurn(3));
+        Assert.Contains("1 rejected request", Assert.Single(state.Transcript).Summary,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Parallel_tool_batch_stays_in_one_live_passage()
     {
         var first = ToolCall("call-a", "search", 1) with { BatchId = "batch-1", BatchSize = 2 };
@@ -375,6 +399,20 @@ public sealed class ChatPresentationReducerTests
             SubAgent("run-a", SubAgentPhase.Started, 3),
             new BufferFlush { SessionId = SessionId },
             new ProcessingStateOutput(true) { SessionId = SessionId },
+            new UserMessageQueuedOutput
+            {
+                SessionId = SessionId,
+                MessageId = "tui:message-1",
+                TurnId = new TurnId("turn-a"),
+                QueueDepth = 1
+            },
+            new UserMessagesPulledOutput
+            {
+                SessionId = SessionId,
+                BatchId = "batch-a",
+                TurnId = new TurnId("turn-a"),
+                Messages = [new PulledUserMessage("tui:message-1", "Use the dev branch")]
+            },
             new CompactionOutput
             {
                 SessionId = SessionId,
