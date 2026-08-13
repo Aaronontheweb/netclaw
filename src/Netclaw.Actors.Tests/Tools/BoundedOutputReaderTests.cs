@@ -218,6 +218,7 @@ public class BoundedOutputReaderTests
     // returns and never reaches EOF. Only the caller's token can end a read.
     private sealed class NeverEndingReader : TextReader
     {
+        [SlopwatchSuppress("SW004", "Infinite delay is the test fixture, not a timing guess: it stands in for a pipe that never reaches EOF, and only the caller's token can end the read.")]
         public override async ValueTask<int> ReadAsync(Memory<char> buffer, CancellationToken cancellationToken = default)
         {
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);

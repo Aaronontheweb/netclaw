@@ -540,6 +540,7 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
             // The outer token cancelled before the channel drained on its own
             // (for example the process is being killed after a timeout).
             // Whatever already relayed stays relayed.
+            Debug.WriteLine("shell_execute: activity relay stopped — outer token cancelled.");
         }
     }
 
