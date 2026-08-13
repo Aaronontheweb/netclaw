@@ -129,8 +129,6 @@ check_prerequisites() {
         RESULTS_DB=""
     fi
 
-    NETCLAW_VER=$("$NETCLAW_BIN" --version 2>/dev/null | head -1 || echo "unknown")
-
     if [[ "$RUNS" -lt 1 ]]; then
         echo "ERROR: NETCLAW_EVAL_RUNS must be >= 1 (got: $RUNS)" >&2
         exit 1
@@ -2263,6 +2261,7 @@ main() {
         echo "ERROR: CLI binary not found at '$NETCLAW_BIN'" >&2
         exit 1
     fi
+    NETCLAW_VER=$("$NETCLAW_BIN" --version 2>/dev/null | head -1 || echo "unknown")
 
     start_eval_daemon
     init_db
