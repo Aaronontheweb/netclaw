@@ -52,6 +52,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     private Task _commitTail = Task.CompletedTask;
     private readonly List<ChatPresentationBlock> _deferredInspectorCommits = [];
     private readonly List<QueuedPromptDisplay> _queuedPromptDisplays = [];
+    private readonly HashSet<string> _unseenAssistantEvents = new(StringComparer.Ordinal);
     private long? _lastEscapeTimestamp;
     private int _inspectorIndex;
     private bool _inspectorOpen;
@@ -124,6 +125,9 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         ViewModel.Input.OfType<IInputEvent, ResizeEvent>()
             .Subscribe(_ => _liveRegion.Invalidate())
             .DisposeWith(Subscriptions);
+        ViewModel.Input.OfType<IInputEvent, MouseScrollEvent>()
+            .Subscribe(HandleAssistantMouseScroll)
+            .DisposeWith(Subscriptions);
         ViewModel.Input.OfType<IInputEvent, TerminalInputCapabilitiesChanged>()
             .Subscribe(capabilities =>
             {
@@ -138,6 +142,12 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     internal int ApprovalDetailScrollOffset => _approvalDetail?.ScrollOffset ?? 0;
 
     internal bool ApprovalDetailCanScrollDown => _approvalDetail?.CanScrollDown == true;
+
+    internal int AssistantScrollOffset => _assistantStream?.ScrollOffset ?? 0;
+
+    internal bool AssistantCanScrollDown => _assistantStream?.CanScrollDown == true;
+
+    internal int UnseenAssistantEventCount => _unseenAssistantEvents.Count;
 
     public override bool HandlePageInput(ConsoleKeyInfo keyInfo)
     {
@@ -168,6 +178,32 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             if (keyInfo.Key == ConsoleKey.PageDown)
             {
                 _approvalDetail?.PageDown();
+                return true;
+            }
+        }
+
+        if (_assistantStream is not null && _state.PendingApproval is null)
+        {
+            if (keyInfo.Key == ConsoleKey.PageUp && _assistantStream.CanScrollUp)
+            {
+                _assistantStream.PageUp();
+                _liveRegion.Invalidate();
+                return true;
+            }
+
+            if (keyInfo.Key == ConsoleKey.PageDown && _assistantStream.CanScrollDown)
+            {
+                _assistantStream.PageDown();
+                ResumeAssistantTailIfAtBottom();
+                _liveRegion.Invalidate();
+                return true;
+            }
+
+            if (keyInfo.Key == ConsoleKey.End && IsAssistantTailPaused())
+            {
+                _assistantStream.ScrollToBottom();
+                _unseenAssistantEvents.Clear();
+                _liveRegion.Invalidate();
                 return true;
             }
         }
@@ -212,6 +248,23 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         _ = ViewModel.SubmitAsync(text, messageId);
     }
 
+    private void HandleAssistantMouseScroll(MouseScrollEvent mouseScroll)
+    {
+        if (_assistantStream is null || _inspectorOpen || _state.PendingApproval is not null)
+            return;
+
+        var scrollable = (IScrollable)_assistantStream;
+        if (mouseScroll.Delta > 0)
+            scrollable.ScrollUp(3);
+        else if (mouseScroll.Delta < 0)
+            scrollable.ScrollDown(3);
+        else
+            return;
+
+        ResumeAssistantTailIfAtBottom();
+        _liveRegion.Invalidate();
+    }
+
     private void ApplyMessageLifecycle(SessionOutput output)
     {
         switch (output)
@@ -237,8 +290,57 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
 
     private void ApplyOutput(SessionOutput output)
     {
+        TrackUnseenAssistantEvent(output);
         ApplyMessageLifecycle(output);
         ApplyReduction(ChatPresentationReducer.Reduce(_state, output));
+    }
+
+    private void TrackUnseenAssistantEvent(SessionOutput output)
+    {
+        if (output is TurnCompleted)
+        {
+            _unseenAssistantEvents.Clear();
+            return;
+        }
+
+        if (!IsAssistantTailPaused())
+        {
+            _unseenAssistantEvents.Clear();
+            return;
+        }
+
+        if (AssistantEventKey(output) is { } key)
+            _unseenAssistantEvents.Add(key);
+    }
+
+    private string? AssistantEventKey(SessionOutput output) => output switch
+    {
+        TextDeltaOutput or TextOutput => $"text:{CurrentReplyPassageIndex()}",
+        ThinkingDeltaOutput or ThinkingOutput => "thought",
+        ToolCallOutput tool => $"tool:{tool.CallId.Value}",
+        ToolActivityOutput activity => $"tool:{activity.CallId.Value}",
+        ToolResultOutput result => $"tool:{result.CallId.Value}",
+        SubAgentOutput agent => $"agent:{agent.RunId?.Value ?? agent.AgentName.Value}",
+        UserMessagesPulledOutput pulled => $"pull:{pulled.BatchId}",
+        _ => null
+    };
+
+    private int CurrentReplyPassageIndex()
+    {
+        if (_state.ReplyPassages.Count == 0)
+            return 0;
+
+        var passage = _state.ReplyPassages[^1];
+        return passage.IsFinal ? passage.Index + 1 : passage.Index;
+    }
+
+    private bool IsAssistantTailPaused() =>
+        _assistantStream is { CanScrollDown: true, IsNearBottom: false };
+
+    private void ResumeAssistantTailIfAtBottom()
+    {
+        if (_assistantStream?.CanScrollDown == false)
+            _unseenAssistantEvents.Clear();
     }
 
     private void ApplyReduction(ChatReduction reduction)
@@ -732,7 +834,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
 
         var maximumHeight = Math.Max(5, Math.Min(18, _terminal.Height / 2));
         _assistantStream ??= new ScrollableContainerNode()
-            .WithAutoScroll(AutoScrollPolicy.AlwaysTail)
+            .WithAutoScroll(AutoScrollPolicy.TailWhenAtBottom)
             .WithScrollbar(false);
         _assistantStream.WithContent(reply);
 
@@ -955,12 +1057,14 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         };
         if (_state.PendingApproval is not null)
             displayStatus = "Decision needed";
+        var tailPaused = IsAssistantTailPaused();
         var keys = StatusKeys(
             _terminal.Width,
             _state.PendingApproval is not null,
             ViewModel.IsApprovalDetailVisible.Value,
             ShowsComposer(_state),
-            _modifiedEnterKeySupport);
+            _modifiedEnterKeySupport,
+            tailPaused);
         var statusNode = new TextNode(
                 string.Equals(status, "Generating...", StringComparison.Ordinal)
                     ? displayStatus.PadRight(12)
@@ -971,7 +1075,17 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         else
             statusNode.WidthAuto();
         var statusLine = Layouts.Horizontal()
-            .WithChild(statusNode)
+            .WithChild(statusNode);
+        if (tailPaused)
+        {
+            var count = _unseenAssistantEvents.Count;
+            var eventLabel = $"{count} new {(count == 1 ? "event" : "events")}";
+            statusLine.WithChild(new TextNode($"  {eventLabel.PadRight(13)}")
+                .WithForeground(ChatVisualTheme.Primary)
+                .Width(15));
+        }
+
+        statusLine
             .WithChild(new TextNode($"  {keys}")
                 .WithForeground(ChatVisualTheme.Muted)
                 .NoWrap()
@@ -1105,7 +1219,8 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         bool hasApproval,
         bool approvalDetailVisible,
         bool hasComposer,
-        TerminalCapabilityAvailability modifiedEnterKeySupport)
+        TerminalCapabilityAvailability modifiedEnterKeySupport,
+        bool tailPaused)
     {
         if (hasApproval)
             return width >= 88
@@ -1114,7 +1229,16 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
                     : "Up/Down select  Enter confirm  Ctrl+O details  Esc deny  Ctrl+Q quit"
                 : "Up/Down select  Enter confirm  Esc deny";
         if (!hasComposer)
-            return width >= 70 ? "Ctrl+O inspect  Ctrl+Q quit" : "Ctrl+Q quit";
+            return width >= 70
+                ? tailPaused
+                    ? "End follow  Ctrl+O inspect  Ctrl+Q quit"
+                    : "Ctrl+O inspect  Ctrl+Q quit"
+                : "Ctrl+Q quit";
+
+        if (tailPaused)
+            return width >= 88
+                ? "PageDown/End follow  Enter send  Esc x2 clear  Ctrl+Q quit"
+                : "End follow  Enter send";
 
         if (modifiedEnterKeySupport == TerminalCapabilityAvailability.Unavailable)
         {
