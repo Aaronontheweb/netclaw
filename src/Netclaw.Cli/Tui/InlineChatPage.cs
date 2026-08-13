@@ -797,9 +797,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
             ? string.Empty
             : $"  {phase}";
         var summary = string.IsNullOrWhiteSpace(tool.Summary) ? string.Empty : $"  {tool.Summary}";
-        var action = string.IsNullOrWhiteSpace(tool.Rationale)
-            ? "No rationale supplied"
-            : tool.Rationale.Trim();
+        var action = ChatPresentationReducer.ToolWorkTitle(tool);
         var rows = Layouts.Vertical()
             .WithChild(new TextNode(ChatPresentationRenderer.OneLine(
                     $"{state,-8} {action}  · {tool.ToolName}{phaseText}{summary}",
@@ -1148,7 +1146,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
     private static Color ActivityColor(string phase) => phase.ToLowerInvariant() switch
     {
         "queued" => ChatVisualTheme.Muted,
-        "failed" or "error" or "denied" => ChatVisualTheme.Danger,
+        "failed" or "error" or "denied" or "rejected" => ChatVisualTheme.Danger,
         "completed" or "complete" => ChatVisualTheme.Muted,
         _ => ChatVisualTheme.Primary
     };
@@ -1158,6 +1156,7 @@ public sealed class InlineChatPage : ReactivePage<ChatViewModel>
         "queued" => "Queued",
         "failed" or "error" => "Failed",
         "denied" => "Denied",
+        "rejected" => "Rejected",
         "completed" or "complete" => "Done",
         _ => "Live"
     };

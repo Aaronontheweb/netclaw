@@ -51,7 +51,8 @@ internal sealed record ToolActivityPresentation(
     int BatchSize,
     int PassageIndex,
     string? Result,
-    long? CompletedAtMs);
+    long? CompletedAtMs,
+    string? FailureCode);
 
 internal sealed record ReplyPassagePresentation(
     int Index,
@@ -493,7 +494,7 @@ internal static class ChatPresentationReducer
             output.ToolName.Value,
             output.Rationale,
             output.ArgumentsJson,
-            "queued",
+            output.FailureCode is null ? "queued" : "rejected",
             null,
             output.TimestampMs,
             state.CurrentTurnId,
@@ -501,7 +502,8 @@ internal static class ChatPresentationReducer
             output.BatchSize,
             passage.Index,
             null,
-            null);
+            null,
+            output.FailureCode);
         passage = passage with { ToolCallIds = passage.ToolCallIds.Add(tool.CallId) };
         return state with
         {
@@ -527,6 +529,7 @@ internal static class ChatPresentationReducer
                 string.Empty,
                 1,
                 state.ReplyPassages.Count == 0 ? 0 : state.ReplyPassages[^1].Index,
+                null,
                 null,
                 null);
         return state with
@@ -556,7 +559,7 @@ internal static class ChatPresentationReducer
                 output.ToolName.Value,
                 null,
                 null,
-                "completed",
+                output.FailureCode is null ? "completed" : "rejected",
                 null,
                 output.TimestampMs,
                 state.CurrentTurnId,
@@ -564,7 +567,8 @@ internal static class ChatPresentationReducer
                 1,
                 passage.Index,
                 output.Result,
-                output.TimestampMs);
+                output.TimestampMs,
+                output.FailureCode);
             passage = passage with { ToolCallIds = passage.ToolCallIds.Add(key) };
             passages = passages.SetItem(passages.Count - 1, passage);
         }
@@ -572,9 +576,10 @@ internal static class ChatPresentationReducer
         {
             active = active with
             {
-                Phase = "completed",
+                Phase = output.FailureCode is null ? "completed" : "rejected",
                 Result = output.Result,
-                CompletedAtMs = output.TimestampMs
+                CompletedAtMs = output.TimestampMs,
+                FailureCode = output.FailureCode
             };
         }
 
@@ -774,14 +779,20 @@ internal static class ChatPresentationReducer
         var prose = string.Join("\n\n", state.ReplyPassages
             .Select(passage => passage.Text.Trim())
             .Where(text => text.Length > 0));
-        var completedToolCount = state.Tools.Count - incompleteTools.Count;
-        var toolReceipt = state.Tools.Count switch
+        var rejectedToolCount = state.Tools.Count(tool => tool.Value.FailureCode is not null);
+        var requestedToolCount = state.Tools.Count - rejectedToolCount;
+        var completedToolCount = requestedToolCount - incompleteTools.Count;
+        var toolReceipt = requestedToolCount switch
         {
             0 => string.Empty,
             1 when incompleteTools.Count == 0 => "1 tool",
-            _ when incompleteTools.Count == 0 => $"{state.Tools.Count} tools",
-            _ => $"{completedToolCount}/{state.Tools.Count} tools completed"
+            _ when incompleteTools.Count == 0 => $"{requestedToolCount} tools",
+            _ => $"{completedToolCount}/{requestedToolCount} tools completed"
         };
+        var rejectedToolReceipt = CountLabel(
+            rejectedToolCount,
+            "rejected request",
+            "rejected requests");
         var completedAgentCount = state.SubAgents.Count(run => run.Value.CompletedAtMs is not null);
         var agentReceipt = completedAgentCount switch
         {
@@ -797,7 +808,7 @@ internal static class ChatPresentationReducer
         };
         var pulledMessageCount = state.AgentPulls.Sum(pull => pull.Messages.Count);
         var pullReceipt = CountLabel(pulledMessageCount, "follow-up", "follow-ups");
-        var receiptParts = new[] { toolReceipt, agentReceipt, approvalReceipt, pullReceipt }
+        var receiptParts = new[] { toolReceipt, rejectedToolReceipt, agentReceipt, approvalReceipt, pullReceipt }
             .Where(value => value.Length > 0)
             .ToArray();
         var receipt = receiptParts.Length == 0
@@ -868,7 +879,7 @@ internal static class ChatPresentationReducer
         var duration = tool.CompletedAtMs is { } completedAt
             ? $"\nDuration: {Math.Max(0, completedAt - tool.StartedAtMs)} ms"
             : string.Empty;
-        return $"{ToolWorkTitle(tool.Rationale)}\nTool: {tool.ToolName}\nCall: {tool.CallId}\nState: {tool.Phase}"
+        return $"{ToolWorkTitle(tool)}\nTool: {tool.ToolName}\nCall: {tool.CallId}\nState: {tool.Phase}"
                + (tool.ArgumentsJson is null ? string.Empty : $"\nArguments: {tool.ArgumentsJson}")
                + (tool.Result is null ? string.Empty : $"\nResult: {tool.Result}")
                + duration;
@@ -1107,6 +1118,12 @@ internal static class ChatPresentationReducer
     private static string ToolWorkTitle(string? rationale) => string.IsNullOrWhiteSpace(rationale)
         ? "No rationale supplied"
         : rationale.Trim();
+
+    internal static string ToolWorkTitle(ToolActivityPresentation tool) => tool.FailureCode switch
+    {
+        "invalid_rationale" => "Rejected tool request · rationale missing",
+        _ => ToolWorkTitle(tool.Rationale)
+    };
 
     private static ChatPresentationState CommitParallelGroup(
         ChatPresentationState state,
