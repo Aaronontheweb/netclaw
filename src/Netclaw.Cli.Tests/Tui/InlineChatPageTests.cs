@@ -380,9 +380,49 @@ public sealed class InlineChatPageTests
 
         await harness.WaitUntilAsync(() =>
             harness.Terminal.Contains("QUEUED  3 messages")
-            && harness.Terminal.Contains("1  queue this first")
-            && harness.Terminal.Contains("2  queue this second")
-            && harness.Terminal.Contains("3  queue this third"));
+            && harness.Terminal.Contains("1  sending  queue this first")
+            && harness.Terminal.Contains("2  sending  queue this second")
+            && harness.Terminal.Contains("3  sending  queue this third"));
+
+        for (var index = 0; index < prompts.Length; index++)
+        {
+            harness.ViewModel.Emit(new UserMessageQueuedOutput
+            {
+                SessionId = SessionId,
+                TimestampMs = index + 1,
+                MessageId = harness.ViewModel.MessageIdFor(prompts[index]),
+                TurnId = new Netclaw.Actors.Protocol.TurnId("turn-1"),
+                QueueDepth = index + 1
+            });
+        }
+        await harness.WaitUntilAsync(() =>
+            harness.Terminal.Contains("1  queued   queue this first")
+            && harness.Terminal.Contains("2  queued   queue this second")
+            && harness.Terminal.Contains("3  queued   queue this third"));
+
+        harness.ViewModel.Emit(new TextDeltaOutput("I will inspect the current state.")
+        {
+            SessionId = SessionId,
+            TimestampMs = 5
+        });
+        harness.ViewModel.Emit(new UserMessagesPulledOutput
+        {
+            SessionId = SessionId,
+            TimestampMs = 6,
+            BatchId = "batch-1",
+            TurnId = new Netclaw.Actors.Protocol.TurnId("turn-1"),
+            Messages =
+            [
+                new PulledUserMessage(harness.ViewModel.MessageIdFor(prompts[0]), prompts[0]),
+                new PulledUserMessage(harness.ViewModel.MessageIdFor(prompts[1]), prompts[1])
+            ]
+        });
+        await harness.WaitUntilAsync(() =>
+            harness.Terminal.Contains("QUEUED  1 message")
+            && harness.Terminal.Contains("1  queued   queue this third")
+            && harness.Terminal.Contains("Pulled by agent  · 2 messages")
+            && harness.Terminal.Contains("NETCLAW  LIVE"));
+
         var screen = harness.Terminal.ToString();
         Assert.True(
             screen.IndexOf("queue this first", StringComparison.Ordinal)
@@ -1128,6 +1168,7 @@ public sealed class InlineChatPageTests
         private readonly IReadOnlyList<SessionOutput> _outputs;
         private readonly ToolInteractionRequest? _approval;
         private readonly Channel<string> _submissions = Channel.CreateUnbounded<string>();
+        private readonly Dictionary<string, string> _messageIds = new(StringComparer.Ordinal);
         private readonly Channel<string> _approvalSelections = Channel.CreateUnbounded<string>();
 
         public TestChatViewModel(
@@ -1172,6 +1213,15 @@ public sealed class InlineChatPageTests
             _submissions.Writer.TryWrite(text);
             return Task.CompletedTask;
         }
+
+        public override Task SubmitAsync(string text, string messageId)
+        {
+            _messageIds[text] = messageId;
+            _submissions.Writer.TryWrite(text);
+            return Task.CompletedTask;
+        }
+
+        public string MessageIdFor(string text) => _messageIds[text];
 
         protected override Task SubmitInteractionSelectionAsync(string selectedKey)
         {

@@ -46,6 +46,12 @@ public enum OutputFilter
     /// <summary><see cref="ProcessingStateOutput"/> — semantic busy/idle state for channel-native indicators.</summary>
     ProcessingState = 1 << 6,
 
+    /// <summary>
+    /// <see cref="UserMessageQueuedOutput"/> and <see cref="UserMessagesPulledOutput"/> —
+    /// transient user-message admission and agent-pull receipts.
+    /// </summary>
+    MessageLifecycle = 1 << 7,
+
     // ── Convenience presets ──
 
     /// <summary>Final text replies only — suitable for adapters that post once (Slack).</summary>

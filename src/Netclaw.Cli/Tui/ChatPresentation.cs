@@ -60,6 +60,13 @@ internal sealed record ReplyPassagePresentation(
     bool IsFinal,
     ImmutableList<string> ToolCallIds);
 
+internal sealed record AgentPullPresentation(
+    string BatchId,
+    string TurnId,
+    long TimestampMs,
+    int AfterPassageIndex,
+    ImmutableList<PulledUserMessage> Messages);
+
 internal sealed record SubAgentActivityPresentation(
     string RunId,
     string? ParentCallId,
@@ -94,6 +101,8 @@ internal sealed record ChatPresentationState
     public ImmutableList<ChatPresentationBlock> CompletedApprovals { get; init; } = [];
 
     public ImmutableList<ReplyPassagePresentation> ReplyPassages { get; init; } = [];
+
+    public ImmutableList<AgentPullPresentation> AgentPulls { get; init; } = [];
 
     public string ThoughtText { get; init; } = string.Empty;
 
@@ -171,6 +180,8 @@ internal static class ChatPresentationReducer
             CompactionOutput compaction => Commit(state, CompactionBlock(compaction, state.CurrentTurnId), effects),
             ToolInteractionRequest approval => ShowApproval(state, approval, effects),
             ApprovalOutcomeOutput approval => ResolveApproval(state, approval, effects),
+            UserMessageQueuedOutput => state,
+            UserMessagesPulledOutput pulled => RecordAgentPull(state, pulled),
             TurnCompleted completed => CompleteTurn(state, completed, effects),
             ProcessingStateOutput processing => state with { IsProcessing = processing.IsProcessing },
             SessionTitleOutput title => CommitTitle(state, title, effects),
@@ -184,7 +195,7 @@ internal static class ChatPresentationReducer
 
         if (output is TextDeltaOutput or TextOutput or ThinkingDeltaOutput or ThinkingOutput
             or ToolCallOutput or ToolActivityOutput or ToolResultOutput
-            or ProcessingStateOutput)
+            or ProcessingStateOutput or UserMessageQueuedOutput or UserMessagesPulledOutput)
         {
             effects.Add(new ChatPresentationEffect.RefreshLiveRegion());
         }
@@ -443,6 +454,31 @@ internal static class ChatPresentationReducer
     {
         var text = string.IsNullOrEmpty(output.Text) ? state.ThoughtText : output.Text;
         return state with { ThoughtText = text };
+    }
+
+    private static ChatPresentationState RecordAgentPull(
+        ChatPresentationState state,
+        UserMessagesPulledOutput output)
+    {
+        if (state.AgentPulls.Any(pull => string.Equals(
+                pull.BatchId,
+                output.BatchId,
+                StringComparison.Ordinal)))
+        {
+            return state;
+        }
+
+        var pull = new AgentPullPresentation(
+            output.BatchId,
+            output.TurnId.Value,
+            output.TimestampMs,
+            state.ReplyPassages.Count - 1,
+            output.Messages.ToImmutableList());
+        return state with
+        {
+            CurrentTurnId = output.TurnId.Value,
+            AgentPulls = state.AgentPulls.Add(pull)
+        };
     }
 
     private static ChatPresentationState StartTool(
@@ -723,6 +759,7 @@ internal static class ChatPresentationReducer
             ThoughtText = string.Empty,
             PendingApprovals = ImmutableQueue<ToolInteractionRequest>.Empty,
             CompletedApprovals = [],
+            AgentPulls = [],
             IsProcessing = false,
             TurnNumber = Math.Max(state.TurnNumber + 1, completed.TurnNumber.Value + 1),
             CurrentTurnId = null
@@ -758,7 +795,9 @@ internal static class ChatPresentationReducer
             1 => "1 decision",
             _ => $"{state.CompletedApprovals.Count} decisions"
         };
-        var receiptParts = new[] { toolReceipt, agentReceipt, approvalReceipt }
+        var pulledMessageCount = state.AgentPulls.Sum(pull => pull.Messages.Count);
+        var pullReceipt = CountLabel(pulledMessageCount, "follow-up", "follow-ups");
+        var receiptParts = new[] { toolReceipt, agentReceipt, approvalReceipt, pullReceipt }
             .Where(value => value.Length > 0)
             .ToArray();
         var receipt = receiptParts.Length == 0
@@ -790,6 +829,12 @@ internal static class ChatPresentationReducer
             detailParts.Add($"Decisions:\n{string.Join("\n\n", state.CompletedApprovals.Select(
                 approval => approval.Detail ?? approval.Summary))}");
         }
+        if (state.AgentPulls.Count > 0)
+        {
+            var pullDetail = state.AgentPulls.Select(pull =>
+                $"Pulled by agent:\n{string.Join("\n", pull.Messages.Select(message => message.Content))}");
+            detailParts.Add($"User steering:\n{string.Join("\n\n", pullDetail)}");
+        }
 
         var detail = string.Join("\n\n", new[] { prose }
             .Concat(detailParts)
@@ -801,7 +846,9 @@ internal static class ChatPresentationReducer
                 ? state.Tools.Values.Min(tool => tool.StartedAtMs)
                 : state.SubAgents.Count > 0
                     ? state.SubAgents.Values.Min(run => run.StartedAtMs)
-                    : state.CompletedApprovals.Min(approval => approval.TimestampMs);
+                    : state.CompletedApprovals.Count > 0
+                        ? state.CompletedApprovals.Min(approval => approval.TimestampMs)
+                        : state.AgentPulls.Min(pull => pull.TimestampMs);
         return new ChatPresentationBlock(
             $"turn:{state.TurnNumber}:reply",
             ChatBlockKind.Assistant,

@@ -121,4 +121,31 @@ public sealed class SessionSubscriberManagerTests : TestKit
         await full.ExpectMsgAsync<SubAgentOutput>(cancellationToken: TestContext.Current.CancellationToken);
         await restricted.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
     }
+
+    [Fact]
+    public async Task Message_lifecycle_requires_an_explicit_filter()
+    {
+        var manager = new SessionSubscriberManager();
+        var full = CreateTestProbe("full");
+        var lifecycle = CreateTestProbe("message-lifecycle");
+        var sessionId = new SessionId("channel/thread");
+
+        manager.AddOrUpdate(full.Ref, OutputFilter.Full);
+        manager.AddOrUpdate(lifecycle.Ref, OutputFilter.Full | OutputFilter.MessageLifecycle);
+
+        manager.Emit(new UserMessageQueuedOutput
+        {
+            SessionId = sessionId,
+            MessageId = "tui:message-1",
+            TurnId = new TurnId("turn-1"),
+            QueueDepth = 1
+        }, OutputFilter.MessageLifecycle);
+
+        var queued = await lifecycle.ExpectMsgAsync<UserMessageQueuedOutput>(
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal("tui:message-1", queued.MessageId);
+        await full.ExpectNoMsgAsync(
+            TimeSpan.FromMilliseconds(100),
+            TestContext.Current.CancellationToken);
+    }
 }
