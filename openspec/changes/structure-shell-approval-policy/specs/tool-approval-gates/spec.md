@@ -21,12 +21,18 @@ own or inspect one-time approval state. The coordinator SHALL import actor
 coverage, apply safe policy to still-uncovered candidates, validate the
 invocation-owned one-time set exactly, and SHALL NOT rescan grants.
 
+Reviewed-safe phrase coverage SHALL cover a candidate only when the run has
+interactive approval capability. A run without that capability SHALL require
+explicit one-time, session, or persistent authority for every candidate that
+is not an approval-exempt side effect.
+
 The actor result SHALL include typed persistent-store status. An absent store
 file SHALL be ready with an empty snapshot. Expected corruption or migration
 failure SHALL be unavailable. Completion SHALL allow a call fully covered by
-one-time, session, or reviewed-safe authority without persistent state. If any
-candidate remains uncovered and persistent state was unavailable, completion
-SHALL return terminal `ApprovalStoreUnavailable` instead of a prompt.
+one-time, session, approval-exempt side effects, or, for an interactive run,
+reviewed-safe phrase coverage without persistent state. If any candidate
+remains uncovered and persistent state was unavailable, completion SHALL
+return terminal `ApprovalStoreUnavailable` instead of a prompt.
 
 `ToolApprovalAttempt` SHALL remain owner of one-time invocation state.
 `ToolApprovalActor` SHALL remain owner of session and persistent grants. The
@@ -49,10 +55,27 @@ a fact that no current type represents.
 #### Scenario: Independent coverage survives unavailable persistence
 
 - **GIVEN** the persistent store is unavailable
+- **AND** interactive approval capability is available
 - **AND** session and reviewed-safe coverage jointly cover every candidate
 - **WHEN** completion evaluates the actor result
 - **THEN** the call is allowed
 - **AND** no persisted grant is assumed
+
+#### Scenario: Reviewed-safe policy does not grant headless authority
+
+- **GIVEN** interactive approval capability is unavailable
+- **AND** a complete candidate is in the reviewed-safe catalog
+- **WHEN** no one-time, session, or persistent grant covers that candidate
+- **THEN** the candidate remains uncovered
+- **AND** the caller follows the current unsupported-channel denial path
+
+#### Scenario: Explicit grant covers a headless candidate
+
+- **GIVEN** interactive approval capability is unavailable
+- **AND** a session or persistent grant covers a complete candidate
+- **WHEN** completion evaluates the call
+- **THEN** the explicit grant covers that candidate
+- **AND** reviewed-safe policy adds no authority
 
 #### Scenario: Uncovered candidate fails closed when persistence is unavailable
 
@@ -136,22 +159,28 @@ mismatched actor result, or impossible transition SHALL produce terminal deny.
 ### Requirement: Causal approval intent is separate from execution scope
 
 The system SHALL keep canonical execution facts unchanged. For Bash only, it
-MAY derive an approval-intent directory from an exact leading authored
-directory transition on the success edge of `cd TARGET && ...`.
+MAY derive approval intent from a leading ShellSyntaxTree 0.3.4 occurrence.
+That occurrence SHALL publish `ChangesOnSuccess(Exact(target))`. Its next
+top-level action SHALL be success-gated with `&&`.
 
 Intent MAY continue through later top-level diagnostic statements until a
 later directory mutation, differing control-flow join, alternate branch,
 subshell/group boundary, dynamic flow, or unsupported region invalidates it. An
-exact later success-gated directory transition SHALL replace intent on its
-success edge.
+exact later success-gated `ChangesOnSuccess` effect SHALL replace intent.
+`Unchanged` SHALL preserve intent. `Unknown` or a non-exact change target SHALL
+invalidate intent. Causal and temporary-scope policy SHALL NOT identify
+directory-transition verbs.
 
-An intent target SHALL be eligible only when exact, absolute, normalized,
-symlink-free, and allowed by protected-path policy. The directory-transition
-candidate and first non-navigation action on its success edge SHALL already
-have one-time, session, or stored-grant coverage. Safe policy alone SHALL NOT
-manufacture causal intent.
+An intent target SHALL be eligible only when exact, absolute, normalized, and
+allowed by protected-path policy. It SHALL contain no symlink segment. Every
+possible fallback directory SHALL meet the same rule. A captured platform
+temporary alias and its descendants MAY map to its canonical root. POSIX hosts
+MAY also capture the conventional `/tmp` alias. No other symlink target SHALL
+be eligible. The directory-transition candidate and first non-navigation
+action on its success edge SHALL already have one-time, session, or
+stored-grant coverage. Safe policy alone SHALL NOT create causal intent.
 
-Only a reviewed read-only-for-all-arguments candidate without a file-writing
+Only a reviewed diagnostic candidate without a file-writing
 redirect MAY consume eligible intent. Hard deny, protected paths, folder
 grants, noninteractive authority, and process execution SHALL use real facts.
 The system SHALL NOT rewrite source, arguments, cwd, or model history.
@@ -162,7 +191,7 @@ scope from `Set-Location`.
 #### Scenario: Exact D03 chain composes under intended tmp scope
 
 - **GIVEN** global grants cover `cd` and `gh api`
-- **AND** `wc` and `head` are reviewed read-only entries
+- **AND** `wc` and `head` are reviewed diagnostic entries
 - **WHEN** the agent submits
   `cd /tmp && gh api repos/example/project/actions/jobs/123456/logs > slopwatch.log 2>&1; wc -c slopwatch.log; head -100 slopwatch.log`
 - **THEN** real redirect and path facts pass deny policy
@@ -176,6 +205,62 @@ scope from `Set-Location`.
 - **WHEN** a later `cd "$1"` precedes a diagnostic tail
 - **THEN** the tail has unknown intent
 - **AND** safe policy cannot use the earlier `/tmp` intent
+
+#### Scenario: Parser-owned wrappers establish and replace intent
+
+- **WHEN** Bash reports `ChangesOnSuccess(Exact("/tmp"))` for `command cd /tmp`
+- **THEN** the effect can establish causal intent
+- **AND** no Netclaw command-name rule is consulted
+
+#### Scenario: Directory-stack effect invalidates intent
+
+- **GIVEN** intent is `/tmp`
+- **WHEN** a later `pushd` or `popd` occurrence reports `Unknown`
+- **THEN** no later diagnostic receives the earlier intent
+
+#### Scenario: Failure-only transition shape does not create intent
+
+- **WHEN** Bash reports `Unchanged` for `cd /tmp extra`
+- **THEN** no causal intent is created
+- **AND** Netclaw does not reinterpret the command's private arguments
+
+#### Scenario: Arbitrary symlink target cannot create intent
+
+- **GIVEN** `/work/alias` is a symlink to another directory
+- **WHEN** source starts with `cd /work/alias && inspect`
+- **THEN** no causal approval intent is eligible
+- **AND** the captured platform temporary alias remains a separate bounded
+  exception
+
+#### Scenario: Earlier symlink target cannot become a fallback
+
+- **GIVEN** an earlier exact intent target crosses a symlink
+- **WHEN** a later eligible transition replaces intent
+- **THEN** the earlier target fails fallback eligibility
+- **AND** no later diagnostic receives reviewed-safe intent coverage
+
+#### Scenario: Protected fallback denial stays terminal
+
+- **GIVEN** an earlier fallback alias resolves into a protected directory
+- **WHEN** a later intent candidate also fails symlink eligibility
+- **THEN** protected-path policy denies before the eligibility check
+- **AND** the system does not offer a one-time approval prompt
+
+#### Scenario: Conventional macOS tmp alias remains eligible
+
+- **GIVEN** the host runtime temp root differs from `/tmp`
+- **AND** the POSIX `/tmp` alias resolves to `/private/tmp`
+- **WHEN** intent targets `/tmp` or one of its safe descendants
+- **THEN** causal policy validates the canonical `/private/tmp` path
+- **AND** arbitrary POSIX symlink aliases remain strict
+
+#### Scenario: Session and folder grants use real prerequisite scope
+
+- **GIVEN** session or persistent-folder authority covers each prerequisite
+- **WHEN** causal policy checks a diagnostic tail
+- **THEN** prerequisite coverage can establish intent
+- **AND** a folder grant matches only the prerequisite's real scope
+- **AND** intent scope cannot convert a folder near miss into coverage
 
 #### Scenario: Alternate branch does not leak intent
 
@@ -245,12 +330,21 @@ expected per-candidate coverage, ordered trace rows, and final outcome for the
 policy-owned acceptance cases. Tests SHALL load those fields directly and
 SHALL NOT branch on Dxx identifiers to manufacture expected results.
 
-Fixture defaults SHALL explicitly provide tool name, audience, approval mode,
-interactive capability, session identity and safe root, project safe root,
-inherited cwd, and persistent-store status. Each case SHALL provide canonical
-shell environment and initial cwd. Every stored grant SHALL carry a canonical
-shell tag. D02, D03, D07, D08, D09, D10, D11, D14, D17, and D18 SHALL be exact
-executable fixtures.
+Fixture defaults SHALL explicitly provide:
+
+- tool name, audience, and approval mode;
+- interactive capability;
+- session identity and safe root;
+- project safe root and inherited cwd;
+- persistent-store status; and
+- a fixed clock.
+
+Each case SHALL provide canonical shell environment and initial cwd. Parser facts SHALL use
+command indexes. Policy facts SHALL use stable candidate IDs. Every stored
+grant SHALL carry a canonical shell tag. D02, D03, D07, D08, D09, D10, D11,
+D14, D17, and D18 SHALL be exact executable fixtures. Tests SHALL deserialize
+the schema through source-generated `System.Text.Json` metadata and reject
+unknown members.
 
 Additional adversarial rows SHALL cover dynamic identity, deny-only wrappers,
 redirects, protected paths, prefix collisions, runtime iterators, PowerShell
@@ -516,15 +610,21 @@ global entries. Unknown or synthetic-only scope SHALL omit `Always here`.
 - **THEN** folder coverage fails
 - **AND** protected-path policy denies when applicable
 
-### Requirement: Safe-verb auto-allow short-circuit in declared safe spaces
+### Requirement: Reviewed diagnostic auto-allow in declared safe spaces
 
 The system SHALL load an embedded immutable per-platform policy catalog.
-`ReadOnlyForAllArguments` SHALL mean no accepted argument shape can write or
-delete a file, execute another command, or mutate a remote service through the
-executable's argv interpretation. Runtime user overrides SHALL NOT widen the
-catalog. Redirects, parser-owned path operands, provider paths, and unknown
-shell expansions SHALL remain separate strict effects. Displaying a value
-explicitly supplied by the shell SHALL NOT by itself disqualify a phrase.
+`ReviewedDiagnostic` SHALL classify only the shell-authored invocation.
+Runtime user overrides SHALL NOT widen the catalog.
+
+No accepted authored argument shape SHALL select a child executable, select a
+caller-authored output file, request destructive persistent state, or request
+a remote mutation. Tool-private metadata or cache refresh SHALL remain outside
+this claim. Ambient executable configuration and executable-discovered paths
+SHALL also remain outside this claim.
+
+Redirects, parser-owned filesystem values, provider paths, and unknown shell
+expansions SHALL remain separate strict effects. Bounded shell-local output
+variables MAY remain eligible. Any unresolved later use SHALL remain strict.
 
 Safe policy SHALL refine only uncovered candidates. It SHALL require reviewed
 phrase coverage, an allowed real or eligible intent scope, no symlink segment,
@@ -536,12 +636,58 @@ plus declared project directory. Public SHALL use session directory only.
 code SHALL contain no executable-specific flag exceptions. PowerShell provider
 paths SHALL retain existing strict checks.
 
-#### Scenario: Read-only candidate in project scope is covered
+Reviewed-safe phrase identity SHALL use canonical ShellSyntaxTree token
+prefixes. Legacy display and compatibility strings SHALL NOT establish
+reviewed-safe coverage.
+
+An authored argument before the matched phrase completes SHALL prevent
+reviewed-safe coverage. The check SHALL use parser-owned element order.
+
+A known `AuthoredPathShape` SHALL be conservative negative evidence only.
+Every represented authored value SHALL resolve beneath an eligible safe root.
+Unknown or unsupported domains SHALL prevent reviewed-safe coverage. A lexical
+path shape SHALL NOT create filesystem authority.
+
+#### Scenario: Reviewed diagnostic in project scope is covered
 
 - **GIVEN** `head` is reviewed safe
 - **AND** its real scope is under a Personal project root
 - **WHEN** every earlier stage passes
 - **THEN** safe policy covers that candidate
+
+#### Scenario: Global argument before a reviewed phrase stays strict
+
+- **GIVEN** `git status` is a reviewed diagnostic phrase
+- **WHEN** the authored command is `git -c include.path=/tmp/config status`
+- **THEN** reviewed-safe policy does not cover the candidate
+- **AND** Netclaw does not parse Git's private option grammar
+
+#### Scenario: Hidden option path outside the safe root stays strict
+
+- **GIVEN** `grep` is a reviewed diagnostic phrase
+- **AND** ShellSyntaxTree marks `/tmp/patterns` with a POSIX path shape
+- **WHEN** the authored command is `grep -f /tmp/patterns ./safe.txt`
+- **THEN** reviewed-safe policy does not cover the candidate
+- **AND** lexical path shape creates no new authority
+
+#### Scenario: Path-shaped data beneath the safe root can remain eligible
+
+- **GIVEN** a reviewed diagnostic receives `example/project` as data
+- **AND** its possible local-path interpretation stays beneath the safe root
+- **WHEN** all stronger shell facts pass
+- **THEN** lexical path shape alone does not reject the candidate
+
+#### Scenario: Exact path scope does not declare a safe root
+
+- **GIVEN** an agent has no declared project root for a user-named project
+- **WHEN** a shell candidate contains an absolute path beneath that project
+- **THEN** the path can provide the candidate's exact policy scope
+- **AND** it does not add that project as a safe-space root
+- **AND** model guidance tells the agent to call `set_working_directory` before
+  several shell calls in that project
+- **AND** the same rule applies when a subagent's exposed tools include
+  `set_working_directory` and its inherited project differs
+- **AND** the rule is absent when that tool is unavailable
 
 #### Scenario: Undeclared project scope returns an agent correction
 
@@ -558,6 +704,45 @@ paths SHALL retain existing strict checks.
 - **AND** the correction tells the agent to declare the exact cwd and retry the
   exact command unchanged
 
+#### Scenario: Subagent scope correction precedes parent approval
+
+- **GIVEN** a subagent submits eligible reviewed-safe shell work beneath an
+  undeclared cwd
+- **AND** its registered `set_working_directory` tool accepts that exact cwd
+- **WHEN** policy would otherwise open the parent approval bridge
+- **THEN** the subagent returns the same scope-declaration correction as a
+  parent session
+- **AND** it does not execute the shell command or request parent approval
+- **AND** the authored tool call remains unchanged in model history
+
+#### Scenario: Subagent declaration applies to the unchanged retry
+
+- **GIVEN** a subagent received a scope-declaration correction
+- **WHEN** it calls `set_working_directory` with the exact suggested cwd
+- **THEN** the child replaces its local project-scope snapshot
+- **AND** it reloads project instructions before the next model call
+- **AND** an unchanged eligible shell retry uses the declared child scope
+- **AND** the child does not replace the parent project directory
+
+#### Scenario: Headless subagent declaration does not grant authority
+
+- **GIVEN** a headless subagent received a scope-declaration correction
+- **AND** it successfully declared the exact suggested cwd
+- **WHEN** it retries the unchanged shell call
+- **THEN** the declared child scope prevents another correction
+- **AND** the retry follows ordinary headless authority rules
+- **AND** the declaration does not grant reviewed-safe, session, or persistent
+  authority
+
+#### Scenario: Subagent keeps the approval bridge when scope cannot change
+
+- **GIVEN** a subagent submits eligible reviewed-safe shell work beneath an
+  undeclared cwd
+- **AND** `set_working_directory` is absent or rejects that cwd
+- **WHEN** policy requires approval
+- **THEN** the scope-declaration correction does not apply
+- **AND** the existing parent approval bridge handles the request
+
 #### Scenario: Scope correction cannot hide unsafe work
 
 - **GIVEN** any candidate lacks reviewed-safe phrase coverage
@@ -567,7 +752,8 @@ paths SHALL retain existing strict checks.
 - **OR** `set_working_directory` is unavailable
 - **OR** `set_working_directory` policy would reject or substitute the cwd
 - **WHEN** policy evaluates the call
-- **THEN** the scope-declaration correction does not apply
+- **THEN** the scope-declaration correction does not apply in a parent session
+  or subagent
 - **AND** the normal approval or deny result remains
 
 #### Scenario: Unsafe argument surface excludes whole phrase
@@ -586,7 +772,7 @@ paths SHALL retain existing strict checks.
 #### Scenario: Public project directory is not safe
 
 - **GIVEN** a Public session has a project directory
-- **WHEN** a reviewed read-only candidate runs only there
+- **WHEN** a reviewed diagnostic candidate runs only there
 - **THEN** safe policy does not cover it
 
 #### Scenario: PowerShell environment provider stays strict
@@ -601,15 +787,29 @@ Authorization SHALL use canonical ShellSyntaxTree completeness rather than a
 second control-flow tokenizer. Supported static loops SHALL expose candidates.
 Unsupported branches and runtime-generated loops SHALL remain strict.
 
+An effective finite argument SHALL enter path policy when the parser-owned
+`Argument.IsPath` role is true. ShellSyntaxTree 0.3.3 `Exact` and `FiniteSet`
+`AuthoredFileSystemValue` facts SHALL also enter path policy. Unknown and all
+other alternatives SHALL stay strict. `AuthoredPathShape` SHALL NOT substitute
+for the stronger fact or create file authority.
+
 A legacy scanner MAY add a denial when canonical analysis is incomplete. It
 SHALL NOT allow, create candidates, create persistent options, or widen scope.
 
-#### Scenario: Static loop exposes authored candidates
+#### Scenario: ShellSyntaxTree 0.3.2 keeps D14 path coverage strict
 
-- **GIVEN** ShellSyntaxTree 0.3.2 reports D14 authored values and the existing
-  parser-owned `Argument.IsPath` role
+- **GIVEN** ShellSyntaxTree 0.3.2 reports D14 finite authored values
+- **AND** its effective argument has `Argument.IsPath` false
 - **WHEN** the maintainer-approved authored-source policy evaluates it
-- **THEN** finite `cat` paths are checked individually
+- **THEN** the authored values do not create file authority
+- **AND** lexical `AuthoredPathShape` does not cover the candidate
+
+#### Scenario: ShellSyntaxTree 0.3.3 unlocks finite D14 path checks
+
+- **GIVEN** ShellSyntaxTree 0.3.3 reports a finite D14
+  `AuthoredFileSystemValue`
+- **WHEN** the maintainer-approved authored-source policy evaluates it
+- **THEN** each finite `cat` path passes `ToolPathPolicy`
 - **AND** the presence of `for` alone does not force a prompt
 
 #### Scenario: Runtime iterator stays one-time
@@ -672,9 +872,13 @@ ShellSyntaxTree analysis.
 
 PowerShell SHALL use the selected dialect and `PwshInitialStateMode.Unknown`.
 Netclaw SHALL use effective values for runtime and deny policy. It MAY use
-ShellSyntaxTree 0.3.2 authored values only for the explicitly approved approval
-perspective. Unknown policy-relevant values SHALL not create reusable or safe
-coverage.
+authored values only for the approved approval perspective. It SHALL route
+ShellSyntaxTree 0.3.3 authored filesystem values through path policy. Unknown
+policy-relevant values SHALL not create reusable or safe coverage.
+
+Netclaw SHALL consume ShellSyntaxTree 0.3.4 working-directory effects for the
+bounded Bash causal projection. It SHALL NOT derive equivalent effects from
+command names or executable-private grammar.
 
 Deny-only defensive scans MAY deny incomplete input but SHALL never authorize
 it.

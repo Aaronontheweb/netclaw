@@ -54,12 +54,14 @@ public sealed class ToolApprovalGateTests
     public void Shell_in_deny_mode_returns_deny()
     {
         var policy = CreatePolicy(ToolApprovalMode.Deny);
+        var context = PersonalContext();
         var args = ToolInput.Create("Command", "git push");
 
-        var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+        var decision = policy.AuthorizeInvocation(ShellTool(), context, args);
 
         Assert.False(decision.Allowed);
         Assert.Equal("tool_denied_by_approval_policy", decision.DenyReason);
+        Assert.False(policy.TryTakeAuthorizedShellAnalysis(context, out _));
     }
 
     [Fact]
@@ -73,6 +75,84 @@ public sealed class ToolApprovalGateTests
         Assert.True(decision.Allowed);
         Assert.False(decision.NeedsApproval);
         Assert.Equal(ToolAllowReason.PolicyAuto, decision.AllowReason);
+    }
+
+    [Theory]
+    [InlineData(ToolApprovalMode.Auto)]
+    [InlineData(ToolApprovalMode.Deny)]
+    [InlineData((ToolApprovalMode)999)]
+    public void Shell_hard_deny_precedes_approval_mode(ToolApprovalMode mode)
+    {
+        var policy = CreatePolicy(mode);
+
+        var decision = policy.AuthorizeInvocation(
+            ShellTool(),
+            PersonalContext(),
+            ToolInput.Create("Command", "rm -rf /"));
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("hard_deny_system_destructive", decision.DenyReason);
+    }
+
+    [Theory]
+    [InlineData(ToolApprovalMode.Auto)]
+    [InlineData(ToolApprovalMode.Deny)]
+    [InlineData((ToolApprovalMode)999)]
+    public void Shell_protected_path_precedes_approval_mode(ToolApprovalMode mode)
+    {
+        var environment = ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux);
+        const string protectedRoot = "/protected";
+        var config = CreateShellConfig(mode);
+        var commandPolicy = new ShellCommandPolicy(environment);
+        var pathPolicy = new ToolPathPolicy(environment, [protectedRoot]);
+        var policy = new ToolAccessPolicy(config, Defaults(), commandPolicy, pathPolicy);
+        var tool = new ShellTool(config, pathPolicy, commandPolicy);
+
+        var decision = policy.AuthorizeInvocation(
+            tool,
+            PersonalContext(),
+            ToolInput.Create("Command", "cat /protected/secret.txt"));
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("shell_references_protected_path", decision.DenyReason);
+    }
+
+    [Theory]
+    [InlineData(ToolApprovalMode.Auto, "shell_trust_zone_policy_not_configured")]
+    [InlineData(ToolApprovalMode.Deny, "tool_denied_by_approval_policy")]
+    public void Shell_approval_mode_preserves_noninteractive_trust_zone(
+        ToolApprovalMode mode,
+        string expectedDenyReason)
+    {
+        var policy = CreatePolicy(mode);
+        var context = PersonalContext(supportsApproval: false);
+
+        var decision = policy.AuthorizeInvocation(
+            ShellTool(),
+            context,
+            ToolInput.Create("Command", "cat /external/data.txt"));
+
+        Assert.False(decision.Allowed);
+        Assert.Equal(expectedDenyReason, decision.DenyReason);
+        Assert.False(decision.NeedsApproval);
+        Assert.False(policy.TryTakeAuthorizedShellAnalysis(context, out _));
+    }
+
+    [Fact]
+    public void Invalid_shell_approval_mode_fails_closed()
+    {
+        var policy = CreatePolicy((ToolApprovalMode)999);
+        var context = PersonalContext();
+
+        var decision = policy.AuthorizeInvocation(
+            ShellTool(),
+            context,
+            ToolInput.Create("Command", "git status"));
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("internal_policy_failure", decision.DenyReason);
+        Assert.False(policy.TryTakeAuthorizedShellAnalysis(context, out _));
+        Assert.Null(context.Cwd);
     }
 
     [Fact]
@@ -915,6 +995,26 @@ public sealed class ToolApprovalGateTests
             shellTrustZonePolicy: trustZone);
     }
 
+    private static ToolConfig CreateShellConfig(ToolApprovalMode mode)
+    {
+        var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
+        config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
+        {
+            ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
+            {
+                ["shell_execute"] = mode
+            }
+        };
+        return config;
+    }
+
+    private static EffectivePolicyDefaults Defaults()
+        => new(
+            DeploymentPosture.Personal,
+            TrustAudience.Personal,
+            ShellExecutionMode.HostAllowed,
+            UsedStrictFallback: false);
+
     // Simulates a Mode.Roots audience: a path is write-authorized iff it falls
     // within one of the configured roots (the same IsWithinAnyRoot semantics the
     // real ScopedFileAccessPolicy applies for Mode.Roots).
@@ -990,36 +1090,27 @@ public sealed class ToolApprovalGateTests
     public void Shell_relative_path_command_extracts_verb_chain_without_directory_roots()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
-        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        var logs = Path.Combine(root, "logs");
-        Directory.CreateDirectory(logs);
+        const string root = "/netclaw-approval-test/workspace";
 
-        try
-        {
-            var args = ToolInput.Create(
-                "Command", "grep timeout logs/app.log | wc -l",
-                "WorkingDirectory", root);
+        var args = ToolInput.Create(
+            "Command", "grep timeout logs/app.log | wc -l",
+            "WorkingDirectory", root);
 
-            var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
+        var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
 
-            Assert.True(decision.NeedsApproval);
-            // Pipelines stay inside one approval unit, so the candidate is
-            // the verb chain of the unit's first command (path-aware
-            // "grep <first-arg>").
-            Assert.Contains(decision.ApprovalContext!.CandidateVerbs, v => v.StartsWith("grep", StringComparison.Ordinal));
-            // Button labels are fixed; Slack's 76-char and Discord's 80-char
-            // button caps make dynamic labels structurally unsafe.
-            Assert.Equal(
-                ApprovalOptionKeys.ApproveSessionLabel,
-                decision.ApprovalContext.Options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveSession).Label);
-            Assert.Equal(
-                ApprovalOptionKeys.ApproveAlwaysLabel,
-                decision.ApprovalContext.Options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveAlways).Label);
-        }
-        finally
-        {
-            Directory.Delete(root, recursive: true);
-        }
+        Assert.True(decision.NeedsApproval);
+        // Pipelines stay inside one approval unit, so the candidate is
+        // the verb chain of the unit's first command (path-aware
+        // "grep <first-arg>").
+        Assert.Contains(decision.ApprovalContext!.CandidateVerbs, v => v.StartsWith("grep", StringComparison.Ordinal));
+        // Button labels are fixed; Slack's 76-char and Discord's 80-char
+        // button caps make dynamic labels structurally unsafe.
+        Assert.Equal(
+            ApprovalOptionKeys.ApproveSessionLabel,
+            decision.ApprovalContext.Options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveSession).Label);
+        Assert.Equal(
+            ApprovalOptionKeys.ApproveAlwaysLabel,
+            decision.ApprovalContext.Options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveAlways).Label);
     }
 
     [Fact]
@@ -1087,10 +1178,63 @@ public sealed class ToolApprovalGateTests
         var narrowed = ToolAccessPolicy.NarrowShellApprovalContext(
             original,
             [candidate],
-            sessionDirectory: null);
+            sessionDirectory: null,
+            ShellPathStyle.Posix);
 
         Assert.Equal(
             [ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.Deny],
             narrowed.Options.Select(static option => option.Key.Value));
+    }
+
+    [Theory]
+    [InlineData("/", ShellPathStyle.Posix, false)]
+    [InlineData("/etc", ShellPathStyle.Posix, false)]
+    [InlineData("/home/user", ShellPathStyle.Posix, true)]
+    [InlineData("/home//user", ShellPathStyle.Posix, false)]
+    [InlineData("/etc/..", ShellPathStyle.Posix, false)]
+    [InlineData("relative/repo", ShellPathStyle.Posix, false)]
+    [InlineData(@"C:\", ShellPathStyle.Windows, false)]
+    [InlineData(@"C:\Windows", ShellPathStyle.Windows, false)]
+    [InlineData(@"C:\Users\user", ShellPathStyle.Windows, true)]
+    [InlineData(@"C:\Users\\user", ShellPathStyle.Windows, false)]
+    [InlineData(@"\\server\share", ShellPathStyle.Windows, false)]
+    [InlineData(@"\\server\share\folder", ShellPathStyle.Windows, false)]
+    [InlineData(@"\\server\share\folder\repo", ShellPathStyle.Windows, true)]
+    [InlineData("\\\\ser\nver\\share\\folder\\repo", ShellPathStyle.Windows, false)]
+    [InlineData("\\\\server\\sha\nre\\folder\\repo", ShellPathStyle.Windows, false)]
+    [InlineData(@"\\server\\share\folder\repo", ShellPathStyle.Windows, false)]
+    [InlineData(@"\\server\..\folder\repo", ShellPathStyle.Windows, false)]
+    [InlineData(@"\\.\share\folder\repo", ShellPathStyle.Windows, false)]
+    [InlineData(@"\\?\C:\folder\repo", ShellPathStyle.Windows, false)]
+    [InlineData("\\\\server\\share\\folder\\repo\\", ShellPathStyle.Windows, false)]
+    [InlineData(@"C:\work", (ShellPathStyle)999, false)]
+    public void Narrow_shell_context_uses_root_relative_scope_depth(
+        string cwd,
+        ShellPathStyle pathStyle,
+        bool offersAlwaysHere)
+    {
+        var candidate = new ApprovalCandidate("git status", cwd)
+        {
+            Shell = ApprovalShell.Bash,
+            VerbTokens = ["git", "status"]
+        };
+        var original = new ToolApprovalContext(
+            "shell_execute",
+            "git status",
+            ["git status"],
+            ["git status"],
+            [],
+            Cwd: cwd,
+            Candidates: [candidate]);
+
+        var narrowed = ToolAccessPolicy.NarrowShellApprovalContext(
+            original,
+            [candidate],
+            sessionDirectory: null,
+            pathStyle);
+
+        Assert.Equal(
+            offersAlwaysHere,
+            narrowed.Options.Any(option => option.Key.Value == ApprovalOptionKeys.ApproveAlways));
     }
 }

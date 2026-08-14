@@ -84,6 +84,7 @@ RESULTS_DB=""
 
 # Per-prompt state (set by run_prompt, read by assertion helpers)
 STDOUT_FILE=""
+STDERR_FILE=""
 DAEMON_LOG_LINES_BEFORE=0
 
 # ─── Prerequisites ────────────────────────────────────────────────────────────
@@ -136,7 +137,7 @@ check_prerequisites() {
     fi
 
     # Eval-owned temp roots: everything under $EVAL_HOME is torn down by the
-    # EXIT trap. $TMPDIR_EVAL holds per-prompt stdout captures.
+    # EXIT trap. $TMPDIR_EVAL holds per-prompt stdout and stderr captures.
     EVAL_HOME=$(mktemp -d -t netclaw-eval-home-XXXXXX)
     TMPDIR_EVAL=$(mktemp -d -t netclaw-eval-tmp-XXXXXX)
     RESULTS_DIR="$EVAL_HOME/evals"
@@ -198,7 +199,7 @@ cleanup_eval_env() {
     if [[ -n "${EVAL_CONTAINER_NAME:-}" ]]; then
         docker stop "$EVAL_CONTAINER_NAME" >/dev/null 2>&1 || true
     fi
-    # TMPDIR_EVAL only holds host-owned per-prompt stdout captures, so a
+    # TMPDIR_EVAL only holds host-owned per-prompt stdout/stderr captures, so a
     # plain rm always succeeds — no force_rmrf fallback needed.
     if [[ -n "${TMPDIR_EVAL:-}" && -d "$TMPDIR_EVAL" ]]; then
         rm -rf "$TMPDIR_EVAL"
@@ -226,11 +227,13 @@ archive_eval_run() {
 
     # Copy all container logs (crash logs, session logs)
     if [[ -d "$EVAL_HOME/data/logs" ]]; then
-        cp -r "$EVAL_HOME/data/logs" "$archive_dir/container-logs" 2>/dev/null || true
+        mkdir -p "$archive_dir/container-logs"
+        cp -r "$EVAL_HOME/data/logs/." "$archive_dir/container-logs/" 2>/dev/null || true
     fi
     # Also check the direct logs dir (bind-mount layout varies)
-    if [[ -d "$EVAL_HOME/logs" && ! -d "$archive_dir/container-logs" ]]; then
-        cp -r "$EVAL_HOME/logs" "$archive_dir/container-logs" 2>/dev/null || true
+    if [[ -d "$EVAL_HOME/logs" ]]; then
+        mkdir -p "$archive_dir/container-logs"
+        cp -r "$EVAL_HOME/logs/." "$archive_dir/container-logs/" 2>/dev/null || true
     fi
 
     # Copy results DB
@@ -238,10 +241,14 @@ archive_eval_run() {
         cp "$RESULTS_DB" "$archive_dir/results.db" 2>/dev/null || true
     fi
 
-    # Copy stdout captures
+    # Copy stdout and stderr captures. Both land in the same archive_dir/stdout
+    # directory — the stdout_*/stderr_* filename prefix already tells them apart,
+    # and keeping stderr alongside stdout means a failing run's diagnostics
+    # (denied approvals, daemon errors) are always one directory away.
     if [[ -n "${TMPDIR_EVAL:-}" && -d "$TMPDIR_EVAL" ]]; then
         mkdir -p "$archive_dir/stdout"
         cp "$TMPDIR_EVAL"/stdout_*.txt "$archive_dir/stdout/" 2>/dev/null || true
+        cp "$TMPDIR_EVAL"/stderr_*.txt "$archive_dir/stdout/" 2>/dev/null || true
     fi
 
     # Write run metadata, including the immutable image identity so before/after
@@ -762,7 +769,10 @@ check_daemon_alive() {
 run_prompt() {
     local prompt="$1"
     local output_format="${2:-text}"
-    STDOUT_FILE="$TMPDIR_EVAL/stdout_$(date +%s%N).txt"
+    local ts
+    ts="$(date +%s%N)"
+    STDOUT_FILE="$TMPDIR_EVAL/stdout_${ts}.txt"
+    STDERR_FILE="$TMPDIR_EVAL/stderr_${ts}.txt"
 
     # Record daemon log position before the prompt (the daemon writes to a
     # daily-rotating file at /root/.netclaw/logs/daemon-YYYY-MM-DD.log, and
@@ -780,10 +790,15 @@ run_prompt() {
         output_args+=(--json)
     fi
 
+    # Stdout and stderr go to separate files. A merged capture corrupts
+    # --json assertions: the CLI writes legitimate diagnostics (for example
+    # "[error] Unknown output type from daemon: ...") to stderr, and a
+    # trailing diagnostic line breaks jq's parse of the JSON envelope on
+    # stdout, producing a false eval failure rather than a real one.
     NETCLAW_DAEMON_ENDPOINT="http://127.0.0.1:$EVAL_PORT" \
     NETCLAW_HOME="$EVAL_HOME" \
         timeout "$PROMPT_TIMEOUT" "$NETCLAW_BIN" chat -p "${output_args[@]}" "$prompt" \
-        > "$STDOUT_FILE" 2>&1 || true
+        > "$STDOUT_FILE" 2> "$STDERR_FILE" || true
 
     # Brief pause for daemon log flush
     sleep 2
@@ -792,23 +807,34 @@ run_prompt() {
 ## Runs a prompt against an existing (or new) named session via `chat -p --resume`.
 ## Appends output to a per-turn file AND the shared STDOUT_FILE so existing
 ## assertion helpers (stdout_contains, etc.) see the full concatenated output.
+## Stderr is captured the same way, into a separate shared STDERR_FILE, so
+## stdout stays pure for assertions (see run_prompt for why that matters).
 ## Args: session_id, prompt
 run_prompt_resume() {
     local session_id="$1"
     local prompt="$2"
-    local turn_file="$TMPDIR_EVAL/stdout_$(date +%s%N)_turn.txt"
+    local ts
+    ts="$(date +%s%N)"
+    local turn_file="$TMPDIR_EVAL/stdout_${ts}_turn.txt"
+    local turn_stderr_file="$TMPDIR_EVAL/stderr_${ts}_turn.txt"
 
     if [[ ! -x "$NETCLAW_BIN" ]]; then
         echo "ERROR: eval CLI disappeared during the run: $NETCLAW_BIN" >&2
         exit 2
     fi
 
-    # First call in a multi-turn case: open a fresh shared STDOUT_FILE.
+    # First call in a multi-turn case: open fresh shared STDOUT_FILE/STDERR_FILE.
     if [[ -z "${MULTI_TURN_STDOUT_FILE:-}" ]]; then
         MULTI_TURN_STDOUT_FILE="$TMPDIR_EVAL/stdout_$(date +%s%N)_multi.txt"
         : > "$MULTI_TURN_STDOUT_FILE"
     fi
     STDOUT_FILE="$MULTI_TURN_STDOUT_FILE"
+
+    if [[ -z "${MULTI_TURN_STDERR_FILE:-}" ]]; then
+        MULTI_TURN_STDERR_FILE="$TMPDIR_EVAL/stderr_$(date +%s%N)_multi.txt"
+        : > "$MULTI_TURN_STDERR_FILE"
+    fi
+    STDERR_FILE="$MULTI_TURN_STDERR_FILE"
 
     if [[ -f "$DAEMON_LOG" ]]; then
         DAEMON_LOG_LINES_BEFORE=$(wc -l < "$DAEMON_LOG")
@@ -819,10 +845,11 @@ run_prompt_resume() {
     NETCLAW_DAEMON_ENDPOINT="http://127.0.0.1:$EVAL_PORT" \
     NETCLAW_HOME="$EVAL_HOME" \
         timeout "$PROMPT_TIMEOUT" "$NETCLAW_BIN" chat -p --resume "$session_id" "$prompt" \
-        > "$turn_file" 2>&1 || true
+        > "$turn_file" 2> "$turn_stderr_file" || true
 
-    # Append this turn's output to the shared file so assertions see all turns.
+    # Append this turn's output to the shared files so assertions see all turns.
     cat "$turn_file" >> "$STDOUT_FILE"
+    cat "$turn_stderr_file" >> "$STDERR_FILE"
 
     # Per-turn metrics — read the usage line from this turn's file only.
     LAST_TURN_USAGE_LINE=$(grep -ao '\[usage\].*' "$turn_file" 2>/dev/null | tail -1 || echo "")
@@ -857,6 +884,7 @@ run_multi_turn_case() {
         # Fresh session per run so runs don't pollute each other.
         local session_id="eval/${case_name}-run${run}-$$"
         MULTI_TURN_STDOUT_FILE=""
+        MULTI_TURN_STDERR_FILE=""
 
         local setup_fn="setup_${case_name}"
         if declare -f "$setup_fn" >/dev/null 2>&1; then
@@ -1342,6 +1370,69 @@ assert_subagent_specialization_precedence() {
         stdout_contains 'SPECIALIZED ANALYST BRIEF' && \
         stdout_response_contains '^Subject:' && \
         stdout_response_contains 'Would Tuesday or Wednesday work for a 15-minute call?'
+}
+
+setup_subagent_project_scope_declaration() {
+    local run="$1"
+    PROJECT_SCOPE_LOG_MARKER="$TMPDIR_EVAL/project-scope-$run.marker"
+    touch "$PROJECT_SCOPE_LOG_MARKER"
+
+    docker exec --user netclaw "$EVAL_CONTAINER_NAME" \
+        mkdir -p /home/netclaw/.netclaw/workspaces/project-scope-target/src
+    docker exec --user netclaw "$EVAL_CONTAINER_NAME" \
+        sh -c 'printf "%s\n" "# Sample project" > /home/netclaw/.netclaw/workspaces/project-scope-target/README.md
+printf "%s\n" "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>" > /home/netclaw/.netclaw/workspaces/project-scope-target/Project.csproj
+printf "%s\n" "Console.WriteLine(\"sample\");" > /home/netclaw/.netclaw/workspaces/project-scope-target/src/Program.cs'
+    docker exec --user netclaw "$EVAL_CONTAINER_NAME" \
+        git -C /home/netclaw/.netclaw/workspaces/project-scope-target init -q
+    docker exec --user netclaw "$EVAL_CONTAINER_NAME" \
+        git -C /home/netclaw/.netclaw/workspaces/project-scope-target add README.md Project.csproj src/Program.cs
+    docker exec --user netclaw "$EVAL_CONTAINER_NAME" \
+        sh -c 'printf "%s\n" "<!-- changed -->" >> /home/netclaw/.netclaw/workspaces/project-scope-target/Project.csproj
+printf "%s\n" "// changed" >> /home/netclaw/.netclaw/workspaces/project-scope-target/src/Program.cs'
+}
+
+assert_subagent_project_scope_declaration() {
+    stdout_tool_called 'spawn_agent' || return 1
+    stdout_contains '\[subagent:done\] project-scope-analyst (completed' || return 1
+    stdout_response_contains 'Project.csproj' || return 1
+    stdout_response_contains 'src' || return 1
+
+    local child_log
+    child_log=$(find "$EVAL_HOME/logs/sessions" -type f \
+        -path '*_subagent_project-scope-analyst_*/session.log' \
+        -newer "$PROJECT_SCOPE_LOG_MARKER" 2>/dev/null | head -1)
+    [[ -n "$child_log" ]] || return 1
+
+    local declared_line shell_line shell_result_line shell_count shell_result_count
+    local status_command_count diff_command_count
+    declared_line=$(grep -an \
+        'SubAgent \[project-scope-analyst\] project directory set to /home/netclaw/.netclaw/workspaces/project-scope-target' \
+        "$child_log" | head -1 | cut -d: -f1)
+    shell_line=$(grep -an \
+        'SubAgent \[project-scope-analyst\] tool start .* name=shell_execute' \
+        "$child_log" | head -1 | cut -d: -f1)
+    shell_result_line=$(grep -an \
+        'SubAgent \[project-scope-analyst\] tool \[shell_execute\] result: Exit code: 0' \
+        "$child_log" | head -1 | cut -d: -f1)
+    shell_count=$(grep -ac \
+        'SubAgent \[project-scope-analyst\] tool start .* name=shell_execute' \
+        "$child_log")
+    shell_result_count=$(grep -ac \
+        'SubAgent \[project-scope-analyst\] tool \[shell_execute\] result: Exit code: 0' \
+        "$child_log")
+    status_command_count=$(grep -aEo \
+        'shell_execute#[[:alnum:]-]+\(Command=git status --short, WorkingDirectory=/home/netclaw/\.netclaw/workspaces/project-scope-target,' \
+        "$child_log" | wc -l | tr -d ' ')
+    diff_command_count=$(grep -aEo \
+        'shell_execute#[[:alnum:]-]+\(Command=git diff --stat, WorkingDirectory=/home/netclaw/\.netclaw/workspaces/project-scope-target,' \
+        "$child_log" | wc -l | tr -d ' ')
+
+    [[ -n "$declared_line" && -n "$shell_line" && -n "$shell_result_line" \
+        && "$shell_count" -eq 2 && "$shell_result_count" -eq 2 \
+        && "$status_command_count" -eq 1 && "$diff_command_count" -eq 1 \
+        && "$declared_line" -lt "$shell_line" \
+        && "$shell_line" -lt "$shell_result_line" ]]
 }
 
 setup_coding_context_worktree_handoff() {
@@ -2014,6 +2105,9 @@ run_all() {
     run_case subagent_specialization_precedence "specialized subagent guidance overrides a conflicting deployment playbook" \
         "Use spawn_agent with agent headless-analyst to write a prospecting email to Casey, a VP of Engineering interested in reducing operational toil. Return its final email." \
         "Delegate to headless-analyst: draft an outbound email for Jordan, a technology leader evaluating autonomous operations. Return the worker's final email."
+
+    run_multi_turn_case subagent_project_scope_declaration "subagent declares a different named project before shell inspection" \
+        "Use spawn_agent with agent project-scope-analyst. Ask it to inspect /home/netclaw/.netclaw/workspaces/project-scope-target with exactly two shell_execute calls: git status --short and git diff --stat. Return the command results, project layout, and build-file summary. Keep the parent project unchanged."
 
     PROMPT_TIMEOUT="$previous_timeout"
 

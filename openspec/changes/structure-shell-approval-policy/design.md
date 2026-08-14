@@ -3,6 +3,8 @@
 The exact sanitized harvest is `evidence/approval-matrix.json`. The approval
 store contained 435 Personal shell grants and no new persistent grant during
 the window. The observed responses were one-time, session, denied, or pending.
+Complex prompts can expose only `Once` and `Deny`. An observed `Once` response
+does not prove that the operator preferred one-time authority.
 
 Current ownership is split. `ToolAccessPolicy` performs synchronous policy,
 `DispatchingToolExecutor` coordinates asynchronous approval,
@@ -170,36 +172,40 @@ convert deny or prompt to allow, and its output cannot enter a stored grant.
 directory. Hard deny, protected paths, folder grants, noninteractive authority,
 and process execution use it.
 
-For Bash only, `Intent` can carry the exact target of a leading authored
-directory transition. The transition begins on the success edge of `cd TARGET
-&& ...`. It may remain the user's approval scope for later top-level diagnostic
-occurrences until invalidated, even when a semicolon means runtime failure
-would continue in the original directory. This is an approval-intent fact, not
-a runtime cwd claim.
+For Bash only, `Intent` can carry an exact target from ShellSyntaxTree 0.3.4.
+The leading occurrence must publish `ChangesOnSuccess(Exact(target))`. Its next
+top-level action must be success-gated with `&&`. Intent may remain the user's
+approval scope for later top-level diagnostics. A semicolon can still execute a
+tail in the original directory after failure. Intent is an approval fact, not a
+runtime cwd claim.
 
 Intent is invalidated by:
 
-- a later directory mutation whose exact target is unavailable;
+- a later `Unknown` working-directory effect;
+- a later `ChangesOnSuccess` effect whose target is not exact;
 - `||`, alternate branches, or a join whose incoming intent scopes differ;
 - entry to or exit from a subshell/group boundary unless both sides retain the
   same proved intent;
 - dynamic identity, command substitution controlling flow, or unsupported
   control flow.
 
-An exact later success-gated `cd` replaces intent on its success edge. Relative
-authored paths under intent are rebased only for safe-policy scope; protected
-path evaluation also checks their real execution projection. Folder grants
-never use intent.
+An exact later success-gated `ChangesOnSuccess` effect replaces intent. An
+`Unchanged` effect preserves it. Netclaw does not identify transition verbs.
+Relative authored paths under intent are rebased only for safe-policy scope.
+Protected-path evaluation also checks their real execution projection. Folder
+grants never use intent.
 
-An intent target is eligible only when it is exact, absolute, normalized,
-symlink-free, and allowed by protected-path policy; the `cd` candidate and the
-first non-navigation action on its success edge must already have one-time,
-session, or stored-grant coverage. This existing user authority is what lets a
-later reviewed diagnostic consume intent even when the target is not a normal
-session/project safe root. Safe policy alone cannot manufacture causal intent.
+An intent target is eligible only when it is exact, absolute, normalized, and
+allowed by protected-path policy. It must contain no symlink segment. The
+captured platform temporary alias can map to its canonical root. No other
+symlink target is eligible. The `cd` candidate and the first non-navigation
+action on its success edge must already have one-time, session, or stored-grant
+coverage. This user authority lets a later reviewed diagnostic consume intent
+outside a normal session or project safe root. Safe policy alone cannot create
+causal intent.
 
-Only a catalog entry proved read-only for every accepted argument shape and an
-occurrence without a file-writing redirect can consume eligible intent. Native
+Only a reviewed diagnostic entry and an occurrence without a file-writing
+redirect can consume eligible intent. Native
 PowerShell remains strict in this slice: `Set-Location` does not create causal
 intent. Existing PowerShell filesystem-provider checks remain mandatory, and
 `Get-Content Env:SECRET` cannot receive filesystem safe-space coverage.
@@ -249,15 +255,33 @@ file. This avoids silently changing the authority set.
 Only a new version-3 grant can use `TokenPrefix`. The user sees that phrase in
 the approval surface before Netclaw stores the grant.
 
+A `LegacyExact` entry compares with the projected legacy candidate phrase. It
+does not compare with the full command line. A global `gh api` entry therefore
+covers both read and mutation calls whose projected phrase is `gh api`. This
+behavior preserves version-2 authority and reduces prompts. An operator can
+revoke that entry without a reset of unrelated approvals.
+
 ### 6. Use a reviewed immutable safe-policy catalog
 
 The bundled per-platform resource contains typed phrase entries. A
-`ReadOnlyForAllArguments` entry means no accepted argument shape can write or
-delete a file, execute another command, or mutate a remote service through the
-executable's argv interpretation. Redirects, parser-owned path operands,
-provider paths, and unknown shell expansions remain separate strict effects.
-Displaying a value explicitly supplied by the shell does not itself make a
-phrase executable-private or unsafe.
+`ReviewedDiagnostic` entry classifies the shell-authored invocation. It does
+not classify all executable behavior.
+
+No accepted authored argument shape may:
+
+- select a child executable;
+- select a caller-authored output file;
+- request destructive or persistent configuration state; or
+- request a remote mutation.
+
+Tool-private metadata or cache refresh is outside this claim. Ambient
+executable configuration is also outside this claim. Paths that an executable
+discovers after execution starts are outside this claim.
+
+These exclusions do not relax shell-authored checks. Redirects, parser-owned
+filesystem values, provider paths, and unknown shell expansions remain strict.
+Bounded shell-local output variables are permitted. Any unresolved later use
+of that state remains strict.
 
 The catalog is immutable at runtime. User-overridable safe-verb files are
 removed because an agent-writable or operator-edited file can silently widen
@@ -265,15 +289,72 @@ authority outside code review. At minimum `find`, `awk`, `rg`, and `sort` are
 not eligible. Production code has no flag-specific exceptions. The existing
 `git ls-tree` special case is deleted.
 
-### 7. Consume ShellSyntaxTree 0.3.1 facts through 0.3.2 explicitly
+Reviewed-safe authorization uses only canonical ShellSyntaxTree token prefixes.
+Legacy display and compatibility strings do not establish safe coverage.
+
+The parser-owned source order supplies two conservative guards. No authored
+argument may appear before the matched phrase completes. Every argument with a
+known lexical path shape must resolve beneath an eligible safe root.
+
+Lexical path shape never creates authority. It only blocks reviewed-safe
+coverage when a possible local path escapes the allowed roots or stays
+unresolved. Parser-owned filesystem values and redirects still pass through
+their stronger existing checks.
+
+Parent sessions and subagents consume the same project-scope correction before
+they open an approval request. The correction is available only when the
+registered `set_working_directory` tool accepts the exact suggested directory
+under its normal filesystem policy. A subagent returns the correction as the
+tool result and leaves the authored call in history. If the tool is absent or
+rejects the directory, the subagent keeps the existing parent approval bridge
+path.
+
+A headless subagent may receive this model-facing correction even though it
+cannot open an approval bridge. After a successful declaration, the unchanged
+retry follows the ordinary headless authority rules. The declared root prevents
+another correction; it does not grant reviewed-safe or stored authority.
+
+A successful child `set_working_directory` call replaces only the child run's
+immutable project-scope snapshot. It reloads project instructions through the
+same prompt provider and rebuilds the child's system prompt before the next
+model call. Later child tool calls use the new scope. The child reports the
+local scope in its result, but the parent merge keeps its existing rule: child
+project selection does not replace the parent project directory.
+
+Model guidance distinguishes an exact candidate scope from a declared safe
+root. An absolute path operand lets policy bind a candidate to that path. It
+does not add a safe-space root or make an otherwise uncovered phrase safe. If
+a task needs several shell calls in a user-named project that differs from the
+current project, the agent declares that project before the first shell call.
+This rule also applies to subagents whose exposed tools include the declaration
+tool, and to commands with absolute operands. One shell call can use the typed
+`WorkingDirectory` argument without changing the persistent project root. The
+final headless subagent contract conditionally repeats the multi-command rule
+after role guidance so the execution boundary stays clear.
+
+The shared `set_working_directory` validation rejects NUL, CR, and LF before
+filesystem resolution. This rule applies to both execution and the eligibility
+probe. An invalid path returns a bounded error and cannot enter model history,
+child scope, or project-instruction lookup as a successful declaration.
+
+### 7. Consume ShellSyntaxTree 0.3.1 facts through 0.3.4 explicitly
 
 Netclaw uses effective `AnalyzedArgument.Value` for runtime-sensitive checks.
 It may use `AuthoredValue` for approval matching only after the maintainer
 accepts that ambient Bash attributes, ambient `IFS`, and field splitting are
 outside the approval claim. The existing parser-owned `Argument.IsPath`
-contract decides whether a value is path-relevant. Every effective or authored
-finite value for an `IsPath` argument still passes `ToolPathPolicy`; an unknown
-path-relevant value stays strict.
+contract decides whether an effective value is path-relevant. Every finite
+effective value for an `IsPath` argument still passes `ToolPathPolicy`; an
+unknown path-relevant value stays strict.
+
+ShellSyntaxTree 0.3.3 publishes D14's finite `AuthoredFileSystemValue`. Netclaw
+accepts only `Exact` and `FiniteSet`. Each value enters `ToolPathPolicy` and the
+approval scope check. Unknown and all other alternatives stay strict. Netclaw
+does not infer the role from an executable's private grammar.
+
+ShellSyntaxTree 0.3.4 publishes each occurrence's working-directory effect.
+The causal projection consumes this closed fact directly. It never parses a
+directory command name, alias, option, or operand.
 
 `AuthoredPathShape` is lexical shape only. It may make review stricter, but it
 never establishes that an executable treats an argument as a filesystem
@@ -330,9 +411,11 @@ inputs, expected coverage, the ordered bounded trace, and final outcome for the
 policy-owned acceptance cases. Tests load these structured fields directly;
 they do not branch on Dxx IDs or derive expectations from prose.
 
-The fixture's top-level defaults are executable inputs, not test conventions:
-tool name, audience, approval mode, interactive capability, session identity
-and safe root, project safe root, inherited cwd, and persistent-store status.
+The fixture's top-level defaults are executable inputs, not test conventions.
+They include tool, audience, approval mode, interactive capability, session,
+safe roots, inherited cwd, store status, and a fixed clock. Parser facts use
+command indexes. Policy rows use stable candidate
+IDs because one parser occurrence can project a different policy cardinality.
 Each case supplies its canonical shell environment, initial cwd, and every
 stored grant includes its canonical shell tag. The exact executable cases are
 D02, D03, D07, D08, D09, D10, D11, D14, D17, and D18.
@@ -341,11 +424,22 @@ Complete D03 example:
 
 ```text
 Input: cd /tmp && gh api ... > slopwatch.log 2>&1; wc -c slopwatch.log; head -100 slopwatch.log
-Preflight: candidates C0=cd, C1=gh api, C2=wc, C3=head; intent=/tmp
-Actor: C0=PersistentGlobal, C1=PersistentGlobal, C2/C3=Uncovered
-Safe policy: C2=ReviewedSafePolicy, C3=ReviewedSafePolicy
+Execution: real scopes remain unchanged
+Prerequisites: cd and gh api use persistent global grants
+Intent: wc and head use the exact protected-path-safe /tmp target
+Trace: two StoredGrantMatch rows, two ReviewedSafePolicy rows, then Completion/Allow
 Final: Allow(AllCandidatesCovered)
 ```
+
+The fixture keeps each causal role and prerequisite ID explicit. It does not
+replace execution scope with approval intent.
+
+The policy validates each runtime fallback before reviewed-safe coverage. A
+prior target cannot become a later fallback through a symlink. POSIX policy
+captures the conventional `/tmp` alias independently of the runtime temp root.
+It maps that alias and its safe descendants to the host-resolved canonical
+root. Parser-published working-directory effects identify each transition.
+Netclaw does not inspect transition command names.
 
 ## Risks / Trade-offs
 
