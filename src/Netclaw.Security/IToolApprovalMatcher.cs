@@ -448,7 +448,10 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         bool resolveUnknownPathsFromEffectiveValues)
     {
         if (!string.IsNullOrWhiteSpace(argument.Resolved))
-            return [argument.Resolved];
+            return argument.Resolved.Any(char.IsControl)
+                ? null
+                : [argument.Resolved];
+
         if (!resolveUnknownPathsFromEffectiveValues)
             return null;
 
@@ -466,11 +469,15 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         var resolved = new List<string>(values.Count);
         foreach (var value in values)
         {
+            if (value.Any(char.IsControl))
+                return null;
+
             var path = ShellTokenizer.NormalizePathToken(
                 value,
                 workingDirectory,
                 pathStyle);
-            if (string.IsNullOrWhiteSpace(path))
+            if (string.IsNullOrWhiteSpace(path)
+                || path.Any(char.IsControl))
                 return null;
 
             resolved.Add(path);
@@ -506,7 +513,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         {
             if (string.IsNullOrWhiteSpace(path)
                 || !IsRootedForPathStyle(path, pathStyle)
-                || UsesHostPathStyle(pathStyle)
+                || ShellPathRules.UsesHostPathStyle(pathStyle)
                 && HasUnsafeHostPath(path)
                 && isAllowedHostPath?.Invoke(path) != true)
             {
@@ -625,12 +632,13 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             : staticPrefix.LastIndexOf('/');
         var coveringPath = CoveringPath(staticPrefix, separator, pathStyle);
 
-        var coveringDirectory = ShellTokenizer.NormalizePathToken(
-            coveringPath,
-            workingDirectory,
-            pathStyle);
-        if (coveringDirectory is null
-            || ContainsSymlinkEntry(coveringDirectory))
+        if (!ShellPathRules.TryResolve(
+                coveringPath,
+                workingDirectory,
+                pathStyle,
+                out var coveringDirectory)
+            || ShellPathRules.UsesHostPathStyle(pathStyle)
+            && ContainsSymlinkEntry(coveringDirectory))
         {
             return null;
         }
@@ -827,7 +835,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             if (string.IsNullOrWhiteSpace(target))
                 return null;
 
-            if (UsesHostPathStyle(pathStyle)
+            if (ShellPathRules.UsesHostPathStyle(pathStyle)
                 && HasUnsafeHostPath(target)
                 && isAllowedHostPath?.Invoke(target) != true)
                 return null;
@@ -886,11 +894,6 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
                                           && path[1] is '/' or '\\'),
             _ => false
         };
-
-    private static bool UsesHostPathStyle(ShellPathStyle pathStyle)
-        => pathStyle == ShellPathStyle.Windows
-            ? OperatingSystem.IsWindows()
-            : !OperatingSystem.IsWindows();
 
     private static bool HasUnsafeHostPath(string target)
     {
