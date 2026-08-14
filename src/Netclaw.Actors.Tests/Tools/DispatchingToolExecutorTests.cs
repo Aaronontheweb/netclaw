@@ -3260,7 +3260,9 @@ public class DispatchingToolExecutorTests
             ShellTool.ToolName,
             ToolInput.Create(
                 "Command",
-                ShellEnvironment.Grammar == ShellGrammar.PowerShell ? "Get-Location" : "pwd"));
+                ShellEnvironment.Grammar == ShellGrammar.PowerShell ? "Get-Location" : "pwd",
+                "_rationale",
+                "Inspect the current working directory."));
 
         await executor.AuthorizeAsync(call, context, TestContext.Current.CancellationToken);
         _ = await executor.ExecuteAsync(call, context, TestContext.Current.CancellationToken);
@@ -3275,8 +3277,8 @@ public class DispatchingToolExecutorTests
     public async Task Auto_shell_without_command_returns_argument_error(bool includeNullCommand)
     {
         var arguments = includeNullCommand
-            ? ToolInput.Create("Command", null)
-            : ToolInput.Empty();
+            ? ToolInput.Create("Command", null, "_rationale", "Probe argument error handling.")
+            : ToolInput.Create("_rationale", "Probe argument error handling.");
         var call = new FunctionCallContent(
             $"call-missing-command-{includeNullCommand}",
             ShellTool.ToolName,
@@ -3296,7 +3298,7 @@ public class DispatchingToolExecutorTests
         var call = new FunctionCallContent(
             "call-stream-missing-command",
             ShellTool.ToolName,
-            ToolInput.Empty());
+            ToolInput.Create("_rationale", "Probe stream argument error handling."));
 
         ToolCompletedUpdate? completed = null;
         await foreach (var update in _executor.ExecuteStreamAsync(
@@ -3318,8 +3320,8 @@ public class DispatchingToolExecutorTests
     {
         var executor = CreateApprovalGatedShellExecutor();
         var arguments = includeNullCommand
-            ? ToolInput.Create("Command", null)
-            : ToolInput.Empty();
+            ? ToolInput.Create("Command", null, "_rationale", "Probe argument error handling.")
+            : ToolInput.Create("_rationale", "Probe argument error handling.");
         var call = new FunctionCallContent(
             $"call-approved-missing-command-{includeNullCommand}",
             ShellTool.ToolName,
@@ -3357,7 +3359,9 @@ public class DispatchingToolExecutorTests
                     "Command",
                     TestShellEnvironment.PrintWorkingDirectoryCommand,
                     "WorkingDirectory",
-                    firstRoot));
+                    firstRoot,
+                    "_rationale",
+                    "Inspect the current working directory."));
             var secondCall = new FunctionCallContent(
                 "call-parallel-shell-second",
                 ShellTool.ToolName,
@@ -3365,7 +3369,9 @@ public class DispatchingToolExecutorTests
                     "Command",
                     TestShellEnvironment.PrintWorkingDirectoryCommand,
                     "WorkingDirectory",
-                    secondRoot));
+                    secondRoot,
+                    "_rationale",
+                    "Inspect the current working directory."));
 
             var results = await Task.WhenAll(
                 _executor.ExecuteAsync(firstCall, context, TestContext.Current.CancellationToken),
@@ -3396,7 +3402,9 @@ public class DispatchingToolExecutorTests
                     "Command",
                     TestShellEnvironment.PrintWorkingDirectoryCommand,
                     "WorkingDirectory",
-                    root));
+                    root,
+                    "_rationale",
+                    "Inspect the current working directory."));
             var streamCall = new FunctionCallContent(
                 "call-shell-analysis-stream",
                 ShellTool.ToolName,
@@ -3404,7 +3412,9 @@ public class DispatchingToolExecutorTests
                     "Command",
                     TestShellEnvironment.PrintWorkingDirectoryCommand,
                     "WorkingDirectory",
-                    root));
+                    root,
+                    "_rationale",
+                    "Inspect the current working directory."));
 
             var nonStreamResult = await _executor.ExecuteAsync(
                 nonStreamCall,
