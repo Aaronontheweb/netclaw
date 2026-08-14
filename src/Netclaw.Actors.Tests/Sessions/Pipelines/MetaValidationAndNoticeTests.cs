@@ -305,6 +305,8 @@ public sealed class MetaValidationAndNoticeTests(ITestOutputHelper output) : Tes
             result.ToolCallId == new ToolCallId("call-invalid")
             && result.Content.Contains("'_rationale'", StringComparison.Ordinal)
             && result.Content.Contains("NOT executed", StringComparison.Ordinal));
+        Assert.Equal("invalid_rationale", completed.ToolFailureCodes["call-invalid"]);
+        Assert.False(completed.ToolFailureCodes.ContainsKey("call-valid"));
     }
 
     [Fact]
