@@ -1005,11 +1005,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _buffer.Clear();
         }
 
-        var invalidRationaleCount = msg.ToolResults.Count(result =>
-            Pipelines.ToolCallMetaExtractor.IsRequiredRationaleRejection(result.Content));
-        if (StopToolsAfterInvalidRationale(invalidRationaleCount, msg.ToolResults.Count))
-            return;
-
         switch (budgetStatus)
         {
             case ToolBudgetStatus.Exhausted exhausted:
@@ -3525,7 +3520,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         var alreadyRecorded = false;
         if (evt.ToolResult.ToolCallId is { } toolCallId)
         {
-            _activeToolBatch.RecordCompleted(evt.ToolResult);
+            _activeToolBatch.RecordCompleted(toolCallId.Value);
 
             if (ParkedToolBatchHistory.HasToolResult(_state.History, toolCallId.Value))
                 alreadyRecorded = true;
@@ -4824,9 +4819,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _buffer.Clear();
         }
 
-        if (StopToolsAfterInvalidRationale(_activeToolBatch.InvalidRationaleCount, resultCount))
-            return;
-
         switch (budgetStatus)
         {
             case ToolBudgetStatus.Exhausted exhausted:
@@ -4857,25 +4849,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _turnState.ToolIterationCount, _turnState.ToolCallCount, _config.MaxToolIterationsPerTurn, resultCount);
         MarkApprovalRunningAfterRedrive();
         FireLlmCall();
-    }
-
-    private bool StopToolsAfterInvalidRationale(int invalidRationaleCount, int resultCount)
-    {
-        if (_turnState.EvaluateInvalidRationaleResults(invalidRationaleCount, resultCount)
-            is not InvalidRationaleAction.StopTools stop)
-        {
-            return false;
-        }
-
-        TurnLog().Warning(
-            "turn_invalid_rationale_limit_reached invalidIterations=3 resultCount={ResultCount}",
-            resultCount);
-        _state = _state.AddSystemNudge(stop.NudgeText);
-        _pendingToolInteractions.Clear();
-        _resolvedToolApprovals.Clear();
-        ClearActiveToolBatchTracking();
-        FireLlmCall(forceNoTools: true);
-        return true;
     }
 
     private void PersistAdoptedContextIfNeeded(MessageSource? source)

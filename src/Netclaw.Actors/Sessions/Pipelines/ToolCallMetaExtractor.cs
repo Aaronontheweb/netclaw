@@ -19,9 +19,6 @@ internal static class ToolCallMetaExtractor
         "Error: Required meta argument '_rationale' must be a non-empty string. " +
         "Supply one sentence that states the tool call intent. The tool was NOT executed.";
 
-    internal static bool IsRequiredRationaleRejection(string? message) =>
-        string.Equals(message, RequiredRationaleError, StringComparison.Ordinal);
-
     /// <param name="resolveMeta">
     /// Maps a key to its canonical meta field (schema-aware for the executor,
     /// exact for persistence). Defaults to exact. See

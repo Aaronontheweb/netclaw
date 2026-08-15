@@ -11,9 +11,7 @@ using Netclaw.Configuration;
 using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Sessions;
-using Netclaw.Actors.Sessions.Pipelines;
 using Netclaw.Actors.Tools;
-using Netclaw.Tools;
 using Xunit;
 using static Netclaw.Actors.Sessions.SessionProtocol;
 
@@ -348,19 +346,6 @@ internal sealed class FakeToolExecutor : IToolExecutor
 
     /// <summary>Tool names that should throw on execution.</summary>
     public HashSet<string> FailForTools { get; } = [];
-
-    public bool RequireRationale { get; set; }
-
-    public ToolArgumentRejection? ValidateToolCall(FunctionCallContent toolCall)
-    {
-        if (!RequireRationale)
-            return null;
-
-        var error = ToolCallMetaExtractor.ValidateRequiredRationale(
-            toolCall.Arguments,
-            ToolCallMeta.ResolveExactMetaField);
-        return error is null ? null : new ToolArgumentRejection(error, "invalid_rationale");
-    }
 
     public Task AuthorizeAsync(FunctionCallContent toolCall, Netclaw.Tools.ToolExecutionContext context, CancellationToken ct = default)
     {
