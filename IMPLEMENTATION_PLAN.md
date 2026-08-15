@@ -160,7 +160,7 @@ Done when:
 
 - [x] The sanitized v0.26.0-beta.3 approval window has 18 classified cases in
   the linked ShellSyntaxTree and Netclaw OpenSpec changes.
-- [x] `openspec/changes/structure-shell-approval-policy/` defines the typed
+- [x] `openspec/changes/archive/2026-08-15-structure-shell-approval-policy/` defines the typed
   coordinator and actor protocol, per-candidate coverage, real and intent
   scopes, token-boundary grants, reviewed policy catalog, bounded trace,
   migration, and validation tasks.
@@ -230,12 +230,15 @@ Done when:
   each effective directory, across live, sub-agent, and redrive paths.
 - [x] External paths, mismatched grants, dynamic syntax, and hard-deny rules
   keep their strict behavior.
-- [ ] Bash causal approval intent composes exact stored grants for an initial
+- [x] Bash causal approval intent composes exact stored grants for an initial
   exact ShellSyntaxTree 0.3.4 directory change with reviewed diagnostic tails.
   Execution facts, folder grants, protected paths, headless authority, and
   PowerShell remain strict. Each possible fallback passes the same symlink
   check. POSIX `/tmp` aliases map through host path facts. The exact D03 fixture
   must pass on Linux, macOS, and native Windows CI.
+  PR #1967 added exact PowerShell 7 and Windows PowerShell 5.1 strict-scope
+  rows. Both rows required approval despite matching stored grants. Workflow
+  `31859321334` passed Ubuntu, macOS, and Windows.
 - [x] Directory operands preserve dotted directory names without weakening the
   external-path or symlink checks.
 - [x] Reviewed-safe policy matches canonical ShellSyntaxTree token prefixes.
@@ -275,7 +278,7 @@ Done when:
   `deepseek-v4-flash-dspark` endpoint. This measures headless path preference;
   deterministic actor tests own interactive correction and approval proof.
 - [x] Post-0.26.0 live evidence in
-  `openspec/changes/structure-shell-approval-policy/evidence/post-1952-live-approval-harvest.json`
+  `openspec/changes/archive/2026-08-15-structure-shell-approval-policy/evidence/post-1952-live-approval-harvest.json`
   classifies 69 prompts across 285 shell calls. The largest avoidable cluster
   is 15 read-heavy prompts from one headless subagent working beneath shared
   platform temp even though its execution scope already owns private session
@@ -327,7 +330,7 @@ Done when:
   The Release build and all 7,138 runnable tests pass. The suite reports 15
   expected platform or opt-in skips. Adversarial review and all required CI
   checks passed before merge.
-- [ ] Netclaw consumes public ShellSyntaxTree `0.3.4` for parser-owned
+- [x] Netclaw consumes public ShellSyntaxTree `0.3.4` for parser-owned
   working-directory effects. The causal policy does not recognize command
   names or private executable grammar. Native platform CI remains required.
 - [x] Netclaw consumes public ShellSyntaxTree `0.3.5` for positive authored
