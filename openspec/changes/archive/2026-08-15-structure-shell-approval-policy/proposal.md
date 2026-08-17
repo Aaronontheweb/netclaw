@@ -26,7 +26,11 @@ session and persistent grant snapshots.
   decision-gated v2 migration.
 - Emit a bounded, redacted decision trace that also supplies near-miss data.
 - Adopt the authored/effective fact separation introduced in ShellSyntaxTree
-  0.3.1 through the corrected public 0.3.2 package.
+  0.3.1 and the authored filesystem fact from public 0.3.3.
+- Consume ShellSyntaxTree 0.3.4 working-directory effects for causal intent.
+- Use the 0.3.3 authored filesystem fact for D14. Accept only exact or finite
+  values. Check each path through product policy. Lexical path shape alone
+  cannot create file authority.
 - Pin the exact sanitized D01-D18 catalog and adversarial cases.
 
 No production branch will parse an executable's private options or operands.
@@ -52,5 +56,6 @@ No production branch will parse an executable's private options or operands.
   per-candidate coverage from one atomic snapshot.
 - UX: covered diagnostic chains stop prompting; unresolved syntax remains
   one-time-only.
-- Dependencies: implementation consumes public ShellSyntaxTree 0.3.2.
+- Dependencies: implementation consumes public ShellSyntaxTree 0.3.4 for the
+  authored, effective, filesystem, and working-directory effect facts.
 - Documentation/evals: operator guidance and approval behavioral evals change.

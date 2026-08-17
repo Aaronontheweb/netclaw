@@ -6,15 +6,14 @@
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
+using ShellSyntaxTree;
 
 namespace Netclaw.Actors.Tools;
 
 /// <summary>
 /// Layer 1.5 of the shell approval pipeline (between the hard-deny list and
-/// the interactive approval gate): when both the candidate verb chain is on
-/// the supplied <see cref="SafeVerbList"/> AND each effective directory is
-/// under an audience-aware safe-space root, the policy grants access without
-/// a prompt.
+/// the interactive approval gate). The policy covers a reviewed diagnostic
+/// only when all parser-owned source and scope guards pass.
 ///
 /// Mirrors <see cref="ScopedFileAccessPolicy"/> for the audience model and
 /// the symlink-segment guard. Personal and Team audiences get
@@ -25,90 +24,15 @@ namespace Netclaw.Actors.Tools;
 ///
 /// The policy never relaxes the hard-deny list (layer 1) — that runs first
 /// in <see cref="ToolAccessPolicy"/>. It only relaxes the interactive
-/// approval gate (layer 2) for verbs that have been explicitly classified as
-/// read-only by the supplied safe-verbs list.
+/// approval gate (layer 2) for phrases that the bundled catalog reviews.
 /// </summary>
 internal sealed class ScopedShellSafeVerbPolicy
 {
-    private const string GitLsTreeVerb = "git ls-tree";
     private readonly SafeVerbList _safeVerbs;
 
     public ScopedShellSafeVerbPolicy(SafeVerbList safeVerbs)
     {
         _safeVerbs = safeVerbs;
-    }
-
-    /// <summary>
-    /// Evaluates a candidate verb and cwd against the safe-verb policy.
-    /// Returns <c>true</c> when the gate should short-circuit to allow with
-    /// no user prompt; <c>false</c> when the candidate should fall through
-    /// to the existing approval gate.
-    /// </summary>
-    public bool ShortCircuitsApproval(string candidateVerb, string? cwd, ToolInvocationContext context)
-        => AllShortCircuit([new ApprovalCandidate(candidateVerb, Directory: null)], cwd, context);
-
-    /// <summary>
-    /// Removes the variable tree operand from a read-only <c>git ls-tree</c>
-    /// candidate. Other Git commands keep exact parser output because a
-    /// trailing token can name a mutating subcommand.
-    /// </summary>
-    public ApprovalCandidate NormalizeCandidate(ApprovalCandidate candidate)
-    {
-        if (_safeVerbs.IsOperandBearingMatch(candidate.Verb, GitLsTreeVerb))
-        {
-            return candidate with { Verb = GitLsTreeVerb };
-        }
-
-        return candidate;
-    }
-
-    /// <summary>
-    /// Returns true when each candidate has a safe verb and a safe effective
-    /// directory. The candidate directory takes precedence over the cwd.
-    /// </summary>
-    public bool AllShortCircuit(
-        IReadOnlyList<ApprovalCandidate> candidates,
-        string? cwd,
-        ToolInvocationContext context)
-    {
-        if (candidates.Count == 0)
-            return false;
-
-        foreach (var candidate in candidates)
-        {
-            if (string.IsNullOrWhiteSpace(candidate.Verb) || !_safeVerbs.Contains(candidate.Verb))
-                return false;
-        }
-
-        var safeRoots = ResolveSafeSpaceRoots(context);
-        if (safeRoots.Count == 0)
-            return false;
-
-        foreach (var candidate in candidates)
-        {
-            var effectiveDirectory = candidate.Directory ?? cwd;
-            if (string.IsNullOrWhiteSpace(effectiveDirectory))
-                return false;
-
-            string fullDirectory;
-            try
-            {
-                fullDirectory = Path.GetFullPath(effectiveDirectory);
-            }
-            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-            {
-                return false;
-            }
-
-            var isSafe = safeRoots.Any(root =>
-                PathUtility.IsWithinRoot(fullDirectory, root)
-                && !PathUtility.ContainsSymlinkSegment(root, fullDirectory));
-
-            if (!isSafe)
-                return false;
-        }
-
-        return true;
     }
 
     /// <summary>
@@ -133,12 +57,6 @@ internal sealed class ScopedShellSafeVerbPolicy
             return false;
         }
 
-        foreach (var candidate in candidates)
-        {
-            if (string.IsNullOrWhiteSpace(candidate.Verb) || !_safeVerbs.Contains(candidate.Verb))
-                return false;
-        }
-
         string fullCwd;
         try
         {
@@ -149,8 +67,30 @@ internal sealed class ScopedShellSafeVerbPolicy
             return false;
         }
 
+        if (ResolveSafeSpaceRoots(context)
+            .Any(root => PathUtility.IsWithinRoot(fullCwd, root)))
+        {
+            return false;
+        }
+
+        var prospectiveRoots = ResolveSafeSpaceRoots(context)
+            .Append(fullCwd)
+            .ToArray();
         foreach (var candidate in candidates)
         {
+            var resolvedPaths = ResolveCompatibilityPaths(
+                candidate,
+                candidate.SourceOccurrence,
+                fullCwd);
+            if (!IsReviewedDiagnostic(
+                    candidate,
+                    candidate.SourceOccurrence,
+                    prospectiveRoots,
+                    resolvedPaths))
+            {
+                return false;
+            }
+
             var effectiveDirectory = candidate.Directory ?? fullCwd;
             if (string.IsNullOrWhiteSpace(effectiveDirectory))
                 return false;
@@ -175,17 +115,315 @@ internal sealed class ScopedShellSafeVerbPolicy
         return true;
     }
 
+    private bool IsReviewedDiagnostic(
+        ApprovalCandidate candidate,
+        CommandOccurrence? sourceOccurrence,
+        IReadOnlyList<string> safeRoots,
+        ShellPolicyResolvedPathView? resolvedPaths)
+    {
+        if (candidate is not
+            {
+                Shell: { } shell,
+                VerbTokens: { }
+            }
+            || sourceOccurrence is null
+            || HasFileWritingRedirect(resolvedPaths)
+            || HasUnprovedNonFileSystemSemantics(resolvedPaths)
+            || !_safeVerbs.TryMatchReviewedDiagnostic(
+                shell,
+                candidate.VerbTokens,
+                out var matchedTokenCount))
+        {
+            return false;
+        }
+
+        if (sourceOccurrence.Arguments.Any(argument =>
+                argument.Element.PrecedingVerbElementCount < matchedTokenCount))
+        {
+            return false;
+        }
+
+        return AllAuthoredPathsStayWithinRoots(
+            resolvedPaths,
+            shell,
+            safeRoots);
+    }
+
+    internal bool ShortCircuitsCausalIntent(
+        ShellPolicyCandidate projected,
+        ShellPolicyCandidatePathFacts pathFacts,
+        ToolInvocationContext context)
+    {
+        var candidate = projected.Candidate;
+        if (context.Audience != TrustAudience.Personal
+            || candidate is not
+            {
+                Shell: ApprovalShell.Bash,
+                VerbTokens: { }
+            }
+            || pathFacts.Intent?.ResolutionBase is not
+            {
+                State: ShellPolicyPathResolutionState.Known,
+                Path: { } intentPath
+            }
+            || !IsSafePath(
+                intentPath.Value,
+                intentPath.Value,
+                ShellPathStyle.Posix)
+            || !IsReviewedDiagnostic(
+                candidate,
+                projected.SourceOccurrence,
+                [intentPath.Value],
+                pathFacts.Intent))
+        {
+            return false;
+        }
+
+        return AllEffectivePathsStayWithinIntent(
+            pathFacts.Intent,
+            intentPath.Value);
+    }
+
+    internal bool ShortCircuits(
+        ApprovalCandidate candidate,
+        string? cwd,
+        ToolInvocationContext context)
+    {
+        var projected = new ShellPolicyCandidate(
+            new ShellPolicyCandidateId(0),
+            candidate.Directory is null ? candidate with { Directory = cwd } : candidate,
+            candidate.SourceOccurrence);
+        var pathStyle = OperatingSystem.IsWindows()
+            ? ShellPathStyle.Windows
+            : ShellPathStyle.Posix;
+        var facts = ShellPolicyPathFacts.Create([projected], pathStyle);
+        return ShortCircuits(projected, facts[projected.Id.Value], context);
+    }
+
+    internal bool ShortCircuits(
+        ShellPolicyCandidate projected,
+        ShellPolicyCandidatePathFacts pathFacts,
+        ToolInvocationContext context)
+    {
+        var candidate = projected.Candidate;
+        var safeRoots = ResolveDeclaredSafeSpaceRoots(context);
+        if (safeRoots.Count == 0
+            || !IsReviewedDiagnostic(
+                candidate,
+                projected.SourceOccurrence,
+                safeRoots,
+                pathFacts.Real)
+            || pathFacts.RealScope is not
+            {
+                State: ShellPolicyPathResolutionState.Known,
+                Path: { } realPath
+            } realScope)
+        {
+            return false;
+        }
+
+        var pathStyle = candidate.Shell == ApprovalShell.Bash
+            ? ShellPathStyle.Posix
+            : ShellPathStyle.Windows;
+        if (safeRoots.All(root =>
+                ShellPathRules.TryNormalize(root, pathStyle, out _)))
+        {
+            return safeRoots.Any(root => IsSafePath(
+                realPath.Value,
+                root,
+                pathStyle));
+        }
+
+        if (string.IsNullOrWhiteSpace(realScope.AuthoredValue))
+            return false;
+
+        try
+        {
+            var fullDirectory = Path.GetFullPath(realScope.AuthoredValue);
+            return safeRoots.Any(root => IsSafePath(fullDirectory, root));
+        }
+        catch (Exception ex) when (ex is ArgumentException
+                                      or NotSupportedException
+                                      or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    private static bool HasFileWritingRedirect(ShellPolicyResolvedPathView? resolvedPaths)
+        => resolvedPaths?.Facts.Any(static fact =>
+            fact.Source is
+            {
+                Origin: ShellPolicyPathOrigin.Redirect,
+                RedirectMode: { } mode
+            }
+            && ShellRedirectPolicyFacts.IsFileWritingMode(mode)) == true;
+
+    private static bool HasUnprovedNonFileSystemSemantics(
+        ShellPolicyResolvedPathView? resolvedPaths)
+        => resolvedPaths?.HasUnprovedNonFileSystemSemantics == true;
+
+    private static bool AllAuthoredPathsStayWithinRoots(
+        ShellPolicyResolvedPathView? resolvedPaths,
+        ApprovalShell shell,
+        IReadOnlyList<string> safeRoots)
+    {
+        if (resolvedPaths is null)
+            return false;
+
+        var pathStyle = shell == ApprovalShell.Bash
+            ? ShellPathStyle.Posix
+            : ShellPathStyle.Windows;
+        foreach (var fact in resolvedPaths.Facts.Where(static fact =>
+                     fact.Source.Origin == ShellPolicyPathOrigin.AuthoredArgument))
+        {
+            if (fact.Source.AuthoredPathShape == ShellPathShape.Posix
+                    && pathStyle != ShellPathStyle.Posix
+                || fact.Source.AuthoredPathShape == ShellPathShape.Windows
+                    && pathStyle != ShellPathStyle.Windows
+                || fact.Source.Domain is not
+                    (ShellValueDomain.Exact or ShellValueDomain.FiniteSet)
+                || fact.State != ShellPolicyPathResolutionState.Known
+                || fact.Paths.Count == 0
+                || fact.Paths.Any(path =>
+                    !safeRoots.Any(root => IsSafePath(
+                        path.Value,
+                        root,
+                        path.PathStyle))))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool AllEffectivePathsStayWithinIntent(
+        ShellPolicyResolvedPathView? resolvedPaths,
+        string intentDirectory)
+    {
+        if (resolvedPaths is null)
+            return false;
+
+        foreach (var fact in resolvedPaths.Facts.Where(static fact =>
+                     fact.Source.Origin == ShellPolicyPathOrigin.EffectiveArgument))
+        {
+            if (fact.Source.Domain is not
+                    (ShellValueDomain.Exact or ShellValueDomain.FiniteSet)
+                || fact.State != ShellPolicyPathResolutionState.Known
+                || fact.Paths.Count == 0
+                || fact.Paths.Any(path => !IsSafePath(
+                    path.Value,
+                    intentDirectory,
+                    ShellPathStyle.Posix)))
+            {
+                return false;
+            }
+        }
+
+        foreach (var fact in resolvedPaths.Facts.Where(static fact =>
+                     fact.Source.Origin == ShellPolicyPathOrigin.Redirect))
+        {
+            if (fact.Source.RedirectMode != FileRedirectMode.Input
+                || fact.Source.Domain is not ShellValueDomain.Exact
+                || fact.State != ShellPolicyPathResolutionState.Known
+                || fact.Paths.Count != 1
+                || !IsSafePath(
+                    fact.Paths[0].Value,
+                    intentDirectory,
+                    ShellPathStyle.Posix))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static ShellPolicyResolvedPathView? ResolveCompatibilityPaths(
+        ApprovalCandidate candidate,
+        CommandOccurrence? occurrence,
+        string? workingDirectoryOverride = null)
+    {
+        if (candidate.Shell is not { } shell || occurrence is null)
+            return null;
+
+        var workingDirectory = workingDirectoryOverride
+            ?? (occurrence.WorkingDirectory is ShellValueDomain.Exact exact
+                ? exact.Value
+                : null);
+        var pathStyle = OperatingSystem.IsWindows()
+            ? ShellPathStyle.Windows
+            : ShellPathStyle.Posix;
+        return ShellPolicyOccurrencePathFacts.Create(occurrence)
+            .Resolve(workingDirectory, pathStyle, shell);
+    }
+
+    private static bool IsSafePath(string path, string root)
+    {
+        try
+        {
+            return PathUtility.IsWithinRoot(path, root)
+                   && !PathUtility.ContainsSymlinkSegment(root, path);
+        }
+        catch (Exception ex) when (ex is ArgumentException
+                                      or IOException
+                                      or NotSupportedException
+                                      or UnauthorizedAccessException
+                                      or System.Security.SecurityException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsSafePath(
+        string path,
+        string root,
+        ShellPathStyle pathStyle)
+    {
+        try
+        {
+            return ShellPathRules.TryNormalize(path, pathStyle, out var normalizedPath)
+                   && ShellPathRules.TryNormalize(root, pathStyle, out var normalizedRoot)
+                   && ShellPathRules.IsWithinRoot(
+                       normalizedPath,
+                       normalizedRoot,
+                       pathStyle)
+                   && (!ShellPathRules.UsesHostPathStyle(pathStyle)
+                       || !PathUtility.ContainsSymlinkSegment(
+                           normalizedRoot,
+                           normalizedPath));
+        }
+        catch (Exception ex) when (ex is ArgumentException
+                                      or IOException
+                                      or NotSupportedException
+                                      or UnauthorizedAccessException
+                                      or System.Security.SecurityException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>
     /// Resolves the audience-aware safe-space roots for the current
     /// invocation. Personal and Team get <c>session_dir + project_dir</c>;
     /// Public gets <c>session_dir</c> only.
     /// </summary>
     private static IReadOnlyList<string> ResolveSafeSpaceRoots(ToolInvocationContext context)
+        => ResolveSafeSpaceRoots(context, static path => PathUtility.Normalize(path));
+
+    private static IReadOnlyList<string> ResolveDeclaredSafeSpaceRoots(
+        ToolInvocationContext context)
+        => ResolveSafeSpaceRoots(context, static path => path);
+
+    private static IReadOnlyList<string> ResolveSafeSpaceRoots(
+        ToolInvocationContext context,
+        Func<string, string> mapPath)
     {
         var roots = new List<string>(2);
 
         if (!string.IsNullOrWhiteSpace(context.SessionDirectory))
-            roots.Add(PathUtility.Normalize(context.SessionDirectory));
+            roots.Add(mapPath(context.SessionDirectory));
 
         // Public audience cannot expand its safe space via project_dir —
         // mirrors the file_read read-roots restriction enforced by
@@ -195,7 +433,7 @@ internal sealed class ScopedShellSafeVerbPolicy
         if (context.Audience != TrustAudience.Public
             && !string.IsNullOrWhiteSpace(context.ProjectDirectory))
         {
-            roots.Add(PathUtility.Normalize(context.ProjectDirectory));
+            roots.Add(mapPath(context.ProjectDirectory));
         }
 
         return roots;

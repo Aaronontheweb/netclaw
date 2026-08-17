@@ -7,6 +7,7 @@ using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
+using ShellSyntaxTree;
 using Xunit;
 
 namespace Netclaw.Actors.Tests.Tools;
@@ -58,10 +59,55 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     }
 
     private static SafeVerbList VerbList(params string[] verbs)
-        => SafeVerbList.FromVerbs(verbs);
+        => SafeVerbList.FromVerbs(ApprovalShell.Bash, verbs);
+
+    private static ApprovalCandidate Candidate(
+        string verb,
+        string? directory = null,
+        ApprovalShell shell = ApprovalShell.Bash)
+    {
+        if (shell != ApprovalShell.Bash)
+        {
+            return new ApprovalCandidate(verb, directory)
+            {
+                Shell = shell,
+                VerbTokens = Array.AsReadOnly(
+                    verb.Split(' ', StringSplitOptions.RemoveEmptyEntries)),
+            };
+        }
+
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironmentDefaults.Bash);
+        var parsed = Assert.Single(matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?>
+            {
+                ["Command"] = verb,
+                ["WorkingDirectory"] = "/"
+            }));
+        return parsed with { Directory = directory };
+    }
 
     private static IReadOnlyList<ApprovalCandidate> Candidates(params string[] verbs)
-        => verbs.Select(verb => new ApprovalCandidate(verb, Directory: null)).ToList();
+        => verbs.Select(verb => Candidate(verb)).ToList();
+
+    private static bool ShortCircuits(
+        ScopedShellSafeVerbPolicy policy,
+        string verb,
+        string? cwd,
+        ToolInvocationContext context) =>
+        AllShortCircuit(policy, [Candidate(verb)], cwd, context);
+
+    private static bool AllShortCircuit(
+        ScopedShellSafeVerbPolicy policy,
+        IReadOnlyList<ApprovalCandidate> candidates,
+        string? cwd,
+        ToolInvocationContext context)
+    {
+        if (candidates.Count == 0)
+            return false;
+
+        return candidates.All(candidate => policy.ShortCircuits(candidate, cwd, context));
+    }
 
     private ToolInvocationContext PersonalContext(string? projectDir = null, string? sessionDir = null)
         => TestToolExecutionContext.CreateBound("session-1", sessionDir ?? _sessionDir, new TestToolExecutionContextOptions
@@ -83,7 +129,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
         var policy = new ScopedShellSafeVerbPolicy(VerbList("grep"));
         var ctx = PersonalContext(projectDir: _projectDir);
 
-        Assert.True(policy.ShortCircuitsApproval("grep", _projectDir, ctx));
+        Assert.True(ShortCircuits(policy, "grep", _projectDir, ctx));
     }
 
     [Fact]
@@ -92,7 +138,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
         var policy = new ScopedShellSafeVerbPolicy(VerbList("cat"));
         var ctx = PersonalContext();
 
-        Assert.True(policy.ShortCircuitsApproval("cat", _sessionDir, ctx));
+        Assert.True(ShortCircuits(policy, "cat", _sessionDir, ctx));
     }
 
     [Fact]
@@ -101,7 +147,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
         var policy = new ScopedShellSafeVerbPolicy(VerbList("grep"));
         var ctx = PersonalContext(projectDir: _projectDir);
 
-        Assert.False(policy.ShortCircuitsApproval("grep", _outsideDir, ctx));
+        Assert.False(ShortCircuits(policy, "grep", _outsideDir, ctx));
     }
 
     [Fact]
@@ -112,7 +158,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
         var policy = new ScopedShellSafeVerbPolicy(VerbList("git status", "git log"));
         var ctx = PersonalContext(projectDir: _projectDir);
 
-        Assert.False(policy.ShortCircuitsApproval("git push", _projectDir, ctx));
+        Assert.False(ShortCircuits(policy, "git push", _projectDir, ctx));
     }
 
     [Fact]
@@ -122,9 +168,9 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
         // Public has project_dir set (somehow), but it should be ignored.
         var ctx = PublicContext(projectDir: _projectDir);
 
-        Assert.False(policy.ShortCircuitsApproval("grep", _projectDir, ctx));
+        Assert.False(ShortCircuits(policy, "grep", _projectDir, ctx));
         // Session_dir still works for Public.
-        Assert.True(policy.ShortCircuitsApproval("grep", _sessionDir, ctx));
+        Assert.True(ShortCircuits(policy, "grep", _sessionDir, ctx));
     }
 
     [Fact]
@@ -143,7 +189,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
             var policy = new ScopedShellSafeVerbPolicy(VerbList("cat"));
             var ctx = PersonalContext(projectDir: _projectDir);
 
-            Assert.False(policy.ShortCircuitsApproval("cat", symlinkPath, ctx));
+            Assert.False(ShortCircuits(policy, "cat", symlinkPath, ctx));
         }
         finally
         {
@@ -157,7 +203,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
         var policy = new ScopedShellSafeVerbPolicy(VerbList("grep", "cat"));
         var ctx = PersonalContext(projectDir: _projectDir);
 
-        Assert.False(policy.AllShortCircuit(Candidates("grep", "git push"), _projectDir, ctx));
+        Assert.False(AllShortCircuit(policy, Candidates("grep", "git push"), _projectDir, ctx));
     }
 
     [Fact]
@@ -166,7 +212,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
         var policy = new ScopedShellSafeVerbPolicy(VerbList("grep", "cat", "wc"));
         var ctx = PersonalContext(projectDir: _projectDir);
 
-        Assert.True(policy.AllShortCircuit(Candidates("grep", "cat", "wc"), _projectDir, ctx));
+        Assert.True(AllShortCircuit(policy, Candidates("grep", "cat", "wc"), _projectDir, ctx));
     }
 
     [Fact]
@@ -175,7 +221,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
         var policy = new ScopedShellSafeVerbPolicy(VerbList("grep"));
         var ctx = PersonalContext(projectDir: _projectDir);
 
-        Assert.False(policy.AllShortCircuit([], _projectDir, ctx));
+        Assert.False(AllShortCircuit(policy, [], _projectDir, ctx));
     }
 
     [Fact]
@@ -184,78 +230,191 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
         var policy = new ScopedShellSafeVerbPolicy(VerbList("grep"));
         var ctx = PersonalContext(projectDir: _projectDir);
 
-        Assert.False(policy.ShortCircuitsApproval("grep", null, ctx));
+        Assert.False(ShortCircuits(policy, "grep", null, ctx));
     }
 
     [Fact]
     public void Newly_added_read_only_verb_short_circuits_in_safe_space()
     {
-        // Mirrors the safe-verb expansion: a read-only system verb (date) and
-        // a read-only gh query (gh pr view) short-circuit inside a trusted
+        // Mirrors the reviewed catalog: a read-only system verb and a
+        // read-only gh query short-circuit inside a trusted
         // zone and still prompt outside one. The bundled list's membership of
         // these verbs is verified separately by SafeVerbLoaderTests.
-        var policy = new ScopedShellSafeVerbPolicy(VerbList("date", "gh pr view"));
+        var policy = new ScopedShellSafeVerbPolicy(VerbList("whoami", "gh run list"));
         var ctx = PersonalContext(projectDir: _projectDir);
 
-        Assert.True(policy.ShortCircuitsApproval("date", _sessionDir, ctx));
-        Assert.True(policy.ShortCircuitsApproval("gh pr view", _projectDir, ctx));
-        Assert.False(policy.ShortCircuitsApproval("date", _outsideDir, ctx));
+        Assert.True(ShortCircuits(policy, "whoami", _sessionDir, ctx));
+        Assert.True(ShortCircuits(policy, "gh run list", _projectDir, ctx));
+        Assert.False(ShortCircuits(policy, "whoami", _outsideDir, ctx));
     }
 
     [Fact]
     public void New_safe_verb_chained_with_mutating_verb_still_prompts()
     {
-        // The all-clauses-safe conjunction holds: `date` is safe but a
+        // The all-clauses-safe conjunction holds: `whoami` is safe but a
         // compound that also runs the unlisted `git push` must still prompt.
-        var policy = new ScopedShellSafeVerbPolicy(VerbList("date"));
+        var policy = new ScopedShellSafeVerbPolicy(VerbList("whoami"));
         var ctx = PersonalContext(projectDir: _projectDir);
 
-        Assert.False(policy.AllShortCircuit(Candidates("date", "git push origin main"), _projectDir, ctx));
+        Assert.False(AllShortCircuit(
+            policy,
+            Candidates("whoami", "git push origin main"),
+            _projectDir,
+            ctx));
     }
 
     [Fact]
-    public void Git_ls_tree_operand_normalizes_to_read_only_verb()
+    public void Reviewed_phrase_matches_a_longer_canonical_token_chain()
     {
         var policy = new ScopedShellSafeVerbPolicy(VerbList("git ls-tree"));
-        var candidate = new ApprovalCandidate("git ls-tree feature", _projectDir)
-        {
-            Shell = ApprovalShell.Bash,
-            VerbTokens = Array.AsReadOnly(["git", "ls-tree", "feature"]),
-        };
+        var ctx = PersonalContext(projectDir: _projectDir);
 
-        var normalized = policy.NormalizeCandidate(candidate);
-
-        Assert.Equal("git ls-tree", normalized.Verb);
-        Assert.Equal(_projectDir, normalized.Directory);
-        Assert.Equal(["git", "ls-tree", "feature"], normalized.VerbTokens);
-        Assert.Equal(ApprovalShell.Bash, normalized.Shell);
+        Assert.True(AllShortCircuit(
+            policy,
+            [Candidate("git ls-tree feature", _projectDir)],
+            _projectDir,
+            ctx));
     }
 
-    [Fact]
-    public void Git_subcommand_without_an_operand_rule_stays_exact()
-    {
-        var policy = new ScopedShellSafeVerbPolicy(VerbList("git remote"));
-        var candidate = new ApprovalCandidate("git remote add", _projectDir);
-
-        Assert.Equal(candidate, policy.NormalizeCandidate(candidate));
-    }
-
-    [Fact]
-    public void Same_length_safe_verb_does_not_normalize_to_git_ls_tree()
-    {
-        var policy = new ScopedShellSafeVerbPolicy(VerbList("git ls-tree", "gh run list"));
-        var candidate = new ApprovalCandidate("gh run list feature", _projectDir);
-
-        Assert.Equal(candidate, policy.NormalizeCandidate(candidate));
-    }
-
-    [Fact]
-    public void Git_ls_tree_normalization_requires_safe_list_membership()
+    [Theory]
+    [InlineData("git -c include.path={0}/config status")]
+    [InlineData("git --no-pager status")]
+    public void Argument_before_reviewed_phrase_stays_strict(string commandTemplate)
     {
         var policy = new ScopedShellSafeVerbPolicy(VerbList("git status"));
-        var candidate = new ApprovalCandidate("git ls-tree feature", _projectDir);
+        var ctx = PersonalContext(projectDir: _projectDir);
+        var command = string.Format(
+            System.Globalization.CultureInfo.InvariantCulture,
+            commandTemplate,
+            _outsideDir);
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironmentDefaults.Bash);
+        var candidates = matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?>
+            {
+                ["Command"] = command,
+                ["WorkingDirectory"] = _projectDir
+            });
 
-        Assert.Equal(candidate, policy.NormalizeCandidate(candidate));
+        Assert.False(AllShortCircuit(policy, candidates, _projectDir, ctx));
+    }
+
+    [Theory]
+    [InlineData("grep -f /external/patterns ./data.txt", "grep")]
+    [InlineData("wc --files0-from=/external/list", "wc")]
+    [InlineData("du --exclude-from=/external/patterns ./data", "du")]
+    [InlineData("realpath --relative-to=/external ./data", "realpath")]
+    public void Path_shaped_option_operand_outside_safe_root_stays_strict(
+        string command,
+        string phrase)
+    {
+        var policy = new ScopedShellSafeVerbPolicy(VerbList(phrase));
+        var ctx = PersonalContext(projectDir: _projectDir);
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironmentDefaults.Bash);
+        var candidates = matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?>
+            {
+                ["Command"] = command,
+                ["WorkingDirectory"] = _projectDir
+            });
+
+        Assert.False(AllShortCircuit(policy, candidates, _projectDir, ctx));
+    }
+
+    [Fact]
+    public void Path_shaped_option_operand_under_safe_root_remains_eligible()
+    {
+        var policy = new ScopedShellSafeVerbPolicy(VerbList("grep"));
+        var ctx = PersonalContext(projectDir: _projectDir);
+        var command = "grep -f ./patterns ./data.txt";
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironmentDefaults.Bash);
+        var candidates = matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?>
+            {
+                ["Command"] = command,
+                ["WorkingDirectory"] = _projectDir
+            });
+
+        Assert.True(AllShortCircuit(policy, candidates, _projectDir, ctx));
+    }
+
+    [Fact]
+    public void Path_shaped_data_under_safe_root_does_not_create_new_authority()
+    {
+        var policy = new ScopedShellSafeVerbPolicy(VerbList("gh run list"));
+        var ctx = PersonalContext(projectDir: _projectDir);
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironmentDefaults.Bash);
+        var candidates = matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?>
+            {
+                ["Command"] = "gh run list --repo example/project",
+                ["WorkingDirectory"] = _projectDir
+            });
+
+        Assert.True(AllShortCircuit(policy, candidates, _projectDir, ctx));
+    }
+
+    [Fact]
+    public void PowerShell_compatibility_paths_use_posix_host_roots()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var policy = new ScopedShellSafeVerbPolicy(
+            SafeVerbList.FromVerbs(ApprovalShell.PowerShell, ["Get-ChildItem"]));
+        var ctx = PersonalContext(projectDir: _projectDir);
+        var matcher = new ShellApprovalMatcher(
+            ShellExecutionEnvironment.CreatePowerShell(
+                "C:\\PowerShell\\pwsh.exe",
+                PwshDialect.PowerShell7));
+        var candidates = matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?>
+            {
+                ["Command"] = "Get-ChildItem -LiteralPath .\\data.txt",
+                ["WorkingDirectory"] = _projectDir
+            });
+
+        Assert.True(AllShortCircuit(policy, candidates, _projectDir, ctx));
+    }
+
+    [Fact]
+    public void Prefix_collision_does_not_match_reviewed_phrase()
+    {
+        var policy = new ScopedShellSafeVerbPolicy(VerbList("git ls-tree"));
+        var ctx = PersonalContext(projectDir: _projectDir);
+
+        Assert.False(AllShortCircuit(
+            policy,
+            [Candidate("git ls-treex feature", _projectDir)],
+            _projectDir,
+            ctx));
+    }
+
+    [Fact]
+    public void Candidate_without_canonical_tokens_stays_strict()
+    {
+        var policy = new ScopedShellSafeVerbPolicy(VerbList("head"));
+        var ctx = PersonalContext(projectDir: _projectDir);
+        var candidate = new ApprovalCandidate("head", _projectDir);
+
+        Assert.False(AllShortCircuit(policy, [candidate], _projectDir, ctx));
+    }
+
+    [Fact]
+    public void Candidate_from_another_shell_stays_strict()
+    {
+        var policy = new ScopedShellSafeVerbPolicy(VerbList("Get-Content"));
+        var ctx = PersonalContext(projectDir: _projectDir);
+
+        Assert.False(AllShortCircuit(
+            policy,
+            [Candidate("Get-Content", _projectDir, ApprovalShell.PowerShell)],
+            _projectDir,
+            ctx));
     }
 
     [Fact]
@@ -271,9 +430,9 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
             Directory.CreateSymbolicLink(link, target);
             var policy = new ScopedShellSafeVerbPolicy(VerbList("find"));
             var ctx = PersonalContext(projectDir: _projectDir);
-            var candidate = new ApprovalCandidate("find", link);
+            var candidate = Candidate("find", link);
 
-            Assert.False(policy.AllShortCircuit([candidate], _projectDir, ctx));
+            Assert.False(AllShortCircuit(policy, [candidate], _projectDir, ctx));
         }
         finally
         {
@@ -286,9 +445,9 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     {
         var policy = new ScopedShellSafeVerbPolicy(VerbList("cat"));
         var ctx = PersonalContext(projectDir: _projectDir);
-        var candidates = new[] { new ApprovalCandidate("cat", _outsideDir) };
+        var candidates = new[] { Candidate("cat", _outsideDir) };
 
-        Assert.False(policy.AllShortCircuit(candidates, _projectDir, ctx));
+        Assert.False(AllShortCircuit(policy, candidates, _projectDir, ctx));
     }
 
     [Fact]
@@ -300,11 +459,21 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
         var ctx = PersonalContext(projectDir: _projectDir);
         var candidates = new[]
         {
-            new ApprovalCandidate("head", nested),
-            new ApprovalCandidate("wc", _outsideDir)
+            Candidate("head", nested),
+            Candidate("wc", _outsideDir)
         };
 
         Assert.True(policy.CanShortCircuitAfterProjectDeclaration(candidates, _outsideDir, ctx));
+    }
+
+    [Fact]
+    public void Already_declared_project_scope_does_not_request_another_declaration()
+    {
+        var policy = new ScopedShellSafeVerbPolicy(VerbList("head"));
+        var ctx = PersonalContext(projectDir: _outsideDir);
+        var candidates = new[] { Candidate("head", _outsideDir) };
+
+        Assert.False(policy.CanShortCircuitAfterProjectDeclaration(candidates, _outsideDir, ctx));
     }
 
     [Fact]
@@ -314,8 +483,8 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
         var ctx = PersonalContext(projectDir: _projectDir);
         var candidates = new[]
         {
-            new ApprovalCandidate("head", _outsideDir),
-            new ApprovalCandidate("rm", _outsideDir)
+            Candidate("head", _outsideDir),
+            Candidate("rm", _outsideDir)
         };
 
         Assert.False(policy.CanShortCircuitAfterProjectDeclaration(candidates, _outsideDir, ctx));
@@ -326,7 +495,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     {
         var policy = new ScopedShellSafeVerbPolicy(VerbList("head"));
         var ctx = PersonalContext(projectDir: _projectDir);
-        var candidates = new[] { new ApprovalCandidate("head", _projectDir) };
+        var candidates = new[] { Candidate("head", _projectDir) };
 
         Assert.False(policy.CanShortCircuitAfterProjectDeclaration(candidates, _outsideDir, ctx));
     }
@@ -336,7 +505,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     {
         var policy = new ScopedShellSafeVerbPolicy(VerbList("head"));
         var ctx = PublicContext(projectDir: _projectDir);
-        var candidates = new[] { new ApprovalCandidate("head", _outsideDir) };
+        var candidates = new[] { Candidate("head", _outsideDir) };
 
         Assert.False(policy.CanShortCircuitAfterProjectDeclaration(candidates, _outsideDir, ctx));
     }

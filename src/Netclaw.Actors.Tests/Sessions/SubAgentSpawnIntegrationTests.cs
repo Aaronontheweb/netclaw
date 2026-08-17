@@ -34,6 +34,18 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
     private RecordingContextTool? _recordingFileReadTool;
     private RecordingContextTool? _recordingShellTool;
 
+    private static FunctionCallContent CreateToolCall(
+        string callId,
+        string name,
+        IDictionary<string, object?> arguments)
+    {
+        var callArguments = new Dictionary<string, object?>(arguments, StringComparer.Ordinal)
+        {
+            ["_rationale"] = "Verify the sub-agent session behavior."
+        };
+        return new FunctionCallContent(callId, name, callArguments);
+    }
+
     public SubAgentSpawnIntegrationTests(ITestOutputHelper output) : base(output)
     {
     }
@@ -205,7 +217,7 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
     {
         _clientProvider.Main.ToolCallsOnFirstCall =
         [
-            new FunctionCallContent(
+            CreateToolCall(
                 "call-spawn",
                 "spawn_agent",
                 new Dictionary<string, object?>
@@ -295,7 +307,7 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
 
         _clientProvider.Main.ToolCallsOnFirstCall =
         [
-            new FunctionCallContent(
+            CreateToolCall(
                 parentCallId,
                 "spawn_agent",
                 new Dictionary<string, object?>
@@ -306,7 +318,7 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
         ];
         _clientProvider.Compaction.ToolCallsOnFirstCall =
         [
-            new FunctionCallContent(
+            CreateToolCall(
                 childCallId,
                 "shell_execute",
                 new Dictionary<string, object?>
@@ -389,7 +401,7 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
     {
         _clientProvider.Main.ToolCallsOnFirstCall =
         [
-            new FunctionCallContent(
+            CreateToolCall(
                 "call-spawn-shell-expire",
                 "spawn_agent",
                 new Dictionary<string, object?>
@@ -400,7 +412,7 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
         ];
         _clientProvider.Compaction.ToolCallsOnFirstCall =
         [
-            new FunctionCallContent(
+            CreateToolCall(
                 "call-subagent-shell-expire",
                 "shell_execute",
                 new Dictionary<string, object?>
@@ -595,7 +607,8 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
         var subagentCall = Assert.Single(_clientProvider.Compaction.ReceivedMessages);
         Assert.Contains(subagentCall, m =>
             m.Role == Microsoft.Extensions.AI.ChatRole.User
-            && string.Equals(m.Text, "check scheduled health", StringComparison.Ordinal));
+            && m.Text.Contains("[session]\nsession_dir:", StringComparison.Ordinal)
+            && m.Text.EndsWith("Task:\ncheck scheduled health", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -707,7 +720,7 @@ public class SubAgentSpawnIntegrationTests : LlmSessionTestBase
     {
         _clientProvider.Compaction.ToolCallsOnFirstCall =
         [
-            new FunctionCallContent(
+            CreateToolCall(
                 "call-read",
                 "file_read",
                 new Dictionary<string, object?>

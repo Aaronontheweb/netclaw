@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.50.0"
+  version: "2.54.0"
 ---
 
 # Netclaw Operations
@@ -37,6 +37,15 @@ a reference file — load the one matching the user's intent with
 | Pair remote devices, manage access | `skill_read_resource('netclaw-operations', 'references/devices.md')` |
 | Kick the tires on Netclaw end-to-end locally | `skill_read_resource('netclaw-operations', 'references/demo-apphost.md')` |
 
+## File and Shell Selection
+
+Prefer file tools for known file reads, directory listings, and edits.
+Do not use shell for those operations unless shell behavior is requested.
+Never use `cat`, `sed`, or `ls` when a file tool can perform the requested operation.
+Use `shell_execute` for local repository search, builds, tests, VCS, or process semantics.
+Use built-in `web_search` for external discovery and `web_fetch` for page retrieval.
+Do not use shell HTTP clients for external search or retrieval.
+
 ## Project Directory
 
 `set_working_directory(path)` sets the session's project root (absolute path within
@@ -45,11 +54,22 @@ allowed roots); the project's identity file (`.netclaw/AGENTS.md`, `CLAUDE.md`,
 `skill_read_resource('netclaw-operations', 'references/projects.md')`.
 
 Use the `shell_execute` `WorkingDirectory` argument for one command in another
-directory. Do not add an inline `cd` unless changing directory is itself the
-behavior the user asked you to run or test. Use
-`set_working_directory` when later commands and subagents need the same project
-root. Do not repeat it when `[working-context]` already names that project. If
+directory. Put the shell operation in `Command`.
+Do not place the named directory in `Command` to choose where the operation runs.
+Program-specific directory options do not replace `WorkingDirectory`.
+Always use this rule for a named child directory or worktree.
+Example: use `Command='inspect'` and `WorkingDirectory='/repo/child'`.
+The argument and an absolute path operand provide exact scope, but
+they do not add a safe-space root. Keep an inline directory change only when
+that change is the requested behavior.
+
+When available, use `set_working_directory` before shell work if several
+commands target another user-named project.
+This rule also applies to subagents and commands with absolute path operands.
+Do not repeat the call when `[working-context]` already names that project. If
 the tool rejects a path, correct the path and retry it before work continues.
+Honor a request to keep the current project unchanged.
+A denied child-directory call does not permit a project change.
 
 For Team and Personal sessions, `[working-context]` is refreshed at the start
 of each new turn. In a Git project it includes the active worktree, branch,
@@ -84,6 +104,11 @@ meta keys also accept the underscore-dropped/cased/shortened forms
 (`TimeoutSeconds`, `timeout_seconds`, `Timeout` → the timeout hint; `Rationale`,
 `Background` likewise). The supplied value is always *used* — never silently
 defaulted.
+
+Every tool call requires a non-empty `_rationale` string. State the call intent
+and reason in one sentence. Apply this rule to each parallel call and each later
+tool iteration. If a correction reports a missing rationale, fix every call
+before the retry.
 
 Three things are still rejected loudly, and when rejected the tool did NOT run —
 fix and re-issue once, do not retry the same shape:

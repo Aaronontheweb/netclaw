@@ -20,6 +20,8 @@ public class ShellToolTests
     public static bool IsWindows => OperatingSystem.IsWindows();
     public static bool IsPosix => !OperatingSystem.IsWindows();
 
+    public static bool IsPosix => !OperatingSystem.IsWindows();
+
     private static ShellTool CreateTool(ToolConfig? config = null)
     {
         var commandPolicy = new ShellCommandPolicy(ShellEnvironment);
@@ -44,8 +46,12 @@ public class ShellToolTests
     }
 
     [Fact]
-    public void Working_directory_schema_prefers_the_typed_argument_to_inline_cd()
+    public void Shell_schema_prefers_file_tools_and_typed_working_directory()
     {
+        Assert.Contains("shell semantics", _tool.Description, StringComparison.Ordinal);
+        Assert.Contains("Program-specific directory options do not replace it", _tool.Description, StringComparison.Ordinal);
+        Assert.Contains("Do not use for known file reads", _tool.Description, StringComparison.Ordinal);
+
         var commandDescription = _tool.ParameterSchema
             .GetProperty("properties")
             .GetProperty("Command")
@@ -57,9 +63,10 @@ public class ShellToolTests
             .GetProperty("description")
             .GetString();
 
-        Assert.Equal("The shell command to execute.", commandDescription);
-        Assert.Contains("Prefer this argument", description, StringComparison.Ordinal);
-        Assert.Contains("inline cd", description, StringComparison.Ordinal);
+        Assert.Contains("Command='inspect' and WorkingDirectory='/repo/child'", commandDescription, StringComparison.Ordinal);
+        Assert.Contains("Always use it for one-call work", description, StringComparison.Ordinal);
+        Assert.Contains("named child directory or worktree", description, StringComparison.Ordinal);
+        Assert.Contains("Command='inspect' and WorkingDirectory='/repo/child'", description, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -565,5 +572,47 @@ public class ShellToolTests
         Assert.DoesNotContain("hard deny policy", result);
         Assert.Contains("protected file path", result);
         Assert.Contains("Access denied", result);
+    }
+
+    [SlopwatchSuppress("SW001", "This test requires native POSIX symbolic-link behavior.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only symbolic-link semantics")]
+    public async Task Authorized_execution_rechecks_current_symbolic_link_state()
+    {
+        var root = Directory.CreateTempSubdirectory("netclaw-shell-recheck-");
+        try
+        {
+            var deniedDirectory = Directory.CreateDirectory(Path.Combine(root.FullName, "denied"));
+            var deniedFile = Path.Combine(deniedDirectory.FullName, "secret.txt");
+            await File.WriteAllTextAsync(
+                deniedFile,
+                "secret",
+                TestContext.Current.CancellationToken);
+            var link = Path.Combine(root.FullName, "late-link");
+            var environment = ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux);
+            var pathPolicy = new ToolPathPolicy(environment, [deniedDirectory.FullName]);
+            var commandPolicy = new ShellCommandPolicy(environment);
+            var tool = new ShellTool(new ToolConfig(), pathPolicy, commandPolicy);
+            var command = $"cat {link}";
+            var analysis = commandPolicy.Analyze(command, root.FullName);
+            Assert.False(pathPolicy.CommandReferencesDeniedPath(analysis));
+
+            File.CreateSymbolicLink(link, deniedFile);
+            var result = await tool.ExecuteAuthorizedAsync(
+                ToolInput.Create(
+                    "Command",
+                    command,
+                    "WorkingDirectory",
+                    root.FullName),
+                TestToolExecutionContext.CreateUnbound().Invocation,
+                analysis,
+                TestContext.Current.CancellationToken);
+
+            Assert.Contains("protected file path", result);
+            Assert.Contains("Access denied", result);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
     }
 }

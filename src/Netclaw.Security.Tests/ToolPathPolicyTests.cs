@@ -12,6 +12,47 @@ public sealed class ToolPathPolicyTests
 {
     public static bool IsPosix => !OperatingSystem.IsWindows();
 
+    [Theory]
+    [InlineData("relative/path", ShellPathStyle.Posix)]
+    [InlineData("/work/line\nbreak", ShellPathStyle.Posix)]
+    [InlineData("relative\\path", ShellPathStyle.Windows)]
+    [InlineData("C:\\work\\line\nbreak", ShellPathStyle.Windows)]
+    [InlineData(@"C:\work", (ShellPathStyle)999)]
+    public void Canonical_shell_path_rejects_invalid_values(
+        string path,
+        ShellPathStyle pathStyle)
+    {
+        Assert.False(CanonicalShellPath.TryCreate(path, pathStyle, out _));
+    }
+
+    [Theory]
+    [InlineData("/work/../external/file.txt", ShellPathStyle.Posix, "/external/file.txt")]
+    [InlineData(@"C:\work\..\external\file.txt", ShellPathStyle.Windows, @"C:\external\file.txt")]
+    [InlineData(@"\\server\share\work\..\file.txt", ShellPathStyle.Windows, @"\\server\share\file.txt")]
+    public void Canonical_shell_path_uses_declared_style_on_every_host(
+        string value,
+        ShellPathStyle pathStyle,
+        string expected)
+    {
+        Assert.True(CanonicalShellPath.TryCreate(value, pathStyle, out var path));
+        Assert.Equal(expected, path.Value);
+    }
+
+    [Fact]
+    public void Projected_path_check_rejects_a_mismatched_path_style()
+    {
+        var environment = ShellExecutionEnvironment.CreatePowerShell(
+            @"C:\Program Files\PowerShell\7\pwsh.exe",
+            PwshDialect.PowerShell7);
+        var policy = new ToolPathPolicy(environment, [@"C:\protected"]);
+        Assert.True(CanonicalShellPath.TryCreate(
+            "/protected",
+            ShellPathStyle.Posix,
+            out var path));
+
+        Assert.True(policy.IsShellDeniedProjectedPath(path));
+    }
+
     [Fact]
     public void IsDenied_blocks_exact_match()
     {
@@ -65,6 +106,16 @@ public sealed class ToolPathPolicyTests
         var policy = new ToolPathPolicy(["/home/user/.netclaw/config/secrets.json"]);
         Assert.False(policy.CommandReferencesDeniedPath("ls -la /tmp"));
         Assert.False(policy.CommandReferencesDeniedPath("echo hello"));
+    }
+
+    [Fact]
+    public void CommandReferencesDeniedPath_checks_finite_authored_filesystem_values()
+    {
+        var policy = new ToolPathPolicy(["/work/src/B.cs"]);
+        const string command =
+            "for f in src/A.cs src/B.cs; do cat /work/$f; done";
+
+        Assert.True(policy.CommandReferencesDeniedPath(command, "/work"));
     }
 
     [Fact]

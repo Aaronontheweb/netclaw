@@ -357,11 +357,11 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             lifecycle.RollbackCatalogRefreshClaim(previousRefreshMs);
             if (IsAuthFailure(ex))
             {
-                MarkAwaitingAuthorization(lifecycle, current, ex);
+                MarkAwaitingAuthorization(lifecycle, current, ex, entry.Url);
                 return McpCatalogRefreshResult.Failed;
             }
 
-            _logger.LogWarning(ex,
+            _logger.LogWarning(SecretOutputRedactor.RedactForLogging(ex),
                 "MCP server '{Name}' catalog refresh failed; keeping generation {Generation} unchanged",
                 current.Name.Value,
                 current.Generation);
@@ -843,9 +843,11 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                     hasOAuthRuntimeHints,
                     now);
             lifecycle.Publish(WithFailureStatus(current, failureStatus));
+            if (IsAuthFailure(ex))
+                LogOAuthRefreshFailureDiagnostics(current.Name.Value, entry.Url);
             if (current.IsConnected)
             {
-                _logger.LogWarning(ex,
+                _logger.LogWarning(SecretOutputRedactor.RedactForLogging(ex),
                     "MCP server '{Name}' replacement failed; generation {Generation} remains connected",
                     current.Name.Value,
                     current.Generation);
@@ -863,7 +865,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                     _credentialStore.ForgetClientIdentity(current.Name, entry.Url!, CancellationToken.None);
 
                 var error = CreateSafeOAuthError(ex, "connection initialization");
-                _logger.LogError(ex,
+                _logger.LogError(SecretOutputRedactor.RedactForLogging(ex),
                     "Explicit MCP OAuth candidate failed for server '{Name}' during {Operation} (provider status {ProviderStatus})",
                     current.Name.Value,
                     error.Operation,
@@ -937,13 +939,13 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             var error = new McpErrorResponse(
                 "Authorization was cancelled or expired. Start a new MCP authorization attempt.",
                 "authorization exchange");
-            _logger.LogWarning(ex, "Explicit MCP OAuth flow was cancelled for '{Name}'", flow.ServerName.Value);
+            _logger.LogWarning(SecretOutputRedactor.RedactForLogging(ex), "Explicit MCP OAuth flow was cancelled for '{Name}'", flow.ServerName.Value);
             _flowBroker.Fail(flow, error);
         }
         catch (Exception ex)
         {
             var error = CreateSafeOAuthError(ex, "connection initialization");
-            _logger.LogError(ex, "Explicit MCP OAuth flow failed for '{Name}'", flow.ServerName.Value);
+            _logger.LogError(SecretOutputRedactor.RedactForLogging(ex), "Explicit MCP OAuth flow failed for '{Name}'", flow.ServerName.Value);
             _flowBroker.Fail(flow, error);
         }
     }
@@ -1001,7 +1003,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         {
             // The replacement is already published and serving; a failed disposal of the
             // old client leaks a connection but must not fail the reconnect.
-            _logger.LogError(ex, "Error disposing replaced MCP client '{Name}'", replaced.Name.Value);
+            _logger.LogError(SecretOutputRedactor.RedactForLogging(ex), "Error disposing replaced MCP client '{Name}'", replaced.Name.Value);
         }
     }
 
@@ -1326,10 +1328,29 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         bool hasOAuthRuntimeHints,
         DateTimeOffset errorAt)
     {
+        // A stdio server is a local child process: no HTTP request is ever made for it, so
+        // no HTTP status can genuinely appear in its failure. The spawn-failure message
+        // routinely embeds caller-supplied data -- the command name, a working directory --
+        // that can coincidentally look like a status code (e.g. a GUID substring landing on
+        // "401"), so status sniffing is skipped outright for this transport.
+        var isStdioTransport = entry.Transport is "stdio";
+
         if (IsAuthFailure(ex))
         {
-            if (!hasCachedTokens && entry.Transport is not "stdio" && hasOAuthRuntimeHints)
-                return CreateAwaitingAuthStatus(serverName, errorAt);
+            if (!hasCachedTokens && !isStdioTransport && hasOAuthRuntimeHints)
+            {
+                // "Awaiting auth" -- which sends the operator to `netclaw mcp auth` -- is only
+                // correct for a genuine OAuth challenge: a Bearer WWW-Authenticate response (or
+                // discoverable protected-resource metadata) that drove the SDK's OAuth handler
+                // to throw. A server that simply denies the connection with a bare 401/403 and
+                // no OAuth challenge reaches us as a plain transport HttpRequestException;
+                // reporting that as pending authorization hides the real access-control / host /
+                // URL error behind a dead-end auth prompt, so surface it as a transport failure
+                // carrying the HTTP status instead.
+                return IsOAuthChallenge(ex)
+                    ? CreateAwaitingAuthStatus(serverName, errorAt)
+                    : CreateUnreachableStatus(serverName, ex, errorAt, isStdioTransport);
+            }
 
             return CreateAuthFailedStatus(
                 serverName,
@@ -1338,7 +1359,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                 errorAt);
         }
 
-        return CreateUnreachableStatus(serverName, ex, errorAt);
+        return CreateUnreachableStatus(serverName, ex, errorAt, isStdioTransport);
     }
 
     internal static McpServerStatus CreateAwaitingAuthStatus(
@@ -1375,17 +1396,18 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
     internal static McpServerStatus CreateUnreachableStatus(
         McpServerName serverName,
         Exception ex,
-        DateTimeOffset errorAt)
+        DateTimeOffset errorAt,
+        bool isStdioTransport)
         => new(
             serverName,
             McpConnectionState.Unreachable,
             0,
-            GetSafeConnectionFailure(ex),
+            GetSafeConnectionFailure(ex, isStdioTransport),
             errorAt);
 
-    private static string GetSafeConnectionFailure(Exception ex)
+    private static string GetSafeConnectionFailure(Exception ex, bool isStdioTransport)
     {
-        var status = FindHttpStatus(ex);
+        var status = isStdioTransport ? null : FindHttpStatus(ex);
         if (status is not null)
             return $"MCP server request failed (HTTP {(int)status.Value} {status.Value}).";
         if (ex is TimeoutException or TaskCanceledException)
@@ -1402,7 +1424,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
     {
         if (failureStatus.State is McpConnectionState.AwaitingAuth)
         {
-            _logger.LogWarning(ex, "MCP server '{Name}' requires OAuth authorization", name.Value);
+            _logger.LogWarning(SecretOutputRedactor.RedactForLogging(ex), "MCP server '{Name}' requires OAuth authorization", name.Value);
             EmitAuthAlert(name,
                 $"MCP server '{name.Value}' requires OAuth authorization. Run: netclaw mcp auth {name.Value}",
                 "authorization_required");
@@ -1411,7 +1433,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
 
         if (failureStatus.State is McpConnectionState.AuthFailed)
         {
-            _logger.LogWarning(ex, "MCP server '{Name}' authentication failed", name.Value);
+            _logger.LogWarning(SecretOutputRedactor.RedactForLogging(ex), "MCP server '{Name}' authentication failed", name.Value);
             if (hasOAuthRuntimeHints || hasCachedTokens)
             {
                 EmitAuthAlert(name,
@@ -1427,7 +1449,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             return;
         }
 
-        _logger.LogWarning(ex, "Failed to connect to MCP server '{Name}'", name.Value);
+        _logger.LogWarning(SecretOutputRedactor.RedactForLogging(ex), "Failed to connect to MCP server '{Name}'", name.Value);
         EmitDisconnectedAlert(name,
             $"MCP server '{name.Value}' connection failed: {failureStatus.ErrorMessage}");
     }
@@ -1478,17 +1500,85 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
     private void MarkAwaitingAuthorization(
         McpServerLifecycle lifecycle,
         McpServerSnapshot current,
-        Exception ex)
+        Exception ex,
+        string? resourceUrl)
     {
         var status = CreateAwaitingAuthStatus(current.Name, _timeProvider.GetUtcNow())
             with { ToolCount = current.ToolFunctions.Count };
         lifecycle.Publish(current with { Status = status });
-        _logger.LogWarning(ex,
+        _logger.LogWarning(SecretOutputRedactor.RedactForLogging(ex),
             "MCP server '{Name}' lost OAuth authorization during catalog refresh; marked AwaitingAuth",
             current.Name.Value);
+        LogOAuthRefreshFailureDiagnostics(current.Name.Value, resourceUrl);
         EmitAuthAlert(current.Name,
             $"MCP server '{current.Name.Value}' lost OAuth authorization. Run: netclaw mcp auth {current.Name.Value}",
             "authorization_expired");
+    }
+
+    /// <summary>
+    /// When a stored OAuth record can no longer produce a working access token, the SDK
+    /// 2.0 refresh path fails silently: a refresh is only attempted when the cached token
+    /// container matches the live provider on all four binding fields — AuthorizationServer,
+    /// ClientId, ClientSecret, and TokenEndpointAuthMethod — and even then the actual
+    /// refresh HTTP response is swallowed (returned as a null access token, surfaced as a
+    /// generic "null authorization result" failure). This method makes the failure
+    /// diagnosable by reporting exactly which binding field is missing or mismatched and
+    /// whether a refresh token existed to redeem at all.
+    /// </summary>
+    private void LogOAuthRefreshFailureDiagnostics(string serverName, string? resourceUrl)
+    {
+        try
+        {
+            if (resourceUrl is null)
+                return;
+
+            var record = _credentialStore.GetBoundActive(new McpServerName(serverName), resourceUrl);
+            if (record is null)
+            {
+                _logger.LogWarning(
+                    "OAuth failure diagnostics for MCP server '{Name}': no bound credential record found for resource '{Url}'. " +
+                    "The SDK had no refresh token to redeem, so the only remedy is a fresh authorization.",
+                    serverName,
+                    resourceUrl);
+                return;
+            }
+
+            var missing = new List<string>();
+            if (string.IsNullOrWhiteSpace(record.AuthorizationServer))
+                missing.Add("AuthorizationServer");
+            if (string.IsNullOrWhiteSpace(record.ClientId))
+                missing.Add("ClientId");
+            if (record.ClientSecret is null)
+                missing.Add("ClientSecret");
+            if (string.IsNullOrWhiteSpace(record.TokenEndpointAuthMethod))
+                missing.Add("TokenEndpointAuthMethod");
+
+            var hasRefreshToken = record.RefreshToken is not null;
+            var hasAccessToken = record.AccessToken is not null;
+            var expiresAt = record.ExpiresAt;
+
+            _logger.LogWarning(
+                "OAuth refresh failure diagnostics for MCP server '{Name}': stored record has refreshToken={HasRefresh}, " +
+                "accessToken={HasAccess}, expiresAt={ExpiresAt:o}, dynamicClientRegistration={Dcr}, " +
+                "bindingFieldsMissing=[{Missing}], authorizationServer={AuthServer}. " +
+                "The SDK 2.0 refresh gate requires AuthorizationServer, ClientId, ClientSecret, and " +
+                "TokenEndpointAuthMethod to all match the live provider; missing fields mean refresh is " +
+                "never attempted and every expiration falls through to interactive auth (the 'null " +
+                "authorization result' symptom).",
+                serverName,
+                hasRefreshToken,
+                hasAccessToken,
+                expiresAt,
+                record.DynamicClientRegistration,
+                string.Join(", ", missing),
+                record.AuthorizationServer ?? "<null>");
+        }
+        catch (Exception diagEx)
+        {
+            _logger.LogDebug(diagEx,
+                "Failed to produce OAuth refresh diagnostics for MCP server '{Name}'",
+                serverName);
+        }
     }
 
     private static bool IsAuthFailure(Exception ex)
@@ -1503,6 +1593,35 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             return true;
 
         return ex.InnerException is not null && IsAuthFailure(ex.InnerException);
+    }
+
+    /// <summary>
+    /// Distinguishes a genuine OAuth challenge from a bare transport 401/403. The MCP SDK
+    /// only engages its OAuth handler when the server answers with a Bearer
+    /// <c>WWW-Authenticate</c> challenge (or discoverable protected-resource metadata); when
+    /// that handler cannot complete it throws an <see cref="McpException"/> naming the Bearer
+    /// scheme, and Netclaw's own flow raises an in-progress signal. A server that simply
+    /// denies access with a plain 401/403 -- no OAuth challenge -- reaches us instead as an
+    /// <see cref="HttpRequestException"/>, and is deliberately not treated as pending
+    /// authorization so the real transport error surfaces rather than a dead-end
+    /// <c>netclaw mcp auth</c> prompt.
+    /// </summary>
+    private static bool IsOAuthChallenge(Exception ex)
+    {
+        if (ex is McpOAuthAuthorizationInProgressException)
+            return true;
+
+        // Positive OAuth signals only. The bare words "unauthorized"/"forbidden" are avoided
+        // on purpose: they also appear in the message and body of a non-OAuth 401/403.
+        var message = ex.Message;
+        if (message.Contains("unauthorized response with 'Bearer'", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("AuthorizationCallbackHandler", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("invalid_token", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("token expired", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return ex.InnerException is not null && IsOAuthChallenge(ex.InnerException);
     }
 
     /// <summary>
@@ -1584,6 +1703,17 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         }
     }
 
+    /// <summary>
+    /// Reads an HTTP status from an exception chain. Only two anchored shapes are trusted: a
+    /// typed <see cref="HttpRequestException.StatusCode"/>, and the literal "status {Name}" /
+    /// "HTTP {code}" text the MCP SDK and .NET's own <c>HttpClient</c> use when they report one
+    /// (see the SDK's <c>HttpResponseMessageExtensions.CreateHttpRequestException</c> and
+    /// <see cref="McpOAuthClientRegistrar"/>, both of which set the typed status too). A bare
+    /// digit or word match (e.g. <c>Contains("401")</c>) is deliberately not used: exception
+    /// messages routinely embed caller-supplied data -- command names, file paths, GUIDs -- and
+    /// a coincidental "401"/"403" substring there would misreport an unrelated failure as an
+    /// HTTP auth rejection.
+    /// </summary>
     private static HttpStatusCode? FindHttpStatus(Exception ex)
     {
         if (ex is HttpRequestException { StatusCode: { } status })
@@ -1594,12 +1724,6 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                 || ex.Message.Contains($"HTTP {(int)candidate}", StringComparison.OrdinalIgnoreCase))
                 return candidate;
         }
-        if (ex.Message.Contains("403", StringComparison.Ordinal)
-            || ex.Message.Contains("Forbidden", StringComparison.OrdinalIgnoreCase))
-            return HttpStatusCode.Forbidden;
-        if (ex.Message.Contains("401", StringComparison.Ordinal)
-            || ex.Message.Contains("Unauthorized", StringComparison.OrdinalIgnoreCase))
-            return HttpStatusCode.Unauthorized;
         return ex.InnerException is null ? null : FindHttpStatus(ex.InnerException);
     }
 

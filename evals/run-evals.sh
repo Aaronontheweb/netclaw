@@ -81,9 +81,13 @@ EVAL_HOME=""
 DAEMON_LOG=""
 RESULTS_DIR=""
 RESULTS_DB=""
+NATURALISTIC_PROJECT_ROOT="/home/netclaw/.netclaw/workspaces/netclaw"
+NATURALISTIC_CWD_ROOT="$NATURALISTIC_PROJECT_ROOT/netclaw-worktrees/fix-pwsh-probe-timeout"
 
 # Per-prompt state (set by run_prompt, read by assertion helpers)
 STDOUT_FILE=""
+STDERR_FILE=""
+LAST_TURN_STDOUT_FILE=""
 DAEMON_LOG_LINES_BEFORE=0
 
 # ─── Prerequisites ────────────────────────────────────────────────────────────
@@ -136,7 +140,7 @@ check_prerequisites() {
     fi
 
     # Eval-owned temp roots: everything under $EVAL_HOME is torn down by the
-    # EXIT trap. $TMPDIR_EVAL holds per-prompt stdout captures.
+    # EXIT trap. $TMPDIR_EVAL holds per-prompt stdout and stderr captures.
     EVAL_HOME=$(mktemp -d -t netclaw-eval-home-XXXXXX)
     TMPDIR_EVAL=$(mktemp -d -t netclaw-eval-tmp-XXXXXX)
     RESULTS_DIR="$EVAL_HOME/evals"
@@ -198,7 +202,7 @@ cleanup_eval_env() {
     if [[ -n "${EVAL_CONTAINER_NAME:-}" ]]; then
         docker stop "$EVAL_CONTAINER_NAME" >/dev/null 2>&1 || true
     fi
-    # TMPDIR_EVAL only holds host-owned per-prompt stdout captures, so a
+    # TMPDIR_EVAL only holds host-owned per-prompt stdout/stderr captures, so a
     # plain rm always succeeds — no force_rmrf fallback needed.
     if [[ -n "${TMPDIR_EVAL:-}" && -d "$TMPDIR_EVAL" ]]; then
         rm -rf "$TMPDIR_EVAL"
@@ -226,11 +230,13 @@ archive_eval_run() {
 
     # Copy all container logs (crash logs, session logs)
     if [[ -d "$EVAL_HOME/data/logs" ]]; then
-        cp -r "$EVAL_HOME/data/logs" "$archive_dir/container-logs" 2>/dev/null || true
+        mkdir -p "$archive_dir/container-logs"
+        cp -r "$EVAL_HOME/data/logs/." "$archive_dir/container-logs/" 2>/dev/null || true
     fi
     # Also check the direct logs dir (bind-mount layout varies)
-    if [[ -d "$EVAL_HOME/logs" && ! -d "$archive_dir/container-logs" ]]; then
-        cp -r "$EVAL_HOME/logs" "$archive_dir/container-logs" 2>/dev/null || true
+    if [[ -d "$EVAL_HOME/logs" ]]; then
+        mkdir -p "$archive_dir/container-logs"
+        cp -r "$EVAL_HOME/logs/." "$archive_dir/container-logs/" 2>/dev/null || true
     fi
 
     # Copy results DB
@@ -238,10 +244,14 @@ archive_eval_run() {
         cp "$RESULTS_DB" "$archive_dir/results.db" 2>/dev/null || true
     fi
 
-    # Copy stdout captures
+    # Copy stdout and stderr captures. Both land in the same archive_dir/stdout
+    # directory — the stdout_*/stderr_* filename prefix already tells them apart,
+    # and keeping stderr alongside stdout means a failing run's diagnostics
+    # (denied approvals, daemon errors) are always one directory away.
     if [[ -n "${TMPDIR_EVAL:-}" && -d "$TMPDIR_EVAL" ]]; then
         mkdir -p "$archive_dir/stdout"
         cp "$TMPDIR_EVAL"/stdout_*.txt "$archive_dir/stdout/" 2>/dev/null || true
+        cp "$TMPDIR_EVAL"/stderr_*.txt "$archive_dir/stdout/" 2>/dev/null || true
     fi
 
     # Write run metadata, including the immutable image identity so before/after
@@ -410,6 +420,46 @@ start_eval_daemon() {
     awk 'BEGIN{x=1;for(i=1;i<=30000;i++){x=(x*48271)%2147483647;print x}}' \
         > "$EVAL_HOME/data/workspaces/netclaw-eval-largefile.txt"
 
+    # Seed deterministic local files for unaided file-vs-shell selection evals.
+    # The prompts name goals and paths, never tool names.
+    local selection_root="$EVAL_HOME/data/workspaces/file-tool-selection"
+    mkdir -p "$selection_root/search-target/nested"
+    printf 'first\nexpected-file-read-line\nthird\n' > "$selection_root/read-target.txt"
+    printf 'initial-content\n' > "$selection_root/edit-target.txt"
+    local i
+    for ((i = 1; i <= 20; i++)); do
+        printf 'ordinary-%s\n' "$i" > "$selection_root/search-target/file-$i.txt"
+    done
+    printf 'local-search-eval-token\n' > "$selection_root/search-target/nested/match.txt"
+
+    # Seed a worktree-like repository for natural directory-scope evals.
+    local naturalistic_root="$EVAL_HOME/data/workspaces/netclaw/netclaw-worktrees/fix-pwsh-probe-timeout"
+    mkdir -p "$naturalistic_root/src/Netclaw.Daemon" \
+        "$naturalistic_root/src/Netclaw.Daemon.Tests"
+    printf '%s\n' \
+        'internal static class PowerShellHostProbe' \
+        '{' \
+        '    internal static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);' \
+        '    internal static Task WaitAsync(Process process, CancellationToken cancellationToken)' \
+        '        => process.WaitForExitAsync(cancellationToken);' \
+        '}' \
+        > "$naturalistic_root/src/Netclaw.Daemon/PowerShellHostProbe.cs"
+    git -C "$naturalistic_root" init -q -b main
+    git -C "$naturalistic_root" config user.name "Netclaw Eval"
+    git -C "$naturalistic_root" config user.email "eval@netclaw.dev"
+    git -C "$naturalistic_root" add src/Netclaw.Daemon/PowerShellHostProbe.cs
+    git -C "$naturalistic_root" commit -q -m seed
+    sed 's/FromSeconds(10)/FromSeconds(15)/' \
+        "$naturalistic_root/src/Netclaw.Daemon/PowerShellHostProbe.cs" \
+        > "$naturalistic_root/src/Netclaw.Daemon/PowerShellHostProbe.cs.changed"
+    mv "$naturalistic_root/src/Netclaw.Daemon/PowerShellHostProbe.cs.changed" \
+        "$naturalistic_root/src/Netclaw.Daemon/PowerShellHostProbe.cs"
+    printf '%s\n' \
+        'internal sealed class PowerShellHostProbeTests' \
+        '{' \
+        '    // ProbeTimeout and WaitForExitAsync define the timeout boundary.' \
+        '}' \
+        > "$naturalistic_root/src/Netclaw.Daemon.Tests/PowerShellHostProbeTests.cs"
     # The eval container runs as the non-root `netclaw` user and needs write
     # access to the bind-mounted identity, logs, skills, and data trees.
     chmod -R ugo+rwX "$EVAL_HOME/identity" "$EVAL_HOME/logs" "$EVAL_HOME/data" "$EVAL_HOME/skills"
@@ -762,7 +812,10 @@ check_daemon_alive() {
 run_prompt() {
     local prompt="$1"
     local output_format="${2:-text}"
-    STDOUT_FILE="$TMPDIR_EVAL/stdout_$(date +%s%N).txt"
+    local ts
+    ts="$(date +%s%N)"
+    STDOUT_FILE="$TMPDIR_EVAL/stdout_${ts}.txt"
+    STDERR_FILE="$TMPDIR_EVAL/stderr_${ts}.txt"
 
     # Record daemon log position before the prompt (the daemon writes to a
     # daily-rotating file at /root/.netclaw/logs/daemon-YYYY-MM-DD.log, and
@@ -780,10 +833,15 @@ run_prompt() {
         output_args+=(--json)
     fi
 
+    # Stdout and stderr go to separate files. A merged capture corrupts
+    # --json assertions: the CLI writes legitimate diagnostics (for example
+    # "[error] Unknown output type from daemon: ...") to stderr, and a
+    # trailing diagnostic line breaks jq's parse of the JSON envelope on
+    # stdout, producing a false eval failure rather than a real one.
     NETCLAW_DAEMON_ENDPOINT="http://127.0.0.1:$EVAL_PORT" \
     NETCLAW_HOME="$EVAL_HOME" \
         timeout "$PROMPT_TIMEOUT" "$NETCLAW_BIN" chat -p "${output_args[@]}" "$prompt" \
-        > "$STDOUT_FILE" 2>&1 || true
+        > "$STDOUT_FILE" 2> "$STDERR_FILE" || true
 
     # Brief pause for daemon log flush
     sleep 2
@@ -792,23 +850,35 @@ run_prompt() {
 ## Runs a prompt against an existing (or new) named session via `chat -p --resume`.
 ## Appends output to a per-turn file AND the shared STDOUT_FILE so existing
 ## assertion helpers (stdout_contains, etc.) see the full concatenated output.
-## Args: session_id, prompt
+## Stderr is captured the same way, into a separate shared STDERR_FILE, so
+## stdout stays pure for assertions (see run_prompt for why that matters).
+## Args: session_id, prompt, [output_format]
 run_prompt_resume() {
     local session_id="$1"
     local prompt="$2"
-    local turn_file="$TMPDIR_EVAL/stdout_$(date +%s%N)_turn.txt"
+    local output_format="${3:-text}"
+    local ts
+    ts="$(date +%s%N)"
+    local turn_file="$TMPDIR_EVAL/stdout_${ts}_turn.txt"
+    local turn_stderr_file="$TMPDIR_EVAL/stderr_${ts}_turn.txt"
 
     if [[ ! -x "$NETCLAW_BIN" ]]; then
         echo "ERROR: eval CLI disappeared during the run: $NETCLAW_BIN" >&2
         exit 2
     fi
 
-    # First call in a multi-turn case: open a fresh shared STDOUT_FILE.
+    # First call in a multi-turn case: open fresh shared STDOUT_FILE/STDERR_FILE.
     if [[ -z "${MULTI_TURN_STDOUT_FILE:-}" ]]; then
         MULTI_TURN_STDOUT_FILE="$TMPDIR_EVAL/stdout_$(date +%s%N)_multi.txt"
         : > "$MULTI_TURN_STDOUT_FILE"
     fi
     STDOUT_FILE="$MULTI_TURN_STDOUT_FILE"
+
+    if [[ -z "${MULTI_TURN_STDERR_FILE:-}" ]]; then
+        MULTI_TURN_STDERR_FILE="$TMPDIR_EVAL/stderr_$(date +%s%N)_multi.txt"
+        : > "$MULTI_TURN_STDERR_FILE"
+    fi
+    STDERR_FILE="$MULTI_TURN_STDERR_FILE"
 
     if [[ -f "$DAEMON_LOG" ]]; then
         DAEMON_LOG_LINES_BEFORE=$(wc -l < "$DAEMON_LOG")
@@ -816,16 +886,32 @@ run_prompt_resume() {
         DAEMON_LOG_LINES_BEFORE=0
     fi
 
+    local -a output_args=()
+    if [[ "$output_format" == "json" ]]; then
+        output_args+=(--json)
+    fi
+
     NETCLAW_DAEMON_ENDPOINT="http://127.0.0.1:$EVAL_PORT" \
     NETCLAW_HOME="$EVAL_HOME" \
-        timeout "$PROMPT_TIMEOUT" "$NETCLAW_BIN" chat -p --resume "$session_id" "$prompt" \
-        > "$turn_file" 2>&1 || true
+        timeout "$PROMPT_TIMEOUT" "$NETCLAW_BIN" chat -p --resume "$session_id" \
+        "${output_args[@]}" "$prompt" \
+        > "$turn_file" 2> "$turn_stderr_file" || true
 
-    # Append this turn's output to the shared file so assertions see all turns.
+    # Append this turn's output to the shared files so assertions see all turns.
     cat "$turn_file" >> "$STDOUT_FILE"
+    cat "$turn_stderr_file" >> "$STDERR_FILE"
 
     # Per-turn metrics — read the usage line from this turn's file only.
-    LAST_TURN_USAGE_LINE=$(grep -ao '\[usage\].*' "$turn_file" 2>/dev/null | tail -1 || echo "")
+    LAST_TURN_STDOUT_FILE="$turn_file"
+    if [[ "$output_format" == "json" ]]; then
+        LAST_TURN_USAGE_LINE=$(jq -r '
+            if .usage == null then ""
+            else "[usage] in=\(.usage.inputTokens // 0) out=\(.usage.outputTokens // 0) total=\(.usage.totalTokens // 0) cached=\(.usage.cachedInputTokens // 0) prompt_ms=\(.usage.promptMs // 0) tok_s=\(.usage.predictedPerSecond // 0)"
+            end
+        ' "$turn_file" 2>/dev/null || echo "")
+    else
+        LAST_TURN_USAGE_LINE=$(grep -ao '\[usage\].*' "$turn_file" 2>/dev/null | tail -1 || echo "")
+    fi
 
     sleep 2
 }
@@ -833,8 +919,13 @@ run_prompt_resume() {
 ## Runs a named multi-turn case. Each prompt is sent via --resume against
 ## a dedicated session. Metrics are captured per turn. The assertion function
 ## is called once against the concatenated output of all turns.
-## Args: case_name, description, prompt1, prompt2, ... promptN
+## Args: [--json], case_name, description, prompt1, prompt2, ... promptN
 run_multi_turn_case() {
+    local output_format="text"
+    if [[ "${1:-}" == "--json" ]]; then
+        output_format="json"
+        shift
+    fi
     local case_name="$1"; shift
     local description="$1"; shift
     local -a prompts=("$@")
@@ -857,6 +948,7 @@ run_multi_turn_case() {
         # Fresh session per run so runs don't pollute each other.
         local session_id="eval/${case_name}-run${run}-$$"
         MULTI_TURN_STDOUT_FILE=""
+        MULTI_TURN_STDERR_FILE=""
 
         local setup_fn="setup_${case_name}"
         if declare -f "$setup_fn" >/dev/null 2>&1; then
@@ -871,7 +963,7 @@ run_multi_turn_case() {
             rendered_prompt="${rendered_prompt//\{\{SECOND_WORKTREE\}\}/${CODING_CONTEXT_SECOND_WORKTREE:-}}"
             rendered_prompt="${rendered_prompt//\{\{TARGET_BRANCH\}\}/${CODING_CONTEXT_TARGET_BRANCH:-}}"
             rendered_prompt="${rendered_prompt//\{\{TARGET_FILE\}\}/${CODING_CONTEXT_TARGET_FILE:-}}"
-            run_prompt_resume "$session_id" "$rendered_prompt"
+            run_prompt_resume "$session_id" "$rendered_prompt" "$output_format"
             store_metrics "$case_name" "$run" "$turn" "$LAST_TURN_USAGE_LINE"
             turn=$((turn + 1))
         done
@@ -994,6 +1086,27 @@ stdout_json_tool_call_arguments() {
     jq -ce --arg tool_name "$tool_name" \
         '.toolCalls[]? | select(.toolName == $tool_name) | .argumentsJson | fromjson' \
         "$STDOUT_FILE" 2>/dev/null
+}
+
+stdout_json_all_tool_calls_have_rationale() {
+    local minimum_calls="${1:-1}"
+    jq -e --argjson minimum_calls "$minimum_calls" '
+        (.toolCalls // []) as $calls
+        | ($calls | length) >= $minimum_calls
+          and all($calls[];
+              try (
+                  (.argumentsJson | fromjson | ._rationale) as $rationale
+                  | ($rationale | type) == "string"
+                    and ($rationale | length) > 0
+              ) catch false)
+    ' "$STDOUT_FILE" >/dev/null 2>&1
+}
+
+stdout_json_tool_call_sequence_matches() {
+    local expected_json="$1"
+    jq -e --argjson expected "$expected_json" '
+        [(.toolCalls // [])[] | .toolName] == $expected
+    ' "$STDOUT_FILE" >/dev/null 2>&1
 }
 
 stdout_skill_file_read_called() {
@@ -1224,7 +1337,8 @@ assert_tool_shell() {
 }
 
 assert_tool_web_search() {
-    stdout_contains '\[tool:call\] web_search'
+    stdout_tool_called 'web_search' \
+        && ! stdout_tool_called 'shell_execute'
 }
 
 assert_tool_cli_invoke() {
@@ -1232,7 +1346,45 @@ assert_tool_cli_invoke() {
 }
 
 assert_tool_file_list() {
-    stdout_contains '\[tool:call\] file_list'
+    stdout_tool_called 'file_list'
+}
+
+assert_tool_known_file_read() {
+    stdout_tool_called 'file_read' \
+        && ! stdout_tool_called 'shell_execute' \
+        && stdout_response_contains 'expected-file-read-line'
+}
+
+assert_tool_known_directory_list() {
+    stdout_tool_called 'file_list' \
+        && ! stdout_tool_called 'shell_execute' \
+        && stdout_response_contains 'read-target.txt' \
+        && stdout_response_contains 'edit-target.txt'
+}
+
+setup_tool_known_file_edit() {
+    printf 'initial-content\n' \
+        > "$EVAL_HOME/data/workspaces/file-tool-selection/edit-target.txt"
+}
+
+assert_tool_known_file_edit() {
+    (stdout_tool_called 'file_edit' || stdout_tool_called 'file_write') \
+        && ! stdout_tool_called 'shell_execute' \
+        && grep -qx 'edited-content' \
+            "$EVAL_HOME/data/workspaces/file-tool-selection/edit-target.txt"
+}
+
+assert_tool_local_repository_search() {
+    stdout_tool_called 'shell_execute' \
+        && ! stdout_tool_called 'web_search' \
+        && stdout_response_contains 'match.txt'
+}
+
+assert_tool_rationale_contract() {
+    stdout_json_envelope_valid \
+        && stdout_json_tool_call_sequence_matches \
+            '["file_list","list_reminders","file_read","skill_load"]' \
+        && stdout_json_all_tool_calls_have_rationale 4
 }
 
 assert_tool_timestamped_webhook() {
@@ -1342,6 +1494,132 @@ assert_subagent_specialization_precedence() {
         stdout_contains 'SPECIALIZED ANALYST BRIEF' && \
         stdout_response_contains '^Subject:' && \
         stdout_response_contains 'Would Tuesday or Wednesday work for a 15-minute call?'
+}
+
+setup_subagent_project_scope_declaration() {
+    local run="$1"
+    PROJECT_SCOPE_LOG_MARKER="$TMPDIR_EVAL/project-scope-$run.marker"
+    touch "$PROJECT_SCOPE_LOG_MARKER"
+
+    docker exec --user netclaw "$EVAL_CONTAINER_NAME" \
+        mkdir -p /home/netclaw/.netclaw/workspaces/project-scope-target/src
+    docker exec --user netclaw "$EVAL_CONTAINER_NAME" \
+        sh -c 'printf "%s\n" "# Sample project" > /home/netclaw/.netclaw/workspaces/project-scope-target/README.md
+printf "%s\n" "<Project Sdk=\"Microsoft.NET.Sdk\"></Project>" > /home/netclaw/.netclaw/workspaces/project-scope-target/Project.csproj
+printf "%s\n" "Console.WriteLine(\"sample\");" > /home/netclaw/.netclaw/workspaces/project-scope-target/src/Program.cs'
+    docker exec --user netclaw "$EVAL_CONTAINER_NAME" \
+        git -C /home/netclaw/.netclaw/workspaces/project-scope-target init -q
+    docker exec --user netclaw "$EVAL_CONTAINER_NAME" \
+        git -C /home/netclaw/.netclaw/workspaces/project-scope-target add README.md Project.csproj src/Program.cs
+    docker exec --user netclaw "$EVAL_CONTAINER_NAME" \
+        sh -c 'printf "%s\n" "<!-- changed -->" >> /home/netclaw/.netclaw/workspaces/project-scope-target/Project.csproj
+printf "%s\n" "// changed" >> /home/netclaw/.netclaw/workspaces/project-scope-target/src/Program.cs'
+}
+
+assert_subagent_project_scope_declaration() {
+    stdout_tool_called 'spawn_agent' || return 1
+    stdout_contains '\[subagent:done\] project-scope-analyst (completed' || return 1
+    stdout_response_contains 'Project.csproj' || return 1
+    stdout_response_contains 'src' || return 1
+
+    local child_log
+    child_log=$(find "$EVAL_HOME/logs/sessions" -type f \
+        -path '*_subagent_project-scope-analyst_*/session.log' \
+        -newer "$PROJECT_SCOPE_LOG_MARKER" 2>/dev/null | head -1)
+    [[ -n "$child_log" ]] || return 1
+
+    local declared_line shell_line shell_result_line shell_count shell_result_count
+    local status_command_count diff_command_count
+    declared_line=$(grep -an \
+        'SubAgent \[project-scope-analyst\] project directory set to /home/netclaw/.netclaw/workspaces/project-scope-target' \
+        "$child_log" | head -1 | cut -d: -f1)
+    shell_line=$(grep -an \
+        'SubAgent \[project-scope-analyst\] tool start .* name=shell_execute' \
+        "$child_log" | head -1 | cut -d: -f1)
+    shell_result_line=$(grep -an \
+        'SubAgent \[project-scope-analyst\] tool \[shell_execute\] result: Exit code: 0' \
+        "$child_log" | head -1 | cut -d: -f1)
+    shell_count=$(grep -ac \
+        'SubAgent \[project-scope-analyst\] tool start .* name=shell_execute' \
+        "$child_log")
+    shell_result_count=$(grep -ac \
+        'SubAgent \[project-scope-analyst\] tool \[shell_execute\] result: Exit code: 0' \
+        "$child_log")
+    status_command_count=$(grep -aEo \
+        'shell_execute#[[:alnum:]-]+\(Command=git status --short, WorkingDirectory=/home/netclaw/\.netclaw/workspaces/project-scope-target,' \
+        "$child_log" | wc -l | tr -d ' ')
+    diff_command_count=$(grep -aEo \
+        'shell_execute#[[:alnum:]-]+\(Command=git diff --stat, WorkingDirectory=/home/netclaw/\.netclaw/workspaces/project-scope-target,' \
+        "$child_log" | wc -l | tr -d ' ')
+
+    [[ -n "$declared_line" && -n "$shell_line" && -n "$shell_result_line" \
+        && "$shell_count" -eq 2 && "$shell_result_count" -eq 2 \
+        && "$status_command_count" -eq 1 && "$diff_command_count" -eq 1 \
+        && "$declared_line" -lt "$shell_line" \
+        && "$shell_line" -lt "$shell_result_line" ]]
+}
+
+setup_subagent_session_scratch_disposable() {
+    local run="$1"
+    SUBAGENT_SCRATCH_LOG_MARKER="$TMPDIR_EVAL/subagent-scratch-$run.marker"
+    touch "$SUBAGENT_SCRATCH_LOG_MARKER"
+}
+
+assert_subagent_session_scratch_disposable() {
+    stdout_json_tool_called 'spawn_agent' || return 1
+    stdout_response_contains 'git version' || return 1
+
+    local spawn_call child_task child_log
+    spawn_call=$(stdout_json_tool_call_arguments 'spawn_agent' | head -1)
+    child_task=$(jq -r '.Task // .task // ""' <<<"$spawn_call")
+    jq -e '(.Agent // .agent) == "disposable-diagnostic"' <<<"$spawn_call" >/dev/null || return 1
+    [[ -n "$child_task" ]] || return 1
+    ! grep -Eiq 'session_dir|/tmp|temporary|working.?directory|set_working_directory|(^|[^[:alpha:]])cwd([^[:alpha:]]|$)' \
+        <<<"$child_task" || return 1
+
+    child_log=$(find "$EVAL_HOME/logs/sessions" -type f \
+        -path '*_subagent_disposable-diagnostic_*/session.log' \
+        -newer "$SUBAGENT_SCRATCH_LOG_MARKER" 2>/dev/null | head -1)
+    [[ -n "$child_log" ]] || return 1
+    grep -aq \
+        'SubAgent \[disposable-diagnostic\] completed (success=True, outcome=Completed' \
+        "$child_log" || return 1
+
+    local session_id session_segment expected_session_dir
+    session_id=$(jq -r '.sessionId' "$STDOUT_FILE")
+    [[ -n "$session_id" && "$session_id" != "null" ]] || return 1
+    session_segment=$(LC_ALL=C sed 's/[^[:alnum:]-]/_/g' <<<"$session_id")
+    expected_session_dir="/home/netclaw/.netclaw/sessions/$session_segment"
+
+    local shell_count shell_result_count
+    shell_count=$(grep -ac \
+        'SubAgent \[disposable-diagnostic\] tool start .* name=shell_execute' \
+        "$child_log")
+    shell_result_count=$(grep -ac \
+        'SubAgent \[disposable-diagnostic\] tool \[shell_execute\] result: Exit code: 0' \
+        "$child_log")
+
+    [[ "$shell_count" -eq 2 ]] || return 1
+    [[ "$shell_result_count" -eq 2 ]] || return 1
+
+    local -a call_previews
+    mapfile -t call_previews < <(grep -aEo \
+        'shell_execute#[^(]+\([^)]*\)' \
+        "$child_log")
+    [[ "${#call_previews[@]}" -eq 2 ]] || return 1
+
+    local version_suffix config_suffix
+    [[ "${call_previews[0]}" == *"Command=git --version,"* ]] || return 1
+    [[ "${call_previews[1]}" == *"Command=git config --list,"* ]] || return 1
+    version_suffix=${call_previews[0]#*"WorkingDirectory=$expected_session_dir"}
+    config_suffix=${call_previews[1]#*"WorkingDirectory=$expected_session_dir"}
+    [[ "$version_suffix" != "${call_previews[0]}" \
+        && ( "$version_suffix" == ,* || "$version_suffix" == \)* ) ]] || return 1
+    [[ "$config_suffix" != "${call_previews[1]}" \
+        && ( "$config_suffix" == ,* || "$config_suffix" == \)* ) ]] || return 1
+    ! grep -aEiq 'Command=[^,]*(/tmp|\\Temp\\)|WorkingDirectory=(/tmp|[^,]*\\Temp\\)' \
+        "$child_log" || return 1
+
 }
 
 setup_coding_context_worktree_handoff() {
@@ -1604,6 +1882,60 @@ assert_approval_shell_working_directory_argument() {
         <<<"$shell_call" >/dev/null
 }
 
+shell_calls_use_naturalistic_working_directory() {
+    local require_shell="$1"
+    local shell_call
+    local -a shell_calls
+    mapfile -t shell_calls < <(stdout_json_tool_call_arguments 'shell_execute')
+
+    if [[ "$require_shell" == "true" && "${#shell_calls[@]}" -eq 0 ]]; then
+        return 1
+    fi
+
+    for shell_call in "${shell_calls[@]}"; do
+        jq -e --arg expected "$NATURALISTIC_CWD_ROOT" '
+            .WorkingDirectory == $expected
+            and (.Command | type == "string" and length > 0)
+            and ((.Command | test("(^|[;&|])[[:space:]]*(cd|chdir)[[:space:]]"; "i")) | not)
+        ' <<<"$shell_call" >/dev/null || return 1
+    done
+
+    ! stdout_json_tool_called 'set_working_directory'
+}
+
+# A natural repository check must select its directory through the typed field.
+assert_approval_naturalistic_worktree_status() {
+    local saved_stdout="$STDOUT_FILE"
+    STDOUT_FILE="$LAST_TURN_STDOUT_FILE"
+    stdout_json_envelope_valid || { STDOUT_FILE="$saved_stdout"; return 1; }
+    stdout_json_tool_called 'shell_execute' || { STDOUT_FILE="$saved_stdout"; return 1; }
+    shell_calls_use_naturalistic_working_directory true || { STDOUT_FILE="$saved_stdout"; return 1; }
+    jq -e '
+        (.response | test("main"; "i"))
+        and (.response | test("PowerShellHostProbe\\.cs"; "i"))
+        and (.response | test("Netclaw\\.Daemon\\.Tests"; "i"))
+    ' "$STDOUT_FILE" >/dev/null
+    local result=$?
+    STDOUT_FILE="$saved_stdout"
+    return "$result"
+}
+
+# Known source inspection should use file tools. Any shell fallback keeps typed scope.
+assert_approval_naturalistic_source_inspection() {
+    local saved_stdout="$STDOUT_FILE"
+    STDOUT_FILE="$LAST_TURN_STDOUT_FILE"
+    stdout_json_envelope_valid || { STDOUT_FILE="$saved_stdout"; return 1; }
+    stdout_json_tool_called 'file_read' || { STDOUT_FILE="$saved_stdout"; return 1; }
+    shell_calls_use_naturalistic_working_directory false || { STDOUT_FILE="$saved_stdout"; return 1; }
+    jq -e '
+        (.response | test("WaitForExitAsync"; "i"))
+        and (.response | test("ProbeTimeout"; "i"))
+    ' "$STDOUT_FILE" >/dev/null
+    local result=$?
+    STDOUT_FILE="$saved_stdout"
+    return "$result"
+}
+
 # Preserve inline cd when directory mutation is the behavior under test.
 assert_approval_inline_cd_semantics() {
     local shell_call
@@ -1637,15 +1969,20 @@ assert_approval_set_working_directory_retry() {
 # This headless case measures model guidance. It does not exercise an approval prompt.
 assert_approval_session_scratch_disposable() {
     local shell_call
+    local -a shell_calls
     stdout_json_envelope_valid || return 1
-    shell_call=$(stdout_json_tool_call_arguments 'shell_execute' | head -1)
+    mapfile -t shell_calls < <(stdout_json_tool_call_arguments 'shell_execute')
+    [[ "${#shell_calls[@]}" -ge 1 ]] || return 1
 
-    jq -e '
-        (.WorkingDirectory | type == "string")
-        and (.WorkingDirectory | contains("/.netclaw/sessions/"))
-        and (.WorkingDirectory != "/tmp")
-    ' <<<"$shell_call" >/dev/null && \
-        ! stdout_json_tool_called 'set_working_directory'
+    for shell_call in "${shell_calls[@]}"; do
+        jq -e '
+            ((.WorkingDirectory // "") == ""
+                or (.WorkingDirectory | contains("/.netclaw/sessions/")))
+            and ((.Command // "") | contains("/tmp") | not)
+        ' <<<"$shell_call" >/dev/null || return 1
+    done
+
+    ! stdout_json_tool_called 'set_working_directory'
 }
 
 # Schedule pre-approval: user asks to schedule an unattended task that
@@ -1731,6 +2068,11 @@ run_case() {
     for ((run = 1; run <= RUNS; run++)); do
         local prompt
         prompt=$(pick_variant "${prompts[@]}")
+
+        local setup_fn="setup_${case_name}"
+        if declare -f "$setup_fn" >/dev/null 2>&1; then
+            "$setup_fn" "$run"
+        fi
 
         run_prompt "$prompt" "$output_format"
 
@@ -1937,14 +2279,29 @@ run_all() {
     run_case tool_shell "shell_execute called" \
         "Run 'echo hello' in the shell"
 
-    run_case tool_web_search "web_search called" \
+    run_case tool_web_search "web_search called without shell" \
         "Search the web for today's weather in Columbus Ohio"
 
     run_case tool_cli_invoke "list_reminders called" \
         "List my active reminders"
 
-    run_case tool_file_list "file_list called" \
+    run_case tool_file_list "file_list called without shell" \
         "What files are in my session directory?"
+
+    run_case tool_known_file_read "known file content uses file_read without shell" \
+        "Read line 2 of /home/netclaw/.netclaw/workspaces/file-tool-selection/read-target.txt and tell me its exact value."
+
+    run_case tool_known_directory_list "known directory listing uses file_list without shell" \
+        "List the entries in /home/netclaw/.netclaw/workspaces/file-tool-selection and tell me their names."
+
+    run_case tool_known_file_edit "known file edit uses a file tool without shell" \
+        "Replace initial-content with edited-content in /home/netclaw/.netclaw/workspaces/file-tool-selection/edit-target.txt, then report completion."
+
+    run_case tool_local_repository_search "local repository search uses shell, not web_search" \
+        "Search recursively under /home/netclaw/.netclaw/workspaces/file-tool-selection/search-target for the exact text local-search-eval-token and tell me which file contains it."
+
+    run_case --json tool_rationale_contract "all calls retain rationales across two parallel tool iterations" \
+        "Use exactly two tool stages. First, call file_list on /home/netclaw/.netclaw/workspaces and list_reminders in one parallel batch. After both results return, call file_read on /home/netclaw/.netclaw/workspaces/netclaw-eval-largefile.txt for lines 1 through 3 and skill_load for netclaw-operations in one parallel batch. Use all four tools, then summarize the results."
 
     run_case tool_timestamped_webhook "set_webhook called with Stripe timestamp verification" \
         "Create a public inbound webhook route named stripe-events for Stripe. Use secret eval-whsec-123 and have it summarize each payment event."
@@ -2014,6 +2371,12 @@ run_all() {
     run_case subagent_specialization_precedence "specialized subagent guidance overrides a conflicting deployment playbook" \
         "Use spawn_agent with agent headless-analyst to write a prospecting email to Casey, a VP of Engineering interested in reducing operational toil. Return its final email." \
         "Delegate to headless-analyst: draft an outbound email for Jordan, a technology leader evaluating autonomous operations. Return the worker's final email."
+
+    run_multi_turn_case subagent_project_scope_declaration "subagent declares a different named project before shell inspection" \
+        "Use spawn_agent with agent project-scope-analyst. Ask it to inspect /home/netclaw/.netclaw/workspaces/project-scope-target with exactly two shell_execute calls: git status --short and git diff --stat. Return the command results, project layout, and build-file summary. Keep the parent project unchanged."
+
+    run_case --json subagent_session_scratch_disposable "subagent chooses private session scratch for disposable shell work" \
+        "Use spawn_agent with agent disposable-diagnostic. Ask it to complete its assigned diagnostic and return the exact marker. Do not include a Context argument."
 
     PROMPT_TIMEOUT="$previous_timeout"
 
@@ -2129,6 +2492,14 @@ run_all() {
     run_case --json approval_shell_working_directory_argument "uses the typed WorkingDirectory argument instead of inline cd" \
         "Run pwd from /tmp with one shell_execute call. Do not change the session project directory."
 
+    run_multi_turn_case --json approval_naturalistic_worktree_status "uses typed scope for an unaided repository status check" \
+        "Use $NATURALISTIC_PROJECT_ROOT as the current project for this session. Reply ready after you establish it." \
+        "Review the checkout at $NATURALISTIC_CWD_ROOT. Report its current branch and all pending file changes. Keep the current project unchanged. Do not modify anything."
+
+    run_multi_turn_case --json approval_naturalistic_source_inspection "avoids inline directory changes during an unaided source inspection" \
+        "Use $NATURALISTIC_PROJECT_ROOT as the current project for this session. Reply ready after you establish it." \
+        "Inspect the timeout logic in $NATURALISTIC_CWD_ROOT/src/Netclaw.Daemon/PowerShellHostProbe.cs and locate its related tests. Report the timeout member and the process-exit method. Keep the current project unchanged. Do not edit files."
+
     run_case --json approval_inline_cd_semantics "keeps inline cd when directory change is the requested shell behavior" \
         "Run a Bash control-flow experiment in one shell_execute call: execute 'cd /tmp && pwd' exactly as a compound command. Changing directory is the behavior being tested, so do not replace it with a WorkingDirectory argument."
 
@@ -2136,7 +2507,7 @@ run_all() {
         "Test project recovery: first call set_working_directory with /home/netclaw/.netclaw/workspaces/missing-project. Then use /home/netclaw/.netclaw/workspaces, and only after that run pwd."
 
     run_case --json approval_session_scratch_disposable "uses session scratch for ordinary disposable output" \
-        "Run a diagnostic command that writes a disposable result.log file. Use the private session scratch directory announced in context. Do not use /tmp and do not declare a project."
+        "Run a diagnostic command that writes and then reads a disposable result.log file. Return its exact contents."
 
     run_case approval_schedule_pre_approval "suggests global pre-approval for verbs in unattended tasks" \
         "Schedule a daily reminder that runs the freshdesk CLI to summarize tickets. The reminder fires unattended and won't be able to answer approval prompts, so the verb needs to be globally pre-approved before the schedule fires. Call netclaw approvals trust-verb freshdesk via shell_execute as part of the setup."

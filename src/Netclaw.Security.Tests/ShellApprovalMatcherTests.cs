@@ -93,6 +93,79 @@ public sealed class ShellApprovalMatcherTests
         });
     }
 
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
+    public void Bash_finite_filesystem_loop_uses_bounded_path_scopes()
+    {
+        const string command =
+            "for f in src/A.cs src/B.cs; do cat /work/$f; done";
+        var arguments = Args(command, "/work");
+
+        var analysis = _matcher.AnalyzeInvocation(
+            new ToolName("shell_execute"),
+            arguments);
+
+        Assert.False(analysis.IsMessy);
+        var candidate = Assert.Single(analysis.Candidates);
+        Assert.Equal("cat", candidate.Verb);
+        Assert.Equal("/work", candidate.Directory);
+        Assert.True(_matcher.IsApproved(
+            new ToolName("shell_execute"),
+            arguments,
+            [InDir("cat", "/work")],
+            cwd: "/work"));
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
+    public void Bash_finite_filesystem_loop_keeps_external_scopes_exact()
+    {
+        const string command =
+            "for f in /work/A.cs /work2/B.cs; do cat \"$f\"; done";
+
+        var analysis = _matcher.AnalyzeInvocation(
+            new ToolName("shell_execute"),
+            Args(command, "/work"));
+
+        Assert.False(analysis.IsMessy);
+        Assert.Equal(
+            ["/work/A.cs", "/work2/B.cs"],
+            analysis.Candidates.Select(static candidate => candidate.Directory));
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
+    public void Bash_finite_filesystem_loop_rejects_a_symlink_scope()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            $"netclaw-authored-loop-{Guid.NewGuid():N}");
+        var projectDirectory = Path.Combine(root, "project");
+        var externalDirectory = Path.Combine(root, "external");
+        var externalFile = Path.Combine(externalDirectory, "secret.txt");
+        var link = Path.Combine(projectDirectory, "link.txt");
+        Directory.CreateDirectory(projectDirectory);
+        Directory.CreateDirectory(externalDirectory);
+        File.WriteAllText(externalFile, "secret");
+        File.CreateSymbolicLink(link, externalFile);
+
+        try
+        {
+            var arguments = Args(
+                "for f in link.txt safe.txt; do cat \"$f\"; done",
+                projectDirectory);
+
+            Assert.True(_matcher.IsMessy(
+                new ToolName("shell_execute"),
+                arguments));
+            Assert.Empty(_matcher.ExtractCandidates(
+                new ToolName("shell_execute"),
+                arguments));
+        }
+        finally
+        {
+            File.Delete(link);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Fact]
     public void Power_shell_matcher_uses_the_native_power_shell_grammar()
     {
@@ -1023,6 +1096,62 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         Assert.False(_matcher.IsMessy(new ToolName("shell_execute"), Args(command, projectDirectory)));
     }
 
+    [Fact]
+    public void ExtractCandidates_uses_declared_posix_scope_for_relative_glob()
+    {
+        var arguments = Args("du -sh ./*", "/work");
+        var candidate = Assert.Single(_matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            arguments));
+
+        Assert.Equal("du", candidate.Verb);
+        Assert.Equal("/work", candidate.Directory);
+        Assert.False(_matcher.IsMessy(new ToolName("shell_execute"), arguments));
+    }
+
+    [Theory]
+    [InlineData(ShellPathStyle.Posix, "./bad\0/*", "/work")]
+    [InlineData(ShellPathStyle.Windows, "bad\0\\*", @"C:\work")]
+    public void Declared_path_resolution_rejects_control_characters(
+        ShellPathStyle pathStyle,
+        string path,
+        string resolutionBase)
+    {
+        Assert.False(ShellPathRules.TryResolve(
+            path,
+            resolutionBase,
+            pathStyle,
+            out _));
+    }
+
+    [Fact]
+    public void ExtractCandidates_rejects_control_character_in_relative_glob()
+    {
+        var arguments = Args("du -sh \"./bad\0/*\"", "/work");
+
+        Assert.Empty(_matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            arguments));
+        Assert.True(_matcher.IsMessy(new ToolName("shell_execute"), arguments));
+    }
+
+    [Fact]
+    public void PowerShell_candidates_reject_control_character_in_glob()
+    {
+        var matcher = new ShellApprovalMatcher(
+            ShellExecutionEnvironment.CreatePowerShell(
+                @"C:\Program Files\PowerShell\7\pwsh.exe",
+                PwshDialect.PowerShell7));
+        var arguments = Args(
+            "Get-ChildItem 'C:\\work\\bad\0\\*'",
+            @"C:\work");
+
+        Assert.Empty(matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            arguments));
+        Assert.True(matcher.IsMessy(new ToolName("shell_execute"), arguments));
+    }
+
     [SlopwatchSuppress("SW001", "This theory verifies Bash glob scopes, which do not apply to the Windows shell parser.")]
     [Theory(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
     [MemberData(nameof(UnsafeGlobScopeCases))]
@@ -1516,6 +1645,31 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         Assert.Contains(candidates, c => c.Verb == "cd" && c.Directory == "/a");
         Assert.Contains(candidates, c => c.Verb == "cd" && c.Directory == "/b");
         Assert.Contains(candidates, c => c.Verb == "pwd" && c.Directory == "/b");
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
+    public void Occurrence_extraction_rebases_unknown_path_only_for_explicit_intent_scope()
+    {
+        var environment = ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux);
+        var analysis = new ShellCommandAnalyzer(environment).Analyze(
+            "cd /tmp && inspect; head result.log",
+            "/work");
+        var occurrence = Assert.Single(
+            analysis.Commands,
+            command => command.Clause.Verb.Tokens is ["head"]);
+        var matcher = new ShellApprovalMatcher(environment);
+
+        Assert.Null(matcher.ExtractCandidatesForOccurrence(
+            occurrence,
+            "/tmp",
+            resolveUnknownPathsFromEffectiveValues: false));
+
+        var candidate = Assert.Single(matcher.ExtractCandidatesForOccurrence(
+            occurrence,
+            "/tmp",
+            resolveUnknownPathsFromEffectiveValues: true)!);
+        Assert.Equal("head", candidate.Verb);
+        Assert.Equal("/tmp", candidate.Directory);
     }
 
     [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]

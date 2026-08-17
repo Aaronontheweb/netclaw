@@ -53,6 +53,11 @@ public sealed class McpSdkCatalogNotificationIntegrationTests(ITestOutputHelper 
     [Fact]
     public async Task FailedStdioStartup_IsReportedBeforeLeaseAssertions()
     {
+        // The GUID suffix on this command name is intentional and must stay random: it
+        // regression-guards McpClientManager.FindHttpStatus against sniffing a status code
+        // out of caller-supplied data. A prior bug made a bare Contains("401")/Contains("403")
+        // check misclassify a random GUID substring (e.g. "632401b4...") as an HTTP auth
+        // failure. See McpClientManagerStatusTests for the targeted unit coverage.
         var entry = new McpServerEntry
         {
             Transport = "stdio",

@@ -35,6 +35,18 @@ public sealed class FileSystemPromptProviderAudienceTests : IDisposable
         _dir.Dispose();
     }
 
+    [Theory]
+    [InlineData(TrustAudience.Public)]
+    [InlineData(TrustAudience.Team)]
+    [InlineData(TrustAudience.Personal)]
+    public void Every_audience_receives_the_tool_rationale_contract(TrustAudience audience)
+    {
+        var prompt = _provider.GetSystemPrompt(audience);
+
+        Assert.Contains("Every tool call must include a non-empty `_rationale` string.", prompt);
+        Assert.Contains("Apply this rule to each parallel call", prompt);
+    }
+
     [Fact]
     public void Public_audience_gets_stripped_agents_without_team_only_content()
     {
@@ -76,12 +88,45 @@ public sealed class FileSystemPromptProviderAudienceTests : IDisposable
         var prompt = _provider.GetSystemPrompt(TrustAudience.Personal);
 
         Assert.Contains("`WorkingDirectory` argument", prompt);
+        Assert.Contains("Do not place the named directory in `Command`", prompt);
+        Assert.Contains("Program-specific directory options do not replace `WorkingDirectory`", prompt);
+        Assert.Contains("Always use this rule for a named child directory or worktree", prompt);
+        Assert.Contains("Command='inspect'` and `WorkingDirectory='/repo/child'", prompt);
+        Assert.Contains("Keep the project root unless the user requests", prompt);
+        Assert.Contains("A denied child-directory call does not permit a project change", prompt);
         Assert.Contains("Do not prefix the command with an inline `cd`", prompt);
+        Assert.Contains("Path arguments give the approval gate an exact candidate scope", prompt);
+        Assert.Contains("safe-space root", prompt);
+        Assert.DoesNotContain("path argument IS the declaration", prompt);
         Assert.Contains("before the first shell", prompt);
-        Assert.Contains("Do not repeat it when", prompt);
+        Assert.Contains("Do not repeat", prompt);
+        Assert.Contains("`project_dir` already names the correct project", prompt);
         Assert.Contains("changing directory is itself behavior", prompt);
         Assert.Contains("correct the path and retry the tool", prompt);
         Assert.Contains("Do not continue with a stale directory", prompt);
+    }
+
+    [Theory]
+    [InlineData(TrustAudience.Team)]
+    [InlineData(TrustAudience.Personal)]
+    public void Trusted_audiences_prefer_file_tools_for_known_content(TrustAudience audience)
+    {
+        var prompt = _provider.GetSystemPrompt(audience);
+
+        Assert.Contains("Prefer file tools for known file reads", prompt);
+        Assert.Contains("Do not use shell for those operations", prompt);
+        Assert.Contains("Never use `cat`, `sed`, or `ls`", prompt);
+        Assert.Contains("Use `shell_execute` for local repository search", prompt);
+        Assert.Contains("Use built-in `web_search` for external discovery", prompt);
+        Assert.Contains("Do not use shell HTTP clients", prompt);
+    }
+
+    [Fact]
+    public void Public_audience_omits_shell_selection_guidance()
+    {
+        var prompt = _provider.GetSystemPrompt(TrustAudience.Public);
+
+        Assert.DoesNotContain("Use `shell_execute` for local repository search", prompt);
     }
 
     [Fact]
