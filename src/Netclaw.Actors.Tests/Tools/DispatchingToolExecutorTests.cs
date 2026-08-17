@@ -1558,14 +1558,11 @@ public class DispatchingToolExecutorTests
         for (var index = 0; index < 300; index++)
         {
             builder.AddCoverage(
-                ShellPolicyTraceStage.ReviewedSafePolicy,
+                ShellPolicyCoverageSource.ReviewedSafeReal,
                 new ShellPolicyCandidate(
                     new ShellPolicyCandidateId(index),
                     BashCandidate($"/usr/bin/tool-{index}"),
-                    SourceOccurrence: null),
-                ShellCoverageKind.ReviewedSafePolicy,
-                ShellPolicyReason.ReviewedSafePhrase,
-                ShellScopeRelation.UnderRealRoot);
+                    SourceOccurrence: null));
         }
 
         var decision = ToolAuthorizationDecision.Allow(ToolAllowReason.SafeVerbInTrustedScope);
@@ -1617,14 +1614,11 @@ public class DispatchingToolExecutorTests
         var executor = CreateApprovalGatedShellExecutor(logger: logger);
         var builder = new ShellPolicyDecisionTraceBuilder();
         builder.AddCoverage(
-            ShellPolicyTraceStage.ReviewedSafePolicy,
+                ShellPolicyCoverageSource.ReviewedSafeReal,
             new ShellPolicyCandidate(
                 new ShellPolicyCandidateId(0),
                 BashCandidate($"/usr/bin/{secret}\r\n\u202Espoof"),
-                SourceOccurrence: null),
-            ShellCoverageKind.ReviewedSafePolicy,
-            ShellPolicyReason.ReviewedSafePhrase,
-            ShellScopeRelation.UnderRealRoot);
+                SourceOccurrence: null));
         var trace = builder.Complete(
             ToolAuthorizationDecision.Allow(ToolAllowReason.SafeVerbInTrustedScope));
 
@@ -1700,6 +1694,82 @@ public class DispatchingToolExecutorTests
 
         Assert.Equal(ToolAuthorizationOutcome.Denied, decision.Outcome);
         Assert.Equal("internal_policy_failure", decision.DenyReason);
+    }
+
+    [Fact]
+    public async Task Authorization_evaluation_propagates_preexisting_cancellation_without_actor_contact()
+    {
+        var approvalService = GrantEveryShellCandidate();
+        var executor = CreateApprovalGatedShellExecutor(approvalService);
+        var call = new FunctionCallContent(
+            "call-preexisting-cancellation",
+            ShellTool.ToolName,
+            ToolInput.Create("Command", "git status"));
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            executor.EvaluateAuthorizationAsync(
+                call,
+                CreateInteractivePersonalContext("signalr/preexisting-cancellation"),
+                cancellation.Token));
+
+        Assert.Equal(0, approvalService.RequestCount);
+    }
+
+    [Fact]
+    public async Task Authorization_evaluation_propagates_actor_cancellation_before_an_ordinary_failure()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var approvalService = new FixedShellApprovalService(_ =>
+        {
+            cancellation.Cancel();
+            throw new InvalidOperationException("actor failed after cancellation");
+        });
+        var executor = CreateApprovalGatedShellExecutor(approvalService);
+        var call = new FunctionCallContent(
+            "call-actor-cancellation",
+            ShellTool.ToolName,
+            ToolInput.Create("Command", "git status"));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            executor.EvaluateAuthorizationAsync(
+                call,
+                CreateInteractivePersonalContext("signalr/actor-cancellation"),
+                cancellation.Token));
+
+        Assert.Equal(1, approvalService.RequestCount);
+    }
+
+    [Fact]
+    public async Task Authorization_evaluation_propagates_cancellation_after_actor_result()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var approvalService = new FixedShellApprovalService(request =>
+        {
+            cancellation.Cancel();
+            return new ShellApprovalMatchResult(
+                new PersistentGrantStoreStatus.Ready(),
+                Array.AsReadOnly(request.Candidates.Select(candidate =>
+                    new ShellGrantCandidateMatch(
+                        candidate.CandidateId,
+                        Match: null,
+                        GrantCoverage: null,
+                        NearMisses: [])).ToArray()));
+        });
+        var executor = CreateApprovalGatedShellExecutor(approvalService);
+        var call = new FunctionCallContent(
+            "call-post-actor-cancellation",
+            ShellTool.ToolName,
+            ToolInput.Create("Command", "git status"));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            executor.EvaluateAuthorizationAsync(
+                call,
+                CreateInteractivePersonalContext("signalr/post-actor-cancellation"),
+                cancellation.Token));
+
+        Assert.Equal(1, approvalService.RequestCount);
     }
 
     [Fact]

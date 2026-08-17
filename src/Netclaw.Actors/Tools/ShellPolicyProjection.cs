@@ -21,15 +21,16 @@ internal enum ShellCoverageKind
     Denied = 6,
 }
 
-internal enum ShellPolicyReason
+internal enum ShellPolicyCoverageSource
 {
-    None = 0,
-    OneTimeGrant = 1,
-    SessionGrant = 2,
-    PersistentGlobalGrant = 3,
-    PersistentFolderGrant = 4,
-    ReviewedSafePhrase = 5,
-    ApprovalExemptSideEffect = 6,
+    Uncovered = 0,
+    OneTime = 1,
+    Session = 2,
+    PersistentGlobal = 3,
+    PersistentFolder = 4,
+    ReviewedSafeReal = 5,
+    ReviewedSafeIntent = 6,
+    ApprovalExemptSideEffect = 7,
 }
 
 internal readonly record struct ShellPolicyCandidateId
@@ -68,11 +69,6 @@ internal sealed record ShellPolicyCandidate(
     internal bool CanUseRealReviewedSafePolicy => Role == ShellPolicyCandidateRole.Ordinary;
 }
 
-internal sealed record ShellCandidateCoverage(
-    ShellPolicyCandidateId CandidateId,
-    ShellCoverageKind Kind,
-    ShellPolicyReason Reason);
-
 /// <summary>
 /// The immutable policy-facing projection of one shell approval context.
 /// </summary>
@@ -84,7 +80,7 @@ internal sealed record ShellPolicyProjection
         ToolRunScope runScope,
         ToolApprovalContext approvalContext,
         IReadOnlyList<ShellPolicyCandidate> candidates,
-        ShellPolicyPathFacts pathFacts,
+        IReadOnlyList<ShellPolicyCandidatePathFacts> pathFacts,
         IReadOnlySet<string> approvedOneTimeKeys,
         string? approvedOneTimeToolName)
     {
@@ -93,6 +89,11 @@ internal sealed record ShellPolicyProjection
         RunScope = runScope;
         ApprovalContext = approvalContext;
         Candidates = candidates;
+        GrantCandidates = Array.AsReadOnly(candidates
+            .Where(static candidate =>
+                candidate.CanMatchStoredGrant
+                && !ApprovalPatternMatching.IsPureSideEffect(candidate.Candidate))
+            .ToArray());
         PathFacts = pathFacts;
         ApprovedOneTimeKeys = approvedOneTimeKeys;
         ApprovedOneTimeToolName = approvedOneTimeToolName;
@@ -108,19 +109,13 @@ internal sealed record ShellPolicyProjection
 
     internal IReadOnlyList<ShellPolicyCandidate> Candidates { get; }
 
-    internal ShellPolicyPathFacts PathFacts { get; }
+    internal IReadOnlyList<ShellPolicyCandidatePathFacts> PathFacts { get; }
 
     internal IReadOnlySet<string> ApprovedOneTimeKeys { get; }
 
     internal string? ApprovedOneTimeToolName { get; }
 
-    internal IReadOnlyList<ShellPolicyCandidate> GrantCandidates =>
-        Candidates
-            .Where(static candidate =>
-                candidate.CanMatchStoredGrant
-                &&
-                !ApprovalPatternMatching.IsPureSideEffect(candidate.Candidate))
-            .ToArray();
+    internal IReadOnlyList<ShellPolicyCandidate> GrantCandidates { get; }
 
     internal bool HasCausalIntent => Candidates.Any(static candidate =>
         candidate.Role != ShellPolicyCandidateRole.Ordinary);

@@ -36,25 +36,6 @@ internal sealed class ScopedShellSafeVerbPolicy
     }
 
     /// <summary>
-    /// Returns true when each candidate has a safe verb and a safe effective
-    /// directory. The candidate directory takes precedence over the cwd.
-    /// </summary>
-    public bool AllShortCircuit(
-        IReadOnlyList<ApprovalCandidate> candidates,
-        string? cwd,
-        ToolInvocationContext context)
-    {
-        if (candidates.Count == 0)
-            return false;
-
-        return candidates.All(candidate => ShortCircuits(
-            candidate,
-            candidate.SourceOccurrence,
-            cwd,
-            context));
-    }
-
-    /// <summary>
     /// Returns true when declaring <paramref name="cwd"/> as the project root
     /// would make every candidate eligible for the reviewed-safe short circuit.
     /// </summary>
@@ -169,17 +150,18 @@ internal sealed class ScopedShellSafeVerbPolicy
     }
 
     internal bool ShortCircuitsCausalIntent(
-        ApprovalCandidate candidate,
+        ShellPolicyCandidate projected,
         ShellPolicyCandidatePathFacts pathFacts,
         ToolInvocationContext context)
     {
+        var candidate = projected.Candidate;
         if (context.Audience != TrustAudience.Personal
             || candidate is not
             {
                 Shell: ApprovalShell.Bash,
                 VerbTokens: { }
             }
-            || pathFacts.IntentScope is not
+            || pathFacts.Intent?.ResolutionBase is not
             {
                 State: ShellPolicyPathResolutionState.Known,
                 Path: { } intentPath
@@ -190,7 +172,7 @@ internal sealed class ScopedShellSafeVerbPolicy
                 ShellPathStyle.Posix)
             || !IsReviewedDiagnostic(
                 candidate,
-                pathFacts.SourceOccurrence,
+                projected.SourceOccurrence,
                 [intentPath.Value],
                 pathFacts.Intent))
         {
@@ -204,45 +186,31 @@ internal sealed class ScopedShellSafeVerbPolicy
 
     internal bool ShortCircuits(
         ApprovalCandidate candidate,
-        CommandOccurrence? sourceOccurrence,
         string? cwd,
         ToolInvocationContext context)
     {
-        var safeRoots = ResolveSafeSpaceRoots(context);
-        var resolvedPaths = ResolveCompatibilityPaths(candidate, sourceOccurrence);
-        if (safeRoots.Count == 0
-            || !IsReviewedDiagnostic(candidate, sourceOccurrence, safeRoots, resolvedPaths))
-        {
-            return false;
-        }
-
-        var effectiveDirectory = candidate.Directory ?? cwd;
-        if (string.IsNullOrWhiteSpace(effectiveDirectory))
-            return false;
-
-        try
-        {
-            var fullDirectory = Path.GetFullPath(effectiveDirectory);
-            return safeRoots.Any(root => IsSafePath(fullDirectory, root));
-        }
-        catch (Exception ex) when (ex is ArgumentException
-                                      or NotSupportedException
-                                      or PathTooLongException)
-        {
-            return false;
-        }
+        var projected = new ShellPolicyCandidate(
+            new ShellPolicyCandidateId(0),
+            candidate.Directory is null ? candidate with { Directory = cwd } : candidate,
+            candidate.SourceOccurrence);
+        var pathStyle = OperatingSystem.IsWindows()
+            ? ShellPathStyle.Windows
+            : ShellPathStyle.Posix;
+        var facts = ShellPolicyPathFacts.Create([projected], pathStyle);
+        return ShortCircuits(projected, facts[projected.Id.Value], context);
     }
 
     internal bool ShortCircuits(
-        ApprovalCandidate candidate,
+        ShellPolicyCandidate projected,
         ShellPolicyCandidatePathFacts pathFacts,
         ToolInvocationContext context)
     {
+        var candidate = projected.Candidate;
         var safeRoots = ResolveDeclaredSafeSpaceRoots(context);
         if (safeRoots.Count == 0
             || !IsReviewedDiagnostic(
                 candidate,
-                pathFacts.SourceOccurrence,
+                projected.SourceOccurrence,
                 safeRoots,
                 pathFacts.Real)
             || pathFacts.RealScope is not
@@ -313,8 +281,8 @@ internal sealed class ScopedShellSafeVerbPolicy
                     && pathStyle != ShellPathStyle.Posix
                 || fact.Source.AuthoredPathShape == ShellPathShape.Windows
                     && pathStyle != ShellPathStyle.Windows
-                || fact.Source.DomainKind is not
-                    (ShellPolicyPathDomainKind.Exact or ShellPolicyPathDomainKind.FiniteSet)
+                || fact.Source.Domain is not
+                    (ShellValueDomain.Exact or ShellValueDomain.FiniteSet)
                 || fact.State != ShellPolicyPathResolutionState.Known
                 || fact.Paths.Count == 0
                 || fact.Paths.Any(path =>
@@ -340,8 +308,8 @@ internal sealed class ScopedShellSafeVerbPolicy
         foreach (var fact in resolvedPaths.Facts.Where(static fact =>
                      fact.Source.Origin == ShellPolicyPathOrigin.EffectiveArgument))
         {
-            if (fact.Source.DomainKind is not
-                    (ShellPolicyPathDomainKind.Exact or ShellPolicyPathDomainKind.FiniteSet)
+            if (fact.Source.Domain is not
+                    (ShellValueDomain.Exact or ShellValueDomain.FiniteSet)
                 || fact.State != ShellPolicyPathResolutionState.Known
                 || fact.Paths.Count == 0
                 || fact.Paths.Any(path => !IsSafePath(
@@ -357,7 +325,7 @@ internal sealed class ScopedShellSafeVerbPolicy
                      fact.Source.Origin == ShellPolicyPathOrigin.Redirect))
         {
             if (fact.Source.RedirectMode != FileRedirectMode.Input
-                || fact.Source.DomainKind != ShellPolicyPathDomainKind.Exact
+                || fact.Source.Domain is not ShellValueDomain.Exact
                 || fact.State != ShellPolicyPathResolutionState.Known
                 || fact.Paths.Count != 1
                 || !IsSafePath(

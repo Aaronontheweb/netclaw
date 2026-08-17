@@ -11,6 +11,7 @@ using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
+using ShellSyntaxTree;
 
 namespace Netclaw.Actors.Tools;
 
@@ -343,7 +344,7 @@ public sealed class ToolAccessPolicy
     }
 
     internal bool IsReviewedSafeCandidate(
-        ApprovalCandidate candidate,
+        ShellPolicyCandidate candidate,
         ShellPolicyCandidatePathFacts pathFacts,
         ToolInvocationContext context)
         => _safeVerbPolicy is not null
@@ -353,7 +354,7 @@ public sealed class ToolAccessPolicy
                context);
 
     internal bool IsReviewedSafeIntentCandidate(
-        ApprovalCandidate candidate,
+        ShellPolicyCandidate candidate,
         ShellPolicyCandidatePathFacts pathFacts,
         ToolInvocationContext context)
         => _safeVerbPolicy is not null
@@ -366,15 +367,16 @@ public sealed class ToolAccessPolicy
         ShellPolicyCandidatePathFacts facts)
     {
         ArgumentNullException.ThrowIfNull(facts);
-        if (facts.IntentScope is not { } intent
+        if (facts.Intent?.ResolutionBase is not { } intent
             || string.IsNullOrWhiteSpace(intent.AuthoredValue)
-            || facts.FallbackScopes.Count == 0)
+            || facts.Fallbacks.Count == 0)
         {
             return true;
         }
 
         if (ScopeReferencesProtectedPath(intent)
-            || facts.FallbackScopes.Any(ScopeReferencesProtectedPath))
+            || facts.Fallbacks.Any(fallback =>
+                ScopeReferencesProtectedPath(fallback.ResolutionBase)))
         {
             return true;
         }
@@ -401,8 +403,7 @@ public sealed class ToolAccessPolicy
             fact.Source.Origin is ShellPolicyPathOrigin.EffectiveArgument
                 or ShellPolicyPathOrigin.AuthoredArgument
                 or ShellPolicyPathOrigin.Redirect
-            && fact.Source.DomainKind is ShellPolicyPathDomainKind.Exact
-                or ShellPolicyPathDomainKind.FiniteSet
+            && fact.Source.Domain is ShellValueDomain.Exact or ShellValueDomain.FiniteSet
             && (fact.State == ShellPolicyPathResolutionState.InvalidKnownValue
                 || fact.Paths.Any(path =>
                     _toolPathPolicy.IsShellDeniedProjectedPath(path))));
@@ -629,8 +630,8 @@ public sealed class ToolAccessPolicy
             if (!deferReviewedSafeCoverage)
             {
                 approvalCandidates = approvalCandidates
-                    .Where(candidate => !_safeVerbPolicy.AllShortCircuit(
-                        [candidate],
+                    .Where(candidate => !_safeVerbPolicy.ShortCircuits(
+                        candidate,
                         context.Approval.Cwd,
                         context.Invocation))
                     .ToList();
