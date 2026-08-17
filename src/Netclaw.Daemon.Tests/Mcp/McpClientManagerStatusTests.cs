@@ -190,6 +190,35 @@ public sealed class McpClientManagerStatusTests
     }
 
     [Fact]
+    public void LoggedExceptionsNeverIncludeProviderBodySecrets()
+    {
+        var exception = new HttpRequestException(
+            HttpRequestError.Unknown,
+            "invalid_client: client_secret=secret-value token=token-value",
+            null,
+            HttpStatusCode.BadRequest);
+
+        var redacted = McpClientManager.RedactForLogging(exception);
+
+        Assert.DoesNotContain("secret-value", redacted.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("token-value", redacted.ToString(), StringComparison.Ordinal);
+        Assert.Contains("HttpRequestException", redacted.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void LoggedExceptionsWithoutSecretShapedContentKeepTheOriginalInstance()
+    {
+        // The common case (network errors, cancellations, disposal failures) must keep its
+        // native stack trace and type for diagnostics -- redaction only swaps in a summary
+        // when secret-shaped content is actually detected.
+        var exception = new HttpRequestException("Connection refused");
+
+        var redacted = McpClientManager.RedactForLogging(exception);
+
+        Assert.Same(exception, redacted);
+    }
+
+    [Fact]
     public void WrappedRetiredCredentialWriterIsClassifiedAsCredentialPersistence()
     {
         var exception = new InvalidOperationException(

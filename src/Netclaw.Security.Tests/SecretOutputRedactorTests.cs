@@ -50,6 +50,21 @@ public sealed class SecretOutputRedactorTests
         Assert.DoesNotContain("secret123", redacted, StringComparison.Ordinal);
     }
 
+    // A form-urlencoded OAuth token/DCR error body ("client_secret=...&grant_type=...") uses
+    // compound keys whose secret-bearing fragment is not the first word. These must redact the
+    // same way the JSON key form already does.
+    [Theory]
+    [InlineData("client_secret=super-secret-value-123&grant_type=refresh_token", "super-secret-value-123")]
+    [InlineData("access_token=tok-abc-123&token_type=Bearer", "tok-abc-123")]
+    [InlineData("refresh_token=rt-xyz-456", "rt-xyz-456")]
+    public void Redact_masks_env_style_compound_key_secrets(string input, string secretValue)
+    {
+        var redacted = SecretOutputRedactor.Redact(input);
+
+        Assert.Contains("***REDACTED***", redacted, StringComparison.Ordinal);
+        Assert.DoesNotContain(secretValue, redacted, StringComparison.Ordinal);
+    }
+
     // ── Authorization header redaction ──
 
     [Fact]

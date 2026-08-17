@@ -83,7 +83,12 @@ public static partial class SecretOutputRedactor
     [GeneratedRegex("\"((?:api[_-]?key|token|secret|password|authorization|access[_-]?token|refresh[_-]?token|client[_-]?secret|signing[_-]?key|private[_-]?key|connection[_-]?string|credential)[^\"]*)\"\\s*:\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase)]
     private static partial Regex JsonSecretValueRegex();
 
-    [GeneratedRegex("\\b((?:api[_-]?key|token|secret|password|authorization|credential)[A-Z0-9_-]*)=([^\\s;]+)", RegexOptions.IgnoreCase)]
+    // Kept in lockstep with JsonSecretValueRegex's key fragments: an OAuth token endpoint's
+    // error body is as likely to arrive form-urlencoded ("client_secret=...&grant_type=...")
+    // as JSON, and a compound key like "client_secret" or "refresh_token" does not match a
+    // bare "secret"/"token" fragment here, since \b only anchors at the start of the whole
+    // key -- "client_secret" has no word boundary before "secret".
+    [GeneratedRegex("\\b((?:api[_-]?key|token|secret|password|authorization|access[_-]?token|refresh[_-]?token|client[_-]?secret|signing[_-]?key|private[_-]?key|connection[_-]?string|credential)[A-Z0-9_-]*)=([^\\s;]+)", RegexOptions.IgnoreCase)]
     private static partial Regex EnvSecretValueRegex();
 
     [GeneratedRegex("(Authorization\\s*:\\s*Bearer\\s+)(\\S+)", RegexOptions.IgnoreCase)]
