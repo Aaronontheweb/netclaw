@@ -20,7 +20,14 @@ public class ShellToolTests
     public static bool IsWindows => OperatingSystem.IsWindows();
     public static bool IsPosix => !OperatingSystem.IsWindows();
 
-    public static bool IsPosix => !OperatingSystem.IsWindows();
+    [Fact]
+    public void Constructor_preserves_three_parameter_binary_signature()
+    {
+        var constructor = typeof(ShellTool).GetConstructor(
+            [typeof(ToolConfig), typeof(ToolPathPolicy), typeof(ShellCommandPolicy)]);
+
+        Assert.NotNull(constructor);
+    }
 
     private static ShellTool CreateTool(ToolConfig? config = null)
     {

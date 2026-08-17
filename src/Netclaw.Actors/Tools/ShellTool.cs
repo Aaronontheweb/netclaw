@@ -9,7 +9,6 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Channels;
-using Microsoft.Extensions.Logging;
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
@@ -40,7 +39,6 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
     private readonly ToolPathPolicy _pathPolicy;
     private readonly ShellCommandPolicy _commandPolicy;
     private readonly ShellExecutionEnvironment _environment;
-    private readonly ILogger? _logger;
 
     public record Params(
         [param: Description(
@@ -50,16 +48,11 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
             "Run the operation in this directory. Always use it for one-call work in a named child directory or worktree. Example: use Command='inspect' and WorkingDirectory='/repo/child'. Omit it to use the session project or scratch directory.")]
         string? WorkingDirectory = null);
 
-    public ShellTool(
-        ToolConfig config,
-        ToolPathPolicy pathPolicy,
-        ShellCommandPolicy commandPolicy,
-        ILogger<ShellTool>? logger = null)
+    public ShellTool(ToolConfig config, ToolPathPolicy pathPolicy, ShellCommandPolicy commandPolicy)
     {
         _config = config;
         _pathPolicy = pathPolicy;
         _commandPolicy = commandPolicy;
-        _logger = logger;
         if (!ReferenceEquals(pathPolicy.Environment, commandPolicy.Environment))
         {
             throw new ArgumentException(
@@ -241,7 +234,7 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
 
             var captured = BoundedOutputReader.Window(combined.ToString(), _config.MaxOutputChars);
             if (stdoutGraceCut || stderrGraceCut)
-                captured = AppendGraceCutMarker(captured, args.Command);
+                captured += GraceCutMarker;
 
             return $"Exit code: {process.ExitCode}{Environment.NewLine}{captured}";
         }
@@ -454,7 +447,7 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
 
                 var captured = BoundedOutputReader.Window(combined.ToString(), _config.MaxOutputChars);
                 if (graceCut)
-                    captured = AppendGraceCutMarker(captured, args.Command);
+                    captured += GraceCutMarker;
 
                 output.TryWrite(new ToolCompletedUpdate(
                     $"Exit code: {process.ExitCode}{Environment.NewLine}{captured}"));
@@ -505,27 +498,11 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
     private static readonly TimeSpan PostExitDrainGrace = TimeSpan.FromMilliseconds(500);
 
     // The tool appends this text when the post-exit grace window cuts a drain
-    // before EOF. At that point a background child may still hold the pipe
-    // open, so the capture can be silently partial. The log warning alone
-    // does not solve this: the agent that reads the tool result never sees
-    // the log. This marker puts the cut in the result text, where the agent
-    // sees it.
+    // before EOF. A background child can still hold the pipe open, so the
+    // capture can be partial. This marker makes the cut visible to the agent.
     private static readonly string GraceCutMarker =
         $"{Environment.NewLine}Note: a background process held the output pipe open. "
         + "The tool did not capture output after this point.";
-
-    private void LogGraceCut(string command)
-        => _logger?.LogWarning(
-            "shell_execute command exited but a background child held the output pipe open past the " +
-            "{GraceMs}ms grace window; the remaining stream was not captured. Command: {Command}",
-            PostExitDrainGrace.TotalMilliseconds,
-            command);
-
-    private string AppendGraceCutMarker(string captured, string command)
-    {
-        LogGraceCut(command);
-        return captured + GraceCutMarker;
-    }
 
     private static async Task RelayActivitiesAsync(
         ChannelReader<ToolActivityUpdate> reader,
