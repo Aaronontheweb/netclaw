@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Net;
 using Xunit;
 
 namespace Netclaw.Security.Tests;
@@ -145,5 +146,36 @@ public sealed class SecretOutputRedactorTests
         var redacted = SecretOutputRedactor.Redact(input);
 
         Assert.Equal(input, redacted);
+    }
+
+    // ── Exception redaction for logging ──
+
+    [Fact]
+    public void RedactForLogging_masks_secret_shaped_exception_text()
+    {
+        var exception = new HttpRequestException(
+            HttpRequestError.Unknown,
+            "invalid_client: client_secret=secret-value token=token-value",
+            null,
+            HttpStatusCode.BadRequest);
+
+        var redacted = SecretOutputRedactor.RedactForLogging(exception);
+
+        Assert.DoesNotContain("secret-value", redacted.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("token-value", redacted.ToString(), StringComparison.Ordinal);
+        Assert.Contains("HttpRequestException", redacted.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RedactForLogging_keeps_the_original_instance_when_nothing_matches()
+    {
+        // The common case (network errors, cancellations, disposal failures) must keep its
+        // native stack trace and type for diagnostics -- redaction only swaps in a summary
+        // when secret-shaped content is actually detected.
+        var exception = new HttpRequestException("Connection refused");
+
+        var redacted = SecretOutputRedactor.RedactForLogging(exception);
+
+        Assert.Same(exception, redacted);
     }
 }
