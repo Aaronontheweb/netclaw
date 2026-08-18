@@ -1500,15 +1500,26 @@ public class ReminderManagerActorTests : TestKit
     // simulate a persisted reminder whose schedule became unschedulable, then
     // reconcile is asked to restore it.
 
+    private static async Task DrainStartupReconcileAsync(IActorRef manager)
+    {
+        // ActorOf can return before PreStart queues its reconcile.
+        // Two ordered barriers drain both possible startup orderings.
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance,
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
+            ReminderManagerActor.ReconcileReminders.Instance,
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+    }
+
     [Fact]
     public async Task Reconcile_surfaces_scheduling_failure_and_counts_it()
     {
         var manager = await GetManagerAsync();
 
-        // Drain PreStart's reconcile (it ran against an empty store) so the write
-        // below is bumped exactly once by our explicit reconcile.
-        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
-            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await DrainStartupReconcileAsync(manager);
 
         var definition = CreateCronDefinition("sched-fail", "0 0 30 2 *");
         _definitionStore.Save(definition);
@@ -1529,8 +1540,7 @@ public class ReminderManagerActorTests : TestKit
     {
         var manager = await GetManagerAsync();
 
-        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
-            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await DrainStartupReconcileAsync(manager);
 
         // One below threshold; the next scheduling failure crosses it.
         var definition = CreateCronDefinition(
@@ -1559,8 +1569,7 @@ public class ReminderManagerActorTests : TestKit
         // install no schedule. It never silently falls back to a bogus fire time.
         var manager = await GetManagerAsync();
 
-        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
-            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await DrainStartupReconcileAsync(manager);
 
         var definition = CreateCronDefinition("sched-none", "0 0 30 2 *");
         _definitionStore.Save(definition);
@@ -1581,8 +1590,7 @@ public class ReminderManagerActorTests : TestKit
     {
         var manager = await GetManagerAsync();
 
-        await manager.Ask<ReminderManagerActor.ReconcileCompleted>(
-            ReminderManagerActor.ReconcileReminders.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await DrainStartupReconcileAsync(manager);
 
         _definitionStore.Save(CreateCronDefinition("sched-health", "0 0 30 2 *"));
 

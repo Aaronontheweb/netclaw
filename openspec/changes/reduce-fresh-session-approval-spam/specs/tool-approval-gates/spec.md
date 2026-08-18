@@ -198,11 +198,18 @@ tool can complete.
 
 #### Scenario: Policy-blocked shell work does not fan out
 
-- **GIVEN** a shell result requires unavailable approval or reports access denial
+- **GIVEN** a shell result reports `Tool access denied:`
 - **WHEN** the agent continues the task
 - **THEN** guidance does not retry or substitute shell variants
-- **AND** it may apply one explicit correction unchanged
-- **AND** otherwise it uses an available structured tool or reports the block once
+- **AND** it does not call `set_working_directory`
+- **AND** it reports the block once
+
+#### Scenario: Deferred shell work applies one correction
+
+- **GIVEN** a shell result reports `Tool execution deferred:` with one explicit correction
+- **WHEN** the agent continues the task
+- **THEN** it may apply that correction once and retry the original shell call unchanged
+- **AND** any later approval-required or denied result terminates the attempt
 
 #### Scenario: Preferred tool is unavailable
 

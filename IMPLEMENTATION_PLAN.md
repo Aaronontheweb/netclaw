@@ -378,9 +378,28 @@ Done when:
   from 25 to 2, but 446 historical grants make that prompt delta non-causal.
   Fifteen retained trust-zone denials exposed redundant file verification,
   disposable redirects, child absolute paths, and retry-after-denial debt.
-- [ ] Deliver and live-test the follow-up guidance that treats successful file
-  results as confirmation, starts disposable text on file tools, and avoids
-  shell retry or substitution after approval and access denials.
+- [x] PR #1983 merged as `7efa7fd0f711696343cd7d5e3d2abf75d20707d6`.
+  The exact binary was swapped into the live daemon with the prior binary kept
+  for rollback. Fifteen fresh affected sessions then improved from 2/15 to
+  14/15 behavior passes, and shell attempts fell from 25 to 6. Known-file edit
+  and disposable-output cases passed 10/10 without shell. All five requested
+  external directory transitions remained denied; one fallback-model run made
+  one additional shell call after denial. The initial controlled DeepSeek run
+  was blocked by provider billing, so the live comparison is operational
+  deployment evidence rather than a same-model causal estimate. See
+  `openspec/changes/reduce-fresh-session-approval-spam/evidence/post-7efa7fd-followup-live-eval-results.json`.
+- [x] After billing resumed, an isolated same-model rerun of the exact merged
+  image passed known-file and disposable-output cases 10/10, but the terminal
+  directory-denial case passed only 3/5. Both failures followed stale inherited
+  guidance by calling `set_working_directory` after `Tool access denied:`.
+- [x] The pending correction removes that contradictory recovery rule and pins
+  denial versus deferred-correction behavior. On one DeepSeek image, all three
+  affected cases passed 15/15. Structured-file cases used no shell. All five
+  external directory transitions produced exactly one hard denial, no scope
+  correction, and no retry. See
+  `openspec/changes/reduce-fresh-session-approval-spam/evidence/post-terminal-denial-guidance-eval-results.json`.
+- [ ] Merge the bounded terminal-denial guidance correction, swap the exact
+  merged binary, and confirm five fresh live denial sessions before completion.
 - [x] The initial follow-up disposable eval was discarded. Its prompt requested
   a diagnostic command but omitted the exact content required by its assertion.
   The corrected case names the disposable file effect and exact content without
