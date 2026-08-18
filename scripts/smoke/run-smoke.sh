@@ -101,6 +101,7 @@ SHOT_FRAMES=(
 # Two character cells cover a shell cursor artifact.
 # A real content change differs by thousands of pixels.
 SHOT_AE_TOLERANCE="${SHOT_AE_TOLERANCE:-1000}"
+SHOT_CAPTURE_ATTEMPTS=3
 
 usage() {
   sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
@@ -372,6 +373,51 @@ run_shot_tape() {
   fi
 }
 
+# capture_stable_shot <tape> <frame> — require two matching captures before
+# baseline comparison. This quorum does not use the baseline. A stable visual
+# change reaches compare_shot_frame and fails there.
+capture_stable_shot() {
+  local tape="$1"
+  local frame="$2"
+  local candidates=""
+  local attempt
+
+  for (( attempt = 1; attempt <= SHOT_CAPTURE_ATTEMPTS; attempt++ )); do
+    rm -f "/tmp/shot-${frame}.png"
+    run_shot_tape "$tape"
+
+    local capture="/tmp/shot-${frame}.png"
+    if [[ ! -f "$capture" ]]; then
+      echo "  WARN: ${frame} attempt ${attempt} did not produce a capture." >&2
+      continue
+    fi
+
+    local candidate="/tmp/shot-${frame}.candidate-${attempt}.png"
+    cp "$capture" "$candidate"
+
+    local previous
+    for previous in $candidates; do
+      local ae
+      if ae=$(python3 "$SHOT_COMPARATOR" "$previous" "$candidate") \
+          && [[ "$ae" -le "$SHOT_AE_TOLERANCE" ]]; then
+        cp "$candidate" "$capture"
+        echo "  STABLE: ${frame} reached a two-capture quorum (AE=${ae})."
+        return
+      fi
+    done
+
+    candidates="${candidates} ${candidate}"
+  done
+
+  mkdir -p "$SHOT_ARTIFACT_DIR"
+  local candidate
+  for candidate in $candidates; do
+    cp "$candidate" "$SHOT_ARTIFACT_DIR/$(basename "$candidate")"
+  done
+  echo "  FAIL: ${frame} did not reach a two-capture quorum." >&2
+  failed+=("shot-unstable:${frame}")
+}
+
 # compare_shot_frame <frame> — compare /tmp/shot-<frame>.png against the
 # committed baseline. Records a failure (and writes review PNGs) on a
 # missing capture, missing baseline, or pixel mismatch.
@@ -435,8 +481,8 @@ compare_shot_frame() {
 if [[ "$shots_mode" -eq 1 ]]; then
   # Fresh /tmp so a stale capture from an earlier run cannot be compared.
   rm -f /tmp/shot-*.png
-  for tape in "${SHOT_TAPES[@]}"; do
-    run_shot_tape "$tape"
+  for index in "${!SHOT_TAPES[@]}"; do
+    capture_stable_shot "${SHOT_TAPES[$index]}" "${SHOT_FRAMES[$index]}"
   done
 
   echo

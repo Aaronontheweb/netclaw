@@ -140,6 +140,10 @@ prove the complete frame exists before the screenshot. Do not use a fixed delay
 as an application render signal. Never capture a screen with a version string,
 timestamp, spinner, or token counter. Select a different stable frame.
 
+The harness requires two matching captures before it checks the baseline. It
+can make three capture attempts. This quorum does not use the baseline. Thus, a
+stable visual change still reaches the baseline check and fails.
+
 ### Baseline workflow
 
 Baselines are **not** generated locally — they come from a CI run:
