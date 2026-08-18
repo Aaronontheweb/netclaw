@@ -195,7 +195,15 @@ internal sealed class MattermostNetGatewayTransport : IMattermostGatewayTranspor
         _logger.LogInformation("Bot identity resolved: {BotUserId} (@{Username})",
             me.Id, me.Username);
 
-        await _client.StartReceivingAsync(cancellationToken);
+        // Mattermost.NET starts its receiver before the authenticated WebSocket
+        // exists. Preserve the transport contract by waiting for OnConnected.
+        await MattermostInitialConnectionGate.StartAndWaitAsync(
+            _client.StartReceivingAsync,
+            handler => _client.OnConnected += handler,
+            handler => _client.OnConnected -= handler,
+            _timeProvider,
+            cancellationToken);
+
         return new MattermostBotIdentity(me.Id, me.Username);
     }
 
@@ -397,6 +405,33 @@ internal sealed class MattermostNetGatewayTransport : IMattermostGatewayTranspor
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error handling {Operation}", operation);
+        }
+    }
+}
+
+internal static class MattermostInitialConnectionGate
+{
+    internal static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
+
+    public static async Task StartAndWaitAsync(
+        Func<CancellationToken, Task> startReceivingAsync,
+        Action<EventHandler<ConnectionEventArgs>> subscribe,
+        Action<EventHandler<ConnectionEventArgs>> unsubscribe,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        var connected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void HandleConnected(object? sender, ConnectionEventArgs e) => connected.TrySetResult();
+
+        subscribe(HandleConnected);
+        try
+        {
+            await startReceivingAsync(cancellationToken);
+            await connected.Task.WaitAsync(Timeout, timeProvider, cancellationToken);
+        }
+        finally
+        {
+            unsubscribe(HandleConnected);
         }
     }
 }
