@@ -39,6 +39,7 @@ Set TypingSpeed 30ms
 
 # Determinism pins for stable screenshot pixels.
 Set CursorBlink false
+Set Framerate 60
 Set Theme "Catppuccin Mocha"
 
 Hide
