@@ -88,14 +88,13 @@ Typed `WorkingDirectory` does not change the persistent project root or create a
 Program-specific directory options do not replace it.
 Inline directory changes alter control flow and remain subject to ordinary approval.
 
-**Recovery from a denied shell call.** If `shell_execute` fails with a denial
-that mentions cwd being outside the safe spaces, the result includes a hint
-pointing at `set_working_directory <path>`. Read the hint, call the tool with
-the directory the user is asking about, then retry the original shell call —
-do not re-prompt the user.
+**Recovery from deferred shell execution.**
 
-If `set_working_directory` rejects a path, correct the path and retry the tool.
-Do not continue with a stale directory or use an inline `cd` as a workaround.
+- Only `Tool execution deferred:` permits one scope correction and unchanged shell retry.
+- Never call `set_working_directory` after `Tool access denied:`.
+- If a proactive project declaration fails, correct an evident path error once.
+- Otherwise, preserve the current scope and report the block.
+- Never use inline `cd` as a workaround.
 
 ## Native Shell Syntax
 

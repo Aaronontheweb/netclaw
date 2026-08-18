@@ -83,7 +83,7 @@ public sealed class FileSystemPromptProviderAudienceTests : IDisposable
     }
 
     [Fact]
-    public void Personal_rules_apply_directory_order_and_retry_failed_project_scope()
+    public void Personal_rules_apply_directory_order_and_bound_failed_project_scope_recovery()
     {
         var prompt = _provider.GetSystemPrompt(TrustAudience.Personal);
 
@@ -104,8 +104,12 @@ public sealed class FileSystemPromptProviderAudienceTests : IDisposable
         Assert.Contains("before the first shell", prompt);
         Assert.Contains("Do not repeat", prompt);
         Assert.Contains("`project_dir` already names the correct project", prompt);
-        Assert.Contains("correct the path and retry the tool", prompt);
-        Assert.Contains("Do not continue with a stale directory", prompt);
+        Assert.Contains("Only `Tool execution deferred:` permits one scope correction", prompt);
+        Assert.Contains("Never call `set_working_directory` after `Tool access denied:`", prompt);
+        Assert.Contains("correct an evident path error once", prompt);
+        Assert.Contains("preserve the current scope and report the block", prompt);
+        Assert.DoesNotContain("Recovery from a denied shell call", prompt);
+        Assert.DoesNotContain("correct the path and retry the tool", prompt);
     }
 
     [Theory]

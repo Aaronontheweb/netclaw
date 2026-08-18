@@ -85,8 +85,12 @@
 - [x] 10.5 Report the measured prompt reduction, unchanged legitimate prompts, regressions, and remaining fact gaps.
 - [x] 10.6 Keep the large evaluator refactor out of this change and leave its separate OpenSpec state unchanged.
 - [x] 10.7 Strengthen successful-file, disposable-output, and policy-denial guidance from the sanitized post-swap failures without changing authority.
-- [ ] 10.8 Deliver the follow-up, swap the exact merged binary, and rerun five fresh affected sessions per case.
-- [ ] 10.9 Report the final behavior delta and retained legitimate prompts before the evaluator refactor begins.
+- [x] 10.8 Deliver the follow-up, swap the exact merged binary, and rerun five fresh affected sessions per case.
+- [x] 10.9 Report the final behavior delta and retained legitimate prompts before the evaluator refactor begins.
+- [x] 10.10 Remove stale denied-shell recovery guidance that contradicted terminal access denials, and pin the boundary in prompt and OpenSpec tests.
+- [x] 10.11 Rerun the three affected cases five times on one primary-model image, retaining all five legitimate directory denials.
+- [ ] 10.12 Deliver the terminal-denial correction, swap the exact merged binary, and rerun five fresh live denial sessions.
+- [ ] 10.13 Report the post-correction live result before the evaluator refactor begins.
 
 ## 11. Completion Audit
 
