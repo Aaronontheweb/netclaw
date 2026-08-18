@@ -19,8 +19,9 @@ internal static class ToolChoiceGuidance
     public const string ShellCompositionOrder = """
         Keep shell approval friction bounded:
         1. Start with the smallest single shell operation that directly answers the request.
-        2. Add diagnostics only when the task requires them.
-        3. After an approval-required result, do not split or retry shell variants.
-        4. Use an available structured tool when it can finish; otherwise report the blocked operation once.
+        2. Do not use shell only to verify a successful structured tool result.
+        3. After an approval-required result, do not retry or substitute shell variants.
+        4. A `Tool access denied:` result is terminal; do not change scope, retry, or substitute another tool.
+        5. Apply one `Tool execution deferred:` correction unchanged; otherwise use a structured tool or report the block once.
         """;
 }

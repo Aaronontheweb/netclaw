@@ -131,9 +131,21 @@ tool is available. The shell description will retain its negative boundary.
 The same surfaces will state one shell-composition order:
 
 1. Start with the smallest shell operation that answers the request.
-2. Add diagnostics only when the task requires them.
-3. Do not split or retry shell variants after an approval-required result.
-4. Use an available structured tool or report the blocked operation once.
+2. Do not use shell only to verify a successful structured tool result.
+3. Do not retry or substitute shell variants after an approval-required result.
+4. Treat a `Tool access denied:` result as terminal. Do not change scope, retry,
+   or substitute another tool.
+5. Apply one `Tool execution deferred:` correction unchanged. Otherwise use an
+   available structured tool or report the blocked operation once.
+
+A successful `file_write` or `file_edit` result is the confirmation for that
+operation. Shell verification remains appropriate only when the user requests
+shell behavior or the task independently requires shell semantics. Disposable
+text starts with `file_write` and `file_read`; it does not first attempt a shell
+redirect.
+
+The agent does not delegate a known file operation that one available file
+tool can complete.
 
 This order reduces repeated approval attempts. It does not classify the shell
 operation, alter its arguments, or provide authority.
@@ -231,6 +243,10 @@ context. A failed declaration leaves the prior project unchanged.
   strict, and the eval records the failure.
 - **The model still selects shell for a known file.** → Normal approval remains
   active, and the case stays in the guidance corpus.
+- **The model verifies a successful file tool with shell.** → Normal approval
+  remains active, and the follow-up eval records the redundant attempt.
+- **The model retries after a policy denial.** → Normal approval remains active,
+  and the no-retry assertion records the additional call.
 - **A tool is unavailable.** → Guidance does not invent it. The model uses an
   available tool under normal policy.
 - **A parser fact is incomplete.** → The command remains promptable. No fallback

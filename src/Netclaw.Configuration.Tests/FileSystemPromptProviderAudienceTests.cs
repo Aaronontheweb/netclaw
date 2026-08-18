@@ -121,8 +121,13 @@ public sealed class FileSystemPromptProviderAudienceTests : IDisposable
         Assert.Contains("use `shell_execute` for local search", prompt);
         Assert.Contains("use `web_search` for external discovery", prompt);
         Assert.Contains("Do not substitute shell commands", prompt);
+        Assert.Contains("Do not delegate a known file operation", prompt);
+        Assert.Contains("do not use shell only to verify", prompt);
+        Assert.Contains("do not attempt a shell redirect first", prompt);
         Assert.Contains("Start with the smallest single shell operation", prompt);
-        Assert.Contains("do not split or retry shell variants", prompt);
+        Assert.Contains("After an approval-required result", prompt);
+        Assert.Contains("A `Tool access denied:` result is terminal", prompt);
+        Assert.Contains("Apply one `Tool execution deferred:` correction unchanged", prompt);
     }
 
     [Fact]

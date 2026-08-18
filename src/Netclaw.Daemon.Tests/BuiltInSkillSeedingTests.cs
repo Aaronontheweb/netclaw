@@ -59,12 +59,16 @@ public sealed class BuiltInSkillSeedingTests : IDisposable
         var skill = File.ReadAllText(Path.Combine(skillDirectory, "SKILL.md"));
         var projects = File.ReadAllText(Path.Combine(skillDirectory, "references", "projects.md"));
 
-        Assert.Contains("version: \"2.55.0\"", skill, StringComparison.Ordinal);
+        Assert.Contains("version: \"2.56.0\"", skill, StringComparison.Ordinal);
         Assert.Contains("use `file_read` for a known local file read", skill, StringComparison.Ordinal);
         Assert.Contains("use `web_search` for external discovery", skill, StringComparison.Ordinal);
         Assert.Contains("use `shell_execute` for local search", skill, StringComparison.Ordinal);
+        Assert.Contains("Do not delegate a known file operation", skill, StringComparison.Ordinal);
+        Assert.Contains("do not use shell only to verify", skill, StringComparison.Ordinal);
+        Assert.Contains("do not attempt a shell redirect first", skill, StringComparison.Ordinal);
         Assert.Contains("Start with the smallest single shell operation", skill, StringComparison.Ordinal);
-        Assert.Contains("do not split or retry shell variants", skill, StringComparison.Ordinal);
+        Assert.Contains("After an approval-required result", skill, StringComparison.Ordinal);
+        Assert.Contains("A `Tool access denied:` result is terminal", skill, StringComparison.Ordinal);
 
         var statements = new[]
         {
@@ -73,7 +77,9 @@ public sealed class BuiltInSkillSeedingTests : IDisposable
             "Use `session_dir` only for disposable work outside a project",
             "Use an inline directory change only when",
             "Start with the smallest single shell operation",
-            "do not split or retry shell variants"
+            "After an approval-required result",
+            "A `Tool access denied:` result is terminal",
+            "Apply one `Tool execution deferred:` correction unchanged"
         };
         foreach (var statement in statements)
         {

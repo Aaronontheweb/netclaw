@@ -30,6 +30,8 @@ public sealed partial class ShellApprovalEvidenceContractTests
         "pre-guidance-fresh-session-eval-baseline.json";
     private const string FreshSessionEvalResultsFile =
         "post-guidance-fresh-session-eval-results.json";
+    private const string FreshSessionPostSwapResultsFile =
+        "post-9d02d19-binary-swap-eval-results.json";
     private const string ApprovalMatrixSha256 =
         "0169105efe87b345d9a82d777ef86909e31fa81a5255cc0cc30f32fbe4d0d6b0";
     private const string LiveRegressionCasesSha256 =
@@ -42,6 +44,8 @@ public sealed partial class ShellApprovalEvidenceContractTests
         "be1c2fe0fc646f4692da75b0d5398fb4f8c3c5ea2707625266915b8d2e6cd31e";
     private const string FreshSessionEvalResultsSha256 =
         "f728ba445e16e02b24c191b336f20542109ce0992dcfd954f87a4d77832bee6f";
+    private const string FreshSessionPostSwapResultsSha256 =
+        "f89ea432d81d9e616b5efe63fb2caadcea58e9777f179fa5b4e2873a41323d30";
 
     [Fact]
     public void Fresh_session_eval_baseline_separates_completion_from_approval_friction()
@@ -185,6 +189,92 @@ public sealed partial class ShellApprovalEvidenceContractTests
     }
 
     [Fact]
+    public void Fresh_session_post_swap_results_lock_live_outcomes_and_comparison_limit()
+    {
+        var bytes = File.ReadAllBytes(EvidencePath(FreshSessionPostSwapResultsFile));
+        var results = DeserializeFreshSessionEvalBaseline(bytes);
+
+        Assert.Equal(FreshSessionPostSwapResultsSha256, ComputeSha256(bytes));
+        Assert.DoesNotContain((byte)'\r', bytes);
+        Assert.Equal(1, results.SchemaVersion);
+        Assert.Equal("9d02d19efd75fe871c8603e151e3e7169a9d9433", results.Runtime.Commit);
+        Assert.Null(results.Runtime.BaseCommit);
+        Assert.Equal(
+            "cd49b4b808438e8440eae46f431940964e5e003df091c961153b68f8fdb075ea",
+            results.Runtime.ImageSha256);
+        Assert.Equal("deepseek-v4-flash", results.Runtime.Model);
+        Assert.Equal(5, results.Runtime.RunsPerCase);
+        Assert.False(results.Runtime.InteractiveApprovalAvailable);
+        Assert.Contains("446 historical shell grants", results.Runtime.SourceState, StringComparison.Ordinal);
+        Assert.Equal(
+            Enumerable.Range(1, 9).Select(number => $"S{number:00}"),
+            results.Cases.Select(item => item.Id));
+        Assert.All(results.Cases, item =>
+        {
+            Assert.Equal(5, item.Runs);
+            Assert.False(string.IsNullOrWhiteSpace(item.BaselineComparison));
+            Assert.Null(item.ExpectedIntervention);
+        });
+
+        var summary = Assert.IsType<FreshSessionEvalSummary>(results.Summary);
+        Assert.Equal(results.Cases.Sum(item => item.BehaviorPassCount), summary.BehaviorPassCount);
+        Assert.Equal(results.Cases.Sum(item => item.Runs), summary.BehaviorRunCount);
+        Assert.Equal(
+            results.Cases.Sum(item => item.ApprovalPromptEquivalentCount),
+            summary.ApprovalPromptEquivalentCount);
+        Assert.Equal(
+            results.Cases.Sum(item => item.TrustZoneHardDenyCount),
+            summary.TrustZoneHardDenyCount);
+        Assert.Equal(28, summary.BehaviorPassCount);
+        Assert.Equal(45, summary.BehaviorRunCount);
+        Assert.Equal(2, summary.ApprovalPromptEquivalentCount);
+        Assert.Equal(15, summary.TrustZoneHardDenyCount);
+        Assert.Equal(25, summary.BaselineApprovalPromptEquivalentCount);
+        Assert.Equal(5, summary.BaselineTrustZoneHardDenyCount);
+        Assert.Contains("non-causal", summary.Interpretation, StringComparison.Ordinal);
+
+        var fixedPipeline = Assert.Single(results.Cases, item => item.Id == "S03");
+        Assert.Equal(5, fixedPipeline.BehaviorPassCount);
+        Assert.Equal(0, fixedPipeline.ApprovalPromptEquivalentCount);
+        Assert.Equal(15, fixedPipeline.SuccessfulShellCallCount);
+
+        var knownEdit = Assert.Single(results.Cases, item => item.Id == "S07");
+        Assert.Equal(0, knownEdit.BehaviorPassCount);
+        Assert.Equal(11, knownEdit.ParentToolCalls["shell_execute"]);
+        Assert.Equal(6, knownEdit.TrustZoneHardDenyCount);
+
+        var child = Assert.Single(results.Cases, item => item.Id == "S09");
+        Assert.Equal(5, child.ChildAttemptCount);
+        Assert.Equal(0, child.ChildFailureCount);
+        Assert.Equal(2, child.ChildProjectDeclarationCount);
+        Assert.Equal(17, child.ChildToolCalls["shell_execute"]);
+        Assert.Equal(16, child.SuccessfulShellCallCount);
+
+        var deliberateTransition = Assert.Single(results.Cases, item => item.Id == "S05");
+        Assert.Equal(1, deliberateTransition.BehaviorPassCount);
+        Assert.Equal(0, deliberateTransition.TaskCompletionCount);
+        Assert.Equal(6, deliberateTransition.TrustZoneHardDenyCount);
+    }
+
+    [Theory]
+    [InlineData("\"behaviorPassCount\": 28", "\"behaviorPassCount\": 29")]
+    [InlineData("\"approvalPromptEquivalentCount\": 2", "\"approvalPromptEquivalentCount\": 1")]
+    [InlineData("446 historical shell grants", "445 historical shell grants")]
+    [InlineData("\"childProjectDeclarationCount\": 2", "\"childProjectDeclarationCount\": 5")]
+    public void Fresh_session_post_swap_digest_detects_measurement_mutation(
+        string original,
+        string replacement)
+    {
+        var json = File.ReadAllText(EvidencePath(FreshSessionPostSwapResultsFile));
+        var mutated = json.Replace(original, replacement, StringComparison.Ordinal);
+
+        Assert.NotEqual(json, mutated);
+        Assert.NotEqual(
+            ComputeSha256(Encoding.UTF8.GetBytes(json)),
+            ComputeSha256(Encoding.UTF8.GetBytes(mutated)));
+    }
+
+    [Fact]
     public void Fresh_session_harvest_classifies_the_complete_fixed_window()
     {
         var bytes = File.ReadAllBytes(EvidencePath(FreshSessionHarvestFile));
@@ -317,7 +407,8 @@ public sealed partial class ShellApprovalEvidenceContractTests
             File.ReadAllText(EvidencePath(FreshSessionHarvestFile)),
             File.ReadAllText(EvidencePath(FreshSessionPolicyFixturesFile)),
             File.ReadAllText(EvidencePath(FreshSessionEvalBaselineFile)),
-            File.ReadAllText(EvidencePath(FreshSessionEvalResultsFile)));
+            File.ReadAllText(EvidencePath(FreshSessionEvalResultsFile)),
+            File.ReadAllText(EvidencePath(FreshSessionPostSwapResultsFile)));
 
         Assert.DoesNotMatch(SlackChannelPattern(), text);
         Assert.DoesNotMatch(SlackThreadPattern(), text);

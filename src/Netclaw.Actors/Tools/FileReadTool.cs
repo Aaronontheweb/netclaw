@@ -21,6 +21,7 @@ namespace Netclaw.Actors.Tools;
 /// </summary>
 [NetclawTool(ToolName,
     "Use for a known local file read. Read text or inspect non-text files without shell. " +
+    "Use to read disposable text after file_write. " +
     "Images can load for visual inspection when the active model supports image input. " +
     "PDFs, media, and archives return metadata and guidance. Use StartLine and Limit for large text files.",
     Grant = "file")]

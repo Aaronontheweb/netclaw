@@ -73,17 +73,20 @@
 - [x] 9.1 Run strict OpenSpec validation, Release build, full tests, formatting, headers, diff, JSON, Bash syntax, and PII gates.
 - [x] 9.2 Run changed-file Slopwatch and CRAP analysis for complex changed code; resolve new findings without suppressions.
 - [x] 9.3 Complete an adversarial review of authority, redaction, fixture truth, parser ownership, cross-platform behavior, and test strength.
-- [ ] 9.4 Rebase onto current `upstream/dev`, rerun interaction gates, create the Netclaw pull request, and enable auto-merge.
-- [ ] 9.5 Merge and clean the completed Netclaw and ShellSyntaxTree worktrees after each pull request lands.
+- [x] 9.4 Rebase onto current `upstream/dev`, rerun interaction gates, create the Netclaw pull request, and enable auto-merge.
+- [x] 9.5 Merge and clean the completed Netclaw and ShellSyntaxTree worktrees after each pull request lands.
 
 ## 10. Binary Swap and Live Measurement
 
-- [ ] 10.1 Build the exact merged Netclaw commit and preserve the current binary as a rollback artifact.
-- [ ] 10.2 Stop the daemon, swap the binary, restart it, and verify health, version, commit, and session recovery.
-- [ ] 10.3 Run the same natural workloads in new sessions without prescribed tool or directory choices.
-- [ ] 10.4 Freeze and sanitize the post-swap measurement with the same counting and classification rules.
-- [ ] 10.5 Report the measured prompt reduction, unchanged legitimate prompts, regressions, and remaining fact gaps.
-- [ ] 10.6 Keep the large evaluator refactor out of this change and leave its separate OpenSpec state unchanged.
+- [x] 10.1 Build the exact merged Netclaw commit and preserve the current binary as a rollback artifact.
+- [x] 10.2 Stop the daemon, swap the binary, restart it, and verify health, version, commit, and session recovery.
+- [x] 10.3 Run the same natural workloads in new sessions without prescribed tool or directory choices.
+- [x] 10.4 Freeze and sanitize the post-swap measurement with the same counting and classification rules.
+- [x] 10.5 Report the measured prompt reduction, unchanged legitimate prompts, regressions, and remaining fact gaps.
+- [x] 10.6 Keep the large evaluator refactor out of this change and leave its separate OpenSpec state unchanged.
+- [x] 10.7 Strengthen successful-file, disposable-output, and policy-denial guidance from the sanitized post-swap failures without changing authority.
+- [ ] 10.8 Deliver the follow-up, swap the exact merged binary, and rerun five fresh affected sessions per case.
+- [ ] 10.9 Report the final behavior delta and retained legitimate prompts before the evaluator refactor begins.
 
 ## 11. Completion Audit
 
