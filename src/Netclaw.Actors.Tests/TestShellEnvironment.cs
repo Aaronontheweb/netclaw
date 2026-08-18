@@ -74,7 +74,7 @@ internal static class TestShellEnvironment
         if (OperatingSystem.IsWindows())
         {
             return ShellExecutionEnvironment.CreatePowerShell(
-                "pwsh.exe",
+                @"C:\Program Files\PowerShell\7\pwsh.exe",
                 PwshDialect.PowerShell7);
         }
 
