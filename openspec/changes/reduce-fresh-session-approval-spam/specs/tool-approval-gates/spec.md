@@ -114,8 +114,16 @@ prefer their first-party file tools. External discovery SHALL prefer
 search, VCS, builds, tests, and process semantics SHALL remain shell work.
 Guidance SHALL NOT claim that a preferred tool bypasses its own authority.
 Guidance SHALL start with the smallest necessary shell operation. After an
-approval-required result, it SHALL avoid split or retried shell variants. It
-SHALL use an available structured tool or report the blocked operation once.
+approval-required result, it SHALL avoid retried or substitute shell variants.
+A `Tool access denied:` result SHALL be terminal: guidance SHALL NOT change
+scope, retry, or substitute another tool. It MAY apply one
+`Tool execution deferred:` correction unchanged. Otherwise it SHALL use an
+available structured tool or report the blocked operation once.
+A successful structured file mutation SHALL serve as confirmation of that
+operation. Guidance SHALL NOT add shell solely to verify it unless the user
+requests shell behavior. Guidance SHALL select tools from the required effect.
+Guidance SHALL NOT delegate a known file operation that one available file
+tool can complete.
 
 #### Scenario: Known file read selects file_read
 
@@ -141,6 +149,30 @@ SHALL use an available structured tool or report the blocked operation once.
 - **THEN** guidance selects the matching first-party file tool
 - **AND** the selected tool keeps its normal approval policy
 
+#### Scenario: Successful file mutation is not verified with shell
+
+- **GIVEN** `file_write` or `file_edit` reports success
+- **AND** the user did not request shell behavior
+- **WHEN** the agent continues the task
+- **THEN** guidance treats the structured result as confirmation
+- **AND** it does not add a shell-only verification call
+
+#### Scenario: Disposable text starts with structured file tools
+
+- **GIVEN** disposable text belongs in session scratch
+- **AND** `file_write` and `file_read` are available
+- **WHEN** the agent creates and reads that text
+- **THEN** guidance selects those structured tools directly
+- **AND** it does not first attempt a shell redirect
+
+#### Scenario: Simple file operation is not delegated
+
+- **GIVEN** a task requires one known local file operation
+- **AND** one available file tool can complete that operation
+- **WHEN** the agent selects a tool
+- **THEN** guidance selects that file tool directly
+- **AND** it does not delegate the operation to a subagent
+
 #### Scenario: External retrieval avoids shell HTTP
 
 - **GIVEN** the task needs external discovery or page retrieval
@@ -164,12 +196,13 @@ SHALL use an available structured tool or report the blocked operation once.
 - **THEN** guidance selects the smallest operation that answers the task
 - **AND** optional diagnostics remain absent until the task requires them
 
-#### Scenario: Approval-required shell work does not fan out
+#### Scenario: Policy-blocked shell work does not fan out
 
-- **GIVEN** a shell result requires unavailable approval
+- **GIVEN** a shell result requires unavailable approval or reports access denial
 - **WHEN** the agent continues the task
-- **THEN** guidance does not split or retry shell variants
-- **AND** it uses an available structured tool or reports the block once
+- **THEN** guidance does not retry or substitute shell variants
+- **AND** it may apply one explicit correction unchanged
+- **AND** otherwise it uses an available structured tool or reports the block once
 
 #### Scenario: Preferred tool is unavailable
 

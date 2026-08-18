@@ -20,7 +20,8 @@ namespace Netclaw.Actors.Tools;
     "Use for changing a known local file without shell. " +
     "Apply targeted text replacement with OldString/NewString, or write entire content with Content. " +
     "For targeted edits, matches literal text (not regex) and fails if OldString is not found or is ambiguous. " +
-    "For full writes, creates the file and parent directories if needed.",
+    "For full writes, creates the file and parent directories if needed. " +
+    "A successful result confirms the change; do not verify it with shell unless requested.",
     Grant = "file")]
 public sealed partial class FileEditTool : NetclawTool<FileEditTool.Params>
 {
