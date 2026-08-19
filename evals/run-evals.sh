@@ -564,6 +564,16 @@ start_eval_daemon() {
     local deadline=$((SECONDS + 60))
     while (( SECONDS < deadline )); do
         if curl -fsS "http://127.0.0.1:$EVAL_PORT/api/health/ready" >/dev/null 2>&1; then
+            # The container runs with --network host, so any process on this
+            # port can answer the host-side readiness poll — including another
+            # eval run's daemon. Readiness must also prove THIS container's
+            # daemon is alive, or the whole run interrogates a stranger while
+            # every daemon-log assert reads its own dead container's empty log.
+            if ! docker exec "$EVAL_CONTAINER_NAME" pgrep -f netclawd >/dev/null 2>&1; then
+                echo "ERROR: port $EVAL_PORT answered but this container's daemon is not running — another daemon owns the port. Set NETCLAW_EVAL_PORT to a free port." >&2
+                docker logs "$EVAL_CONTAINER_NAME" >&2 2>&1 || true
+                exit 2
+            fi
             echo "Eval daemon ready at http://127.0.0.1:$EVAL_PORT"
             return 0
         fi
@@ -862,6 +872,7 @@ run_prompt() {
     # Record daemon log position before the prompt (the daemon writes to a
     # daily-rotating file at /root/.netclaw/logs/daemon-YYYY-MM-DD.log, and
     # the container bind-mounts that directory from $EVAL_HOME/logs).
+    resolve_daemon_log
     if [[ -f "$DAEMON_LOG" ]]; then
         DAEMON_LOG_LINES_BEFORE=$(wc -l < "$DAEMON_LOG")
     else
@@ -882,7 +893,7 @@ run_prompt() {
     # stdout, producing a false eval failure rather than a real one.
     NETCLAW_DAEMON_ENDPOINT="http://127.0.0.1:$EVAL_PORT" \
     NETCLAW_HOME="$EVAL_HOME" \
-        timeout "$PROMPT_TIMEOUT" "$NETCLAW_BIN" chat -p "${output_args[@]}" "$prompt" \
+        timeout "$PROMPT_TIMEOUT" stdbuf -oL -eL "$NETCLAW_BIN" chat -p "${output_args[@]}" "$prompt" \
         > "$STDOUT_FILE" 2> "$STDERR_FILE" || true
 
     # Brief pause for daemon log flush
@@ -922,6 +933,7 @@ run_prompt_resume() {
     fi
     STDERR_FILE="$MULTI_TURN_STDERR_FILE"
 
+    resolve_daemon_log
     if [[ -f "$DAEMON_LOG" ]]; then
         DAEMON_LOG_LINES_BEFORE=$(wc -l < "$DAEMON_LOG")
     else
@@ -935,7 +947,7 @@ run_prompt_resume() {
 
     NETCLAW_DAEMON_ENDPOINT="http://127.0.0.1:$EVAL_PORT" \
     NETCLAW_HOME="$EVAL_HOME" \
-        timeout "$PROMPT_TIMEOUT" "$NETCLAW_BIN" chat -p --resume "$session_id" \
+        timeout "$PROMPT_TIMEOUT" stdbuf -oL -eL "$NETCLAW_BIN" chat -p --resume "$session_id" \
         "${output_args[@]}" "$prompt" \
         > "$turn_file" 2> "$turn_stderr_file" || true
 
@@ -1067,6 +1079,19 @@ stdout_response_not_contains() {
         return 1
     fi
     return 0
+}
+
+## The daemon runs inside the container on its own clock (UTC), so a host
+## date computation can name a log file the daemon never writes — every
+## daemon_log_contains then fails silently for the whole run (observed when a
+## CDT-evening run crossed UTC midnight). Resolve the newest real log file
+## instead of trusting a computed date. Callers re-resolve before they take a
+## per-case line baseline; a midnight rollover inside a single case remains
+## unhandled and acceptable.
+resolve_daemon_log() {
+    local newest
+    newest=$(ls -1t "$EVAL_HOME"/logs/daemon-*.log 2>/dev/null | head -n 1)
+    [[ -n "$newest" ]] && DAEMON_LOG="$newest"
 }
 
 daemon_log_tail() {
@@ -1365,9 +1390,14 @@ assert_memory_explicit_store() {
 
 assert_memory_recall_filters() {
     # After overfetch fix: at least one candidate selection should reduce the set.
+    # POSIX awk only: mawk lacks gawk's 3-argument match(), which made this
+    # assert die on a syntax error and fail unconditionally on hosts without
+    # gawk. Extract the two counts with sub() instead of capture groups.
     daemon_log_tail | awk '
-        match($0, /rawCount=([0-9]+).*selectedCount=([0-9]+)/, m) {
-            if ((m[1] + 0) > (m[2] + 0)) {
+        /rawCount=[0-9]+.*selectedCount=[0-9]+/ {
+            raw = $0; sub(/.*rawCount=/, "", raw); sub(/[^0-9].*/, "", raw)
+            sel = $0; sub(/.*selectedCount=/, "", sel); sub(/[^0-9].*/, "", sel)
+            if ((raw + 0) > (sel + 0)) {
                 found = 1
             }
         }
