@@ -147,6 +147,10 @@ public sealed class McpToolPermissionsViewModel : ReactiveViewModel
     public void SelectServer(McpServerName serverName)
     {
         SelectedServer = serverName.Value;
+        // Set the state before the request so a reentrant Enter cannot also close the tool grid.
+        StatusMessage.Value = $"Loading tools for {serverName.Value}...";
+        CurrentState.Value = ToolPermissionsState.Loading;
+        NotifyStateChanged();
         _ = LoadToolsForServerAsync(serverName);
     }
 
@@ -176,9 +180,6 @@ public sealed class McpToolPermissionsViewModel : ReactiveViewModel
 
     private async Task LoadToolsForServerAsync(McpServerName serverName)
     {
-        StatusMessage.Value = $"Loading tools for {serverName.Value}...";
-        NotifyStateChanged();
-
         try
         {
             var tools = await _daemonApi.GetMcpToolNamesAsync(serverName.Value, CancellationToken.None);
