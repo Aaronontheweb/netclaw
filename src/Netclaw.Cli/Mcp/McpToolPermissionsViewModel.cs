@@ -195,7 +195,10 @@ public sealed class McpToolPermissionsViewModel : ReactiveViewModel
         }
         catch (Exception ex)
         {
+            // The state must return to the server list on error. A failed request must not
+            // strand the user on the Loading screen with no visible exit.
             StatusMessage.Value = $"Error loading tools: {ex.Message}";
+            CurrentState.Value = ToolPermissionsState.ServerList;
         }
 
         NotifyStateChanged();

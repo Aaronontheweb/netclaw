@@ -108,6 +108,30 @@ public sealed class McpToolPermissionsViewModelTests : IDisposable
         Assert.Equal(["record-tasks"], vm.DiscoveredTools);
     }
 
+    [Fact]
+    public async Task SelectServer_ToolRequestThrows_ReturnsToServerListWithError()
+    {
+        // A failed tool request must not strand the user on the Loading screen: the state
+        // must fall back to the server list so Esc / GoBack has somewhere to go.
+        var configuration = new ConfigurationBuilder().Build();
+        var daemonApi = new DaemonApi(new ThrowingToolsHttpClientFactory(), configuration, _paths);
+        using var vm = new McpToolPermissionsViewModel(_paths, daemonApi);
+        var serverListReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var subscription = vm.CurrentState.Subscribe(state =>
+        {
+            if (state == ToolPermissionsState.ServerList)
+                serverListReached.TrySetResult();
+        });
+
+        vm.SelectServer(new McpServerName("notion"));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await serverListReached.Task.WaitAsync(cts.Token);
+
+        Assert.Equal(ToolPermissionsState.ServerList, vm.CurrentState.Value);
+        Assert.Contains("Error loading tools", vm.StatusMessage.Value);
+    }
+
     public static TheoryData<bool, ToolApprovalMode[]> ServerDefaultCycles => new()
     {
         { false, [ToolApprovalMode.Approval, ToolApprovalMode.Deny, ToolApprovalMode.Auto] },
@@ -603,6 +627,20 @@ public sealed class McpToolPermissionsViewModelTests : IDisposable
             protected override Task<HttpResponseMessage> SendAsync(
                 HttpRequestMessage request, CancellationToken cancellationToken)
                 => Task.FromResult(new HttpResponseMessage { Content = new StringContent(body) });
+        }
+    }
+
+    // Fails every request so GetMcpToolNamesAsync throws, exercising the catch path in
+    // LoadToolsForServerAsync.
+    private sealed class ThrowingToolsHttpClientFactory : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(new ThrowingHandler());
+
+        private sealed class ThrowingHandler : HttpMessageHandler
+        {
+            protected override Task<HttpResponseMessage> SendAsync(
+                HttpRequestMessage request, CancellationToken cancellationToken)
+                => throw new HttpRequestException("connection refused");
         }
     }
 
