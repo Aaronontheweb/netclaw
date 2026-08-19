@@ -77,13 +77,14 @@ public sealed class McpToolPermissionsViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task SelectServer_EntersLoadingStateBeforeToolRequestCompletes()
+    public async Task SelectServer_EntersLoadingStateAndIgnoresReentrantSelection()
     {
         var requestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseResponse = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var configuration = new ConfigurationBuilder().Build();
+        var httpClientFactory = new GatedToolsHttpClientFactory(requestStarted, releaseResponse.Task);
         var daemonApi = new DaemonApi(
-            new GatedToolsHttpClientFactory(requestStarted, releaseResponse.Task),
+            httpClientFactory,
             configuration,
             _paths);
         using var vm = new McpToolPermissionsViewModel(_paths, daemonApi);
@@ -94,6 +95,7 @@ public sealed class McpToolPermissionsViewModelTests : IDisposable
                 toolGridReached.TrySetResult();
         });
 
+        vm.CurrentState.Value = ToolPermissionsState.ServerList;
         vm.SelectServer(new McpServerName("notion"));
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -101,11 +103,18 @@ public sealed class McpToolPermissionsViewModelTests : IDisposable
         Assert.Equal(ToolPermissionsState.Loading, vm.CurrentState.Value);
         Assert.Equal("Loading tools for notion...", vm.StatusMessage.Value);
 
+        vm.SelectServer(new McpServerName("notion"));
+        Assert.Equal(1, httpClientFactory.RequestCount);
+
         releaseResponse.TrySetResult();
         await toolGridReached.Task.WaitAsync(cts.Token);
 
         Assert.Equal(ToolPermissionsState.ToolGrid, vm.CurrentState.Value);
         Assert.Equal(["record-tasks"], vm.DiscoveredTools);
+
+        vm.SelectServer(new McpServerName("notion"));
+        Assert.Equal(1, httpClientFactory.RequestCount);
+        Assert.Equal(ToolPermissionsState.ToolGrid, vm.CurrentState.Value);
     }
 
     [Fact]
@@ -123,6 +132,7 @@ public sealed class McpToolPermissionsViewModelTests : IDisposable
                 serverListReached.TrySetResult();
         });
 
+        vm.CurrentState.Value = ToolPermissionsState.ServerList;
         vm.SelectServer(new McpServerName("notion"));
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -644,20 +654,35 @@ public sealed class McpToolPermissionsViewModelTests : IDisposable
         }
     }
 
-    private sealed class GatedToolsHttpClientFactory(
-        TaskCompletionSource requestStarted,
-        Task releaseResponse) : IHttpClientFactory
+    private sealed class GatedToolsHttpClientFactory : IHttpClientFactory
     {
-        public HttpClient CreateClient(string name) => new(new GatedToolsHttpHandler(requestStarted, releaseResponse));
+        private readonly TaskCompletionSource _requestStarted;
+        private readonly Task _releaseResponse;
+        private int _requestCount;
+
+        public GatedToolsHttpClientFactory(TaskCompletionSource requestStarted, Task releaseResponse)
+        {
+            _requestStarted = requestStarted;
+            _releaseResponse = releaseResponse;
+        }
+
+        public int RequestCount => Volatile.Read(ref _requestCount);
+
+        public HttpClient CreateClient(string name) => new(new GatedToolsHttpHandler(
+            _requestStarted,
+            _releaseResponse,
+            () => Interlocked.Increment(ref _requestCount)));
 
         private sealed class GatedToolsHttpHandler(
             TaskCompletionSource requestStarted,
-            Task releaseResponse) : HttpMessageHandler
+            Task releaseResponse,
+            Action onRequest) : HttpMessageHandler
         {
             protected override async Task<HttpResponseMessage> SendAsync(
                 HttpRequestMessage request,
                 CancellationToken cancellationToken)
             {
+                onRequest();
                 requestStarted.TrySetResult();
                 await releaseResponse.WaitAsync(cancellationToken);
                 return new HttpResponseMessage(HttpStatusCode.OK)

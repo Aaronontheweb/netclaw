@@ -25,5 +25,4 @@ Type "netclaw mcp permissions"
 Enter
 Wait+Screen@15s /MCP Permissions/
 Wait+Screen@10s /Connected, 4 tools/
-Screenshot "/tmp/shot-mcp-permissions-server-list.png"
 Sleep 250ms

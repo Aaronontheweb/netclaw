@@ -30,5 +30,4 @@ Enter
 Wait+Screen@10s /validated and saved/
 Wait+Screen@10s /Saved Search settings./
 Wait+Screen@5s /\[Esc\] Review backends/
-Screenshot "/tmp/shot-config-search-saved.png"
 Sleep 250ms

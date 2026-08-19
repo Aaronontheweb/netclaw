@@ -2,7 +2,7 @@
 # No terminal action follows the screenshot.
 #
 # Capture-only tape: it has NO post-tape assertion. The screenshots mode
-# in run-smoke.sh compares the emitted PNG byte-for-byte against the
+# in run-smoke.sh compares the final lossless PNG frame against the
 # committed baseline at tests/smoke/screenshots/help.approved.png.
 #
 # The usage screen is fully static (no version string, timestamp, spinner,
@@ -17,5 +17,4 @@ Enter
 # The read command keeps the shell from printing a prompt after the help text.
 # The final help line proves that the process wrote the complete static frame.
 Wait+Screen@10s /Docs & guides:/
-Screenshot "/tmp/shot-help.png"
 Sleep 250ms

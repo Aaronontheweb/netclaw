@@ -31,5 +31,4 @@ Enter
 
 Wait+Screen@10s /Who will interact with this Netclaw instance/
 Wait+Screen@5s /Personal/
-Screenshot "/tmp/shot-wizard-security-posture.png"
 Sleep 250ms

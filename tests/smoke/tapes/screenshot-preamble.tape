@@ -42,6 +42,10 @@ Set CursorBlink false
 Set Framerate 60
 Set Theme "Catppuccin Mocha"
 
+# Record every frame as a lossless PNG. The harness selects the final frame
+# after VHS exits, because the Screenshot command can read a stale browser frame.
+Output "/tmp/shot-frames-__TAPE_NAME__/"
+
 Hide
 
 # The host vhs-spawned bash may carry an unhelpful PS1; we set our own

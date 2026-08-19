@@ -10,5 +10,4 @@ Enter
 Wait+Screen@10s /Ollama/
 Wait+Screen@5s /Venice/
 Wait+Screen@5s /\[Delete\] Remove/
-Screenshot "/tmp/shot-provider-manager-empty.png"
 Sleep 250ms

@@ -19,5 +19,4 @@ Enter
 Wait+Screen@10s /Brave Search requires an API key/
 Wait+Screen@5s /Enter Brave Search API key/
 Wait+Screen@5s /Stored in secrets.json./
-Screenshot "/tmp/shot-config-search-brave-entry.png"
 Sleep 250ms

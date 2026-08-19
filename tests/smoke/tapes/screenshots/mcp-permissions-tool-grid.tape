@@ -29,5 +29,4 @@ Enter
 Wait+Screen@30s /record-tasks/
 Wait+Screen@10s /Server default:/
 Wait+Screen@5s /Audience:/
-Screenshot "/tmp/shot-mcp-permissions-tool-grid.png"
 Sleep 250ms

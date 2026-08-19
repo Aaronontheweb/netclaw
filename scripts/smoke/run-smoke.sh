@@ -14,7 +14,7 @@
 #
 # The `screenshots` profile provisions Ollama + the binary exactly like
 # `light`, then runs the capture tapes under tests/smoke/tapes/screenshots/
-# and compares each emitted PNG byte-for-byte against the approved baseline
+# and compares each final lossless PNG frame against the approved baseline
 # in tests/smoke/screenshots/<frame>.approved.png. Missing baselines and
 # mismatches fail the run; the actual/diff PNGs are collected for review.
 #
@@ -70,10 +70,9 @@ LIGHT_SCENARIOS=(
 )
 FULL_SCENARIOS=("${LIGHT_SCENARIOS[@]}")
 
-# Screenshot capture tapes are under tests/smoke/tapes/screenshots/. Each tape
-# emits one `Screenshot "/tmp/shot-<frame>.png"` directive. SHOT_FRAMES
-# is the full set of frame names that the harness compares against baselines. It
-# MUST stay in sync with the Screenshot paths in those tapes.
+# Screenshot capture tapes are under tests/smoke/tapes/screenshots/. The shared
+# preamble records lossless PNG frames. SHOT_FRAMES is the full set of frame
+# names that the harness compares against baselines.
 SHOT_TAPES=(
   help
   wizard-provider-picker
@@ -354,8 +353,10 @@ run_shot_tape() {
   echo "════════════════════════════════════════════════════════"
   local home="${RUN_ROOT}/home/shot-${tape}"
   local user_home="${RUN_ROOT}/home/user-shot-${tape}"
+  local frame_dir="/tmp/shot-frames-${tape}"
   rm -rf "$home"
   rm -rf "$user_home"
+  rm -rf "$frame_dir"
   mkdir -p "$user_home"
   if ! HOME="$user_home" \
        NETCLAW_HOME="$home" \
@@ -371,6 +372,25 @@ run_shot_tape() {
        bash "${SMOKE_SCRIPTS}/run-native-tape.sh" "$tape"; then
     failed+=("shot-tape:${tape}")
   fi
+}
+
+# copy_final_shot_frame <tape> <frame> — copy the final lossless recorder
+# frame after VHS exits. VHS Screenshot can capture a stale browser frame even
+# after Wait+Screen observes the settled terminal state.
+copy_final_shot_frame() {
+  local tape="$1"
+  local frame="$2"
+  local frame_dir="/tmp/shot-frames-${tape}"
+  local final_frame
+
+  final_frame=$(find "$frame_dir" -maxdepth 1 -type f -name '*.png' -print 2>/dev/null \
+    | sort | tail -n 1)
+  if [[ -z "$final_frame" ]]; then
+    echo "  WARN: ${frame} did not produce any lossless recorder frames." >&2
+    return 1
+  fi
+
+  cp "$final_frame" "/tmp/shot-${frame}.png"
 }
 
 # capture_stable_shot <tape> <frame> — require two matching captures before
@@ -391,7 +411,7 @@ capture_stable_shot() {
     run_shot_tape "$tape"
 
     local capture="/tmp/shot-${frame}.png"
-    if [[ ! -f "$capture" ]]; then
+    if ! copy_final_shot_frame "$tape" "$frame"; then
       echo "  WARN: ${frame} attempt ${attempt} did not produce a capture." >&2
       continue
     fi

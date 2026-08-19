@@ -15,5 +15,4 @@ Enter
 Wait+Screen@10s /Choose the backend Netclaw uses for web search/
 Wait+Screen@5s /DuckDuckGo works without setup, but may hit bot detection./
 Wait+Screen@5s /\[Esc\] Back/
-Screenshot "/tmp/shot-config-search-selection.png"
 Sleep 250ms

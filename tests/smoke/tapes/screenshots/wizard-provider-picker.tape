@@ -7,5 +7,4 @@ Type "netclaw init"
 Enter
 Wait+Screen@10s /Choose your LLM provider:/
 Wait+Screen@5s /8\. Venice\.ai/
-Screenshot "/tmp/shot-wizard-provider-picker.png"
 Sleep 250ms
