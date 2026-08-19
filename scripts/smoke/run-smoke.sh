@@ -381,6 +381,10 @@ capture_stable_shot() {
   local frame="$2"
   local candidates=""
   local attempt
+  # A tape run inside the loop can add "shot-tape:${tape}" to failed[] even
+  # when a later attempt still reaches a clean quorum. A clean retry is not
+  # a failure, so the entry is rolled back once quorum is reached.
+  local failed_before=${#failed[@]}
 
   for (( attempt = 1; attempt <= SHOT_CAPTURE_ATTEMPTS; attempt++ )); do
     rm -f "/tmp/shot-${frame}.png"
@@ -402,6 +406,9 @@ capture_stable_shot() {
           && [[ "$ae" -le "$SHOT_AE_TOLERANCE" ]]; then
         cp "$candidate" "$capture"
         echo "  STABLE: ${frame} reached a two-capture quorum (AE=${ae})."
+        if (( ${#failed[@]} > failed_before )); then
+          failed=("${failed[@]:0:$failed_before}")
+        fi
         return
       fi
     done
