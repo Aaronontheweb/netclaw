@@ -1,6 +1,6 @@
 # Netclaw Implementation Plan
 
-Last updated: 2026-08-14
+Last updated: 2026-08-21
 
 This is the execution plan for Netclaw. Autonomous agents and RALPH-style loops
 SHALL work from `NOW` by default. `NEXT` and `LATER` work belongs in
@@ -163,6 +163,17 @@ Done when:
 - [x] Hidden tools are not named by remediation.
 - [x] Approval authority, scratch retry state, durable messages, and public APIs remain unchanged.
 - [ ] The stacked follow-up handles `attach_file` exposure and native-tool shell mistakes separately.
+
+### Priority: Prevent Native-Tool Shell Mistakes
+
+**Stack parent:** PR #2046 (`fix/repair-tool-rollout-contracts`).
+
+- [x] Specify `attach_file` as a policy-filtered Core tool that accepts the authorized source path directly.
+- [x] Specify parser-owned exact executable matching without executable-private argument parsing.
+- [x] Return a typed correction before shell approval or execution and expose one deferred schema actor-locally.
+- [x] Prove parent/child, hard-deny, hidden-tool, and eventual-authorization boundaries.
+- [x] Refresh deterministic and hosted PII-free behavioral evidence.
+- [x] Complete Release, OpenSpec, header, formatting, Slopwatch, and adversarial-review gates before opening the stacked PR.
 
 ### Priority: Reduce Shell Approval Fatigue
 
