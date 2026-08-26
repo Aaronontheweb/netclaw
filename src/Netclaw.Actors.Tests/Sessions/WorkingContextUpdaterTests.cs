@@ -12,6 +12,15 @@ namespace Netclaw.Actors.Tests.Sessions;
 
 public class WorkingContextUpdaterTests
 {
+    public static TheoryData<string> NonSuccessCategories { get; } = new()
+    {
+        nameof(ToolInvocationOutcomeCategory.InvalidInput),
+        nameof(ToolInvocationOutcomeCategory.AccessDenied),
+        nameof(ToolInvocationOutcomeCategory.NotFound),
+        nameof(ToolInvocationOutcomeCategory.TransientFailure),
+        nameof(ToolInvocationOutcomeCategory.RecoverableCorrection)
+    };
+
     [Fact]
     public void Successful_receipts_apply_canonical_activity_in_result_order()
     {
@@ -39,17 +48,15 @@ public class WorkingContextUpdaterTests
     }
 
     [Theory]
-    [InlineData(1)]
-    [InlineData(2)]
-    [InlineData(3)]
-    [InlineData(4)]
-    [InlineData(5)]
-    public void Failed_or_corrective_receipts_cannot_add_recent_files(int categoryValue)
+    [MemberData(nameof(NonSuccessCategories))]
+    public void Failed_or_corrective_receipts_cannot_add_recent_files(string categoryName)
     {
-        var category = (ToolInvocationOutcomeCategory)categoryValue;
+        var category = Enum.Parse<ToolInvocationOutcomeCategory>(categoryName);
         var result = Result("call-1", "file_read", "successful-looking presentation");
         var receipt = category == ToolInvocationOutcomeCategory.RecoverableCorrection
-            ? new ToolInvocationReceipt(category, remediationCode: "set_working_directory")
+            ? new ToolInvocationReceipt(
+                category,
+                remediationCode: ToolRemediationCode.SetWorkingDirectory)
             : new ToolInvocationReceipt(category);
 
         var updated = WorkingContextUpdater.UpdateFromToolReceipts(
@@ -97,6 +104,29 @@ public class WorkingContextUpdaterTests
             [new ToolFileActivity(path, ToolFileActivityKind.Read)]));
 
         Assert.Contains("successful", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Recoverable_receipt_requires_remediation()
+    {
+        Assert.Throws<ArgumentException>(() => new ToolInvocationReceipt(
+            ToolInvocationOutcomeCategory.RecoverableCorrection));
+    }
+
+    [Fact]
+    public void Non_corrective_receipt_rejects_remediation()
+    {
+        Assert.Throws<ArgumentException>(() => new ToolInvocationReceipt(
+            ToolInvocationOutcomeCategory.AccessDenied,
+            remediationCode: ToolRemediationCode.SetWorkingDirectory));
+    }
+
+    [Fact]
+    public void Remediation_rejects_undefined_code()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ToolInvocationReceipt(
+            ToolInvocationOutcomeCategory.RecoverableCorrection,
+            remediationCode: (ToolRemediationCode)int.MaxValue));
     }
 
     private static ToolInvocationReceipt Success(string path, ToolFileActivityKind kind)

@@ -566,7 +566,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 {
                     msg.ToolReceipts.TryGetValue(callId.Value, out var receipt);
                     _fileActivity.Apply(receipt);
-                    TryApplyProjectDirectory(receipt);
+                    TryApplyProjectDirectory(result.Name, receipt);
                     if (receipt is not null)
                         _log.Info("SubAgent tool outcome category={OutcomeCategory}", receipt.Category);
                 }
@@ -823,7 +823,12 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         var setWorkingDirectoryTool =
             _toolRegistry.GetByName(SetWorkingDirectoryTool.ToolName) as SetWorkingDirectoryTool;
         Func<string, ToolInvocationContext, bool>? canDeclareWorkingDirectory =
-            setWorkingDirectoryTool is null ? null : setWorkingDirectoryTool.CanDeclare;
+            setWorkingDirectoryTool is null
+            || !_toolAccessPolicy.IsToolExposed(
+                setWorkingDirectoryTool,
+                ToolExecutionContext.Invocation)
+                ? null
+                : setWorkingDirectoryTool.CanDeclare;
         _toolExecutionWatchdogState = _approvalBridge is null
             ? ToolExecutionWatchdogState.None
             : ToolExecutionWatchdogState.RunningApprovalCapableTools;
@@ -1154,9 +1159,10 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         return _fileActivity.BuildResult();
     }
 
-    private void TryApplyProjectDirectory(ToolInvocationReceipt? receipt)
+    private void TryApplyProjectDirectory(string? toolName, ToolInvocationReceipt? receipt)
     {
-        if (receipt is not
+        if (!string.Equals(toolName, SetWorkingDirectoryTool.ToolName, StringComparison.Ordinal)
+            || receipt is not
             {
                 Category: ToolInvocationOutcomeCategory.Success,
                 DeclaredProjectDirectory: { } projectDirectory
@@ -1441,7 +1447,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     {
                         toolContext.Outputs.TryComplete(new ToolInvocationReceipt(
                             ToolInvocationOutcomeCategory.RecoverableCorrection,
-                            remediationCode: ToolOutcomeResults.UseSessionScratchRemediation));
+                            remediationCode: ToolRemediationCode.UseSessionScratch));
                         var correctionText = SessionToolExecutionPipeline.BuildSessionScratchCorrection(
                             scratchCorrection.SessionDirectory);
                         var newCorrectionKey = new SessionScratchCorrectionKey(
@@ -1466,7 +1472,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     {
                         toolContext.Outputs.TryComplete(new ToolInvocationReceipt(
                             ToolInvocationOutcomeCategory.RecoverableCorrection,
-                            remediationCode: ToolOutcomeResults.SetWorkingDirectoryRemediation));
+                            remediationCode: ToolRemediationCode.SetWorkingDirectory));
                         return BuildToolResult(
                             cleanedTc,
                             projectScopeCorrection,
@@ -1577,6 +1583,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 {
                     var category = ex switch
                     {
+                        ToolAccessDeniedException => ToolInvocationOutcomeCategory.AccessDenied,
                         UnauthorizedAccessException => ToolInvocationOutcomeCategory.AccessDenied,
                         FileNotFoundException or DirectoryNotFoundException => ToolInvocationOutcomeCategory.NotFound,
                         _ => ToolInvocationOutcomeCategory.TransientFailure
@@ -1594,6 +1601,17 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             });
 
             var results = await Task.WhenAll(tasks);
+            for (var i = 0; i < results.Length; i++)
+            {
+                var result = results[i];
+                results[i] = result with
+                {
+                    Message = ToolRemediationPresenter.Present(
+                        result.Message,
+                        result.Receipt,
+                        canDeclareWorkingDirectory is not null)
+                };
+            }
             self.Tell(new ToolExecutionCompleted
             {
                 ToolResults = [.. results.Select(r => r.Message)],
@@ -1641,6 +1659,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 materialization.RequestedCount - materialization.MediaReferences.Count);
         }
 
+        var receipt = toolContext.Receipt
+            ?? new ToolInvocationReceipt(ToolInvocationOutcomeCategory.Success);
         return new SubAgentToolCallResult(
             new SerializableChatMessage
             {
@@ -1651,7 +1671,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             },
             materialization.MediaReferences,
             scratchCorrectionChange,
-            toolContext.Receipt ?? new ToolInvocationReceipt(ToolInvocationOutcomeCategory.Success));
+            receipt);
     }
 
     private static ModelInputMaterializationResult MaterializeModelInputFiles(

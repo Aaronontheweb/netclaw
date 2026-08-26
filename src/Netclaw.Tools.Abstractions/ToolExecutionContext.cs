@@ -29,6 +29,13 @@ internal enum ToolInvocationOutcomeCategory
     RecoverableCorrection
 }
 
+internal enum ToolRemediationCode
+{
+    SetWorkingDirectory,
+    UseSessionScratch,
+    ProvideUniqueOldString
+}
+
 internal enum ToolFileActivityKind
 {
     Read,
@@ -41,7 +48,7 @@ internal sealed record ToolFileActivity
     {
         if (!Enum.IsDefined(kind))
             throw new ArgumentOutOfRangeException(nameof(kind));
-        if (!IsCanonicalAbsolutePath(canonicalPath))
+        if (!ToolInvocationReceipt.IsCanonicalAbsolutePath(canonicalPath))
             throw new ArgumentException("File activity requires a canonical absolute path.", nameof(canonicalPath));
 
         CanonicalPath = canonicalPath;
@@ -50,25 +57,6 @@ internal sealed record ToolFileActivity
 
     public string CanonicalPath { get; }
     public ToolFileActivityKind Kind { get; }
-
-    private static bool IsCanonicalAbsolutePath(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path)
-            || path.Any(char.IsControl)
-            || !Path.IsPathFullyQualified(path))
-        {
-            return false;
-        }
-
-        try
-        {
-            return string.Equals(path, Path.GetFullPath(path), StringComparison.Ordinal);
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-        {
-            return false;
-        }
-    }
 }
 
 internal sealed record ToolInvocationReceipt
@@ -76,7 +64,7 @@ internal sealed record ToolInvocationReceipt
     public ToolInvocationReceipt(
         ToolInvocationOutcomeCategory category,
         IReadOnlyList<ToolFileActivity>? fileActivity = null,
-        string? remediationCode = null,
+        ToolRemediationCode? remediationCode = null,
         string? declaredProjectDirectory = null)
     {
         if (!Enum.IsDefined(category))
@@ -95,8 +83,22 @@ internal sealed record ToolInvocationReceipt
             throw new ArgumentException("Only a recoverable correction may report remediation.", nameof(remediationCode));
         }
 
-        if (declaredProjectDirectory is not null)
-            _ = new ToolFileActivity(declaredProjectDirectory, ToolFileActivityKind.Read);
+        if (category == ToolInvocationOutcomeCategory.RecoverableCorrection
+            && remediationCode is null)
+        {
+            throw new ArgumentException("A recoverable correction requires remediation.", nameof(remediationCode));
+        }
+
+        if (remediationCode is { } code && !Enum.IsDefined(code))
+            throw new ArgumentOutOfRangeException(nameof(remediationCode));
+
+        if (declaredProjectDirectory is not null
+            && !IsCanonicalAbsolutePath(declaredProjectDirectory))
+        {
+            throw new ArgumentException(
+                "Declared project directory requires a canonical absolute path.",
+                nameof(declaredProjectDirectory));
+        }
 
         Category = category;
         FileActivity = Array.AsReadOnly(activity);
@@ -106,8 +108,27 @@ internal sealed record ToolInvocationReceipt
 
     public ToolInvocationOutcomeCategory Category { get; }
     public IReadOnlyList<ToolFileActivity> FileActivity { get; }
-    public string? RemediationCode { get; }
+    public ToolRemediationCode? RemediationCode { get; }
     public string? DeclaredProjectDirectory { get; }
+
+    internal static bool IsCanonicalAbsolutePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)
+            || path.Any(char.IsControl)
+            || !Path.IsPathFullyQualified(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            return string.Equals(path, Path.GetFullPath(path), StringComparison.Ordinal);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
 }
 
 /// <summary>
