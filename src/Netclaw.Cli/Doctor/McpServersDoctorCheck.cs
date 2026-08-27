@@ -311,9 +311,11 @@ public sealed class McpServersDoctorCheck : IDoctorCheck
 
         var summary = string.Join("; ", statusMessages);
 
+        // The daemon already chose the remedy per server and put it in the status line.
+        // A remedy named here would guess the auth scheme a second time.
         if (hasAuthFailure)
             return DoctorCheckResult.Error("mcp-servers", summary,
-                "Re-authorize affected MCP servers with `netclaw mcp auth <name>`.");
+                "Follow the remedy in each server's status line.");
 
         if (hasConnectivityFailure)
         {

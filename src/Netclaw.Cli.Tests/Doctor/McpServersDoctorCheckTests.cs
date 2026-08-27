@@ -200,7 +200,48 @@ public sealed class McpServersDoctorCheckTests : IDisposable
 
         Assert.Equal(DoctorSeverity.Error, result.Severity);
         Assert.Contains("auth failed", result.Message);
-        Assert.Contains("netclaw mcp auth", result.Remediation);
+        // The daemon already chose the remedy for this server. Doctor repeats that status
+        // line and points at it, instead of naming a second remedy of its own.
+        Assert.Contains("netclaw mcp auth", result.Message);
+        Assert.Contains("status line", result.Remediation);
+    }
+
+    [Fact]
+    public async Task DaemonReportedAuthFailureWithoutOAuth_RepeatsTheCredentialRemedy()
+    {
+        WriteConfig(new
+        {
+            configVersion = 1,
+            McpServers = new
+            {
+                shortio = new
+                {
+                    Transport = "http",
+                    Url = "https://mcp.example.com",
+                    Enabled = true,
+                }
+            }
+        });
+
+        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(new
+        {
+            shortio = new
+            {
+                state = "AuthFailed",
+                toolCount = 0,
+                error = "Authentication rejected by server (401 Unauthorized). Check configured credentials or headers."
+            }
+        })));
+
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        // The daemon runs no OAuth flow for this server, so its status names the operator's
+        // own credential. Doctor must not add `netclaw mcp auth` on top of that.
+        Assert.Equal(DoctorSeverity.Error, result.Severity);
+        Assert.Contains("auth failed", result.Message);
+        Assert.Contains("credentials or headers", result.Message);
+        Assert.DoesNotContain("netclaw mcp auth", result.Remediation);
+        Assert.DoesNotContain("netclaw mcp auth", result.Message);
     }
 
     [Fact]
