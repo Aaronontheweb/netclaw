@@ -37,6 +37,17 @@ internal static class ReminderCommand
             return 0;
         }
 
+        // None of the subcommands below have their own --help handling, so a trailing
+        // --help/-h was previously ignored and the subcommand ran for real — e.g.
+        // `reminder list --help` still hit the live daemon and printed reminders instead
+        // of help (same missed-help pattern reported for `netclaw memory backfill-embeddings
+        // --help`). Scan the full argument list, not just the subcommand slot.
+        if (CliArgsParser.HasTrailingHelpToken(args, startIndex: 2))
+        {
+            WriteHelp();
+            return 0;
+        }
+
         // validate is offline — no daemon needed
         if (subcommand is "validate")
             return RunValidate(args);

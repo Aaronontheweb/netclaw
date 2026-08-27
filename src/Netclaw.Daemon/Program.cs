@@ -47,10 +47,26 @@ using Netclaw.Daemon.Lifecycle;
 using Netclaw.Daemon.Reminders;
 using Netclaw.Daemon.Skills;
 using Netclaw.Daemon.Webhooks;
+using Netclaw.Embeddings;
 using Netclaw.Search;
 using Netclaw.Tools;
 using Netclaw.Security;
 using static Microsoft.Extensions.Logging.LogLevel;
+
+// Handled first, before any directory creation, lock-file acquisition, or host startup:
+// `netclawd --version`/`-v` must print the version and exit rather than booting a real
+// daemon instance (alpha.onnx.2 production canary regression).
+if (DaemonCliArgs.IsVersionRequest(args))
+{
+    // Fully qualified: Program.cs (top-level statements) sits in the global namespace, and both
+    // Netclaw.Daemon and Netclaw.Configuration are `using`-imported here, so the unqualified
+    // "BuildInfo" is ambiguous between the two. Netclaw.Daemon.BuildInfo is the daemon-specific
+    // facade that reads the daemon assembly's own metadata (see that type's remarks).
+    Console.WriteLine(
+        $"netclawd {Netclaw.Daemon.BuildInfo.FullVersion} "
+        + $"(commit {Netclaw.Daemon.BuildInfo.CommitHash}, built {Netclaw.Daemon.BuildInfo.BuildTimestamp})");
+    return;
+}
 
 var bootstrapPaths = new NetclawPaths();
 try
@@ -745,6 +761,50 @@ static void ConfigureDaemonServices(
         toolRegistry.Register(new SqliteGetMemoriesTool(memoryStore));
         toolRegistry.Register(new SqliteStoreMemoryTool(new SQLiteMemoryCheckpointSink(memoryStore, TimeProvider.System)));
         toolRegistry.Register(new SqliteUpdateMemoryTool(memoryStore));
+
+        // Embedding foundation (memory-core-redesign Slice 2). The holder always exists —
+        // starts pointed at an Unavailable stub so any consumer resolving it before warmup
+        // completes gets a safe, explicit degraded value rather than a null reference — and
+        // EmbeddingWarmupHostedService populates it at startup (see that type's remarks for why
+        // a mutable holder is required instead of constructor injection).
+        services.AddHttpClient("EmbeddingModelProvisioner").AddNetclawHeaders("embedding-provisioner");
+        services.AddSingleton<IReadOnlyDictionary<string, EmbeddingModelManifestEntry>>(
+            EmbeddingModelProvisioner.Allowlist);
+        services.AddSingleton(sp => new EmbeddingModelProvisioner(
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient("EmbeddingModelProvisioner"),
+            EmbeddingModelProvisioner.Allowlist));
+
+        // Initial prefix/floor are resolved from the allowlist entry (memory-query-prefix design
+        // D2/D3) rather than hardcoded empty/null placeholders: an unknown ModelId degrades to
+        // "no prefix, no calibration" here (TryGetValue returns null) exactly like any other
+        // missing-manifest-entry condition elsewhere — the daemon still starts, and
+        // EmbeddingWarmupHostedService's own load attempt is what surfaces the loud failure.
+        EmbeddingModelProvisioner.Allowlist.TryGetValue(memoryConfig.Embeddings.ModelId, out var initialEmbeddingEntry);
+        services.AddSingleton(_ => new MemoryEmbedderHolder(
+            new UnavailableMemoryEmbedder(memoryConfig.Embeddings.ModelId, "embedding warmup has not completed yet"),
+            initialQueryPrefix: initialEmbeddingEntry?.QueryPrefix ?? string.Empty,
+            initialCalibratedMinCosineSimilarity: initialEmbeddingEntry?.CalibratedMinCosineSimilarity));
+
+        // Vector index for the curation evaluator's embedding kNN nominator (memory-core-
+        // redesign Slice 3 Stage B, task 3.1). Registered alongside MemoryEmbedderHolder above:
+        // both are optional dependencies of MemoryCurationActor/MemoryCurationEngine that
+        // degrade to the lexical content-term search when either is absent or the embedder is
+        // unavailable.
+        services.AddSingleton(new MemoryVectorIndexHolder(memoryStore));
+
+        // Post-floor relevance gate (memory-relevance-gate D4). Same holder-and-warmup pattern
+        // as MemoryEmbedderHolder above; also an optional dependency of
+        // SQLiteMemoryRecallCoordinator, which degrades to floor-only behavior when this holder's
+        // current scorer is unavailable.
+        services.AddSingleton<IReadOnlyDictionary<string, RelevanceModelManifestEntry>>(
+            EmbeddingModelProvisioner.RelevanceAllowlist);
+        services.AddSingleton(_ => new RelevanceScorerHolder(
+            new UnavailableRelevanceScorer(
+                EmbeddingModelProvisioner.DefaultRelevanceModelId, "relevance gate warmup has not completed yet"),
+            initialCalibratedThreshold: EmbeddingModelProvisioner.RelevanceAllowlist[EmbeddingModelProvisioner.DefaultRelevanceModelId].CalibratedThreshold));
+
+        services.AddSingleton<EmbeddingWarmupHostedService>();
+        services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<EmbeddingWarmupHostedService>());
     }
 
     services.AddSingleton<IMemoryExtractor>(NullMemoryExtractor.Instance);
@@ -1003,7 +1063,9 @@ static void ConfigureDaemonServices(
         sp.GetService<IMemoryRecallCoordinator>() ?? NullMemoryRecallCoordinator.Instance,
         sp.GetService<IMemoryCheckpointSink>() ?? NullMemoryCheckpointSink.Instance,
         sp.GetService<SQLiteMemoryStore>(),
-        sp.GetService<MemoryConfig>()));
+        sp.GetService<MemoryConfig>(),
+        sp.GetService<MemoryEmbedderHolder>(),
+        sp.GetService<MemoryVectorIndexHolder>()));
 
     services.AddSingleton(sp => new SessionObservability(
         sp.GetService<Netclaw.Actors.Telemetry.ISessionMetrics>(),

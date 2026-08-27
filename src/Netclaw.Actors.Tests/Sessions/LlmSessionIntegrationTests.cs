@@ -73,7 +73,9 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
         services.AddSingleton<SQLiteMemoryStore>(sp => new SQLiteMemoryStore(Path.Combine(Path.GetTempPath(), $"netclaw-sidecar-tests-{Guid.NewGuid():N}.db"), TimeProvider.System));
         services.AddSingleton<IMemoryRecallCoordinator>(sp => new SQLiteMemoryRecallCoordinator(
             sp.GetRequiredService<SQLiteMemoryStore>(),
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<SQLiteMemoryRecallCoordinator>.Instance));
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<SQLiteMemoryRecallCoordinator>.Instance,
+            new MemoryConfig(),
+            sp.GetRequiredService<TimeProvider>()));
 
         var registry = new ToolRegistry();
         _toolRegistry = registry;

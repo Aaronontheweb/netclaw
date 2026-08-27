@@ -490,7 +490,9 @@ Add or switch model providers (including OAuth login) and configure search backe
 ## Diagnostics, Kill Switches & Self-Maintenance
 
 When something is broken, start with `netclaw status`, then `netclaw doctor`. Feature
-kill switches and self-update/health are covered in the reference. Full guidance:
+kill switches and self-update/health are covered in the reference. Memory embeddings
+can be backfilled with `netclaw memory backfill-embeddings [--force]`; doctor checks
+memory embedding availability. Full guidance:
 `skill_read_resource('netclaw-operations', 'references/diagnostics.md')`.
 
 ## Identity

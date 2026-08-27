@@ -113,6 +113,90 @@ PY
 
 Then restart the daemon from local binaries before running evals.
 
+## Relevance Gate Health
+
+The relevance gate (`memory-relevance-gate`) is a post-floor cross-encoder
+stage: for each of the (≤3) candidates that already cleared the cosine
+floor, a small ONNX model (`ms-marco-minilm-l-6-v2`) scores `(query,
+candidate)` jointly and drops anything below the calibrated threshold.
+Activation follows `Memory.Embeddings.Enabled` unless
+`Memory.Recall.RelevanceGate.Enabled`/`Threshold` explicitly override it.
+
+1. Run offline diagnostics and review the `Memory Relevance Gate` check:
+
+```bash
+netclaw doctor
+```
+
+   - `PASS` + "disabled (follows Memory.Embeddings.Enabled...)" or "disabled
+     (Memory.Recall.RelevanceGate.Enabled is explicitly false)" — expected,
+     healthy state for any deployment that hasn't opted into embeddings, or
+     that opted out of the gate specifically. Not an error.
+   - `PASS` + "Relevance gate healthy: model '...' provisioned (threshold
+     ...)" — the model is present, hash-verified, and its manifest-carried
+     (or config-overridden) threshold is reported.
+   - `ERROR` + "missing or fails hash verification at `<path>`" — the model
+     was never provisioned or the on-disk artifact doesn't match the pinned
+     SHA-256. Restart the daemon to re-provision if `AutoDownload` is
+     enabled; otherwise provision manually and restart.
+
+2. Check the degradation log line. When the gate is skipped for a turn
+   (model unavailable, its sub-budget exceeded — a 120 ms ceiling clamped to
+   whatever remains of the outer 300 ms `Memory.RecallTimeoutMs` envelope, so
+   a turn where earlier stages already ran long gets less than 120 ms; raised
+   from a fixed 60 ms by a 2026-07 production-canary finding of cold-start
+   timeouts — or recall running in lexical mode because there's no query
+   vector), the coordinator logs a rate-limited marker instead of silently
+   changing what gets injected:
+
+```
+memory_recall_gate_degraded session=<id> reason=<reason> elapsedMs=<ms>
+```
+
+   `reason` is one of `gate_disabled_by_config`, `no_scorer_configured`,
+   `scorer_unavailable`, `sub_budget_exceeded`, or `score_failed:<ExceptionType>`.
+   `elapsedMs` is 0 for the first three (no scoring attempt ever started) and
+   the measured time spent before degrading for the latter two — useful for
+   telling a genuine cold-start/contention timeout apart from an instant
+   failure. Logged at `Warning` when the gate is enabled but a turn still
+   degraded (a genuine runtime condition worth noticing); logged at `Debug`
+   when the gate is off by config (the default, intentional state — not
+   spam). Rate-limited per-reason with the same cooldown as
+   `memory_recall_vector_degraded`, so expect at most one `Warning` line per
+   reason per cooldown window even under sustained degradation, not one per
+   turn.
+
+3. Read `gateScores`/`droppedByGate`/`gateElapsedMs` on `memory_retrieval_final`
+   when diagnosing over- or under-injection or quantifying gate latency
+   margin against the 120 ms ceiling:
+
+```bash
+grep memory_retrieval_final "$HOME/.netclaw/logs/daemon-$(date +%F).log" | tail -20
+```
+
+   - `droppedByGate` — how many of the floor's survivors the gate rejected
+     this turn. `0` on a turn that also injected nothing means the floor
+     itself already filtered everything (or the gate didn't run); a nonzero
+     `droppedByGate` with zero final `injectedCount` means the gate is the
+     reason nothing was injected, not the floor.
+   - `gateScores` — the cross-encoder score for every candidate the gate
+     scored (`id=score`, e.g. `doc-abc123=0.014`), regardless of whether it
+     survived. Compare against the active threshold (config override, or the
+     manifest's calibrated default reported by the doctor check) to see how
+     close a dropped candidate came, or how comfortably a survivor cleared
+     the bar. Absent `gateScores` (empty) on a hybrid-mode turn is itself a
+     signal the gate didn't run for that turn — check for a paired
+     `memory_recall_gate_degraded` line first before assuming a config
+     problem.
+   - Zero `gateScores` and zero `droppedByGate` on a turn is normal whenever
+     the floor itself already produced zero survivors — the gate never runs
+     against an empty candidate set. This is not a gate failure.
+
+See `openspec/changes/memory-relevance-gate/design.md` for the calibration
+procedure (threshold-sweep protocol, model shoot-out, and out-of-sample
+validation numbers) if the operating point ever needs to be re-verified
+against a different relevance model or corpus.
+
 ## Reproducible Memory Score (Non-LLM Judge)
 
 Run the deterministic memory score script:

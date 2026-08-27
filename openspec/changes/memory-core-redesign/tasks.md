@@ -12,43 +12,43 @@ constitution gates (tests, evals where mapped, schema/skill sync, slopwatch).
 
 ## 2. Embedding foundation
 
-- [ ] 2.1 Create `src/Netclaw.Embeddings` project (Microsoft.ML.OnnxRuntime CPU, FastBertTokenizer, System.Numerics.Tensors) and `IMemoryEmbedder` seam in `Netclaw.Actors/Memory`
-- [ ] 2.2 Implement `OnnxMemoryEmbedder` (single InferenceSession, bounded intra-op threads, concurrency semaphore) + `UnavailableMemoryEmbedder`
-- [ ] 2.3 Implement `EmbeddingModelProvisioner`: pinned allowlist (id → URL, size, SHA-256), atomic download, hash verification, rejection of unknown ids
-- [ ] 2.4 Add `memory_embeddings` table + `UpsertEmbeddingAsync`/`FindNearestByEmbeddingAsync`/coverage queries to `SQLiteMemoryStore.InitializeAsync` (idempotent DDL)
-- [ ] 2.5 Implement `MemoryContentHasher` (normalized title+body SHA-256) and hash-skip on re-embed
-- [ ] 2.6 Implement `MemoryVectorIndex` (per-model flat float[] brute-force cosine, store-version invalidation)
-- [ ] 2.7 `EmbeddingWarmupHostedService`: provision-or-degrade at startup, warm-up inference, gap-repair sweep; register `IMemoryEmbedder` in daemon DI
-- [ ] 2.8 Embed-on-write after both curation batch commit paths
-- [ ] 2.9 `netclaw memory backfill-embeddings [--force]` CLI command
-- [ ] 2.10 `MemoryEmbeddingDoctorCheck` (model presence/hash, coverage, mixed-model warning) + daemon status `embeddings: degraded` surface + rate-limited degradation logs
-- [ ] 2.11 Config: `Memory.Embeddings { Enabled, ModelId, AutoDownload }` + schema sync with defaults
-- [ ] 2.12 Tests: provisioner hash-rejection/unknown-id, hash-skip, gap repair, vector index invalidation, degraded stub; CI uses a tiny fixture ONNX model (no downloads in tests)
-- [ ] 2.13 **Measure ONNX int8 short-query embedding latency on reference hardware; record the number in design.md and gate Slice 4's sub-budget on it**
-- [ ] 2.14 ARM64 publish smoke leg exercising OnnxRuntime load
-- [ ] 2.15 Update `netclaw-memory` + `netclaw-operations` skills (backfill command, degraded mode); eval suite run
+- [x] 2.1 Create `src/Netclaw.Embeddings` project (Microsoft.ML.OnnxRuntime CPU, FastBertTokenizer, System.Numerics.Tensors) and `IMemoryEmbedder` seam in `Netclaw.Actors/Memory`
+- [x] 2.2 Implement `OnnxMemoryEmbedder` (single InferenceSession, bounded intra-op threads, concurrency semaphore) + `UnavailableMemoryEmbedder`
+- [x] 2.3 Implement `EmbeddingModelProvisioner`: pinned allowlist (id → URL, size, SHA-256), atomic download, hash verification, rejection of unknown ids
+- [x] 2.4 Add `memory_embeddings` table + `UpsertEmbeddingAsync`/`FindNearestByEmbeddingAsync`/coverage queries to `SQLiteMemoryStore.InitializeAsync` (idempotent DDL)
+- [x] 2.5 Implement `MemoryContentHasher` (normalized title+body SHA-256) and hash-skip on re-embed
+- [x] 2.6 Implement `MemoryVectorIndex` (per-model flat float[] brute-force cosine, store-version invalidation)
+- [x] 2.7 `EmbeddingWarmupHostedService`: provision-or-degrade at startup, warm-up inference, gap-repair sweep; register `IMemoryEmbedder` in daemon DI
+- [x] 2.8 Embed-on-write after both curation batch commit paths
+- [x] 2.9 `netclaw memory backfill-embeddings [--force]` CLI command
+- [x] 2.10 `MemoryEmbeddingDoctorCheck` (model presence/hash, coverage, mixed-model warning) + daemon status `embeddings: degraded` surface + rate-limited degradation logs
+- [x] 2.11 Config: `Memory.Embeddings { Enabled, ModelId, AutoDownload }` + schema sync with defaults
+- [x] 2.12 Tests: provisioner hash-rejection/unknown-id, hash-skip, gap repair, vector index invalidation, degraded stub; CI uses a tiny fixture ONNX model (no downloads in tests)
+- [x] 2.13 **Measure ONNX int8 short-query embedding latency on reference hardware; record the number in design.md and gate Slice 4's sub-budget on it**
+- [x] 2.14 ARM64 publish smoke leg exercising OnnxRuntime load
+- [x] 2.15 Update `netclaw-memory` + `netclaw-operations` skills (backfill command, degraded mode); eval suite run
 
 ## 3. Write-side nominate→decide + lossless merge
 
-- [ ] 3.1 Nominator in the shared evaluator: kNN shortlist at `Memory.Curation.NominatorSimilarityThreshold`/`NominatorK`; any nominee forces the LLM tier; no-nominee-no-anchor creates without LLM; lexical candidate search becomes the logged degraded path
-- [ ] 3.2 Extend `CurationPromptBuilder` response protocol: CONSOLIDATE/UPDATE emit a merged body; `CurationDecision.MergedBody`; full-content previews for nominated candidates
-- [ ] 3.3 Implement `MergeGuard` (load-bearing-token retention ≥95%, length collapse check) with structural-append fallback producing `AppendDocument` semantics
-- [ ] 3.4 Route all curation UPDATE/CONSOLIDATE writes through guard-validated merged bodies; make raw whole-body overwrite unreachable from curation decisions
-- [ ] 3.5 Config: `Memory.Curation { NominatorSimilarityThreshold, NominatorK, LlmMaxOutputTokens, LlmTimeoutSeconds }` (replacing hardcoded constants) + schema sync
-- [ ] 3.6 Tests: paraphrase-dupe nomination (fixture pairs from the audit corpus shape), sibling pairs never auto-merge, MergeGuard property tests, append fallback, both-pipelines parity
-- [ ] 3.7 Eval suite (memory category) + skill sync; update decision-mix expectations (consolidate share should rise from ~0.1%)
+- [x] 3.1 Nominator in the shared evaluator: kNN shortlist at `Memory.Curation.NominatorSimilarityThreshold`/`NominatorK`; any nominee forces the LLM tier; no-nominee-no-anchor creates without LLM; lexical candidate search becomes the logged degraded path
+- [x] 3.2 Extend `CurationPromptBuilder` response protocol: CONSOLIDATE/UPDATE emit a merged body; `CurationDecision.MergedBody`; full-content previews for nominated candidates
+- [x] 3.3 Implement `MergeGuard` (load-bearing-token retention ≥95%, length collapse check) with structural-append fallback producing `AppendDocument` semantics
+- [x] 3.4 Route all curation UPDATE/CONSOLIDATE writes through guard-validated merged bodies; make raw whole-body overwrite unreachable from curation decisions
+- [x] 3.5 Config: `Memory.Curation { NominatorSimilarityThreshold, NominatorK, LlmMaxOutputTokens, LlmTimeoutSeconds }` (replacing hardcoded constants) + schema sync
+- [x] 3.6 Tests: paraphrase-dupe nomination (fixture pairs from the audit corpus shape), sibling pairs never auto-merge, MergeGuard property tests, append fallback, both-pipelines parity
+- [x] 3.7 Eval suite (memory category) + skill sync; update decision-mix expectations (consolidate share should rise from ~0.1%)
 
 ## 4. Read-side hybrid recall + absolute floor
 
-- [ ] 4.1 Query embedding per turn with a vector sub-budget inside `RecallTimeoutMs`; lexical-only fallback + `memory_recall_vector_degraded` log on miss
-- [ ] 4.2 Candidate union (FTS5 ∪ vector top-k) with policy-gate parity for vector-sourced hits
-- [ ] 4.3 Weighted fusion scoring + `MinCosineSimilarity` absolute floor; omit the `[memory-recall]` block entirely on zero injections
-- [ ] 4.4 Recency half-life decay (floor-bounded multiplier) on composite scores
-- [ ] 4.5 Config: `Memory.Recall { VectorWeight, LexicalWeight, MinCosineSimilarity, RecencyHalfLifeDays }` + schema sync
-- [ ] 4.6 Calibrate the floor against `gold-prod-2026-07` (local gold set); record calibration numbers in design.md
-- [ ] 4.7 Gold-set recall regression suite (fixture corpus + labeled queries asserting injected/withheld ids, MRR/precision floors, zero-injection cases)
-- [ ] 4.8 Flip scenario P09 (paraphrase-gap) back to expected-recall; policy-parity scenario test; latency budget test with warm embedder
-- [ ] 4.9 Eval suite + `netclaw-memory` skill update (hybrid recall, zero-injection normality)
+- [x] 4.1 Query embedding per turn with a vector sub-budget inside `RecallTimeoutMs`; lexical-only fallback + `memory_recall_vector_degraded` log on miss
+- [x] 4.2 Candidate union (FTS5 ∪ vector top-k) with policy-gate parity for vector-sourced hits
+- [x] 4.3 Weighted fusion scoring + `MinCosineSimilarity` absolute floor; omit the `[memory-recall]` block entirely on zero injections
+- [x] 4.4 Recency half-life decay (floor-bounded multiplier) on composite scores
+- [x] 4.5 Config: `Memory.Recall { VectorWeight, LexicalWeight, MinCosineSimilarity, RecencyHalfLifeDays }` + schema sync
+- [x] 4.6 Calibrate the floor against `gold-prod-2026-07` (local gold set); record calibration numbers in design.md
+- [x] 4.7 Gold-set recall regression suite (fixture corpus + labeled queries asserting injected/withheld ids, MRR/precision floors, zero-injection cases)
+- [x] 4.8 Flip scenario P09 (paraphrase-gap) back to expected-recall; policy-parity scenario test; latency budget test with warm embedder
+- [x] 4.9 Eval suite + `netclaw-memory` skill update (hybrid recall, zero-injection normality)
 
 ## 5. Taxonomy rebalance, trace revival, tool lessons
 

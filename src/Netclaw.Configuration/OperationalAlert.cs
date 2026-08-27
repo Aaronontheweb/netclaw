@@ -37,10 +37,9 @@ public enum AlertType
     DaemonStopping,
     DaemonCrashed,
     UpdateAvailable,
-
-    // Appended at the end so any ordinal-based representation of prior values
-    // stays stable. A reminder could not compute or install its next occurrence
-    // at an unattended reschedule site (post-fire reschedule or startup reconcile).
+    MemoryEmbeddingModelUnavailable,
+    MemoryRelevanceModelUnavailable,
+    // Appended at the end so prior ordinal values remain stable.
     ReminderScheduleFailed,
 }
 
