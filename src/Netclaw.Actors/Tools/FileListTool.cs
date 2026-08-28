@@ -31,7 +31,7 @@ public sealed partial class FileListTool : NetclawTool<FileListTool.Params>
     private readonly ToolPathPolicy _pathPolicy;
 
     public record Params(
-        [property: Description("Directory path to list. Relative paths use the current project, then session scratch.")] string Path);
+        [property: Description("Directory path to list. Relative paths use the current project, then session_dir.")] string Path);
 
     public FileListTool(ToolConfig config, NetclawPaths paths, ToolPathPolicy pathPolicy)
     {

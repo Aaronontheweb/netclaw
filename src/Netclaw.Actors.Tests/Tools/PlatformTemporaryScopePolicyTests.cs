@@ -32,8 +32,8 @@ public sealed class PlatformTemporaryScopePolicyTests
             explicitWorkingDirectory: PosixTemp);
 
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-        var correction = Assert.IsType<ToolAgentCorrection.SessionScratchSuggested>(context.AgentCorrection);
-        Assert.Equal(PosixSession, correction.SessionDirectory);
+        var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
+        Assert.Equal(Path.Combine(PosixSession, "tmp", "parent"), correction.ManagedTemporaryDirectory);
         Assert.Equal(PosixTemp, correction.TemporaryRoot);
         Assert.Null(context.SuggestedProjectDirectory);
     }
@@ -50,7 +50,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             inspector: new TestPathInspector(resolvedRoot: "/private/tmp"));
 
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-        var correction = Assert.IsType<ToolAgentCorrection.SessionScratchSuggested>(context.AgentCorrection);
+        var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
         Assert.Equal("/private/tmp", correction.TemporaryRoot);
     }
 
@@ -68,7 +68,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             PosixSession);
 
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-        Assert.IsType<ToolAgentCorrection.SessionScratchSuggested>(context.AgentCorrection);
+        Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
         Assert.Null(context.SuggestedProjectDirectory);
     }
 
@@ -91,7 +91,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             additionalTemporaryRoots: [PosixTemp]);
 
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-        var correction = Assert.IsType<ToolAgentCorrection.SessionScratchSuggested>(
+        var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(
             context.AgentCorrection);
         Assert.Equal("/private/tmp", correction.TemporaryRoot);
     }
@@ -131,6 +131,9 @@ public sealed class PlatformTemporaryScopePolicyTests
     [Fact]
     public void Native_windows_explicit_temp_cwd_returns_private_scratch_correction()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         var decision = Evaluate(
             PowerShellEnvironment(),
             WindowsTemp,
@@ -139,14 +142,16 @@ public sealed class PlatformTemporaryScopePolicyTests
             explicitWorkingDirectory: WindowsTemp);
 
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-        var correction = Assert.IsType<ToolAgentCorrection.SessionScratchSuggested>(context.AgentCorrection);
-        Assert.Equal(ApprovalShell.PowerShell, correction.Shell);
-        Assert.Equal(WindowsSession, correction.SessionDirectory);
+        var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
+        Assert.Equal(Path.Combine(WindowsSession, "tmp", "parent"), correction.ManagedTemporaryDirectory);
     }
 
     [Fact]
     public void Native_windows_temp_comparison_uses_windows_case_rules()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         var decision = Evaluate(
             PowerShellEnvironment(),
             WindowsTemp,
@@ -155,7 +160,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             explicitWorkingDirectory: WindowsTemp.ToUpperInvariant());
 
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-        Assert.IsType<ToolAgentCorrection.SessionScratchSuggested>(context.AgentCorrection);
+        Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
     }
 
     [Theory]
@@ -252,16 +257,9 @@ public sealed class PlatformTemporaryScopePolicyTests
     [Theory]
     [InlineData("")]
     [InlineData("relative/session")]
-    public void Invalid_session_scope_suppresses_correction(string sessionDirectory)
+    public void Invalid_storage_envelope_is_rejected_before_correction(string sessionDirectory)
     {
-        var decision = Evaluate(
-            BashEnvironment(),
-            PosixTemp,
-            "gh api repos/example/project",
-            sessionDirectory,
-            explicitWorkingDirectory: PosixTemp);
-
-        Assert.Null(decision.ApprovalContext?.AgentCorrection);
+        Assert.Throws<ArgumentException>(() => new SessionStorageEnvelopeRoot(sessionDirectory));
     }
 
     [Fact]
@@ -276,7 +274,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             explicitWorkingDirectory: PosixTemp);
 
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-        Assert.IsType<ToolAgentCorrection.SessionScratchSuggested>(context.AgentCorrection);
+        Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
     }
 
     [Fact]
@@ -406,7 +404,7 @@ public sealed class PlatformTemporaryScopePolicyTests
                 inspector: HostPlatformTemporaryPathInspector.Instance);
 
             var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-            var correction = Assert.IsType<ToolAgentCorrection.SessionScratchSuggested>(context.AgentCorrection);
+            var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
             Assert.Equal(realTemp, correction.TemporaryRoot);
         }
         finally
@@ -470,9 +468,11 @@ public sealed class PlatformTemporaryScopePolicyTests
                     : ApprovalShell.PowerShell,
                 ["head", "cat"]));
         var shellTool = new ShellTool(config, pathPolicy, commandPolicy);
-        var context = TestToolExecutionContext.CreateBound(
+        var storage = SessionStoragePaths.CreateVersion2(
+            new SessionStorageEnvelopeRoot(Path.GetFullPath(sessionDirectory)));
+        var context = TestToolExecutionContext.CreateBoundWithStorage(
             "signalr/example",
-            sessionDirectory,
+            storage,
             new TestToolExecutionContextOptions
             {
                 Audience = audience,

@@ -77,6 +77,7 @@ public sealed record StartBackgroundJob : IBackgroundJobCommand
 {
     public required string Command { get; init; }
     public string? WorkingDirectory { get; init; }
+    public required string ManagedTemporaryDirectory { get; init; }
     public required Protocol.SessionId SessionId { get; init; }
     public required string Rationale { get; init; }
     public required TrustAudience Audience { get; init; }
@@ -193,6 +194,7 @@ public sealed record BackgroundJobDefinition
     public required BackgroundJobId Id { get; init; }
     public required string Command { get; init; }
     public string? WorkingDirectory { get; init; }
+    public required string ManagedTemporaryDirectory { get; init; }
     [JsonConverter(typeof(Protocol.SessionIdJsonConverter))]
     public required Protocol.SessionId SessionId { get; init; }
     public required string Rationale { get; init; }

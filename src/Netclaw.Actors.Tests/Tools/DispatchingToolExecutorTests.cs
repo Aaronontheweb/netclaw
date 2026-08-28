@@ -24,6 +24,10 @@ public class DispatchingToolExecutorTests
     private const string MissingShellCommandError =
         "Error parsing arguments for tool 'shell_execute': Required parameter 'Command' is missing.";
     private static readonly ShellExecutionEnvironment ShellEnvironment = TestShellEnvironment.Current;
+    private static readonly string BoundSessionDirectory = Path.Combine(
+        Path.GetTempPath(),
+        "netclaw-dispatching-tool-tests",
+        Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture));
     private readonly DispatchingToolExecutor _executor;
     private readonly DispatchingToolExecutor _restrictedExecutor;
 
@@ -41,6 +45,7 @@ public class DispatchingToolExecutorTests
 
     public DispatchingToolExecutorTests()
     {
+        Directory.CreateDirectory(BoundSessionDirectory);
         var baseConfig = new ToolConfig();
         baseConfig.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
         {
@@ -58,6 +63,7 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             pathPolicy,
             commandPolicy,
+            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(baseConfig, commandPolicy, pathPolicy));
         _executor = new DispatchingToolExecutor(
             registry,
@@ -89,6 +95,7 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             restrictedPathPolicy,
             restrictedCommandPolicy,
+            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(
                 restrictedConfig,
                 restrictedCommandPolicy,
@@ -174,7 +181,7 @@ public class DispatchingToolExecutorTests
         // Redaction happens centrally for every result, spill or not.
         var toolCall = CreateToolCall("call-r", "shell_execute",
             ToolInput.Create("Command", "echo API_KEY=secret123"));
-        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", null, new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", BoundSessionDirectory, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
         });
@@ -262,7 +269,7 @@ public class DispatchingToolExecutorTests
             logger: logger);
 
         var toolCall = CreateToolCall("call-mcp", adapter.Name, new Dictionary<string, object?>());
-        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", null, new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", BoundSessionDirectory, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
         });
@@ -296,7 +303,7 @@ public class DispatchingToolExecutorTests
         // Shell output continues to be redacted — only file tools suppress it.
         var toolCall = CreateToolCall("call-shell-secret", "shell_execute",
             ToolInput.Create("Command", "echo API_KEY=secret123"));
-        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", null, new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", BoundSessionDirectory, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
         });
@@ -406,7 +413,7 @@ public class DispatchingToolExecutorTests
             "call-1", "shell_execute",
             ToolInput.Create("Command", "echo routed"));
 
-        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", null, new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", BoundSessionDirectory, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             Boundary = TrustBoundary.TrustedInstance,
@@ -477,6 +484,7 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             pathPolicy,
             commandPolicy,
+            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
 
         var executor = new DispatchingToolExecutor(
@@ -495,7 +503,7 @@ public class DispatchingToolExecutorTests
             "call-shell-profile-deny", "shell_execute",
             ToolInput.Create("Command", "echo denied"));
 
-        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", null, new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", BoundSessionDirectory, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             Boundary = TrustBoundary.TrustedInstance,
@@ -521,6 +529,7 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             pathPolicy,
             commandPolicy,
+            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
 
         var executor = new DispatchingToolExecutor(
@@ -539,7 +548,7 @@ public class DispatchingToolExecutorTests
             "call-shell-off", "shell_execute",
             ToolInput.Create("Command", "echo denied"));
 
-        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", null, new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", BoundSessionDirectory, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             Boundary = TrustBoundary.TrustedInstance,
@@ -564,7 +573,7 @@ public class DispatchingToolExecutorTests
             "call-allow", "shell_execute",
             ToolInput.Create("Command", "echo allowed"));
 
-        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", null, new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", BoundSessionDirectory, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             Boundary = TrustBoundary.TrustedInstance,
@@ -671,6 +680,7 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
+            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config));
         var approvedMatch = new ToolApprovalMatch("git status", "session", "this chat");
         var approvalService = new FixedApprovalService(
@@ -728,6 +738,7 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
+            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config));
         var approvedMatch = new ToolApprovalMatch("git status", "session", "this chat");
         var approvedCandidate = BashCandidate("git status");
@@ -798,6 +809,7 @@ public class DispatchingToolExecutorTests
                 new NetclawPaths(),
                 pathPolicy,
                 commandPolicy,
+                TimeProvider.System,
                 toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
             var approvalService = new FixedShellApprovalService(request =>
             {
@@ -2226,6 +2238,7 @@ public class DispatchingToolExecutorTests
                 new NetclawPaths(),
                 new ToolPathPolicy([]),
                 new ShellCommandPolicy(),
+                TimeProvider.System,
                 toolAccessPolicy: TestToolAccessPolicy.Create(config));
             var approvedScope = ApprovalEntry.CreateTokenPrefix(
                 ApprovalShell.Bash,
@@ -2300,6 +2313,7 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
+            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config));
         var approvalService = new FixedApprovalService(
             new ToolApprovalCheckResult(
@@ -2357,6 +2371,7 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
+            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config));
         var forgedCandidate = new ApprovalCandidate("git status", Directory: null)
         {
@@ -2418,6 +2433,7 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
+            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config));
         var approvalService = new FixedApprovalService(
             new ToolApprovalCheckResult(
@@ -2672,7 +2688,7 @@ public class DispatchingToolExecutorTests
         var registry = new ToolRegistry();
         var paths = new NetclawPaths(Path.Combine(Path.GetTempPath(), $"netclaw-{audience}-tools-{Guid.NewGuid():N}"));
         paths.EnsureDirectoriesExist();
-        registry.WithFirstPartyTools(config, paths: paths, pathPolicy: new ToolPathPolicy([]), shellCommandPolicy: new ShellCommandPolicy(), toolAccessPolicy: policy, webhookRouteStore: new WebhookRouteStore(paths));
+        registry.WithFirstPartyTools(config, paths: paths, pathPolicy: new ToolPathPolicy([]), shellCommandPolicy: new ShellCommandPolicy(), timeProvider: TimeProvider.System, toolAccessPolicy: policy, webhookRouteStore: new WebhookRouteStore(paths));
         // set_webhook and delete_webhook ask WebhookRouteActor. This test reads
         // exposure metadata only and never executes them, so an unresolvable
         // actor reference is enough to put them in the registry.
@@ -2747,7 +2763,7 @@ public class DispatchingToolExecutorTests
                 // approval flow this test exercises actually triggers.
                 ToolInput.Create("Command", "git status"));
 
-            var context = TestToolExecutionContext.CreateBound("signalr/thread-1", null, new TestToolExecutionContextOptions
+            var context = TestToolExecutionContext.CreateBound("signalr/thread-1", BoundSessionDirectory, new TestToolExecutionContextOptions
             {
                 Audience = TrustAudience.Personal,
                 Boundary = TrustBoundary.TrustedInstance,
@@ -2795,7 +2811,7 @@ public class DispatchingToolExecutorTests
             "shell_execute",
             ToolInput.Create("Command", "echo bypass"));
 
-        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", null, new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", BoundSessionDirectory, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             Boundary = TrustBoundary.TrustedInstance,
@@ -2886,6 +2902,7 @@ public class DispatchingToolExecutorTests
                 new NetclawPaths(),
                 new ToolPathPolicy([]),
                 new ShellCommandPolicy(),
+                TimeProvider.System,
                 toolAccessPolicy: TestToolAccessPolicy.Create(config));
 
             var executor = new DispatchingToolExecutor(
@@ -2906,7 +2923,7 @@ public class DispatchingToolExecutorTests
                 "file_write",
                 ToolInput.Create("Path", targetPath, "Content", "approved once"));
 
-            var context = TestToolExecutionContext.CreateBound("signalr/thread-1", null, new TestToolExecutionContextOptions
+            var context = TestToolExecutionContext.CreateBound("signalr/thread-1", BoundSessionDirectory, new TestToolExecutionContextOptions
             {
                 Audience = TrustAudience.Personal,
                 Boundary = TrustBoundary.TrustedInstance,
@@ -2960,7 +2977,7 @@ public class DispatchingToolExecutorTests
                 policy,
                 approvalService);
 
-            var context = TestToolExecutionContext.CreateBound("signalr/thread-filtered", null, new TestToolExecutionContextOptions
+            var context = TestToolExecutionContext.CreateBound("signalr/thread-filtered", BoundSessionDirectory, new TestToolExecutionContextOptions
             {
                 Audience = TrustAudience.Personal,
                 Boundary = TrustBoundary.TrustedInstance,
@@ -3034,6 +3051,7 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
+            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config));
 
         var tempFile = Path.GetTempFileName();
@@ -3118,6 +3136,7 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
+            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config));
 
         var system = ActorSystem.Create($"tool-approval-session-{Guid.NewGuid():N}");
@@ -3146,7 +3165,7 @@ public class DispatchingToolExecutorTests
                 // One_time_approval_allows_immediate_retry_only).
                 ToolInput.Create("Command", "git status"));
 
-            var firstContext = TestToolExecutionContext.CreateBound("signalr/thread-1", null, new TestToolExecutionContextOptions
+            var firstContext = TestToolExecutionContext.CreateBound("signalr/thread-1", BoundSessionDirectory, new TestToolExecutionContextOptions
             {
                 Audience = TrustAudience.Personal,
                 Boundary = TrustBoundary.TrustedInstance,
@@ -3154,7 +3173,7 @@ public class DispatchingToolExecutorTests
                 InteractiveApproval = TestToolExecutionContext.InteractiveApproval(true)
             });
 
-            var secondContext = TestToolExecutionContext.CreateBound("signalr/thread-2", null, new TestToolExecutionContextOptions
+            var secondContext = TestToolExecutionContext.CreateBound("signalr/thread-2", BoundSessionDirectory, new TestToolExecutionContextOptions
             {
                 Audience = TrustAudience.Personal,
                 Boundary = TrustBoundary.TrustedInstance,
@@ -3419,7 +3438,7 @@ public class DispatchingToolExecutorTests
     {
         var approvalService = GrantEveryShellCandidate();
         var executor = CreateApprovalGatedShellExecutor(ShellEnvironment, approvalService);
-        var context = CreateInteractivePersonalContext("signalr/authorization-only");
+        var context = CreateInteractivePersonalExecutionContext("signalr/authorization-only");
         var call = new FunctionCallContent(
             "call-authorization-only",
             ShellTool.ToolName,
@@ -3516,7 +3535,7 @@ public class DispatchingToolExecutorTests
         Directory.CreateDirectory(secondRoot);
         try
         {
-            var context = CreateInteractivePersonalContext("signalr/parallel-shell-analysis");
+            var context = CreateInteractivePersonalExecutionContext("signalr/parallel-shell-analysis");
             var firstCall = new FunctionCallContent(
                 "call-parallel-shell-first",
                 ShellTool.ToolName,
@@ -3559,7 +3578,7 @@ public class DispatchingToolExecutorTests
         Directory.CreateDirectory(root);
         try
         {
-            var context = CreateInteractivePersonalContext("signalr/shell-analysis-paths");
+            var context = CreateInteractivePersonalExecutionContext("signalr/shell-analysis-paths");
             var nonStreamCall = new FunctionCallContent(
                 "call-shell-analysis-non-stream",
                 ShellTool.ToolName,
@@ -3962,6 +3981,7 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             pathPolicy,
             commandPolicy,
+            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
         var policy = new ToolAccessPolicy(
             config,
@@ -4113,6 +4133,16 @@ public class DispatchingToolExecutorTests
                 InteractiveApproval = TestToolExecutionContext.InteractiveApproval(true)
             });
 
+    private static ToolExecutionContext CreateInteractivePersonalExecutionContext(string sessionId)
+        => TestToolExecutionContext.CreateBound(
+            sessionId,
+            BoundSessionDirectory,
+            new TestToolExecutionContextOptions
+            {
+                Audience = TrustAudience.Personal,
+                InteractiveApproval = TestToolExecutionContext.InteractiveApproval(true)
+            });
+
     private static ToolAgentCorrection.NativeToolSuggested? DetectNativeToolForConfig(
         ToolConfig config,
         TrustAudience audience)
@@ -4135,6 +4165,7 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             pathPolicy,
             commandPolicy,
+            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
         var analysis = new ShellCommandAnalyzer(environment).Analyze("file_read", "/workspace");
         var context = TestToolExecutionContext.CreateBound(

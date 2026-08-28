@@ -337,15 +337,15 @@ internal static class SlackApprovalBlockBuilder
             return $"{distinctDirs.Count} directories";
 
         // No path arguments — fall back to cwd, but prefer "this session" when
-        // the cwd is the session's ephemeral scratch directory so operators
+        // the cwd is the session-owned workspace so operators
         // know an "Always here" grant would be a no-op.
         if (string.IsNullOrWhiteSpace(request.Cwd))
             return "(no working directory)";
 
-        return IsSessionScratchPath(request.Cwd) ? "this session" : request.Cwd;
+        return IsSessionOwnedPath(request.Cwd) ? "this session" : request.Cwd;
     }
 
-    private static bool IsSessionScratchPath(string cwd)
+    private static bool IsSessionOwnedPath(string cwd)
     {
         // Session directories live under "{netclaw-home}/sessions/{id}/" with
         // {id} of the form "<channelId>_<unix-ts>_<random>" or a uuid. We use

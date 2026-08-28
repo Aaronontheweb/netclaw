@@ -74,6 +74,7 @@ public sealed class MessyCommandOneTimeApprovalTests : TestKit
             new NetclawPaths(),
             new Netclaw.Security.ToolPathPolicy([]),
             new Netclaw.Security.ShellCommandPolicy(),
+            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(toolConfig));
         services.AddSingleton(registry);
     }
@@ -107,7 +108,7 @@ public sealed class MessyCommandOneTimeApprovalTests : TestKit
                 "_rationale",
                 "Verify one-time approval for a complex command."));
 
-        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", null, new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateBound("signalr/thread-1", Path.GetTempPath(), new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             Boundary = TrustBoundary.TrustedInstance,

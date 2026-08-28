@@ -28,7 +28,7 @@ internal static class TestToolExecutionContext
         TrustAudience audience)
         => new(new ToolRunScope
         {
-            Session = new ToolSessionScope.Bound(sessionId, sessionDirectory),
+            Session = CreateSessionScope(sessionId, sessionDirectory),
             Audience = audience,
             InlineOutputBudget = InlineOutputBudget.Default,
             InteractiveApproval = new InteractiveApprovalCapability.Available(new TestParentApprovalBridge()),
@@ -38,7 +38,13 @@ internal static class TestToolExecutionContext
         string sessionId,
         string? sessionDirectory,
         TestToolExecutionContextOptions options)
-        => Create(new ToolSessionScope.Bound(sessionId, sessionDirectory), options);
+        => Create(CreateSessionScope(sessionId, sessionDirectory), options);
+
+    public static ToolExecutionContext CreateBoundWithStorage(
+        string sessionId,
+        SessionStoragePaths storage,
+        TestToolExecutionContextOptions options)
+        => Create(ToolSessionScope.Bound.WithStorage(sessionId, storage), options);
 
     private static ToolExecutionContext Create(ToolSessionScope session, TestToolExecutionContextOptions options)
     {
@@ -66,6 +72,22 @@ internal static class TestToolExecutionContext
             context.Approval.SetCwd(options.Cwd);
 
         return context;
+    }
+
+    private static ToolSessionScope CreateSessionScope(string sessionId, string? sessionDirectory)
+    {
+        if (sessionDirectory is null
+            || sessionDirectory.Any(char.IsControl)
+            || !Path.IsPathFullyQualified(sessionDirectory))
+        {
+            return new ToolSessionScope.Bound(sessionId, sessionDirectory);
+        }
+
+        var storage = SessionStoragePaths.CreateLegacy(
+            Path.GetFullPath(sessionDirectory),
+            Path.Combine(Path.GetTempPath(), "netclaw-test-session-logs"),
+            "test-session");
+        return ToolSessionScope.Bound.WithStorage(sessionId, storage);
     }
 }
 

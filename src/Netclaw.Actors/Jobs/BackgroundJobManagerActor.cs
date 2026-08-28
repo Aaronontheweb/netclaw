@@ -133,6 +133,7 @@ public sealed class BackgroundJobManagerActor : ReceiveActor, IWithTimers
             Id = jobId,
             Command = cmd.Command,
             WorkingDirectory = cmd.WorkingDirectory,
+            ManagedTemporaryDirectory = cmd.ManagedTemporaryDirectory,
             SessionId = cmd.SessionId,
             Rationale = cmd.Rationale,
             Status = BackgroundJobStatus.Pending,

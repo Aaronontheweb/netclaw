@@ -31,7 +31,7 @@ public sealed partial class FileEditTool : NetclawTool<FileEditTool.Params>
     private readonly ScopedFileAccessPolicy _fileAccessPolicy;
 
     public record Params(
-        [property: Description("File path to edit. Relative paths use the current project, then session scratch.")] string Path,
+        [property: Description("File path to edit. Relative paths use the current project, then session_dir.")] string Path,
         [property: Description("The exact text to find in the file (omit when using Content for a full write)")] string? OldString = null,
         [property: Description("The text to replace OldString with (must differ from OldString; use empty string to delete)")] string? NewString = null,
         [property: Description("Replace all occurrences instead of just the first (default: false)")] bool? ReplaceAll = null,

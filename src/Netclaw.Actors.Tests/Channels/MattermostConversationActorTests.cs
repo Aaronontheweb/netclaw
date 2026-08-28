@@ -535,6 +535,7 @@ public sealed class MattermostConversationActorTests(ITestOutputHelper output) :
             AudienceProfiles: TestMattermostGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestMattermostGatewayDeps.DefaultVisionCapableModel,
             Paths: TestMattermostGatewayDeps.NewTestPaths(),
+                        StorageResolver: Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance,
             BotUsername: botUsername,
             SessionPropsFactory: sessionPropsFactory);
     }

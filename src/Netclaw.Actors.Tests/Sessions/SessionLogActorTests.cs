@@ -12,6 +12,7 @@ using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Routing;
 using Netclaw.Actors.Sessions;
 using Netclaw.Configuration;
+using Netclaw.Tools;
 using Xunit;
 using static Netclaw.Actors.Sessions.SessionProtocol;
 
@@ -221,5 +222,55 @@ public sealed class SessionLogActorTests : TestKit
         {
             await TryDeleteDirectoryAsync(basePath);
         }
+    }
+
+    [Fact]
+    public async Task Storage_dispatcher_separates_version_2_parent_and_child_logs()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"netclaw-session-log-v2-{Guid.NewGuid():N}");
+        var timeProvider = new FakeTimeProvider(DateTimeOffset.Parse("2026-08-28T00:00:00Z"));
+        var sessionId = new SessionId("signalr/session-1");
+        var storage = SessionStoragePaths.CreateVersion2(new SessionStorageEnvelopeRoot(
+            Path.GetFullPath(Path.Combine(basePath, "sessions", "session-1"))));
+        var childScope = new SubAgentScopeId("signalr/session-1/subagent/test/run-1");
+        var child = storage.ForChild(new SubAgentRunId("run-1"), childScope);
+
+        try
+        {
+            var dispatcher = Sys.ActorOf(Props.Create(() => new SessionLogDispatcher(
+                new FixedSessionStorageResolver(storage),
+                timeProvider)));
+            dispatcher.Tell(new TextOutput("parent audit") { SessionId = sessionId });
+            for (var index = 0; index < 256; index++)
+            {
+                dispatcher.Tell(new SessionLogDiagnostic(
+                    sessionId,
+                    $"child diagnostic {index}",
+                    childScope));
+            }
+
+            await AwaitAssertAsync(async () =>
+            {
+                var parentText = await ReadLogAsync(
+                    storage.LogPath,
+                    TestContext.Current.CancellationToken);
+                var childText = await ReadLogAsync(
+                    child.LogPath,
+                    TestContext.Current.CancellationToken);
+                Assert.Contains("parent audit", parentText, StringComparison.Ordinal);
+                Assert.DoesNotContain("child diagnostic", parentText, StringComparison.Ordinal);
+                Assert.Contains("child diagnostic 255", childText, StringComparison.Ordinal);
+            }, cancellationToken: TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            await TryDeleteDirectoryAsync(basePath);
+        }
+    }
+
+    private sealed class FixedSessionStorageResolver(SessionStoragePaths storage)
+        : ISessionStorageResolver
+    {
+        public SessionStoragePaths Resolve(SessionId sessionId) => storage;
     }
 }

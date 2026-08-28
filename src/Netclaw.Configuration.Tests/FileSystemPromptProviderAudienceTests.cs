@@ -89,12 +89,12 @@ public sealed class FileSystemPromptProviderAudienceTests : IDisposable
 
         var projectIndex = prompt.IndexOf("For declared-project work, omit `WorkingDirectory`", StringComparison.Ordinal);
         var childIndex = prompt.IndexOf("For one call in a named child directory", StringComparison.Ordinal);
-        var scratchIndex = prompt.IndexOf("Use `session_dir` for disposable writable work outside a project", StringComparison.Ordinal);
+        var temporaryIndex = prompt.IndexOf("Use `temp_dir` for disposable files", StringComparison.Ordinal);
         var transitionIndex = prompt.IndexOf("Use an inline directory change only when", StringComparison.Ordinal);
         Assert.True(projectIndex >= 0);
         Assert.True(childIndex > projectIndex);
-        Assert.True(scratchIndex > childIndex);
-        Assert.True(transitionIndex > scratchIndex);
+        Assert.True(temporaryIndex > childIndex);
+        Assert.True(transitionIndex > temporaryIndex);
         Assert.Contains("Program-specific directory options do not replace it", prompt);
         Assert.Contains("Keep the project root unless the user requests", prompt);
         Assert.Contains("A denied child-directory call does not permit a project change", prompt);
@@ -143,6 +143,10 @@ public sealed class FileSystemPromptProviderAudienceTests : IDisposable
         Assert.Contains("If approval is required but no interactive requester is available", prompt);
         Assert.Contains("After an access denial, do not retry that call during the same user turn", prompt);
         Assert.Contains("A later explicit user request can start a new call", prompt);
+        Assert.Contains("Use `temp_dir` for disposable files", prompt);
+        Assert.Contains("Standard temporary APIs already use this directory", prompt);
+        Assert.Contains("After an approval-required result", prompt);
+        Assert.Contains("A `Tool access denied:` result is terminal", prompt);
         Assert.Contains("Apply one `Tool execution deferred:` correction unchanged", prompt);
         Assert.Contains("Use `load_tool` directly for a known exact tool name", prompt);
         Assert.Contains("Use `search_tools` when the capability is known", prompt);

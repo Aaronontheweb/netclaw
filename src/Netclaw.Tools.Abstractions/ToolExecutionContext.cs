@@ -32,7 +32,7 @@ internal enum ToolInvocationOutcomeCategory
 internal enum ToolRemediationCode
 {
     SetWorkingDirectory,
-    UseSessionScratch,
+    UseManagedTemporaryDirectory,
     ProvideUniqueOldString,
     UseNativeTool
 }
@@ -299,6 +299,15 @@ public abstract record ToolSessionScope
 
     public sealed record Bound : ToolSessionScope
     {
+        private Bound(string sessionId, SessionStoragePaths storage)
+            : this(sessionId, storage.SessionDirectory)
+        {
+            Storage = storage;
+        }
+
+        public static Bound WithStorage(string sessionId, SessionStoragePaths storage) =>
+            new(sessionId, storage ?? throw new ArgumentNullException(nameof(storage)));
+
         public Bound(string sessionId, string? sessionDirectory)
         {
             if (string.IsNullOrWhiteSpace(sessionId))
@@ -310,6 +319,7 @@ public abstract record ToolSessionScope
 
         public string SessionId { get; }
         public string? SessionDirectory { get; }
+        public SessionStoragePaths? Storage { get; }
     }
 }
 
@@ -490,6 +500,7 @@ public sealed class ToolInvocationContext
         {
             SessionId = bound.SessionId;
             SessionDirectory = bound.SessionDirectory;
+            SessionStorage = bound.Storage;
         }
     }
 
@@ -566,6 +577,8 @@ public sealed class ToolInvocationContext
     /// </summary>
     public string? SessionDirectory { get; }
 
+    public SessionStoragePaths? SessionStorage { get; }
+
     /// <summary>
     /// The session <i>content</i> inline budget
     /// (<c>SessionTuning.MaxInlineToolResultChars</c>), surfaced here so
@@ -613,8 +626,8 @@ public sealed class ToolInvocationContext
     /// <c>WorkingDirectory</c> argument when the agent provided one;</item>
     /// <item><see cref="ProjectDirectory"/> — the session's declared project
     /// root, populated from <c>WorkingContext.ProjectDirectory</c>;</item>
-    /// <item><see cref="SessionDirectory"/> — the per-session scratch
-    /// directory under <c>~/.netclaw/sessions/&lt;id&gt;/</c>;</item>
+    /// <item><see cref="SessionDirectory"/> — the session workspace and
+    /// relative-path fallback;</item>
     /// <item><see cref="InheritedCwd"/> — a sub-agent's snapshot of the
     /// parent's resolved cwd, used when the child has no
     /// <see cref="ProjectDirectory"/> or <see cref="SessionDirectory"/> of
@@ -713,6 +726,7 @@ public sealed class ToolExecutionContext
     public string? ChannelType => Invocation.ChannelType;
     public string? SessionId => Invocation.SessionId;
     public string? SessionDirectory => Invocation.SessionDirectory;
+    public SessionStoragePaths? SessionStorage => Invocation.SessionStorage;
     public int MaxInlineToolResultChars => Invocation.MaxInlineToolResultChars;
     public string? ProjectDirectory => Invocation.ProjectDirectory;
     public ModelModality ModelInputModalities => Invocation.ModelInputModalities;

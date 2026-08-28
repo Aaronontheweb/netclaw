@@ -261,10 +261,10 @@ internal static class DiscordApprovalPromptBuilder
         if (string.IsNullOrWhiteSpace(request.Cwd))
             return "(no working directory)";
 
-        return IsSessionScratchPath(request.Cwd) ? "this session" : request.Cwd;
+        return IsSessionOwnedPath(request.Cwd) ? "this session" : request.Cwd;
     }
 
-    private static bool IsSessionScratchPath(string cwd)
+    private static bool IsSessionOwnedPath(string cwd)
     {
         var normalized = cwd.Replace('\\', '/');
         return normalized.Contains("/.netclaw/sessions/", StringComparison.OrdinalIgnoreCase);

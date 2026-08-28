@@ -7,6 +7,7 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Memory;
 using Netclaw.Actors.SubAgents;
 using Netclaw.Actors.Tools;
+using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
@@ -22,7 +23,8 @@ public sealed record SessionServices(
     IReadOnlyList<IContextLayerProvider> ContextLayers,
     IWorkingContextSnapshotProvider WorkingContextSnapshots,
     TimeProvider TimeProvider,
-    NetclawPaths Paths);
+    NetclawPaths Paths,
+    ISessionStorageResolver StorageResolver);
 
 /// <summary>
 /// Tool execution infrastructure. Null when the session operates without tools.

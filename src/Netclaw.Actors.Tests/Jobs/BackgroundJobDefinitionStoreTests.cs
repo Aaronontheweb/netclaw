@@ -77,6 +77,7 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
         {
             Id = new BackgroundJobId(jobId),
             Command = "dotnet test",
+        ManagedTemporaryDirectory = Path.Combine(Path.GetTempPath(), "netclaw-tests", "managed-temp"),
             SessionId = new Netclaw.Actors.Protocol.SessionId("C0ABC/1712000000.000001"),
             Rationale = "Run the test suite.",
             Status = BackgroundJobStatus.Pending,
@@ -113,6 +114,7 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
         {
             Id = jobId,
             Command = "dotnet test",
+        ManagedTemporaryDirectory = Path.Combine(Path.GetTempPath(), "netclaw-tests", "managed-temp"),
             SessionId = new Netclaw.Actors.Protocol.SessionId("C0ABC/1712000000.000001"),
             Rationale = "Run the test suite.",
             Status = BackgroundJobStatus.Completed,
@@ -170,6 +172,7 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
         {
             Id = jobId,
             Command = "dotnet test",
+        ManagedTemporaryDirectory = Path.Combine(Path.GetTempPath(), "netclaw-tests", "managed-temp"),
             SessionId = new Netclaw.Actors.Protocol.SessionId("C0ABC/1712000000.000001"),
             Rationale = "Run the test suite.",
             Status = BackgroundJobStatus.Completed,
@@ -243,6 +246,7 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
             {
               "id": "{{unsafeId}}",
               "command": "echo pwn",
+              "managedTemporaryDirectory": "/tmp/netclaw-tests/managed-temp",
               "sessionId": "C0TEST/1712000000.000001",
               "rationale": "test",
               "status": "Completed",
@@ -269,6 +273,7 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
         {
             Id = victimId,
             Command = "dotnet test",
+        ManagedTemporaryDirectory = Path.Combine(Path.GetTempPath(), "netclaw-tests", "managed-temp"),
             SessionId = new Netclaw.Actors.Protocol.SessionId("C0ABC/1712000000.000001"),
             Rationale = "Run the test suite.",
             Status = BackgroundJobStatus.Completed,
@@ -312,6 +317,7 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
         {
             Id = new BackgroundJobId("job-byte-eq"),
             Command = "dotnet test",
+        ManagedTemporaryDirectory = Path.Combine(Path.GetTempPath(), "netclaw-tests", "managed-temp"),
             SessionId = new Netclaw.Actors.Protocol.SessionId("C0ABC/1712000000.000001"),
             Rationale = "Run the test suite.",
             Audience = TrustAudience.Team,

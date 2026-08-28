@@ -1,0 +1,84 @@
+// -----------------------------------------------------------------------
+// <copyright file="SessionStoragePathsTests.cs" company="Petabridge, LLC">
+//      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
+// </copyright>
+// -----------------------------------------------------------------------
+using Netclaw.Tools;
+
+namespace Netclaw.Actors.Tests.Protocol;
+
+public sealed class SessionStoragePathsTests
+{
+    [Fact]
+    public void Version_2_paths_share_one_envelope()
+    {
+        var envelope = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "netclaw-storage", "session-42"));
+        var storage = SessionStoragePaths.CreateVersion2(new SessionStorageEnvelopeRoot(envelope));
+
+        Assert.Equal(SessionStorageLayoutVersion.Version2, storage.Binding?.LayoutVersion);
+        Assert.Equal(Path.Combine(envelope, "workspace"), storage.SessionDirectory);
+        Assert.Equal(Path.Combine(envelope, "artifacts"), storage.ArtifactDirectory);
+        Assert.Equal(Path.Combine(envelope, "tmp", "parent"), storage.TemporaryDirectory);
+        Assert.Equal(Path.Combine(envelope, "worktrees"), storage.WorktreeDirectory);
+        Assert.Equal(Path.Combine(envelope, "logs", "session.log"), storage.LogPath);
+    }
+
+    [Fact]
+    public void Child_paths_use_the_run_identifier_and_keep_parent_workspace()
+    {
+        var envelope = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "netclaw-storage", "session-42"));
+        var parent = SessionStoragePaths.CreateVersion2(new SessionStorageEnvelopeRoot(envelope));
+
+        var child = parent.ForChild(
+            new SubAgentRunId("run-7"),
+            new SubAgentScopeId("session-42/subagent/example/run-7"));
+
+        var childRoot = Path.Combine(envelope, "subagents", "run-7");
+        Assert.Equal(parent.SessionDirectory, child.SessionDirectory);
+        Assert.Equal(Path.Combine(childRoot, "artifacts"), child.ArtifactDirectory);
+        Assert.Equal(Path.Combine(childRoot, "tmp"), child.TemporaryDirectory);
+        Assert.Equal(Path.Combine(childRoot, "logs", "session.log"), child.LogPath);
+        Assert.Equal(parent.WorktreeDirectory, child.WorktreeDirectory);
+    }
+
+    [Fact]
+    public void Envelope_root_rejects_relative_and_noncanonical_paths()
+    {
+        Assert.Throws<ArgumentException>(() => new SessionStorageEnvelopeRoot("relative/path"));
+
+        var noncanonical = Path.Combine(Path.GetTempPath(), "one", "..", "two");
+        Assert.Throws<ArgumentException>(() => new SessionStorageEnvelopeRoot(noncanonical));
+    }
+
+    [Theory]
+    [InlineData("../escape")]
+    [InlineData("run/child")]
+    [InlineData("run\\child")]
+    public void Run_identifier_rejects_path_syntax(string value)
+    {
+        Assert.Throws<ArgumentException>(() => new SubAgentRunId(value));
+    }
+
+    [Fact]
+    public void Legacy_paths_keep_the_existing_session_and_log_locations()
+    {
+        var basePath = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "netclaw-storage"));
+        var sessionDirectory = Path.Combine(basePath, "sessions", "signalr_example");
+        var logBase = Path.Combine(basePath, "logs", "sessions");
+        var storage = SessionStoragePaths.CreateLegacy(
+            sessionDirectory,
+            logBase,
+            "signalr_example");
+
+        Assert.Null(storage.Binding);
+        Assert.Equal(sessionDirectory, storage.SessionDirectory);
+        Assert.Equal(Path.Combine(logBase, "signalr_example", "session.log"), storage.LogPath);
+
+        var child = storage.ForChild(
+            new SubAgentRunId("run-7"),
+            new SubAgentScopeId("signalr/example/subagent/example/run-7"));
+        Assert.Equal(
+            Path.Combine(logBase, "signalr_example_subagent_example_run-7", "session.log"),
+            child.LogPath);
+    }
+}

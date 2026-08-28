@@ -6,6 +6,7 @@
 using Discord.WebSocket;
 using Mattermost;
 using Netclaw.Actors.Channels;
+using Netclaw.Actors.Protocol;
 using Netclaw.Channels;
 using Netclaw.Channels.Discord;
 using Netclaw.Channels.Discord.Transport;
@@ -67,7 +68,8 @@ public static class ChannelIntegrationRegistrationExtensions
                     paths,
                     toolConfig.AudienceProfiles,
                     modelCapabilities,
-                    logger);
+                    logger,
+                    sp.GetRequiredService<ISessionStorageResolver>());
             })
             .WithOutboundClient<ISlackOutboundClient, SlackOutboundClient>()
             .WithLookupClient<ISlackTargetLookupClient, SlackApiTargetLookupClient>()
@@ -172,7 +174,8 @@ public static class ChannelIntegrationRegistrationExtensions
                     toolConfig.AudienceProfiles,
                     modelCapabilities,
                     paths,
-                    logger);
+                    logger,
+                    sp.GetRequiredService<ISessionStorageResolver>());
             })
             .WithReminderResolver((_, options) => new DiscordReminderTargetResolver(options))
             .WithResolver((sp, options) => new DiscordAddressResolver(
@@ -250,7 +253,8 @@ public static class ChannelIntegrationRegistrationExtensions
                     toolConfig.AudienceProfiles,
                     modelCapabilities,
                     paths,
-                    logger);
+                    logger,
+                    sp.GetRequiredService<ISessionStorageResolver>());
             })
             .WithReminderResolver<MattermostReminderTargetResolver>()
             .WithOutboundClient<IMattermostOutboundClient, MattermostNetOutboundClient>()

@@ -27,7 +27,7 @@ public sealed partial class AttachFileTool : NetclawTool<AttachFileTool.Params>
     private readonly ToolPathPolicy _pathPolicy;
 
     public record Params(
-        [property: Description("Existing authorized source file path. Relative paths use the current project, then session scratch. Pass this path directly without first copying the file.")] string Path,
+        [property: Description("Existing authorized source file path. Relative paths use the current project, then session_dir. Pass this path directly without first copying the file.")] string Path,
         [property: Description("Optional display name for the file")] string? DisplayName = null);
 
     public AttachFileTool(ToolConfig config, NetclawPaths paths, ToolPathPolicy pathPolicy)

@@ -46,7 +46,8 @@ public sealed class MattermostChannelHealthContractTests(ITestOutputHelper outpu
                 AudienceProfiles = TestMattermostGatewayDeps.DefaultAudienceProfiles
             },
             TestMattermostGatewayDeps.DefaultVisionCapableModel,
-            TestMattermostGatewayDeps.NewTestPaths());
+            TestMattermostGatewayDeps.NewTestPaths(),
+            Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance);
     }
 
     protected override Task SetTransportStateAsync(bool connected, bool ready, string? healthDetail)

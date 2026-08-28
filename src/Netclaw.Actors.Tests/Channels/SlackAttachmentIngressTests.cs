@@ -146,6 +146,7 @@ public sealed class SlackAttachmentIngressVisionTests : TestKit
             AudienceProfiles: profiles,
             ModelCapabilities: Host.Services.GetRequiredService<ModelCapabilities>(),
             Paths: _paths,
+            StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             HttpClient: httpClient,
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 

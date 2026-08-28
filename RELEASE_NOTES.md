@@ -49,6 +49,15 @@ A new `Netclaw.Embeddings` assembly gives every cross-session memory a local emb
 ### Small fixes
 
 - Fixed release-note parsing so version metadata resolves cleanly ([#2067](https://github.com/netclaw-dev/netclaw/pull/2067)).
+- New sessions now keep work files, artifacts, temporary files, worktrees, and logs in one versioned storage envelope.
+- Each parent and child process now receives its own managed temporary directory through standard temporary environment variables.
+- Existing file tools can read same-session parent and child logs. They cannot change logs or read another session's logs.
+- Successful `spawn_agent` results now return the child run, log, and artifact locations.
+- The new `worktree_create` tool allocates a managed destination and changes project scope only after Git succeeds.
+
+Existing sessions keep their current paths. Netclaw does not move or rename their data.
+
+> **Downgrade note:** A pre-feature binary cannot resume a session that already has a versioned storage binding.
 
 > **Upgrade note:** embeddings default to enabled. Expect roughly 800 MB total RSS on the reference configuration, and plan for model access on first start. Operators can disable embeddings or pre-provision the models for offline use.
 

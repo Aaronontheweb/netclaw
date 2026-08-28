@@ -34,11 +34,13 @@ public sealed class SessionCatalogService : ISessionLifecycleObserver
     private readonly NetclawPaths _paths;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<SessionCatalogService> _logger;
+    private readonly ISessionStorageResolver _storageResolver;
     private readonly ISessionMetrics? _metrics;
 
     public SessionCatalogService(
         NetclawPaths paths,
         TimeProvider timeProvider,
+        ISessionStorageResolver storageResolver,
         ILogger<SessionCatalogService> logger,
         ISessionMetrics? metrics = null)
     {
@@ -49,6 +51,7 @@ public sealed class SessionCatalogService : ISessionLifecycleObserver
             Mode = SqliteOpenMode.ReadWriteCreate
         }.ToString();
         _timeProvider = timeProvider;
+        _storageResolver = storageResolver;
         _logger = logger;
         _metrics = metrics;
     }
@@ -61,7 +64,7 @@ public sealed class SessionCatalogService : ISessionLifecycleObserver
 
         try
         {
-            var logPath = SessionLogFile.GetLogPath(sessionId, _paths.SessionLogsDirectory);
+            var logPath = _storageResolver.Resolve(sessionId).LogPath;
 
             using var conn = new SqliteConnection(_connectionString);
             conn.Open();

@@ -1,6 +1,6 @@
 # Netclaw Implementation Plan
 
-Last updated: 2026-08-21
+Last updated: 2026-08-28
 
 This is the execution plan for Netclaw. Autonomous agents and RALPH-style loops
 SHALL work from `NOW` by default. `NEXT` and `LATER` work belongs in
@@ -109,6 +109,19 @@ the smallest repeatable manual script plus expected output.
 - Testing: `docs/spec/SPEC-010-testing-and-smoke-strategy.md`, `TOOLING.md`
 
 ## NOW
+
+### Priority: Unify Session Storage And Temporary Files
+
+- [x] New sessions bind one durable, versioned
+  [session storage envelope](docs/spec/GLOSSARY.md#session-storage-envelope).
+- [x] Existing sessions keep their established workspace and log paths.
+- [x] Parent and child processes receive separate managed temporary paths.
+- [x] Existing file tools can read same-session logs but cannot change them.
+- [x] Successful subagent results return exact child log and artifact paths.
+- [x] `worktree_create` allocates a session-owned destination and records its owner.
+- [x] The operations skill explains the new path and worktree contracts.
+- [ ] Complete the locked post-change eval comparison and the repository gates.
+- [ ] Harvest sanitized traffic after the binary swap.
 
 ### Priority: Keep MCP HTTP Protocol Fallback Deterministic
 

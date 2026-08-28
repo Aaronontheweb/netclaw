@@ -84,13 +84,13 @@ public interface IToolExecutor
     }
 }
 
-internal interface ISessionScratchRetryAwareExecutor
+internal interface IManagedTemporaryRetryAwareExecutor
 {
     ApprovalShell Shell { get; }
 
-    void MarkSessionScratchRetry(
+    void MarkManagedTemporaryRetry(
         ToolExecutionContext context,
-        ToolAgentCorrection.SessionScratchSuggested correction);
+        ToolAgentCorrection.ManagedTemporaryDirectorySuggested correction);
 }
 
 /// <summary>

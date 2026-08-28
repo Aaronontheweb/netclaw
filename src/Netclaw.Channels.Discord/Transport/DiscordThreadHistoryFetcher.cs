@@ -43,6 +43,7 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
     private readonly ToolAudienceProfiles _audienceProfiles;
     private readonly ModelCapabilities _modelCapabilities;
     private readonly NetclawPaths _paths;
+    private readonly ISessionStorageResolver _storageResolver;
     private readonly ILogger<DiscordThreadHistoryFetcher> _logger;
 
     public DiscordThreadHistoryFetcher(
@@ -53,7 +54,8 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         ToolAudienceProfiles audienceProfiles,
         ModelCapabilities modelCapabilities,
         NetclawPaths paths,
-        ILogger<DiscordThreadHistoryFetcher> logger)
+        ILogger<DiscordThreadHistoryFetcher> logger,
+        ISessionStorageResolver storageResolver)
         : this(
             (threadChannelId, cancellationToken) => FetchRawMessagesAsync(client, threadChannelId, cancellationToken, logger),
             options,
@@ -62,7 +64,8 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
             audienceProfiles,
             modelCapabilities,
             paths,
-            logger)
+            logger,
+            storageResolver)
     {
     }
 
@@ -74,7 +77,8 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         ToolAudienceProfiles audienceProfiles,
         ModelCapabilities modelCapabilities,
         NetclawPaths paths,
-        ILogger<DiscordThreadHistoryFetcher> logger)
+        ILogger<DiscordThreadHistoryFetcher> logger,
+        ISessionStorageResolver storageResolver)
     {
         _messageFetcher = messageFetcher;
         _options = options;
@@ -84,6 +88,7 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         _modelCapabilities = modelCapabilities;
         _paths = paths;
         _logger = logger;
+        _storageResolver = storageResolver;
     }
 
     public async Task<IReadOnlyList<ChannelInput>> FetchThreadHistoryAsync(
@@ -103,8 +108,9 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         }
 
         var inlineImages = _modelCapabilities.InputModalities.HasFlag(ModelModality.Image);
-        var inboxDir = SessionDirectoryHelper.GetOrCreateInboxDirectory(sessionId, _paths.SessionsDirectory);
-        var stagingDir = SessionDirectoryHelper.GetOrCreateAttachmentStagingDirectory(sessionId, _paths.SessionsDirectory);
+        var storage = _storageResolver.Resolve(sessionId);
+        var inboxDir = SessionDirectoryHelper.GetOrCreateInboxDirectory(storage);
+        var stagingDir = SessionDirectoryHelper.GetOrCreateAttachmentStagingDirectory(storage);
 
         try
         {

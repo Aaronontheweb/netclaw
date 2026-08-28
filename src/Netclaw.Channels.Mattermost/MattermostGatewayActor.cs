@@ -100,6 +100,7 @@ public sealed record MattermostGatewayDependencies(
     ToolAudienceProfiles AudienceProfiles,
     ModelCapabilities ModelCapabilities,
     NetclawPaths Paths,
+    ISessionStorageResolver StorageResolver,
     string? ServerUrl = null,
     string? CallbackUrl = null,
     MattermostUserId? BotUserId = null,

@@ -1397,7 +1397,7 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
         const string callId = "call-shell-scratch-denied";
         const string scratchDirectory = "/home/user/.netclaw/sessions/example";
         _toolExecutor.GatedTools.Add("shell_execute");
-        _toolExecutor.SessionScratchRetryTools["shell_execute"] = scratchDirectory;
+        _toolExecutor.ManagedTemporaryRetryTools["shell_execute"] = scratchDirectory;
 
         _fakeChatClient.ToolCallsOnFirstCall =
         [
@@ -1719,7 +1719,7 @@ internal sealed class ApprovalGateToolExecutor : IToolExecutor
     /// <summary>Tool names that require interactive approval before execution.</summary>
     public HashSet<string> GatedTools { get; } = [];
 
-    public Dictionary<string, string> SessionScratchRetryTools { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, string> ManagedTemporaryRetryTools { get; } = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Audience on the execution context of the most recent successful
@@ -1776,12 +1776,12 @@ internal sealed class ApprovalGateToolExecutor : IToolExecutor
                     Cwd: null,
                     IsMessy: false,
                     Candidates: [new Netclaw.Security.ApprovalCandidate(toolCall.Name, Directory: null)]);
-                if (SessionScratchRetryTools.TryGetValue(toolCall.Name, out var scratchDirectory))
+                if (ManagedTemporaryRetryTools.TryGetValue(toolCall.Name, out var scratchDirectory))
                 {
                     approvalContext = approvalContext with
                     {
-                        IsSessionScratchRetry = true,
-                        SessionScratchDirectory = scratchDirectory
+                        IsManagedTemporaryRetry = true,
+                        ManagedTemporaryDirectory = scratchDirectory
                     };
                 }
 

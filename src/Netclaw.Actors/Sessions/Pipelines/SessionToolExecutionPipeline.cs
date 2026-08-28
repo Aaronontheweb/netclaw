@@ -38,35 +38,35 @@ internal sealed record ToolCallResult(
     IReadOnlyList<AcceptedSubAgentFinding> AcceptedSubAgentFindings,
     AuthorizationAttemptId AuthorizationAttemptId,
     Jobs.ActiveJobInfo? StartedBackgroundJob = null,
-    SessionScratchCorrectionChange? ScratchCorrectionChange = null,
+    ManagedTemporaryCorrectionChange? ManagedTemporaryCorrectionUpdate = null,
     string? FailureCode = null,
     ToolInvocationReceipt? Receipt = null,
     ToolExposureRequest? ExposureRequest = null);
 
-internal abstract record SessionScratchCorrectionChange
+internal abstract record ManagedTemporaryCorrectionChange
 {
-    private SessionScratchCorrectionChange()
+    private ManagedTemporaryCorrectionChange()
     {
     }
 
-    internal sealed record Arm(SessionScratchCorrectionKey Key) : SessionScratchCorrectionChange;
+    internal sealed record Arm(ManagedTemporaryCorrectionKey Key) : ManagedTemporaryCorrectionChange;
 
-    internal sealed record Consume(SessionScratchCorrectionKey Key) : SessionScratchCorrectionChange;
+    internal sealed record Consume(ManagedTemporaryCorrectionKey Key) : ManagedTemporaryCorrectionChange;
 }
 
-internal sealed class SessionScratchCorrectionDispatch
+internal sealed class ManagedTemporaryCorrectionDispatch
 {
-    internal static SessionScratchCorrectionDispatch Empty { get; } = new([]);
+    internal static ManagedTemporaryCorrectionDispatch Empty { get; } = new([]);
 
-    private readonly IReadOnlyList<SessionScratchCorrectionKey> _armed;
-    private readonly ConcurrentDictionary<SessionScratchCorrectionKey, byte> _consumed = new();
+    private readonly IReadOnlyList<ManagedTemporaryCorrectionKey> _armed;
+    private readonly ConcurrentDictionary<ManagedTemporaryCorrectionKey, byte> _consumed = new();
 
-    internal SessionScratchCorrectionDispatch(IEnumerable<SessionScratchCorrectionKey> armed)
+    internal ManagedTemporaryCorrectionDispatch(IEnumerable<ManagedTemporaryCorrectionKey> armed)
         => _armed = Array.AsReadOnly(armed.ToArray());
 
     internal bool TryConsume(
-        SessionScratchCallSemantics call,
-        out SessionScratchCorrectionKey key)
+        ManagedTemporaryCallSemantics call,
+        out ManagedTemporaryCorrectionKey key)
     {
         foreach (var candidate in _armed)
         {
@@ -83,9 +83,10 @@ internal sealed class SessionScratchCorrectionDispatch
     }
 
     private static bool HasSameExecutionSemantics(
-        SessionScratchCallSemantics left,
-        SessionScratchCallSemantics right)
-        => left.Shell == right.Shell
+        ManagedTemporaryCallSemantics left,
+        ManagedTemporaryCallSemantics right)
+        => string.Equals(left.ToolName, right.ToolName, StringComparison.Ordinal)
+           && left.Shell == right.Shell
            && string.Equals(left.Command, right.Command, StringComparison.Ordinal)
            && left.HasExplicitWorkingDirectory == right.HasExplicitWorkingDirectory
            && string.Equals(
@@ -93,24 +94,29 @@ internal sealed class SessionScratchCorrectionDispatch
                right.ExplicitWorkingDirectory,
                StringComparison.Ordinal)
            && left.Background == right.Background
-           && left.Timeout == right.Timeout;
+           && left.Timeout == right.Timeout
+           && string.Equals(left.Path, right.Path, StringComparison.Ordinal)
+           && string.Equals(left.Content, right.Content, StringComparison.Ordinal)
+           && string.Equals(left.OldString, right.OldString, StringComparison.Ordinal)
+           && string.Equals(left.NewString, right.NewString, StringComparison.Ordinal)
+           && left.ReplaceAll == right.ReplaceAll;
 }
 
-internal sealed class SessionScratchCorrectionState
+internal sealed class ManagedTemporaryCorrectionState
 {
-    private readonly HashSet<SessionScratchCorrectionKey> _keys = [];
+    private readonly HashSet<ManagedTemporaryCorrectionKey> _keys = [];
 
-    internal SessionScratchCorrectionDispatch Snapshot()
+    internal ManagedTemporaryCorrectionDispatch Snapshot()
         => new(_keys);
 
-    internal void Apply(SessionScratchCorrectionChange? change)
+    internal void Apply(ManagedTemporaryCorrectionChange? change)
     {
         switch (change)
         {
-            case SessionScratchCorrectionChange.Arm arm:
+            case ManagedTemporaryCorrectionChange.Arm arm:
                 _keys.Add(arm.Key);
                 break;
-            case SessionScratchCorrectionChange.Consume consume:
+            case ManagedTemporaryCorrectionChange.Consume consume:
                 _keys.Remove(consume.Key);
                 break;
         }
@@ -192,7 +198,7 @@ internal sealed class SessionToolRunEnvironment
 {
     private IReadOnlyList<string> _recentFiles = [];
 
-    public required string SessionDirectory { get; init; }
+    public required SessionStoragePaths Storage { get; init; }
     public required InlineOutputBudget InlineOutputBudget { get; init; }
     public required Func<object, string, CancellationToken, Task<object>> SpawnChildActor { get; init; }
     public ModelModality ModelInputModalities { get; init; } = ModelModality.Text;
@@ -214,15 +220,15 @@ internal sealed class SessionToolBatch
         = new Dictionary<string, IReadOnlyList<string>>().ToFrozenDictionary();
     private static readonly IReadOnlyDictionary<string, ApprovalDecision> NoDecisionOverrides
         = new Dictionary<string, ApprovalDecision>().ToFrozenDictionary();
-    private static readonly IReadOnlyDictionary<string, string> NoSessionScratchDenialDirectories
+    private static readonly IReadOnlyDictionary<string, string> NoManagedTemporaryDenialDirectories
         = new Dictionary<string, string>().ToFrozenDictionary();
     private static readonly IReadOnlyDictionary<string, AuthorizationAttemptId> NoAuthorizationAttemptIds
         = new Dictionary<string, AuthorizationAttemptId>().ToFrozenDictionary();
     private IReadOnlyList<FunctionCallContent> _toolCalls = [];
     private IReadOnlyDictionary<string, IReadOnlyList<string>> _oneTimeApprovalPreSeed = NoApprovalPreSeed;
     private IReadOnlyDictionary<string, ApprovalDecision> _decisionOverrides = NoDecisionOverrides;
-    private IReadOnlyDictionary<string, string> _sessionScratchDenialDirectories =
-        NoSessionScratchDenialDirectories;
+    private IReadOnlyDictionary<string, string> _managedTemporaryDenialDirectories =
+        NoManagedTemporaryDenialDirectories;
     private IReadOnlyDictionary<string, AuthorizationAttemptId> _authorizationAttemptIds =
         NoAuthorizationAttemptIds;
 
@@ -230,14 +236,14 @@ internal sealed class SessionToolBatch
     {
         ArgumentNullException.ThrowIfNull(turnContext);
         ArgumentNullException.ThrowIfNull(environment);
-        ArgumentException.ThrowIfNullOrWhiteSpace(environment.SessionDirectory);
+        ArgumentNullException.ThrowIfNull(environment.Storage);
         ArgumentNullException.ThrowIfNull(environment.InlineOutputBudget);
         ArgumentNullException.ThrowIfNull(environment.SpawnChildActor);
 
         TurnContext = turnContext;
         RunScope = new ToolRunScope
         {
-            Session = new ToolSessionScope.Bound(turnContext.SessionId.Value, environment.SessionDirectory),
+            Session = ToolSessionScope.Bound.WithStorage(turnContext.SessionId.Value, environment.Storage),
             Audience = turnContext.Audience,
             Boundary = turnContext.Boundary,
             ChannelType = turnContext.ChannelType?.ToWireValue(),
@@ -271,8 +277,8 @@ internal sealed class SessionToolBatch
     public bool SetWorkingDirectoryAvailable { get; init; }
     public Func<string, ToolInvocationContext, bool>? CanDeclareWorkingDirectory { get; init; }
     public bool StreamResults { get; init; }
-    public SessionScratchCorrectionDispatch ScratchCorrections { get; init; }
-        = SessionScratchCorrectionDispatch.Empty;
+    public ManagedTemporaryCorrectionDispatch ManagedTemporaryCorrections { get; init; }
+        = ManagedTemporaryCorrectionDispatch.Empty;
     public IReadOnlyDictionary<string, IReadOnlyList<string>> OneTimeApprovalPreSeed
     {
         get => _oneTimeApprovalPreSeed;
@@ -294,13 +300,13 @@ internal sealed class SessionToolBatch
             _decisionOverrides = value.ToFrozenDictionary(StringComparer.Ordinal);
         }
     }
-    public IReadOnlyDictionary<string, string> SessionScratchDenialDirectories
+    public IReadOnlyDictionary<string, string> ManagedTemporaryDenialDirectories
     {
-        get => _sessionScratchDenialDirectories;
+        get => _managedTemporaryDenialDirectories;
         init
         {
             ArgumentNullException.ThrowIfNull(value);
-            _sessionScratchDenialDirectories = value.ToFrozenDictionary(StringComparer.Ordinal);
+            _managedTemporaryDenialDirectories = value.ToFrozenDictionary(StringComparer.Ordinal);
         }
     }
     public IReadOnlyDictionary<string, AuthorizationAttemptId> AuthorizationAttemptIds
@@ -331,7 +337,7 @@ internal sealed class SessionToolBatch
         ArgumentNullException.ThrowIfNull(BackgroundJobs);
         ArgumentNullException.ThrowIfNull(OneTimeApprovalPreSeed);
         ArgumentNullException.ThrowIfNull(DecisionOverrides);
-        ArgumentNullException.ThrowIfNull(SessionScratchDenialDirectories);
+        ArgumentNullException.ThrowIfNull(ManagedTemporaryDenialDirectories);
         ArgumentNullException.ThrowIfNull(AuthorizationAttemptIds);
     }
 }
@@ -384,7 +390,7 @@ internal sealed class SessionToolExecutionPipeline
                     batch.DecisionOverrides.TryGetValue(tc.CallId, out var overrideDecision)
                         ? overrideDecision
                         : null,
-                    batch.SessionScratchDenialDirectories.TryGetValue(tc.CallId, out var scratchDirectory)
+                    batch.ManagedTemporaryDenialDirectories.TryGetValue(tc.CallId, out var scratchDirectory)
                         ? scratchDirectory
                         : null,
                     modelInputBudget);
@@ -431,7 +437,7 @@ internal sealed class SessionToolExecutionPipeline
                 CompletedSubAgentRuns = [.. results.SelectMany(r => r.CompletedSubAgentRuns)],
                 AcceptedSubAgentFindings = [.. results.SelectMany(r => r.AcceptedSubAgentFindings)],
                 StartedBackgroundJobs = [.. results.Where(r => r.StartedBackgroundJob is not null).Select(r => r.StartedBackgroundJob!)],
-                ScratchCorrectionChanges = [.. results.Where(r => r.ScratchCorrectionChange is not null).Select(r => r.ScratchCorrectionChange!)],
+                ManagedTemporaryCorrectionChanges = [.. results.Where(r => r.ManagedTemporaryCorrectionUpdate is not null).Select(r => r.ManagedTemporaryCorrectionUpdate!)],
                 ToolFailureCodes = results
                     .Where(result => result.FailureCode is not null)
                     .ToDictionary<ToolCallResult, string, string>(
@@ -494,7 +500,7 @@ internal sealed class SessionToolExecutionPipeline
         SessionToolBatch batch,
         IReadOnlyList<string>? oneTimeApprovalPreSeed,
         ApprovalDecision? decisionOverride,
-        string? sessionScratchDenialDirectory,
+        string? managedTemporaryDenialDirectory,
         ModelInputBatchBudget modelInputBudget)
     {
         var originalToolCall = tc;
@@ -635,22 +641,21 @@ internal sealed class SessionToolExecutionPipeline
             new ToolExecutionTimeout(timeout),
             outputs);
         context.Approval.RestoreAuthorizationAttemptId(authorizationAttemptId);
-        var scratchShell = _executor is ISessionScratchRetryAwareExecutor scratchAwareExecutor
+        var scratchShell = _executor is IManagedTemporaryRetryAwareExecutor scratchAwareExecutor
             ? scratchAwareExecutor.Shell
             : ApprovalShell.Bash;
-        var scratchCall = BuildSessionScratchCallSemantics(tc, meta, timeout, scratchShell);
-        SessionScratchCorrectionKey? consumedScratchKey = null;
+        var scratchCall = BuildManagedTemporaryCallSemantics(tc, meta, timeout, scratchShell);
+        ManagedTemporaryCorrectionKey? consumedManagedTemporaryKey = null;
         if (scratchCall is { } call
-            && batch.ScratchCorrections.TryConsume(call, out var correctionKey)
-            && _executor is ISessionScratchRetryAwareExecutor retryAwareExecutor)
+            && batch.ManagedTemporaryCorrections.TryConsume(call, out var correctionKey)
+            && _executor is IManagedTemporaryRetryAwareExecutor retryAwareExecutor)
         {
-            consumedScratchKey = correctionKey;
-            retryAwareExecutor.MarkSessionScratchRetry(
+            consumedManagedTemporaryKey = correctionKey;
+            retryAwareExecutor.MarkManagedTemporaryRetry(
                 context,
-                new ToolAgentCorrection.SessionScratchSuggested(
-                    correctionKey.SessionDirectory,
-                    correctionKey.TemporaryRoot,
-                    correctionKey.Call.Shell));
+                new ToolAgentCorrection.ManagedTemporaryDirectorySuggested(
+                    correctionKey.ManagedTemporaryDirectory,
+                    correctionKey.TemporaryRoot));
         }
 
         // Re-drive of an ApprovedOnce approval: the user already clicked
@@ -673,9 +678,9 @@ internal sealed class SessionToolExecutionPipeline
                     ? "Tool access denied: approval_timed_out"
                     : $"Tool access denied: approval_denied_by_user ({tc.Name} requires interactive approval and the user declined it)";
                 if (decisionOverride == ApprovalDecision.Denied
-                    && sessionScratchDenialDirectory is { Length: > 0 })
+                    && managedTemporaryDenialDirectory is { Length: > 0 })
                 {
-                    resultText = $"{resultText}\n{BuildSessionScratchDenialHint(sessionScratchDenialDirectory)}";
+                    resultText = $"{resultText}\n{BuildManagedTemporaryDenialHint(managedTemporaryDenialDirectory)}";
                 }
 
                 var deniedMessage = new SerializableChatMessage
@@ -694,8 +699,8 @@ internal sealed class SessionToolExecutionPipeline
                     [],
                     authorizationAttemptId,
                     Receipt: new ToolInvocationReceipt(ToolInvocationOutcomeCategory.AccessDenied),
-                    ScratchCorrectionChange: consumedScratchKey is { } deniedConsumed
-                        ? new SessionScratchCorrectionChange.Consume(deniedConsumed)
+                    ManagedTemporaryCorrectionUpdate: consumedManagedTemporaryKey is { } deniedConsumed
+                        ? new ManagedTemporaryCorrectionChange.Consume(deniedConsumed)
                         : null);
             }
 
@@ -729,8 +734,8 @@ internal sealed class SessionToolExecutionPipeline
                         meta.TimeoutHintSeconds ?? 0);
                     return backgroundResult with
                     {
-                        ScratchCorrectionChange = consumedScratchKey is { } backgroundConsumed
-                            ? new SessionScratchCorrectionChange.Consume(backgroundConsumed)
+                        ManagedTemporaryCorrectionUpdate = consumedManagedTemporaryKey is { } backgroundConsumed
+                            ? new ManagedTemporaryCorrectionChange.Consume(backgroundConsumed)
                             : null
                     };
                 }
@@ -764,18 +769,18 @@ internal sealed class SessionToolExecutionPipeline
         catch (ToolApprovalRequiredException approvalEx)
         {
             if (approvalEx.ApprovalContext.AgentCorrection is
-                ToolAgentCorrection.SessionScratchSuggested scratchCorrection
+                ToolAgentCorrection.ManagedTemporaryDirectorySuggested managedTemporaryCorrection
                 && scratchCall is { } correctedCall)
             {
                 sw.Stop();
-                resultText = BuildSessionScratchCorrection(scratchCorrection.SessionDirectory);
-                var newCorrectionKey = new SessionScratchCorrectionKey(
+                resultText = BuildManagedTemporaryCorrection(managedTemporaryCorrection.ManagedTemporaryDirectory);
+                var newCorrectionKey = new ManagedTemporaryCorrectionKey(
                     correctedCall,
-                    scratchCorrection.TemporaryRoot,
-                    scratchCorrection.SessionDirectory);
+                    managedTemporaryCorrection.TemporaryRoot,
+                    managedTemporaryCorrection.ManagedTemporaryDirectory);
                 var correctionReceipt = new ToolInvocationReceipt(
                     ToolInvocationOutcomeCategory.RecoverableCorrection,
-                    remediationCode: ToolRemediationCode.UseSessionScratch);
+                    remediationCode: ToolRemediationCode.UseManagedTemporaryDirectory);
 
                 return new ToolCallResult(new SerializableChatMessage
                 {
@@ -786,7 +791,7 @@ internal sealed class SessionToolExecutionPipeline
                 }, [], context.Outputs.FileAttachments, completedRuns, acceptedFindings,
                     authorizationAttemptId,
                     Receipt: correctionReceipt,
-                    ScratchCorrectionChange: new SessionScratchCorrectionChange.Arm(newCorrectionKey));
+                    ManagedTemporaryCorrectionUpdate: new ManagedTemporaryCorrectionChange.Arm(newCorrectionKey));
             }
 
             var projectScopeCorrection = BuildProjectScopeDeclarationCorrection(
@@ -860,8 +865,8 @@ internal sealed class SessionToolExecutionPipeline
                     .ToList()
             }, PersistApprovalState: true)
             {
-                SessionScratchDirectory = ctx.IsSessionScratchRetry
-                    ? ctx.SessionScratchDirectory
+                ManagedTemporaryDirectory = ctx.IsManagedTemporaryRetry
+                    ? ctx.ManagedTemporaryDirectory
                     : null
             });
 
@@ -911,8 +916,8 @@ internal sealed class SessionToolExecutionPipeline
                         meta.TimeoutHintSeconds ?? 0);
                     return backgroundResult with
                     {
-                        ScratchCorrectionChange = consumedScratchKey is { } backgroundConsumed
-                            ? new SessionScratchCorrectionChange.Consume(backgroundConsumed)
+                        ManagedTemporaryCorrectionUpdate = consumedManagedTemporaryKey is { } backgroundConsumed
+                            ? new ManagedTemporaryCorrectionChange.Consume(backgroundConsumed)
                             : null
                     };
                 }
@@ -1007,36 +1012,64 @@ internal sealed class SessionToolExecutionPipeline
             acceptedFindings,
             authorizationAttemptId,
             Receipt: receipt,
-            ScratchCorrectionChange: consumedScratchKey is { } consumed
-                ? new SessionScratchCorrectionChange.Consume(consumed)
+            ManagedTemporaryCorrectionUpdate: consumedManagedTemporaryKey is { } consumed
+                ? new ManagedTemporaryCorrectionChange.Consume(consumed)
                 : null);
     }
 
     internal static string BuildNativeToolCorrection(ToolName toolName)
         => $"Shell execution stopped because '{toolName.Value}' is a native Netclaw tool.";
 
-    internal static SessionScratchCallSemantics? BuildSessionScratchCallSemantics(
+    internal static ManagedTemporaryCallSemantics? BuildManagedTemporaryCallSemantics(
         FunctionCallContent toolCall,
         ToolCallMeta? meta,
         TimeSpan timeout,
         ApprovalShell shell = ApprovalShell.Bash)
     {
-        if (!string.Equals(toolCall.Name, Tools.ShellTool.ToolName, StringComparison.Ordinal))
+        if (string.Equals(toolCall.Name, Tools.ShellTool.ToolName, StringComparison.Ordinal))
+        {
+            var command = ToolArgumentHelper.GetString(toolCall.Arguments, "Command")
+                ?? ToolArgumentHelper.GetString(toolCall.Arguments, "command");
+            if (string.IsNullOrWhiteSpace(command))
+                return null;
+
+            var explicitCwd = ToolArgumentHelper.GetString(toolCall.Arguments, "WorkingDirectory");
+            return new ManagedTemporaryCallSemantics(
+                ToolName: toolCall.Name,
+                Shell: shell,
+                Command: command,
+                HasExplicitWorkingDirectory: !string.IsNullOrWhiteSpace(explicitCwd),
+                ExplicitWorkingDirectory: explicitCwd,
+                Background: meta?.Background == true,
+                Timeout: timeout,
+                Path: null,
+                Content: null,
+                OldString: null,
+                NewString: null,
+                ReplaceAll: null);
+        }
+
+        if (toolCall.Name is not (FileWriteTool.ToolName or FileEditTool.ToolName))
             return null;
 
-        var command = ToolArgumentHelper.GetString(toolCall.Arguments, "Command")
-            ?? ToolArgumentHelper.GetString(toolCall.Arguments, "command");
-        if (string.IsNullOrWhiteSpace(command))
+        var path = ToolArgumentHelper.GetString(toolCall.Arguments, "Path")
+            ?? ToolArgumentHelper.GetString(toolCall.Arguments, "path");
+        if (string.IsNullOrWhiteSpace(path))
             return null;
 
-        var explicitCwd = ToolArgumentHelper.GetString(toolCall.Arguments, "WorkingDirectory");
-        return new SessionScratchCallSemantics(
-            Shell: shell,
-            Command: command,
-            HasExplicitWorkingDirectory: !string.IsNullOrWhiteSpace(explicitCwd),
-            ExplicitWorkingDirectory: explicitCwd,
-            Background: meta?.Background == true,
-            Timeout: timeout);
+        return new ManagedTemporaryCallSemantics(
+            ToolName: toolCall.Name,
+            Shell: null,
+            Command: null,
+            HasExplicitWorkingDirectory: false,
+            ExplicitWorkingDirectory: null,
+            Background: false,
+            Timeout: timeout,
+            Path: path,
+            Content: ToolArgumentHelper.GetString(toolCall.Arguments, "Content"),
+            OldString: ToolArgumentHelper.GetString(toolCall.Arguments, "OldString"),
+            NewString: ToolArgumentHelper.GetString(toolCall.Arguments, "NewString"),
+            ReplaceAll: ToolArgumentHelper.GetBoolStrict(toolCall.Arguments, "ReplaceAll"));
     }
 
     private static async Task<string> ExecuteToolAttemptAsync(
@@ -1218,6 +1251,8 @@ internal sealed class SessionToolExecutionPipeline
         {
             Command = command,
             WorkingDirectory = workingDirectory,
+            ManagedTemporaryDirectory = context.SessionStorage?.TemporaryDirectory
+                ?? throw new InvalidOperationException("Background shell execution requires resolved session storage."),
             SessionId = batch.SessionId,
             Rationale = meta.Rationale ?? "background shell execution",
             Audience = batch.TurnContext.Audience,
@@ -1427,9 +1462,9 @@ internal sealed class SessionToolExecutionPipeline
     private static bool CanRequestInteractiveApproval(TurnContext turnContext)
         => turnContext.SupportsInteractiveApproval && turnContext.HasApprovalRequester;
 
-    internal static string BuildSessionScratchCorrection(string sessionDirectory)
-        => "Tool execution deferred: shared_temporary_directory\n" +
-           $"Session scratch directory: '{sessionDirectory}'.";
+    internal static string BuildManagedTemporaryCorrection(string managedTemporaryDirectory)
+        => "Tool execution deferred: use_managed_temporary_directory\n" +
+           $"Managed temporary directory: '{managedTemporaryDirectory}'.";
 
     /// <summary>
     /// Builds the agent-facing correction for reviewed-safe shell work whose
@@ -1482,11 +1517,11 @@ internal sealed class SessionToolExecutionPipeline
 
         if (approvalContext is
             {
-                IsSessionScratchRetry: true,
-                SessionScratchDirectory: { Length: > 0 } scratchDirectory
+                IsManagedTemporaryRetry: true,
+                ManagedTemporaryDirectory: { Length: > 0 } managedTemporaryDirectory
             })
         {
-            return BuildSessionScratchDenialHint(scratchDirectory);
+            return BuildManagedTemporaryDenialHint(managedTemporaryDirectory);
         }
 
         if (!setWorkingDirectoryAvailable)
@@ -1511,8 +1546,8 @@ internal sealed class SessionToolExecutionPipeline
         return $"Hint: '{cwd}' is outside the session's trusted scope. Call set_working_directory \"{cwd}\" first, then retry — that brings the directory into your trusted scope so the approval policy can reason about it.";
     }
 
-    internal static string BuildSessionScratchDenialHint(string scratchDirectory)
-        => $"Hint: Use the private session scratch directory '{scratchDirectory}' for disposable artifacts. " +
+    internal static string BuildManagedTemporaryDenialHint(string managedTemporaryDirectory)
+        => $"Hint: Use the managed temporary directory '{managedTemporaryDirectory}' for disposable artifacts. " +
            "The shared platform temporary root remains outside the session's trusted scope.";
 
     private static bool IsCwdInsideSafeSpace(string cwd, string? safeSpace)

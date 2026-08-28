@@ -29,7 +29,7 @@ public sealed partial class FileSearchTool : NetclawTool<FileSearchTool.Params>
     private readonly ScopedFileAccessPolicy _fileAccessPolicy;
 
     public record Params(
-        [property: Description("Authorized directory to search. Relative paths use the current project, then session scratch.")] string Root,
+        [property: Description("Authorized directory to search. Relative paths use the current project, then session_dir.")] string Root,
         [property: Description("Literal text to find; regular expressions and executable query syntax are not accepted.")] string Query,
         [property: Description("Search mode: 'name' matches file names; 'content' matches UTF-8 text lines.")] string Mode,
         [property: Description("Maximum matches returned (default 50, maximum 200).")] int? MaxResults = null,

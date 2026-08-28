@@ -41,6 +41,18 @@ internal static class ToolOutcomeResults
             ToolInvocationOutcomeCategory.Success,
             declaredProjectDirectory: canonicalProjectDirectory);
 
+    public static string SuccessProjectChange(
+        this ToolInvocationContext context,
+        string result,
+        string canonicalChangedPath,
+        string canonicalProjectDirectory)
+        => Complete(
+            context,
+            result,
+            ToolInvocationOutcomeCategory.Success,
+            [new ToolFileActivity(canonicalChangedPath, ToolFileActivityKind.Changed)],
+            declaredProjectDirectory: canonicalProjectDirectory);
+
     public static string InvalidInput(this ToolInvocationContext context, string result)
         => Complete(context, result, ToolInvocationOutcomeCategory.InvalidInput);
 

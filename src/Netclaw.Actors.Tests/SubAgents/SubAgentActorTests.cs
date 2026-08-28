@@ -703,7 +703,7 @@ public class SubAgentActorTests : TestKit
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(
             CreateDefinition([fakeTool]),
             fakeClient,
-            CreateScratchCorrectionPolicy()));
+            CreateManagedTemporaryCorrectionPolicy()));
 
         var result = await agent.Ask<SubAgentResult>(
             new RunSubAgent
@@ -721,9 +721,9 @@ public class SubAgentActorTests : TestKit
         Assert.False(fakeTool.WasCalled);
         Assert.Equal(0, approvalBridge.RequestCount);
         Assert.Equal(
-            "Tool execution deferred: shared_temporary_directory\n" +
-            "Session scratch directory: '/home/user/.netclaw/sessions/example'.\n" +
-            "Next action: use the session scratch directory from this result for disposable files, or retry unchanged for exact platform paths.",
+            "Tool execution deferred: use_managed_temporary_directory\n" +
+            "Managed temporary directory: '/home/user/.netclaw/sessions/example/subagents/run/tmp'.\n" +
+            "Next action: use the managed temporary directory from this result for disposable files, or retry unchanged for exact platform paths.",
             GetLastToolResult(fakeClient, "call-scratch-correction"));
     }
 
@@ -964,7 +964,7 @@ public class SubAgentActorTests : TestKit
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(
             CreateDefinition([fakeTool]),
             fakeClient,
-            CreateScratchCorrectionPolicy()));
+            CreateManagedTemporaryCorrectionPolicy()));
 
         var result = await agent.Ask<SubAgentResult>(
             new RunSubAgent
@@ -982,10 +982,10 @@ public class SubAgentActorTests : TestKit
         Assert.False(fakeTool.WasCalled);
         Assert.Equal(0, approvalBridge.RequestCount);
         Assert.Contains(
-            "shared_temporary_directory",
+            "use_managed_temporary_directory",
             GetLastToolResult(fakeClient, "call-scratch-parallel-1"));
         Assert.Contains(
-            "shared_temporary_directory",
+            "use_managed_temporary_directory",
             GetLastToolResult(fakeClient, "call-scratch-parallel-2"));
     }
 
@@ -1002,7 +1002,7 @@ public class SubAgentActorTests : TestKit
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(
             CreateDefinition([fakeTool]),
             fakeClient,
-            CreateScratchCorrectionPolicy()));
+            CreateManagedTemporaryCorrectionPolicy()));
 
         var result = await agent.Ask<SubAgentResult>(
             new RunSubAgent
@@ -1368,7 +1368,7 @@ public class SubAgentActorTests : TestKit
                 : new ShellTrustZonePolicy(toolConfig, new NetclawPaths(netclawHome)));
     }
 
-    private static ToolAccessPolicy CreateScratchCorrectionPolicy()
+    private static ToolAccessPolicy CreateManagedTemporaryCorrectionPolicy()
     {
         var toolConfig = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
         toolConfig.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
@@ -1937,7 +1937,7 @@ public class SubAgentActorTests : TestKit
     [Theory]
     [InlineData(TrustAudience.Personal)]
     [InlineData(TrustAudience.Team)]
-    public async Task Eligible_subagent_context_announces_exact_private_session_scratch(
+    public async Task Eligible_subagent_context_announces_exact_private_storage_paths(
         TrustAudience audience)
     {
         const string sessionDirectory = "/home/user/.netclaw/sessions/example";
@@ -1971,7 +1971,7 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
-    public async Task Public_subagent_context_does_not_disclose_private_session_scratch()
+    public async Task Public_subagent_context_does_not_disclose_private_storage_paths()
     {
         const string sessionDirectory = "/home/user/.netclaw/sessions/private";
         var fakeClient = new FakeChatClient();
@@ -2006,29 +2006,12 @@ public class SubAgentActorTests : TestKit
     [InlineData("\0")]
     [InlineData("\r")]
     [InlineData("\n")]
-    public async Task Control_bearing_session_scratch_is_not_added_to_subagent_context(
+    public void Control_bearing_session_directory_is_rejected_before_subagent_context(
         string controlCharacter)
     {
         var sessionDirectory = $"/home/user/.netclaw/sessions/bad{controlCharacter}prompt";
-        var fakeClient = new FakeChatClient();
-        var agent = Sys.ActorOf(SubAgentActor.CreateProps(
-            CreateDefinition(),
-            fakeClient,
-            PermissivePolicy()));
-
-        var result = await agent.Ask<SubAgentResult>(
-            new RunSubAgent
-            {
-                Scope = SubAgentTestScope.Create(sessionDirectory: sessionDirectory),
-                Task = "Create a disposable diagnostic artifact.",
-                Timeout = TimeSpan.FromSeconds(5)
-            },
-            TimeSpan.FromSeconds(5),
-            TestContext.Current.CancellationToken);
-
-        Assert.True(result.Success);
-        Assert.DoesNotContain("session_dir", fakeClient.LastReceivedMessages![1].Text);
-        Assert.DoesNotContain(sessionDirectory, fakeClient.LastReceivedMessages[1].Text);
+        Assert.Throws<ArgumentException>(() =>
+            SubAgentTestScope.Create(sessionDirectory: sessionDirectory));
     }
 
     [Fact]

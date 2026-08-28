@@ -28,7 +28,12 @@ public sealed class SessionCatalogServiceTests : IDisposable
     }
 
     private SessionCatalogService CreateService(NetclawPaths paths, ISessionMetrics? metrics = null, TimeProvider? timeProvider = null)
-        => new(paths, timeProvider ?? TimeProvider.System, NullLogger<SessionCatalogService>.Instance, metrics);
+        => new(
+            paths,
+            timeProvider ?? TimeProvider.System,
+            new TestSessionStorageResolver(paths),
+            NullLogger<SessionCatalogService>.Instance,
+            metrics);
 
     public void Dispose()
     {

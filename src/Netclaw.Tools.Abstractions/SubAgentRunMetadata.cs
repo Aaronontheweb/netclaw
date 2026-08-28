@@ -17,8 +17,24 @@ public enum SubAgentRunOutcome
 }
 
 /// <summary>Spawner-generated subagent run id used to correlate logs and notifications.</summary>
-public readonly record struct SubAgentRunId(string Value)
+public readonly record struct SubAgentRunId
 {
+    public SubAgentRunId(string value)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+        if (value.Any(static character =>
+                !char.IsLetterOrDigit(character) && character is not '-' and not '_'))
+        {
+            throw new ArgumentException(
+                "A subagent run identifier can contain letters, numbers, hyphens, and underscores only.",
+                nameof(value));
+        }
+
+        Value = value;
+    }
+
+    public string Value { get; }
+
     public static SubAgentRunId New() => new(Guid.NewGuid().ToString("N"));
 
     public static explicit operator SubAgentRunId(string value) => new(value);
@@ -30,6 +46,20 @@ public readonly record struct SubAgentRunId(string Value)
 public readonly record struct SubAgentScopeId(string Value)
 {
     public static explicit operator SubAgentScopeId(string value) => new(value);
+
+    public bool TryGetRunId(out SubAgentRunId runId)
+    {
+        var marker = Value.LastIndexOf("/subagent/", StringComparison.Ordinal);
+        var separator = Value.LastIndexOf('/');
+        if (marker < 0 || separator <= marker + "/subagent/".Length || separator == Value.Length - 1)
+        {
+            runId = default;
+            return false;
+        }
+
+        runId = new SubAgentRunId(Value[(separator + 1)..]);
+        return true;
+    }
 
     public override string ToString() => Value;
 }

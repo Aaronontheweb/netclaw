@@ -102,7 +102,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     // Conversation state (not persisted — ephemeral)
     private readonly List<AiChatMessage> _history = [];
-    private readonly SessionScratchCorrectionState _sessionScratchCorrections = new();
+    private readonly ManagedTemporaryCorrectionState _managedTemporaryCorrections = new();
     private long _llmCallId;
     private IActorRef _replyTo = ActorRefs.Nobody;
     private CancellationTokenSource? _executionCts;
@@ -431,7 +431,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     BuildModelContext(
                         msg.Scope.InitialWorkingSnapshot,
                         subAgentAudience,
-                        ToolExecutionContext.SessionDirectory),
+                        ToolExecutionContext.SessionStorage),
                     msg.Task)));
 
             _log.Info("SubAgent [{AgentName}] starting (tools={ToolCount}, prefill={Prefill}, interDelta={InterDelta}, noProgress={NoProgress})",
@@ -597,8 +597,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     TryActivateDiscoveredTool(result.Content.Trim());
             }
 
-            foreach (var change in msg.ScratchCorrectionChanges)
-                _sessionScratchCorrections.Apply(change);
+            foreach (var change in msg.ManagedTemporaryCorrectionChanges)
+                _managedTemporaryCorrections.Apply(change);
 
             AddModelInputMediaNudge(msg.ModelInputMediaReferences);
 
@@ -860,7 +860,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             _externalCts?.Token ?? CancellationToken.None,
             self,
             _approvalBridge,
-            _sessionScratchCorrections.Snapshot(),
+            _managedTemporaryCorrections.Snapshot(),
             canDeclareWorkingDirectory,
             _log,
             _definition.Name,
@@ -973,7 +973,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         // caller wins; subsequent calls are no-ops.
         if (_completed) return;
         _completed = true;
-        _sessionScratchCorrections.Clear();
+        _managedTemporaryCorrections.Clear();
 
         _toolExecutionWatchdogState = ToolExecutionWatchdogState.None;
         _pendingApprovalWaits = 0;
@@ -1154,19 +1154,24 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private static string BuildModelContext(
         WorkingContextSnapshot snapshot,
         TrustAudience audience,
-        string? sessionDirectory)
+        SessionStoragePaths? storage)
     {
         if (audience == TrustAudience.Public)
             return string.Empty;
 
         var workingContext = snapshot.ToContextBlock();
-        var sessionContext = string.IsNullOrWhiteSpace(sessionDirectory)
-                             || sessionDirectory.Any(char.IsControl)
+        var sessionContext = storage is null
             ? string.Empty
-            : $"[session]\nsession_dir: {sessionDirectory}\n"
+            : $"[session]\nsession_dir: {storage.SessionDirectory}\n"
+              + $"temp_dir: {storage.TemporaryDirectory}\n"
+              + $"artifact_dir: {storage.ArtifactDirectory}\n"
+              + $"log_path: {storage.LogPath}\n"
               + ToolChoiceGuidance.StructuredWorkspaceSelection + "\n"
               + ToolChoiceGuidance.DirectorySelectionOrder + "\n"
-              + ToolChoiceGuidance.ShellCompositionOrder;
+              + ToolChoiceGuidance.ShellCompositionOrder + "\n"
+              + "temp_dir is private managed temporary storage for disposable files. "
+              + "session_dir is the default workspace when no project is active. "
+              + "Netclaw does not automatically clean managed temporary storage yet.";
 
         return string.Join(
             "\n\n",
@@ -1184,7 +1189,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     private void TryApplyProjectDirectory(string? toolName, ToolInvocationReceipt? receipt)
     {
-        if (!string.Equals(toolName, SetWorkingDirectoryTool.ToolName, StringComparison.Ordinal)
+        if (toolName is not (SetWorkingDirectoryTool.ToolName or WorktreeCreateTool.ToolName)
             || receipt is not
             {
                 Category: ToolInvocationOutcomeCategory.Success,
@@ -1403,7 +1408,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         CancellationToken externalCt,
         IActorRef self,
         IParentApprovalBridge? approvalBridge,
-        SessionScratchCorrectionDispatch scratchCorrections,
+        ManagedTemporaryCorrectionDispatch managedTemporaryCorrections,
         Func<string, ToolInvocationContext, bool>? canDeclareWorkingDirectory,
         ILoggingAdapter logger,
         AgentName agentName,
@@ -1442,25 +1447,24 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
                 var meta = interpretation.Meta;
                 var cleanedTc = interpretation.Cleaned;
-                var scratchCall = SessionToolExecutionPipeline.BuildSessionScratchCallSemantics(
+                var scratchCall = SessionToolExecutionPipeline.BuildManagedTemporaryCallSemantics(
                     cleanedTc,
                     meta,
                     toolContext.ExecutionTimeout.Value,
-                    executor is ISessionScratchRetryAwareExecutor scratchAwareExecutor
+                    executor is IManagedTemporaryRetryAwareExecutor scratchAwareExecutor
                         ? scratchAwareExecutor.Shell
                         : ApprovalShell.Bash);
-                SessionScratchCorrectionKey? consumedScratchKey = null;
+                ManagedTemporaryCorrectionKey? consumedManagedTemporaryKey = null;
                 if (scratchCall is { } call
-                    && scratchCorrections.TryConsume(call, out var correctionKey)
-                    && executor is ISessionScratchRetryAwareExecutor retryAwareExecutor)
+                    && managedTemporaryCorrections.TryConsume(call, out var correctionKey)
+                    && executor is IManagedTemporaryRetryAwareExecutor retryAwareExecutor)
                 {
-                    consumedScratchKey = correctionKey;
-                    retryAwareExecutor.MarkSessionScratchRetry(
+                    consumedManagedTemporaryKey = correctionKey;
+                    retryAwareExecutor.MarkManagedTemporaryRetry(
                         toolContext,
-                        new ToolAgentCorrection.SessionScratchSuggested(
-                            correctionKey.SessionDirectory,
-                            correctionKey.TemporaryRoot,
-                            correctionKey.Call.Shell));
+                        new ToolAgentCorrection.ManagedTemporaryDirectorySuggested(
+                            correctionKey.ManagedTemporaryDirectory,
+                            correctionKey.TemporaryRoot));
                 }
                 try
                 {
@@ -1470,8 +1474,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         result,
                         toolContext,
                         modelInputBudget,
-                        consumedScratchKey is { } directConsumed
-                            ? new SessionScratchCorrectionChange.Consume(directConsumed)
+                        consumedManagedTemporaryKey is { } directConsumed
+                            ? new ManagedTemporaryCorrectionChange.Consume(directConsumed)
                             : null);
                 }
                 catch (ToolAgentCorrectionRequiredException correctionEx)
@@ -1494,24 +1498,24 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     var ctx = approvalEx.ApprovalContext;
                     if (approvalBridge is not null
                         && ctx.AgentCorrection is
-                        ToolAgentCorrection.SessionScratchSuggested scratchCorrection
+                        ToolAgentCorrection.ManagedTemporaryDirectorySuggested managedTemporaryCorrection
                         && scratchCall is { } correctedCall)
                     {
                         toolContext.Outputs.TryComplete(new ToolInvocationReceipt(
                             ToolInvocationOutcomeCategory.RecoverableCorrection,
-                            remediationCode: ToolRemediationCode.UseSessionScratch));
-                        var correctionText = SessionToolExecutionPipeline.BuildSessionScratchCorrection(
-                            scratchCorrection.SessionDirectory);
-                        var newCorrectionKey = new SessionScratchCorrectionKey(
+                            remediationCode: ToolRemediationCode.UseManagedTemporaryDirectory));
+                        var correctionText = SessionToolExecutionPipeline.BuildManagedTemporaryCorrection(
+                            managedTemporaryCorrection.ManagedTemporaryDirectory);
+                        var newCorrectionKey = new ManagedTemporaryCorrectionKey(
                             correctedCall,
-                            scratchCorrection.TemporaryRoot,
-                            scratchCorrection.SessionDirectory);
+                            managedTemporaryCorrection.TemporaryRoot,
+                            managedTemporaryCorrection.ManagedTemporaryDirectory);
                         return BuildToolResult(
                             cleanedTc,
                             correctionText,
                             toolContext,
                             modelInputBudget,
-                            new SessionScratchCorrectionChange.Arm(newCorrectionKey));
+                            new ManagedTemporaryCorrectionChange.Arm(newCorrectionKey));
                     }
 
                     var projectScopeCorrection =
@@ -1606,8 +1610,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                             result,
                             retryContext,
                             modelInputBudget,
-                            consumedScratchKey is { } approvedConsumed
-                                ? new SessionScratchCorrectionChange.Consume(approvedConsumed)
+                            consumedManagedTemporaryKey is { } approvedConsumed
+                                ? new ManagedTemporaryCorrectionChange.Consume(approvedConsumed)
                                 : null);
                     }
 
@@ -1615,9 +1619,9 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         ? "Tool access denied: approval_timed_out"
                         : "Tool access denied: approval_denied_by_user";
                     if (decision == ParentApprovalDecision.Denied
-                        && consumedScratchKey is { } deniedScratchRetry)
+                        && consumedManagedTemporaryKey is { } deniedManagedTemporaryRetry)
                     {
-                        reason = $"{reason}\n{SessionToolExecutionPipeline.BuildSessionScratchDenialHint(deniedScratchRetry.SessionDirectory)}";
+                        reason = $"{reason}\n{SessionToolExecutionPipeline.BuildManagedTemporaryDenialHint(deniedManagedTemporaryRetry.ManagedTemporaryDirectory)}";
                     }
 
                     toolContext.Outputs.TryComplete(
@@ -1628,8 +1632,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         reason,
                         toolContext,
                         modelInputBudget,
-                        consumedScratchKey is { } deniedConsumed
-                            ? new SessionScratchCorrectionChange.Consume(deniedConsumed)
+                        consumedManagedTemporaryKey is { } deniedConsumed
+                            ? new ManagedTemporaryCorrectionChange.Consume(deniedConsumed)
                             : null);
                 }
                 catch (ParentApprovalUnavailableException)
@@ -1662,8 +1666,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         $"Error: {ex.Message}",
                         toolContext,
                         modelInputBudget,
-                        consumedScratchKey is { } failedConsumed
-                            ? new SessionScratchCorrectionChange.Consume(failedConsumed)
+                        consumedManagedTemporaryKey is { } failedConsumed
+                            ? new ManagedTemporaryCorrectionChange.Consume(failedConsumed)
                             : null);
                 }
             });
@@ -1684,7 +1688,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             {
                 ToolResults = [.. results.Select(r => r.Message)],
                 ModelInputMediaReferences = [.. results.SelectMany(r => r.ModelInputMediaReferences)],
-                ScratchCorrectionChanges = [.. results.Where(r => r.ScratchCorrectionChange is not null).Select(r => r.ScratchCorrectionChange!)],
+                ManagedTemporaryCorrectionChanges = [.. results.Where(r => r.ManagedTemporaryCorrectionUpdate is not null).Select(r => r.ManagedTemporaryCorrectionUpdate!)],
                 ToolReceipts = results
                     .Where(result => result.Receipt is not null)
                     .ToDictionary<SubAgentToolCallResult, string, ToolInvocationReceipt>(
@@ -1732,7 +1736,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         string resultText,
         ToolExecutionContext toolContext,
         ModelInputBatchBudget modelInputBudget,
-        SessionScratchCorrectionChange? scratchCorrectionChange = null,
+        ManagedTemporaryCorrectionChange? managedTemporaryCorrectionUpdate = null,
         ToolExposureRequest? exposureRequest = null)
     {
         var materialization = MaterializeModelInputFiles(toolContext, modelInputBudget);
@@ -1754,7 +1758,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 Name = toolCall.Name
             },
             materialization.MediaReferences,
-            scratchCorrectionChange,
+            managedTemporaryCorrectionUpdate,
             receipt,
             exposureRequest,
             toolContext.Approval.AuthorizationAttemptId);
@@ -1780,7 +1784,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private sealed record SubAgentToolCallResult(
         SerializableChatMessage Message,
         IReadOnlyList<SerializableMediaReference> ModelInputMediaReferences,
-        SessionScratchCorrectionChange? ScratchCorrectionChange,
+        ManagedTemporaryCorrectionChange? ManagedTemporaryCorrectionUpdate,
         ToolInvocationReceipt? Receipt,
         ToolExposureRequest? ExposureRequest,
         AuthorizationAttemptId AuthorizationAttemptId);

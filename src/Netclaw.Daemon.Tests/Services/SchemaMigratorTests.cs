@@ -122,6 +122,7 @@ public sealed class SchemaMigratorTests : IDisposable
         var service = new SessionCatalogService(
             _paths,
             TimeProvider.System,
+            new TestSessionStorageResolver(_paths),
             NullLogger<SessionCatalogService>.Instance);
 
         var sessions = service.ListRecent();

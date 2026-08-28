@@ -7,6 +7,7 @@ using Microsoft.Extensions.AI;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
+using Netclaw.Tools;
 using AiChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace Netclaw.Actors.Sessions;
@@ -24,7 +25,7 @@ public sealed record ContextAssemblyInput(
     string? SessionPromptOverlay,
     string? TurnRestartNotice,
     SessionId SessionId,
-    string SessionsBasePath,
+    SessionStoragePaths Storage,
     bool FileReadGranted,
     AutomaticRecallResult? ActiveRecall,
     string WorkingContextBlock,
@@ -116,7 +117,7 @@ public static class SessionMessageAssembler
 
     public static List<AiChatMessage> Assemble(ContextAssemblyInput input)
     {
-        var sessionDir = SessionDirectoryHelper.GetSessionDirectory(input.SessionId, input.SessionsBasePath);
+        var sessionDir = input.Storage.SessionDirectory;
         var messages = ChatMessageConverter.ToAiMessages(
             input.State.History,
             sessionDir,
@@ -190,13 +191,16 @@ public static class SessionMessageAssembler
         {
             var sessionBlock = $"[session]\nid: {input.SessionId.Value}" +
                                $"\nsession_dir: {sessionDir}" +
+                               $"\ntemp_dir: {input.Storage.TemporaryDirectory}" +
+                               $"\nartifact_dir: {input.Storage.ArtifactDirectory}" +
+                               $"\nlog_path: {input.Storage.LogPath}" +
                                $"\n{ToolChoiceGuidance.StructuredWorkspaceSelection}" +
                                $"\n{ToolChoiceGuidance.DirectorySelectionOrder}" +
                                $"\n{ToolChoiceGuidance.ShellCompositionOrder}" +
-                               "\nsession_dir is private scratch for disposable writable non-project artifacts. " +
-                               "Do not substitute platform temporary storage. " +
+                               "\ntemp_dir is private managed temporary storage for disposable files. " +
+                               "session_dir is the default workspace when no project is active. " +
                                "Use an explicitly required platform temporary path unchanged. " +
-                               "Netclaw does not automatically clean session scratch yet.";
+                               "Netclaw does not automatically clean managed temporary storage yet.";
             parts.Add(sessionBlock);
         }
 

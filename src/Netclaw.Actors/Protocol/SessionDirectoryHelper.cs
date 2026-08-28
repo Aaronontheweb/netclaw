@@ -5,6 +5,8 @@
 // -----------------------------------------------------------------------
 namespace Netclaw.Actors.Protocol;
 
+using Netclaw.Tools;
+
 /// <summary>
 /// Shared helper for computing session-scoped directories.
 /// Used by <see cref="Sessions.LlmSessionActor"/> and channel pipeline components.
@@ -54,6 +56,14 @@ public static class SessionDirectoryHelper
         return inboxDir;
     }
 
+    public static string GetOrCreateInboxDirectory(SessionStoragePaths storage)
+    {
+        ArgumentNullException.ThrowIfNull(storage);
+        var inboxDir = Path.Combine(storage.SessionDirectory, InboxSubdirectory);
+        Directory.CreateDirectory(inboxDir);
+        return inboxDir;
+    }
+
     /// <summary>
     /// Computes and creates the hidden per-session staging directory used for
     /// streamed attachment downloads before they are accepted into
@@ -66,6 +76,13 @@ public static class SessionDirectoryHelper
         var stagingDir = Path.Combine(stagingRoot, SanitizeSessionId(sessionId));
         Directory.CreateDirectory(stagingDir);
         return stagingDir;
+    }
+
+    public static string GetOrCreateAttachmentStagingDirectory(SessionStoragePaths storage)
+    {
+        ArgumentNullException.ThrowIfNull(storage);
+        Directory.CreateDirectory(storage.AttachmentStagingDirectory);
+        return storage.AttachmentStagingDirectory;
     }
 
     /// <summary>

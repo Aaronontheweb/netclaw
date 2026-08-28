@@ -307,6 +307,7 @@ public sealed class DiscordFileFlowIntegrationTests : TestKit
             AudienceProfiles: TestDiscordGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestDiscordGatewayDeps.DefaultVisionCapableModel,
             Paths: _paths,
+            StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             BotUserId: new DiscordUserId("UBOT"),
             HttpClient: httpClient,
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);

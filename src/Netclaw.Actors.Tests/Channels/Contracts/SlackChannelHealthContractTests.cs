@@ -64,7 +64,8 @@ public sealed class SlackChannelHealthContractTests(ITestOutputHelper output)
                 AudienceProfiles = TestSlackGatewayDeps.DefaultAudienceProfiles
             },
             TestSlackGatewayDeps.DefaultVisionCapableModel,
-            TestSlackGatewayDeps.NewTestPaths());
+            TestSlackGatewayDeps.NewTestPaths(),
+            Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance);
 
         return _channel;
     }

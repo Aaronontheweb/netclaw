@@ -54,6 +54,7 @@ public sealed class SlackGatewayContractTests(ITestOutputHelper output)
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
             Paths: TestSlackGatewayDeps.NewTestPaths(),
+                        StorageResolver: Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance,
             PromptInjectionDetector: SafePromptInjectionDetector.Instance,
             ThreadPropsFactory: (sid, chId, threadTs, d) =>
                 Props.Create(() => new ForwardActor(TestActor)));

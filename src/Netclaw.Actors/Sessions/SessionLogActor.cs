@@ -44,7 +44,7 @@ public sealed class SessionLogActor : ReceiveActor, IWithTimers
     private static readonly TimeSpan FlushInterval = TimeSpan.FromSeconds(1);
 
     private readonly SessionId _sessionId;
-    private readonly string _sessionLogsBasePath;
+    private readonly SessionLogPath _logPath;
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _idleTimeout;
     private readonly ILoggingAdapter _log = Context.GetLogger();
@@ -57,10 +57,34 @@ public sealed class SessionLogActor : ReceiveActor, IWithTimers
     public static Props CreateProps(SessionId sessionId, string sessionLogsBasePath, TimeProvider timeProvider, TimeSpan? idleTimeout = null) =>
         Props.Create(() => new SessionLogActor(sessionId, sessionLogsBasePath, timeProvider, idleTimeout ?? TimeSpan.FromMinutes(10)));
 
+    public static Props CreatePropsForPath(
+        SessionId sessionId,
+        SessionLogPath logPath,
+        TimeProvider timeProvider,
+        TimeSpan? idleTimeout = null) =>
+        Props.Create(() => new SessionLogActor(
+            sessionId,
+            logPath,
+            timeProvider,
+            idleTimeout ?? TimeSpan.FromMinutes(10)));
+
     public SessionLogActor(SessionId sessionId, string sessionLogsBasePath, TimeProvider timeProvider, TimeSpan idleTimeout)
+        : this(
+            sessionId,
+            new SessionLogPath(SessionLogFile.GetLogPath(sessionId, sessionLogsBasePath)),
+            timeProvider,
+            idleTimeout)
+    {
+    }
+
+    public SessionLogActor(
+        SessionId sessionId,
+        SessionLogPath logPath,
+        TimeProvider timeProvider,
+        TimeSpan idleTimeout)
     {
         _sessionId = sessionId;
-        _sessionLogsBasePath = sessionLogsBasePath;
+        _logPath = logPath;
         _timeProvider = timeProvider;
         _idleTimeout = idleTimeout;
 
@@ -84,7 +108,7 @@ public sealed class SessionLogActor : ReceiveActor, IWithTimers
         base.PreStart();
         Context.SetReceiveTimeout(_idleTimeout);
 
-        var logPath = SessionLogFile.GetLogPath(_sessionId, _sessionLogsBasePath);
+        var logPath = _logPath.Value;
         Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
 
         // Open once: append mode + read-share so concurrent readers (tail, diagnostics, tests)

@@ -31,6 +31,7 @@ public static class ToolRegistrationExtensions
         NetclawPaths paths,
         ToolPathPolicy pathPolicy,
         ShellCommandPolicy shellCommandPolicy,
+        TimeProvider timeProvider,
         ISearchBackend? searchBackend = null,
         ToolAccessPolicy? toolAccessPolicy = null,
         WebhookRouteStore? webhookRouteStore = null)
@@ -51,6 +52,7 @@ public static class ToolRegistrationExtensions
             registry.Register(new WebSearchTool(searchBackend));
         registry.Register(new WebFetchTool(config));
         registry.RegisterCore(new SetWorkingDirectoryTool(config, paths));
+        registry.Register(new WorktreeCreateTool(config, paths, timeProvider));
 
         // Register search_tools and load_tool meta-tools (always loaded, "builtin" grant)
         registry.RegisterCore(new SearchToolsTool(registry, toolAccessPolicy));

@@ -17,7 +17,7 @@ namespace Netclaw.Actors.Tools;
 
 public sealed class ToolAccessPolicy
 {
-    private static readonly IReadOnlyList<ToolApprovalOption> SessionScratchRetryOptions =
+    private static readonly IReadOnlyList<ToolApprovalOption> ManagedTemporaryRetryOptions =
         Array.AsReadOnly<ToolApprovalOption>(
         [
             new(ApprovalOptionKeys.ApproveOnceKey, ApprovalOptionKeys.ApproveOnceLabel),
@@ -35,8 +35,8 @@ public sealed class ToolAccessPolicy
     private readonly FeatureGates _featureGates;
     private readonly ScopedShellSafeVerbPolicy? _safeVerbPolicy;
     private readonly PlatformTemporaryScopePolicy _platformTemporaryScopePolicy;
-    private readonly ConditionalWeakTable<ToolExecutionContext, SessionScratchRetryMarker>
-        _sessionScratchRetries = new();
+    private readonly ConditionalWeakTable<ToolExecutionContext, ManagedTemporaryRetryMarker>
+        _managedTemporaryRetries = new();
 
     internal ApprovalShell Shell => _shellCommandPolicy.Environment.Grammar == ShellGrammar.Bash
         ? ApprovalShell.Bash
@@ -346,12 +346,12 @@ public sealed class ToolAccessPolicy
             deferReviewedSafeCoverage);
     }
 
-    internal void MarkSessionScratchRetry(
+    internal void MarkManagedTemporaryRetry(
         ToolExecutionContext context,
-        ToolAgentCorrection.SessionScratchSuggested correction)
+        ToolAgentCorrection.ManagedTemporaryDirectorySuggested correction)
     {
-        _sessionScratchRetries.Remove(context);
-        _sessionScratchRetries.Add(context, new SessionScratchRetryMarker(correction));
+        _managedTemporaryRetries.Remove(context);
+        _managedTemporaryRetries.Add(context, new ManagedTemporaryRetryMarker(correction));
     }
 
     internal bool IsReviewedSafeCandidate(
@@ -618,6 +618,14 @@ public sealed class ToolAccessPolicy
                 arguments,
                 context.Invocation);
         }
+        else if (!isShell)
+        {
+            agentCorrection = _platformTemporaryScopePolicy.EvaluateStructuredFileChange(
+                toolName,
+                arguments,
+                context.Invocation,
+                _toolPathPolicy);
+        }
 
         // A clean shell command can combine safe candidates with candidates
         // that need a stored grant. Remove only candidates that independently
@@ -657,15 +665,15 @@ public sealed class ToolAccessPolicy
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var isSessionScratchRetry = _sessionScratchRetries.TryGetValue(context, out var retryMarker);
-        var options = isSessionScratchRetry
-            ? SessionScratchRetryOptions
+        var isManagedTemporaryRetry = _managedTemporaryRetries.TryGetValue(context, out var retryMarker);
+        var options = isManagedTemporaryRetry
+            ? ManagedTemporaryRetryOptions
             : BuildApprovalOptions(
                 isMessy,
                 hasReusablePhraseForEveryCandidate: !isShell ||
                     approvalCandidates.All(HasReusableShellPhrase),
                 isCwdShallow: IsCwdTooShallow(context.Approval.Cwd, ShellEnvironment.PathStyle),
-                allEffectiveDirsAreSessionScratch: AllCandidatesResolveToSessionScratch(
+                allEffectiveDirsAreSessionOwned: AllCandidatesResolveToSessionOwnedDirectory(
                     approvalCandidates, context.Approval.Cwd, context.SessionDirectory),
                 supportsDirectoryScope: matcher is ShellApprovalMatcher,
                 isMcpTool: toolName.IsMcp);
@@ -681,9 +689,9 @@ public sealed class ToolAccessPolicy
             Candidates: approvalCandidates)
         {
             SuggestedProjectDirectory = suggestedProjectDirectory,
-            AgentCorrection = isSessionScratchRetry ? null : agentCorrection,
-            IsSessionScratchRetry = isSessionScratchRetry,
-            SessionScratchDirectory = retryMarker?.Correction.SessionDirectory,
+            AgentCorrection = isManagedTemporaryRetry ? null : agentCorrection,
+            IsManagedTemporaryRetry = isManagedTemporaryRetry,
+            ManagedTemporaryDirectory = retryMarker?.Correction.ManagedTemporaryDirectory,
             PlatformTemporaryRoot = retryMarker?.Correction.TemporaryRoot
         };
 
@@ -727,14 +735,14 @@ public sealed class ToolAccessPolicy
             .Select(static candidate => candidate.Verb)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        var options = context.IsSessionScratchRetry
-            ? SessionScratchRetryOptions
+        var options = context.IsManagedTemporaryRetry
+            ? ManagedTemporaryRetryOptions
             : BuildApprovalOptions(
                 isMessy: false,
                 hasReusablePhraseForEveryCandidate:
                     unapprovedCandidates.All(HasReusableShellPhrase),
                 isCwdShallow: IsCwdTooShallow(context.Cwd, pathStyle),
-                allEffectiveDirsAreSessionScratch: AllCandidatesResolveToSessionScratch(
+                allEffectiveDirsAreSessionOwned: AllCandidatesResolveToSessionOwnedDirectory(
                     unapprovedCandidates, context.Cwd, sessionDirectory),
                 supportsDirectoryScope: true,
                 isMcpTool: false);
@@ -757,7 +765,7 @@ public sealed class ToolAccessPolicy
     /// operators can pick "This chat" (the equivalent in-session
     /// semantics) or "Always anywhere" (folder-agnostic) instead.
     /// </summary>
-    private static bool AllCandidatesResolveToSessionScratch(
+    private static bool AllCandidatesResolveToSessionOwnedDirectory(
         IReadOnlyList<ApprovalCandidate> candidates,
         string? cwd,
         string? sessionDirectory)
@@ -791,7 +799,7 @@ public sealed class ToolAccessPolicy
     /// <c>Always here</c> is omitted so an operator cannot accidentally write
     /// a folder-scoped grant for a too-shallow root like <c>/etc/</c>.
     /// <c>This chat</c> and <c>Always anywhere</c> remain available.</item>
-    /// <item><b>Session-scratch effective directory</b> (every candidate's
+    /// <item><b>Session-owned effective directory</b> (every candidate's
     /// effective directory is the session's ephemeral <c>session_dir</c>) —
     /// <c>Always here</c> is omitted because the saved grant would be scoped
     /// to a directory that won't recur. <c>This chat</c> already provides
@@ -807,7 +815,7 @@ public sealed class ToolAccessPolicy
         bool isMessy,
         bool hasReusablePhraseForEveryCandidate,
         bool isCwdShallow,
-        bool allEffectiveDirsAreSessionScratch,
+        bool allEffectiveDirsAreSessionOwned,
         bool supportsDirectoryScope,
         bool isMcpTool)
     {
@@ -826,7 +834,7 @@ public sealed class ToolAccessPolicy
             new ToolApprovalOption(ApprovalOptionKeys.ApproveSessionKey, ApprovalOptionKeys.ApproveSessionLabel)
         };
 
-        if (supportsDirectoryScope && !isCwdShallow && !allEffectiveDirsAreSessionScratch)
+        if (supportsDirectoryScope && !isCwdShallow && !allEffectiveDirsAreSessionOwned)
         {
             options.Add(new ToolApprovalOption(ApprovalOptionKeys.ApproveAlwaysKey, ApprovalOptionKeys.ApproveAlwaysLabel));
         }
@@ -1034,17 +1042,17 @@ public sealed record ToolApprovalContext(
 
     internal ToolAgentCorrection? AgentCorrection { get; init; }
 
-    internal bool IsSessionScratchRetry { get; init; }
+    internal bool IsManagedTemporaryRetry { get; init; }
 
-    internal string? SessionScratchDirectory { get; init; }
+    internal string? ManagedTemporaryDirectory { get; init; }
 
     internal string? PlatformTemporaryRoot { get; init; }
 }
 
-internal sealed class SessionScratchRetryMarker(
-    ToolAgentCorrection.SessionScratchSuggested correction)
+internal sealed class ManagedTemporaryRetryMarker(
+    ToolAgentCorrection.ManagedTemporaryDirectorySuggested correction)
 {
-    internal ToolAgentCorrection.SessionScratchSuggested Correction { get; } = correction;
+    internal ToolAgentCorrection.ManagedTemporaryDirectorySuggested Correction { get; } = correction;
 }
 
 public sealed record ToolApprovalOption(ApprovalOptionKey Key, string Label);

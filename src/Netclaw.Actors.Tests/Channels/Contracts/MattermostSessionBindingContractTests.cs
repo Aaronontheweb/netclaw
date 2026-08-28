@@ -61,6 +61,7 @@ public sealed class MattermostSessionBindingContractTests(ITestOutputHelper outp
             AudienceProfiles: TestMattermostGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestMattermostGatewayDeps.DefaultVisionCapableModel,
             Paths: TestMattermostGatewayDeps.NewTestPaths(),
+                        StorageResolver: Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance,
             PromptInjectionDetector: detector);
 
         var name = $"mm-session-fail-{Interlocked.Increment(ref _actorCounter)}";
@@ -200,6 +201,7 @@ public sealed class MattermostSessionBindingContractTests(ITestOutputHelper outp
             AudienceProfiles: TestMattermostGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestMattermostGatewayDeps.DefaultVisionCapableModel,
             Paths: TestMattermostGatewayDeps.NewTestPaths(),
+                        StorageResolver: Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance,
             PromptInjectionDetector: detector,
             ThreadHistoryFetcher: historyFetcher);
 
@@ -397,6 +399,7 @@ public sealed class MattermostSessionBindingContractTests(ITestOutputHelper outp
             AudienceProfiles: TestMattermostGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestMattermostGatewayDeps.DefaultVisionCapableModel,
             Paths: TestMattermostGatewayDeps.NewTestPaths(),
+                        StorageResolver: Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance,
             CallbackUrl: options.CallbackUrl,
             PromptInjectionDetector: detector,
             CallbackActionStore: store);

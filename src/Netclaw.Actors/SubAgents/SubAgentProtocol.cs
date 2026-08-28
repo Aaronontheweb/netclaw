@@ -164,6 +164,12 @@ public sealed record SubAgentResult : ISubAgentResponse
     /// <summary>Subagent scope id used in structured logs.</summary>
     public SubAgentScopeId? ScopeId { get; init; }
 
+    /// <summary>The exact child log path. Only a successful run exposes it.</summary>
+    public string? LogPath { get; init; }
+
+    /// <summary>The parent-readable child artifact directory. Only a successful run exposes it.</summary>
+    public string? ArtifactDirectory { get; init; }
+
     /// <summary>
     /// Structured findings returned to the owning session for policy and checkpoint review.
     /// </summary>

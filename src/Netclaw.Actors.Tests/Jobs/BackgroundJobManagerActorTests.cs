@@ -89,6 +89,7 @@ public class BackgroundJobManagerActorTests : TestKit
     {
         Id = new BackgroundJobId(jobId),
         Command = "echo hello",
+        ManagedTemporaryDirectory = Path.Combine(Path.GetTempPath(), "netclaw-tests", "managed-temp"),
         SessionId = new SessionId("test/thread"),
         Rationale = "test run",
         Status = status,
@@ -103,6 +104,7 @@ public class BackgroundJobManagerActorTests : TestKit
     private StartBackgroundJob MakeStartCommand(string command = "echo hello") => new()
     {
         Command = command,
+        ManagedTemporaryDirectory = Path.Combine(Path.GetTempPath(), "netclaw-tests", "managed-temp"),
         SessionId = new SessionId("test/thread"),
         Rationale = "test run",
         Audience = TrustAudience.Personal,
@@ -286,6 +288,7 @@ public class BackgroundJobManagerActorTests : TestKit
         {
             Id = orphanId,
             Command = "jekyll serve",
+        ManagedTemporaryDirectory = Path.Combine(Path.GetTempPath(), "netclaw-tests", "managed-temp"),
             SessionId = sessionId,
             Rationale = "dev server",
             Status = BackgroundJobStatus.Running,
@@ -335,6 +338,7 @@ public class BackgroundJobManagerActorTests : TestKit
         {
             Id = new BackgroundJobId("orphan-123"),
             Command = "sleep 999",
+        ManagedTemporaryDirectory = Path.Combine(Path.GetTempPath(), "netclaw-tests", "managed-temp"),
             SessionId = new Netclaw.Actors.Protocol.SessionId("test/thread"),
             Rationale = "orphaned test",
             Status = BackgroundJobStatus.Running,

@@ -75,6 +75,10 @@ public sealed class BuiltInSkillSeedingTests : IDisposable
         Assert.Contains("If approval is required but no interactive requester is available", skill, StringComparison.Ordinal);
         Assert.Contains("After an access denial, do not retry that call during the same user turn", skill, StringComparison.Ordinal);
         Assert.Contains("A later explicit user request can start a new call", skill, StringComparison.Ordinal);
+        Assert.Contains("Use `temp_dir` for disposable files", skill, StringComparison.Ordinal);
+        Assert.Contains("Standard temporary APIs already use this directory", skill, StringComparison.Ordinal);
+        Assert.Contains("After an approval-required result", skill, StringComparison.Ordinal);
+        Assert.Contains("A `Tool access denied:` result is terminal", skill, StringComparison.Ordinal);
         Assert.Contains("Do not probe a named project path before declaring it", skill, StringComparison.Ordinal);
         Assert.Contains("user-provided fallback before other tools", skill, StringComparison.Ordinal);
         Assert.Contains("Use the task's first project path exactly", skill, StringComparison.Ordinal);
@@ -85,7 +89,7 @@ public sealed class BuiltInSkillSeedingTests : IDisposable
         {
             "For declared-project work, omit `WorkingDirectory`",
             "For one call in a named child directory",
-            "Use `session_dir` for disposable writable work outside a project",
+            "Use `temp_dir` for disposable files",
             "Use an inline directory change only when",
             "Start with the smallest single shell operation",
             "Use one operation per call",

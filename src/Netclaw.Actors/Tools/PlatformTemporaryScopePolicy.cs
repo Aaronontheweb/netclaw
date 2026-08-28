@@ -16,26 +16,31 @@ internal abstract record ToolAgentCorrection
     {
     }
 
-    internal sealed record SessionScratchSuggested(
-        string SessionDirectory,
-        string TemporaryRoot,
-        ApprovalShell Shell) : ToolAgentCorrection;
+    internal sealed record ManagedTemporaryDirectorySuggested(
+        string ManagedTemporaryDirectory,
+        string TemporaryRoot) : ToolAgentCorrection;
 
     internal sealed record NativeToolSuggested(ToolName ToolName) : ToolAgentCorrection;
 }
 
-internal readonly record struct SessionScratchCallSemantics(
-    ApprovalShell Shell,
-    string Command,
+internal readonly record struct ManagedTemporaryCallSemantics(
+    string ToolName,
+    ApprovalShell? Shell,
+    string? Command,
     bool HasExplicitWorkingDirectory,
     string? ExplicitWorkingDirectory,
     bool Background,
-    TimeSpan Timeout);
+    TimeSpan Timeout,
+    string? Path,
+    string? Content,
+    string? OldString,
+    string? NewString,
+    bool? ReplaceAll);
 
-internal readonly record struct SessionScratchCorrectionKey(
-    SessionScratchCallSemantics Call,
+internal readonly record struct ManagedTemporaryCorrectionKey(
+    ManagedTemporaryCallSemantics Call,
     string TemporaryRoot,
-    string SessionDirectory);
+    string ManagedTemporaryDirectory);
 
 /// <summary>
 /// Identifies advice-only calls that explicitly use the shared platform temp root.
@@ -86,7 +91,7 @@ internal sealed class PlatformTemporaryScopePolicy
             HostPlatformTemporaryPathInspector.Instance,
             environment.PathStyle == ShellPathStyle.Posix ? ["/tmp"] : []);
 
-    internal ToolAgentCorrection.SessionScratchSuggested? Evaluate(
+    internal ToolAgentCorrection.ManagedTemporaryDirectorySuggested? Evaluate(
         ShellCommandAnalysis analysis,
         IReadOnlyList<ApprovalCandidate> candidates,
         IDictionary<string, object?>? arguments,
@@ -96,20 +101,49 @@ internal sealed class PlatformTemporaryScopePolicy
             || analysis.HasDynamicSyntax
             || context.RunScope.InteractiveApproval is not InteractiveApprovalCapability.Available
             || context.Audience != TrustAudience.Personal
-            || !TryNormalizeSessionDirectory(context.SessionDirectory, out var sessionDirectory)
+            || !TryNormalizeManagedTemporaryDirectory(
+                context.SessionStorage?.TemporaryDirectory,
+                out var managedTemporaryDirectory)
             || !TryGetExplicitTemporaryRoot(analysis, arguments, out var temporaryRoot)
             || !AllScopesStayWithinTemporaryRoot(analysis, candidates, temporaryRoot))
         {
             return null;
         }
 
-        var shell = _environment.Grammar == ShellGrammar.Bash
-            ? ApprovalShell.Bash
-            : ApprovalShell.PowerShell;
-        return new ToolAgentCorrection.SessionScratchSuggested(
-            sessionDirectory,
-            temporaryRoot.Canonical,
-            shell);
+        return new ToolAgentCorrection.ManagedTemporaryDirectorySuggested(
+            managedTemporaryDirectory,
+            temporaryRoot.Canonical);
+    }
+
+    internal ToolAgentCorrection.ManagedTemporaryDirectorySuggested? EvaluateStructuredFileChange(
+        ToolName toolName,
+        IDictionary<string, object?>? arguments,
+        ToolInvocationContext context,
+        ToolPathPolicy pathPolicy)
+    {
+        if (toolName.Value is not (FileWriteTool.ToolName or FileEditTool.ToolName)
+            || context.RunScope.InteractiveApproval is not InteractiveApprovalCapability.Available
+            || context.Audience != TrustAudience.Personal
+            || !TryNormalizeManagedTemporaryDirectory(
+                context.SessionStorage?.TemporaryDirectory,
+                out var managedTemporaryDirectory))
+        {
+            return null;
+        }
+
+        var path = ToolArgumentHelper.GetString(arguments, "Path")
+            ?? ToolArgumentHelper.GetString(arguments, "path");
+        if (string.IsNullOrWhiteSpace(path)
+            || !Path.IsPathFullyQualified(path)
+            || pathPolicy.IsDenied(path)
+            || !TryGetSafeTemporaryRoot(path, out var temporaryRoot))
+        {
+            return null;
+        }
+
+        return new ToolAgentCorrection.ManagedTemporaryDirectorySuggested(
+            managedTemporaryDirectory,
+            temporaryRoot);
     }
 
     internal bool IsPlatformTemporaryRoot(string? path)
@@ -130,6 +164,26 @@ internal sealed class PlatformTemporaryScopePolicy
             }
         }
 
+        return false;
+    }
+
+    private bool TryGetSafeTemporaryRoot(string path, out string temporaryRoot)
+    {
+        if (TryNormalizePath(path, out var normalized))
+        {
+            foreach (var root in _temporaryRoots)
+            {
+                if ((IsWithinRoot(normalized, root.Authored)
+                     || IsWithinRoot(normalized, root.Canonical))
+                    && IsSafeTemporaryPath(normalized, root))
+                {
+                    temporaryRoot = root.Canonical;
+                    return true;
+                }
+            }
+        }
+
+        temporaryRoot = string.Empty;
         return false;
     }
 
@@ -333,7 +387,7 @@ internal sealed class PlatformTemporaryScopePolicy
         return false;
     }
 
-    private bool TryNormalizeSessionDirectory(string? path, out string normalized)
+    private bool TryNormalizeManagedTemporaryDirectory(string? path, out string normalized)
     {
         if (!TryNormalizePath(path, out normalized))
             return false;

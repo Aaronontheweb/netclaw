@@ -9,6 +9,7 @@ using Akka.Pattern;
 using Microsoft.Extensions.Logging;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Hosting;
+using Netclaw.Actors.Protocol;
 using Netclaw.Channels;
 using Netclaw.Channels.Discord.Transport;
 using Netclaw.Configuration;
@@ -35,6 +36,7 @@ public sealed class DiscordChannel : IChannel
     private readonly ToolAudienceProfiles _audienceProfiles;
     private readonly ModelCapabilities _modelCapabilities;
     private readonly NetclawPaths _paths;
+    private readonly ISessionStorageResolver _storageResolver;
 
     private readonly object _connectionSetupLock = new();
     private volatile IActorRef? _gateway;
@@ -57,7 +59,8 @@ public sealed class DiscordChannel : IChannel
         ILogger<DiscordChannel> logger,
         ToolConfig toolConfig,
         ModelCapabilities modelCapabilities,
-        NetclawPaths paths)
+        NetclawPaths paths,
+        ISessionStorageResolver storageResolver)
     {
         _system = system;
         _pipeline = pipeline;
@@ -80,6 +83,7 @@ public sealed class DiscordChannel : IChannel
         _audienceProfiles = toolConfig.AudienceProfiles;
         _modelCapabilities = modelCapabilities;
         _paths = paths;
+        _storageResolver = storageResolver;
 
         _gatewayClient.CleanReconnectRequired += HandleCleanReconnectRequiredAsync;
         _gatewayClient.ConnectionRestored += HandleConnectionRestoredAsync;
@@ -191,6 +195,7 @@ public sealed class DiscordChannel : IChannel
                 AudienceProfiles: _audienceProfiles,
                 ModelCapabilities: _modelCapabilities,
                 Paths: _paths,
+                StorageResolver: _storageResolver,
                 BotUserId: botUserId,
                 PromptInjectionDetector: _promptInjectionDetector,
                 ThreadHistoryFetcher: _threadHistoryFetcher,

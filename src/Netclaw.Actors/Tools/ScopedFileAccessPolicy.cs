@@ -201,6 +201,58 @@ internal sealed class ScopedFileAccessPolicy
         var access = GetAccessProfile(profile, accessKind);
         var audience = context.Audience;
 
+        if (context.SessionStorage?.LogReadScope.IsSessionLogPath(
+                fullPath,
+                out var belongsToCurrentSession) == true
+            && (!belongsToCurrentSession || accessKind != AccessKind.Read))
+        {
+            error = belongsToCurrentSession
+                ? "Error: The current session log scope permits read access only."
+                : "Error: Another session log is outside the current session scope.";
+            failure = PathResolutionFailure.AccessDenied;
+            return false;
+        }
+
+        if (accessKind == AccessKind.Read
+            && access.Mode != ToolFilesystemMode.None
+            && context.SessionStorage?.LogReadScope.TryGetReadRoot(fullPath, out var logRoot) == true)
+        {
+            if (PathUtility.ContainsSymlinkSegment(logRoot, fullPath))
+            {
+                error = "Error: The current session log path contains an unsafe filesystem link.";
+                failure = PathResolutionFailure.AccessDenied;
+                return false;
+            }
+
+            error = string.Empty;
+            failure = PathResolutionFailure.None;
+            return true;
+        }
+
+        if (allowInteractivePersonalReach
+            && audience != TrustAudience.Public
+            && access.Mode != ToolFilesystemMode.None
+            && context.SessionStorage?.TryGetManagedDataRoot(fullPath, out var managedDataRoot) == true)
+        {
+            if (PathUtility.ContainsSymlinkSegment(managedDataRoot, fullPath))
+            {
+                error = "Error: The current session data path contains an unsafe filesystem link.";
+                failure = PathResolutionFailure.AccessDenied;
+                return false;
+            }
+
+            error = string.Empty;
+            failure = PathResolutionFailure.None;
+            return true;
+        }
+
+        if (context.SessionStorage?.IsRestrictedEnvelopePath(fullPath) == true)
+        {
+            error = "Error: The session storage envelope is not a general file root.";
+            failure = PathResolutionFailure.AccessDenied;
+            return false;
+        }
+
         if (access.Mode == ToolFilesystemMode.All)
         {
             // Autonomous (non-interactive) channels have no human approval backstop,

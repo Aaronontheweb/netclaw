@@ -102,7 +102,8 @@ public class ToolRegistrationExtensionsTests
             config,
             new NetclawPaths(),
             new ToolPathPolicy([]),
-            new ShellCommandPolicy()));
+            new ShellCommandPolicy(),
+            TimeProvider.System));
         Assert.Empty(registry.GetAllRegistrations());
     }
 
@@ -134,6 +135,7 @@ public class ToolRegistrationExtensionsTests
             paths,
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
+            TimeProvider.System,
             toolAccessPolicy: policy);
 
         var skillRegistry = new SkillRegistry();

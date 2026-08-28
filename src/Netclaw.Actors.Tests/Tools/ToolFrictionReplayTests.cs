@@ -220,6 +220,7 @@ public sealed class ToolFrictionReplayTests(ITestOutputHelper output) : TestKit(
             new NetclawPaths(),
             toolPathPolicy,
             commandPolicy,
+            TimeProvider.System,
             toolAccessPolicy: accessPolicy);
         return new RuntimeSetup(registry, new DispatchingToolExecutor(registry, accessPolicy), accessPolicy);
     }

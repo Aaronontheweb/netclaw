@@ -111,15 +111,16 @@ public sealed class SubAgentSpawnerTests : TestKit
     {
         var childProbe = CreateTestProbe($"non-interactive-{channelType}-child");
         var spawner = CreateSpawner();
-        var context = new ToolExecutionContext(new ToolRunScope
+        var context = TestToolExecutionContext.CreateBound(
+            "automation/subagent-parent",
+            Path.GetTempPath(),
+            new TestToolExecutionContextOptions
         {
-            Session = new ToolSessionScope.Bound("automation/subagent-parent", "/tmp/netclaw/sessions/parent"),
             Audience = TrustAudience.Personal,
-            InlineOutputBudget = InlineOutputBudget.Default,
             ChannelType = channelType.ToWireValue(),
             InteractiveApproval = new InteractiveApprovalCapability.Unavailable(),
             SpawnChildActor = (_, _, _) => Task.FromResult<object>(childProbe.Ref)
-        }, ToolExecutionTimeout.Default);
+        });
 
         var spawnTask = spawner.SpawnAsync(
             CreateProfile(),
@@ -142,15 +143,16 @@ public sealed class SubAgentSpawnerTests : TestKit
         var childProbe = CreateTestProbe("interactive-approval-child");
         var approvalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.ApprovedOnce);
         var spawner = CreateSpawner();
-        var context = new ToolExecutionContext(new ToolRunScope
+        var context = TestToolExecutionContext.CreateBound(
+            "interactive/subagent-parent",
+            Path.GetTempPath(),
+            new TestToolExecutionContextOptions
         {
-            Session = new ToolSessionScope.Bound("interactive/subagent-parent", "/tmp/netclaw/sessions/parent"),
             Audience = TrustAudience.Personal,
-            InlineOutputBudget = InlineOutputBudget.Default,
             ChannelType = ChannelType.Tui.ToWireValue(),
             InteractiveApproval = new InteractiveApprovalCapability.Available(approvalBridge),
             SpawnChildActor = (_, _, _) => Task.FromResult<object>(childProbe.Ref)
-        }, ToolExecutionTimeout.Default);
+        });
 
         var spawnTask = spawner.SpawnAsync(
             CreateProfile(),

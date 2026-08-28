@@ -122,7 +122,7 @@ public sealed class SessionToolExecutionPipelineHintTests
     }
 
     [Fact]
-    public void Denied_platform_temp_retry_recommends_session_scratch()
+    public void Denied_managed_temp_retry_recommends_managed_temp_directory()
     {
         var context = new ToolApprovalContext(
             ToolName: ShellTool,
@@ -131,8 +131,8 @@ public sealed class SessionToolExecutionPipelineHintTests
             CandidateVerbs: ["diagnostic-command"],
             Options: [])
         {
-            IsSessionScratchRetry = true,
-            SessionScratchDirectory = "/home/user/.netclaw/sessions/abc",
+            IsManagedTemporaryRetry = true,
+            ManagedTemporaryDirectory = "/home/user/.netclaw/sessions/abc",
             PlatformTemporaryRoot = "/tmp"
         };
 
@@ -145,7 +145,7 @@ public sealed class SessionToolExecutionPipelineHintTests
             setWorkingDirectoryAvailable: true,
             approvalContext: context);
 
-        Assert.Contains("private session scratch", hint);
+        Assert.Contains("managed temporary directory", hint);
         Assert.Contains("/home/user/.netclaw/sessions/abc", hint);
         Assert.DoesNotContain("set_working_directory", hint);
     }

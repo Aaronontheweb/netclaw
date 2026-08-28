@@ -22,6 +22,7 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Memory;
+using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Reminders;
 using Netclaw.Actors.Skills;
 using Netclaw.Actors.SubAgents;
@@ -224,6 +225,7 @@ static async Task RunDaemonAsync(
     builder.Services.AddSingleton<Netclaw.Actors.Telemetry.ISessionMetrics>(sp => sp.GetRequiredService<DailyStatsPublisher>());
     builder.Services.AddSingleton<DaemonStatsService>();
     builder.Services.AddSingleton<SessionIngressGate>();
+    builder.Services.AddSingleton<ISessionStorageResolver, SqliteSessionStorageResolver>();
     builder.Services.AddSingleton<RestartManifestStore>();
     builder.Services.AddSingleton<DaemonRestartCoordinator>();
     builder.Services.AddSingleton<IDaemonRestartCoordinator>(sp => sp.GetRequiredService<DaemonRestartCoordinator>());
@@ -707,7 +709,7 @@ static void ConfigureDaemonServices(
     services.AddSingleton<IToolApprovalService, AkkaToolApprovalService>();
 
     var toolRegistry = new ToolRegistry();
-    toolRegistry.WithFirstPartyTools(toolConfig, paths, toolPathPolicy, shellCommandPolicy, searchBackend, toolAccessPolicy,
+    toolRegistry.WithFirstPartyTools(toolConfig, paths, toolPathPolicy, shellCommandPolicy, TimeProvider.System, searchBackend, toolAccessPolicy,
         webhooksConfig.Enabled ? webhookRouteStore : null);
 
     // Skills system: seed built-in skills to .system/, register sync service
@@ -1045,7 +1047,8 @@ static void ConfigureDaemonServices(
         sp.GetRequiredService<IReadOnlyList<IContextLayerProvider>>(),
         sp.GetRequiredService<IWorkingContextSnapshotProvider>(),
         sp.GetRequiredService<TimeProvider>(),
-        sp.GetRequiredService<NetclawPaths>()));
+        sp.GetRequiredService<NetclawPaths>(),
+        sp.GetRequiredService<ISessionStorageResolver>()));
 
     services.AddSingleton(sp => new SessionToolServices(
         sp.GetRequiredService<IToolExecutor>(),
@@ -1118,7 +1121,7 @@ static void ConfigureDaemonServices(
         akkaBuilder.WithNetclawSerialization();
         akkaBuilder.WithNetclawActors(shellEnvironment, reminderStorage);
         akkaBuilder.WithWebhookRouteActor();
-        akkaBuilder.WithSessionLogDispatcher(paths.SessionLogsDirectory, sp.GetRequiredService<TimeProvider>());
+        akkaBuilder.WithSessionLogDispatcher();
         akkaBuilder.WithSignalRGateway();
         akkaBuilder.WithDailyStatsActor();
 

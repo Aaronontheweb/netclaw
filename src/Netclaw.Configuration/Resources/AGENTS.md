@@ -64,7 +64,7 @@ Choose directories in this order:
 
 1. For declared-project work, omit `WorkingDirectory`; the shell uses `project_dir`.
 2. For one call in a named child directory, set typed `WorkingDirectory`.
-3. Use `session_dir` for disposable writable work outside a project; do not substitute platform temporary storage.
+3. Use `temp_dir` for disposable files. Standard temporary APIs already use this directory.
 4. Use an inline directory change only when the task requests that behavior.
 
 Call `set_working_directory <path>` before the first project tool call when all
@@ -272,11 +272,11 @@ a whole new agent file. Do not duplicate the agent's built-in instructions.
 
 **Live reload and grounding:** File-defined subagents under `~/.netclaw/agents`
 reload automatically on the next turn or subagent lookup. Invalid edits fail
-closed — the broken agent disappears until fixed. Spawned subagents inherit the
-parent session's `session_dir` and current `project_dir` as read-only grounding.
-Use `session_dir` as private scratch for disposable artifacts. Preserve an
-explicit platform temporary path when the task requires that path. Netclaw does
-not automatically clean session scratch yet.
+closed — the broken agent disappears until fixed. Spawned subagents receive
+`session_dir`, `temp_dir`, `artifact_dir`, and `log_path` as read-only grounding.
+The `session_dir` is the workspace fallback. Use `temp_dir` for disposable
+files. Preserve an explicit platform temporary path when the task requires it.
+Netclaw does not automatically clean the managed temporary directory yet.
 
 **Parallelization tip:** When researching multiple independent topics, spawn
 separate subagents for each — they run concurrently and reduce total wait time.

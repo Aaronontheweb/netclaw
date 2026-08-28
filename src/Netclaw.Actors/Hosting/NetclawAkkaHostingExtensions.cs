@@ -185,19 +185,12 @@ public static class NetclawAkkaHostingExtensions
     /// session audit messages through it.
     /// </summary>
     public static AkkaConfigurationBuilder WithSessionLogDispatcher(
-        this AkkaConfigurationBuilder builder,
-        string sessionLogsBasePath,
-        TimeProvider timeProvider)
+        this AkkaConfigurationBuilder builder)
     {
-        return builder.StartActors((system, registry, _) =>
+        return builder.StartActors((system, registry, resolver) =>
         {
             var actor = system.ActorOf(
-                GenericChildPerEntityParent.CreateProps(
-                    new Routing.SessionMessageExtractor(),
-                    entityId => SessionLogActor.CreateProps(
-                        new Protocol.SessionId(entityId),
-                        sessionLogsBasePath,
-                        timeProvider)),
+                resolver.Props<SessionLogDispatcher>(),
                 "session-log-dispatcher");
             registry.Register<SessionLogDispatcherActorKey>(actor);
         });

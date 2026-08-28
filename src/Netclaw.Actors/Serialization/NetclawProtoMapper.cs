@@ -288,6 +288,8 @@ internal static class NetclawProtoMapper
             proto.SessionScratchDirectory = evt.SessionScratchDirectory;
         if (evt.AuthorizationAttemptId is not null)
             proto.AuthorizationAttemptId = evt.AuthorizationAttemptId;
+        if (evt.ManagedTemporaryDirectory is not null)
+            proto.ManagedTemporaryDirectory = evt.ManagedTemporaryDirectory;
         return proto;
     }
 
@@ -317,6 +319,9 @@ internal static class NetclawProtoMapper
             : null,
         AuthorizationAttemptId = proto.HasAuthorizationAttemptId
             ? proto.AuthorizationAttemptId
+            : null,
+        ManagedTemporaryDirectory = proto.HasManagedTemporaryDirectory
+            ? proto.ManagedTemporaryDirectory
             : null,
         RequestedAtMs = proto.RequestedAtMs
     };
