@@ -44,9 +44,6 @@
     <Project Path="tests/Netclaw.SmokeLlmServer/Netclaw.SmokeLlmServer.csproj" />
     <Project Path="tests/Netclaw.SmokeMcpServer/Netclaw.SmokeMcpServer.csproj" />
   </Folder>
-  <Folder Name="/evals/">
-    <Project Path="evals/Netclaw.Evals.InteractiveClient/Netclaw.Evals.InteractiveClient.csproj" />
-  </Folder>
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/Netclaw.Benchmarks/Netclaw.Benchmarks.csproj" />
   </Folder>

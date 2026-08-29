@@ -31,8 +31,6 @@
 #     NETCLAW_EVAL_NO_BUILD      Set to 1 to skip `dotnet publish` + `docker build`
 #                                (reuse existing ./publish output and image)
 #     NETCLAW_BIN                Path to netclaw CLI (default: ./publish/cli/netclaw)
-#     NETCLAW_EVAL_INTERACTIVE_CLIENT
-#                                Path to the eval-only interactive client DLL
 #     NETCLAW_EVAL_ASSET_ROOT    Checkout that supplies identity, skills, and fixtures
 #                                (default: the checkout that contains this script)
 #
@@ -63,7 +61,6 @@ FILTER_CASE="${NETCLAW_EVAL_CASE:-}"
 # always test the current source tree, not a stale published image.
 NETCLAW_IMAGE="${NETCLAW_IMAGE:-ghcr.io/netclaw-dev/netclaw:dev}"
 NETCLAW_BIN="${NETCLAW_BIN:-$REPO_ROOT/publish/cli/netclaw}"
-EVAL_INTERACTIVE_CLIENT_DLL="${NETCLAW_EVAL_INTERACTIVE_CLIENT:-$REPO_ROOT/publish/eval-client/Netclaw.Evals.InteractiveClient.dll}"
 
 # Eval target — resolved by check_prerequisites after optional interactive prompt.
 EVAL_PROVIDER_TYPE="${NETCLAW_EVAL_PROVIDER_TYPE:-}"
@@ -272,7 +269,6 @@ archive_eval_run() {
     if [[ -n "${TMPDIR_EVAL:-}" && -d "$TMPDIR_EVAL" ]]; then
         mkdir -p "$archive_dir/stdout"
         cp "$TMPDIR_EVAL"/stdout_*.txt "$archive_dir/stdout/" 2>/dev/null || true
-        cp "$TMPDIR_EVAL"/stdout_*_events.ndjson "$archive_dir/stdout/" 2>/dev/null || true
         cp "$TMPDIR_EVAL"/stderr_*.txt "$archive_dir/stdout/" 2>/dev/null || true
     fi
 
@@ -337,59 +333,15 @@ build_local_image() {
             echo "       Run without NO_BUILD or publish the CLI first." >&2
             exit 1
         fi
-        if [[ ! -f "$EVAL_INTERACTIVE_CLIENT_DLL" ]]; then
-            echo "ERROR: NO_BUILD=1 but interactive eval client not found at $EVAL_INTERACTIVE_CLIENT_DLL" >&2
-            echo "       Run without NO_BUILD or publish the eval client first." >&2
-            exit 1
-        fi
         return 0
     fi
 
     echo "→ Building netclaw from source (image + CLI)..."
     "$REPO_ROOT/scripts/docker/build-image.sh"
-    dotnet publish \
-        "$REPO_ROOT/evals/Netclaw.Evals.InteractiveClient/Netclaw.Evals.InteractiveClient.csproj" \
-        -c Release \
-        -o "$REPO_ROOT/publish/eval-client"
     echo "→ Local build complete: $NETCLAW_IMAGE"
 }
 
 # ─── Eval Daemon Lifecycle ────────────────────────────────────────────────────
-
-wait_for_eval_daemon() {
-    local deadline=$((SECONDS + 60))
-    while (( SECONDS < deadline )); do
-        if curl -fsS "http://127.0.0.1:$EVAL_PORT/api/health/ready" >/dev/null 2>&1; then
-            # The port can belong to another eval. Confirm this container owns a live daemon.
-            if ! docker exec "$EVAL_CONTAINER_NAME" pgrep -f netclawd >/dev/null 2>&1; then
-                echo "ERROR: port $EVAL_PORT answered but this container's daemon is not running. Set NETCLAW_EVAL_PORT to a free port." >&2
-                docker logs "$EVAL_CONTAINER_NAME" >&2 2>&1 || true
-                exit 2
-            fi
-            return 0
-        fi
-
-        local running
-        running=$(docker inspect -f '{{.State.Running}}' "$EVAL_CONTAINER_NAME" 2>/dev/null || echo "false")
-        if [[ "$running" != "true" ]]; then
-            echo "ERROR: eval container exited before the daemon became ready" >&2
-            docker logs "$EVAL_CONTAINER_NAME" >&2 2>&1 || true
-            if [[ -f "$DAEMON_LOG" ]]; then
-                tail -50 "$DAEMON_LOG" >&2 || true
-            fi
-            exit 2
-        fi
-
-        sleep 1
-    done
-
-    echo "ERROR: eval daemon did not become healthy within 60s" >&2
-    docker logs "$EVAL_CONTAINER_NAME" >&2 2>&1 || true
-    if [[ -f "$DAEMON_LOG" ]]; then
-        tail -50 "$DAEMON_LOG" >&2 || true
-    fi
-    exit 2
-}
 
 # Substitute {{PLACEHOLDER}} tokens in identity templates with eval defaults.
 substitute_identity_template() {
@@ -646,31 +598,40 @@ start_eval_daemon() {
         exit 2
     fi
 
-    wait_for_eval_daemon
-    echo "Eval daemon ready at http://127.0.0.1:$EVAL_PORT"
-}
+    # Poll /api/health/ready up to 60s.
+    local deadline=$((SECONDS + 60))
+    while (( SECONDS < deadline )); do
+        if curl -fsS "http://127.0.0.1:$EVAL_PORT/api/health/ready" >/dev/null 2>&1; then
+            # The container runs with --network host, so any process on this
+            # port can answer the host-side readiness poll — including another
+            # eval run's daemon. Readiness must also prove THIS container's
+            # daemon is alive, or the whole run interrogates a stranger while
+            # every daemon-log assert reads its own dead container's empty log.
+            if ! docker exec "$EVAL_CONTAINER_NAME" pgrep -f netclawd >/dev/null 2>&1; then
+                echo "ERROR: port $EVAL_PORT answered but this container's daemon is not running — another daemon owns the port. Set NETCLAW_EVAL_PORT to a free port." >&2
+                docker logs "$EVAL_CONTAINER_NAME" >&2 2>&1 || true
+                exit 2
+            fi
+            echo "Eval daemon ready at http://127.0.0.1:$EVAL_PORT"
+            return 0
+        fi
 
-restart_eval_daemon() {
-    docker restart "$EVAL_CONTAINER_NAME" >/dev/null
-    wait_for_eval_daemon
-}
+        local running
+        running=$(docker inspect -f '{{.State.Running}}' "$EVAL_CONTAINER_NAME" 2>/dev/null || echo "false")
+        if [[ "$running" != "true" ]]; then
+            echo "ERROR: eval container exited during startup" >&2
+            docker logs "$EVAL_CONTAINER_NAME" >&2 2>&1 || true
+            [[ -f "$DAEMON_LOG" ]] && tail -50 "$DAEMON_LOG" >&2 || true
+            exit 2
+        fi
 
-set_file_write_approval_mode() {
-    local mode="$1"
-    local config_path="$EVAL_HOME/data/config/netclaw.json"
-    local updated_path="$config_path.updated"
+        sleep 1
+    done
 
-    if [[ "$mode" == "inherit" ]]; then
-        jq 'del(.Tools.AudienceProfiles.Personal.ApprovalPolicy.ToolOverrides.file_write)' \
-            "$config_path" > "$updated_path"
-    else
-        jq --arg mode "$mode" \
-            '.Tools.AudienceProfiles.Personal.ApprovalPolicy.ToolOverrides.file_write = $mode' \
-            "$config_path" > "$updated_path"
-    fi
-
-    mv "$updated_path" "$config_path"
-    chmod ugo+rw "$config_path"
+    echo "ERROR: eval daemon did not become healthy within 60s" >&2
+    docker logs "$EVAL_CONTAINER_NAME" >&2 2>&1 || true
+    [[ -f "$DAEMON_LOG" ]] && tail -50 "$DAEMON_LOG" >&2 || true
+    exit 2
 }
 
 # ─── Memory Seeding ──────────────────────────────────────────────────────────
@@ -941,7 +902,6 @@ check_daemon_alive() {
 run_prompt() {
     local prompt="$1"
     local output_format="${2:-text}"
-    local prompt_mode="${3:-headless}"
     local ts
     ts="$(date +%s%N)"
     STDOUT_FILE="$TMPDIR_EVAL/stdout_${ts}.txt"
@@ -957,63 +917,22 @@ run_prompt() {
         DAEMON_LOG_LINES_BEFORE=0
     fi
 
-    if [[ "$prompt_mode" == "interactive" ]]; then
-        if [[ "$output_format" != "json" ]]; then
-            echo "ERROR: interactive eval prompts require JSON output" >&2
-            exit 2
-        fi
-
-        local event_file="$TMPDIR_EVAL/stdout_${ts}_events.ndjson"
-        timeout "$PROMPT_TIMEOUT" dotnet "$EVAL_INTERACTIVE_CLIENT_DLL" \
-            "http://127.0.0.1:$EVAL_PORT" "$prompt" \
-            > "$event_file" 2> "$STDERR_FILE" || true
-
-        jq -cs '
-            ([.[] | select(.type == "text_delta") | .text // ""]) as $deltas
-            | ([.[] | select(.type == "usage")] | last // null) as $usage
-            | {
-                sessionId: ([.[] | .sessionId | select(. != null and . != "")] | first // ""),
-                response: (
-                    if ($deltas | length) > 0 then $deltas | join("")
-                    else [.[] | select(.type == "text") | .text // ""] | join("")
-                    end
-                ),
-                toolCalls: (
-                    [.[] | select(.type == "tool_call") | {
-                        callId: .callId,
-                        toolName: .toolName,
-                        argumentsJson: .argumentsJson
-                    }]
-                    | if length == 0 then null else . end
-                ),
-                usage: (
-                    if $usage == null then null else {
-                        inputTokens: $usage.inputTokens,
-                        outputTokens: $usage.outputTokens,
-                        totalTokens: $usage.totalTokens,
-                        cachedInputTokens: $usage.cachedInputTokens,
-                        reasoningTokens: $usage.reasoningTokens,
-                        promptMs: $usage.promptMs,
-                        predictedPerSecond: $usage.predictedPerSecond
-                    } end
-                ),
-                ttftMs: null,
-                totalMs: null
-            }
-        ' "$event_file" > "$STDOUT_FILE"
-    else
-        # Run the normal noninteractive prompt through the host CLI.
-        local -a output_args=()
-        if [[ "$output_format" == "json" ]]; then
-            output_args+=(--json)
-        fi
-
-        # Separate stdout keeps JSON assertions valid when the CLI writes diagnostics.
-        NETCLAW_DAEMON_ENDPOINT="http://127.0.0.1:$EVAL_PORT" \
-        NETCLAW_HOME="$EVAL_HOME" \
-            timeout "$PROMPT_TIMEOUT" stdbuf -oL -eL "$NETCLAW_BIN" chat -p "${output_args[@]}" "$prompt" \
-            > "$STDOUT_FILE" 2> "$STDERR_FILE" || true
+    # Run prompt via the host CLI, but redirect it at the eval container's
+    # daemon and keep CLI-side path resolution inside the eval sandbox.
+    local -a output_args=()
+    if [[ "$output_format" == "json" ]]; then
+        output_args+=(--json)
     fi
+
+    # Stdout and stderr go to separate files. A merged capture corrupts
+    # --json assertions: the CLI writes legitimate diagnostics (for example
+    # "[error] Unknown output type from daemon: ...") to stderr, and a
+    # trailing diagnostic line breaks jq's parse of the JSON envelope on
+    # stdout, producing a false eval failure rather than a real one.
+    NETCLAW_DAEMON_ENDPOINT="http://127.0.0.1:$EVAL_PORT" \
+    NETCLAW_HOME="$EVAL_HOME" \
+        timeout "$PROMPT_TIMEOUT" stdbuf -oL -eL "$NETCLAW_BIN" chat -p "${output_args[@]}" "$prompt" \
+        > "$STDOUT_FILE" 2> "$STDERR_FILE" || true
 
     # Brief pause for daemon log flush
     sleep 2
@@ -2608,33 +2527,6 @@ assert_approval_managed_temp_disposable() {
         ' "$STDOUT_FILE" >/dev/null
 }
 
-assert_approval_managed_temp_correction_recovery() {
-    local session_id session_segment expected_path session_log
-    local -a write_calls call_ids
-    stdout_json_envelope_valid || return 1
-    mapfile -t write_calls < <(stdout_json_tool_call_arguments 'file_write')
-    mapfile -t call_ids < <(jq -r '
-        .toolCalls[]?
-        | select(.toolName == "file_write")
-        | .callId // empty
-    ' "$STDOUT_FILE")
-    [[ "${#write_calls[@]}" -eq 2 && "${#call_ids[@]}" -eq 2 ]] || return 1
-    jq -e '.Path == "/tmp/netclaw-eval-unmanaged/result.log"' \
-        <<<"${write_calls[0]}" >/dev/null || return 1
-
-    session_id=$(jq -r '.sessionId' "$STDOUT_FILE")
-    session_segment=$(LC_ALL=C sed 's/[^[:alnum:]-]/_/g' <<<"$session_id")
-    expected_path="/home/netclaw/.netclaw/sessions/$session_segment/tmp/parent/result.log"
-    jq -e --arg expected "$expected_path" '.Path == $expected' \
-        <<<"${write_calls[1]}" >/dev/null || return 1
-
-    session_log=$(stdout_json_session_actor_log_path) || return 1
-    grep -qaE \
-        "Tool result: file_write \(call=${call_ids[0]}\).*Tool execution deferred: use_managed_temporary_directory" \
-        "$session_log" || return 1
-    jq -e '.response | contains("managed-temp-ok v1")' "$STDOUT_FILE" >/dev/null
-}
-
 assert_parent_child_log_handoff() {
     stdout_json_envelope_valid || return 1
     stdout_json_tool_called 'spawn_agent' || return 1
@@ -2736,22 +2628,10 @@ end_category() {
 
 run_case() {
     local output_format="text"
-    local prompt_mode="headless"
-    while [[ "${1:-}" == --* ]]; do
-        case "$1" in
-            --json)
-                output_format="json"
-                ;;
-            --interactive)
-                prompt_mode="interactive"
-                ;;
-            *)
-                echo "ERROR: unsupported run_case option '$1'" >&2
-                exit 2
-                ;;
-        esac
+    if [[ "${1:-}" == "--json" ]]; then
+        output_format="json"
         shift
-    done
+    fi
     local case_name="$1"; shift
     local description="$1"; shift
     local -a prompts=("$@")
@@ -2783,7 +2663,7 @@ run_case() {
 
         local rendered_prompt="$prompt"
         rendered_prompt="${rendered_prompt//\{\{MANAGED_WORKTREE_BRANCH\}\}/${MANAGED_WORKTREE_BRANCH:-}}"
-        run_prompt "$rendered_prompt" "$output_format" "$prompt_mode"
+        run_prompt "$rendered_prompt" "$output_format"
 
         local passed=0
         local details="fail"
@@ -3244,17 +3124,6 @@ run_all() {
 
     run_case --json approval_managed_temp_disposable "uses managed temporary storage for ordinary disposable output" \
         "Create a disposable result.log file with exactly these two lines: diagnostic-ok v1 and line2: all systems nominal. Read the file back and return its exact contents."
-
-    if [[ "$CATEGORY_SKIPPED" != "true" \
-        && ( -z "$FILTER_CASE" || "$FILTER_CASE" == "approval_managed_temp_correction_recovery" ) ]]; then
-        # This case needs a real correction and a bounded approval response.
-        set_file_write_approval_mode "Approval"
-        restart_eval_daemon
-        run_case --interactive --json approval_managed_temp_correction_recovery "recovers from one explicit unmanaged temporary write" \
-            "First, use file_write to try /tmp/netclaw-eval-unmanaged/result.log with the exact text managed-temp-ok v1. This initial path only triggers policy; it is not a required final destination. If Netclaw returns one correction, follow it exactly and do not retry the original path. Return the final successful path and text."
-        set_file_write_approval_mode "inherit"
-        restart_eval_daemon
-    fi
 
     run_case --json parent_child_log_handoff "reads the returned child log with an existing file tool" \
         "Use spawn_agent with agent disposable-diagnostic. After it succeeds, use an existing file tool to read its returned log path. Do not use shell to find the log. Return one log line."

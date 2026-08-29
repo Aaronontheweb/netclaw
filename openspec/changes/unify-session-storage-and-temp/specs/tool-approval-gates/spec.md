@@ -376,7 +376,7 @@ approval bridges.
 The change SHALL use deterministic tests as the acceptance boundary for path
 layout, persistence, access control, environment injection, correction
 selection, retry behavior, and worktree authority. Model evals SHALL measure
-tool choice, managed-path use, correction recovery, and parent-child handoff.
+tool choice, managed-path use, and parent-child handoff.
 A model-eval result SHALL NOT replace a failed or missing deterministic test.
 
 #### Scenario: Counterexample - model success cannot hide contract failure

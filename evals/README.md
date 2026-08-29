@@ -35,8 +35,8 @@ default provider.
 
 ## How It Works
 
-1. `scripts/docker/build-image.sh dev` builds the `netclawd` image. The harness
-   also builds its eval-only interactive SignalR client.
+1. `scripts/docker/build-image.sh dev` (or a published release image) builds
+   the `netclawd` Docker image.
 2. On every invocation, `run-evals.sh` spins up an ephemeral container
    from that image with `docker run --rm --network host`, a throwaway
    `$EVAL_HOME` temp directory, and `NETCLAW_*` env vars that route it at
@@ -58,15 +58,10 @@ default provider.
 
 The harness preloads `evals/fixtures/config/netclaw.json` into the ephemeral
 home before startup. It auto-approves tools and grants read/write access for the
-Personal audience because headless sessions cannot answer approval prompts.
-A companion `tool-approvals.json` trusts Git for shell-based coding cases.
-Tool exposure and command-deny rules still apply.
-
-The correction-recovery case uses the eval-only interactive client. The harness
-temporarily gates `file_write` for that case. The client approves one write only
-when its path is below the directory from Netclaw's trusted correction. It
-denies all other approval requests. The harness restores the standard policy
-after the case.
+Personal audience because headless sessions cannot answer approval prompts or
+edit an interactive trust policy. A companion `tool-approvals.json` trusts Git
+for shell-based coding cases. Tool exposure and command-deny rules still apply,
+and these policies are never copied into an operator's config.
 
 `--network host` is the default because operators often host their LLM on
 a Tailscale node — MagicDNS hostnames like `my-gpu-server.tailnet.ts.net` only
@@ -76,9 +71,9 @@ reduces `--network host` to bridge mode).
 
 ## What It Tests
 
-The suite runs most prompts via `netclaw chat -p` against the eval container.
-The correction-recovery case uses the eval-only interactive client. The suite
-verifies both **stdout output** and **daemon log patterns**.
+The suite runs prompts via `netclaw chat -p` against the eval container and
+verifies both **stdout output** (tool calls, text content) and **daemon
+log patterns** (skill loading, memory recall, checkpoint formation).
 
 | Category | Cases | What It Validates |
 |----------|-------|-------------------|
@@ -91,7 +86,7 @@ verifies both **stdout output** and **daemon log patterns**.
 | Deployment Mission | 1 | Applies the disk mission playbook, loads its required skill, and returns reviewed sales email |
 | Subagents | 3 | Delegates through `spawn_agent`, completes ambiguous work, preserves specialized guidance, and declares a different named project before shell inspection |
 | Coding Context | 1 | Repeatedly switches between isolated linked worktrees, alternates branch and one-of-four target files by run, and verifies Git grounding, wrong-file/worktree safety, and path-free child handoff |
-| Session Storage | 5 | Verifies managed temporary APIs, correction recovery, parent-child log handoff, and managed worktree creation |
+| Session Storage | 4 | Verifies managed temporary APIs, parent-child log handoff, and managed worktree creation |
 | Complex Task Execution | 5 | Multi-step tool chains complete successfully, incl. bounded tool output — given only the goal (no handling hints), the agent retrieves a deep line from oversized shell output and from a large file, which is only possible by coping with the bound the way AGENTS.md/skills/steer text direct |
 | Multi-Turn Conversation | 7 | Session resume and speaker attribution recall |
 
@@ -156,7 +151,6 @@ the missing values. In non-interactive contexts it fails loudly.
 | `NETCLAW_IMAGE` | `ghcr.io/netclaw-dev/netclaw:latest` | Image ref |
 | `NETCLAW_EVAL_PORT` | `5299` | Host-side port for the eval daemon |
 | `NETCLAW_BIN` | `netclaw` | Path to the netclaw CLI on the host |
-| `NETCLAW_EVAL_INTERACTIVE_CLIENT` | `publish/eval-client/Netclaw.Evals.InteractiveClient.dll` | Path to the eval-only interactive client |
 | `NETCLAW_EVAL_ASSET_ROOT` | Current checkout | Checkout that supplies identity, skills, agents, and config fixtures |
 
 ### Eval suite knobs (optional)

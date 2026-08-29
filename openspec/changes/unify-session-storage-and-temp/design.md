@@ -567,8 +567,6 @@ The eval suite will add these behavioral cases:
 
 - a child uses the injected temporary environment without an export prefix;
 - a parent uses first-party file tools under `temp_dir` without a shell call;
-- an agent retries an explicit unmanaged POSIX write under `temp_dir` after a
-  typed correction;
 - an explicit platform-temp task preserves the requested path;
 - a parent uses the returned child log path with existing file tools;
 - an agent uses `worktree_create` instead of a shell worktree command.

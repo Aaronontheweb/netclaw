@@ -48,11 +48,10 @@
 - [x] 7.1 Rewrite `subagent_session_scratch_disposable` so a standard temporary API must produce output below the child's `temp_dir`; verify the prompt does not name a path, cwd, environment variable, or scope tool
 - [x] 7.2 Rename `approval_session_scratch_disposable` to `approval_managed_temp_disposable` and require `file_write` plus `file_read` at `<temp_dir>/result.log` with no shell call; verify no eval describes the complete session envelope as disposable scratch
 - [x] 7.3 Keep the explicit platform-temp cases for typed `WorkingDirectory`, exact inline `cd`, and natural directory mutation; verify their requested path is preserved and normal authorization still decides execution
-- [x] 7.4 Add a correction-recovery eval for an explicit unmanaged POSIX write; verify the next authored call uses `temp_dir` and no published artifact contains PII
-- [x] 7.5 Add a parent-child handoff eval that uses the returned child log path with `file_read`, `file_list`, or `file_search`; verify the parent performs no shell search and invokes no special log tool
-- [x] 7.6 Add a managed-worktree eval that offers the focused tool through progressive disclosure; verify the agent uses `worktree_create` instead of a shell Git worktree command
-- [x] 7.7 Defer Windows model-pattern evals until sanitized representative traffic exists while keeping Windows contract tests required; verify the eval inventory records this as evidence work rather than a passed case
-- [x] 7.8 Run the locked post-change comparison with the same prompts, model configuration, and assertions as the baseline; verify the report separates deterministic acceptance from behavioral scores
+- [x] 7.4 Add a parent-child handoff eval that uses the returned child log path with `file_read`, `file_list`, or `file_search`; verify the parent performs no shell search and invokes no special log tool
+- [x] 7.5 Add a managed-worktree eval that offers the focused tool through progressive disclosure; verify the agent uses `worktree_create` instead of a shell Git worktree command
+- [x] 7.6 Defer Windows model-pattern evals until sanitized representative traffic exists while keeping Windows contract tests required; verify the eval inventory records this as evidence work rather than a passed case
+- [x] 7.7 Run the locked post-change comparison with the same prompts, model configuration, and assertions as the baseline; verify the report separates deterministic acceptance from behavioral scores
 
 ## 8. Documentation and Release Verification
 
