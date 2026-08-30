@@ -826,11 +826,12 @@ public class SubAgentActorTests : TestKit
         const string retryCallId = "call-project-scope-retry";
         const string projectGuidance = "Project instructions: use the local test conventions.";
         var sessionDirectory = TestPath("sessions", "project-scope-child");
-        var worktree = Path.GetFullPath(AppContext.BaseDirectory);
+        var worktree = Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppContext.BaseDirectory));
+        var workspacesDirectory = Directory.GetParent(worktree)!.FullName;
         var shell = new FakeNetclawTool(ShellTool.ToolName, "inspected");
         var setWorkingDirectory = new SetWorkingDirectoryTool(
             new ToolConfig(),
-            new NetclawPaths(worktree, worktree));
+            new NetclawPaths(workspacesDirectory, workspacesDirectory));
         var client = new SequencedToolCallChatClient(
         [
             ProjectScopeCall(firstCallId, worktree),
@@ -850,7 +851,7 @@ public class SubAgentActorTests : TestKit
         var actor = Sys.ActorOf(SubAgentActor.CreatePropsWithProjectInstructionProvider(
             CreateDefinition([shell, setWorkingDirectory]),
             client,
-            CreateProjectScopeCorrectionPolicy(worktree),
+            CreateProjectScopeCorrectionPolicy(workspacesDirectory),
             new ProjectPromptProvider(worktree, projectGuidance)));
 
         var result = await actor.Ask<SubAgentResult>(
@@ -1367,6 +1368,7 @@ public class SubAgentActorTests : TestKit
                 ["shell_execute"] = ToolApprovalMode.Approval
             }
         };
+        var environment = TestShellEnvironment.Current;
         return new ToolAccessPolicy(
             toolConfig,
             new EffectivePolicyDefaults(
@@ -1374,8 +1376,8 @@ public class SubAgentActorTests : TestKit
                 TrustAudience.Personal,
                 ShellExecutionMode.HostAllowed,
                 UsedStrictFallback: false),
-            new ShellCommandPolicy(),
-            new ToolPathPolicy([]),
+            new ShellCommandPolicy(environment),
+            new ToolPathPolicy(environment, []),
             shellTrustZonePolicy: netclawHome is null
                 ? null
                 : new ShellTrustZonePolicy(toolConfig, new NetclawPaths(netclawHome)));
@@ -1533,8 +1535,8 @@ public class SubAgentActorTests : TestKit
 
     private static string ProjectScopeCommand =>
         TestShellEnvironment.Current.Grammar == ShellGrammar.Bash
-            ? "pwd; whoami"
-            : "Get-Location; Get-Date";
+            ? "pwd"
+            : "Get-Location";
 
     private static string? GetLastToolResult(FakeChatClient fakeClient, string callId)
     {
