@@ -507,8 +507,8 @@ public sealed class SessionMessageAssemblerTests
             TurnRestartNotice: restartNotice,
             SessionId: TestSession,
             Storage: SessionStoragePaths.CreateLegacy(
-                "/tmp/netclaw-test/session",
-                "/tmp/netclaw-test/logs",
+                Path.Combine(Path.GetTempPath(), "netclaw-test", "session"),
+                Path.Combine(Path.GetTempPath(), "netclaw-test", "logs"),
                 "test-session"),
             FileReadGranted: fileReadGranted,
             ActiveRecall: activeRecall,

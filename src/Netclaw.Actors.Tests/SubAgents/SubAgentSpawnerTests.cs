@@ -25,6 +25,11 @@ namespace Netclaw.Actors.Tests.SubAgents;
 
 public sealed class SubAgentSpawnerTests : TestKit
 {
+    private static readonly string ParentSessionDirectory = Path.GetFullPath(
+        Path.Combine(Path.GetTempPath(), "netclaw", "sessions", "parent"));
+    private static readonly string TestProjectDirectory = Path.GetFullPath(
+        Path.Combine(Path.GetTempPath(), "netclaw", "repos", "foo"));
+
     public SubAgentSpawnerTests(ITestOutputHelper output) : base(output: output) { }
 
     protected override void ConfigureAkka(AkkaConfigurationBuilder builder, IServiceProvider provider)
@@ -62,10 +67,10 @@ public sealed class SubAgentSpawnerTests : TestKit
             NullLogger<SubAgentSpawner>.Instance);
 
         var childProbe = CreateTestProbe("subagent-child");
-        var context = TestToolExecutionContext.CreateBound("console/subagent-parent", "/tmp/netclaw/sessions/parent", new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateBound("console/subagent-parent", ParentSessionDirectory, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
-            ProjectDirectory = "/home/user/repos/foo",
+            ProjectDirectory = TestProjectDirectory,
             SpawnChildActor = (_, _, _) => Task.FromResult<object>(childProbe.Ref),
         });
 
@@ -87,9 +92,9 @@ public sealed class SubAgentSpawnerTests : TestKit
 
         var run = await childProbe.ExpectMsgAsync<RunSubAgent>(cancellationToken: TestContext.Current.CancellationToken);
         var bound = Assert.IsType<ToolSessionScope.Bound>(run.Scope.Authority.Session);
-        Assert.Equal("/tmp/netclaw/sessions/parent", bound.SessionDirectory);
-        Assert.Equal("/home/user/repos/foo", run.Scope.Authority.ProjectDirectory);
-        Assert.Equal("/home/user/repos/foo", run.Scope.Authority.InheritedCwd);
+        Assert.Equal(ParentSessionDirectory, bound.SessionDirectory);
+        Assert.Equal(TestProjectDirectory, run.Scope.Authority.ProjectDirectory);
+        Assert.Equal(TestProjectDirectory, run.Scope.Authority.InheritedCwd);
         Assert.Same(environment, run.Scope.InitialWorkingSnapshot.ShellEnvironment);
 
         childProbe.Reply(new SubAgentResult
@@ -115,12 +120,12 @@ public sealed class SubAgentSpawnerTests : TestKit
             "automation/subagent-parent",
             Path.GetTempPath(),
             new TestToolExecutionContextOptions
-        {
-            Audience = TrustAudience.Personal,
-            ChannelType = channelType.ToWireValue(),
-            InteractiveApproval = new InteractiveApprovalCapability.Unavailable(),
-            SpawnChildActor = (_, _, _) => Task.FromResult<object>(childProbe.Ref)
-        });
+            {
+                Audience = TrustAudience.Personal,
+                ChannelType = channelType.ToWireValue(),
+                InteractiveApproval = new InteractiveApprovalCapability.Unavailable(),
+                SpawnChildActor = (_, _, _) => Task.FromResult<object>(childProbe.Ref)
+            });
 
         var spawnTask = spawner.SpawnAsync(
             CreateProfile(),
@@ -147,12 +152,12 @@ public sealed class SubAgentSpawnerTests : TestKit
             "interactive/subagent-parent",
             Path.GetTempPath(),
             new TestToolExecutionContextOptions
-        {
-            Audience = TrustAudience.Personal,
-            ChannelType = ChannelType.Tui.ToWireValue(),
-            InteractiveApproval = new InteractiveApprovalCapability.Available(approvalBridge),
-            SpawnChildActor = (_, _, _) => Task.FromResult<object>(childProbe.Ref)
-        });
+            {
+                Audience = TrustAudience.Personal,
+                ChannelType = ChannelType.Tui.ToWireValue(),
+                InteractiveApproval = new InteractiveApprovalCapability.Available(approvalBridge),
+                SpawnChildActor = (_, _, _) => Task.FromResult<object>(childProbe.Ref)
+            });
 
         var spawnTask = spawner.SpawnAsync(
             CreateProfile(),
@@ -198,7 +203,7 @@ public sealed class SubAgentSpawnerTests : TestKit
 
         var notifications = new List<SubAgentNotificationInfo>();
         var childProbe = CreateTestProbe("subagent-tool-metadata-child");
-        var context = TestToolExecutionContext.CreateBound("console/subagent-parent", "/tmp/netclaw/sessions/parent", new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateBound("console/subagent-parent", ParentSessionDirectory, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             SpawnChildActor = (_, _, _) => Task.FromResult<object>(childProbe.Ref),
@@ -258,7 +263,7 @@ public sealed class SubAgentSpawnerTests : TestKit
         ]);
         var spawner = CreateSpawner(new SequenceWorkingContextSnapshotProvider(snapshots));
         var childProbe = CreateTestProbe("working-context-child");
-        var context = TestToolExecutionContext.CreateBound("console/subagent-parent", "/tmp/netclaw/sessions/parent", new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateBound("console/subagent-parent", ParentSessionDirectory, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             ProjectDirectory = projectDirectory,
@@ -299,7 +304,7 @@ public sealed class SubAgentSpawnerTests : TestKit
         var notifications = new List<SubAgentNotificationInfo>();
         var context = TestToolExecutionContext.CreateBound(
             "console/subagent-parent",
-            "/tmp/netclaw/sessions/parent",
+            ParentSessionDirectory,
             new TestToolExecutionContextOptions
             {
                 Audience = TrustAudience.Personal,
@@ -333,7 +338,7 @@ public sealed class SubAgentSpawnerTests : TestKit
         var childSpawned = false;
         var context = TestToolExecutionContext.CreateBound(
             "console/subagent-parent",
-            "/tmp/netclaw/sessions/parent",
+            ParentSessionDirectory,
             new TestToolExecutionContextOptions
             {
                 Audience = TrustAudience.Personal,
@@ -366,7 +371,7 @@ public sealed class SubAgentSpawnerTests : TestKit
         var childSpawned = false;
         var context = TestToolExecutionContext.CreateBound(
             "console/subagent-parent",
-            "/tmp/netclaw/sessions/parent",
+            ParentSessionDirectory,
             new TestToolExecutionContextOptions
             {
                 Audience = TrustAudience.Personal,
@@ -402,7 +407,7 @@ public sealed class SubAgentSpawnerTests : TestKit
         ])));
         var context = TestToolExecutionContext.CreateBound(
             "console/subagent-parent",
-            "/tmp/netclaw/sessions/parent",
+            ParentSessionDirectory,
             new TestToolExecutionContextOptions
             {
                 Audience = TrustAudience.Personal,
@@ -438,7 +443,7 @@ public sealed class SubAgentSpawnerTests : TestKit
         var spawner = CreateSpawner(new CancelOnSecondWorkingContextSnapshotProvider(cancellation));
         var context = TestToolExecutionContext.CreateBound(
             "console/subagent-parent",
-            "/tmp/netclaw/sessions/parent",
+            ParentSessionDirectory,
             new TestToolExecutionContextOptions
             {
                 Audience = TrustAudience.Personal,
@@ -475,7 +480,7 @@ public sealed class SubAgentSpawnerTests : TestKit
         var spawner = CreateSpawner(new FatalOnSecondWorkingContextSnapshotProvider());
         var context = TestToolExecutionContext.CreateBound(
             "console/subagent-parent",
-            "/tmp/netclaw/sessions/parent",
+            ParentSessionDirectory,
             new TestToolExecutionContextOptions
             {
                 Audience = TrustAudience.Personal,
@@ -541,7 +546,7 @@ public sealed class SubAgentSpawnerTests : TestKit
             NullLogger<SubAgentSpawner>.Instance,
             sessionMetrics: metrics);
 
-        var context = TestToolExecutionContext.CreateBound("console/subagent-parent", "/tmp/netclaw/sessions/parent", new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateBound("console/subagent-parent", ParentSessionDirectory, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             SpawnChildActor = (props, name, _) => Task.FromResult<object>(Sys.ActorOf((Props)props, name)),

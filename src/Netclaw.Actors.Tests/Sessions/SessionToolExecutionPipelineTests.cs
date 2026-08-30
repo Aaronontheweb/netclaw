@@ -28,6 +28,13 @@ namespace Netclaw.Actors.Tests.Sessions;
 
 public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) : TestKit(output: output)
 {
+    private static readonly string ManagedTemporarySessionDirectory = Path.GetFullPath(
+        Path.Combine(Path.GetTempPath(), "netclaw-test-sessions", "example"));
+    private static readonly string TestManagedTemporaryDirectory = Path.Combine(
+        ManagedTemporarySessionDirectory,
+        "tmp",
+        "parent");
+
     protected override void ConfigureServices(HostBuilderContext context, IServiceCollection services)
     {
     }
@@ -429,7 +436,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
 
         var pipelineTask = new SessionToolPipelineTestFixture(executor, calls, sessionId, probe.Ref)
             .WithTurnContext(InteractiveTurnContext(sessionId))
-            .InSessionDirectory("/home/user/.netclaw/sessions/example")
+            .InSessionDirectory(ManagedTemporarySessionDirectory)
             .WithApprovals(
                 new ApprovalChannel(),
                 request => approvals.Add(request.Request),
@@ -445,7 +452,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
         Assert.All(completed.ToolResults, result =>
             Assert.Equal(
                 "Tool execution deferred: use_managed_temporary_directory\n" +
-                "Managed temporary directory: '/home/user/.netclaw/sessions/example/tmp/parent'.\n" +
+                $"Managed temporary directory: '{TestManagedTemporaryDirectory}'.\n" +
                 "Next action: use the managed temporary directory from this result for disposable files, or retry unchanged for exact platform paths.",
                 result.Content));
         Assert.All(completed.ToolReceipts.Values, receipt =>
@@ -1321,7 +1328,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
                 NewString: null,
                 ReplaceAll: null),
             TemporaryRoot: "/tmp",
-            ManagedTemporaryDirectory: "/home/user/.netclaw/sessions/example/tmp/parent");
+            ManagedTemporaryDirectory: TestManagedTemporaryDirectory);
 
         public Task AuthorizeAsync(
             FunctionCallContent toolCall,

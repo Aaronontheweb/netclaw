@@ -20,8 +20,12 @@ public sealed class PlatformTemporaryScopePolicyTests
     private const string PosixSession = "/home/user/.netclaw/sessions/example";
     private const string WindowsTemp = "C:\\Users\\user\\AppData\\Local\\Temp";
     private const string WindowsSession = "C:\\Users\\user\\.netclaw\\sessions\\example";
+    public static bool IsMacOS => OperatingSystem.IsMacOS();
+    public static bool IsPosix => !OperatingSystem.IsWindows();
+    public static bool IsWindows => OperatingSystem.IsWindows();
 
-    [Fact]
+    [SlopwatchSuppress("SW001", "This test requires a POSIX storage path and Bash temporary path semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case uses POSIX host path semantics.")]
     public void Explicit_posix_temp_cwd_returns_private_scratch_correction()
     {
         var decision = Evaluate(
@@ -38,7 +42,8 @@ public sealed class PlatformTemporaryScopePolicyTests
         Assert.Null(context.SuggestedProjectDirectory);
     }
 
-    [Fact]
+    [SlopwatchSuppress("SW001", "This test requires a POSIX storage path and Bash temporary path semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case uses POSIX host path semantics.")]
     public void Platform_temp_alias_maps_to_canonical_target()
     {
         var decision = Evaluate(
@@ -54,7 +59,8 @@ public sealed class PlatformTemporaryScopePolicyTests
         Assert.Equal("/private/tmp", correction.TemporaryRoot);
     }
 
-    [Theory]
+    [SlopwatchSuppress("SW001", "This theory requires a POSIX storage path and Bash temporary path semantics.")]
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "This case uses POSIX host path semantics.")]
     [InlineData("cd /tmp && gh api repos/example/project > /tmp/result.log")]
     [InlineData("command cd /tmp && gh api repos/example/project > /tmp/result.log")]
     [InlineData("builtin cd /tmp && gh api repos/example/project > /tmp/result.log")]
@@ -72,7 +78,8 @@ public sealed class PlatformTemporaryScopePolicyTests
         Assert.Null(context.SuggestedProjectDirectory);
     }
 
-    [Fact]
+    [SlopwatchSuppress("SW001", "This test requires a POSIX storage path and Bash temporary path semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case uses POSIX host path semantics.")]
     public void Additional_posix_temp_alias_maps_to_its_own_canonical_root()
     {
         const string runtimeTemp = "/var/folders/example/T";
@@ -117,23 +124,19 @@ public sealed class PlatformTemporaryScopePolicyTests
         Assert.False(policy.IsSafePlatformTemporaryPath("/var/external/result.log"));
     }
 
-    [Fact]
+    [SlopwatchSuppress("SW001", "This test requires the native macOS temporary path alias configuration.")]
+    [Fact(SkipUnless = nameof(IsMacOS), Skip = "This case uses native macOS temporary path aliases.")]
     public void MacOS_factory_recognizes_the_conventional_posix_temp_alias()
     {
-        if (!OperatingSystem.IsMacOS())
-            return;
-
         var policy = PlatformTemporaryScopePolicy.Create(BashEnvironment());
 
         Assert.True(policy.IsPlatformTemporaryRoot(PosixTemp));
     }
 
-    [Fact]
+    [SlopwatchSuppress("SW001", "This test requires a Windows storage path and PowerShell temporary path semantics.")]
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "This case uses native Windows path semantics.")]
     public void Native_windows_explicit_temp_cwd_returns_private_scratch_correction()
     {
-        if (!OperatingSystem.IsWindows())
-            return;
-
         var decision = Evaluate(
             PowerShellEnvironment(),
             WindowsTemp,
@@ -146,12 +149,10 @@ public sealed class PlatformTemporaryScopePolicyTests
         Assert.Equal(Path.Combine(WindowsSession, "tmp", "parent"), correction.ManagedTemporaryDirectory);
     }
 
-    [Fact]
+    [SlopwatchSuppress("SW001", "This test requires native Windows case rules for temporary paths.")]
+    [Fact(SkipUnless = nameof(IsWindows), Skip = "This case uses native Windows path semantics.")]
     public void Native_windows_temp_comparison_uses_windows_case_rules()
     {
-        if (!OperatingSystem.IsWindows())
-            return;
-
         var decision = Evaluate(
             PowerShellEnvironment(),
             WindowsTemp,
@@ -262,7 +263,8 @@ public sealed class PlatformTemporaryScopePolicyTests
         Assert.Throws<ArgumentException>(() => new SessionStorageEnvelopeRoot(sessionDirectory));
     }
 
-    [Fact]
+    [SlopwatchSuppress("SW001", "This test requires a POSIX storage path and Bash temporary path semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case uses POSIX host path semantics.")]
     public void Fresh_session_scope_does_not_need_to_exist()
     {
         var sessionDirectory = $"/home/user/.netclaw/sessions/{Guid.NewGuid():N}";
@@ -317,12 +319,10 @@ public sealed class PlatformTemporaryScopePolicyTests
         Assert.Null(decision.ApprovalContext?.AgentCorrection);
     }
 
-    [Fact]
+    [SlopwatchSuppress("SW001", "This test requires native POSIX symbolic link traversal semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case uses POSIX symbolic link semantics.")]
     public void Host_inspector_rejects_posix_symlink_descendant()
     {
-        if (OperatingSystem.IsWindows())
-            return;
-
         var testRoot = Path.Combine(Path.GetTempPath(), $"netclaw-scratch-policy-{Guid.NewGuid():N}");
         var outside = Path.Combine(testRoot, "outside");
         var link = Path.Combine(testRoot, "link");
@@ -344,12 +344,10 @@ public sealed class PlatformTemporaryScopePolicyTests
         }
     }
 
-    [Fact]
+    [SlopwatchSuppress("SW001", "This test requires native POSIX symbolic link root semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case uses POSIX symbolic link semantics.")]
     public void Host_inspector_resolves_symlink_in_temporary_root_parent()
     {
-        if (OperatingSystem.IsWindows())
-            return;
-
         var testRoot = Path.Combine(Path.GetTempPath(), $"netclaw-temp-root-{Guid.NewGuid():N}");
         var realParent = Path.Combine(testRoot, "real-parent");
         var realTemp = Path.Combine(realParent, "temp");
@@ -372,12 +370,10 @@ public sealed class PlatformTemporaryScopePolicyTests
         }
     }
 
-    [Fact]
+    [SlopwatchSuppress("SW001", "This test requires native POSIX symbolic link alias semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case uses POSIX symbolic link semantics.")]
     public void Canonical_platform_temp_alias_can_recommend_scratch_for_redirect()
     {
-        if (OperatingSystem.IsWindows())
-            return;
-
         var testRoot = Path.Combine(Path.GetTempPath(), $"netclaw-temp-alias-{Guid.NewGuid():N}");
         var realTemp = Path.Combine(testRoot, "real-temp");
         var aliasTemp = Path.Combine(testRoot, "alias-temp");
