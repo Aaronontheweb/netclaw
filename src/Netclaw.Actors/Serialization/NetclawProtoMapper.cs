@@ -284,8 +284,6 @@ internal static class NetclawProtoMapper
         proto.AdoptedSpeakerIds.AddRange(evt.AdoptedSpeakerIds);
         if (evt.TurnContext is not null)
             proto.TurnContext = ToProto(evt.TurnContext);
-        if (evt.SessionScratchDirectory is not null)
-            proto.SessionScratchDirectory = evt.SessionScratchDirectory;
         if (evt.AuthorizationAttemptId is not null)
             proto.AuthorizationAttemptId = evt.AuthorizationAttemptId;
         if (evt.ManagedTemporaryDirectory is not null)
