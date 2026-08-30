@@ -815,7 +815,8 @@ public class SubAgentActorTests : TestKit
             StringComparison.Ordinal);
     }
 
-    [Theory]
+    [SlopwatchSuppress("SW001", "This regression requires a POSIX shell cwd and Bash project-scope correction behavior.")]
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "The project-scope correction defines Bash path behavior.")]
     [InlineData(true)]
     [InlineData(false)]
     public async Task Subagent_project_declaration_updates_child_prompt_before_unchanged_retry(
