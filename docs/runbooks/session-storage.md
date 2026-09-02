@@ -8,7 +8,8 @@ See the [engineering glossary](../spec/GLOSSARY.md#filesystem-and-output-terms) 
 Netclaw gives each new session one durable version-2 storage binding.
 The binding stores the absolute [session storage envelope](../spec/GLOSSARY.md#session-storage-envelope).
 The session workspace is the envelope's `workspace/` directory.
-The complete envelope is not a workspace or an authority grant.
+The complete envelope is an implicit trusted root. It is not the workspace,
+default shell cwd, or an unconditional shell grant.
 
 Existing sessions have no binding.
 They keep their established workspace and log paths.
@@ -25,6 +26,7 @@ The `[session]` context gives a private run these exact paths:
 - `session_dir` is the workspace and default relative-path base.
 - `temp_dir` contains disposable files for the current run.
 - `artifact_dir` contains outputs that the parent or user must keep.
+- `worktree_dir` contains Git worktrees for the session.
 - `log_path` is the raw log for the current run.
 
 Netclaw sets `TMPDIR`, `TMP`, and `TEMP` for each child process.
@@ -37,10 +39,11 @@ Counterexample: A child does not treat `session_dir` as disposable storage.
 
 ## Log Access
 
-Existing file tools can read, list, and search same-session logs.
-This scope includes parent and child logs for the same session.
-It does not grant file changes, attachments, or shell authority.
-It does not grant access to another session.
+The current session envelope is an implicit trusted root for parent and child
+runs. Existing file and shell tools apply their normal audience, operation,
+syntax, and approval rules inside it. Runs also inherit configured trusted
+roots. Another session is accessible only when those ordinary roots and
+permissions already cover it.
 
 A successful `spawn_agent` result supplies the exact child log path.
 Use that path with an existing file tool.
@@ -48,20 +51,32 @@ Do not search the global log directory with a shell command.
 
 Example: `file_read` reads the returned child `LogPath` while the child writer remains open.
 
-Counterexample: `file_write` cannot change the same log.
+Counterexample: A read-only audience cannot use `file_write` on the same log.
+Path containment does not replace operation permission.
+
+## Configuration Reads
+
+An authorized `file_read` can inspect the exact `config/netclaw.json` path.
+That file contains ordinary persisted configuration, not the effective value
+of environment overrides.
+
+Secret values belong in protected stores. `secrets.json`, key and OAuth
+material, webhook secrets, database state, and process-control files remain
+read-denied. Reading `netclaw.json` does not grant write, attach, or shell
+authority.
 
 ## Managed Worktrees
 
-Use `worktree_create` for a new Git worktree.
-Supply a branch and an authorized source repository.
-Do not supply a destination.
-Netclaw selects a collision-safe directory below the session worktree area.
+Use the `worktree_dir` from the existing `[session]` context for a new Git
+worktree. Run `git worktree add` through `shell_execute` with a destination
+below that directory. After Git succeeds, pass the created path to
+`set_working_directory`.
 
-The tool changes project scope only after Git succeeds.
-The tool records session and run ownership.
-Netclaw does not delete the worktree when the session ends.
+Normal shell authorization decides the Git command. Netclaw does not expose a
+special worktree tool or delete the worktree when the session ends.
 
-Example: A successful call returns the canonical worktree path.
+Example: Git creates `<worktree_dir>/fix-session-temp`, then
+`set_working_directory` adopts that path.
 
 Counterexample: A failed Git call does not change project scope.
 
@@ -73,7 +88,8 @@ Use these checks after an upgrade:
 2. Start one new session and record its `session_dir` and `log_path`.
 3. Restart the daemon and confirm the new paths stay unchanged.
 4. Start one child and read its returned log path with `file_read`.
-5. Confirm a different session cannot read that log.
+5. Confirm another session follows its ordinary trusted-root and audience
+   policy for that log.
 
 Warning: A pre-feature binary cannot resume a session that has a version-2 binding.
 This downgrade path is outside the supported scope.

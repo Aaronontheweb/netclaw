@@ -10,7 +10,9 @@ persist an immutable storage binding with the layout version and absolute
 session storage envelope root. The system SHALL use that binding when it
 resumes the session. A configuration change, environment override, or binary
 upgrade SHALL NOT reinterpret the envelope root. The binding SHALL NOT contain
-a second log root.
+a second log root. Two distinct raw session identifiers SHALL NOT resolve to
+the same physical envelope, even when their human-readable sanitized forms are
+equal.
 
 Channel ingress, the parent actor, child-run creation, and the log dispatcher
 SHALL resolve storage through one shared get-or-bind operation. That operation
@@ -56,6 +58,14 @@ current configuration.
 - **THEN** one atomic binding wins
 - **AND** both requests receive the same persisted envelope root
 
+#### Scenario: Counterexample - sanitized identifiers cannot collide
+
+- **GIVEN** raw session identifiers `channel/a_b` and `channel/a/b`
+- **AND** their display-safe forms would otherwise be equal
+- **WHEN** the resolver binds storage for both sessions
+- **THEN** it persists two different envelope roots
+- **AND** later recovery maps each raw identifier to its original root
+
 #### Scenario: Counterexample - helper cannot bypass layout selection
 
 - **GIVEN** a new session has no binding yet
@@ -93,6 +103,15 @@ rename, or delete its data.
 - **THEN** it promises that current binaries preserve existing unbound sessions
 - **AND** it does not promise that a pre-feature binary can resume a newly
   bound session
+
+#### Scenario: Example - journal-only legacy session remains discoverable
+
+- **GIVEN** an existing session has journal records but no snapshot and no
+  storage binding
+- **WHEN** the current resolver checks whether the session predates the new
+  layout
+- **THEN** it recognizes the shipped journal schema and table
+- **AND** it resumes the existing path behavior without creating a new binding
 
 ### Requirement: Version 2 uses one physical session envelope
 
@@ -140,27 +159,40 @@ SHALL use `<session-envelope>/logs/session.log` for the parent and
 - **THEN** it uses the daemon-global log location
 - **AND** it is not written to a session envelope
 
-### Requirement: Same-session logs use existing file-tool read authority
+### Requirement: Current session is an implicit trusted root
 
-The system SHALL give existing file-read, file-list, and file-search operations
-read access to logs in the current session envelope. The scope SHALL include
-the main session log and every child log. Every parent and child run in that
-session SHALL receive the same log-read scope. The scope SHALL NOT include
-another session.
+The system SHALL treat the complete current session storage envelope as an
+implicit trusted root for every parent and child run in that session. It SHALL
+also inherit the configured trusted roots into those runs. Existing audience
+profiles and per-operation tool permissions SHALL decide whether a run can
+read, list, search, write, edit, attach, or execute against a path below an
+effective root. Shell syntax analysis, approval policy, and tool exposure SHALL
+still apply.
 
-For an existing unbound session, the system SHALL build the same read scope
-from the unchanged legacy main-log resolver and durable child lineage. It SHALL
-NOT move or copy a legacy log to make it readable.
+The effective filesystem authority SHALL be:
 
-This read scope SHALL NOT authorize file writes, file edits, attachments, or
-shell execution. The default no-project working directory SHALL remain the
-`workspace/` child. The system SHALL NOT add the complete envelope as a shell
-safe root.
+```text
+current session envelope
++ inherited configured trusted roots
++ current audience and operation permissions
+```
 
-The implementation SHALL NOT redefine `{session_dir}` as the session envelope.
-It SHALL NOT add the complete envelope or `subagents/` directory as a read
-root. It SHALL authorize only normalized main-log and child-log path shapes.
-Existing link, reparse-point, and protected-path checks SHALL still apply.
+The system SHALL NOT add a log-specific read scope, child-artifact ownership
+ACL, foreign-session override, or managed-data exception. A path in another
+Netclaw session SHALL use the same ordinary root and audience rules as any
+other path. Personal `Mode.All` can therefore inspect another session when its
+normal roots cover that path. Team and Public runs can do so only when their
+configured roots and file-tool permissions cover it.
+
+For an existing unbound session, the system SHALL derive the current-session
+implicit roots from the unchanged legacy session and log locations. It SHALL
+NOT move or copy legacy files to make them accessible.
+
+The default no-project working directory SHALL remain `workspace/`. The
+implementation SHALL NOT redefine `{session_dir}` as the session envelope or
+use the complete envelope as the default shell cwd. Root authority SHALL NOT be
+treated as unconditional shell approval. Existing link, reparse-point,
+protected-path, and control-plane checks SHALL still apply.
 
 This requirement defines Netclaw application authorization. It SHALL NOT be
 documented or tested as OS-level containment of an arbitrary process that has
@@ -178,21 +210,21 @@ already received execution authority under the Netclaw identity.
 
 - **GIVEN** an agent uses a version-2 session envelope
 - **WHEN** it calls `file_read` for its main session log
-- **THEN** same-session log scope authorizes the read
+- **THEN** current-session root authority permits the path
 - **AND** `file_read` applies its normal output bounds
 
-#### Scenario: Example - parent reads an owned child log
+#### Scenario: Example - parent reads a child log
 
 - **GIVEN** a parent owns child run `run-7`
 - **WHEN** it calls `file_search` on the returned log path's directory
-- **THEN** same-session log scope authorizes the search
+- **THEN** current-session root authority permits the path
 - **AND** no special log tool is required
 
 #### Scenario: Example - child reads another log in the same session
 
 - **GIVEN** child runs `run-7` and `run-8` belong to one session
 - **WHEN** `run-7` reads the main log or the log for `run-8`
-- **THEN** same-session log scope authorizes the read
+- **THEN** current-session root authority permits the path
 - **AND** the request remains subject to normal file-tool limits
 
 #### Scenario: Example - legacy session keeps readable log paths
@@ -200,44 +232,64 @@ already received execution authority under the Netclaw identity.
 - **GIVEN** an existing unbound session uses separate data and log roots
 - **WHEN** its parent or child calls an existing file tool for a resolved
   same-session log path
-- **THEN** same-session log scope authorizes the operation
+- **THEN** its derived current-session roots permit the operation
 - **AND** no file moves into a new envelope
 
-#### Scenario: Counterexample - foreign session log is denied
+#### Scenario: Example - trusted root can cover another session
 
-- **GIVEN** a log path belongs to another session envelope
-- **WHEN** the current agent calls `file_read`, `file_list`, or `file_search`
-- **THEN** same-session log scope does not authorize the operation
-- **AND** the result does not reveal whether the foreign file exists
+- **GIVEN** a Personal run has ordinary read authority for a configured root
+  that contains another Netclaw session
+- **WHEN** it calls `file_read` for that session's log
+- **THEN** normal trusted-root and read policy decides the call
+- **AND** the path is not denied only because it belongs to another session
 
-#### Scenario: Counterexample - log read does not grant mutation
+#### Scenario: Counterexample - path knowledge does not grant mutation
 
-- **GIVEN** an agent can read its same-session logs
+- **GIVEN** an audience profile permits `file_read` but not `file_write`
 - **WHEN** it calls `file_write` or `file_edit` for a log path
-- **THEN** same-session log scope does not authorize that operation
+- **THEN** current-session containment does not authorize that operation
 - **AND** normal write policy decides the call
 
-#### Scenario: Counterexample - broad child root is not authorized
+#### Scenario: Example - child artifact uses ordinary file authority
 
-- **GIVEN** a version-2 session has child logs, artifacts, and temporary files
-- **WHEN** policy constructs the same-session log read scope
-- **THEN** it does not add `<session-envelope>/subagents` as a broad root
-- **AND** log-read scope cannot read a child artifact or temporary file
+- **GIVEN** a parent receives a child artifact path below its current session
+- **WHEN** it uses an existing file tool allowed by its audience profile
+- **THEN** current-session root authority permits the path
+- **AND** no child ownership record or artifact-specific reader is required
 
-#### Scenario: Counterexample - linked path cannot escape log scope
+#### Scenario: Counterexample - linked path cannot escape current-session root
 
 - **GIVEN** a same-session log directory contains a filesystem link to another
   session
 - **WHEN** an agent reads, lists, or searches through that link
 - **THEN** existing path safety policy denies the operation
-- **AND** same-session ownership does not bypass that denial
+- **AND** current-session authority does not bypass that denial
 
-#### Scenario: Counterexample - envelope is not the shell root
+#### Scenario: Counterexample - trusted root itself cannot be a link escape
+
+- **GIVEN** `logs`, `tmp`, `artifacts`, `worktrees`, `workspace`, or a legacy
+  current-session root is a symbolic link, junction, or reparse point outside
+  its expected parent
+- **WHEN** a file tool resolves a path through that root
+- **THEN** containment validation denies the operation
+- **AND** validation does not skip the trusted root segment itself
+
+#### Scenario: Counterexample - envelope is not the default shell cwd
 
 - **GIVEN** an agent can read logs in its session envelope
-- **WHEN** policy selects a default shell cwd or shell safe root
+- **WHEN** policy selects a default shell cwd
 - **THEN** it uses the session directory or existing project scope
-- **AND** it does not use the complete envelope because log reads are allowed
+- **AND** it does not use the complete envelope merely because that envelope is
+  an effective trusted root
+
+#### Scenario: Example - shell can target the session worktree area
+
+- **GIVEN** an audience can use `shell_execute`
+- **AND** its current session root contains `worktree_dir`
+- **WHEN** a shell call targets a path below `worktree_dir`
+- **THEN** normal shell root checks recognize the path as inside the current
+  session
+- **AND** normal syntax, hard-deny, and approval rules still decide execution
 
 #### Scenario: Counterexample - this layout is not a process sandbox
 

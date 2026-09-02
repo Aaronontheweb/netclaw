@@ -10,7 +10,7 @@
   },
   "configuration": {
     "providerType": "openai-compatible",
-    "model": "deepseek-v4-flash-dspark",
+    "model": "configured-eval-model",
     "runsPerCase": 5,
     "threshold": 0.8,
     "timeoutSeconds": 180,

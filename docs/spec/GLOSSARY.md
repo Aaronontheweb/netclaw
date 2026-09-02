@@ -403,8 +403,9 @@ session-owned files for a new-layout session. Its path is fixed when the
 session binds its versioned storage binding. Its contents are mutable.
 
 The envelope contains distinct working, artifact, temporary, worktree, log,
-and child-run areas. Physical containment does not make the complete envelope
-a project scope, a shell safe space, or an authority grant.
+and child-run areas. Netclaw supplies the current envelope as an implicit
+trusted root. It is not a project scope, the default shell cwd, or an
+unconditional shell grant.
 
 ```text
 <session-envelope>/
@@ -443,10 +444,11 @@ A raw session log is the diagnostic file for one main session or subagent run.
 New-layout raw logs are physically inside the session storage envelope but are
 outside the session directory.
 
-Every parent and child run can read, list, and search logs from its own session
-through the existing file tools. The session is the log-read trust boundary.
-This read scope does not grant file-write, file-edit, attach, or shell
-authority. Another session cannot use this scope.
+Every parent and child run receives its current session storage as an implicit
+trusted root. Existing file tools can inspect logs when the audience and
+operation permissions allow the request. A path in another session follows
+ordinary configured-root and audience policy; session identity does not add a
+special allow or deny.
 
 These reads return normal bounded file-tool output. A raw session log does not
 use a separate activity projection or log-specific redaction layer.
@@ -466,13 +468,23 @@ An artifact directory contains outputs that a parent or user must keep or
 attach. It is separate from the session directory and managed temporary
 directory. Netclaw does not apply a retention policy to either directory yet.
 
+### Worktree directory
+
+A worktree directory is the `worktree_dir` area inside the session storage
+envelope. It is separate from each run's managed temporary directory because a
+Git worktree can contain valuable source state.
+
+Netclaw announces this path in the existing session context. Agents compose
+`shell_execute` and `set_working_directory` to create and adopt Git worktrees.
+The path uses ordinary current-session shell authority. It does not create a
+special worktree tool or bypass shell syntax, hard-deny, or approval policy.
+
 ### Child run directory
 
 A child run directory is the area below
 `<session-envelope>/subagents/<run-id>` for one subagent run. Its artifact,
 temporary, and raw-log areas share the same opaque run identifier. The parent
-owns the lineage and can read the child's log through the existing file tools.
-This ownership does not grant access to a different session.
+and child use ordinary current-session root authority to inspect it.
 
 ### Session-owned directory
 
@@ -487,6 +499,17 @@ term only when the rule intentionally applies to more than one of them.
 An allowed root is a configured or context-derived directory boundary for a
 specific access type. A path inside one root can still fail another security
 check.
+
+### Ordinary configuration
+
+Ordinary configuration is the non-secret persisted configuration in
+`netclaw.json`. It can be read through structured file tools when normal roots,
+audience policy, and operation permissions allow it. Read authority does not
+grant write, attach, or shell authority.
+
+Secret-valued configuration belongs in protected stores such as
+`secrets.json`, key storage, OAuth credential files, or webhook secret files.
+Those stores and control-plane state remain read-denied.
 
 ### Canonical path
 

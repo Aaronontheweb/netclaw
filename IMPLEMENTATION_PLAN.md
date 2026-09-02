@@ -116,11 +116,19 @@ the smallest repeatable manual script plus expected output.
   [session storage envelope](docs/spec/GLOSSARY.md#session-storage-envelope).
 - [x] Existing sessions keep their established workspace and log paths.
 - [x] Parent and child processes receive separate managed temporary paths.
-- [x] Existing file tools can read same-session logs but cannot change them.
 - [x] Successful subagent results return exact child log and artifact paths.
-- [x] `worktree_create` allocates a session-owned destination and records its owner.
-- [x] The operations skill explains the new path and worktree contracts.
-- [ ] Complete the locked post-change eval comparison and the repository gates.
+- [ ] Use the current session and inherited trusted roots for ordinary file and
+  shell authority; remove special log, child, and foreign-session rules.
+- [ ] Remove `worktree_create`; expose `worktree_dir` and compose
+  `shell_execute` with `set_working_directory`.
+- [ ] Allow normal structured reads of validated secret-free `netclaw.json`
+  while keeping secret stores and control-plane state denied.
+- [ ] Fix collision-safe session roots, journal-only legacy discovery,
+  root-segment link checks, old background-job JSON, and per-log resolver locks.
+- [ ] Replace weak worktree and child-handoff eval assertions and complete the
+  repository gates.
+- [ ] Update the operations skill, runbooks, and release notes to the revised
+  path, authority, worktree, and configuration contracts.
 - [ ] Harvest sanitized traffic after the binary swap.
 
 ### Priority: Keep MCP HTTP Protocol Fallback Deterministic
@@ -311,7 +319,7 @@ Done when:
   one-command typed scope, failed-path recovery, and deliberate inline `cd`.
 - [x] Two naturalistic cases now test a child checkout beneath a declared
   parent project. The prompts do not name a tool, `WorkingDirectory`, or `cd`.
-  Against `deepseek-v4-flash-dspark`, the worktree status baseline passed 1/5.
+  Against the configured evaluation model, the worktree status baseline passed 1/5.
   Three failures used `git -C`, and one failure used inline `cd`. The source
   inspection baseline passed 0/5. Each run read the named file, then tried
   shell search before `file_list`.
@@ -325,12 +333,12 @@ Done when:
 - [x] A sanitized subagent eval proves that a different user-named project is
   declared before the child's first multi-command shell inspection. Absolute
   path operands remain exact scopes, but do not create a safe-space root. The
-  configured `deepseek-v4-flash-dspark` endpoint passed 4/5 runs. The assertion
+  configured evaluation endpoint passed 4/5 runs. The assertion
   orders declaration before two exact successful shell calls and verifies the
   reported layout and build file. One run used one-shot scope without declaring
   the project and failed as intended.
 - [x] The session-scratch model-guidance eval passed 4/5 against the configured
-  `deepseek-v4-flash-dspark` endpoint. This measures headless path preference;
+  configured evaluation endpoint. This measures headless path preference;
   deterministic actor tests own interactive correction and approval proof.
 - [x] Post-0.26.0 live evidence in
   `openspec/changes/archive/2026-08-15-structure-shell-approval-policy/evidence/post-1952-live-approval-harvest.json`
@@ -345,7 +353,7 @@ Done when:
   all 5/5 runs omitted `WorkingDirectory` and passed through the existing shell
   fallback. After the exact assertion and guidance were corrected, the fresh
   `a1077feb-6bd7-413c-8a90-c651aa5a03df` run passed 4/5 against
-  `deepseek-v4-flash-dspark`. Four children passed the exact bound session
+  the configured evaluation model. Four children passed the exact bound session
   directory on both Git diagnostics; one omitted it and failed as intended.
 - [x] Removing the prescribed answer from the existing parent-only disposable
   output eval produced 3/5 path-aligned runs. All five completed through the
