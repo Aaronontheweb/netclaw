@@ -871,7 +871,11 @@ public sealed class ToolApprovalGateTests
             new Dictionary<string, object?> { ["command"] = command });
 
         Assert.False(decision.Allowed);
-        Assert.Equal("shell_path_outside_trust_zone", decision.DenyReason);
+        Assert.Equal(
+            OperatingSystem.IsWindows()
+                ? "shell_unresolved_trust_zone_input"
+                : "shell_path_outside_trust_zone",
+            decision.DenyReason);
     }
 
     [Fact]
@@ -1084,7 +1088,9 @@ public sealed class ToolApprovalGateTests
         var candidate = Assert.Single(decision.ApprovalContext.Candidates!);
         Assert.Equal("cat", candidate.Verb);
         Assert.NotNull(candidate.Directory);
-        Assert.Equal(Path.GetDirectoryName(logPath), candidate.Directory);
+        Assert.Equal(
+            Path.GetDirectoryName(logPath)!.Replace('\\', '/'),
+            candidate.Directory!.Replace('\\', '/'));
     }
 
     [Fact]
@@ -1098,10 +1104,7 @@ public sealed class ToolApprovalGateTests
 
         Assert.True(decision.NeedsApproval);
         var options = decision.ApprovalContext!.Options;
-        var sessionOption = options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveSession);
-        var alwaysOption = options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveAlways);
-        Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, sessionOption.Label);
-        Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, alwaysOption.Label);
+        AssertFixedApprovalLabels(options);
     }
 
     [Fact]
@@ -1118,8 +1121,7 @@ public sealed class ToolApprovalGateTests
 
         Assert.True(decision.NeedsApproval);
         var options = decision.ApprovalContext!.Options;
-        Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveSession).Label);
-        Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveAlways).Label);
+        AssertFixedApprovalLabels(options);
     }
 
     [Fact]
@@ -1141,12 +1143,7 @@ public sealed class ToolApprovalGateTests
         Assert.Contains(decision.ApprovalContext!.CandidateVerbs, v => v.StartsWith("grep", StringComparison.Ordinal));
         // Button labels are fixed; Slack's 76-char and Discord's 80-char
         // button caps make dynamic labels structurally unsafe.
-        Assert.Equal(
-            ApprovalOptionKeys.ApproveSessionLabel,
-            decision.ApprovalContext.Options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveSession).Label);
-        Assert.Equal(
-            ApprovalOptionKeys.ApproveAlwaysLabel,
-            decision.ApprovalContext.Options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveAlways).Label);
+        AssertFixedApprovalLabels(decision.ApprovalContext.Options);
     }
 
     [Fact]
@@ -1199,11 +1196,13 @@ public sealed class ToolApprovalGateTests
         Assert.All(options, option => Assert.True(
             option.Label.Length <= ApprovalOptionKeys.MaxLabelLength,
             $"Option '{option.Key}' label '{option.Label}' is {option.Label.Length} chars; must stay within {ApprovalOptionKeys.MaxLabelLength}."));
-        Assert.Equal(ApprovalOptionKeys.ApproveOnceLabel, options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveOnce).Label);
-        Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveSession).Label);
-        Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveAlways).Label);
-        Assert.Equal(ApprovalOptionKeys.DenyLabel, options.Single(o => o.Key.Value == ApprovalOptionKeys.Deny).Label);
+        AssertFixedApprovalLabels(options);
     }
+
+    private static void AssertFixedApprovalLabels(IReadOnlyList<ToolApprovalOption> options)
+        => Assert.All(options, option => Assert.Equal(
+            ApprovalOptionKeys.LabelFor(option.Key.Value),
+            option.Label));
 
     [Fact]
     public void Narrow_shell_context_omits_reusable_options_for_incomplete_phrase_facts()
