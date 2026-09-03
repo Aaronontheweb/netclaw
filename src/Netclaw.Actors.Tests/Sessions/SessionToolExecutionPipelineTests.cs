@@ -1248,15 +1248,14 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
             CancellationToken ct = default)
         {
             Attempts++;
-            throw new ToolApprovalRequiredException(new ToolApprovalContext(
-                ToolName: toolCall.Name,
-                DisplayText: "head -40 src/file.cs",
-                Patterns: ["head"],
-                CandidateVerbs: ["head"],
-                Options: [])
-            {
-                SuggestedProjectDirectory = directory
-            });
+            throw new ToolApprovalRequiredException(
+                new ToolApprovalContext(
+                    ToolName: toolCall.Name,
+                    DisplayText: "head -40 src/file.cs",
+                    Patterns: ["head"],
+                    CandidateVerbs: ["head"],
+                    Options: []),
+                new ToolCorrection.ProjectDirectorySuggested(directory));
         }
     }
 
@@ -1306,8 +1305,8 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
             throw CreateCorrection();
         }
 
-        private static ToolAgentCorrectionRequiredException CreateCorrection()
-            => new(new ToolAgentCorrection.NativeToolSuggested(new ToolName("file_read")));
+        private static ToolCorrectionRequiredException CreateCorrection()
+            => new(new ToolCorrection.NativeToolSuggested(new ToolName("file_read")));
     }
 
     private sealed class ManagedTemporaryCorrectionRequiredExecutor : IToolExecutor
@@ -1335,16 +1334,14 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
             FunctionCallContent toolCall,
             ToolExecutionContext? context = null,
             CancellationToken ct = default)
-            => throw new ToolApprovalRequiredException(new ToolApprovalContext(
-                ToolName: toolCall.Name,
-                DisplayText: Command,
-                Patterns: ["gh api"],
-                CandidateVerbs: ["gh api"],
-                Options: [])
-            {
-                AgentCorrection = new ToolAgentCorrection.ManagedTemporaryDirectorySuggested(
-                    Key.Target)
-            });
+            => throw new ToolApprovalRequiredException(
+                new ToolApprovalContext(
+                    ToolName: toolCall.Name,
+                    DisplayText: Command,
+                    Patterns: ["gh api"],
+                    CandidateVerbs: ["gh api"],
+                    Options: []),
+                new ToolCorrection.ManagedTemporaryDirectorySuggested(Key.Target));
     }
 
     private sealed class ManagedTemporaryRetryApprovalExecutor

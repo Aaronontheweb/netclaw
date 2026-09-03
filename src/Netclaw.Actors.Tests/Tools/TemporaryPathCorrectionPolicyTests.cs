@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="PlatformTemporaryScopePolicyTests.cs" company="Petabridge, LLC">
+// <copyright file="TemporaryPathCorrectionPolicyTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
@@ -14,7 +14,7 @@ using Xunit;
 
 namespace Netclaw.Actors.Tests.Tools;
 
-public sealed class PlatformTemporaryScopePolicyTests
+public sealed class TemporaryPathCorrectionPolicyTests
 {
     private const string PosixTemp = "/tmp";
     private const string PosixSession = "/home/user/.netclaw/sessions/example";
@@ -35,11 +35,10 @@ public sealed class PlatformTemporaryScopePolicyTests
             PosixSession,
             explicitWorkingDirectory: PosixTemp);
 
-        var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-        var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
+        var correction = Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(decision.AgentCorrection);
         Assert.Equal(Path.Combine(PosixSession, "tmp", "parent"), correction.Target.ManagedTemporaryDirectory);
         Assert.Equal(PosixTemp, correction.Target.PlatformTemporaryRoot);
-        Assert.Null(context.SuggestedProjectDirectory);
+        Assert.IsNotType<ToolCorrection.ProjectDirectorySuggested>(decision.AgentCorrection);
     }
 
     [SlopwatchSuppress("SW001", "This test requires a POSIX storage path and Bash temporary path semantics.")]
@@ -54,8 +53,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             explicitWorkingDirectory: PosixTemp,
             inspector: new TestPathInspector(resolvedRoot: "/private/tmp"));
 
-        var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-        var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
+        var correction = Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(decision.AgentCorrection);
         Assert.Equal("/private/tmp", correction.Target.PlatformTemporaryRoot);
     }
 
@@ -73,9 +71,8 @@ public sealed class PlatformTemporaryScopePolicyTests
             command,
             PosixSession);
 
-        var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-        Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
-        Assert.Null(context.SuggestedProjectDirectory);
+        Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(decision.AgentCorrection);
+        Assert.IsNotType<ToolCorrection.ProjectDirectorySuggested>(decision.AgentCorrection);
     }
 
     [SlopwatchSuppress("SW001", "This test requires a POSIX storage path and Bash temporary path semantics.")]
@@ -97,9 +94,8 @@ public sealed class PlatformTemporaryScopePolicyTests
                 }),
             additionalTemporaryRoots: [PosixTemp]);
 
-        var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-        var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(
-            context.AgentCorrection);
+        var correction = Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(
+            decision.AgentCorrection);
         Assert.Equal("/private/tmp", correction.Target.PlatformTemporaryRoot);
     }
 
@@ -113,7 +109,7 @@ public sealed class PlatformTemporaryScopePolicyTests
                 [runtimeTemp] = runtimeTemp,
                 [PosixTemp] = "/private/tmp"
             });
-        var policy = new PlatformTemporaryScopePolicy(
+        var policy = new TemporaryPathCorrectionPolicy(
             BashEnvironment(),
             runtimeTemp,
             inspector,
@@ -128,7 +124,7 @@ public sealed class PlatformTemporaryScopePolicyTests
     [Fact(SkipUnless = nameof(IsMacOS), Skip = "This case uses native macOS temporary path aliases.")]
     public void MacOS_factory_recognizes_the_conventional_posix_temp_alias()
     {
-        var policy = PlatformTemporaryScopePolicy.Create(BashEnvironment());
+        var policy = TemporaryPathCorrectionPolicy.Create(BashEnvironment());
 
         Assert.True(policy.IsPlatformTemporaryRoot(PosixTemp));
     }
@@ -144,8 +140,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             WindowsSession,
             explicitWorkingDirectory: WindowsTemp);
 
-        var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-        var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
+        var correction = Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(decision.AgentCorrection);
         Assert.Equal(Path.Combine(WindowsSession, "tmp", "parent"), correction.Target.ManagedTemporaryDirectory);
     }
 
@@ -160,8 +155,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             WindowsSession,
             explicitWorkingDirectory: WindowsTemp.ToUpperInvariant());
 
-        var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-        Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
+        Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(decision.AgentCorrection);
     }
 
     [Theory]
@@ -178,7 +172,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             command,
             PosixSession);
 
-        Assert.Null(decision.ApprovalContext?.AgentCorrection);
+        Assert.Null(decision.AgentCorrection);
     }
 
     [Fact]
@@ -192,7 +186,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             explicitWorkingDirectory: PosixTemp);
 
         Assert.False(decision.Allowed);
-        Assert.Null(decision.ApprovalContext?.AgentCorrection);
+        Assert.Null(decision.AgentCorrection);
         Assert.StartsWith("hard_deny_", decision.DenyReason, StringComparison.Ordinal);
     }
 
@@ -208,7 +202,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             deniedPaths: ["/tmp/protected"]);
 
         Assert.False(decision.Allowed);
-        Assert.Null(decision.ApprovalContext?.AgentCorrection);
+        Assert.Null(decision.AgentCorrection);
         Assert.Equal("shell_references_protected_path", decision.DenyReason);
     }
 
@@ -222,7 +216,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             PosixSession,
             projectDirectory: PosixTemp);
 
-        Assert.Null(decision.ApprovalContext?.AgentCorrection);
+        Assert.Null(decision.AgentCorrection);
     }
 
     [Fact]
@@ -236,7 +230,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             explicitWorkingDirectory: PosixTemp,
             interactive: false);
 
-        Assert.Null(decision.ApprovalContext?.AgentCorrection);
+        Assert.Null(decision.AgentCorrection);
     }
 
     [Theory]
@@ -252,7 +246,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             explicitWorkingDirectory: PosixTemp,
             audience: audience);
 
-        Assert.Null(decision.ApprovalContext?.AgentCorrection);
+        Assert.Null(decision.AgentCorrection);
     }
 
     [Theory]
@@ -275,8 +269,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             sessionDirectory,
             explicitWorkingDirectory: PosixTemp);
 
-        var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-        Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
+        Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(decision.AgentCorrection);
     }
 
     [Fact]
@@ -288,7 +281,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             "Set-Location $env:TEMP; Get-Content result.log",
             WindowsSession);
 
-        Assert.Null(decision.ApprovalContext?.AgentCorrection);
+        Assert.Null(decision.AgentCorrection);
     }
 
     [Fact]
@@ -302,7 +295,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             explicitWorkingDirectory: PosixTemp,
             inspector: new TestPathInspector(failDescendantInspection: true));
 
-        Assert.Null(decision.ApprovalContext?.AgentCorrection);
+        Assert.Null(decision.AgentCorrection);
     }
 
     [Fact]
@@ -316,7 +309,7 @@ public sealed class PlatformTemporaryScopePolicyTests
             explicitWorkingDirectory: WindowsTemp,
             inspector: new TestPathInspector(failDescendantInspection: true));
 
-        Assert.Null(decision.ApprovalContext?.AgentCorrection);
+        Assert.Null(decision.AgentCorrection);
     }
 
     [SlopwatchSuppress("SW001", "This test requires native POSIX symbolic link traversal semantics.")]
@@ -390,7 +383,7 @@ public sealed class PlatformTemporaryScopePolicyTests
                 $"gh api repos/example/project > '{output}'",
                 PosixSession,
                 inspector: HostPlatformTemporaryPathInspector.Instance);
-            Assert.Null(externalFirst.ApprovalContext?.AgentCorrection);
+            Assert.Null(externalFirst.AgentCorrection);
 
             var decision = Evaluate(
                 BashEnvironment(),
@@ -400,7 +393,7 @@ public sealed class PlatformTemporaryScopePolicyTests
                 inspector: HostPlatformTemporaryPathInspector.Instance);
 
             var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-            var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
+            var correction = Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(decision.AgentCorrection);
             Assert.Equal(realTemp, correction.Target.PlatformTemporaryRoot);
         }
         finally
@@ -410,7 +403,7 @@ public sealed class PlatformTemporaryScopePolicyTests
         }
     }
 
-    private static ToolAccessDecision Evaluate(
+    private static ToolAuthorizationDecision Evaluate(
         ShellExecutionEnvironment environment,
         string tempRoot,
         string command,
@@ -442,8 +435,8 @@ public sealed class PlatformTemporaryScopePolicyTests
         var pathPolicy = new ToolPathPolicy(environment, deniedPaths ?? []);
         var pathInspector = inspector ?? new TestPathInspector();
         var tempPolicy = additionalTemporaryRoots is null
-            ? new PlatformTemporaryScopePolicy(environment, tempRoot, pathInspector)
-            : new PlatformTemporaryScopePolicy(
+            ? new TemporaryPathCorrectionPolicy(environment, tempRoot, pathInspector)
+            : new TemporaryPathCorrectionPolicy(
                 environment,
                 tempRoot,
                 pathInspector,

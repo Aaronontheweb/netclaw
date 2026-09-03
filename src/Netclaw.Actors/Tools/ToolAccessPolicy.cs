@@ -19,28 +19,13 @@ namespace Netclaw.Actors.Tools;
 /// </summary>
 public sealed class ToolAccessPolicy
 {
-    private enum ApprovalPersistenceAvailability
+    private enum ApprovalOptionProfile
     {
         OneShotOnly,
-        Reusable
-    }
-
-    private enum DirectoryApprovalOption
-    {
-        Include,
-        Omit
-    }
-
-    private enum ApprovalOptionLabelKind
-    {
         Standard,
+        StandardWithDirectory,
         McpTool
     }
-
-    private readonly record struct ApprovalOptionPolicy(
-        ApprovalPersistenceAvailability Persistence,
-        DirectoryApprovalOption Directory,
-        ApprovalOptionLabelKind LabelKind);
 
     private static readonly IReadOnlyList<ToolApprovalOption> ManagedTemporaryRetryOptions =
         Array.AsReadOnly<ToolApprovalOption>(
@@ -59,7 +44,7 @@ public sealed class ToolAccessPolicy
     private readonly IToolApprovalMatcher _fileApprovalMatcher;
     private readonly FeatureGates _featureGates;
     private readonly ReviewedSafeShellPolicy? _safeVerbPolicy;
-    private readonly PlatformTemporaryScopePolicy _platformTemporaryScopePolicy;
+    private readonly TemporaryPathCorrectionPolicy _temporaryPathCorrectionPolicy;
 
     internal ApprovalShell Shell => _shellCommandPolicy.Environment.Grammar == ShellGrammar.Bash
         ? ApprovalShell.Bash
@@ -76,7 +61,7 @@ public sealed class ToolAccessPolicy
     internal PathAccessPolicy SharedPathAccessPolicy => _pathAccessPolicy;
 
     internal bool IsEligiblePlatformTemporaryPath(string path)
-        => _platformTemporaryScopePolicy.IsEligiblePlatformTemporaryPath(path);
+        => _temporaryPathCorrectionPolicy.IsEligiblePlatformTemporaryPath(path);
 
     public ToolAccessPolicy(
         NetclawPaths paths,
@@ -93,7 +78,7 @@ public sealed class ToolAccessPolicy
             defaults,
             shellCommandPolicy,
             toolPathPolicy,
-            PlatformTemporaryScopePolicy.Create(shellCommandPolicy.Environment),
+            TemporaryPathCorrectionPolicy.Create(shellCommandPolicy.Environment),
             fileApprovalMatcher,
             featureGates,
             safeVerbs)
@@ -106,7 +91,7 @@ public sealed class ToolAccessPolicy
         EffectivePolicyDefaults defaults,
         ShellCommandPolicy shellCommandPolicy,
         ToolPathPolicy toolPathPolicy,
-        PlatformTemporaryScopePolicy platformTemporaryScopePolicy,
+        TemporaryPathCorrectionPolicy platformTemporaryScopePolicy,
         IToolApprovalMatcher? fileApprovalMatcher = null,
         FeatureGates? featureGates = null,
         SafeVerbList? safeVerbs = null)
@@ -139,7 +124,7 @@ public sealed class ToolAccessPolicy
         _safeVerbPolicy = safeVerbs is null
             ? null
             : new ReviewedSafeShellPolicy(safeVerbs, _pathAccessPolicy);
-        _platformTemporaryScopePolicy = platformTemporaryScopePolicy;
+        _temporaryPathCorrectionPolicy = platformTemporaryScopePolicy;
     }
 
     public IReadOnlyList<AITool> FilterExposedTools(
@@ -202,10 +187,10 @@ public sealed class ToolAccessPolicy
         return true;
     }
 
-    public ToolAccessDecision AuthorizeInvocation(INetclawTool tool, ToolExecutionContext context)
+    public ToolAuthorizationDecision AuthorizeInvocation(INetclawTool tool, ToolExecutionContext context)
         => AuthorizeInvocation(tool, context, arguments: null);
 
-    public ToolAccessDecision AuthorizeInvocation(
+    public ToolAuthorizationDecision AuthorizeInvocation(
         INetclawTool tool,
         ToolExecutionContext context,
         IDictionary<string, object?>? arguments)
@@ -246,13 +231,14 @@ public sealed class ToolAccessPolicy
             ? new ShellPolicyPreflightResult.Continue(
                 analysis,
                 approvalContext,
-                ShellEnvironment)
+                ShellEnvironment,
+                decision.AgentCorrection)
             : new ShellPolicyPreflightResult.Complete(
-                ToolAccessDecision.Deny("internal_policy_failure"),
+                ToolAuthorizationDecision.Deny("internal_policy_failure"),
                 authorizedAnalysis: null);
     }
 
-    private ToolAccessDecision AuthorizeInvocationCore(
+    private ToolAuthorizationDecision AuthorizeInvocationCore(
         INetclawTool tool,
         ToolExecutionContext context,
         IDictionary<string, object?>? arguments,
@@ -264,10 +250,10 @@ public sealed class ToolAccessPolicy
         if (tool is McpToolAdapter mcp)
         {
             if (!_profileResolver.IsMcpServerAllowed(new McpServerName(mcp.ServerName), context.Invocation))
-                return ToolAccessDecision.Deny("mcp_server_not_allowed_for_audience_profile");
+                return ToolAuthorizationDecision.Deny("mcp_server_not_allowed_for_audience_profile");
 
             if (!_profileResolver.IsMcpToolAllowed(new McpServerName(mcp.ServerName), new ToolName(mcp.BareToolName), context.Invocation))
-                return ToolAccessDecision.Deny("mcp_tool_not_allowed_for_audience_profile");
+                return ToolAuthorizationDecision.Deny("mcp_tool_not_allowed_for_audience_profile");
 
             var mcpToolName = new ToolName(tool.Name);
             var (_, approvalArguments) = ToolCallMeta.ExtractFrom(
@@ -289,14 +275,14 @@ public sealed class ToolAccessPolicy
         var toolName = new ToolName(tool.Name);
 
         if (!_profileResolver.IsToolAllowed(toolName, context.Invocation))
-            return ToolAccessDecision.Deny("tool_not_allowed_for_audience_profile");
+            return ToolAuthorizationDecision.Deny("tool_not_allowed_for_audience_profile");
 
         if (!IsShellCoupledTool(tool))
         {
             var matcher = SelectMatcherForTool(toolName);
             var approvalMode = GetApprovalMode(toolName, context, arguments, matcher);
             if (approvalMode == ToolApprovalMode.Deny)
-                return ToolAccessDecision.Deny("tool_denied_by_approval_policy");
+                return ToolAuthorizationDecision.Deny("tool_denied_by_approval_policy");
 
             var pathDenial = PreflightStructuredPathAccess(tool, context.Invocation, arguments);
             if (pathDenial is not null)
@@ -307,20 +293,20 @@ public sealed class ToolAccessPolicy
 
         var shellMode = ResolveShellMode();
         if (shellMode == ShellExecutionMode.Off)
-            return ToolAccessDecision.Deny("shell_disabled");
+            return ToolAuthorizationDecision.Deny("shell_disabled");
 
         if (shellMode == ShellExecutionMode.SandboxOnly)
-            return ToolAccessDecision.Deny("shell_requires_sandbox_backend");
+            return ToolAuthorizationDecision.Deny("shell_requires_sandbox_backend");
 
         var shellAudience = ResolveAudience(context.Invocation);
         if (shellAudience != TrustAudience.Personal)
-            return ToolAccessDecision.Deny("shell_requires_personal_context");
+            return ToolAuthorizationDecision.Deny("shell_requires_personal_context");
 
         // shell_execute authorizes the process before the job starts. This tool
         // can only control a job with the same session, audience, and boundary.
         // It does not create a new shell invocation or require another approval.
         if (string.Equals(tool.Name, CheckBackgroundJobTool.ToolName, StringComparison.Ordinal))
-            return ToolAccessDecision.Allow(ToolAllowReason.BackgroundJobLifecycle);
+            return ToolAuthorizationDecision.Allow(ToolAllowReason.BackgroundJobLifecycle);
 
         var shellCommand = ExtractShellCommand(arguments);
         var workingDirectory = context.ResolveShellCwd(ExtractWorkingDirectory(arguments));
@@ -330,11 +316,11 @@ public sealed class ToolAccessPolicy
             shellAnalysis = _shellCommandPolicy.Analyze(shellCommand, workingDirectory);
             var hardDenyDecision = _shellCommandPolicy.Evaluate(shellAnalysis);
             if (!hardDenyDecision.Allowed)
-                return ToolAccessDecision.Deny(
+                return ToolAuthorizationDecision.Deny(
                     $"hard_deny_{hardDenyDecision.DenyCategory?.ToWireName() ?? "unknown"}");
 
             if (_toolPathPolicy.CommandReferencesDeniedPath(shellAnalysis))
-                return ToolAccessDecision.Deny("shell_references_protected_path");
+                return ToolAuthorizationDecision.Deny("shell_references_protected_path");
         }
 
         var mode = GetApprovalMode(toolName, context, arguments, _shellApprovalMatcher);
@@ -462,7 +448,7 @@ public sealed class ToolAccessPolicy
             return false;
         }
 
-        if (_platformTemporaryScopePolicy.IsEligiblePlatformTemporaryPath(normalized))
+        if (_temporaryPathCorrectionPolicy.IsEligiblePlatformTemporaryPath(normalized))
             return true;
 
         try
@@ -496,25 +482,25 @@ public sealed class ToolAccessPolicy
     /// <c>Mode.None</c> ⇒ denied). Returns a deny decision if any path escapes, or
     /// null if all paths are within bounds.
     /// </summary>
-    private ToolAccessDecision? EnforceShellPathAccess(
+    private ToolAuthorizationDecision? EnforceShellPathAccess(
         ShellApprovalAnalysis approval,
         string? workingDirectory,
         ToolExecutionContext context)
     {
         if (approval.IsMessy)
-            return ToolAccessDecision.Deny("shell_unresolved_trust_zone_input");
+            return ToolAuthorizationDecision.Deny("shell_unresolved_trust_zone_input");
 
         if (!string.IsNullOrWhiteSpace(workingDirectory))
         {
             var expandedWorkingDirectory = PathUtility.ExpandAndNormalize(workingDirectory, workingDirectory: null);
             if (expandedWorkingDirectory is null)
-                return ToolAccessDecision.Deny("shell_invalid_working_directory");
+                return ToolAuthorizationDecision.Deny("shell_invalid_working_directory");
 
             if (!_pathAccessPolicy!.Evaluate(
                     expandedWorkingDirectory,
                     context.Invocation,
                     PathAccessPolicy.FileOperation.Write).Allowed)
-                return ToolAccessDecision.Deny("shell_working_directory_outside_trust_zone");
+                return ToolAuthorizationDecision.Deny("shell_working_directory_outside_trust_zone");
         }
 
         foreach (var directory in approval.Candidates
@@ -526,13 +512,13 @@ public sealed class ToolAccessPolicy
                     directory!,
                     context.Invocation,
                     PathAccessPolicy.FileOperation.Write).Allowed)
-                return ToolAccessDecision.Deny("shell_path_outside_trust_zone");
+                return ToolAuthorizationDecision.Deny("shell_path_outside_trust_zone");
         }
 
         return null;
     }
 
-    private ToolAccessDecision? PreflightStructuredPathAccess(
+    private ToolAuthorizationDecision? PreflightStructuredPathAccess(
         INetclawTool tool,
         ToolInvocationContext context,
         IDictionary<string, object?>? arguments)
@@ -556,7 +542,7 @@ public sealed class ToolAccessPolicy
         };
 
         if (request.Argument is null)
-            return ToolAccessDecision.Deny("path_access_descriptor_missing");
+            return ToolAuthorizationDecision.Deny("path_access_descriptor_missing");
 
         var rawPath = ToolArgumentHelper.GetString(arguments, request.Argument);
         if (string.IsNullOrWhiteSpace(rawPath))
@@ -565,7 +551,7 @@ public sealed class ToolAccessPolicy
         var decision = _pathAccessPolicy.Evaluate(rawPath, context, request.Operation);
         return !decision.Allowed
                && decision.Failure is PathAccessPolicy.PathAccessFailure.AccessDenied
-            ? ToolAccessDecision.Deny("path_access_denied", decision.Error)
+            ? ToolAuthorizationDecision.Deny("path_access_denied", decision.Error)
             : null;
     }
 
@@ -614,7 +600,7 @@ public sealed class ToolAccessPolicy
         return analysisArguments;
     }
 
-    private ToolAccessDecision CheckApprovalGate(
+    private ToolAuthorizationDecision CheckApprovalGate(
         ToolName toolName,
         ToolExecutionContext context,
         IDictionary<string, object?>? arguments,
@@ -669,12 +655,11 @@ public sealed class ToolAccessPolicy
             ?? matcher.IsMessy(toolName, analysisArguments);
 
         IReadOnlyList<ApprovalCandidate> approvalCandidates = candidates;
-        string? suggestedProjectDirectory = null;
-        ToolAgentCorrection? agentCorrection = null;
+        ToolCorrection? agentCorrection = null;
 
         if (isShell && shellAnalysis is not null)
         {
-            agentCorrection = _platformTemporaryScopePolicy.Evaluate(
+            agentCorrection = _temporaryPathCorrectionPolicy.Evaluate(
                 shellAnalysis,
                 approvalCandidates,
                 arguments,
@@ -682,7 +667,7 @@ public sealed class ToolAccessPolicy
         }
         else if (!isShell)
         {
-            agentCorrection = _platformTemporaryScopePolicy.EvaluateStructuredFileChange(
+            agentCorrection = _temporaryPathCorrectionPolicy.EvaluateStructuredFileChange(
                 toolName,
                 arguments,
                 context.Invocation,
@@ -699,13 +684,13 @@ public sealed class ToolAccessPolicy
             && approvalCandidates.Count > 0)
         {
             if (agentCorrection is null
-                && !_platformTemporaryScopePolicy.IsPlatformTemporaryRoot(context.Approval.Cwd)
+                && !_temporaryPathCorrectionPolicy.IsPlatformTemporaryRoot(context.Approval.Cwd)
                 && _safeVerbPolicy.CanShortCircuitAfterProjectDeclaration(
                     approvalCandidates,
                     context.Approval.Cwd,
                     context.Invocation))
             {
-                suggestedProjectDirectory = context.Approval.Cwd;
+                agentCorrection = new ToolCorrection.ProjectDirectorySuggested(context.Approval.Cwd!);
             }
 
             if (!deferReviewedSafeCoverage)
@@ -718,7 +703,7 @@ public sealed class ToolAccessPolicy
                     .ToList();
 
                 if (approvalCandidates.Count == 0)
-                    return ToolAccessDecision.Allow(ToolAllowReason.ReviewedSafePolicy);
+                    return ToolAuthorizationDecision.Allow(ToolAllowReason.ReviewedSafePolicy);
             }
         }
 
@@ -736,24 +721,16 @@ public sealed class ToolAccessPolicy
         }
         else
         {
-            var persistence = GetApprovalPersistenceAvailability(
+            options = BuildApprovalOptions(GetApprovalOptionProfile(
+                toolName,
                 isMessy,
-                !isShell || approvalCandidates.All(HasReusableShellPhrase));
-            var directory = DirectoryApprovalOption.Omit;
-            if (matcher is ShellApprovalMatcher)
-            {
-                directory = GetShellDirectoryApprovalAvailability(
+                !isShell || approvalCandidates.All(HasReusableShellPhrase),
+                matcher is ShellApprovalMatcher
+                && IsShellDirectoryApprovalAvailable(
                     approvalCandidates,
                     context.Approval.Cwd,
                     GetSessionOwnedApprovalDirectories(context),
-                    ShellEnvironment.PathStyle);
-            }
-
-            var optionPolicy = new ApprovalOptionPolicy(
-                persistence,
-                directory,
-                GetApprovalOptionLabelKind(toolName));
-            options = BuildApprovalOptions(optionPolicy);
+                    ShellEnvironment.PathStyle)));
         }
 
         var approvalContext = new ToolApprovalContext(
@@ -766,14 +743,14 @@ public sealed class ToolAccessPolicy
             IsMessy: isMessy,
             Candidates: approvalCandidates)
         {
-            SuggestedProjectDirectory = suggestedProjectDirectory,
-            AgentCorrection = isManagedTemporaryRetry ? null : agentCorrection,
             IsManagedTemporaryRetry = isManagedTemporaryRetry,
             ManagedTemporaryDirectory = managedTemporaryRetry?.ManagedTemporaryDirectory,
             PlatformTemporaryRoot = managedTemporaryRetry?.PlatformTemporaryRoot
         };
 
-        return ToolAccessDecision.RequiresApproval(approvalContext);
+        return ToolAuthorizationDecision.RequiresApproval(
+            approvalContext,
+            isManagedTemporaryRetry ? null : agentCorrection);
     }
 
     private ToolApprovalMode GetApprovalMode(
@@ -794,13 +771,13 @@ public sealed class ToolAccessPolicy
             matcher);
     }
 
-    private static ToolAccessDecision? GetApprovalModeDecision(ToolApprovalMode mode)
+    private static ToolAuthorizationDecision? GetApprovalModeDecision(ToolApprovalMode mode)
         => mode switch
         {
             ToolApprovalMode.Approval => null,
-            ToolApprovalMode.Auto => ToolAccessDecision.Allow(ToolAllowReason.PolicyAuto),
-            ToolApprovalMode.Deny => ToolAccessDecision.Deny("tool_denied_by_approval_policy"),
-            _ => ToolAccessDecision.Deny("internal_policy_failure")
+            ToolApprovalMode.Auto => ToolAuthorizationDecision.Allow(ToolAllowReason.PolicyAuto),
+            ToolApprovalMode.Deny => ToolAuthorizationDecision.Deny("tool_denied_by_approval_policy"),
+            _ => ToolAuthorizationDecision.Deny("internal_policy_failure")
         };
 
     internal static ToolApprovalContext NarrowShellApprovalContext(
@@ -820,18 +797,15 @@ public sealed class ToolAccessPolicy
         }
         else
         {
-            var optionPolicy = new ApprovalOptionPolicy(
-                GetApprovalPersistenceAvailability(
-                    isMessy: false,
-                    hasReusablePhraseForEveryCandidate:
-                    unapprovedCandidates.All(HasReusableShellPhrase)),
-                GetShellDirectoryApprovalAvailability(
+            options = BuildApprovalOptions(GetApprovalOptionProfile(
+                new ToolName(ShellTool.ToolName),
+                isMessy: false,
+                unapprovedCandidates.All(HasReusableShellPhrase),
+                IsShellDirectoryApprovalAvailable(
                     unapprovedCandidates,
                     context.Cwd,
                     sessionOwnedDirectories,
-                    pathStyle),
-                ApprovalOptionLabelKind.Standard);
-            options = BuildApprovalOptions(optionPolicy);
+                    pathStyle)));
         }
 
         return context with
@@ -894,37 +868,36 @@ public sealed class ToolAccessPolicy
             .ToArray();
     }
 
-    private static DirectoryApprovalOption GetShellDirectoryApprovalAvailability(
+    private static bool IsShellDirectoryApprovalAvailable(
         IReadOnlyList<ApprovalCandidate> candidates,
         string? cwd,
         IReadOnlyCollection<string> sessionOwnedDirectories,
         ShellPathStyle pathStyle)
     {
         if (IsCwdTooShallow(cwd, pathStyle))
-            return DirectoryApprovalOption.Omit;
+            return false;
 
         if (AllCandidatesResolveToSessionOwnedDirectory(candidates, cwd, sessionOwnedDirectories))
-            return DirectoryApprovalOption.Omit;
+            return false;
 
-        return DirectoryApprovalOption.Include;
+        return true;
     }
 
-    private static ApprovalPersistenceAvailability GetApprovalPersistenceAvailability(
+    private static ApprovalOptionProfile GetApprovalOptionProfile(
+        ToolName toolName,
         bool isMessy,
-        bool hasReusablePhraseForEveryCandidate)
+        bool hasReusablePhraseForEveryCandidate,
+        bool includeDirectory)
     {
         if (isMessy || !hasReusablePhraseForEveryCandidate)
-            return ApprovalPersistenceAvailability.OneShotOnly;
+            return ApprovalOptionProfile.OneShotOnly;
 
-        return ApprovalPersistenceAvailability.Reusable;
-    }
-
-    private static ApprovalOptionLabelKind GetApprovalOptionLabelKind(ToolName toolName)
-    {
         if (toolName.IsMcp)
-            return ApprovalOptionLabelKind.McpTool;
+            return ApprovalOptionProfile.McpTool;
 
-        return ApprovalOptionLabelKind.Standard;
+        return includeDirectory
+            ? ApprovalOptionProfile.StandardWithDirectory
+            : ApprovalOptionProfile.Standard;
     }
 
     /// <summary>
@@ -953,9 +926,9 @@ public sealed class ToolAccessPolicy
     /// allow this tool</c> because it persists a canonical-tool grant.</item>
     /// </list>
     /// </summary>
-    private static IReadOnlyList<ToolApprovalOption> BuildApprovalOptions(ApprovalOptionPolicy policy)
+    private static IReadOnlyList<ToolApprovalOption> BuildApprovalOptions(ApprovalOptionProfile profile)
     {
-        if (policy.Persistence is ApprovalPersistenceAvailability.OneShotOnly)
+        if (profile is ApprovalOptionProfile.OneShotOnly)
         {
             return
             [
@@ -970,7 +943,7 @@ public sealed class ToolAccessPolicy
             new ToolApprovalOption(ApprovalOptionKeys.ApproveSessionKey, ApprovalOptionKeys.ApproveSessionLabel)
         };
 
-        if (policy.Directory is DirectoryApprovalOption.Include)
+        if (profile is ApprovalOptionProfile.StandardWithDirectory)
         {
             options.Add(new ToolApprovalOption(ApprovalOptionKeys.ApproveAlwaysKey, ApprovalOptionKeys.ApproveAlwaysLabel));
         }
@@ -979,7 +952,7 @@ public sealed class ToolAccessPolicy
             ApprovalOptionKeys.ApproveEverywhereKey,
             ApprovalOptionKeys.LabelFor(
                 ApprovalOptionKeys.ApproveEverywhere,
-                policy.LabelKind is ApprovalOptionLabelKind.McpTool)));
+                profile is ApprovalOptionProfile.McpTool)));
         options.Add(new ToolApprovalOption(ApprovalOptionKeys.DenyKey, ApprovalOptionKeys.DenyLabel));
 
         return options;
@@ -1123,34 +1096,6 @@ public sealed record FeatureGates(
     public static readonly FeatureGates AllEnabled = new();
 }
 
-public sealed record ToolAccessDecision(bool Allowed, string? DenyReason = null, ToolApprovalContext? ApprovalContext = null)
-{
-    /// <summary>
-    /// Gets the reason for an allowed access decision.
-    /// </summary>
-    internal ToolAllowReason? AllowReason { get; private init; }
-
-    /// <summary>
-    /// Gets optional human-readable denial detail. Unlike <see cref="DenyReason"/>,
-    /// this value is not a stable telemetry key.
-    /// </summary>
-    internal string? DenyMessage { get; private init; }
-
-    /// <summary>True when the decision is <see cref="RequiresApproval"/>.</summary>
-    public bool NeedsApproval => ApprovalContext is not null && Allowed;
-
-    public static ToolAccessDecision Allow() => new(true);
-
-    internal static ToolAccessDecision Allow(ToolAllowReason reason) => new(true) { AllowReason = reason };
-
-    public static ToolAccessDecision Deny(string reason) => new(false, reason);
-
-    internal static ToolAccessDecision Deny(string reason, string message) =>
-        new(false, reason) { DenyMessage = message };
-
-    public static ToolAccessDecision RequiresApproval(ToolApprovalContext context) => new(true, null, context);
-}
-
 /// <summary>
 /// Context for an approval-gated tool invocation. Contains the information
 /// needed to present the approval prompt and cache the decision.
@@ -1180,15 +1125,6 @@ public sealed record ToolApprovalContext(
     // A null directory uses Cwd. ApprovedAlways stores these effective scopes.
     IReadOnlyList<ApprovalCandidate>? Candidates = null)
 {
-    /// <summary>
-    /// Gets the exact shell cwd that the agent can declare through
-    /// <c>set_working_directory</c> when undeclared scope is the only obstacle
-    /// to the reviewed-safe policy.
-    /// </summary>
-    internal string? SuggestedProjectDirectory { get; init; }
-
-    internal ToolAgentCorrection? AgentCorrection { get; init; }
-
     internal bool IsManagedTemporaryRetry { get; init; }
 
     internal string? ManagedTemporaryDirectory { get; init; }
@@ -1227,10 +1163,20 @@ public sealed class ToolAccessDeniedException : InvalidOperationException
 public sealed class ToolApprovalRequiredException : InvalidOperationException
 {
     public ToolApprovalRequiredException(ToolApprovalContext context)
+        : this(context, correction: null)
+    {
+    }
+
+    internal ToolApprovalRequiredException(
+        ToolApprovalContext context,
+        ToolCorrection? correction)
         : base($"Tool '{context.ToolName}' requires approval")
     {
         ApprovalContext = context;
+        Correction = correction;
     }
 
     public ToolApprovalContext ApprovalContext { get; }
+
+    internal ToolCorrection? Correction { get; }
 }

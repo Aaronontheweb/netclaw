@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="PlatformTemporaryScopePolicy.cs" company="Petabridge, LLC">
+// <copyright file="TemporaryPathCorrectionPolicy.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
@@ -14,13 +14,13 @@ namespace Netclaw.Actors.Tools;
 /// Identifies advice-only calls that explicitly use the shared platform temp root.
 /// This policy grants no authority and does not change the submitted call.
 /// </summary>
-internal sealed class PlatformTemporaryScopePolicy
+internal sealed class TemporaryPathCorrectionPolicy
 {
     private readonly ShellExecutionEnvironment _environment;
     private readonly IPlatformTemporaryPathInspector _pathInspector;
     private readonly IReadOnlyList<PlatformTemporaryRoot> _temporaryRoots;
 
-    internal PlatformTemporaryScopePolicy(
+    internal TemporaryPathCorrectionPolicy(
         ShellExecutionEnvironment environment,
         string platformTemporaryRoot,
         IPlatformTemporaryPathInspector pathInspector)
@@ -28,7 +28,7 @@ internal sealed class PlatformTemporaryScopePolicy
     {
     }
 
-    internal PlatformTemporaryScopePolicy(
+    internal TemporaryPathCorrectionPolicy(
         ShellExecutionEnvironment environment,
         string platformTemporaryRoot,
         IPlatformTemporaryPathInspector pathInspector,
@@ -52,14 +52,14 @@ internal sealed class PlatformTemporaryScopePolicy
 
     internal string? TemporaryRoot { get; }
 
-    internal static PlatformTemporaryScopePolicy Create(ShellExecutionEnvironment environment)
+    internal static TemporaryPathCorrectionPolicy Create(ShellExecutionEnvironment environment)
         => new(
             environment,
             Path.GetTempPath(),
             HostPlatformTemporaryPathInspector.Instance,
             environment.PathStyle == ShellPathStyle.Posix ? ["/tmp"] : []);
 
-    internal ToolAgentCorrection.ManagedTemporaryDirectorySuggested? Evaluate(
+    internal ToolCorrection.ManagedTemporaryDirectorySuggested? Evaluate(
         ShellCommandAnalysis analysis,
         IReadOnlyList<ApprovalCandidate> candidates,
         IDictionary<string, object?>? arguments,
@@ -74,7 +74,7 @@ internal sealed class PlatformTemporaryScopePolicy
             return null;
         }
 
-        return new ToolAgentCorrection.ManagedTemporaryDirectorySuggested(
+        return new ToolCorrection.ManagedTemporaryDirectorySuggested(
             new ManagedTemporaryCorrectionTarget(
                 managedTemporaryDirectory,
                 temporaryRoot.Canonical));
@@ -84,7 +84,7 @@ internal sealed class PlatformTemporaryScopePolicy
     /// Returns advice for an interactive Personal file change below a platform temporary root.
     /// The method rejects protected paths and grants no file authority.
     /// </summary>
-    internal ToolAgentCorrection.ManagedTemporaryDirectorySuggested? EvaluateStructuredFileChange(
+    internal ToolCorrection.ManagedTemporaryDirectorySuggested? EvaluateStructuredFileChange(
         ToolName toolName,
         IDictionary<string, object?>? arguments,
         ToolInvocationContext context,
@@ -106,7 +106,7 @@ internal sealed class PlatformTemporaryScopePolicy
             return null;
         }
 
-        return new ToolAgentCorrection.ManagedTemporaryDirectorySuggested(
+        return new ToolCorrection.ManagedTemporaryDirectorySuggested(
             new ManagedTemporaryCorrectionTarget(
                 managedTemporaryDirectory,
                 temporaryRoot));
@@ -116,22 +116,8 @@ internal sealed class PlatformTemporaryScopePolicy
         => TryGetTemporaryRoot(path, out _);
 
     internal bool IsEligiblePlatformTemporaryPath(string? path)
-    {
-        if (!TryNormalizePath(path, out var normalized))
-            return false;
-
-        foreach (var root in _temporaryRoots)
-        {
-            if ((IsWithinRoot(normalized, root.Authored)
-                 || IsWithinRoot(normalized, root.Canonical))
-                && IsLinkFreeTemporaryPath(normalized, root))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
+        => !string.IsNullOrWhiteSpace(path)
+           && TryGetEligibleTemporaryRoot(path, out _);
 
     /// <summary>
     /// Gets the canonical platform temporary root when the path stays below it without a link escape.

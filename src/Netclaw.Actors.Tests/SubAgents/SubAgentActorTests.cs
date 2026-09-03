@@ -1380,7 +1380,7 @@ public class SubAgentActorTests : TestKit
                 UsedStrictFallback: false),
             commandPolicy,
             pathPolicy,
-            new PlatformTemporaryScopePolicy(
+            new TemporaryPathCorrectionPolicy(
                 environment,
                 Path.GetFullPath(Path.GetTempPath()),
                 new AlwaysSafeTemporaryPathInspector()));

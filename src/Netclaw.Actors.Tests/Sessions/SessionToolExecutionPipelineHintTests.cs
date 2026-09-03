@@ -174,15 +174,7 @@ public sealed class SessionToolExecutionPipelineHintTests
     [Fact]
     public void Project_scope_correction_reports_only_the_failure_reason()
     {
-        var context = new ToolApprovalContext(
-            ToolName: ShellTool,
-            DisplayText: "head -40 src/file.cs",
-            Patterns: ["head"],
-            CandidateVerbs: ["head"],
-            Options: [])
-        {
-            SuggestedProjectDirectory = "/home/user/repos/project"
-        };
+        var context = new ToolCorrection.ProjectDirectorySuggested("/home/user/repos/project");
 
         var correction = SessionToolExecutionPipeline.BuildProjectScopeDeclarationCorrection(
             context,
@@ -197,15 +189,7 @@ public sealed class SessionToolExecutionPipelineHintTests
     [Fact]
     public void Project_scope_correction_is_suppressed_when_tool_is_unavailable()
     {
-        var context = new ToolApprovalContext(
-            ToolName: ShellTool,
-            DisplayText: "head -40 src/file.cs",
-            Patterns: ["head"],
-            CandidateVerbs: ["head"],
-            Options: [])
-        {
-            SuggestedProjectDirectory = "/home/user/repos/project"
-        };
+        var context = new ToolCorrection.ProjectDirectorySuggested("/home/user/repos/project");
 
         var correction = SessionToolExecutionPipeline.BuildProjectScopeDeclarationCorrection(
             context,

@@ -3819,13 +3819,13 @@ public class DispatchingToolExecutorTests
             TestContext.Current.CancellationToken);
 
         Assert.Equal(ToolAuthorizationOutcome.RequiresAgentCorrection, decision.Outcome);
-        var correction = Assert.IsType<ToolAgentCorrection.NativeToolSuggested>(decision.AgentCorrection);
+        var correction = Assert.IsType<ToolCorrection.NativeToolSuggested>(decision.AgentCorrection);
         Assert.Equal("file_read", correction.ToolName.Value);
         Assert.Equal(0, approvalService.RequestCount);
 
-        var exception = await Assert.ThrowsAsync<ToolAgentCorrectionRequiredException>(() =>
+        var exception = await Assert.ThrowsAsync<ToolCorrectionRequiredException>(() =>
             executor.AuthorizeAsync(call, context, TestContext.Current.CancellationToken));
-        var thrownCorrection = Assert.IsType<ToolAgentCorrection.NativeToolSuggested>(exception.Correction);
+        var thrownCorrection = Assert.IsType<ToolCorrection.NativeToolSuggested>(exception.Correction);
         Assert.Equal("file_read", thrownCorrection.ToolName.Value);
         Assert.Null(context.Receipt);
         Assert.Equal(0, approvalService.RequestCount);
@@ -3859,10 +3859,10 @@ public class DispatchingToolExecutorTests
         var context = CreateInteractivePersonalContext(
             "signalr/native-compound-no-partial-execution");
 
-        var exception = await Assert.ThrowsAsync<ToolAgentCorrectionRequiredException>(() =>
+        var exception = await Assert.ThrowsAsync<ToolCorrectionRequiredException>(() =>
             executor.ExecuteAsync(call, context, TestContext.Current.CancellationToken));
 
-        var correction = Assert.IsType<ToolAgentCorrection.NativeToolSuggested>(exception.Correction);
+        var correction = Assert.IsType<ToolCorrection.NativeToolSuggested>(exception.Correction);
         Assert.Equal("file_read", correction.ToolName.Value);
         Assert.False(recordingShell.WasCalled);
     }
@@ -4123,7 +4123,7 @@ public class DispatchingToolExecutorTests
                 InteractiveApproval = TestToolExecutionContext.InteractiveApproval(true)
             });
 
-    private static ToolAgentCorrection.NativeToolSuggested? DetectNativeToolForConfig(
+    private static ToolCorrection.NativeToolSuggested? DetectNativeToolForConfig(
         ToolConfig config,
         TrustAudience audience)
     {

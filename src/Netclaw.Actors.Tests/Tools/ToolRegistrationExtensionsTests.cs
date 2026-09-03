@@ -195,6 +195,7 @@ public class ToolRegistrationExtensionsTests
             skillRegistry,
             indexPublisher);
         registry.WithSkillTools(
+            policy,
             skillRegistry,
             paths,
             scanner,

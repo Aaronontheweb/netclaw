@@ -11,16 +11,19 @@ using Netclaw.Tools;
 namespace Netclaw.Actors.Tools;
 
 /// <summary>Advice that asks an agent to submit a different tool call. A correction grants no authority.</summary>
-internal abstract record ToolAgentCorrection
+internal abstract record ToolCorrection
 {
-    private ToolAgentCorrection() { }
+    private ToolCorrection() { }
 
     /// <summary>Suggests the current run's managed temporary directory instead of a platform temporary root.</summary>
     internal sealed record ManagedTemporaryDirectorySuggested(
-        ManagedTemporaryCorrectionTarget Target) : ToolAgentCorrection;
+        ManagedTemporaryCorrectionTarget Target) : ToolCorrection;
 
     /// <summary>Suggests a native tool instead of invoking that tool name through the shell.</summary>
-    internal sealed record NativeToolSuggested(ToolName ToolName) : ToolAgentCorrection;
+    internal sealed record NativeToolSuggested(ToolName ToolName) : ToolCorrection;
+
+    /// <summary>Suggests declaration of the shell directory as the current project.</summary>
+    internal sealed record ProjectDirectorySuggested(string Directory) : ToolCorrection;
 }
 
 /// <summary>Captures the execution-relevant arguments of one corrected tool call.</summary>
@@ -150,17 +153,20 @@ internal static class ManagedTemporaryCorrection
         if (string.IsNullOrWhiteSpace(path))
             return null;
 
-        return toolCall.Name == FileWriteTool.ToolName
-            ? new ManagedTemporaryCallSemantics.FileWriteCall(
+        if (toolCall.Name == FileWriteTool.ToolName)
+        {
+            return new ManagedTemporaryCallSemantics.FileWriteCall(
                 path,
                 ToolArgumentHelper.GetString(toolCall.Arguments, "Content"),
-                timeout)
-            : new ManagedTemporaryCallSemantics.FileEditCall(
-                path,
-                ToolArgumentHelper.GetString(toolCall.Arguments, "OldString"),
-                ToolArgumentHelper.GetString(toolCall.Arguments, "NewString"),
-                ToolArgumentHelper.GetBoolStrict(toolCall.Arguments, "ReplaceAll"),
                 timeout);
+        }
+
+        return new ManagedTemporaryCallSemantics.FileEditCall(
+            path,
+            ToolArgumentHelper.GetString(toolCall.Arguments, "OldString"),
+            ToolArgumentHelper.GetString(toolCall.Arguments, "NewString"),
+            ToolArgumentHelper.GetBoolStrict(toolCall.Arguments, "ReplaceAll"),
+            timeout);
     }
 
     /// <summary>Builds the correction returned before an approval request.</summary>

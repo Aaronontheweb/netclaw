@@ -1464,40 +1464,39 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                             ? new ManagedTemporaryCorrectionChange.Consume(directConsumed)
                             : null);
                 }
-                catch (ToolAgentCorrectionRequiredException correctionEx)
+                catch (ToolCorrectionRequiredException correctionEx)
                 {
-                    if (correctionEx.Correction is not ToolAgentCorrection.NativeToolSuggested nativeTool)
-                        throw;
+                    if (correctionEx.Correction is ToolCorrection.NativeToolSuggested nativeTool)
+                    {
+                        toolContext.Outputs.TryComplete(new ToolInvocationReceipt(
+                            ToolInvocationOutcomeCategory.RecoverableCorrection,
+                            remediationCode: ToolRemediationCode.UseNativeTool));
+                        return BuildToolResult(
+                            cleanedTc,
+                            SessionToolExecutionPipeline.BuildNativeToolCorrection(nativeTool.ToolName),
+                            toolContext,
+                            modelInputBudget,
+                            exposureRequest: new ToolExposureRequest(nativeTool.ToolName));
+                    }
 
-                    toolContext.Outputs.TryComplete(new ToolInvocationReceipt(
-                        ToolInvocationOutcomeCategory.RecoverableCorrection,
-                        remediationCode: ToolRemediationCode.UseNativeTool));
-                    return BuildToolResult(
-                        cleanedTc,
-                        SessionToolExecutionPipeline.BuildNativeToolCorrection(nativeTool.ToolName),
-                        toolContext,
-                        modelInputBudget,
-                        exposureRequest: new ToolExposureRequest(nativeTool.ToolName));
+                    throw new InvalidOperationException("The correction does not name a native tool.");
                 }
                 catch (ToolApprovalRequiredException approvalEx)
                 {
                     var ctx = approvalEx.ApprovalContext;
-                    if (approvalBridge is not null
-                        && ctx.AgentCorrection is
-                        ToolAgentCorrection.ManagedTemporaryDirectorySuggested managedTemporaryCorrection
+                    if (approvalEx.Correction is ToolCorrection.ManagedTemporaryDirectorySuggested managedTemporaryCorrection
                         && managedTemporaryCall is { } correctedCall)
                     {
                         toolContext.Outputs.TryComplete(new ToolInvocationReceipt(
                             ToolInvocationOutcomeCategory.RecoverableCorrection,
                             remediationCode: ToolRemediationCode.UseManagedTemporaryDirectory));
-                        var correctionText = ManagedTemporaryCorrection.BuildSuggestion(
-                            managedTemporaryCorrection.Target.ManagedTemporaryDirectory);
                         var newCorrectionKey = new ManagedTemporaryCorrectionKey(
                             correctedCall,
                             managedTemporaryCorrection.Target);
                         return BuildToolResult(
                             cleanedTc,
-                            correctionText,
+                            ManagedTemporaryCorrection.BuildSuggestion(
+                                managedTemporaryCorrection.Target.ManagedTemporaryDirectory),
                             toolContext,
                             modelInputBudget,
                             new ManagedTemporaryCorrectionChange.Arm(newCorrectionKey));
@@ -1505,7 +1504,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
                     var projectScopeCorrection =
                         SessionToolExecutionPipeline.BuildProjectScopeDeclarationCorrection(
-                            ctx,
+                            approvalEx.Correction,
                             canDeclareWorkingDirectory is not null,
                             toolContext.Invocation,
                             canDeclareWorkingDirectory);

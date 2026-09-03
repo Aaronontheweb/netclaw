@@ -65,6 +65,7 @@ public static class ToolRegistrationExtensions
     /// </summary>
     public static ToolRegistry WithSkillTools(
         this ToolRegistry registry,
+        ToolAccessPolicy toolAccessPolicy,
         SkillRegistry skillRegistry,
         NetclawPaths paths,
         ISkillContentScanner scanner,
@@ -77,6 +78,12 @@ public static class ToolRegistrationExtensions
         FileSubAgentDefinitionLoader? subAgentLoader = null,
         ILogger<SkillLoadTool>? skillLoadLogger = null)
     {
+        ArgumentNullException.ThrowIfNull(toolAccessPolicy);
+        registry.ReplaceCore(new FileReadTool(
+            toolAccessPolicy.ToolConfig,
+            toolAccessPolicy.SharedPathAccessPolicy,
+            skillRegistry,
+            sessionMetrics));
         registry.RegisterCore(new SkillLoadTool(
             skillRegistry,
             scanner,

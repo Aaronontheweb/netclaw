@@ -373,21 +373,19 @@ internal sealed class PathAccessPolicy
             return false;
         }
 
-        foreach (var root in roots)
+        var relationship = GetHostPathRelationship(fullPath, roots);
+        if (relationship == PathRelationship.WithinTrustedRoot)
         {
-            if (!PathUtility.IsWithinRoot(fullPath, root))
-                continue;
-
-            if (PathUtility.ContainsSymlinkSegment(root, fullPath, includeRoot: true))
-            {
-                error = $"Error: {label} trust context may not access files through symlinked paths inside the current session directory or configured roots.";
-                failure = PathAccessFailure.AccessDenied;
-                return false;
-            }
-
             error = string.Empty;
             failure = null;
             return true;
+        }
+
+        if (relationship is PathRelationship.CrossesLinkBoundary or PathRelationship.Unverifiable)
+        {
+            error = $"Error: {label} trust context may not access files through symlinked paths inside the current session directory or configured roots.";
+            failure = PathAccessFailure.AccessDenied;
+            return false;
         }
 
         error = audience == TrustAudience.Public
@@ -440,27 +438,7 @@ internal sealed class PathAccessPolicy
         if (accessKind is not FileOperation.Read && _cachedWorkspacesRoot.Value is { } workspacesRoot)
             roots.Add(workspacesRoot);
 
-        foreach (var candidate in roots)
-        {
-            string root;
-            try
-            {
-                root = Path.GetFullPath(candidate);
-            }
-            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
-            {
-                continue;
-            }
-
-            if (!PathUtility.IsWithinRoot(projectDirectory, root))
-                continue;
-
-            return PathUtility.ContainsSymlinkSegment(root, projectDirectory, includeRoot: true)
-                ? PathRelationship.CrossesLinkBoundary
-                : PathRelationship.WithinTrustedRoot;
-        }
-
-        return PathRelationship.OutsideTrustedRoots;
+        return GetHostPathRelationship(projectDirectory, roots);
     }
 
     private static PathBaseStatus TryNormalizeAbsoluteBase(
@@ -509,7 +487,8 @@ internal sealed class PathAccessPolicy
     {
         OutsideTrustedRoots,
         WithinTrustedRoot,
-        CrossesLinkBoundary
+        CrossesLinkBoundary,
+        Unverifiable
     }
 
     private static ToolFilesystemAccessProfile GetAccessProfile(ToolAudienceProfile profile, FileOperation accessKind) =>
@@ -567,23 +546,51 @@ internal sealed class PathAccessPolicy
             return false;
         }
 
-        foreach (var root in roots)
+        var relationship = GetHostPathRelationship(fullPath, roots);
+        if (relationship == PathRelationship.WithinTrustedRoot)
         {
-            if (!PathUtility.IsWithinRoot(fullPath, root))
-                continue;
-
-            if (PathUtility.ContainsSymlinkSegment(root, fullPath, includeRoot: true))
-            {
-                error = "Error: unattended session may not access files through links inside trusted roots.";
-                return false;
-            }
-
             error = string.Empty;
             return true;
         }
 
+        if (relationship is PathRelationship.CrossesLinkBoundary or PathRelationship.Unverifiable)
+        {
+            error = "Error: unattended session may not access files through links inside trusted roots.";
+            return false;
+        }
+
         error = "Error: unattended session may only access files inside trusted roots.";
         return false;
+    }
+
+    private static PathRelationship GetHostPathRelationship(
+        string fullPath,
+        IEnumerable<string> roots)
+    {
+        foreach (var candidate in roots)
+        {
+            try
+            {
+                var root = Path.GetFullPath(candidate);
+                if (!PathUtility.IsWithinRoot(fullPath, root))
+                    continue;
+
+                return PathUtility.ContainsSymlinkSegment(root, fullPath, includeRoot: true)
+                    ? PathRelationship.CrossesLinkBoundary
+                    : PathRelationship.WithinTrustedRoot;
+            }
+            catch (Exception ex) when (ex is ArgumentException
+                                           or IOException
+                                           or NotSupportedException
+                                           or PathTooLongException
+                                           or UnauthorizedAccessException
+                                           or System.Security.SecurityException)
+            {
+                return PathRelationship.Unverifiable;
+            }
+        }
+
+        return PathRelationship.OutsideTrustedRoots;
     }
 
     /// <summary>

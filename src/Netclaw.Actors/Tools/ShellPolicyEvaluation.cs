@@ -16,7 +16,7 @@ internal abstract record ShellPolicyPreflightResult
     internal sealed record Complete : ShellPolicyPreflightResult
     {
         internal Complete(
-            ToolAccessDecision decision,
+            ToolAuthorizationDecision decision,
             ShellCommandAnalysis? authorizedAnalysis)
         {
             ArgumentNullException.ThrowIfNull(decision);
@@ -32,7 +32,7 @@ internal abstract record ShellPolicyPreflightResult
             AuthorizedAnalysis = authorizedAnalysis;
         }
 
-        internal ToolAccessDecision Decision { get; }
+        internal ToolAuthorizationDecision Decision { get; }
 
         internal ShellCommandAnalysis? AuthorizedAnalysis { get; }
     }
@@ -42,7 +42,8 @@ internal abstract record ShellPolicyPreflightResult
         internal Continue(
             ShellCommandAnalysis analysis,
             ToolApprovalContext approvalContext,
-            ShellExecutionEnvironment environment)
+            ShellExecutionEnvironment environment,
+            ToolCorrection? correction)
         {
             ArgumentNullException.ThrowIfNull(analysis);
             ArgumentNullException.ThrowIfNull(approvalContext);
@@ -51,6 +52,7 @@ internal abstract record ShellPolicyPreflightResult
             Analysis = analysis;
             ApprovalContext = approvalContext;
             Environment = environment;
+            Correction = correction;
         }
 
         internal ShellCommandAnalysis Analysis { get; }
@@ -58,31 +60,9 @@ internal abstract record ShellPolicyPreflightResult
         internal ToolApprovalContext ApprovalContext { get; }
 
         internal ShellExecutionEnvironment Environment { get; }
+
+        internal ToolCorrection? Correction { get; }
     }
-}
-
-internal sealed record ShellPolicyAuthorization
-{
-    internal ShellPolicyAuthorization(
-        ToolAuthorizationDecision decision,
-        ShellCommandAnalysis? authorizedAnalysis)
-    {
-        ArgumentNullException.ThrowIfNull(decision);
-        if (authorizedAnalysis is not null
-            && decision.Outcome != ToolAuthorizationOutcome.Allowed)
-        {
-            throw new ArgumentException(
-                "Only an allowed shell decision can carry analysis.",
-                nameof(authorizedAnalysis));
-        }
-
-        Decision = decision;
-        AuthorizedAnalysis = authorizedAnalysis;
-    }
-
-    internal ToolAuthorizationDecision Decision { get; }
-
-    internal ShellCommandAnalysis? AuthorizedAnalysis { get; }
 }
 
 internal sealed class ShellPolicyEvaluation

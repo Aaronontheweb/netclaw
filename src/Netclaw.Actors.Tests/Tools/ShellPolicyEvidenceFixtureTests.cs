@@ -71,7 +71,7 @@ public sealed class ShellPolicyEvidenceFixtureTests(ShellApprovalMatrixFixture f
             Assert.Equal(policyCase.ExpectedFinal.IsMessy, decision.ApprovalContext?.IsMessy);
             Assert.Equal(
                 policyCase.ExpectedFinal.AgentCorrection,
-                decision.ApprovalContext?.AgentCorrection?.GetType().Name);
+                decision.AgentCorrection?.GetType().Name);
             expectedRows.AddRange(policyCase.ExpectedTrace.Select(row =>
                 $"{policyCase.EvidenceId}|{FormatExpectedTraceRow(row)}"));
             actualRows.AddRange(decision.ShellPolicyTrace.Rows.Select(row =>
@@ -182,7 +182,7 @@ public sealed class ShellPolicyEvidenceFixtureTests(ShellApprovalMatrixFixture f
             + $"deny={decision.DenyReason}; "
             + $"candidates={string.Join(", ", decision.ApprovalContext?.CandidateVerbs ?? [])}; "
             + $"messy={decision.ApprovalContext?.IsMessy}; "
-            + $"correction={decision.ApprovalContext?.AgentCorrection?.GetType().Name}; "
+            + $"correction={decision.AgentCorrection?.GetType().Name}; "
             + $"checks={harness.ApprovalService.CheckCount}; "
             + $"allow={decision.AllowReason}; "
             + $"matches={string.Join(", ", decision.ApprovalMatches.Select(item => item.Pattern))}; "
@@ -193,7 +193,7 @@ public sealed class ShellPolicyEvidenceFixtureTests(ShellApprovalMatrixFixture f
         Assert.Equal(policyCase.Expected.DenyReason, decision.DenyReason);
         Assert.Equal(
             policyCase.Expected.AgentCorrection,
-            decision.ApprovalContext?.AgentCorrection?.GetType().Name);
+            decision.AgentCorrection?.GetType().Name);
         Assert.Equal(policyCase.Expected.ApprovalCandidates, decision.ApprovalContext?.CandidateVerbs);
         Assert.Equal(policyCase.Expected.IsMessy, decision.ApprovalContext?.IsMessy);
         Assert.Equal(
@@ -261,7 +261,7 @@ public sealed class ShellPolicyEvidenceFixtureTests(ShellApprovalMatrixFixture f
                 environment,
                 analysis,
                 new ShellApprovalMatcher(environment),
-                PlatformTemporaryScopePolicy.Create(environment).IsEligiblePlatformTemporaryPath,
+                TemporaryPathCorrectionPolicy.Create(environment).IsEligiblePlatformTemporaryPath,
                 out var causalCandidates));
             Assert.Equal(policyCase.Candidates.Count, causalCandidates.Count);
             for (var index = 0; index < policyCase.Candidates.Count; index++)

@@ -658,46 +658,45 @@ internal sealed class SessionToolExecutionPipeline
             sw.Stop();
 
         }
-        catch (ToolAgentCorrectionRequiredException correctionEx)
+        catch (ToolCorrectionRequiredException correctionEx)
         {
-            if (correctionEx.Correction is not ToolAgentCorrection.NativeToolSuggested nativeTool)
-                throw;
-
             sw.Stop();
-            var correctionReceipt = new ToolInvocationReceipt(
-                ToolInvocationOutcomeCategory.RecoverableCorrection,
-                remediationCode: ToolRemediationCode.UseNativeTool);
-            return new ToolCallResult(new SerializableChatMessage
+            if (correctionEx.Correction is ToolCorrection.NativeToolSuggested nativeTool)
             {
-                Role = Protocol.ChatRole.Tool,
-                Content = BuildNativeToolCorrection(nativeTool.ToolName),
-                ToolCallId = new ToolCallId(tc.CallId),
-                Name = tc.Name
-            }, [], context.Outputs.FileAttachments, completedRuns, acceptedFindings,
-                authorizationAttemptId,
-                Receipt: correctionReceipt,
-                ExposureRequest: new ToolExposureRequest(nativeTool.ToolName));
-        }
-        catch (ToolApprovalRequiredException approvalEx)
-        {
-            if (approvalEx.ApprovalContext.AgentCorrection is
-                ToolAgentCorrection.ManagedTemporaryDirectorySuggested managedTemporaryCorrection
-                && managedTemporaryCall is { } correctedCall)
-            {
-                sw.Stop();
-                resultText = ManagedTemporaryCorrection.BuildSuggestion(
-                    managedTemporaryCorrection.Target.ManagedTemporaryDirectory);
-                var newCorrectionKey = new ManagedTemporaryCorrectionKey(
-                    correctedCall,
-                    managedTemporaryCorrection.Target);
                 var correctionReceipt = new ToolInvocationReceipt(
                     ToolInvocationOutcomeCategory.RecoverableCorrection,
-                    remediationCode: ToolRemediationCode.UseManagedTemporaryDirectory);
-
+                    remediationCode: ToolRemediationCode.UseNativeTool);
                 return new ToolCallResult(new SerializableChatMessage
                 {
                     Role = Protocol.ChatRole.Tool,
-                    Content = resultText,
+                    Content = BuildNativeToolCorrection(nativeTool.ToolName),
+                    ToolCallId = new ToolCallId(tc.CallId),
+                    Name = tc.Name
+                }, [], context.Outputs.FileAttachments, completedRuns, acceptedFindings,
+                    authorizationAttemptId,
+                    Receipt: correctionReceipt,
+                    ExposureRequest: new ToolExposureRequest(nativeTool.ToolName));
+            }
+
+            throw new InvalidOperationException("The correction does not name a native tool.");
+        }
+        catch (ToolApprovalRequiredException approvalEx)
+        {
+            if (approvalEx.Correction is ToolCorrection.ManagedTemporaryDirectorySuggested managedTemporaryCorrection
+                && managedTemporaryCall is { } correctedCall)
+            {
+                sw.Stop();
+                var correctionReceipt = new ToolInvocationReceipt(
+                    ToolInvocationOutcomeCategory.RecoverableCorrection,
+                    remediationCode: ToolRemediationCode.UseManagedTemporaryDirectory);
+                var newCorrectionKey = new ManagedTemporaryCorrectionKey(
+                    correctedCall,
+                    managedTemporaryCorrection.Target);
+                return new ToolCallResult(new SerializableChatMessage
+                {
+                    Role = Protocol.ChatRole.Tool,
+                    Content = ManagedTemporaryCorrection.BuildSuggestion(
+                        managedTemporaryCorrection.Target.ManagedTemporaryDirectory),
                     ToolCallId = new ToolCallId(tc.CallId),
                     Name = tc.Name
                 }, [], context.Outputs.FileAttachments, completedRuns, acceptedFindings,
@@ -707,7 +706,7 @@ internal sealed class SessionToolExecutionPipeline
             }
 
             var projectScopeCorrection = BuildProjectScopeDeclarationCorrection(
-                approvalEx.ApprovalContext,
+                approvalEx.Correction,
                 batch.SetWorkingDirectoryAvailable,
                 context.Invocation,
                 batch.CanDeclareWorkingDirectory);
@@ -1329,22 +1328,23 @@ internal sealed class SessionToolExecutionPipeline
     /// requested directory has not yet been declared as project scope.
     /// </summary>
     internal static string BuildProjectScopeDeclarationCorrection(
-        ToolApprovalContext context,
+        ToolCorrection? correction,
         bool setWorkingDirectoryAvailable,
         ToolInvocationContext? invocation = null,
         Func<string, ToolInvocationContext, bool>? canDeclare = null)
     {
         if (!setWorkingDirectoryAvailable
-            || string.IsNullOrWhiteSpace(context.SuggestedProjectDirectory)
+            || correction is not ToolCorrection.ProjectDirectorySuggested projectDirectory
+            || string.IsNullOrWhiteSpace(projectDirectory.Directory)
             || invocation is not null
                 && (canDeclare is null
-                    || !canDeclare(context.SuggestedProjectDirectory, invocation)))
+                    || !canDeclare(projectDirectory.Directory, invocation)))
         {
             return string.Empty;
         }
 
         return "Tool execution deferred: working_directory_not_declared\n" +
-               $"Project directory: '{context.SuggestedProjectDirectory}'.";
+               $"Project directory: '{projectDirectory.Directory}'.";
     }
 
     /// <summary>

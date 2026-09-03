@@ -111,7 +111,7 @@ public sealed class BashCausalApprovalIntentTests
 
         try
         {
-            var policy = new PlatformTemporaryScopePolicy(
+            var policy = new TemporaryPathCorrectionPolicy(
                 BashEnvironment,
                 authoredTemp,
                 HostPlatformTemporaryPathInspector.Instance);
@@ -154,7 +154,7 @@ public sealed class BashCausalApprovalIntentTests
         => TryProject(
             environment,
             command,
-            PlatformTemporaryScopePolicy.Create(environment).IsEligiblePlatformTemporaryPath,
+            TemporaryPathCorrectionPolicy.Create(environment).IsEligiblePlatformTemporaryPath,
             out projected);
 
     private static bool TryProject(

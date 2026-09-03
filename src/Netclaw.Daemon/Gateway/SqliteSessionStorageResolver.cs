@@ -201,11 +201,7 @@ public sealed class SqliteSessionStorageResolver : ISessionStorageResolver
         if (!TableExists(connection, transaction, "sessions"))
             return false;
 
-        var identityColumn = ColumnExists(connection, transaction, "sessions", "persistence_id")
-            ? "persistence_id"
-            : ColumnExists(connection, transaction, "sessions", "session_id")
-                ? "session_id"
-                : null;
+        var identityColumn = GetSessionIdentityColumn(connection, transaction);
         if (identityColumn is null)
             return false;
 
@@ -218,6 +214,18 @@ public sealed class SqliteSessionStorageResolver : ISessionStorageResolver
         return Convert.ToInt64(
             command.ExecuteScalar(),
             System.Globalization.CultureInfo.InvariantCulture) != 0;
+    }
+
+    private static string? GetSessionIdentityColumn(
+        SqliteConnection connection,
+        SqliteTransaction transaction)
+    {
+        if (ColumnExists(connection, transaction, "sessions", "persistence_id"))
+            return "persistence_id";
+
+        return ColumnExists(connection, transaction, "sessions", "session_id")
+            ? "session_id"
+            : null;
     }
 
     private static bool HasJournalEntry(

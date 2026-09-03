@@ -7,40 +7,67 @@ using Netclaw.Configuration;
 
 namespace Netclaw.Tools;
 
+/// <summary>
+/// Creates tool execution contexts with explicit test authority and session state.
+/// </summary>
 internal static class TestToolExecutionContext
 {
-    public static InteractiveApprovalCapability InteractiveApproval(bool available) => available
+    internal static InteractiveApprovalCapability InteractiveApproval(bool available) => available
         ? new InteractiveApprovalCapability.Available(new TestParentApprovalBridge())
         : new InteractiveApprovalCapability.Unavailable();
 
-    public static ToolExecutionContext CreateUnbound()
+    internal static ToolExecutionContext CreateUnbound()
         => CreateUnbound(new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Public,
         });
 
-    public static ToolExecutionContext CreateUnbound(TestToolExecutionContextOptions options)
+    internal static ToolExecutionContext CreateUnbound(TestToolExecutionContextOptions options)
         => Create(new ToolSessionScope.Sessionless(), options);
 
-    public static ToolExecutionContext CreateBound(
+    internal static ToolExecutionContext CreateUnboundWithoutApproval(
+        TrustAudience audience = TrustAudience.Public,
+        string? channelType = null)
+        => CreateUnbound(new TestToolExecutionContextOptions
+        {
+            Audience = audience,
+            ChannelType = channelType,
+            InteractiveApproval = new InteractiveApprovalCapability.Unavailable(),
+        });
+
+    internal static ToolExecutionContext CreateBound(
         string sessionId,
         string? sessionDirectory,
         TrustAudience audience)
-        => new(new ToolRunScope
-        {
-            Session = CreateSessionScope(sessionId, sessionDirectory),
-            Audience = audience,
-            InlineOutputBudget = InlineOutputBudget.Default,
-            InteractiveApproval = new InteractiveApprovalCapability.Available(new TestParentApprovalBridge()),
-        }, ToolExecutionTimeout.Default);
+        => CreateBound(
+            sessionId,
+            sessionDirectory,
+            new TestToolExecutionContextOptions { Audience = audience });
 
-    public static ToolExecutionContext CreateBound(
+    internal static ToolExecutionContext CreateBound(
         string sessionId,
         string? sessionDirectory,
         TestToolExecutionContextOptions options)
         => Create(CreateSessionScope(sessionId, sessionDirectory), options);
 
-    public static ToolExecutionContext CreateBoundWithStorage(
+    internal static ToolExecutionContext CreateBoundWithoutApproval(
+        string sessionId,
+        string? sessionDirectory,
+        TrustAudience audience,
+        string? channelType = null,
+        ChannelDeliveryTargetInfo? requestedDeliveryTarget = null)
+        => CreateBound(
+            sessionId,
+            sessionDirectory,
+            new TestToolExecutionContextOptions
+            {
+                Audience = audience,
+                ChannelType = channelType,
+                RequestedDeliveryTarget = requestedDeliveryTarget,
+                InteractiveApproval = new InteractiveApprovalCapability.Unavailable(),
+            });
+
+    internal static ToolExecutionContext CreateBoundWithStorage(
         string sessionId,
         SessionStoragePaths storage,
         TestToolExecutionContextOptions options)
@@ -90,28 +117,35 @@ internal static class TestToolExecutionContext
     }
 }
 
+/// <summary>
+/// Specifies the authority, routing, and run state for a test tool invocation.
+/// </summary>
 internal sealed record TestToolExecutionContextOptions
 {
-    public required TrustAudience Audience { get; init; }
-    public InlineOutputBudget InlineOutputBudget { get; init; } = InlineOutputBudget.Default;
-    public TrustBoundary? Boundary { get; init; }
-    public string? ChannelType { get; init; }
-    public ChannelDeliveryTargetInfo? DefaultDeliveryTarget { get; init; }
-    public ChannelDeliveryTargetInfo? RequestedDeliveryTarget { get; init; }
-    public InteractiveApprovalCapability InteractiveApproval { get; init; }
+    internal required TrustAudience Audience { get; init; }
+    internal InlineOutputBudget InlineOutputBudget { get; init; } = InlineOutputBudget.Default;
+    internal TrustBoundary? Boundary { get; init; }
+    internal string? ChannelType { get; init; }
+    internal ChannelDeliveryTargetInfo? DefaultDeliveryTarget { get; init; }
+    internal ChannelDeliveryTargetInfo? RequestedDeliveryTarget { get; init; }
+    internal InteractiveApprovalCapability InteractiveApproval { get; init; }
         = new InteractiveApprovalCapability.Available(new TestParentApprovalBridge());
-    public ModelModality ModelInputModalities { get; init; } = ModelModality.Text;
-    public Func<object, string, CancellationToken, Task<object>>? SpawnChildActor { get; init; }
-    public string? ProjectDirectory { get; init; }
-    public string? InheritedCwd { get; init; }
-    public IReadOnlyList<string> RecentFiles { get; init; } = [];
-    public ToolExecutionTimeout ExecutionTimeout { get; init; } = ToolExecutionTimeout.Default;
-    public string? Cwd { get; init; }
-    public Action<SubAgentNotificationInfo>? SubAgentActivitySink { get; init; }
+    internal ModelModality ModelInputModalities { get; init; } = ModelModality.Text;
+    internal Func<object, string, CancellationToken, Task<object>>? SpawnChildActor { get; init; }
+    internal string? ProjectDirectory { get; init; }
+    internal string? InheritedCwd { get; init; }
+    internal IReadOnlyList<string> RecentFiles { get; init; } = [];
+    internal ToolExecutionTimeout ExecutionTimeout { get; init; } = ToolExecutionTimeout.Default;
+    internal string? Cwd { get; init; }
+    internal Action<SubAgentNotificationInfo>? SubAgentActivitySink { get; init; }
 }
 
+/// <summary>
+/// Fails tests that unexpectedly request approval through the parent bridge.
+/// </summary>
 internal sealed class TestParentApprovalBridge : IParentApprovalBridge
 {
+    /// <inheritdoc />
     public Task<ParentApprovalDecision> RequestApprovalAsync(
         ToolCallId callId,
         string toolName,
