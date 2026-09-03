@@ -50,8 +50,8 @@ use separate directory trees.
 
 **BREAKING:** New parent and child logs no longer use standalone directories in
 the session-logs base. They are grouped inside the session storage envelope.
-Operator runbooks that derive log paths must use the supported inspection
-command.
+Operator runbooks that derive log paths must use the resolved paths that
+Netclaw returns in session context and child results.
 
 This change is in scope for Personal and Team sessions on POSIX and Windows.
 It includes deterministic runtime tests and PII-free model evals. Automated

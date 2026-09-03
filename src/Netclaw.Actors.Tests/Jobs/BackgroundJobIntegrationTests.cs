@@ -63,6 +63,7 @@ public class BackgroundJobIntegrationTests : TestKit
     {
         Command = command,
         ManagedTemporaryDirectory = Path.Combine(Path.GetTempPath(), "netclaw-tests", "managed-temp"),
+        ManagedTemporaryRoot = Path.Combine(Path.GetTempPath(), "netclaw-tests"),
         WorkingDirectory = workingDirectory,
         SessionId = new SessionId("C0123ABC/1712000000.000001"),
         Rationale = "integration test",

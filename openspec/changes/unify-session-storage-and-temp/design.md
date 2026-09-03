@@ -103,6 +103,7 @@ that envelope, not the envelope itself.
 
 ```text
 <sessions-base>/<session-id>/             session storage envelope
+├── attachment-staging/                   untrusted inbound bytes before admission
 ├── workspace/                            session_dir; default no-project cwd
 │   ├── inbox/
 │   ├── media/
@@ -120,6 +121,11 @@ that envelope, not the envelope itself.
         └── logs/
             └── session.log               raw child log
 ```
+
+The attachment staging directory is inside the envelope but outside
+`workspace/`. Its location does not make its contents trusted. The existing
+attachment pipeline scans each staged file before it moves an accepted file
+to `workspace/inbox/`. A rejected file never becomes agent-visible media.
 
 The existing `[session]` context block keeps `session_dir`. It adds
 `artifact_dir`, `temp_dir`, `worktree_dir`, and the current run's `log_path`
@@ -213,9 +219,11 @@ valid:   each binding records a distinct collision-resistant root
 ```
 
 The bound absolute envelope is durable data. A later environment override or
-binary upgrade cannot recalculate it. Existing sessions without a binding keep
-the current session-directory and session-log resolvers unchanged. The design
-does not create a synthetic legacy descriptor or move their files.
+binary upgrade cannot recalculate it. Existing sessions without a binding use
+the current legacy session-directory and session-log resolvers. The design
+does not create a synthetic legacy descriptor or move their files. If an
+operator changes a legacy root, files below the old root remain there and can
+fall outside current discovery.
 
 The get-or-bind operation must be atomic because channel ingress can write
 media before the session actor processes its first message. The first consumer
@@ -581,20 +589,10 @@ file_read("<netclaw-home>/config/secrets.json")
   -> protected-path denial
 ```
 
-This contract depends on a clear storage invariant: `netclaw.json` contains no
-secret values. API keys, OAuth credentials, secret headers, webhook secret
-material, and similar credentials belong only in protected stores such as
-`secrets.json`, key storage, or dedicated credential files.
-
-The current typed configuration system already marks many secret values for
-separate persistence. The implementation must also validate legacy and manual
-files before raw agent reads become possible. Known secret-valued fields found
-in `netclaw.json` must be migrated to protected storage or produce a blocking
-operator error. They must never be silently returned. Examples include
-provider credentials, MCP environment variables or secret headers,
-notification webhook URLs or secret headers, and skill-feed API keys. Typed
-configuration and provider metadata must define this classification; a
-field-name or value-pattern heuristic is not a safe secret boundary.
+`netclaw.json` has no secret-bearing fields. API keys, OAuth credentials,
+secret headers, webhook secret material, and similar credentials use separate
+protected stores. This change relies on that existing configuration contract.
+It does not add migration, redaction, or secret-field classification.
 
 **Example:** An authorized agent reads `Workspaces.Directory` from
 `netclaw.json` to understand why one path is selected.
@@ -627,7 +625,7 @@ integration tests will prove:
 - process-local environment isolation;
 - recovery of background-job JSON without managed-temp metadata;
 - correction precedence and retry behavior;
-- readable secret-free `netclaw.json` with protected stores still denied;
+- readable ordinary `netclaw.json` with protected stores still denied;
 - link and reparse-point checks that include the trusted root itself;
 - existing-session resume and new-session recovery.
 
@@ -696,7 +694,7 @@ That pass does not prove environment injection, access control, or recovery.
 - **A session binding cannot be persisted.** -> Fail the filesystem action
   before a consumer writes to an unbound location.
 - **An old session has separate session and log trees.** -> Leave its storage
-  binding absent and keep the existing resolvers unchanged.
+  binding absent and use the current legacy resolvers. Do not move its files.
 - **A rollback cannot understand the new binding.** -> Keep pre-feature binary
   support for new-layout sessions out of scope. Existing sessions remain
   compatible because their paths do not move.
@@ -720,8 +718,8 @@ That pass does not prove environment injection, access control, or recovery.
   facts prove the destination. Keep all other calls approval-gated.
 - **The worktree contains uncommitted changes when a session ends.** -> Do not
   delete it in this change. Let Git and the operator retain the state.
-- **`netclaw.json` contains a manually inserted secret.** -> Migrate known
-  secret-valued fields to protected storage or fail closed before agent reads.
+- **An operator puts a secret in an ordinary field.** -> Treat this as an
+  operator configuration error. This change does not add content inspection.
 - **A broad shell indicator blocks ordinary configuration reads.** -> Keep
   structured file-read denies independent from shell indicators.
 - **The session envelope grows without bounds.** -> Keep deletion out of this
@@ -733,8 +731,8 @@ That pass does not prove environment injection, access control, or recovery.
 
 1. Add the optional versioned storage binding before any writer uses the new
    layout.
-2. Keep the binding absent for existing sessions and leave their current
-   session and log resolvers unchanged. Do not move or copy their data.
+2. Keep the binding absent for existing sessions and use the current legacy
+   session and log resolvers. Do not move or copy their data.
 3. Route only newly bound sessions into one physical envelope.
 4. Add the managed environment and corrections after path recovery passes.
 5. Add current-session and inherited trusted roots plus exact child paths after
@@ -742,14 +740,15 @@ That pass does not prove environment injection, access control, or recovery.
 6. Expose `worktree_dir`; remove the custom worktree tool; validate the composed
    Git and project-scope workflow.
 7. Separate exact structured-read policy from broad shell indicators and allow
-   validated secret-free `netclaw.json` reads.
+   ordinary `netclaw.json` reads.
 8. Update runbooks and eval assertions before the release.
 9. Upgrade one existing session and restart one newly bound session.
 
-Existing-session compatibility is intentionally narrow: a current binary keeps
-each unbound existing session on its established directories. A pre-feature
-binary resuming a newly bound session is out of scope. No upgrade path moves or
-deletes session files.
+Existing-session compatibility is intentionally narrow. A current binary does
+not migrate files for an unbound session. A root configuration change can
+leave those files outside current discovery. A pre-feature binary that resumes
+a newly bound session is out of scope. No upgrade path moves or deletes session
+files.
 
 ## Open Questions
 

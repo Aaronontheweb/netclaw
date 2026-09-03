@@ -63,7 +63,6 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             pathPolicy,
             commandPolicy,
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(baseConfig, commandPolicy, pathPolicy));
         _executor = new DispatchingToolExecutor(
             registry,
@@ -95,7 +94,6 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             restrictedPathPolicy,
             restrictedCommandPolicy,
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(
                 restrictedConfig,
                 restrictedCommandPolicy,
@@ -484,7 +482,6 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             pathPolicy,
             commandPolicy,
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
 
         var executor = new DispatchingToolExecutor(
@@ -529,7 +526,6 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             pathPolicy,
             commandPolicy,
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
 
         var executor = new DispatchingToolExecutor(
@@ -680,7 +676,6 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config));
         var approvedMatch = new ToolApprovalMatch("git status", "session", "this chat");
         var approvalService = new FixedApprovalService(
@@ -738,7 +733,6 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config));
         var approvedMatch = new ToolApprovalMatch("git status", "session", "this chat");
         var approvedCandidate = BashCandidate("git status");
@@ -809,7 +803,6 @@ public class DispatchingToolExecutorTests
                 new NetclawPaths(),
                 pathPolicy,
                 commandPolicy,
-                TimeProvider.System,
                 toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
             var approvalService = new FixedShellApprovalService(request =>
             {
@@ -2238,7 +2231,6 @@ public class DispatchingToolExecutorTests
                 new NetclawPaths(),
                 new ToolPathPolicy([]),
                 new ShellCommandPolicy(),
-                TimeProvider.System,
                 toolAccessPolicy: TestToolAccessPolicy.Create(config));
             var approvedScope = ApprovalEntry.CreateTokenPrefix(
                 ApprovalShell.Bash,
@@ -2313,7 +2305,6 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config));
         var approvalService = new FixedApprovalService(
             new ToolApprovalCheckResult(
@@ -2371,7 +2362,6 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config));
         var forgedCandidate = new ApprovalCandidate("git status", Directory: null)
         {
@@ -2433,7 +2423,6 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config));
         var approvalService = new FixedApprovalService(
             new ToolApprovalCheckResult(
@@ -2688,7 +2677,7 @@ public class DispatchingToolExecutorTests
         var registry = new ToolRegistry();
         var paths = new NetclawPaths(Path.Combine(Path.GetTempPath(), $"netclaw-{audience}-tools-{Guid.NewGuid():N}"));
         paths.EnsureDirectoriesExist();
-        registry.WithFirstPartyTools(config, paths: paths, pathPolicy: new ToolPathPolicy([]), shellCommandPolicy: new ShellCommandPolicy(), timeProvider: TimeProvider.System, toolAccessPolicy: policy, webhookRouteStore: new WebhookRouteStore(paths));
+        registry.WithFirstPartyTools(config, paths: paths, pathPolicy: new ToolPathPolicy([]), shellCommandPolicy: new ShellCommandPolicy(), toolAccessPolicy: policy, webhookRouteStore: new WebhookRouteStore(paths));
         // set_webhook and delete_webhook ask WebhookRouteActor. This test reads
         // exposure metadata only and never executes them, so an unresolvable
         // actor reference is enough to put them in the registry.
@@ -2902,7 +2891,6 @@ public class DispatchingToolExecutorTests
                 new NetclawPaths(),
                 new ToolPathPolicy([]),
                 new ShellCommandPolicy(),
-                TimeProvider.System,
                 toolAccessPolicy: TestToolAccessPolicy.Create(config));
 
             var executor = new DispatchingToolExecutor(
@@ -3051,7 +3039,6 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config));
 
         var tempFile = Path.GetTempFileName();
@@ -3136,7 +3123,6 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config));
 
         var system = ActorSystem.Create($"tool-approval-session-{Guid.NewGuid():N}");
@@ -3981,7 +3967,6 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             pathPolicy,
             commandPolicy,
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
         var policy = new ToolAccessPolicy(
             config,
@@ -4165,7 +4150,6 @@ public class DispatchingToolExecutorTests
             new NetclawPaths(),
             pathPolicy,
             commandPolicy,
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
         var analysis = new ShellCommandAnalyzer(environment).Analyze("file_read", "/workspace");
         var context = TestToolExecutionContext.CreateBound(

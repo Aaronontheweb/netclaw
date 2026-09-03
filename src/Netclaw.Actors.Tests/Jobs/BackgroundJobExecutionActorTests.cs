@@ -44,7 +44,8 @@ public class BackgroundJobExecutionActorTests : TestKit
     {
         Id = new BackgroundJobId(Guid.NewGuid().ToString("N")[..12]),
         Command = command,
-        ManagedTemporaryDirectory = Path.Combine(Path.GetTempPath(), "netclaw-tests", "managed-temp"),
+        ManagedTemporaryDirectory = Path.Combine(_dir.Path, "managed-temp"),
+        ManagedTemporaryRoot = _dir.Path,
         SessionId = new Netclaw.Actors.Protocol.SessionId("test/thread"),
         Rationale = "test",
         Status = BackgroundJobStatus.Running,

@@ -44,12 +44,21 @@ current configuration.
 - **THEN** the operation fails before it writes session-owned data
 - **AND** the system does not derive a fallback root from current configuration
 
-#### Scenario: Example - ingress binds before it writes media
+#### Scenario: Example - ingress binds before it stages an attachment
 
 - **GIVEN** the first message for a new session contains an attachment
-- **WHEN** channel ingress prepares the media file before actor processing
+- **WHEN** channel ingress downloads the attachment before actor processing
 - **THEN** it resolves and persists the storage binding first
-- **AND** it writes the file below `<session-envelope>/workspace/media`
+- **AND** it stages the untrusted bytes below
+  `<session-envelope>/attachment-staging`
+- **AND** it moves an accepted file below `<session-envelope>/workspace/inbox`
+
+#### Scenario: Counterexample - storage location does not bypass admission
+
+- **GIVEN** an attachment exists below the session envelope staging directory
+- **WHEN** its content scan rejects the attachment
+- **THEN** the pipeline does not move it into `workspace/inbox`
+- **AND** the session does not create agent-visible media from it
 
 #### Scenario: Example - concurrent first messages share one binding
 
@@ -77,9 +86,10 @@ current configuration.
 ### Requirement: Existing sessions resume without migration
 
 The system SHALL leave the storage binding absent for a session that predates
-the new layout. It SHALL continue to use the existing session-directory and
+the new layout. It SHALL use the current legacy session-directory and
 session-log path resolvers for that session. An upgrade SHALL NOT move, copy,
-rename, or delete its data.
+rename, or delete its data. If an operator changes a legacy root, the system
+SHALL NOT claim that it relocates or rediscovers files below the old root.
 
 #### Scenario: Example - legacy session resumes after upgrade
 
@@ -95,6 +105,13 @@ rename, or delete its data.
 - **WHEN** a current binary resumes it without storage reconfiguration
 - **THEN** both existing path resolvers remain in use
 - **AND** the system does not route new logs into a new-layout envelope
+
+#### Scenario: Counterexample - legacy root change does not migrate files
+
+- **GIVEN** an unbound session has files below a configured legacy root
+- **WHEN** the operator changes that root
+- **THEN** the old files remain in their original location
+- **AND** this capability does not promise discovery below the old root
 
 #### Scenario: Counterexample - old binary support for new sessions is out of scope
 
@@ -116,8 +133,8 @@ rename, or delete its data.
 ### Requirement: Version 2 uses one physical session envelope
 
 For a session with a version-2 binding, the system SHALL place the parent
-session directory, artifacts, temporary files, worktrees, raw log, and all
-child-run directories below the persisted session storage envelope. Each child
+session directory, attachment staging, artifacts, temporary files, worktrees,
+raw log, and all child-run directories below the persisted session storage envelope. Each child
 run SHALL place its artifacts, temporary files, and raw log below
 `<session-envelope>/subagents/<run-id>`. Daemon-global logs SHALL remain outside
 the session envelope.

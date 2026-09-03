@@ -113,9 +113,12 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
             return "Error: Command references a protected file path. Access denied by security policy.";
 
         var psi = _environment.CreateProcessStartInfo(args.Command);
-        var temporaryDirectory = context.SessionStorage?.TemporaryDirectory
+        var storage = context.SessionStorage
             ?? throw new InvalidOperationException("Shell execution requires resolved session storage.");
-        var temporaryDirectoryError = ManagedTemporaryEnvironment.Prepare(psi, temporaryDirectory);
+        var temporaryDirectoryError = ManagedTemporaryEnvironment.Prepare(
+            psi,
+            storage.TemporaryDirectory,
+            storage.TemporaryDirectoryRoot);
         if (temporaryDirectoryError is not null)
             return temporaryDirectoryError;
 
@@ -343,9 +346,12 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
             }
 
             var psi = _environment.CreateProcessStartInfo(args.Command);
-            var temporaryDirectory = context.SessionStorage?.TemporaryDirectory
+            var storage = context.SessionStorage
                 ?? throw new InvalidOperationException("Shell execution requires resolved session storage.");
-            var temporaryDirectoryError = ManagedTemporaryEnvironment.Prepare(psi, temporaryDirectory);
+            var temporaryDirectoryError = ManagedTemporaryEnvironment.Prepare(
+                psi,
+                storage.TemporaryDirectory,
+                storage.TemporaryDirectoryRoot);
             if (temporaryDirectoryError is not null)
             {
                 output.TryWrite(new ToolCompletedUpdate(temporaryDirectoryError));

@@ -14,6 +14,9 @@ default shell cwd, or an unconditional shell grant.
 Existing sessions have no binding.
 They keep their established workspace and log paths.
 Netclaw does not move, copy, or rename their files.
+The current binary resolves those paths with the current legacy rules.
+If an operator changes a legacy storage root, Netclaw does not move or
+rediscover the files that remain below the old root.
 
 Example: A configuration change does not change an existing version-2 binding.
 
@@ -60,7 +63,7 @@ An authorized `file_read` can inspect the exact `config/netclaw.json` path.
 That file contains ordinary persisted configuration, not the effective value
 of environment overrides.
 
-Secret values belong in protected stores. `secrets.json`, key and OAuth
+Secret configuration belongs in protected stores. `secrets.json`, key and OAuth
 material, webhook secrets, database state, and process-control files remain
 read-denied. Reading `netclaw.json` does not grant write, attach, or shell
 authority.

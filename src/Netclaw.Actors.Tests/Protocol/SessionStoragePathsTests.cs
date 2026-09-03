@@ -17,10 +17,13 @@ public sealed class SessionStoragePathsTests
 
         Assert.Equal(SessionStorageLayoutVersion.Version2, storage.Binding?.LayoutVersion);
         Assert.Equal(Path.Combine(envelope, "workspace"), storage.SessionDirectory);
+        Assert.Equal(Path.Combine(envelope, "attachment-staging"), storage.AttachmentStagingDirectory);
         Assert.Equal(Path.Combine(envelope, "artifacts"), storage.ArtifactDirectory);
         Assert.Equal(Path.Combine(envelope, "tmp", "parent"), storage.TemporaryDirectory);
+        Assert.Equal(envelope, storage.TemporaryDirectoryRoot);
         Assert.Equal(Path.Combine(envelope, "worktrees"), storage.WorktreeDirectory);
         Assert.Equal(Path.Combine(envelope, "logs", "session.log"), storage.LogPath);
+        Assert.Equal([envelope], storage.CurrentSessionRoots);
     }
 
     [Fact]
@@ -37,8 +40,10 @@ public sealed class SessionStoragePathsTests
         Assert.Equal(parent.SessionDirectory, child.SessionDirectory);
         Assert.Equal(Path.Combine(childRoot, "artifacts"), child.ArtifactDirectory);
         Assert.Equal(Path.Combine(childRoot, "tmp"), child.TemporaryDirectory);
+        Assert.Equal(envelope, child.TemporaryDirectoryRoot);
         Assert.Equal(Path.Combine(childRoot, "logs", "session.log"), child.LogPath);
         Assert.Equal(parent.WorktreeDirectory, child.WorktreeDirectory);
+        Assert.Equal(parent.CurrentSessionRoots, child.CurrentSessionRoots);
     }
 
     [Fact]
@@ -73,6 +78,8 @@ public sealed class SessionStoragePathsTests
         Assert.Null(storage.Binding);
         Assert.Equal(sessionDirectory, storage.SessionDirectory);
         Assert.Equal(Path.Combine(logBase, "signalr_example", "session.log"), storage.LogPath);
+        Assert.Equal(sessionDirectory, storage.TemporaryDirectoryRoot);
+        Assert.Equal([sessionDirectory, logBase], storage.CurrentSessionRoots);
 
         var child = storage.ForChild(
             new SubAgentRunId("run-7"),

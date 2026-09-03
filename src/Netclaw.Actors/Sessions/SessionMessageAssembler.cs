@@ -193,6 +193,7 @@ public static class SessionMessageAssembler
                                $"\nsession_dir: {sessionDir}" +
                                $"\ntemp_dir: {input.Storage.TemporaryDirectory}" +
                                $"\nartifact_dir: {input.Storage.ArtifactDirectory}" +
+                               $"\nworktree_dir: {input.Storage.WorktreeDirectory}" +
                                $"\nlog_path: {input.Storage.LogPath}" +
                                $"\n{ToolChoiceGuidance.StructuredWorkspaceSelection}" +
                                $"\n{ToolChoiceGuidance.DirectorySelectionOrder}" +

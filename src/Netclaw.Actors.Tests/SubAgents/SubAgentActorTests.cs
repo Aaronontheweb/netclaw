@@ -634,7 +634,9 @@ public class SubAgentActorTests : TestKit
         Assert.False(result.Success);
         Assert.False(fakeTool.WasCalled);
         Assert.Contains("approval bridge", result.Output, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains($"session_dir: {sessionDirectory}", fakeClient.LastReceivedMessages![1].Text);
+        var context = fakeClient.LastReceivedMessages![1].Text;
+        Assert.Contains($"session_dir: {sessionDirectory}", context);
+        Assert.Contains($"worktree_dir: {Path.Combine(sessionDirectory, "worktrees")}", context);
     }
 
     [Fact]
@@ -1981,6 +1983,9 @@ public class SubAgentActorTests : TestKit
         var userMessage = fakeClient.LastReceivedMessages![1].Text;
         Assert.Contains("[session]", userMessage);
         Assert.Contains($"session_dir: {sessionDirectory}", userMessage);
+        Assert.Contains($"temp_dir: {Path.Combine(sessionDirectory, "subagents", "run", "tmp")}", userMessage);
+        Assert.Contains($"artifact_dir: {Path.Combine(sessionDirectory, "subagents", "run", "artifacts")}", userMessage);
+        Assert.Contains($"worktree_dir: {Path.Combine(sessionDirectory, "worktrees")}", userMessage);
         Assert.Contains(ToolChoiceGuidance.StructuredWorkspaceSelection, userMessage, StringComparison.Ordinal);
         Assert.Contains(ToolChoiceGuidance.DirectorySelectionOrder, userMessage, StringComparison.Ordinal);
         Assert.Contains(ToolChoiceGuidance.ShellCompositionOrder, userMessage, StringComparison.Ordinal);

@@ -193,7 +193,6 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
             new NetclawPaths(),
             pathPolicy,
             commandPolicy,
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
 
         var policy = new ToolAccessPolicy(

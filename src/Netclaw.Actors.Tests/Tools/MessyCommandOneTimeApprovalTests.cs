@@ -74,7 +74,6 @@ public sealed class MessyCommandOneTimeApprovalTests : TestKit
             new NetclawPaths(),
             new Netclaw.Security.ToolPathPolicy([]),
             new Netclaw.Security.ShellCommandPolicy(),
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(toolConfig));
         services.AddSingleton(registry);
     }

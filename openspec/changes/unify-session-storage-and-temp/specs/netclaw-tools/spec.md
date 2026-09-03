@@ -187,8 +187,8 @@ grammar to infer authority. Automatic cleanup remains out of scope.
 
 ### Requirement: Ordinary configuration is readable without exposing secrets
 
-`netclaw.json` SHALL contain ordinary configuration and SHALL NOT contain
-secret values. When a structured file read is otherwise authorized by trusted
+`netclaw.json` SHALL contain ordinary configuration. Its schema has no
+secret-bearing fields. When a structured file read is otherwise authorized by trusted
 roots and audience policy, `file_read` SHALL be able to read the exact
 `netclaw.json` path. The implementation SHALL keep structured read-deny rules
 independent from broader shell-deny indicators.
@@ -199,12 +199,9 @@ secret material, the session database and sidecars, process-control files, and
 similar protected state SHALL remain read-denied. A readable configuration
 file SHALL NOT imply write, edit, attach, or shell authority.
 
-The implementation SHALL detect a legacy or manually edited `netclaw.json`
-that contains a known secret-valued field before it makes the file readable to
-an agent. It SHALL migrate the value to the protected secret store or fail
-closed with an operator-facing validation error. It SHALL NOT silently expose
-the raw file. Secret classification SHALL come from typed configuration or
-provider metadata, not from guessing by field name or value format.
+This change SHALL NOT add content redaction, secret-field heuristics, or a
+configuration migration path. Existing configuration validation and separate
+secret storage remain authoritative.
 
 #### Scenario: Example - agent reads ordinary stored configuration
 
@@ -230,16 +227,6 @@ provider metadata, not from guessing by field name or value format.
   command for that path
 - **THEN** the read decision is not reused
 - **AND** the operation follows its independent policy
-
-#### Scenario: Counterexample - inline legacy secret fails closed
-
-- **GIVEN** a manually edited `netclaw.json` contains a known secret-valued
-  provider credential, MCP environment value or header, notification webhook
-  URL or header, or skill-feed API key
-- **WHEN** the daemon validates agent-readable configuration
-- **THEN** it migrates the value to protected storage or reports a blocking
-  operator error
-- **AND** `file_read` does not return the unprotected secret value
 
 #### Scenario: Counterexample - stored configuration is not effective configuration
 

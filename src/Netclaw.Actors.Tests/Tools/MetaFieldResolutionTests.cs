@@ -70,7 +70,6 @@ public class MetaFieldResolutionTests
             new NetclawPaths(),
             pathPolicy,
             commandPolicy,
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
 
         var collisions = new List<string>();

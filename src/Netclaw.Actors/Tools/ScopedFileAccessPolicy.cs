@@ -201,58 +201,6 @@ internal sealed class ScopedFileAccessPolicy
         var access = GetAccessProfile(profile, accessKind);
         var audience = context.Audience;
 
-        if (context.SessionStorage?.LogReadScope.IsSessionLogPath(
-                fullPath,
-                out var belongsToCurrentSession) == true
-            && (!belongsToCurrentSession || accessKind != AccessKind.Read))
-        {
-            error = belongsToCurrentSession
-                ? "Error: The current session log scope permits read access only."
-                : "Error: Another session log is outside the current session scope.";
-            failure = PathResolutionFailure.AccessDenied;
-            return false;
-        }
-
-        if (accessKind == AccessKind.Read
-            && access.Mode != ToolFilesystemMode.None
-            && context.SessionStorage?.LogReadScope.TryGetReadRoot(fullPath, out var logRoot) == true)
-        {
-            if (PathUtility.ContainsSymlinkSegment(logRoot, fullPath))
-            {
-                error = "Error: The current session log path contains an unsafe filesystem link.";
-                failure = PathResolutionFailure.AccessDenied;
-                return false;
-            }
-
-            error = string.Empty;
-            failure = PathResolutionFailure.None;
-            return true;
-        }
-
-        if (allowInteractivePersonalReach
-            && audience != TrustAudience.Public
-            && access.Mode != ToolFilesystemMode.None
-            && context.SessionStorage?.TryGetManagedDataRoot(fullPath, out var managedDataRoot) == true)
-        {
-            if (PathUtility.ContainsSymlinkSegment(managedDataRoot, fullPath))
-            {
-                error = "Error: The current session data path contains an unsafe filesystem link.";
-                failure = PathResolutionFailure.AccessDenied;
-                return false;
-            }
-
-            error = string.Empty;
-            failure = PathResolutionFailure.None;
-            return true;
-        }
-
-        if (context.SessionStorage?.IsRestrictedEnvelopePath(fullPath) == true)
-        {
-            error = "Error: The session storage envelope is not a general file root.";
-            failure = PathResolutionFailure.AccessDenied;
-            return false;
-        }
-
         if (access.Mode == ToolFilesystemMode.All)
         {
             // Autonomous (non-interactive) channels have no human approval backstop,
@@ -319,7 +267,7 @@ internal sealed class ScopedFileAccessPolicy
             if (!PathUtility.IsWithinRoot(fullPath, root))
                 continue;
 
-            if (PathUtility.ContainsSymlinkSegment(root, fullPath))
+            if (PathUtility.ContainsSymlinkSegment(root, fullPath, includeRoot: true))
             {
                 error = $"Error: {label} trust context may not access files through symlinked paths inside the current session directory or configured roots.";
                 failure = PathResolutionFailure.AccessDenied;
@@ -373,7 +321,9 @@ internal sealed class ScopedFileAccessPolicy
         AccessKind accessKind)
     {
         var roots = new List<string>();
-        if (!string.IsNullOrWhiteSpace(context.SessionDirectory))
+        if (context.SessionStorage is { } storage)
+            roots.AddRange(storage.CurrentSessionRoots);
+        else if (!string.IsNullOrWhiteSpace(context.SessionDirectory))
             roots.Add(context.SessionDirectory);
 
         var profile = _profileResolver.ResolveProfile(context);
@@ -397,7 +347,7 @@ internal sealed class ScopedFileAccessPolicy
             if (!PathUtility.IsWithinRoot(projectDirectory, root))
                 continue;
 
-            return PathUtility.ContainsSymlinkSegment(root, projectDirectory)
+            return PathUtility.ContainsSymlinkSegment(root, projectDirectory, includeRoot: true)
                 ? ProjectAuthorityRootResult.Unsafe
                 : ProjectAuthorityRootResult.Safe;
         }
@@ -480,6 +430,11 @@ internal sealed class ScopedFileAccessPolicy
             .Select(PathUtility.Normalize)
             .ToList();
 
+        if (context.SessionStorage is { } storage)
+            roots.AddRange(storage.CurrentSessionRoots);
+        else if (!string.IsNullOrWhiteSpace(context.SessionDirectory))
+            roots.Add(context.SessionDirectory);
+
         if (accessKind == AccessKind.Read && audience != TrustAudience.Public)
         {
             foreach (var globalRoot in _cachedGlobalReadRoots.Value)
@@ -513,7 +468,7 @@ internal sealed class ScopedFileAccessPolicy
             if (!PathUtility.IsWithinRoot(fullPath, root))
                 continue;
 
-            if (PathUtility.ContainsSymlinkSegment(root, fullPath))
+            if (PathUtility.ContainsSymlinkSegment(root, fullPath, includeRoot: true))
             {
                 error = "Error: autonomous session may not access files through symlinked paths inside its zone.";
                 return false;
@@ -545,7 +500,9 @@ internal sealed class ScopedFileAccessPolicy
     {
         var roots = new List<string>();
 
-        if (!string.IsNullOrWhiteSpace(context.SessionDirectory))
+        if (context.SessionStorage is { } storage)
+            roots.AddRange(storage.CurrentSessionRoots);
+        else if (!string.IsNullOrWhiteSpace(context.SessionDirectory))
             roots.Add(context.SessionDirectory);
 
         if (!string.IsNullOrWhiteSpace(context.ProjectDirectory))

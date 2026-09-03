@@ -3,6 +3,9 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Data.Sqlite;
 using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
@@ -19,6 +22,8 @@ public sealed class SqliteSessionStorageResolver : ISessionStorageResolver
     private readonly string _sessionsDirectory;
     private readonly string _sessionLogsDirectory;
     private readonly TimeProvider _timeProvider;
+    private readonly ConcurrentDictionary<string, SessionStoragePaths> _resolved =
+        new(StringComparer.Ordinal);
 
     public SqliteSessionStorageResolver(NetclawPaths paths, TimeProvider timeProvider)
         : this(paths, timeProvider, paths.SessionsDirectory)
@@ -48,6 +53,11 @@ public sealed class SqliteSessionStorageResolver : ISessionStorageResolver
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId.Value);
 
+        return _resolved.GetOrAdd(sessionId.Value, _ => ResolveUncached(sessionId));
+    }
+
+    private SessionStoragePaths ResolveUncached(SessionId sessionId)
+    {
         var sanitizedSessionId = SessionDirectoryHelper.SanitizeSessionId(sessionId);
         var legacySessionDirectory = SessionDirectoryHelper.GetSessionDirectory(
             sessionId,
@@ -80,7 +90,8 @@ public sealed class SqliteSessionStorageResolver : ISessionStorageResolver
                 sanitizedSessionId);
         }
 
-        var envelopeRoot = new SessionStorageEnvelopeRoot(legacySessionDirectory);
+        var envelopeRoot = new SessionStorageEnvelopeRoot(
+            Path.Combine(_sessionsDirectory, CreateEnvelopeDirectoryName(sessionId, sanitizedSessionId)));
         var newBinding = new SessionStorageBinding(SessionStorageLayoutVersion.Version2, envelopeRoot);
         InsertBinding(connection, transaction, sessionId, newBinding);
         transaction.Commit();
@@ -96,9 +107,12 @@ public sealed class SqliteSessionStorageResolver : ISessionStorageResolver
             CREATE TABLE IF NOT EXISTS session_storage_bindings (
                 session_id      TEXT NOT NULL PRIMARY KEY,
                 layout_version  INTEGER NOT NULL,
-                envelope_root   TEXT NOT NULL,
+                envelope_root   TEXT NOT NULL UNIQUE,
                 created_at      INTEGER NOT NULL
             );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS session_storage_bindings_envelope_root_idx
+                ON session_storage_bindings(envelope_root);
             """;
         command.ExecuteNonQuery();
     }
@@ -183,13 +197,13 @@ public sealed class SqliteSessionStorageResolver : ISessionStorageResolver
         SqliteTransaction transaction,
         SessionId sessionId)
     {
-        if (!TableExists(connection, transaction, "event_journal"))
+        if (!TableExists(connection, transaction, "journal"))
             return false;
 
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText =
-            "SELECT EXISTS(SELECT 1 FROM event_journal WHERE persistence_id = $persistenceId)";
+            "SELECT EXISTS(SELECT 1 FROM journal WHERE persistence_id = $persistenceId)";
         command.Parameters.AddWithValue("$persistenceId", $"session-{sessionId.Value}");
         return Convert.ToInt64(
             command.ExecuteScalar(),
@@ -254,5 +268,16 @@ public sealed class SqliteSessionStorageResolver : ISessionStorageResolver
             "$createdAt",
             _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
         command.ExecuteNonQuery();
+    }
+
+    private static string CreateEnvelopeDirectoryName(SessionId sessionId, string sanitizedSessionId)
+    {
+        const int displayPrefixLength = 80;
+        var displayPrefix = sanitizedSessionId.Length <= displayPrefixLength
+            ? sanitizedSessionId
+            : sanitizedSessionId[..displayPrefixLength];
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes(sessionId.Value));
+        var suffix = Convert.ToHexStringLower(digest.AsSpan(0, 8));
+        return $"{displayPrefix}-{suffix}";
     }
 }

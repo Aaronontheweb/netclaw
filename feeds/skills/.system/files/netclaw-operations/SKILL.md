@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.66.0"
+  version: "2.67.0"
 ---
 
 # Netclaw Operations
@@ -97,24 +97,22 @@ A denied child-directory call does not permit a project change.
 
 ## Managed Session Storage
 
-The `[session]` block separates four paths:
+The `[session]` block separates five paths:
 
 - `session_dir` is the workspace and the relative-path fallback.
 - `temp_dir` is run-local storage for disposable files.
 - `artifact_dir` is the run-owned output area.
+- `worktree_dir` is the session area for Git worktrees.
 - `log_path` is the exact raw audit log for the current run.
 
-Do not treat the complete session envelope as a file root.
 Use the existing file tools to read an exact parent or child log path.
 Do not use shell to find session logs.
-The log scope is read-only and does not grant file mutation or shell authority.
+Normal audience and operation policy applies to every session path.
 Netclaw does not automatically remove managed temporary files or worktrees.
 
-Use `worktree_create` when the task needs a Git worktree.
-Supply a branch and an authorized source repository when no project is active.
-Do not select a destination path.
-Netclaw selects a collision-safe path in the session worktree area.
-The successful result changes the current project to the new worktree.
+Use `shell_execute` to run Git with a destination below `worktree_dir`.
+After Git succeeds, use `set_working_directory` to adopt the created path.
+A failed Git command does not change project scope.
 
 For Team and Personal sessions, `[working-context]` is refreshed at the start
 of each new turn. In a Git project it includes the active worktree, branch,

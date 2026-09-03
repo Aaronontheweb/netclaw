@@ -106,7 +106,7 @@ internal sealed class ScopedShellSafeVerbPolicy
             }
 
             if (!PathUtility.IsWithinRoot(fullDirectory, fullCwd)
-                || PathUtility.ContainsSymlinkSegment(fullCwd, fullDirectory))
+                || PathUtility.ContainsSymlinkSegment(fullCwd, fullDirectory, includeRoot: true))
             {
                 return false;
             }
@@ -364,7 +364,7 @@ internal sealed class ScopedShellSafeVerbPolicy
         try
         {
             return PathUtility.IsWithinRoot(path, root)
-                   && !PathUtility.ContainsSymlinkSegment(root, path);
+                   && !PathUtility.ContainsSymlinkSegment(root, path, includeRoot: true);
         }
         catch (Exception ex) when (ex is ArgumentException
                                       or IOException
@@ -392,7 +392,8 @@ internal sealed class ScopedShellSafeVerbPolicy
                    && (!ShellPathRules.UsesHostPathStyle(pathStyle)
                        || !PathUtility.ContainsSymlinkSegment(
                            normalizedRoot,
-                           normalizedPath));
+                           normalizedPath,
+                           includeRoot: true));
         }
         catch (Exception ex) when (ex is ArgumentException
                                       or IOException
@@ -406,8 +407,8 @@ internal sealed class ScopedShellSafeVerbPolicy
 
     /// <summary>
     /// Resolves the audience-aware safe-space roots for the current
-    /// invocation. Personal and Team get <c>session_dir + project_dir</c>;
-    /// Public gets <c>session_dir</c> only.
+    /// invocation. Personal and Team get current-session roots plus
+    /// <c>project_dir</c>. Public gets current-session roots only.
     /// </summary>
     private static IReadOnlyList<string> ResolveSafeSpaceRoots(ToolInvocationContext context)
         => ResolveSafeSpaceRoots(context, static path => PathUtility.Normalize(path));
@@ -420,9 +421,11 @@ internal sealed class ScopedShellSafeVerbPolicy
         ToolInvocationContext context,
         Func<string, string> mapPath)
     {
-        var roots = new List<string>(2);
+        var roots = new List<string>();
 
-        if (!string.IsNullOrWhiteSpace(context.SessionDirectory))
+        if (context.SessionStorage is { } storage)
+            roots.AddRange(storage.CurrentSessionRoots.Select(mapPath));
+        else if (!string.IsNullOrWhiteSpace(context.SessionDirectory))
             roots.Add(mapPath(context.SessionDirectory));
 
         // Public audience cannot expand its safe space via project_dir —

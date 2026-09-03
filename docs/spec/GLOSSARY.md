@@ -409,6 +409,7 @@ unconditional shell grant.
 
 ```text
 <session-envelope>/
+├── attachment-staging/        # untrusted inbound bytes before admission
 ├── workspace/                 # default no-project working directory
 ├── artifacts/                 # retained parent outputs
 ├── tmp/parent/                # disposable parent files
@@ -419,6 +420,16 @@ unconditional shell grant.
     ├── tmp/
     └── logs/session.log       # raw child log
 ```
+
+### Attachment staging directory
+
+An attachment staging directory holds inbound bytes before the attachment
+pipeline accepts them. A version-2 session stores this directory below its
+session storage envelope and outside `workspace/`.
+
+The storage location does not mark the content as trusted. The attachment
+pipeline scans each file before it moves an accepted file to
+`workspace/inbox/`. A rejected file does not become agent-visible media.
 
 ### Session storage binding
 
@@ -507,7 +518,7 @@ Ordinary configuration is the non-secret persisted configuration in
 audience policy, and operation permissions allow it. Read authority does not
 grant write, attach, or shell authority.
 
-Secret-valued configuration belongs in protected stores such as
+Secret configuration belongs in protected stores such as
 `secrets.json`, key storage, OAuth credential files, or webhook secret files.
 Those stores and control-plane state remain read-denied.
 

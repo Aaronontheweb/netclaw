@@ -4,25 +4,47 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Diagnostics;
+using Netclaw.Security;
 
 namespace Netclaw.Actors.Tools;
 
 internal static class ManagedTemporaryEnvironment
 {
-    internal static string? Prepare(ProcessStartInfo startInfo, string temporaryDirectory)
+    internal static string? Prepare(
+        ProcessStartInfo startInfo,
+        string temporaryDirectory,
+        string authorityRoot)
     {
         ArgumentNullException.ThrowIfNull(startInfo);
         ArgumentException.ThrowIfNullOrWhiteSpace(temporaryDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(authorityRoot);
 
         try
         {
-            Directory.CreateDirectory(temporaryDirectory);
-            if (!Directory.Exists(temporaryDirectory))
-                return $"Error: Managed temporary directory '{temporaryDirectory}' was not created.";
+            var normalizedRoot = PathUtility.Normalize(authorityRoot);
+            var normalizedTemporaryDirectory = PathUtility.Normalize(temporaryDirectory);
+            if (!PathUtility.IsWithinRoot(normalizedTemporaryDirectory, normalizedRoot))
+                return "Error: The managed temporary directory is outside its session root.";
 
-            startInfo.Environment["TMPDIR"] = temporaryDirectory;
-            startInfo.Environment["TMP"] = temporaryDirectory;
-            startInfo.Environment["TEMP"] = temporaryDirectory;
+            if (PathUtility.ContainsSymlinkSegment(
+                    normalizedRoot,
+                    normalizedTemporaryDirectory,
+                    includeRoot: true))
+                return "Error: The managed temporary directory contains an unsafe filesystem link.";
+
+            Directory.CreateDirectory(normalizedTemporaryDirectory);
+            if (!Directory.Exists(normalizedTemporaryDirectory))
+                return $"Error: Managed temporary directory '{normalizedTemporaryDirectory}' was not created.";
+
+            if (PathUtility.ContainsSymlinkSegment(
+                    normalizedRoot,
+                    normalizedTemporaryDirectory,
+                    includeRoot: true))
+                return "Error: The managed temporary directory contains an unsafe filesystem link.";
+
+            startInfo.Environment["TMPDIR"] = normalizedTemporaryDirectory;
+            startInfo.Environment["TMP"] = normalizedTemporaryDirectory;
+            startInfo.Environment["TEMP"] = normalizedTemporaryDirectory;
             return null;
         }
         catch (Exception ex) when (ex is ArgumentException

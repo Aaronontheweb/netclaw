@@ -19,11 +19,7 @@ namespace Netclaw.Actors.Sessions;
 /// audit messages (<see cref="SendUserMessage"/>, <see cref="SessionOutput"/>)
 /// and pre-formatted diagnostic lines (<see cref="SessionLogDiagnostic"/>)
 /// from the MEL logger provider, and is the sole writer to the file path
-/// computed by <see cref="SessionLogFile"/>.
-///
-/// Log files live at <c>{sessionLogsBase}/{sanitized_id}/session.log</c> — a
-/// tree deliberately separate from the agent-visible session working
-/// directory so the LLM cannot read its own audit trail via the file_read tool.
+/// computed from the resolved session storage paths.
 ///
 /// File handle lifecycle:
 /// - Open once in <see cref="PreStart"/> with append mode + read-share.

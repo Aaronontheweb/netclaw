@@ -67,6 +67,9 @@ Choose directories in this order:
 3. Use `temp_dir` for disposable files. Standard temporary APIs already use this directory.
 4. Use an inline directory change only when the task requests that behavior.
 
+For a Git worktree, choose a destination below `worktree_dir`. Use
+`shell_execute` to run Git. Use `set_working_directory` only after Git succeeds.
+
 Call `set_working_directory <path>` before the first project tool call when all
 of these conditions apply:
 
@@ -273,7 +276,7 @@ a whole new agent file. Do not duplicate the agent's built-in instructions.
 **Live reload and grounding:** File-defined subagents under `~/.netclaw/agents`
 reload automatically on the next turn or subagent lookup. Invalid edits fail
 closed — the broken agent disappears until fixed. Spawned subagents receive
-`session_dir`, `temp_dir`, `artifact_dir`, and `log_path` as read-only grounding.
+`session_dir`, `temp_dir`, `artifact_dir`, `worktree_dir`, and `log_path` as read-only grounding.
 The `session_dir` is the workspace fallback. Use `temp_dir` for disposable
 files. Preserve an explicit platform temporary path when the task requires it.
 Netclaw does not automatically clean the managed temporary directory yet.

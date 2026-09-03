@@ -44,6 +44,14 @@ internal static class DaemonToolPathPolicyFactory
             paths.SecretsPath,
             paths.KeysDirectory,
             paths.WebhooksDirectory,
+            paths.ToolApprovalsPath,
+            paths.HardDenyOverridesPath,
+            paths.DaemonEnvironmentFilePath,
+            paths.DevicesPath,
+            paths.BootstrapStatePath,
+            paths.SqliteDbPath,
+            ..sqliteSidecars,
+            ..processControlPaths,
             paths.ToolingShadowDirectory,
         ];
         string[] shellIndicatorList =

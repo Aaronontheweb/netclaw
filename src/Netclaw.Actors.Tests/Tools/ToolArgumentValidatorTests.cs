@@ -43,7 +43,6 @@ public class ToolArgumentValidatorTests
             new NetclawPaths(),
             pathPolicy,
             commandPolicy,
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
         _executor = new DispatchingToolExecutor(
             registry,

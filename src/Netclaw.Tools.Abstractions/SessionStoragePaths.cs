@@ -66,156 +66,6 @@ public sealed record SessionStorageBinding(
     SessionStorageEnvelopeRoot EnvelopeRoot);
 
 /// <summary>
-/// Data that lets file policy recognize same-session log paths without adding
-/// the complete envelope or child root as a general file root.
-/// </summary>
-public sealed record SessionLogReadScope
-{
-    private static StringComparison PathComparison => OperatingSystem.IsWindows()
-        ? StringComparison.OrdinalIgnoreCase
-        : StringComparison.Ordinal;
-
-    private SessionLogReadScope(
-        SessionStorageEnvelopeRoot? envelopeRoot,
-        string? legacyLogsBasePath,
-        string? legacySessionPathPrefix)
-    {
-        EnvelopeRoot = envelopeRoot;
-        LegacyLogsBasePath = legacyLogsBasePath;
-        LegacySessionPathPrefix = legacySessionPathPrefix;
-    }
-
-    public SessionStorageEnvelopeRoot? EnvelopeRoot { get; }
-    public string? LegacyLogsBasePath { get; }
-    public string? LegacySessionPathPrefix { get; }
-
-    internal static SessionLogReadScope Version2(SessionStorageEnvelopeRoot root)
-        => new(root, null, null);
-
-    internal static SessionLogReadScope Legacy(string logsBasePath, string sessionPathPrefix)
-        => new(null, NormalizeAbsolute(logsBasePath, nameof(logsBasePath)), sessionPathPrefix);
-
-    public bool TryGetReadRoot(string path, out string root)
-    {
-        root = string.Empty;
-        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path))
-            return false;
-
-        var canonical = Path.GetFullPath(path);
-        if (EnvelopeRoot is { } envelope)
-            return TryGetVersion2ReadRoot(envelope.Value, canonical, out root);
-
-        return TryGetLegacyReadRoot(canonical, out root);
-    }
-
-    public bool IsSessionLogPath(string path, out bool belongsToCurrentSession)
-    {
-        belongsToCurrentSession = false;
-        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path))
-            return false;
-
-        var canonical = Path.GetFullPath(path);
-        if (TryGetReadRoot(canonical, out _))
-        {
-            belongsToCurrentSession = true;
-            return true;
-        }
-
-        if (EnvelopeRoot is { } envelope)
-        {
-            var sessionsRoot = Directory.GetParent(envelope.Value)?.FullName;
-            return sessionsRoot is not null && HasVersion2LogShape(sessionsRoot, canonical);
-        }
-
-        return LegacyLogsBasePath is { } logsBase && HasLegacyLogShape(logsBase, canonical);
-    }
-
-    private static bool TryGetVersion2ReadRoot(string envelope, string path, out string root)
-    {
-        var relative = Path.GetRelativePath(envelope, path);
-        var segments = relative.Split(
-            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-            StringSplitOptions.RemoveEmptyEntries);
-        if (segments.Length >= 1 && string.Equals(segments[0], "logs", PathComparison))
-        {
-            root = Path.Combine(envelope, "logs");
-            return true;
-        }
-
-        if (segments.Length >= 3
-            && string.Equals(segments[0], "subagents", PathComparison)
-            && !string.IsNullOrWhiteSpace(segments[1])
-            && segments[1] is not "." and not ".."
-            && string.Equals(segments[2], "logs", PathComparison))
-        {
-            root = Path.Combine(envelope, "subagents", segments[1], "logs");
-            return true;
-        }
-
-        root = string.Empty;
-        return false;
-    }
-
-    private bool TryGetLegacyReadRoot(string path, out string root)
-    {
-        var logsBase = LegacyLogsBasePath;
-        var prefix = LegacySessionPathPrefix;
-        if (logsBase is null || prefix is null)
-        {
-            root = string.Empty;
-            return false;
-        }
-
-        var relative = Path.GetRelativePath(logsBase, path);
-        var segments = relative.Split(
-            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-            StringSplitOptions.RemoveEmptyEntries);
-        if (segments.Length < 1
-            || segments[0] is "." or ".."
-            || (!string.Equals(segments[0], prefix, PathComparison)
-                && !segments[0].StartsWith(prefix + "_subagent_", PathComparison)))
-        {
-            root = string.Empty;
-            return false;
-        }
-
-        root = Path.Combine(logsBase, segments[0]);
-        return true;
-    }
-
-    private static bool HasVersion2LogShape(string sessionsRoot, string path)
-    {
-        var segments = GetRelativeSegments(sessionsRoot, path);
-        return segments.Length >= 2
-               && segments[0] is not "." and not ".."
-               && (string.Equals(segments[1], "logs", PathComparison)
-                   || (segments.Length >= 4
-                       && string.Equals(segments[1], "subagents", PathComparison)
-                       && segments[2] is not "." and not ".."
-                       && string.Equals(segments[3], "logs", PathComparison)));
-    }
-
-    private static bool HasLegacyLogShape(string logsBase, string path)
-    {
-        var segments = GetRelativeSegments(logsBase, path);
-        return segments.Length >= 2 && segments[0] is not "." and not "..";
-    }
-
-    private static string[] GetRelativeSegments(string root, string path)
-        => Path.GetRelativePath(root, path).Split(
-            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-            StringSplitOptions.RemoveEmptyEntries);
-
-    private static string NormalizeAbsolute(string path, string parameterName)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(path, parameterName);
-        if (!Path.IsPathFullyQualified(path))
-            throw new ArgumentException("The path must be absolute.", parameterName);
-        return Path.GetFullPath(path);
-    }
-}
-
-/// <summary>
 /// Immutable paths for one parent or child run.
 /// </summary>
 public sealed record SessionStoragePaths
@@ -226,9 +76,10 @@ public sealed record SessionStoragePaths
         string attachmentStagingDirectory,
         string artifactDirectory,
         string temporaryDirectory,
+        string temporaryDirectoryRoot,
         string worktreeDirectory,
         string logPath,
-        SessionLogReadScope logReadScope,
+        IReadOnlyList<string> currentSessionRoots,
         string? legacyLogsBasePath)
     {
         Binding = binding;
@@ -238,9 +89,13 @@ public sealed record SessionStoragePaths
             nameof(attachmentStagingDirectory));
         ArtifactDirectory = NormalizeAbsolute(artifactDirectory, nameof(artifactDirectory));
         TemporaryDirectory = NormalizeAbsolute(temporaryDirectory, nameof(temporaryDirectory));
+        TemporaryDirectoryRoot = NormalizeAbsolute(temporaryDirectoryRoot, nameof(temporaryDirectoryRoot));
         WorktreeDirectory = NormalizeAbsolute(worktreeDirectory, nameof(worktreeDirectory));
         LogPath = NormalizeAbsolute(logPath, nameof(logPath));
-        LogReadScope = logReadScope ?? throw new ArgumentNullException(nameof(logReadScope));
+        CurrentSessionRoots = currentSessionRoots
+            .Select(root => NormalizeAbsolute(root, nameof(currentSessionRoots)))
+            .Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal)
+            .ToArray();
         LegacyLogsBasePath = legacyLogsBasePath;
     }
 
@@ -249,63 +104,11 @@ public sealed record SessionStoragePaths
     public string AttachmentStagingDirectory { get; }
     public string ArtifactDirectory { get; }
     public string TemporaryDirectory { get; }
+    public string TemporaryDirectoryRoot { get; }
     public string WorktreeDirectory { get; }
     public string LogPath { get; }
-    public SessionLogReadScope LogReadScope { get; }
+    public IReadOnlyList<string> CurrentSessionRoots { get; }
     private string? LegacyLogsBasePath { get; }
-
-    public bool TryGetManagedDataRoot(string path, out string root)
-    {
-        root = string.Empty;
-        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path))
-            return false;
-
-        var canonical = Path.GetFullPath(path);
-        if (IsWithin(canonical, TemporaryDirectory))
-        {
-            root = TemporaryDirectory;
-            return true;
-        }
-
-        if (IsWithin(canonical, ArtifactDirectory))
-        {
-            root = ArtifactDirectory;
-            return true;
-        }
-
-        var childRoot = Binding is { } binding
-            ? Path.Combine(binding.EnvelopeRoot.Value, "subagents")
-            : Path.Combine(SessionDirectory, "subagents");
-        var segments = Path.GetRelativePath(childRoot, canonical).Split(
-            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
-            StringSplitOptions.RemoveEmptyEntries);
-        if (segments.Length >= 2
-            && segments[0] is not "." and not ".."
-            && string.Equals(
-                segments[1],
-                "artifacts",
-                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
-        {
-            root = Path.Combine(childRoot, segments[0], "artifacts");
-            return true;
-        }
-
-        return false;
-    }
-
-    public bool IsRestrictedEnvelopePath(string path)
-    {
-        if (Binding is not { } binding
-            || string.IsNullOrWhiteSpace(path)
-            || !Path.IsPathFullyQualified(path))
-        {
-            return false;
-        }
-
-        var canonical = Path.GetFullPath(path);
-        return IsWithin(canonical, binding.EnvelopeRoot.Value)
-               && !IsWithin(canonical, SessionDirectory);
-    }
 
     public static SessionStoragePaths CreateVersion2(SessionStorageEnvelopeRoot envelopeRoot)
     {
@@ -316,9 +119,10 @@ public sealed record SessionStoragePaths
             Path.Combine(root, "attachment-staging"),
             Path.Combine(root, "artifacts"),
             Path.Combine(root, "tmp", "parent"),
+            root,
             Path.Combine(root, "worktrees"),
             Path.Combine(root, "logs", "session.log"),
-            SessionLogReadScope.Version2(envelopeRoot),
+            [root],
             null);
     }
 
@@ -340,9 +144,10 @@ public sealed record SessionStoragePaths
                 sanitizedSessionId),
             Path.Combine(normalizedSessionDirectory, "artifacts"),
             Path.Combine(normalizedSessionDirectory, "tmp", "parent"),
+            normalizedSessionDirectory,
             Path.Combine(normalizedSessionDirectory, "worktrees"),
             Path.Combine(normalizedLogsBase, sanitizedSessionId, "session.log"),
-            SessionLogReadScope.Legacy(normalizedLogsBase, sanitizedSessionId),
+            [normalizedSessionDirectory, normalizedLogsBase],
             normalizedLogsBase);
     }
 
@@ -360,9 +165,10 @@ public sealed record SessionStoragePaths
                 AttachmentStagingDirectory,
                 Path.Combine(childRoot, "artifacts"),
                 Path.Combine(childRoot, "tmp"),
+                binding.EnvelopeRoot.Value,
                 WorktreeDirectory,
                 Path.Combine(childRoot, "logs", "session.log"),
-                LogReadScope,
+                CurrentSessionRoots,
                 null);
         }
 
@@ -374,13 +180,14 @@ public sealed record SessionStoragePaths
             AttachmentStagingDirectory,
             Path.Combine(childRootLegacy, "artifacts"),
             Path.Combine(childRootLegacy, "tmp"),
+            SessionDirectory,
             WorktreeDirectory,
             Path.Combine(
                 LegacyLogsBasePath
                 ?? throw new InvalidOperationException("Legacy storage is missing its log base."),
                 sanitizedScopeId,
                 "session.log"),
-            LogReadScope,
+            CurrentSessionRoots,
             LegacyLogsBasePath);
     }
 
@@ -390,16 +197,6 @@ public sealed record SessionStoragePaths
         if (path.Any(char.IsControl) || !Path.IsPathFullyQualified(path))
             throw new ArgumentException("The path must be absolute.", parameterName);
         return Path.GetFullPath(path);
-    }
-
-    private static bool IsWithin(string path, string root)
-    {
-        var relative = Path.GetRelativePath(root, path);
-        return relative != ".."
-               && !relative.StartsWith(
-                   $"..{Path.DirectorySeparatorChar}",
-                   OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
-               && !Path.IsPathRooted(relative);
     }
 
     private static string SanitizePathSegment(string value)

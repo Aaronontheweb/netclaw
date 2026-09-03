@@ -142,6 +142,39 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     }
 
     [Fact]
+    public void Safe_verb_in_session_worktree_directory_uses_current_session_root()
+    {
+        var storage = SessionStoragePaths.CreateVersion2(
+            new SessionStorageEnvelopeRoot(Path.GetFullPath(_sessionDir)));
+        Directory.CreateDirectory(storage.WorktreeDirectory);
+        var context = TestToolExecutionContext.CreateBoundWithStorage(
+            "session-1",
+            storage,
+            new TestToolExecutionContextOptions { Audience = TrustAudience.Personal }).Invocation;
+        var policy = new ScopedShellSafeVerbPolicy(VerbList("cat"));
+
+        Assert.True(ShortCircuits(policy, "cat", storage.WorktreeDirectory, context));
+    }
+
+    [Fact]
+    public void Git_worktree_creation_uses_normal_shell_authorization()
+    {
+        var storage = SessionStoragePaths.CreateVersion2(
+            new SessionStorageEnvelopeRoot(Path.GetFullPath(_sessionDir)));
+        var context = TestToolExecutionContext.CreateBoundWithStorage(
+            "session-1",
+            storage,
+            new TestToolExecutionContextOptions { Audience = TrustAudience.Personal }).Invocation;
+        var policy = new ScopedShellSafeVerbPolicy(VerbList("git worktree list"));
+
+        Assert.False(ShortCircuits(
+            policy,
+            $"git worktree add {Path.Combine(storage.WorktreeDirectory, "fix")}",
+            storage.SessionDirectory,
+            context));
+    }
+
+    [Fact]
     public void Safe_verb_outside_safe_spaces_falls_through_to_prompt()
     {
         var policy = new ScopedShellSafeVerbPolicy(VerbList("grep"));

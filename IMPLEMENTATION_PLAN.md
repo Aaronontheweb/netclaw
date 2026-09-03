@@ -117,17 +117,17 @@ the smallest repeatable manual script plus expected output.
 - [x] Existing sessions keep their established workspace and log paths.
 - [x] Parent and child processes receive separate managed temporary paths.
 - [x] Successful subagent results return exact child log and artifact paths.
-- [ ] Use the current session and inherited trusted roots for ordinary file and
+- [x] Use the current session and inherited trusted roots for ordinary file and
   shell authority; remove special log, child, and foreign-session rules.
-- [ ] Remove `worktree_create`; expose `worktree_dir` and compose
+- [x] Remove `worktree_create`; expose `worktree_dir` and compose
   `shell_execute` with `set_working_directory`.
-- [ ] Allow normal structured reads of validated secret-free `netclaw.json`
+- [x] Allow normal structured reads of ordinary `netclaw.json`
   while keeping secret stores and control-plane state denied.
-- [ ] Fix collision-safe session roots, journal-only legacy discovery,
+- [x] Fix collision-safe session roots, journal-only legacy discovery,
   root-segment link checks, old background-job JSON, and per-log resolver locks.
-- [ ] Replace weak worktree and child-handoff eval assertions and complete the
+- [x] Replace weak worktree and child-handoff eval assertions and complete the
   repository gates.
-- [ ] Update the operations skill, runbooks, and release notes to the revised
+- [x] Update the operations skill, runbooks, and release notes to the revised
   path, authority, worktree, and configuration contracts.
 - [ ] Harvest sanitized traffic after the binary swap.
 

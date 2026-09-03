@@ -1165,6 +1165,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             : $"[session]\nsession_dir: {storage.SessionDirectory}\n"
               + $"temp_dir: {storage.TemporaryDirectory}\n"
               + $"artifact_dir: {storage.ArtifactDirectory}\n"
+              + $"worktree_dir: {storage.WorktreeDirectory}\n"
               + $"log_path: {storage.LogPath}\n"
               + ToolChoiceGuidance.StructuredWorkspaceSelection + "\n"
               + ToolChoiceGuidance.DirectorySelectionOrder + "\n"
@@ -1189,7 +1190,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     private void TryApplyProjectDirectory(string? toolName, ToolInvocationReceipt? receipt)
     {
-        if (toolName is not (SetWorkingDirectoryTool.ToolName or WorktreeCreateTool.ToolName)
+        if (toolName is not SetWorkingDirectoryTool.ToolName
             || receipt is not
             {
                 Category: ToolInvocationOutcomeCategory.Success,

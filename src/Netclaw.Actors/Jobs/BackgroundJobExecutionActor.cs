@@ -94,9 +94,20 @@ public sealed class BackgroundJobExecutionActor : ReceiveActor
     private void SpawnProcess()
     {
         var psi = _environment.CreateProcessStartInfo(_definition.Command);
+        if (string.IsNullOrWhiteSpace(_definition.ManagedTemporaryDirectory)
+            || string.IsNullOrWhiteSpace(_definition.ManagedTemporaryRoot))
+        {
+            ReportCompletion(
+                BackgroundJobStatus.Failed,
+                -1,
+                "Error: Background job has no managed temporary storage context.");
+            return;
+        }
+
         var temporaryDirectoryError = ManagedTemporaryEnvironment.Prepare(
             psi,
-            _definition.ManagedTemporaryDirectory);
+            _definition.ManagedTemporaryDirectory,
+            _definition.ManagedTemporaryRoot);
         if (temporaryDirectoryError is not null)
         {
             ReportCompletion(BackgroundJobStatus.Failed, -1, temporaryDirectoryError);

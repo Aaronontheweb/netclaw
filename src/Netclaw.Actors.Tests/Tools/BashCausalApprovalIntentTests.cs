@@ -120,6 +120,10 @@ public sealed class BashCausalApprovalIntentTests
             var otherCommand =
                 $"cd {otherAlias} && inspect > result.log 2>&1; head result.log";
 
+            Assert.True(policy.IsSafePlatformTemporaryPath(authoredTemp));
+            Assert.True(policy.IsSafePlatformTemporaryPath(canonicalTemp));
+            Assert.True(policy.IsSafePlatformTemporaryPath(Path.Combine(authoredTemp, "result.log")));
+
             Assert.True(TryProject(
                 BashEnvironment,
                 allowedCommand,

@@ -129,8 +129,8 @@ When the agent calls a tool in `Approval` mode:
    - **Deny** — the call returns "Command denied by user" to the LLM
 
 The policy can remove reusable choices when a command has no clean phrase. It
-also removes `Always here` for a shallow root, session scratch, and non-shell
-tools that have no directory scope. See [When the prompt offers fewer
+also removes `Always here` for a shallow root, a session-owned directory, and
+non-shell tools that have no directory scope. See [When the prompt offers fewer
 buttons](#when-the-prompt-offers-fewer-buttons).
 
 ### When the prompt offers fewer buttons

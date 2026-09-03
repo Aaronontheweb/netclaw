@@ -74,6 +74,16 @@ public class ToolRegistrationExtensionsTests
     }
 
     [Fact]
+    public void First_party_registry_composes_worktrees_without_a_custom_tool()
+    {
+        var registry = CreateFullFirstPartyRegistry();
+
+        Assert.IsType<ShellTool>(registry.GetByName("shell_execute"));
+        Assert.IsType<SetWorkingDirectoryTool>(registry.GetByName("set_working_directory"));
+        Assert.Null(registry.GetByName("worktree_create"));
+    }
+
+    [Fact]
     public void Registration_defaults_to_deferred_and_core_replacement_is_explicit()
     {
         var registry = new ToolRegistry();
@@ -102,8 +112,7 @@ public class ToolRegistrationExtensionsTests
             config,
             new NetclawPaths(),
             new ToolPathPolicy([]),
-            new ShellCommandPolicy(),
-            TimeProvider.System));
+            new ShellCommandPolicy()));
         Assert.Empty(registry.GetAllRegistrations());
     }
 
@@ -135,7 +144,6 @@ public class ToolRegistrationExtensionsTests
             paths,
             new ToolPathPolicy([]),
             new ShellCommandPolicy(),
-            TimeProvider.System,
             toolAccessPolicy: policy);
 
         var skillRegistry = new SkillRegistry();

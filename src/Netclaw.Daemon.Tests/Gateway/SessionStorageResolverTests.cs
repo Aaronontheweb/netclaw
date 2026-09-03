@@ -77,6 +77,60 @@ public sealed class SessionStorageResolverTests : IDisposable
         Assert.Equal(0, CountBindings(paths));
     }
 
+    [Fact]
+    public void Distinct_session_ids_with_the_same_display_form_get_distinct_envelopes()
+    {
+        var paths = CreatePaths();
+        var resolver = new SqliteSessionStorageResolver(paths, new FakeTimeProvider());
+
+        var first = resolver.Resolve(new SessionId("channel/a_b"));
+        var second = resolver.Resolve(new SessionId("channel/a/b"));
+
+        Assert.NotEqual(first.Binding?.EnvelopeRoot, second.Binding?.EnvelopeRoot);
+        Assert.Equal(2, CountBindings(paths));
+    }
+
+    [Fact]
+    public void Journal_only_session_keeps_legacy_paths_and_receives_no_binding()
+    {
+        var paths = CreatePaths();
+        var sessionId = new SessionId("signalr/journal-only");
+        using (var connection = new SqliteConnection($"Data Source={paths.SqliteDbPath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText =
+                """
+                CREATE TABLE journal (persistence_id TEXT NOT NULL);
+                INSERT INTO journal(persistence_id) VALUES ($persistenceId);
+                """;
+            command.Parameters.AddWithValue("$persistenceId", $"session-{sessionId.Value}");
+            command.ExecuteNonQuery();
+        }
+
+        var storage = new SqliteSessionStorageResolver(paths, new FakeTimeProvider()).Resolve(sessionId);
+
+        Assert.Null(storage.Binding);
+        Assert.Equal(
+            SessionDirectoryHelper.GetSessionDirectory(sessionId, paths.SessionsDirectory),
+            storage.SessionDirectory);
+        Assert.Equal(0, CountBindings(paths));
+    }
+
+    [Fact]
+    public void Repeated_resolution_uses_the_cached_immutable_result()
+    {
+        var paths = CreatePaths();
+        var resolver = new SqliteSessionStorageResolver(paths, new FakeTimeProvider());
+        var sessionId = new SessionId("signalr/cached-session");
+
+        var first = resolver.Resolve(sessionId);
+        var second = resolver.Resolve(sessionId);
+
+        Assert.Same(first, second);
+        Assert.Equal(1, CountBindings(paths));
+    }
+
     private NetclawPaths CreatePaths()
     {
         var paths = new NetclawPaths(_basePath);

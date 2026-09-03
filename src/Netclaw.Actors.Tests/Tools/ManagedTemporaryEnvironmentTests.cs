@@ -40,7 +40,7 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
             startInfo.ArgumentList.Add("printf '%s' \"$TMPDIR|$TMP|$TEMP\"");
         }
 
-        Assert.Null(ManagedTemporaryEnvironment.Prepare(startInfo, managed));
+        Assert.Null(ManagedTemporaryEnvironment.Prepare(startInfo, managed, _directory.Path));
         using var process = Process.Start(startInfo)!;
         var output = await process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
         await process.WaitForExitAsync(TestContext.Current.CancellationToken);
@@ -66,7 +66,7 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
         startInfo.ArgumentList.Add("-Command");
         startInfo.ArgumentList.Add("[Console]::Write([IO.Path]::GetTempPath())");
 
-        Assert.Null(ManagedTemporaryEnvironment.Prepare(startInfo, managed));
+        Assert.Null(ManagedTemporaryEnvironment.Prepare(startInfo, managed, _directory.Path));
         using var process = Process.Start(startInfo)!;
         var output = await process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
         await process.WaitForExitAsync(TestContext.Current.CancellationToken);
@@ -88,9 +88,46 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
         startInfo.Environment.Remove("TMP");
         startInfo.Environment.Remove("TEMP");
 
-        var error = ManagedTemporaryEnvironment.Prepare(startInfo, managed);
+        var error = ManagedTemporaryEnvironment.Prepare(startInfo, managed, _directory.Path);
 
         Assert.StartsWith("Error preparing managed temporary directory:", error, StringComparison.Ordinal);
+        Assert.False(startInfo.Environment.ContainsKey("TMPDIR"));
+        Assert.False(startInfo.Environment.ContainsKey("TMP"));
+        Assert.False(startInfo.Environment.ContainsKey("TEMP"));
+    }
+
+    [Fact]
+    public void Linked_managed_directory_is_rejected_before_environment_injection()
+    {
+        var outside = Path.Combine(_directory.Path, "outside");
+        var root = Path.Combine(_directory.Path, "root");
+        var linked = Path.Combine(root, "tmp");
+        Directory.CreateDirectory(outside);
+        Directory.CreateDirectory(root);
+        Directory.CreateSymbolicLink(linked, outside);
+        var startInfo = new ProcessStartInfo();
+
+        var error = ManagedTemporaryEnvironment.Prepare(startInfo, linked, root);
+
+        Assert.Equal("Error: The managed temporary directory contains an unsafe filesystem link.", error);
+        Assert.False(startInfo.Environment.ContainsKey("TMPDIR"));
+        Assert.False(startInfo.Environment.ContainsKey("TMP"));
+        Assert.False(startInfo.Environment.ContainsKey("TEMP"));
+    }
+
+    [Fact]
+    public void Linked_session_root_is_rejected_before_environment_injection()
+    {
+        var outside = Path.Combine(_directory.Path, "outside-root");
+        var linkedRoot = Path.Combine(_directory.Path, "linked-root");
+        Directory.CreateDirectory(outside);
+        Directory.CreateSymbolicLink(linkedRoot, outside);
+        var managed = Path.Combine(linkedRoot, "tmp", "parent");
+        var startInfo = new ProcessStartInfo();
+
+        var error = ManagedTemporaryEnvironment.Prepare(startInfo, managed, linkedRoot);
+
+        Assert.Equal("Error: The managed temporary directory contains an unsafe filesystem link.", error);
         Assert.False(startInfo.Environment.ContainsKey("TMPDIR"));
         Assert.False(startInfo.Environment.ContainsKey("TMP"));
         Assert.False(startInfo.Environment.ContainsKey("TEMP"));

@@ -61,3 +61,6 @@ The project directory is distinct from the session directory
 (`~/.netclaw/sessions/{id}/`). The session directory is immutable and used for
 state isolation (inbox, media). The project directory is mutable and points to
 the project root.
+
+For a Git worktree, choose a destination below `worktree_dir`. Use
+`shell_execute` to run Git. Use `set_working_directory` only after Git succeeds.

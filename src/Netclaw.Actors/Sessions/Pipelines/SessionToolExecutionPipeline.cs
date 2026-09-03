@@ -1247,12 +1247,14 @@ internal sealed class SessionToolExecutionPipeline
             throw new InvalidOperationException(
                 "Background-job submission requires turn authority context; trust context cannot be defaulted.");
 
+        var storage = context.SessionStorage
+            ?? throw new InvalidOperationException("Background shell execution requires resolved session storage.");
         var startCmd = new StartBackgroundJob
         {
             Command = command,
             WorkingDirectory = workingDirectory,
-            ManagedTemporaryDirectory = context.SessionStorage?.TemporaryDirectory
-                ?? throw new InvalidOperationException("Background shell execution requires resolved session storage."),
+            ManagedTemporaryDirectory = storage.TemporaryDirectory,
+            ManagedTemporaryRoot = storage.TemporaryDirectoryRoot,
             SessionId = batch.SessionId,
             Rationale = meta.Rationale ?? "background shell execution",
             Audience = batch.TurnContext.Audience,

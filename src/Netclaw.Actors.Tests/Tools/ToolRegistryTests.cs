@@ -353,7 +353,6 @@ public class ToolRegistryTests
             new NetclawPaths(),
             pathPolicy,
             commandPolicy,
-            TimeProvider.System,
             toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
 
         Assert.Equal("shell_execute", registry.ToCanonicalName("shell_execute"));

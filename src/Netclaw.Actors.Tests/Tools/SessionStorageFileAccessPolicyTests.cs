@@ -41,7 +41,7 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
     public void Dispose() => _directory.Dispose();
 
     [Fact]
-    public void Current_parent_and_child_logs_are_read_only()
+    public void Current_parent_and_child_logs_follow_normal_operation_permissions()
     {
         var child = _storage.ForChild(
             new SubAgentRunId("run-1"),
@@ -49,12 +49,12 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
 
         Assert.True(_policy.TryResolveReadPath(_storage.LogPath, _context, out _, out _));
         Assert.True(_policy.TryResolveReadPath(child.LogPath, _context, out _, out _));
-        Assert.False(_policy.TryResolveWritePath(_storage.LogPath, _context, out _, out _));
-        Assert.False(_policy.TryResolveAttachPath(child.LogPath, _context, out _, out _));
+        Assert.True(_policy.TryResolveWritePath(_storage.LogPath, _context, out _, out _));
+        Assert.True(_policy.TryResolveAttachPath(child.LogPath, _context, out _, out _));
     }
 
     [Fact]
-    public void Foreign_logs_are_denied_under_an_unrestricted_personal_profile()
+    public void Unrestricted_interactive_personal_profile_uses_ordinary_foreign_path_access()
     {
         var foreignMain = Path.Combine(
             _paths.SessionsDirectory,
@@ -69,12 +69,12 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
             "logs",
             "session.log");
 
-        Assert.False(_policy.TryResolveReadPath(foreignMain, _context, out _, out _));
-        Assert.False(_policy.TryResolveReadPath(foreignChild, _context, out _, out _));
+        Assert.True(_policy.TryResolveReadPath(foreignMain, _context, out _, out _));
+        Assert.True(_policy.TryResolveReadPath(foreignChild, _context, out _, out _));
     }
 
     [Fact]
-    public void Managed_data_roots_are_exact_and_the_child_root_stays_denied()
+    public void Complete_current_session_envelope_is_one_ordinary_root()
     {
         var childArtifact = Path.Combine(
             _storage.Binding!.EnvelopeRoot.Value,
@@ -93,8 +93,8 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
             out _,
             out _));
         Assert.True(_policy.TryResolveReadPath(childArtifact, _context, out _, out _));
-        Assert.False(_policy.TryResolveReadPath(broadChildRoot, _context, out _, out _));
-        Assert.False(_policy.TryResolveReadPath(
+        Assert.True(_policy.TryResolveReadPath(broadChildRoot, _context, out _, out _));
+        Assert.True(_policy.TryResolveReadPath(
             _storage.Binding.EnvelopeRoot.Value,
             _context,
             out _,
@@ -132,5 +132,34 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
         Assert.Contains("active marker", search, StringComparison.Ordinal);
         await writer.WriteLineAsync("writer remains active");
         await writer.FlushAsync(TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public void Linked_session_root_does_not_grant_file_access()
+    {
+        var outside = Path.Combine(_directory.Path, "outside-envelope");
+        var linkedEnvelope = Path.Combine(_paths.SessionsDirectory, "linked-envelope");
+        Directory.CreateDirectory(outside);
+        Directory.CreateSymbolicLink(linkedEnvelope, outside);
+        var storage = SessionStoragePaths.CreateVersion2(
+            new SessionStorageEnvelopeRoot(Path.GetFullPath(linkedEnvelope)));
+        var context = TestToolExecutionContext.CreateBoundWithStorage(
+            "signalr/linked-session",
+            storage,
+            new TestToolExecutionContextOptions
+            {
+                Audience = TrustAudience.Team,
+                Boundary = TrustBoundary.Team,
+                ChannelType = "signalr"
+            }).Invocation;
+
+        var allowed = _policy.TryResolveReadPath(
+            Path.Combine(linkedEnvelope, "logs", "session.log"),
+            context,
+            out _,
+            out var error);
+
+        Assert.False(allowed);
+        Assert.Contains("symlinked paths", error, StringComparison.Ordinal);
     }
 }
