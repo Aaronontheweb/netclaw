@@ -75,17 +75,17 @@ internal static class ToolOutcomeResults
             ToolInvocationOutcomeCategory.RecoverableCorrection,
             remediationCode: remediationCode);
 
-    public static string PathResolutionFailure(
+    public static string PathAccessFailure(
         this ToolInvocationContext context,
         string result,
-        ScopedFileAccessPolicy.PathResolutionFailure failure)
+        PathAccessPolicy.PathAccessFailure failure)
         => failure switch
         {
-            ScopedFileAccessPolicy.PathResolutionFailure.MissingBase =>
+            PathAccessPolicy.PathAccessFailure.MissingBase =>
                 context.RecoverableCorrection(
                     result,
                     ToolRemediationCode.SetWorkingDirectory),
-            ScopedFileAccessPolicy.PathResolutionFailure.InvalidInput => context.InvalidInput(result),
+            PathAccessPolicy.PathAccessFailure.InvalidInput => context.InvalidInput(result),
             _ => context.AccessDenied(result)
         };
 

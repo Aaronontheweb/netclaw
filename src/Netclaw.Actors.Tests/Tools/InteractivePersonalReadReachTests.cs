@@ -98,7 +98,7 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
         var config = hardenedPersonalRoots
             ? BuildPersonalReadRootsConfig(_sessionDir)
             : new ToolConfig();
-        var policy = new ScopedFileAccessPolicy(config, _paths);
+        var policy = new PathAccessPolicy(config, _paths, new ToolPathPolicy([]));
         var ctx = Ctx(audience, autonomous: !interactive);
 
         var path = outsideRoots
@@ -122,7 +122,7 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
         var config = hardenedPersonalRoots
             ? BuildPersonalReadRootsConfig(_sessionDir)
             : new ToolConfig();
-        var policy = new ScopedFileAccessPolicy(config, _paths);
+        var policy = new PathAccessPolicy(config, _paths, new ToolPathPolicy([]));
         var ctx = Ctx(audience, autonomous: !interactive);
 
         var path = outsideRoots
@@ -217,7 +217,7 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
         // shell-equivalent reach — its declaration widens the safe-verb
         // auto-approve zone and feeds project identity files into the prompt.
         var config = BuildPersonalReadRootsConfig(_sessionDir);
-        var policy = new ScopedFileAccessPolicy(config, _paths);
+        var policy = new PathAccessPolicy(config, _paths, new ToolPathPolicy([]));
         var ctx = Ctx(TrustAudience.Personal, autonomous: false);
 
         var outside = Path.Combine(_outsideDir, "notes.txt");
@@ -235,7 +235,7 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
         // Personal profile (Mode.All) — the most common configuration. The
         // Mode.All interactive blanket grant must not leak into the
         // working-directory declaration.
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var ctx = Ctx(TrustAudience.Personal, autonomous: false);
 
         var outside = Path.Combine(_outsideDir, "notes.txt");
@@ -259,7 +259,7 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
     {
         // Regression (#1724): the new Roots-mode attach branch must actually be
         // exercised — the main matrix hardens only ReadFiles, so its attach rows
-        // hit the Mode.All branch. This pins the AccessKind.Attach clause.
+        // hit the Mode.All branch. This pins the FileOperation.Attach clause.
         var config = new ToolConfig();
         config.AudienceProfiles.Personal.ReadFiles = new ToolFilesystemAccessProfile
         {
@@ -271,7 +271,7 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
             Mode = ToolFilesystemMode.Roots,
             Roots = [_sessionDir]
         };
-        var policy = new ScopedFileAccessPolicy(config, _paths);
+        var policy = new PathAccessPolicy(config, _paths, new ToolPathPolicy([]));
         var ctx = Ctx(TrustAudience.Personal, autonomous: !interactive);
 
         var path = Path.Combine(_outsideDir, "report.png");

@@ -204,9 +204,7 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
                 UsedStrictFallback: false),
             shellCommandPolicy: commandPolicy,
             toolPathPolicy: pathPolicy,
-            shellTrustZonePolicy: new ShellTrustZonePolicy(
-                config,
-                new NetclawPaths(rootDirectory, Path.Combine(rootDirectory, "workspaces"))),
+            paths: new NetclawPaths(rootDirectory, Path.Combine(rootDirectory, "workspaces")),
             safeVerbs: safeVerbs ?? SafeVerbLoader.Load(environment.Platform == ShellPlatform.Windows));
         var executor = new DispatchingToolExecutor(registry, policy, countingApprovalService);
 

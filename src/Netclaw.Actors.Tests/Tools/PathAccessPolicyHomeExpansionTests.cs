@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="ScopedFileAccessPolicyHomeExpansionTests.cs" company="Petabridge, LLC">
+// <copyright file="PathAccessPolicyHomeExpansionTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
@@ -14,17 +14,17 @@ namespace Netclaw.Actors.Tests.Tools;
 
 /// <summary>
 /// Regression coverage for tilde / $HOME expansion in configured filesystem
-/// roots. Without expansion, <see cref="ScopedFileAccessPolicy"/> rejects
+/// roots. Without expansion, <see cref="PathAccessPolicy"/> rejects
 /// access to real files under the user's home because <c>Path.GetFullPath</c>
 /// treats <c>~</c> as a literal subdirectory of CWD.
 /// </summary>
-public sealed class ScopedFileAccessPolicyHomeExpansionTests : IDisposable
+public sealed class PathAccessPolicyHomeExpansionTests : IDisposable
 {
     private readonly DisposableTempDir _dir = new();
     private readonly string _sessionDir;
     private readonly NetclawPaths _paths;
 
-    public ScopedFileAccessPolicyHomeExpansionTests()
+    public PathAccessPolicyHomeExpansionTests()
     {
         _sessionDir = Path.Combine(_dir.Path, "sessions", "test-session");
         Directory.CreateDirectory(_sessionDir);
@@ -40,10 +40,10 @@ public sealed class ScopedFileAccessPolicyHomeExpansionTests : IDisposable
     public void Personal_roots_expand_shell_home_tokens(string configured)
     {
         var toolConfig = BuildPersonalWriteRootsConfig(configured);
-        var policy = new ScopedFileAccessPolicy(toolConfig, _paths);
+        var policy = new PathAccessPolicy(toolConfig, _paths, new ToolPathPolicy([]));
         var context = CreateContext(TrustAudience.Personal);
 
-        var roots = policy.GetRootsForContext(context, ScopedFileAccessPolicy.AccessKind.Write);
+        var roots = policy.GetTrustedRoots(context, PathAccessPolicy.FileOperation.Write);
 
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var expected = PathUtility.Normalize(Path.Combine(home, "repositories"));
@@ -55,7 +55,7 @@ public sealed class ScopedFileAccessPolicyHomeExpansionTests : IDisposable
     public void Personal_write_to_home_relative_root_is_allowed()
     {
         var toolConfig = BuildPersonalWriteRootsConfig("~/repositories");
-        var policy = new ScopedFileAccessPolicy(toolConfig, _paths);
+        var policy = new PathAccessPolicy(toolConfig, _paths, new ToolPathPolicy([]));
         var context = CreateContext(TrustAudience.Personal);
 
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
@@ -70,7 +70,7 @@ public sealed class ScopedFileAccessPolicyHomeExpansionTests : IDisposable
     public void Personal_write_outside_home_relative_root_is_rejected()
     {
         var toolConfig = BuildPersonalWriteRootsConfig("~/repositories");
-        var policy = new ScopedFileAccessPolicy(toolConfig, _paths);
+        var policy = new PathAccessPolicy(toolConfig, _paths, new ToolPathPolicy([]));
         var context = CreateContext(TrustAudience.Personal);
 
         var unrelated = Path.Combine(Path.GetTempPath(), "outside-the-root.txt");

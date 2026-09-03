@@ -29,7 +29,7 @@ public sealed class ToolAccessPolicy
     private readonly ShellCommandPolicy _shellCommandPolicy;
     private readonly ToolPathPolicy _toolPathPolicy;
     private readonly ShellApprovalMatcher _shellApprovalMatcher;
-    private readonly IShellTrustZonePolicy? _shellTrustZonePolicy;
+    private readonly PathAccessPolicy? _pathAccessPolicy;
     private readonly IToolApprovalMatcher _fileApprovalMatcher;
     private readonly FeatureGates _featureGates;
     private readonly ScopedShellSafeVerbPolicy? _safeVerbPolicy;
@@ -51,7 +51,7 @@ public sealed class ToolAccessPolicy
         ToolPathPolicy toolPathPolicy,
         IToolApprovalMatcher? fileApprovalMatcher = null,
         FeatureGates? featureGates = null,
-        IShellTrustZonePolicy? shellTrustZonePolicy = null,
+        NetclawPaths? paths = null,
         SafeVerbList? safeVerbs = null)
         : this(
             toolConfig,
@@ -61,7 +61,7 @@ public sealed class ToolAccessPolicy
             PlatformTemporaryScopePolicy.Create(shellCommandPolicy.Environment),
             fileApprovalMatcher,
             featureGates,
-            shellTrustZonePolicy,
+            paths,
             safeVerbs)
     {
     }
@@ -74,7 +74,7 @@ public sealed class ToolAccessPolicy
         PlatformTemporaryScopePolicy platformTemporaryScopePolicy,
         IToolApprovalMatcher? fileApprovalMatcher = null,
         FeatureGates? featureGates = null,
-        IShellTrustZonePolicy? shellTrustZonePolicy = null,
+        NetclawPaths? paths = null,
         SafeVerbList? safeVerbs = null)
     {
         // shellCommandPolicy (deny-list) and toolPathPolicy (protected paths) are
@@ -94,7 +94,9 @@ public sealed class ToolAccessPolicy
         }
 
         _shellApprovalMatcher = new ShellApprovalMatcher(shellCommandPolicy.Environment);
-        _shellTrustZonePolicy = shellTrustZonePolicy;
+        _pathAccessPolicy = paths is null
+            ? null
+            : new PathAccessPolicy(toolConfig, paths, toolPathPolicy);
         _fileApprovalMatcher = fileApprovalMatcher ?? DefaultApprovalMatcher.Instance;
         _featureGates = featureGates ?? FeatureGates.AllEnabled;
         _safeVerbPolicy = safeVerbs is not null ? new ScopedShellSafeVerbPolicy(safeVerbs) : null;
@@ -305,25 +307,25 @@ public sealed class ToolAccessPolicy
                 analysisArguments,
                 shellAnalysis);
 
-        // Non-interactive channels: sandbox shell commands to trust zone paths.
-        // Even if the verb-chain is pre-approved, path arguments must fall within
-        // the channel's allowed filesystem roots. Fail-closed: if no trust zone
+        // Non-interactive channels: confine shell commands to trusted roots.
+        // Even if the verb-chain is pre-approved, path arguments must pass the
+        // shared path access decision. Fail closed when no path access
         // policy is configured, deny any shell command with path arguments.
         if (context.RunScope.InteractiveApproval is InteractiveApprovalCapability.Unavailable && shellCommand is not null)
         {
-            if (_shellTrustZonePolicy is null)
+            if (_pathAccessPolicy is null)
             {
                 if (ShellCommandHasTrustZoneSensitiveInputs(shellApproval, workingDirectory))
                     return ToolAccessDecision.Deny("shell_trust_zone_policy_not_configured");
             }
             else
             {
-                var trustZoneDeny = EnforceShellTrustZones(
+                var pathAccessDeny = EnforceShellPathAccess(
                     shellApproval!,
                     workingDirectory,
                     context);
-                if (trustZoneDeny is not null)
-                    return trustZoneDeny;
+                if (pathAccessDeny is not null)
+                    return pathAccessDeny;
             }
         }
 
@@ -457,7 +459,7 @@ public sealed class ToolAccessPolicy
     /// <c>Mode.None</c> ⇒ denied). Returns a deny decision if any path escapes, or
     /// null if all paths are within bounds.
     /// </summary>
-    private ToolAccessDecision? EnforceShellTrustZones(
+    private ToolAccessDecision? EnforceShellPathAccess(
         ShellApprovalAnalysis approval,
         string? workingDirectory,
         ToolExecutionContext context)
@@ -471,7 +473,10 @@ public sealed class ToolAccessPolicy
             if (expandedWorkingDirectory is null)
                 return ToolAccessDecision.Deny("shell_invalid_working_directory");
 
-            if (!_shellTrustZonePolicy!.IsShellWritePathAuthorized(expandedWorkingDirectory, context.Invocation))
+            if (!_pathAccessPolicy!.Evaluate(
+                    expandedWorkingDirectory,
+                    context.Invocation,
+                    PathAccessPolicy.FileOperation.Write).Allowed)
                 return ToolAccessDecision.Deny("shell_working_directory_outside_trust_zone");
         }
 
@@ -480,7 +485,10 @@ public sealed class ToolAccessPolicy
                      .Where(static directory => !string.IsNullOrWhiteSpace(directory))
                      .Distinct(StringComparer.Ordinal))
         {
-            if (!_shellTrustZonePolicy!.IsShellWritePathAuthorized(directory!, context.Invocation))
+            if (!_pathAccessPolicy!.Evaluate(
+                    directory!,
+                    context.Invocation,
+                    PathAccessPolicy.FileOperation.Write).Allowed)
                 return ToolAccessDecision.Deny("shell_path_outside_trust_zone");
         }
 

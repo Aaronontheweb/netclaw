@@ -673,7 +673,6 @@ static void ConfigureDaemonServices(
         SubAgentsEnabled: subAgentConfig.Enabled,
         SchedulingEnabled: schedulingConfig.Enabled);
     var fileApprovalMatcher = new FilePathApprovalMatcher(paths.ConfigDirectory);
-    var shellTrustZonePolicy = new ShellTrustZonePolicy(toolConfig, paths);
     // Safe-verbs list: bundled per-OS defaults only — embedded resource in
     // Netclaw.Configuration with no on-disk user override. Used by the
     // approval gate's verb-pattern Layer to auto-allow demonstrably
@@ -691,7 +690,7 @@ static void ConfigureDaemonServices(
         toolPathPolicy,
         fileApprovalMatcher,
         featureGates,
-        shellTrustZonePolicy,
+        paths,
         safeVerbs);
     services.AddSingleton(toolAccessPolicy);
 

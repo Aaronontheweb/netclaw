@@ -33,15 +33,15 @@ public sealed partial class SetWorkingDirectoryTool : NetclawTool<SetWorkingDire
 {
     public const string ToolName = "set_working_directory";
 
-    private readonly ScopedFileAccessPolicy _fileAccessPolicy;
+    private readonly PathAccessPolicy _pathAccessPolicy;
 
     public record Params(
         [param: Description("Absolute path to the project root for the current task.")]
         string Path);
 
-    public SetWorkingDirectoryTool(ToolConfig config, NetclawPaths paths)
+    public SetWorkingDirectoryTool(ToolConfig config, NetclawPaths paths, ToolPathPolicy pathPolicy)
     {
-        _fileAccessPolicy = new ScopedFileAccessPolicy(config, paths);
+        _pathAccessPolicy = new PathAccessPolicy(config, paths, pathPolicy);
     }
 
     protected override Task<string> ExecuteAsync(Params args, ToolInvocationContext context, CancellationToken ct)
@@ -56,15 +56,11 @@ public sealed partial class SetWorkingDirectoryTool : NetclawTool<SetWorkingDire
         if (!Path.IsPathFullyQualified(raw))
             return Task.FromResult(context.InvalidInput("Error: path must be absolute."));
 
-        if (!_fileAccessPolicy.TryResolveWorkingDirectory(
-                raw,
-                context,
-                out var fullPath,
-                out var accessError,
-                out var resolutionFailure))
-        {
-            return Task.FromResult(context.PathResolutionFailure(accessError, resolutionFailure));
-        }
+        var access = _pathAccessPolicy.Evaluate(raw, context, PathAccessPolicy.FileOperation.DeclareProjectScope);
+        if (!access.Allowed)
+            return Task.FromResult(context.PathAccessFailure(access.Error, access.Failure ?? PathAccessPolicy.PathAccessFailure.AccessDenied));
+
+        var fullPath = access.CanonicalPath;
 
         if (!Directory.Exists(fullPath))
             return Task.FromResult(context.NotFound($"Error: directory does not exist: {fullPath}"));
@@ -74,13 +70,12 @@ public sealed partial class SetWorkingDirectoryTool : NetclawTool<SetWorkingDire
 
     internal bool CanDeclare(string path, ToolInvocationContext context)
         => !ContainsInvalidControlCharacter(path)
-           && _fileAccessPolicy.TryResolveWorkingDirectory(
+           && _pathAccessPolicy.Evaluate(
                path,
                context,
-               out var fullPath,
-               out _)
-           && PathUtility.AreEquivalentPaths(path, fullPath)
-           && Directory.Exists(fullPath);
+               PathAccessPolicy.FileOperation.DeclareProjectScope) is { Allowed: true } access
+           && PathUtility.AreEquivalentPaths(path, access.CanonicalPath)
+           && Directory.Exists(access.CanonicalPath);
 
     private static bool ContainsInvalidControlCharacter(string? path)
         => path is not null && path.AsSpan().IndexOfAny('\0', '\r', '\n') >= 0;

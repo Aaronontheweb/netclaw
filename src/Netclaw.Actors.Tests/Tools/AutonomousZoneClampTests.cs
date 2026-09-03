@@ -15,7 +15,7 @@ namespace Netclaw.Actors.Tests.Tools;
 /// <summary>
 /// Autonomous (non-interactive) sessions are confined to a filesystem zone even
 /// under the Personal audience (whose <c>Mode.All</c> would otherwise grant blanket
-/// access). The clamp lives at the single <c>ScopedFileAccessPolicy.TryResolvePath</c>
+/// access). The clamp lives at the single <c>PathAccessPolicy.TryResolvePath</c>
 /// seam, so it covers shell (via <c>TryResolveWritePath</c>) and the file tools
 /// alike. Interactive sessions are unaffected — the live approval gate is their
 /// backstop.
@@ -60,7 +60,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
     [Fact]
     public void Autonomous_personal_write_outside_zone_is_denied()
     {
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var ctx = Ctx(TrustAudience.Personal, autonomous: true);
 
         var outside = Path.Combine(_outsideDir, "loot.txt");
@@ -73,7 +73,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
     {
         // The file_read vector: confining only shell would let an injection read
         // arbitrary files via file_read instead. The shared seam closes both.
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var ctx = Ctx(TrustAudience.Personal, autonomous: true);
 
         var outside = Path.Combine(_outsideDir, "id_rsa");
@@ -84,7 +84,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
     [Fact]
     public void Autonomous_personal_inside_session_and_project_is_allowed()
     {
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var ctx = Ctx(TrustAudience.Personal, autonomous: true);
 
         Assert.True(policy.TryResolveWritePath(Path.Combine(_sessionDir, "f.txt"), ctx, out _, out var e1), e1);
@@ -96,7 +96,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
     {
         // Contrast: an interactive Personal session keeps Mode.All blanket access —
         // the human approving in real time is the backstop.
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var ctx = Ctx(TrustAudience.Personal, autonomous: false);
 
         var outside = Path.Combine(_outsideDir, "anything.txt");
@@ -107,7 +107,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
     [Fact]
     public void Unavailable_interactive_capability_enforces_autonomous_clamp()
     {
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var ctx = TestToolExecutionContext.CreateBound(
             "legacy/s1",
             _sessionDir,
@@ -131,7 +131,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
     {
         // Public is Mode.Roots (session-scoped) — it never reaches the Mode.All
         // clamp, so the zone's project directory does not grant Public project access.
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var ctx = Ctx(TrustAudience.Public, autonomous: true);
 
         Assert.True(policy.TryResolveReadPath(Path.Combine(_sessionDir, "f.txt"), ctx, out _, out _));
@@ -146,7 +146,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
         // Skills and identity are system-managed: readable via the global read
         // roots, but never writable by an autonomous session — it must not be able
         // to rewrite its own identity or skills.
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var ctx = Ctx(TrustAudience.Personal, autonomous: true);
 
         var workspaceFile = Path.Combine(_paths.WorkspacesDirectory, "gotowebinar-last-run.json");
@@ -173,7 +173,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
         var customWorkspaces = Path.Combine(_dir.Path, "custom-ws");
         Directory.CreateDirectory(customWorkspaces);
         var paths = new NetclawPaths(_dir.Path, customWorkspaces);
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), paths, new ToolPathPolicy([]));
         var ctx = Ctx(TrustAudience.Personal, autonomous: true);
 
         var stateFile = Path.Combine(customWorkspaces, "state.json");
@@ -184,7 +184,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
     [Fact]
     public void Autonomous_personal_with_empty_zone_fails_closed()
     {
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var ctx = TestToolExecutionContext.CreateBound("reminder/none", null, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
@@ -197,7 +197,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
     [Fact]
     public void Relative_path_uses_existing_project_directory()
     {
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var context = Ctx(TrustAudience.Personal, autonomous: false);
 
         Assert.True(policy.TryResolveReadPath(
@@ -207,7 +207,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
             out var error,
             out var failure), error);
         Assert.Equal(Path.GetFullPath(Path.Join(_projectDir, "src", "App.cs")), resolved);
-        Assert.Equal(ScopedFileAccessPolicy.PathResolutionFailure.None, failure);
+        Assert.Equal(PathAccessPolicy.PathAccessFailure.None, failure);
     }
 
     [Fact]
@@ -223,7 +223,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
                 InteractiveApproval = TestToolExecutionContext.InteractiveApproval(true),
                 ProjectDirectory = missingProject
             });
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
 
         Assert.True(policy.TryResolveWritePath(
             "notes/result.md",
@@ -232,7 +232,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
             out var error,
             out var failure), error);
         Assert.Equal(Path.GetFullPath(Path.Join(_sessionDir, "notes", "result.md")), resolved);
-        Assert.Equal(ScopedFileAccessPolicy.PathResolutionFailure.None, failure);
+        Assert.Equal(PathAccessPolicy.PathAccessFailure.None, failure);
     }
 
     [Fact]
@@ -243,7 +243,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
             Audience = TrustAudience.Personal,
             InheritedCwd = _projectDir
         });
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
 
         Assert.False(policy.TryResolveReadPath(
             "src/App.cs",
@@ -254,13 +254,13 @@ public sealed class AutonomousZoneClampTests : IDisposable
         Assert.Empty(resolved);
         Assert.Contains("invalid_context", error, StringComparison.Ordinal);
         Assert.DoesNotContain("set_working_directory", error, StringComparison.Ordinal);
-        Assert.Equal(ScopedFileAccessPolicy.PathResolutionFailure.MissingBase, failure);
+        Assert.Equal(PathAccessPolicy.PathAccessFailure.MissingBase, failure);
     }
 
     [Fact]
     public void Relative_traversal_is_canonicalized_before_scope_denial()
     {
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var context = Ctx(TrustAudience.Public, autonomous: true, withProject: false);
 
         Assert.False(policy.TryResolveReadPath(
@@ -270,13 +270,13 @@ public sealed class AutonomousZoneClampTests : IDisposable
             out _,
             out var failure));
         Assert.Equal(Path.GetFullPath(Path.Join(_sessionDir, "..", "outside.txt")), resolved);
-        Assert.Equal(ScopedFileAccessPolicy.PathResolutionFailure.AccessDenied, failure);
+        Assert.Equal(PathAccessPolicy.PathAccessFailure.AccessDenied, failure);
     }
 
     [Fact]
     public void Absolute_path_retains_existing_resolution()
     {
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var context = Ctx(TrustAudience.Personal, autonomous: false);
         var absolute = Path.GetFullPath(Path.Join(_outsideDir, "file.txt"));
 
@@ -287,14 +287,14 @@ public sealed class AutonomousZoneClampTests : IDisposable
             out var error,
             out var failure), error);
         Assert.Equal(absolute, resolved);
-        Assert.Equal(ScopedFileAccessPolicy.PathResolutionFailure.None, failure);
+        Assert.Equal(PathAccessPolicy.PathAccessFailure.None, failure);
     }
 
     [Fact(SkipUnless = nameof(IsWindows), Skip = "Native drive-relative path semantics require Windows.")]
     [SlopwatchSuppress("SW001", "This regression requires native Windows drive-relative and root-relative path semantics.")]
     public void Windows_relative_paths_use_project_but_partial_paths_fail_closed()
     {
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var context = Ctx(TrustAudience.Personal, autonomous: false);
 
         Assert.True(policy.TryResolveReadPath(
@@ -304,7 +304,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
             out var error,
             out var failure), error);
         Assert.Equal(Path.GetFullPath(Path.Join(_projectDir, "src", "App.cs")), resolved);
-        Assert.Equal(ScopedFileAccessPolicy.PathResolutionFailure.None, failure);
+        Assert.Equal(PathAccessPolicy.PathAccessFailure.None, failure);
 
         var drive = Path.GetPathRoot(_projectDir)![..2];
         Assert.False(policy.TryResolveReadPath(
@@ -313,7 +313,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
             out _,
             out _,
             out var driveRelativeFailure));
-        Assert.Equal(ScopedFileAccessPolicy.PathResolutionFailure.InvalidInput, driveRelativeFailure);
+        Assert.Equal(PathAccessPolicy.PathAccessFailure.InvalidInput, driveRelativeFailure);
 
         Assert.False(policy.TryResolveReadPath(
             @"\src\App.cs",
@@ -321,7 +321,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
             out _,
             out _,
             out var rootRelativeFailure));
-        Assert.Equal(ScopedFileAccessPolicy.PathResolutionFailure.InvalidInput, rootRelativeFailure);
+        Assert.Equal(PathAccessPolicy.PathAccessFailure.InvalidInput, rootRelativeFailure);
     }
 
     [Fact(SkipUnless = nameof(IsPosix), Skip = "Directory symlink creation is privilege-gated on Windows.")]
@@ -330,7 +330,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
     {
         var link = Path.Join(_projectDir, "escape");
         Directory.CreateSymbolicLink(link, _outsideDir);
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var context = Ctx(TrustAudience.Personal, autonomous: true);
 
         Assert.False(policy.TryResolveReadPath(
@@ -339,7 +339,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
             out _,
             out _,
             out var failure));
-        Assert.Equal(ScopedFileAccessPolicy.PathResolutionFailure.AccessDenied, failure);
+        Assert.Equal(PathAccessPolicy.PathAccessFailure.AccessDenied, failure);
     }
 
     [Fact(SkipUnless = nameof(IsPosix), Skip = "This case uses native POSIX link semantics.")]
@@ -348,7 +348,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
     {
         var projectLink = Path.Join(_dir.Path, "project-link");
         Directory.CreateSymbolicLink(projectLink, _outsideDir);
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var context = TestToolExecutionContext.CreateBound(
             "signalr/symlink-project-base",
             _sessionDir,
@@ -364,7 +364,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
             out _,
             out _,
             out var failure));
-        Assert.Equal(ScopedFileAccessPolicy.PathResolutionFailure.AccessDenied, failure);
+        Assert.Equal(PathAccessPolicy.PathAccessFailure.AccessDenied, failure);
     }
 
     [Fact(SkipUnless = nameof(IsPosix), Skip = "This case uses native POSIX link semantics.")]
@@ -400,7 +400,7 @@ public sealed class AutonomousZoneClampTests : IDisposable
         Directory.CreateSymbolicLink(link, target);
         var linkedProject = Path.Join(link, "project");
         var paths = new NetclawPaths(_dir.Path, workspaces);
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), paths, new ToolPathPolicy([]));
         var context = TestToolExecutionContext.CreateBound(
             "reminder/ancestor-link-project",
             _sessionDir,
@@ -419,6 +419,6 @@ public sealed class AutonomousZoneClampTests : IDisposable
             out _,
             out _,
             out var failure));
-        Assert.Equal(ScopedFileAccessPolicy.PathResolutionFailure.AccessDenied, failure);
+        Assert.Equal(PathAccessPolicy.PathAccessFailure.AccessDenied, failure);
     }
 }

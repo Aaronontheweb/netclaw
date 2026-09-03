@@ -27,8 +27,7 @@ public sealed partial class FileEditTool : NetclawTool<FileEditTool.Params>
 {
     public const string ToolName = "file_edit";
 
-    private readonly ToolPathPolicy _pathPolicy;
-    private readonly ScopedFileAccessPolicy _fileAccessPolicy;
+    private readonly PathAccessPolicy _pathAccessPolicy;
 
     public record Params(
         [property: Description("File path to edit. Relative paths use the current project, then session_dir.")] string Path,
@@ -39,8 +38,7 @@ public sealed partial class FileEditTool : NetclawTool<FileEditTool.Params>
 
     public FileEditTool(ToolConfig config, NetclawPaths paths, ToolPathPolicy pathPolicy)
     {
-        _pathPolicy = pathPolicy;
-        _fileAccessPolicy = new ScopedFileAccessPolicy(config, paths);
+        _pathAccessPolicy = new PathAccessPolicy(config, paths, pathPolicy);
     }
 
     protected override async Task<string> ExecuteAsync(Params args, ToolInvocationContext context, CancellationToken ct)
@@ -74,18 +72,11 @@ public sealed partial class FileEditTool : NetclawTool<FileEditTool.Params>
 
     internal async Task<string> WriteFileAsync(string path, string content, ToolInvocationContext context, CancellationToken ct)
     {
-        if (!_fileAccessPolicy.TryResolveWritePath(
-                path,
-                context,
-                out var authorizedPath,
-                out var accessError,
-                out var resolutionFailure))
-        {
-            return context.PathResolutionFailure(accessError, resolutionFailure);
-        }
+        var access = _pathAccessPolicy.Evaluate(path, context, PathAccessPolicy.FileOperation.Write);
+        if (!access.Allowed)
+            return context.PathAccessFailure(access.Error, access.Failure ?? PathAccessPolicy.PathAccessFailure.AccessDenied);
 
-        if (_pathPolicy.IsDenied(authorizedPath))
-            return context.AccessDenied(FileToolErrors.ControlPlaneWriteDenied(authorizedPath));
+        var authorizedPath = access.CanonicalPath;
 
         try
         {
@@ -120,18 +111,11 @@ public sealed partial class FileEditTool : NetclawTool<FileEditTool.Params>
 
     private async Task<string> EditFileAsync(string path, string oldString, string newString, bool replaceAll, ToolInvocationContext context, CancellationToken ct)
     {
-        if (!_fileAccessPolicy.TryResolveWritePath(
-                path,
-                context,
-                out var authorizedPath,
-                out var accessError,
-                out var resolutionFailure))
-        {
-            return context.PathResolutionFailure(accessError, resolutionFailure);
-        }
+        var access = _pathAccessPolicy.Evaluate(path, context, PathAccessPolicy.FileOperation.Write);
+        if (!access.Allowed)
+            return context.PathAccessFailure(access.Error, access.Failure ?? PathAccessPolicy.PathAccessFailure.AccessDenied);
 
-        if (_pathPolicy.IsDenied(authorizedPath))
-            return context.AccessDenied(FileToolErrors.ControlPlaneWriteDenied(authorizedPath));
+        var authorizedPath = access.CanonicalPath;
 
         if (!File.Exists(authorizedPath))
             return context.NotFound($"Error: File not found: {authorizedPath}");

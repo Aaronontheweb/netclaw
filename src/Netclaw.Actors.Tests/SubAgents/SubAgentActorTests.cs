@@ -804,7 +804,8 @@ public class SubAgentActorTests : TestKit
         var shell = new FakeNetclawTool(ShellTool.ToolName, "inspected");
         var setWorkingDirectory = new SetWorkingDirectoryTool(
             new ToolConfig(),
-            new NetclawPaths(workspacesDirectory, workspacesDirectory));
+            new NetclawPaths(workspacesDirectory, workspacesDirectory),
+            new ToolPathPolicy([]));
         var client = new SequencedToolCallChatClient(
         [
             ProjectScopeCall(firstCallId, worktree),
@@ -883,7 +884,8 @@ public class SubAgentActorTests : TestKit
         var controlledDirectory = Path.Combine(worktree, $"project-{controlCharacter}-candidate");
         var setWorkingDirectory = new SetWorkingDirectoryTool(
             new ToolConfig(),
-            new NetclawPaths(worktree, worktree));
+            new NetclawPaths(worktree, worktree),
+            new ToolPathPolicy([]));
         var client = new SequencedToolCallChatClient(
         [
             new FunctionCallContent(
@@ -1351,9 +1353,9 @@ public class SubAgentActorTests : TestKit
                 UsedStrictFallback: false),
             new ShellCommandPolicy(environment),
             new ToolPathPolicy(environment, []),
-            shellTrustZonePolicy: netclawHome is null
+            paths: netclawHome is null
                 ? null
-                : new ShellTrustZonePolicy(toolConfig, new NetclawPaths(netclawHome)));
+                : new NetclawPaths(netclawHome));
     }
 
     private static ToolAccessPolicy CreateManagedTemporaryCorrectionPolicy()
@@ -1401,7 +1403,8 @@ public class SubAgentActorTests : TestKit
                 : Path.Combine(worktree, "different-workspace-root");
             tools.Add(new SetWorkingDirectoryTool(
                 new ToolConfig(),
-                new NetclawPaths(allowedRoot, allowedRoot)));
+                new NetclawPaths(allowedRoot, allowedRoot),
+                new ToolPathPolicy([])));
         }
 
         var client = new FakeChatClient
@@ -1482,9 +1485,7 @@ public class SubAgentActorTests : TestKit
                 UsedStrictFallback: false),
             new ShellCommandPolicy(environment),
             new ToolPathPolicy(environment, []),
-            shellTrustZonePolicy: new ShellTrustZonePolicy(
-                toolConfig,
-                new NetclawPaths(workspacesDirectory, workspacesDirectory)),
+            paths: new NetclawPaths(workspacesDirectory, workspacesDirectory),
             safeVerbs: SafeVerbList.FromVerbs(approvalShell, safeVerbs));
     }
 

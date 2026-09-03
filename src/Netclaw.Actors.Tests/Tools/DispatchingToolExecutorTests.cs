@@ -1496,7 +1496,7 @@ public class DispatchingToolExecutorTests
             safeVerbs: SafeVerbList.FromVerbs(
                 ApprovalShell.Bash,
                 ["head"]),
-            shellTrustZonePolicy: new AllowAllShellTrustZonePolicy());
+            paths: new NetclawPaths("/", "/"));
         var call = new FunctionCallContent(
             "call-causal-intent-headless",
             "shell_execute",
@@ -3613,14 +3613,14 @@ public class DispatchingToolExecutorTests
         ILogger<DispatchingToolExecutor>? logger = null,
         SafeVerbList? safeVerbs = null,
         IEnumerable<string>? deniedPaths = null,
-        IShellTrustZonePolicy? shellTrustZonePolicy = null)
+        NetclawPaths? paths = null)
         => CreateApprovalGatedShellExecutor(
             ShellExecutionEnvironmentDefaults.Bash,
             approvalService,
             logger,
             safeVerbs,
             deniedPaths,
-            shellTrustZonePolicy);
+            paths);
 
     private static DispatchingToolExecutor CreateApprovalGatedShellExecutor(
         ShellExecutionEnvironment environment,
@@ -3628,13 +3628,13 @@ public class DispatchingToolExecutorTests
         ILogger<DispatchingToolExecutor>? logger = null,
         SafeVerbList? safeVerbs = null,
         IEnumerable<string>? deniedPaths = null,
-        IShellTrustZonePolicy? shellTrustZonePolicy = null)
+        NetclawPaths? paths = null)
     {
         var (registry, policy) = CreateApprovalGatedShellRegistryAndPolicy(
             environment,
             safeVerbs,
             deniedPaths,
-            shellTrustZonePolicy);
+            paths);
         return new DispatchingToolExecutor(
             registry,
             policy,
@@ -3948,7 +3948,7 @@ public class DispatchingToolExecutorTests
         ShellExecutionEnvironment environment,
         SafeVerbList? safeVerbs = null,
         IEnumerable<string>? deniedPaths = null,
-        IShellTrustZonePolicy? shellTrustZonePolicy = null)
+        NetclawPaths? paths = null)
     {
         var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
         config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
@@ -3976,7 +3976,7 @@ public class DispatchingToolExecutorTests
                 UsedStrictFallback: false),
             commandPolicy,
             pathPolicy,
-            shellTrustZonePolicy: shellTrustZonePolicy,
+            paths: paths,
             safeVerbs: safeVerbs);
         return (registry, policy);
     }
@@ -4166,12 +4166,6 @@ public class DispatchingToolExecutorTests
             registry,
             policy,
             context.Invocation);
-    }
-
-    private sealed class AllowAllShellTrustZonePolicy : IShellTrustZonePolicy
-    {
-        public bool IsShellWritePathAuthorized(string fullPath, ToolInvocationContext context)
-            => true;
     }
 
     private sealed class RecordingTool(INetclawTool inner) : INetclawTool

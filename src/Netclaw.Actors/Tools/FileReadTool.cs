@@ -40,8 +40,7 @@ public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
     public override bool SuppressOutputRedaction => true;
 
     private readonly ToolConfig _config;
-    private readonly ToolPathPolicy _pathPolicy;
-    private readonly ScopedFileAccessPolicy _fileAccessPolicy;
+    private readonly PathAccessPolicy _pathAccessPolicy;
     private readonly SkillRegistry? _skillRegistry;
     private readonly ISessionMetrics? _sessionMetrics;
     private readonly ILogger? _logger;
@@ -60,8 +59,7 @@ public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
         ILogger<FileReadTool>? logger = null)
     {
         _config = config;
-        _pathPolicy = pathPolicy;
-        _fileAccessPolicy = new ScopedFileAccessPolicy(config, paths);
+        _pathAccessPolicy = new PathAccessPolicy(config, paths, pathPolicy);
         _skillRegistry = skillRegistry;
         _sessionMetrics = sessionMetrics;
         _logger = logger;
@@ -72,18 +70,11 @@ public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
         if (string.IsNullOrWhiteSpace(args.Path))
             return context.InvalidInput("Error: 'path' parameter is required.");
 
-        if (!_fileAccessPolicy.TryResolveReadPath(
-                args.Path,
-                context,
-                out var authorizedPath,
-                out var accessError,
-                out var resolutionFailure))
-        {
-            return context.PathResolutionFailure(accessError, resolutionFailure);
-        }
+        var access = _pathAccessPolicy.Evaluate(args.Path, context, PathAccessPolicy.FileOperation.Read);
+        if (!access.Allowed)
+            return context.PathAccessFailure(access.Error, access.Failure ?? PathAccessPolicy.PathAccessFailure.AccessDenied);
 
-        if (_pathPolicy.IsReadDenied(authorizedPath))
-            return context.AccessDenied(FileToolErrors.CredentialReadDenied(authorizedPath));
+        var authorizedPath = access.CanonicalPath;
 
         if (!File.Exists(authorizedPath))
             return context.NotFound($"Error: File not found: {authorizedPath}");

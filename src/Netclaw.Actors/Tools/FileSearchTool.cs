@@ -25,8 +25,7 @@ public sealed partial class FileSearchTool : NetclawTool<FileSearchTool.Params>
     private const int DefaultContentBytes = 1024 * 1024;
     private const int MaximumExcerptChars = 400;
 
-    private readonly ToolPathPolicy _pathPolicy;
-    private readonly ScopedFileAccessPolicy _fileAccessPolicy;
+    private readonly PathAccessPolicy _pathAccessPolicy;
 
     public record Params(
         [property: Description("Authorized directory to search. Relative paths use the current project, then session_dir.")] string Root,
@@ -38,8 +37,7 @@ public sealed partial class FileSearchTool : NetclawTool<FileSearchTool.Params>
 
     public FileSearchTool(ToolConfig config, NetclawPaths paths, ToolPathPolicy pathPolicy)
     {
-        _pathPolicy = pathPolicy;
-        _fileAccessPolicy = new ScopedFileAccessPolicy(config, paths);
+        _pathAccessPolicy = new PathAccessPolicy(config, paths, pathPolicy);
     }
 
     protected override async Task<string> ExecuteAsync(Params args, ToolInvocationContext context, CancellationToken ct)
@@ -54,29 +52,19 @@ public sealed partial class FileSearchTool : NetclawTool<FileSearchTool.Params>
         if (!TryResolveLimits(args, out var limits, out var limitError))
             return context.InvalidInput(limitError);
 
-        if (!_fileAccessPolicy.TryResolveReadPath(
-                args.Root,
-                context,
-                out var root,
-                out var accessError,
-                out var resolutionFailure))
-        {
-            return context.PathResolutionFailure(accessError, resolutionFailure);
-        }
+        var access = _pathAccessPolicy.Evaluate(args.Root, context, PathAccessPolicy.FileOperation.Read);
+        if (!access.Allowed)
+            return context.PathAccessFailure(access.Error, access.Failure ?? PathAccessPolicy.PathAccessFailure.AccessDenied);
 
-        if (_pathPolicy.IsReadDenied(root))
-            return context.AccessDenied(FileToolErrors.CredentialReadDenied(root));
+        var root = access.CanonicalPath;
 
         if (!Directory.Exists(root))
             return context.NotFound($"Error: Directory not found: {root}");
 
-        if (IsReparsePoint(root))
-            return context.AccessDenied($"Error: Search root may not be a symbolic link: {root}");
-
         try
         {
             var state = new SearchState(root, args.Query, mode, limits);
-            await SearchAsync(state, ct);
+            await SearchAsync(state, context, ct);
             return context.Success(FormatResult(state));
         }
         catch (UnauthorizedAccessException ex)
@@ -125,7 +113,7 @@ public sealed partial class FileSearchTool : NetclawTool<FileSearchTool.Params>
         return true;
     }
 
-    private async Task SearchAsync(SearchState state, CancellationToken ct)
+    private async Task SearchAsync(SearchState state, ToolInvocationContext context, CancellationToken ct)
     {
         state.Pending.Add(state.Root);
         while (state.Pending.Count > 0)
@@ -140,7 +128,7 @@ public sealed partial class FileSearchTool : NetclawTool<FileSearchTool.Params>
                 continue;
             }
 
-            if (_pathPolicy.IsReadDenied(path))
+            if (!_pathAccessPolicy.Evaluate(path, context, PathAccessPolicy.FileOperation.Read).Allowed)
             {
                 state.SkippedEntries++;
                 continue;
@@ -305,18 +293,6 @@ public sealed partial class FileSearchTool : NetclawTool<FileSearchTool.Params>
             .Take(MaximumExcerptChars)
             .ToArray();
         return new string(buffer).Trim();
-    }
-
-    private static bool IsReparsePoint(string path)
-    {
-        try
-        {
-            return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0;
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return true;
-        }
     }
 
     private readonly record struct SearchLimits(int Results, int Entries, int ContentBytes);

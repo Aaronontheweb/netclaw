@@ -23,7 +23,7 @@ public sealed class SetWorkingDirectoryAudienceTests
     [Fact]
     public void Path_schema_describes_persistent_project_scope()
     {
-        var tool = new SetWorkingDirectoryTool(new ToolConfig(), new NetclawPaths());
+        var tool = new SetWorkingDirectoryTool(new ToolConfig(), new NetclawPaths(), new ToolPathPolicy([]));
         Assert.Contains("before tool work", tool.Description, StringComparison.Ordinal);
         Assert.Contains("before probing it", tool.Description, StringComparison.Ordinal);
         Assert.Contains("user-provided fallback", tool.Description, StringComparison.Ordinal);

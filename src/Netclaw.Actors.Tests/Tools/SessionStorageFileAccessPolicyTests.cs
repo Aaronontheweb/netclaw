@@ -6,6 +6,7 @@
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
+using Netclaw.Security;
 using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
 
@@ -16,7 +17,7 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
     private readonly DisposableTempDir _directory = new();
     private readonly NetclawPaths _paths;
     private readonly SessionStoragePaths _storage;
-    private readonly ScopedFileAccessPolicy _policy;
+    private readonly PathAccessPolicy _policy;
     private readonly ToolInvocationContext _context;
 
     public SessionStorageFileAccessPolicyTests()
@@ -26,7 +27,7 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
         var envelope = Path.Combine(_paths.SessionsDirectory, "current-session");
         _storage = SessionStoragePaths.CreateVersion2(
             new SessionStorageEnvelopeRoot(Path.GetFullPath(envelope)));
-        _policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        _policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         _context = TestToolExecutionContext.CreateBoundWithStorage(
             "signalr/current-session",
             _storage,

@@ -15,12 +15,12 @@ namespace Netclaw.Actors.Tools;
 /// the interactive approval gate). The policy covers a reviewed diagnostic
 /// only when all parser-owned source and scope guards pass.
 ///
-/// Mirrors <see cref="ScopedFileAccessPolicy"/> for the audience model and
+/// Mirrors <see cref="PathAccessPolicy"/> for the audience model and
 /// the symlink-segment guard. Personal and Team audiences get the current
 /// session roots plus <c>project_dir</c>; Public gets the current session
 /// roots only — Public sessions cannot expand their safe space
 /// via <c>set_working_directory</c>, mirroring the read-roots restriction
-/// <see cref="ScopedFileAccessPolicy"/> enforces for file_read.
+/// <see cref="PathAccessPolicy"/> enforces for file_read.
 ///
 /// The policy never relaxes the hard-deny list (layer 1) — that runs first
 /// in <see cref="ToolAccessPolicy"/>. It only relaxes the interactive
@@ -430,7 +430,7 @@ internal sealed class ScopedShellSafeVerbPolicy
 
         // Public audience cannot expand its safe space via project_dir —
         // mirrors the file_read read-roots restriction enforced by
-        // ScopedFileAccessPolicy. Even a Public session that has somehow
+        // PathAccessPolicy. Even a Public session that has somehow
         // populated WorkingContext.ProjectDirectory does not get to use it
         // as a shell safe-space root.
         if (context.Audience != TrustAudience.Public

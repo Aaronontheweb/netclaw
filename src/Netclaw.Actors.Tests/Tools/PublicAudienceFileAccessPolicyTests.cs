@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
+using Netclaw.Security;
 using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
 using Xunit;
@@ -12,7 +13,7 @@ using Xunit;
 namespace Netclaw.Actors.Tests.Tools;
 
 /// <summary>
-/// Verifies that <see cref="ScopedFileAccessPolicy"/> enforces audience-dependent
+/// Verifies that <see cref="PathAccessPolicy"/> enforces audience-dependent
 /// file root resolution. Public audience sessions must NOT receive global read roots
 /// (skills, identity, workspaces) — they are confined to their session directory.
 /// </summary>
@@ -38,10 +39,10 @@ public sealed class PublicAudienceFileAccessPolicyTests : IDisposable
     [Fact]
     public void Public_audience_read_roots_exclude_global_roots()
     {
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var publicContext = CreateContext(TrustAudience.Public);
 
-        var roots = policy.GetRootsForContext(publicContext, ScopedFileAccessPolicy.AccessKind.Read);
+        var roots = policy.GetTrustedRoots(publicContext, PathAccessPolicy.FileOperation.Read);
 
         // Public should only get session directory — no skills, identity, or workspaces
         Assert.DoesNotContain(roots, r =>
@@ -57,10 +58,10 @@ public sealed class PublicAudienceFileAccessPolicyTests : IDisposable
     [InlineData(TrustAudience.Personal)]
     public void Team_and_Personal_audience_read_roots_include_global_roots(TrustAudience audience)
     {
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var context = CreateContext(audience);
 
-        var roots = policy.GetRootsForContext(context, ScopedFileAccessPolicy.AccessKind.Read);
+        var roots = policy.GetTrustedRoots(context, PathAccessPolicy.FileOperation.Read);
 
         // Team and Personal should include global read roots
         Assert.Contains(roots, r =>
@@ -74,10 +75,10 @@ public sealed class PublicAudienceFileAccessPolicyTests : IDisposable
     [Fact]
     public void Public_audience_read_roots_include_session_directory()
     {
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var publicContext = CreateContext(TrustAudience.Public);
 
-        var roots = policy.GetRootsForContext(publicContext, ScopedFileAccessPolicy.AccessKind.Read);
+        var roots = policy.GetTrustedRoots(publicContext, PathAccessPolicy.FileOperation.Read);
 
         Assert.Contains(roots, r =>
             r.Equals(Normalize(_sessionDir), StringComparison.OrdinalIgnoreCase));
@@ -86,7 +87,7 @@ public sealed class PublicAudienceFileAccessPolicyTests : IDisposable
     [Fact]
     public void Public_audience_denied_path_error_does_not_leak_root_paths()
     {
-        var policy = new ScopedFileAccessPolicy(new ToolConfig(), _paths);
+        var policy = new PathAccessPolicy(new ToolConfig(), _paths, new ToolPathPolicy([]));
         var publicContext = CreateContext(TrustAudience.Public);
 
         // Try to read a file outside the session directory
@@ -116,7 +117,7 @@ public sealed class PublicAudienceFileAccessPolicyTests : IDisposable
             Mode = ToolFilesystemMode.None
         };
 
-        var policy = new ScopedFileAccessPolicy(toolConfig, _paths);
+        var policy = new PathAccessPolicy(toolConfig, _paths, new ToolPathPolicy([]));
         var publicContext = CreateContext(TrustAudience.Public);
 
         var path = Path.Combine(Path.GetTempPath(), "netclaw-public-denied.txt");
