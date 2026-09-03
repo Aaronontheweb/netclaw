@@ -474,6 +474,53 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     }
 
     [Fact]
+    public void Causal_intent_accepts_an_already_validated_root_alias()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var target = CreateTempDir("causal-target");
+        var alias = Path.Combine(_outsideDir, "causal-alias");
+        try
+        {
+            Directory.CreateSymbolicLink(alias, target);
+            var environment = ShellExecutionEnvironmentDefaults.Bash;
+            var command = $"cd {alias} && inspect > result.log 2>&1; head result.log";
+            var analysis = new ShellCommandAnalyzer(environment).Analyze(command, _projectDir);
+            var matcher = new ShellApprovalMatcher(environment);
+            Assert.True(BashCausalApprovalIntent.TryProject(
+                environment,
+                analysis,
+                matcher,
+                path => PathUtility.IsWithinRoot(path, alias),
+                out var causalCandidates));
+
+            var source = causalCandidates[^1];
+            var projected = new ShellPolicyCandidate(
+                new ShellPolicyCandidateId(0),
+                source.Candidate,
+                source.SourceOccurrence)
+            {
+                Role = source.Role,
+                IntentDirectory = source.IntentDirectory
+            };
+            var facts = Assert.Single(ShellPolicyPathFacts.Create(
+                [projected],
+                ShellPathStyle.Posix));
+            var policy = new ScopedShellSafeVerbPolicy(VerbList("head"));
+
+            Assert.True(policy.ShortCircuitsCausalIntent(
+                projected,
+                facts,
+                PersonalContext(projectDir: _projectDir)));
+        }
+        finally
+        {
+            SafeDelete(target);
+        }
+    }
+
+    [Fact]
     public void Candidate_path_outside_safe_spaces_falls_through_to_prompt()
     {
         var policy = new ScopedShellSafeVerbPolicy(VerbList("cat"));

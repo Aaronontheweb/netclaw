@@ -119,7 +119,8 @@ internal sealed class ScopedShellSafeVerbPolicy
         ApprovalCandidate candidate,
         CommandOccurrence? sourceOccurrence,
         IReadOnlyList<string> safeRoots,
-        ShellPolicyResolvedPathView? resolvedPaths)
+        ShellPolicyResolvedPathView? resolvedPaths,
+        bool includeSafeRootInLinkCheck = true)
     {
         if (candidate is not
             {
@@ -146,7 +147,8 @@ internal sealed class ScopedShellSafeVerbPolicy
         return AllAuthoredPathsStayWithinRoots(
             resolvedPaths,
             shell,
-            safeRoots);
+            safeRoots,
+            includeSafeRootInLinkCheck);
     }
 
     internal bool ShortCircuitsCausalIntent(
@@ -171,7 +173,8 @@ internal sealed class ScopedShellSafeVerbPolicy
                 candidate,
                 projected.SourceOccurrence,
                 [intentPath.Value],
-                pathFacts.Intent))
+                pathFacts.Intent,
+                includeSafeRootInLinkCheck: false))
         {
             return false;
         }
@@ -263,7 +266,8 @@ internal sealed class ScopedShellSafeVerbPolicy
     private static bool AllAuthoredPathsStayWithinRoots(
         ShellPolicyResolvedPathView? resolvedPaths,
         ApprovalShell shell,
-        IReadOnlyList<string> safeRoots)
+        IReadOnlyList<string> safeRoots,
+        bool includeSafeRootInLinkCheck)
     {
         if (resolvedPaths is null)
             return false;
@@ -286,7 +290,8 @@ internal sealed class ScopedShellSafeVerbPolicy
                     !safeRoots.Any(root => IsSafePath(
                         path.Value,
                         root,
-                        path.PathStyle))))
+                        path.PathStyle,
+                        includeSafeRootInLinkCheck))))
             {
                 return false;
             }
