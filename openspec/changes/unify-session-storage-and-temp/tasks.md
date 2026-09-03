@@ -42,6 +42,9 @@
 - [x] 5.3 Remove unconditional foreign-session denial; verify Personal `Mode.All` and configured Team or Public roots can inspect another session when ordinary policy permits it
 - [x] 5.4 Use an active-writer-compatible read share mode for `file_read` and `file_search`; verify active Windows and POSIX writers continue after a read
 - [x] 5.5 Validate every trusted root segment, including the root itself, against symbolic-link, junction, and reparse-point escape; cover `workspace`, `logs`, `tmp`, `artifacts`, `worktrees`, and legacy roots
+- [ ] 5.6 Inventory every filesystem path term, policy type, decision method, and call site; map each item to path facts, path authority, or remediation and identify whether it survives, merges, or is removed
+- [ ] 5.7 Replace competing root terms and Boolean path decisions with the shared glossary and typed path decision contract; make file tools, shell approval, and managed-temp correction use the same evaluator
+- [ ] 5.8 Treat the Netclaw sessions directory as an inherited trusted root for parent and child runs; verify one session can analyze another session's logs when audience and operation permissions allow it
 
 ## 6. Compose Git Worktrees from Existing Tools
 

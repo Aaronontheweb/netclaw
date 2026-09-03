@@ -21,9 +21,10 @@ use separate directory trees.
 - Treat the complete current session envelope as an implicit trusted root for
   parent and child runs. Existing file tools apply their ordinary audience and
   operation permissions inside it.
-- Inherit configured trusted roots into parent and child runs. A path in
-  another session is neither automatically allowed nor automatically denied;
-  ordinary trusted-root and audience policy decides access.
+- Store all session directories below the trusted Netclaw sessions root.
+  Parent and child runs inherit this root, so they can access other sessions
+  under normal audience and operation permissions. This supports a session
+  that analyzes another session's logs on a heavily used Netclaw agent.
 - Set `TMPDIR`, `TMP`, and `TEMP` for each parent and child execution scope.
   The values must identify that run's managed temporary directory.
 - Retire the ambiguous “session scratch” vocabulary. Use `session_dir` for the

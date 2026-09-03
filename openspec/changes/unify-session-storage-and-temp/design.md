@@ -95,6 +95,63 @@ tool authorization stages.
 Counterexample: A prompt cannot replace steps 1 through 8. A compliant model
 does not prove that the runtime injected or enforced these values.
 
+### Consolidate filesystem path decisions
+
+The current implementation uses competing terms and policy helpers for the
+same filesystem questions. The final implementation will use one vocabulary
+and one shared path decision contract.
+
+The contract separates three responsibilities:
+
+| Responsibility | Input | Output |
+|---|---|---|
+| Path facts | A raw path | Its canonical path, link state, and relationship to a trusted root |
+| Path authority | Path facts, operation, audience, and trusted roots | A typed allow or deny decision with a reason |
+| Remediation | A denied request and trusted runtime guidance | Optional advice that grants no authority |
+
+The source of a path does not create another safety model. A structured file
+argument, shell syntax fact, working directory, and temporary-path candidate
+all use the same path facts and path authority contract.
+
+The target glossary uses these terms:
+
+- **Canonical path:** A normalized absolute path. Canonical form grants no
+  authority.
+- **Trusted root:** A directory boundary that an invocation can use for a
+  specified operation.
+- **Path relationship:** Whether the canonical path is the trusted root, is a
+  descendant, or is outside it.
+- **File operation:** The requested read, list, search, write, edit, attach,
+  working-directory, or execution use.
+- **Path access decision:** A typed allow or deny result with the canonical
+  path, matched root, and reason.
+
+Terms such as `safe root`, `authority root`, `safe-space root`, `autonomous
+zone`, and `current-session root` will not define competing path models. The
+inventory will map each existing type and call site to the common contract
+before the implementation changes.
+
+The Netclaw sessions directory is a trusted root for every parent and child
+run. All session directories are below this root and are accessible to other
+sessions under normal audience and operation permissions. This design lets
+one session analyze another session's logs, which supports diagnosis on a
+heavily used Netclaw agent.
+
+```text
+file argument or shell path fact
+  -> canonical path and trusted-root relationship
+  -> audience plus operation decision
+  -> allow, deny, or optional remediation after denial
+```
+
+**Counterexample:** Session identity does not create a separate access-control
+list. The shared sessions root provides containment, while audience and
+operation permissions still control the requested action.
+
+**Counterexample:** Temporary-path detection does not decide path authority.
+It can propose `temp_dir` only after the common path decision denies the
+original destination.
+
 ### Bind one physical session storage envelope
 
 Layout version 2 will place all new session-owned files below one persisted
