@@ -1711,7 +1711,8 @@ internal sealed class ApprovalGateToolExecutor : IToolExecutor
     public int SuccessfulExecutions => _successfulExecutions;
 
     public System.Collections.Concurrent.ConcurrentQueue<Netclaw.Tools.AuthorizationAttemptId>
-        AuthorizationAttempts { get; } = new();
+        AuthorizationAttempts
+    { get; } = new();
 
     public TaskCompletionSource<object?> BlockedExecutionStarted { get; private set; } =
         new(TaskCreationOptions.RunContinuationsAsynchronously);

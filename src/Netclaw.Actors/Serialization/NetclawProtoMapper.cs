@@ -570,22 +570,22 @@ internal static class NetclawProtoMapper
 
     private static Proto.SessionSnapshotProto.Types.AdoptedContextSnapshotRecord.Types.AdoptedContextSnapshotMessage
         ToAdoptedContextSnapshotMessage(SessionSnapshot.AdoptedContextSnapshotRecord.AdoptedContextSnapshotMessage m) => new()
-    {
-        MessageId = m.MessageId,
-        SenderId = m.SenderId.Value,
-        TimestampMs = m.TimestampMs,
-        AuthorityAtInclusion = m.AuthorityAtInclusion
-    };
+        {
+            MessageId = m.MessageId,
+            SenderId = m.SenderId.Value,
+            TimestampMs = m.TimestampMs,
+            AuthorityAtInclusion = m.AuthorityAtInclusion
+        };
 
     private static SessionSnapshot.AdoptedContextSnapshotRecord.AdoptedContextSnapshotMessage
         FromAdoptedContextSnapshotMessage(
             Proto.SessionSnapshotProto.Types.AdoptedContextSnapshotRecord.Types.AdoptedContextSnapshotMessage proto) => new()
-    {
-        MessageId = proto.MessageId,
-        SenderId = new SenderId(proto.SenderId),
-        TimestampMs = proto.TimestampMs,
-        AuthorityAtInclusion = proto.AuthorityAtInclusion
-    };
+            {
+                MessageId = proto.MessageId,
+                SenderId = new SenderId(proto.SenderId),
+                TimestampMs = proto.TimestampMs,
+                AuthorityAtInclusion = proto.AuthorityAtInclusion
+            };
 
     // ── WorkingContext ──
 
@@ -749,21 +749,21 @@ internal static class NetclawProtoMapper
 
     private static Proto.AdoptedContextRecordedProto.Types.AdoptedMessageRecordProto ToAdoptedMessageRecord(
         AdoptedContextRecorded.AdoptedMessageRecord m) => new()
-    {
-        MessageId = m.MessageId,
-        SenderId = m.SenderId.Value,
-        TimestampMs = m.TimestampMs,
-        AuthorityAtInclusion = m.AuthorityAtInclusion
-    };
+        {
+            MessageId = m.MessageId,
+            SenderId = m.SenderId.Value,
+            TimestampMs = m.TimestampMs,
+            AuthorityAtInclusion = m.AuthorityAtInclusion
+        };
 
     private static AdoptedContextRecorded.AdoptedMessageRecord FromAdoptedMessageRecord(
         Proto.AdoptedContextRecordedProto.Types.AdoptedMessageRecordProto proto) => new()
-    {
-        MessageId = proto.MessageId,
-        SenderId = new SenderId(proto.SenderId),
-        TimestampMs = proto.TimestampMs,
-        AuthorityAtInclusion = proto.AuthorityAtInclusion
-    };
+        {
+            MessageId = proto.MessageId,
+            SenderId = new SenderId(proto.SenderId),
+            TimestampMs = proto.TimestampMs,
+            AuthorityAtInclusion = proto.AuthorityAtInclusion
+        };
 
     // ── CursorAdvanced ──
 

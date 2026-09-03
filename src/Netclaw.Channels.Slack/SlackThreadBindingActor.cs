@@ -222,7 +222,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
 
         CommandAny(_ =>
         {
-                Stash.Stash();
+            Stash.Stash();
         });
     }
 

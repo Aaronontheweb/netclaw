@@ -281,14 +281,14 @@ internal static class SlackApprovalBlockBuilder
                 _ => "Resolved"
             }
             : selectedKey switch
-        {
-            ApprovalOptionKeys.ApproveAlways => "Saved: always here",
-            ApprovalOptionKeys.ApproveEverywhere => "Saved: always anywhere",
-            ApprovalOptionKeys.ApproveSession => "Saved for this chat",
-            ApprovalOptionKeys.ApproveOnce => "Approved (no save)",
-            ApprovalOptionKeys.Deny => "Denied",
-            _ => "Resolved"
-        };
+            {
+                ApprovalOptionKeys.ApproveAlways => "Saved: always here",
+                ApprovalOptionKeys.ApproveEverywhere => "Saved: always anywhere",
+                ApprovalOptionKeys.ApproveSession => "Saved for this chat",
+                ApprovalOptionKeys.ApproveOnce => "Approved (no save)",
+                ApprovalOptionKeys.Deny => "Denied",
+                _ => "Resolved"
+            };
 
     /// <summary>
     /// Builds the prompt's header line. Single-verb invocations collapse the

@@ -107,8 +107,8 @@ public sealed class SessionCatalogService : ISessionLifecycleObserver
             EnsureSchemaUpToDate(conn, _logger);
 
             using var cmd = conn.CreateCommand();
-                cmd.CommandText =
-                    """
+            cmd.CommandText =
+                """
                     UPDATE sessions SET
                     status = 'inactive'
                 WHERE persistence_id = $pid
