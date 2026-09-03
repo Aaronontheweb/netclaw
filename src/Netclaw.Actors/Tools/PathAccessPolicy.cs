@@ -6,6 +6,7 @@
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
+using ShellSyntaxTree;
 
 namespace Netclaw.Actors.Tools;
 
@@ -120,6 +121,99 @@ internal sealed class PathAccessPolicy
         }
 
         return AllowIfUnprotected(canonicalPath, profileOperation);
+    }
+
+    /// <summary>
+    /// Evaluates one parser-resolved input to a reviewed diagnostic command.
+    /// Reviewed diagnostics are read-only and receive only the session and
+    /// declared-project trusted roots; they do not inherit broader global read
+    /// roots or the interactive Personal filesystem reach.
+    /// </summary>
+    public PathAccessDecision EvaluateReviewedDiagnosticRead(
+        string canonicalPath,
+        ToolInvocationContext context,
+        ShellPathStyle pathStyle,
+        string? proposedProjectRoot = null,
+        bool includeRootInLinkCheck = true)
+    {
+        var profile = _profileResolver.ResolveProfile(context);
+        if (profile.WriteFiles.Mode == ToolFilesystemMode.None)
+        {
+            return PathAccessDecision.Deny(
+                "Error: Shell access is not allowed by this audience profile.",
+                PathAccessFailure.AccessDenied,
+                canonicalPath);
+        }
+
+        var roots = new List<string>();
+        AddSessionRoots(roots, context);
+        if (context.Audience != TrustAudience.Public)
+        {
+            if (!string.IsNullOrWhiteSpace(context.ProjectDirectory))
+                roots.Add(context.ProjectDirectory);
+            if (!string.IsNullOrWhiteSpace(proposedProjectRoot))
+                roots.Add(proposedProjectRoot);
+        }
+
+        foreach (var root in roots.Distinct(PathComparer))
+        {
+            try
+            {
+                var normalizedPath = string.Empty;
+                var normalizedRoot = string.Empty;
+                var usesShellPathStyle = ShellPathRules.TryNormalize(canonicalPath, pathStyle, out normalizedPath)
+                                         && ShellPathRules.TryNormalize(root, pathStyle, out normalizedRoot);
+                if (usesShellPathStyle
+                    && !ShellPathRules.IsWithinRoot(normalizedPath, normalizedRoot, pathStyle))
+                {
+                    continue;
+                }
+
+                if (!usesShellPathStyle)
+                {
+                    if (!Path.IsPathFullyQualified(canonicalPath)
+                        || !Path.IsPathFullyQualified(root))
+                    {
+                        continue;
+                    }
+
+                    normalizedPath = PathUtility.Normalize(canonicalPath);
+                    normalizedRoot = PathUtility.Normalize(root);
+                    if (!PathUtility.IsNormalizedWithinRoot(normalizedPath, normalizedRoot))
+                        continue;
+                }
+
+                if ((!usesShellPathStyle || ShellPathRules.UsesHostPathStyle(pathStyle))
+                    && PathUtility.ContainsSymlinkSegment(
+                        normalizedRoot,
+                        normalizedPath,
+                        includeRootInLinkCheck))
+                {
+                    return PathAccessDecision.Deny(
+                        "Error: Path crosses a filesystem link inside a trusted root.",
+                        PathAccessFailure.AccessDenied,
+                        normalizedPath);
+                }
+
+                return AllowIfUnprotected(normalizedPath, FileOperation.Read);
+            }
+            catch (Exception ex) when (ex is ArgumentException
+                                           or IOException
+                                           or NotSupportedException
+                                           or UnauthorizedAccessException
+                                           or System.Security.SecurityException)
+            {
+                return PathAccessDecision.Deny(
+                    "Error: Path relationship could not be verified.",
+                    PathAccessFailure.AccessDenied,
+                    canonicalPath);
+            }
+        }
+
+        return PathAccessDecision.Deny(
+            "Error: Path is outside trusted roots.",
+            PathAccessFailure.AccessDenied,
+            canonicalPath);
     }
 
     public bool TryResolveReadPath(string rawPath, ToolInvocationContext context, out string fullPath, out string error)

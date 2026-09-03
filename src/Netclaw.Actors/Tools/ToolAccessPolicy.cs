@@ -99,7 +99,16 @@ public sealed class ToolAccessPolicy
             : new PathAccessPolicy(toolConfig, paths, toolPathPolicy);
         _fileApprovalMatcher = fileApprovalMatcher ?? DefaultApprovalMatcher.Instance;
         _featureGates = featureGates ?? FeatureGates.AllEnabled;
-        _safeVerbPolicy = safeVerbs is not null ? new ScopedShellSafeVerbPolicy(safeVerbs) : null;
+        if (safeVerbs is not null && _pathAccessPolicy is null)
+        {
+            throw new ArgumentException(
+                "Netclaw paths are required when reviewed-safe shell verbs are configured.",
+                nameof(paths));
+        }
+
+        _safeVerbPolicy = safeVerbs is null
+            ? null
+            : new ScopedShellSafeVerbPolicy(safeVerbs, _pathAccessPolicy!);
         _platformTemporaryScopePolicy = platformTemporaryScopePolicy;
     }
 

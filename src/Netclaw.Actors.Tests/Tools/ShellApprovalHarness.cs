@@ -94,7 +94,7 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
             Guid.NewGuid().ToString("N"));
         var projectDirectory = Path.Combine(rootDirectory, "project");
         var sessionDirectory = Path.Combine(rootDirectory, "session");
-        var externalDirectory = Path.Combine(rootDirectory, "external");
+        var externalDirectory = Path.Combine(rootDirectory, "workspaces", "external");
         Directory.CreateDirectory(projectDirectory);
         Directory.CreateDirectory(sessionDirectory);
         Directory.CreateDirectory(externalDirectory);
@@ -108,7 +108,7 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
             var windowsRoot = $"C:/netclaw-approval-matrix/{Guid.NewGuid():N}";
             approvalProjectDirectory = $"{windowsRoot}/project";
             approvalSessionDirectory = $"{windowsRoot}/session";
-            approvalExternalDirectory = $"{windowsRoot}/external";
+            approvalExternalDirectory = $"{windowsRoot}/workspaces/external";
         }
 
         var approvalShell = environment.Grammar == ShellGrammar.Bash
