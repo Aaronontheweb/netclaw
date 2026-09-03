@@ -38,13 +38,12 @@
 ## 5. Compose Session Data Access from Existing File Tools
 
 - [x] 5.1 Extend successful `spawn_agent` outcomes with the child run identifier, exact child log path, and exact child artifact directory; create the log target before success and verify failed spawns contain no usable child location
-- [x] 5.2 Remove the special same-session log scope and child ownership ACL. Use the current session plus inherited trusted roots and existing audience and operation permissions for `file_read`, `file_list`, `file_search`, `file_write`, `file_edit`, and `attach_file`
-- [x] 5.3 Remove unconditional foreign-session denial; verify Personal `Mode.All` and configured Team or Public roots can inspect another session when ordinary policy permits it
+- [ ] 5.2 Remove the special same-session log scope and child ownership ACL. Use the common path access decision for `file_read`, `file_list`, `file_search`, `file_write`, `file_edit`, and `attach_file`
+- [ ] 5.3 Supply the Netclaw sessions directory as a trusted root to every parent and child run; verify one session can analyze another session's logs when audience and operation permissions allow it
 - [x] 5.4 Use an active-writer-compatible read share mode for `file_read` and `file_search`; verify active Windows and POSIX writers continue after a read
-- [x] 5.5 Validate every trusted root segment, including the root itself, against symbolic-link, junction, and reparse-point escape; cover `workspace`, `logs`, `tmp`, `artifacts`, `worktrees`, and legacy roots
+- [ ] 5.5 Validate every trusted root and canonical path against symbolic-link, junction, and reparse-point escape through the common path access decision
 - [ ] 5.6 Inventory every filesystem path term, OpenSpec requirement, policy type, decision method, and call site; map each item to one owner and identify whether it survives, merges, or is removed
 - [ ] 5.7 Condense the four affected delta specs around one owning requirement, then replace competing root terms and Boolean path decisions with one shared contract; remove duplicate helpers, call sites, and tests
-- [ ] 5.8 Treat the Netclaw sessions directory as an inherited trusted root for parent and child runs; verify one session can analyze another session's logs when audience and operation permissions allow it
 
 ## 6. Compose Git Worktrees from Existing Tools
 
@@ -71,7 +70,7 @@
 
 ## 9. Documentation and Release Verification
 
-- [x] 9.1 Update the engineering glossary, current session-storage documentation, active OpenSpec text, operator runbooks, and eval runbooks with the revised root model, `worktree_dir`, and readable ordinary configuration; remove stale claims that agents cannot read logs or that foreign sessions are always denied
+- [ ] 9.1 Condense the engineering glossary, active OpenSpec text, and runbooks around the shared path access decision; remove duplicate authority terms and stale session-isolation claims
 - [x] 9.2 Update the implementation plan and release notes for the versioned layout, managed temp environment, composed worktree workflow, and independent structured-read policy; verify public text contains no private provider, hardware, host, or user detail
 - [x] 9.3 Remove or correct evidence that used changed prompts or assertions as a locked comparison, remove invalid headless results, and record exact evidence revisions without changing archived evidence
 - [x] 9.4 Run `openspec validate unify-session-storage-and-temp --strict`, focused tests, `dotnet build -c Release`, `dotnet test -c Release`, header verification, and Slopwatch; report existing skipped tests accurately instead of claiming zero skips

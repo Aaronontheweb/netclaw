@@ -24,8 +24,8 @@ the child tool calls, generated paths, and completion rather than relying on
 response prose.
 
 This eval SHALL measure model alignment only. It SHALL NOT serve as proof that
-the environment was injected, that trusted-root containment works, that a
-managed path grants authority, or that a headless run exercised interactive
+the environment was injected, that trusted-root containment works, that
+managed-path guidance grants authority, or that a headless run exercised interactive
 approval.
 
 #### Scenario: Example - delegated work uses standard temp behavior
@@ -164,8 +164,8 @@ results SHALL take precedence. One call SHALL return at most one correction.
 
 - **GIVEN** the native Windows environment captured its actual platform
   temporary root before managed environment injection
-- **WHEN** an eligible call explicitly authors that exact root or a safe
-  descendant
+- **WHEN** an eligible call explicitly authors that exact root or a canonical
+  descendant that crosses no filesystem link
 - **THEN** the agent receives the same typed correction with its Windows
   managed temporary path
 - **AND** the policy does not depend on `C:\Windows\Temp` or another fixed

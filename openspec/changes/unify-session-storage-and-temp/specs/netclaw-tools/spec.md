@@ -8,8 +8,8 @@ This delta uses terms from the
 A successful `spawn_agent` result SHALL return the child run identifier, an
 exact child log path, and the exact child artifact directory. These paths SHALL
 be below the current session envelope, so the parent can compose existing file
-tools under normal current-session root and audience policy. A failed spawn
-SHALL NOT return locations that appear usable.
+tools through the shared path access decision. A failed spawn SHALL NOT return
+locations that appear usable.
 
 The system SHALL resolve and create the child log target before it returns a
 successful result. The log can be empty. An immediate authorized `file_read`
@@ -35,7 +35,7 @@ artifact_dir: "/srv/netclaw/sessions/s-42/subagents/run-7/artifacts"
 - **GIVEN** a successful spawn returned the child artifact directory
 - **WHEN** the owning parent calls `file_read` or `attach_file` for a file below
   that directory
-- **THEN** current-session root authority can satisfy the path check
+- **THEN** the shared path access decision evaluates the file operation
 - **AND** no new artifact-reference reader is required
 
 #### Scenario: Example - parent reads child logs with existing tools
@@ -49,8 +49,8 @@ artifact_dir: "/srv/netclaw/sessions/s-42/subagents/run-7/artifacts"
 
 - **GIVEN** the parent audience permits reads but not writes
 - **WHEN** it calls `file_write` or `file_edit` for that log
-- **THEN** current-session containment does not authorize the mutation
-- **AND** normal write policy decides the call
+- **THEN** the `Write` path access decision denies the mutation
+- **AND** the trusted-root relationship does not change that result
 
 #### Scenario: Counterexample - failed spawn has no usable child references
 
@@ -64,76 +64,67 @@ artifact_dir: "/srv/netclaw/sessions/s-42/subagents/run-7/artifacts"
 - **THEN** the returned log path identifies an existing file
 - **AND** an authorized `file_read` can open it immediately
 
-### Requirement: Existing file tools can inspect session data
+### Requirement: One path access decision owns filesystem authorization
+
+`netclaw-tools` SHALL own one path access decision for structured file tools,
+project-directory declarations, and shell path facts. The decision SHALL use:
+
+- the canonical path;
+- its relationship to a trusted root;
+- the requested file operation;
+- the audience policy; and
+- protected-path and filesystem-link results.
+
+The decision SHALL return an allowed or denied result with one reason. A
+caller SHALL NOT repeat root assembly, containment, or filesystem-link policy.
 
 The existing `file_read`, `file_search`, `file_list`, `file_write`,
-`file_edit`, and `attach_file` tools SHALL accept session-data paths when the
-effective roots, audience profile, and operation permissions authorize the
-call. Each tool SHALL keep its existing bounds, pagination, query, and
-approval contract. This capability SHALL NOT add a new tool, ownership ACL, or
-log-specific query language.
+`file_edit`, and `attach_file` tools SHALL use this decision. They SHALL keep
+their existing output, pagination, query, and approval contracts.
 
-The current session envelope SHALL be an implicit trusted root. Parent and
-child runs SHALL inherit configured trusted roots. A path in another session
-SHALL use those normal roots and permissions; it SHALL NOT receive a special
-allow or deny because it is session data.
+The Netclaw sessions root SHALL be a trusted root for parent and child runs.
+A path in another session SHALL use the same decision as any other path below
+that root. Session identity SHALL NOT add another access-control rule.
 
-The existing file tools SHALL return their normal file content. The system
-SHALL NOT add a log-specific redaction or projection layer. Existing file-tool
-output bounds and audience policy SHALL still apply.
+The system SHALL NOT add a log-specific tool, ownership check, projection, or
+query language. `file_read` and `file_search` SHALL remain compatible with an
+active log writer on POSIX and Windows.
 
-`file_read` and `file_search` SHALL support an active session-log writer on
-POSIX and Windows. Their read handles SHALL NOT block the writer or fail only
-because the writer keeps its append handle open.
+#### Scenario: Example - one session reads another session's log
 
-#### Scenario: Example - parent reads the next child log page
+- **GIVEN** the audience permits `file_read`
+- **AND** two sessions are below the Netclaw sessions root
+- **WHEN** one session requests the other session's canonical log path
+- **THEN** one `Read` path access decision allows the request
+- **AND** `file_read` applies its normal output bounds
 
-- **GIVEN** a parent receives the child log path from `spawn_agent`
-- **WHEN** it calls `file_read` with `StartLine=1` and a bounded `Limit`
-- **THEN** the tool returns that normal line range
-- **AND** the parent can request the next range with a later `StartLine`
+#### Scenario: Example - parent searches a child log
 
-#### Scenario: Example - parent searches child logs with an existing tool
+- **GIVEN** a parent receives a child log path from `spawn_agent`
+- **WHEN** it calls `file_search` for that path
+- **THEN** the shared path access decision evaluates the request
+- **AND** the parent needs no shell or log-specific tool
 
-- **GIVEN** a parent receives a child log path
-- **WHEN** it calls `file_search` on that path's directory in content mode
-- **THEN** the tool returns its normal bounded matches
-- **AND** the parent does not need a shell search
+#### Scenario: Example - an active Windows log remains readable
 
-#### Scenario: Example - agent lists its session logs
-
-- **GIVEN** an agent can use `file_list` in its current session root
-- **WHEN** it calls `file_list` for its session log area
-- **THEN** the tool lists paths below the requested authorized directory
-- **AND** it applies its normal result limit
-
-#### Scenario: Example - active Windows log remains readable
-
-- **GIVEN** the session-log writer holds its normal append handle open
+- **GIVEN** a log writer holds its append handle open
 - **WHEN** `file_read` or `file_search` opens that log on Windows
-- **THEN** the read succeeds with the normal file-tool result
+- **THEN** the read succeeds
 - **AND** the writer can append and flush another line
 
-#### Scenario: Counterexample - same-session log gets no special projection
+#### Scenario: Counterexample - a trusted root does not grant every operation
 
-- **GIVEN** a same-session log contains normal session diagnostic content
-- **WHEN** an authorized agent reads it with `file_read`
-- **THEN** the tool returns its normal bounded file content
-- **AND** Netclaw does not replace it with a log-specific activity view
+- **GIVEN** an audience permits `Read` but denies `Write`
+- **WHEN** it requests both operations for one path below a trusted root
+- **THEN** the shared decision allows the read
+- **AND** it denies the write
 
-#### Scenario: Example - configured root covers another session
+#### Scenario: Counterexample - a filesystem link cannot escape
 
-- **GIVEN** an agent's configured trusted root contains another session log
-- **WHEN** its audience and file-read permissions allow the operation
-- **THEN** the existing file tool can read that path
-- **AND** no foreign-session override is required
-
-#### Scenario: Example - log path survives parent recovery
-
-- **GIVEN** a parent received a child log path before an actor restart
-- **WHEN** the recovered parent reads that path
-- **THEN** the recovered current-session root authorizes the same child path
-- **AND** the existing file tool applies its current output limits
+- **GIVEN** a path below a trusted root crosses a filesystem link outside it
+- **WHEN** any file operation requests that path
+- **THEN** the shared decision denies the request
+- **AND** no caller can bypass that result with another path policy
 
 ### Requirement: Git worktrees compose existing tools
 
@@ -142,8 +133,8 @@ Agents SHALL create Git worktrees by calling `shell_execute` with a destination
 below that directory. Normal shell authorization SHALL decide the command.
 After Git succeeds, the agent SHALL use the existing
 `set_working_directory` tool to adopt the created worktree as project scope.
-The destination's current-session root authority SHALL dovetail with shell
-access; it SHALL NOT use a separate worktree permission.
+The shared path access decision and normal shell authorization SHALL decide
+the destination. The operation SHALL NOT use a separate worktree permission.
 
 The system SHALL NOT add `worktree_create`, a worktree-specific authorization
 model, or a worktree ownership record. It SHALL NOT parse private Git option

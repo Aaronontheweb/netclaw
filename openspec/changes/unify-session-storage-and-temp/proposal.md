@@ -29,7 +29,7 @@ use separate directory trees.
   The values must identify that run's managed temporary directory.
 - Retire the ambiguous “session scratch” vocabulary. Use `session_dir` for the
   working and relative-path base, `temp_dir` for disposable run-local files,
-  and “session-owned directory” only for approval rules that cover both.
+  and the exact named storage path in approval rules.
 - Preserve the existing `[session]` context block. Extend it with `temp_dir`,
   `artifact_dir`, `worktree_dir`, and `log_path` instead of adding another
   context mechanism.
@@ -93,8 +93,7 @@ directory. The parent passes the path to `file_read`, `file_search`, or
 `file_list`. Those tools apply their normal output limits and session policy.
 
 Counterexample: The parent does not need a special child-log tool or a shell
-search. A different session can read the path only when its ordinary trusted
-roots and audience permissions already allow that file operation.
+search. Another session uses the same path access decision for that log.
 
 Counterexample: Netclaw does not redefine `{session_dir}` as the complete
 envelope. That token also participates in write and attach profiles.

@@ -176,142 +176,55 @@ SHALL use `<session-envelope>/logs/session.log` for the parent and
 - **THEN** it uses the daemon-global log location
 - **AND** it is not written to a session envelope
 
-### Requirement: Current session is an implicit trusted root
+### Requirement: Session storage supplies the shared sessions root
 
-The system SHALL treat the complete current session storage envelope as an
-implicit trusted root for every parent and child run in that session. It SHALL
-also inherit the configured trusted roots into those runs. Existing audience
-profiles and per-operation tool permissions SHALL decide whether a run can
-read, list, search, write, edit, attach, or execute against a path below an
-effective root. Shell syntax analysis, approval policy, and tool exposure SHALL
-still apply.
+The system SHALL store every new session envelope below the trusted Netclaw
+sessions root. Parent and child runs SHALL receive this root as filesystem
+authorization input. The session capability SHALL supply storage paths and
+SHALL NOT decide file-operation authority.
 
-The effective filesystem authority SHALL be:
+Existing unbound sessions SHALL keep their established data paths. The system
+SHALL also supply the legacy session-log root while those sessions remain
+supported. It SHALL NOT move or copy legacy files.
 
-```text
-current session envelope
-+ inherited configured trusted roots
-+ current audience and operation permissions
-```
+The `netclaw-tools` capability SHALL own the path access decision. Session
+identity SHALL NOT add another allow list, deny list, or ownership check.
 
-The system SHALL NOT add a log-specific read scope, child-artifact ownership
-ACL, foreign-session override, or managed-data exception. A path in another
-Netclaw session SHALL use the same ordinary root and audience rules as any
-other path. Personal `Mode.All` can therefore inspect another session when its
-normal roots cover that path. Team and Public runs can do so only when their
-configured roots and file-tool permissions cover it.
+This shared root intentionally lets one session analyze another session's
+logs. Audience policy and file-operation permissions still decide each
+request.
 
-For an existing unbound session, the system SHALL derive the current-session
-implicit roots from the unchanged legacy session and log locations. It SHALL
-NOT move or copy legacy files to make them accessible.
+#### Scenario: Example - all new sessions share one trusted root
 
-The default no-project working directory SHALL remain `workspace/`. The
-implementation SHALL NOT redefine `{session_dir}` as the session envelope or
-use the complete envelope as the default shell cwd. Root authority SHALL NOT be
-treated as unconditional shell approval. Existing link, reparse-point,
-protected-path, and control-plane checks SHALL still apply.
+- **GIVEN** sessions `s-1` and `s-2` use version 2
+- **WHEN** the system creates their envelopes
+- **THEN** both envelopes are descendants of the Netclaw sessions root
+- **AND** parent and child runs receive that common root
 
-This requirement defines Netclaw application authorization. It SHALL NOT be
-documented or tested as OS-level containment of an arbitrary process that has
-already received execution authority under the Netclaw identity.
+#### Scenario: Example - one session analyzes another session's log
 
-#### Scenario: Example - default recursive search stays in workspace
+- **GIVEN** a run can use `file_read` under the Netclaw sessions root
+- **WHEN** it requests the canonical log path for another session
+- **THEN** `netclaw-tools` evaluates one `Read` path access decision
+- **AND** session identity adds no separate restriction
 
-- **GIVEN** a version-2 session has no project scope
-- **WHEN** a shell starts without an explicit working directory
-- **THEN** its cwd is `<session-envelope>/workspace`
-- **AND** a recursive search of `.` does not include the sibling `logs/` or
-  `subagents/` areas by directory containment
+#### Scenario: Counterexample - storage location does not grant an operation
 
-#### Scenario: Example - agent reads its own session log
+- **GIVEN** an audience cannot use `file_write`
+- **WHEN** it requests a write below the sessions root
+- **THEN** the path relationship does not grant the write
+- **AND** `netclaw-tools` denies the operation
 
-- **GIVEN** an agent uses a version-2 session envelope
-- **WHEN** it calls `file_read` for its main session log
-- **THEN** current-session root authority permits the path
-- **AND** `file_read` applies its normal output bounds
+#### Scenario: Counterexample - the sessions root is not a shell grant
 
-#### Scenario: Example - parent reads a child log
-
-- **GIVEN** a parent owns child run `run-7`
-- **WHEN** it calls `file_search` on the returned log path's directory
-- **THEN** current-session root authority permits the path
-- **AND** no special log tool is required
-
-#### Scenario: Example - child reads another log in the same session
-
-- **GIVEN** child runs `run-7` and `run-8` belong to one session
-- **WHEN** `run-7` reads the main log or the log for `run-8`
-- **THEN** current-session root authority permits the path
-- **AND** the request remains subject to normal file-tool limits
-
-#### Scenario: Example - legacy session keeps readable log paths
-
-- **GIVEN** an existing unbound session uses separate data and log roots
-- **WHEN** its parent or child calls an existing file tool for a resolved
-  same-session log path
-- **THEN** its derived current-session roots permit the operation
-- **AND** no file moves into a new envelope
-
-#### Scenario: Example - trusted root can cover another session
-
-- **GIVEN** a Personal run has ordinary read authority for a configured root
-  that contains another Netclaw session
-- **WHEN** it calls `file_read` for that session's log
-- **THEN** normal trusted-root and read policy decides the call
-- **AND** the path is not denied only because it belongs to another session
-
-#### Scenario: Counterexample - path knowledge does not grant mutation
-
-- **GIVEN** an audience profile permits `file_read` but not `file_write`
-- **WHEN** it calls `file_write` or `file_edit` for a log path
-- **THEN** current-session containment does not authorize that operation
-- **AND** normal write policy decides the call
-
-#### Scenario: Example - child artifact uses ordinary file authority
-
-- **GIVEN** a parent receives a child artifact path below its current session
-- **WHEN** it uses an existing file tool allowed by its audience profile
-- **THEN** current-session root authority permits the path
-- **AND** no child ownership record or artifact-specific reader is required
-
-#### Scenario: Counterexample - linked path cannot escape current-session root
-
-- **GIVEN** a same-session log directory contains a filesystem link to another
-  session
-- **WHEN** an agent reads, lists, or searches through that link
-- **THEN** existing path safety policy denies the operation
-- **AND** current-session authority does not bypass that denial
-
-#### Scenario: Counterexample - trusted root itself cannot be a link escape
-
-- **GIVEN** `logs`, `tmp`, `artifacts`, `worktrees`, `workspace`, or a legacy
-  current-session root is a symbolic link, junction, or reparse point outside
-  its expected parent
-- **WHEN** a file tool resolves a path through that root
-- **THEN** containment validation denies the operation
-- **AND** validation does not skip the trusted root segment itself
-
-#### Scenario: Counterexample - envelope is not the default shell cwd
-
-- **GIVEN** an agent can read logs in its session envelope
-- **WHEN** policy selects a default shell cwd
-- **THEN** it uses the session directory or existing project scope
-- **AND** it does not use the complete envelope merely because that envelope is
-  an effective trusted root
-
-#### Scenario: Example - shell can target the session worktree area
-
-- **GIVEN** an audience can use `shell_execute`
-- **AND** its current session root contains `worktree_dir`
-- **WHEN** a shell call targets a path below `worktree_dir`
-- **THEN** normal shell root checks recognize the path as inside the current
-  session
-- **AND** normal syntax, hard-deny, and approval rules still decide execution
+- **GIVEN** a shell path is below the sessions root
+- **WHEN** the agent submits a shell command
+- **THEN** normal shell syntax and approval policy still apply
+- **AND** storage membership alone does not authorize execution
 
 #### Scenario: Counterexample - this layout is not a process sandbox
 
-- **GIVEN** an arbitrary process has already received execution authority as
-  the Netclaw OS identity
-- **WHEN** it learns a same-session log path
-- **THEN** this storage layout alone does not claim to stop the OS file open
-- **AND** a future containment capability must define that stronger boundary
+- **GIVEN** a process already runs as the Netclaw operating-system identity
+- **WHEN** it learns a session path
+- **THEN** the storage layout does not claim to block an operating-system file open
+- **AND** a separate containment capability must define that stronger boundary

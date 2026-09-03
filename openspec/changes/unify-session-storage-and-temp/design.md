@@ -32,7 +32,7 @@ default root from moving to `/tmp` or `%TEMP%` in this change.
   child runs.
 - Let agents inspect authorized session data and ordinary configuration through
   existing file tools.
-- Make standard temporary APIs resolve to a session-owned directory.
+- Make standard temporary APIs resolve to the managed temporary directory.
 - Preserve existing session path behavior without migrating its files.
 - Give worktrees a managed location and compose creation from existing tools.
 - Keep all authority decisions outside model prose.
@@ -61,11 +61,10 @@ Each state item has one owner and one lifetime.
 |---|---|---|---|
 | Storage binding | Shared session storage resolver | Durable | Ingress, session paths, log dispatcher, child run scope |
 | Managed temporary path | Parent or child run scope | Run lifetime; files persist until later cleanup | Process environment and working context |
-| Captured host temporary root | Shell approval policy | Daemon process lifetime | Generic path comparison |
+| Captured host temporary root | Managed-temp remediation policy | Daemon process lifetime | Temporary-destination comparison |
 | Managed-temp correction key | Parent or child actor | One user turn | Approval bridge |
 | Session log paths | Session storage resolver | Durable session lifetime | Existing context assembly, file tools, and `spawn_agent` |
 | Session log records | Log dispatcher | Durable file lifetime | Same-session file-tool reads |
-| Effective trusted roots | Parent or child run scope | Run lifetime | Existing file-tool authorization |
 
 The model does not own any authority state. Model text can request a new call,
 but it cannot change a root, grant, or correction key.
@@ -226,7 +225,7 @@ that choice remains subject to the current doctor warning.
 raw log all resolve below `subagents/run-7/` in the parent's envelope.
 
 **Counterexample:** Netclaw does not use the complete envelope as the default
-shell cwd. Current-session root authority also does not bypass shell syntax,
+shell cwd. A trusted-root relationship also does not bypass shell syntax,
 hard-deny, or approval policy.
 
 ### Bind one envelope only for new-layout sessions
@@ -248,17 +247,12 @@ ResolvedSessionStorage
   WorktreeDirectory
   ParentRawLogPath
   Child(run_id) -> child artifact, temporary, and raw-log paths
-  CurrentSessionRoots -> normalized envelope or established legacy roots
 ```
 
 Consumers receive `ResolvedSessionStorage`; they do not branch on "legacy" or
 "unified" themselves. Only the shared resolver knows whether it used a stored
 binding or the unchanged existing-session path rules. This keeps path selection
 out of ingress, actor, tool, and logging call sites.
-
-The resolver also supplies current-session roots for either path strategy. The
-file policy consumes those roots from the existing invocation context. It does
-not reconstruct storage paths from current configuration.
 
 The shared resolver will persist the binding before the first new-layout
 filesystem side effect. A child will receive it in its immutable run scope. The
@@ -356,35 +350,16 @@ resolution. This avoids turning high-volume logging into repeated write-lock
 traffic.
 
 The `spawn_agent` result will return the child run ID, exact child log path,
-and exact child artifact directory. Existing file tools can read, list, and
-search those paths after ordinary root and audience authorization. They keep
-their normal output bounds and pagination.
+and exact child artifact directory. Existing file tools keep their normal
+output bounds and pagination.
 
-This design composes existing tools. It does not add a log reader, a new query
-language, ownership ACL, or second output contract. The complete current
-session envelope becomes an implicit trusted root. Parent and child runs also
-inherit configured trusted roots. Existing tool exposure, audience profiles,
-operation permissions, protected-path policy, and approval rules still apply.
+The shared `netclaw-tools` path access decision authorizes these paths. The
+Netclaw sessions root covers all new session envelopes. The legacy log root
+remains available while legacy sessions exist.
 
-The effective rule is:
-
-```text
-effective file access
-  = current session envelope
-  + inherited configured trusted roots
-  + audience and operation permissions
-```
-
-This is one root model, not a separate log or child-artifact exception. It lets
-an authorized parent use `file_read` on a child log, `attach_file` on a child
-artifact, or `file_search` over its own session data. It does not turn a
-read-only audience into a writer.
-
-For an unbound existing session, the resolver supplies its established session
-and log roots without moving those files. A path in another Netclaw session
-uses the same ordinary trusted-root policy as any other path. Personal
-`Mode.All` can inspect it when the normal root covers it. Team and Public can
-inspect it only when their configured roots and tool permissions cover it.
+This design adds no log reader, query language, ownership list, or output
+contract. One session can inspect another session's log when its audience and
+requested file operation permit access.
 
 ```text
 spawn_agent result
@@ -408,18 +383,11 @@ must not fail because the path is not ready.
 parent does not need `find`, `grep`, or `cat`. It uses `file_read` on the path.
 It can use `file_search` or `file_list` on the path's directory.
 
-**Example:** An operator uses a Personal session to diagnose another session.
-If the configured root and file-read permission cover that path, Netclaw does
-not add a foreign-session denial.
+**Example:** One Personal session uses `file_read` to diagnose another
+session's log below the shared sessions root.
 
 **Counterexample:** The implementation does not replace `{session_dir}` with
-the envelope root. The current session root enters invocation authority as a
-separate context value, and per-operation permissions remain unchanged.
-
-Every root must pass canonical containment checks, including the root segment
-itself. A `logs`, `tmp`, `artifacts`, `worktrees`, or `workspace` directory that
-is a symbolic link, junction, or reparse point outside the envelope is not a
-valid shortcut around authority.
+the sessions root. That token remains the relative-path base.
 
 ### Give each run one managed temporary environment
 
@@ -492,11 +460,11 @@ implementation will classify each use before renaming it.
 |---|---|---|
 | Default no-project cwd and relative-path base | session directory; `session_dir` | `ToolExecutionContext.SessionDirectory`, file-tool schemas, cwd fallback |
 | Disposable run-local files | managed temporary directory; `temp_dir` | platform-temp correction, model guidance, process environment |
-| Session-specific directory unsuitable for a durable folder grant | session-owned directory | approval-option pruning and runbooks |
+| Session storage path unsuitable for a durable folder grant | exact named storage path | approval-option pruning and runbooks |
 
 The correction pipeline will use the second meaning. It will replace
-`UseSessionScratch` with `UseManagedTemporaryDirectory`, and its trusted path
-will be the run's exact `temp_dir`, not `session_dir`. Correction, retry,
+`UseSessionScratch` with `UseManagedTemporaryDirectory`. Its canonical
+remediation destination will be the run's exact `temp_dir`, not `session_dir`. Correction, retry,
 approval-context, parent-actor, and child-actor type names will use
 `ManagedTemporaryDirectory` or `ManagedTemp` consistently.
 
@@ -504,9 +472,9 @@ File tools use the first meaning. Their schemas will say that relative paths
 resolve against the current project and then the session directory. They will
 not claim that the session directory is disposable scratch.
 
-Approval-option pruning uses the third meaning. The implementation will state
-which session-owned directories suppress a reusable folder grant. It will not
-carry the name “session scratch” after the paths have distinct purposes.
+Approval-option pruning uses the third meaning. The implementation will name
+which storage paths suppress a reusable folder grant. It will not create
+another filesystem authority term.
 
 One persisted approval field currently stores `session_scratch_directory` at
 protobuf field 19. The implementation will retain that field as legacy-read-only
@@ -542,10 +510,10 @@ The initial source audit identifies these implementation groups:
 | Durable pending approvals | `ToolApprovalState`, `SessionProtocol.Events`, `netclaw_messages.proto`, `NetclawProtoMapper` | Add the new field, retain field 19 as legacy-read-only, and test recovery without reinterpretation |
 | Model-visible guidance | shipped `AGENTS.md`, `SessionMessageAssembler`, `SubAgentActor`, `ToolChoiceGuidance`, `ShellTool` | Extend the existing session block with `temp_dir`, `artifact_dir`, `worktree_dir`, and `log_path`; preserve current `session_dir` assembly |
 | Workspace file schemas | `FileReadTool`, `FileListTool`, `FileSearchTool`, `FileWriteTool`, `FileEditTool`, `AttachFileTool` | Replace “session scratch” with “session directory” for relative-path fallback |
-| Session data access | `ToolExecutionContext`, `ScopedFileAccessPolicy`, `FileReadTool`, `FileSearchTool`, `SessionLogActor` | Add the current session and inherited trusted roots to ordinary file authority; use a writer-compatible file share mode |
+| Session data access | `ToolExecutionContext`, `PathAccessPolicy`, `FileReadTool`, `FileSearchTool`, `SessionLogActor` | Use the shared sessions root and one path access decision; use a writer-compatible file share mode |
 | Ordinary config reads | `ToolPathPolicy`, `DaemonToolPathPolicyFactory`, configuration persistence and validation | Separate structured read denies from broad shell indicators; allow validated `netclaw.json`; keep secret and control-plane files denied |
 | Background-job recovery | `BackgroundJobDefinitionStore`, `BackgroundJobManagerActor` | Read records without managed-temp metadata; keep existing `Lost` transition and notification semantics |
-| Approval scopes and prompts | `ApprovalBucketBuilder`, `ToolAccessPolicy`, Slack and Discord approval builders, approval runbook | Name the broader rule “session-owned directory” and define which roots suppress persistent folder grants |
+| Approval scopes and prompts | `ApprovalBucketBuilder`, `ToolAccessPolicy`, Slack and Discord approval builders, approval runbook | Name each storage path that suppresses a persistent folder grant |
 | Verification | actor, policy, serialization, approval-rehydration, TUI, configuration, and daemon test projects | Rename fixtures and add distinct `session_dir` versus `temp_dir` assertions |
 
 **Counterexample:** A global replacement from `SessionScratchDirectory` to
@@ -771,17 +739,16 @@ That pass does not prove environment injection, access control, or recovery.
 - **A rollback cannot understand the new binding.** -> Keep pre-feature binary
   support for new-layout sessions out of scope. Existing sessions remain
   compatible because their paths do not move.
-- **The model tries to read a same-session log.** -> Return the exact path and
-  apply ordinary current-session root and audience permissions.
+- **The model tries to read a session log.** -> Return the exact path and apply
+  the shared path access decision.
 - **The model tries to change a log.** -> Apply ordinary write and edit policy;
   read permission is not write permission.
-- **The model tries to read another session.** -> Apply ordinary inherited-root
-  and audience policy; do not add a foreign-session exception.
+- **The model tries to read another session.** -> Use the shared sessions root,
+  audience policy, and requested file operation.
 - **A file tool reads while the log writer stays open.** -> Use a compatible
   read share mode and test the active writer on Windows and POSIX.
-- **An implementation widens `{session_dir}` to the envelope.** -> Keep the
-  existing token unchanged and carry the current session root separately in
-  invocation authority.
+- **An implementation widens `{session_dir}` to the sessions root.** -> Keep
+  the token as the relative-path base and supply authority separately.
 - **An approved arbitrary process knows a raw-log path.** -> Treat this change
   as an application authority boundary, not an OS sandbox. Add process
   containment only through a separate security design.
