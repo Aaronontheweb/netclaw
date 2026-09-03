@@ -105,7 +105,7 @@ The contract separates three responsibilities:
 | Responsibility | Input | Output |
 |---|---|---|
 | Path facts | A raw path | Its canonical path, link state, and relationship to a trusted root |
-| Path authority | Path facts, operation, audience, and trusted roots | A typed allow or deny decision with a reason |
+| Path access decision | Path facts, operation, audience, and trusted roots | A typed allow or deny decision with a reason |
 | Remediation | A denied request and trusted runtime guidance | Optional advice that grants no authority |
 
 Each capability has one policy owner:
@@ -114,7 +114,7 @@ Each capability has one policy owner:
 |---|---|---|
 | Filesystem authorization | `netclaw-tools` | Session layout and approval presentation |
 | Trusted sessions root and named directories | `netclaw-session` | File-operation authorization |
-| Working and managed temporary directory selection | `session-cwd` | General path authority |
+| Working and managed temporary directory selection | `session-cwd` | Common path access decision |
 | Approval and remediation after authorization | `tool-approval-gates` | Path normalization and containment |
 
 Other specifications SHALL reference the owning requirement. They SHALL NOT
@@ -122,7 +122,7 @@ repeat its policy with different terms or another decision path.
 
 The source of a path does not create another safety model. A structured file
 argument, shell syntax fact, working directory, and temporary-path candidate
-all use the same path facts and path authority contract.
+all use the same path facts and path access decision contract.
 
 The target glossary uses these terms:
 
@@ -163,7 +163,8 @@ file argument or shell path fact
 list. The shared sessions root provides containment, while audience and
 operation permissions still control the requested action.
 
-**Counterexample:** Temporary-path detection does not decide path authority.
+**Counterexample:** Temporary-path detection does not produce a path access
+decision.
 It can propose `temp_dir` only after the common path decision denies the
 original destination.
 
@@ -523,7 +524,7 @@ the new disposable directory. That is a semantic migration bug, not a rename.
 ### Extend the existing correction with one managed-temp code
 
 `UseManagedTemporaryDirectory` will be a closed remediation code. The
-correction presenter will name the exact managed path from trusted invocation
+remediation presenter will name the exact managed path from trusted invocation
 context.
 
 The correction applies only when Netclaw has a generic fact that proves the

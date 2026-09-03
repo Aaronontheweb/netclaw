@@ -31,7 +31,7 @@ model
        -> authorization
        -> tool implementation
        -> factual result -> redaction and output bound --+
-       -> ToolInvocationReceipt --------------------------+---> correction presenter
+       -> ToolInvocationReceipt --------------------------+---> remediation presenter
                                                            -> model-facing result
 
 ToolInvocationReceipt
@@ -42,7 +42,7 @@ An approval request pauses this flow before tool execution. It does not create
 a terminal receipt. Caller cancellation also propagates without a receipt or
 model-facing failure. For another terminal exception, the dispatcher first
 classifies the receipt. The parent or child actor then creates the factual
-failure result and applies the same correction presenter before model delivery.
+failure result and applies the same remediation presenter before model delivery.
 
 ## Goals / Non-Goals
 

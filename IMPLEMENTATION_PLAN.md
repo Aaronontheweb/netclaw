@@ -332,7 +332,7 @@ Done when:
   file-search gap.
 - [x] A sanitized subagent eval proves that a different user-named project is
   declared before the child's first multi-command shell inspection. Absolute
-  path operands remain exact scopes, but do not create a safe-space root. The
+  path operands remain exact scopes, but do not create a trusted root. The
   configured evaluation endpoint passed 4/5 runs. The assertion
   orders declaration before two exact successful shell calls and verifies the
   reported layout and build file. One run used one-shot scope without declaring

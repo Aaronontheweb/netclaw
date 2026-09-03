@@ -26,14 +26,14 @@ model
        -> optional approval request
        -> tool implementation
        -> factual tool result -> redaction and output bound --+
-       -> internal tool receipt ------------------------------+---> correction presenter
+       -> internal tool receipt ------------------------------+---> remediation presenter
                                                                   -> model-facing result
 
 internal tool receipt
   -> optional actor working-context update
 ```
 
-The result and receipt are sibling outputs of execution. The correction
+The result and receipt are sibling outputs of execution. The remediation
 presenter can use both to build the final model-facing result. The actor uses a
 successful receipt only when that receipt contains a defined state effect.
 
@@ -42,7 +42,7 @@ A terminal non-cancellation exception follows a different delivery branch:
 ```text
 dispatcher classifies the receipt and throws
   -> parent or child actor creates the factual failure result
-  -> correction presenter
+  -> remediation presenter
   -> model-facing result
 ```
 
@@ -292,9 +292,9 @@ receipt:
 The prose phrase "typed remediation" means that the receipt uses this enum. It
 does not mean that Netclaw executes the action or grants new authority.
 
-### Correction presenter
+### Remediation presenter
 
-The correction presenter converts a valid remediation code into one fixed model
+The remediation presenter converts a valid remediation code into one fixed model
 instruction. It does not inspect arguments, execute tools, or grant authority.
 
 **Code anchor:** `ToolRemediationPresenter`
@@ -489,7 +489,7 @@ Git worktree can contain valuable source state.
 
 Netclaw announces this path in the existing session context. Agents compose
 `shell_execute` and `set_working_directory` to create and adopt Git worktrees.
-The path uses ordinary current-session shell authority. It does not create a
+The path uses the ordinary shell path access decision. It does not create a
 special worktree tool or bypass shell syntax, hard-deny, or approval policy.
 
 ### Child run directory
@@ -497,7 +497,7 @@ special worktree tool or bypass shell syntax, hard-deny, or approval policy.
 A child run directory is the area below
 `<session-envelope>/subagents/<run-id>` for one subagent run. Its artifact,
 temporary, and raw-log areas share the same opaque run identifier. The parent
-and child use ordinary current-session root authority to inspect it.
+and child use the ordinary path access decision to inspect it.
 
 ### Session-owned directory
 
@@ -516,6 +516,10 @@ file-operation, link, or protected-path check.
 The `netclaw-tools` capability owns the trusted-root interpretation and the
 filesystem authorization decision. Session and cwd capabilities only supply
 roots and candidate paths.
+
+Stable machine-readable reason codes can retain legacy tokens such as
+`trust_zone`. These tokens are compatibility keys, not current engineering
+terms. Specifications and operator prose must use the canonical terms here.
 
 ### Ordinary configuration
 

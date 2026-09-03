@@ -1,7 +1,7 @@
 ## 1. Lock the Evidence Baseline
 
 - [x] 1.1 Record PII-free pre-change results for the unchanged managed-temp and explicit-path cases; identify the binary, prompt, tool surface, model configuration, and assertion revision
-- [x] 1.2 Add deterministic contract tests for every revised acceptance boundary: storage collision resistance, journal-only legacy discovery, current-session and inherited-root authority, root-segment link escape, old background-job JSON, composed worktree flow, and readable ordinary configuration
+- [x] 1.2 Add deterministic contract tests for every revised acceptance boundary: storage collision resistance, journal-only legacy discovery, current-session and inherited trusted roots, root-segment link escape, old background-job JSON, composed worktree flow, and readable ordinary configuration
 - [x] 1.3 Add sanitized fixtures for observed parent-to-child log discovery failures and explicit POSIX temp writes; verify the PII audit finds no user, repository, channel, thread, host, email, token, or secret
 
 ## 2. Add Versioned Session Storage
@@ -73,6 +73,6 @@
 - [ ] 9.1 Condense the engineering glossary, active OpenSpec text, and runbooks around the shared path access decision; remove duplicate authority terms and stale session-isolation claims
 - [x] 9.2 Update the implementation plan and release notes for the versioned layout, managed temp environment, composed worktree workflow, and independent structured-read policy; verify public text contains no private provider, hardware, host, or user detail
 - [x] 9.3 Remove or correct evidence that used changed prompts or assertions as a locked comparison, remove invalid headless results, and record exact evidence revisions without changing archived evidence
-- [x] 9.4 Run `openspec validate unify-session-storage-and-temp --strict`, focused tests, `dotnet build -c Release`, `dotnet test -c Release`, header verification, and Slopwatch; report existing skipped tests accurately instead of claiming zero skips
+- [ ] 9.4 Run `openspec validate unify-session-storage-and-temp --strict`, focused tests, `dotnet build -c Release`, `dotnet test -c Release`, header verification, and Slopwatch; report existing skipped tests accurately instead of claiming zero skips
 - [ ] 9.5 Upgrade one existing session and restart one newly bound session; verify established and new paths remain usable, active writers remain healthy, paths stay stable, and no data is moved or deleted
 - [ ] 9.6 Harvest sanitized live traffic after the swap and classify remaining temp, log-discovery, worktree, configuration-read, and approval-friction patterns; add evidence to the corpus only after manual PII review

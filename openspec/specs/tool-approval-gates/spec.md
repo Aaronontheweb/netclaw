@@ -557,7 +557,7 @@ global entries. Unknown or synthetic-only scope SHALL omit `Always here`.
 - **THEN** folder coverage fails
 - **AND** protected-path policy denies when applicable
 
-### Requirement: Reviewed diagnostic auto-allow in declared safe spaces
+### Requirement: Reviewed diagnostic auto-allow below trusted roots
 
 The system SHALL load an embedded immutable per-platform policy catalog.
 `ReviewedDiagnostic` SHALL classify only the shell-authored invocation.
@@ -573,11 +573,12 @@ Redirects, parser-owned filesystem values, provider paths, and unknown shell
 expansions SHALL remain separate strict effects. Bounded shell-local output
 variables MAY remain eligible. Any unresolved later use SHALL remain strict.
 
-Safe policy SHALL refine only uncovered candidates. It SHALL require reviewed
-phrase coverage, an allowed real or eligible intent scope, no symlink segment,
-no writing redirect, and no unknown explicit path fact. Hard deny and protected
-paths SHALL run first. Personal and Team safe roots SHALL be session directory
-plus declared project directory. Public SHALL use session directory only.
+Reviewed-safe policy SHALL refine only uncovered candidates. It SHALL require
+reviewed phrase coverage and an allowed real or eligible intent scope. It SHALL
+also require no symlink segment, writing redirect, or unknown explicit path
+fact. Hard deny and protected paths SHALL run first. Personal and Team SHALL
+use the session and declared project trusted roots. Public SHALL use the
+session trusted root only.
 
 `find`, `awk`, `rg`, and `sort` SHALL not be reviewed-safe. Production policy
 code SHALL contain no executable-specific flag exceptions. PowerShell provider
@@ -591,7 +592,8 @@ An authored argument before the matched phrase completes SHALL prevent
 reviewed-safe coverage. The check SHALL use parser-owned element order.
 
 A known `AuthoredPathShape` SHALL be conservative negative evidence only.
-Every represented authored value SHALL resolve beneath an eligible safe root.
+Every represented authored value SHALL resolve beneath an applicable trusted
+root.
 Unknown or unsupported domains SHALL prevent reviewed-safe coverage. A lexical
 path shape SHALL NOT create filesystem authority.
 
@@ -606,7 +608,7 @@ unsupported, or contradictory domains SHALL keep reviewed-safe policy strict.
 - **GIVEN** `head` is reviewed safe
 - **AND** its real scope is under a Personal project root
 - **WHEN** every earlier stage passes
-- **THEN** safe policy covers that candidate
+- **THEN** reviewed-safe policy covers that candidate
 
 #### Scenario: Global argument before a reviewed phrase stays strict
 
@@ -615,7 +617,7 @@ unsupported, or contradictory domains SHALL keep reviewed-safe policy strict.
 - **THEN** reviewed-safe policy does not cover the candidate
 - **AND** Netclaw does not parse Git's private option grammar
 
-#### Scenario: Hidden option path outside the safe root stays strict
+#### Scenario: Hidden option path outside trusted roots stays strict
 
 - **GIVEN** `grep` is a reviewed diagnostic phrase
 - **AND** ShellSyntaxTree marks `/tmp/patterns` with a POSIX path shape
@@ -623,10 +625,10 @@ unsupported, or contradictory domains SHALL keep reviewed-safe policy strict.
 - **THEN** reviewed-safe policy does not cover the candidate
 - **AND** lexical path shape creates no new authority
 
-#### Scenario: Path-shaped data beneath the safe root can remain eligible
+#### Scenario: Path-shaped data beneath a trusted root can remain eligible
 
 - **GIVEN** a reviewed diagnostic receives `example/project` as data
-- **AND** its possible local-path interpretation stays beneath the safe root
+- **AND** its possible local-path interpretation stays beneath a trusted root
 - **WHEN** all stronger shell facts pass
 - **THEN** lexical path shape alone does not reject the candidate
 
@@ -689,12 +691,12 @@ SHALL use built-in `web_fetch`, not a shell HTTP client.
 - **AND** shell HTTP clients are not used for either operation
 - **AND** it does not classify web search as local shell work
 
-#### Scenario: Exact path scope does not declare a safe root
+#### Scenario: Exact path scope does not declare a trusted root
 
 - **GIVEN** an agent has no declared project root for a user-named project
 - **WHEN** a shell candidate contains an absolute path beneath that project
 - **THEN** the path can provide the candidate's exact policy scope
-- **AND** it does not add that project as a safe-space root
+- **AND** it does not add that project as a trusted root
 - **AND** model guidance tells the agent to call `set_working_directory` before
   the first shell or file tool call in that project
 - **AND** guidance declares a named path before probing it with another tool
@@ -781,19 +783,19 @@ SHALL use built-in `web_fetch`, not a shell HTTP client.
 #### Scenario: File redirect remains separate
 
 - **WHEN** reviewed `head` writes through a shell redirect
-- **THEN** safe policy does not cover the occurrence
+- **THEN** reviewed-safe policy does not cover the occurrence
 - **AND** redirect path policy still applies
 
 #### Scenario: Public project directory is not safe
 
 - **GIVEN** a Public session has a project directory
 - **WHEN** a reviewed diagnostic candidate runs only there
-- **THEN** safe policy does not cover it
+- **THEN** reviewed-safe policy does not cover it
 
 #### Scenario: PowerShell environment provider stays strict
 
 - **WHEN** native PowerShell submits `Get-Content Env:SECRET`
-- **THEN** the provider is not treated as filesystem safe space
+- **THEN** the provider does not create a trusted root
 - **AND** the call requires explicit authority or denial
 
 ### Requirement: Five-button approval prompt with verb-and-directory framing
@@ -1251,7 +1253,7 @@ Preflight SHALL snapshot the existing `ToolExecutionContext` and exact
 SHALL remain `OneTimeApprovalKeys` binding filtered phrase and effective
 directory. Preflight SHALL build one canonical
 `ShellCommandAnalysis`, apply hard deny and protected paths, resolve approval
-mode, build candidates, and preserve the existing noninteractive trust-zone
+mode, build candidates, and preserve the existing noninteractive path access
 gate. If preflight is not terminal, `DispatchingToolExecutor` SHALL send
 exactly one typed batch request to `ToolApprovalActor`.
 
@@ -1334,13 +1336,13 @@ a fact that no current type represents.
 - **THEN** it returns terminal deny
 - **AND** the executor sends no grant-match request
 
-#### Scenario: Noninteractive trust zone precedes approval matching
+#### Scenario: Noninteractive path access precedes approval matching
 
 - **GIVEN** interactive approval is unavailable
 - **AND** a stored grant covers the command phrase
-- **WHEN** canonical path facts fall outside the configured trust zone
+- **WHEN** canonical paths fall outside the configured trusted roots
 - **THEN** preflight returns terminal deny
-- **AND** neither the stored grant nor safe policy can override it
+- **AND** neither the stored grant nor reviewed-safe policy can override it
 
 #### Scenario: Recovery re-evaluates the original request
 
@@ -1574,8 +1576,8 @@ Fixture defaults SHALL explicitly provide:
 
 - tool name, audience, and approval mode;
 - interactive capability;
-- session identity and safe root;
-- project safe root and inherited cwd;
+- session identity and session trusted root;
+- project trusted root and inherited cwd;
 - persistent-store status; and
 - a fixed clock.
 
@@ -2358,4 +2360,3 @@ The parent session pipeline and subagent pipeline SHALL consume the same typed s
 - **WHEN** a subagent submits an eligible platform-temp call
 - **THEN** it receives the same correction before a parent approval request is created
 - **AND** the parent user is not prompted for that first attempt
-

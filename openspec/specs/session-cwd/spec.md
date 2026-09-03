@@ -1,9 +1,8 @@
 ## Purpose
 
 Define how a session tracks its project directory and how the agent
-declares it via `set_working_directory`. The project directory is the
-load-bearing input to the approval gate's safe-space root set: declaring
-it expands the trust boundary for shell invocations under that tree.
+declares it via `set_working_directory`. A valid declaration adds the project
+directory to the trusted roots that reviewed-safe policy uses.
 ## Requirements
 
 ### Requirement: Relative first-party filesystem paths use session-owned bases
@@ -12,8 +11,8 @@ First-party filesystem tools SHALL resolve a relative path against the declared
 project directory when one exists. Otherwise, they SHALL use the immutable
 session directory. If neither base exists, they SHALL return an
 `invalid_context` correction. They SHALL NOT use the daemon process current
-directory. The canonical path SHALL pass existing scope and protected-path
-policies.
+directory. The system SHALL request a path access decision for the canonical
+path and requested file operation. The decision includes protected-path checks.
 
 #### Scenario: Relative read uses declared project
 
@@ -34,7 +33,7 @@ policies.
 - **GIVEN** project directory `/workspace/project`
 - **WHEN** a file tool receives `../../outside.txt`
 - **THEN** it canonicalizes the result before policy evaluation
-- **AND** it denies the call when the path is outside authorized roots
+- **AND** it denies the call when the path is outside trusted roots
 
 #### Scenario: Missing base returns correction
 
@@ -60,10 +59,10 @@ project declaration SHALL replace the project and reload its instructions.
 Each session SHALL maintain a mutable `ProjectDirectory` in `WorkingContext`
 that tracks which project the session is working on. This is the root
 directory of the project (where `AGENTS.md` or `.netclaw/AGENTS.md` lives).
-The project directory SHALL be independent of the immutable session directory
-(`~/.netclaw/sessions/{id}/`) used for state isolation. The project directory
-SHALL be persisted in `SessionSnapshot` via `WorkingContext` and survive
-compaction, actor recovery, and daemon restart.
+The project directory SHALL be independent of the immutable session directory.
+The session directory provides the default relative-path base. The project
+directory SHALL persist in `SessionSnapshot` through `WorkingContext`. It SHALL
+survive compaction, actor recovery, and daemon restart.
 
 #### Scenario: New session has no project directory
 
@@ -98,19 +97,19 @@ compaction, actor recovery, and daemon restart.
 ### Requirement: set_working_directory tool
 
 The system SHALL provide a `set_working_directory` tool that sets the
-session's project directory to a specified path AND expands the
-approval gate's safe-space root set for Personal and Team audiences.
+session's project directory to a specified path. A successful declaration adds
+that directory to the trusted roots for Personal and Team audiences.
 The tool SHALL validate that the target path is a real directory,
-resolve it to an absolute path, and validate it against the audience
-trust profile's read-allowed roots. The tool SHALL be profile-managed
+resolve it to a canonical path, and request a path access decision for the read
+file operation.
+The tool SHALL be profile-managed
 so that audiences without directory navigation privileges (Public,
 Team by default) cannot use it. The working-directory declaration is
 deliberately NOT granted interactive Personal shell-equivalent reach
-(netclaw-dev/netclaw#1724): it SHALL be clamped to the autonomous zone
-(session directory, project directory, and configured global read
-roots) in every audience and mode, because declaring a working
-directory widens the shell safe-verb auto-approve zone and loads
-project identity files into the system prompt.
+(netclaw-dev/netclaw#1724). Every audience and mode SHALL limit declarations
+to the session directory, project directory, and configured global read roots.
+A declaration changes the roots that reviewed-safe policy uses. It also
+loads project identity files into the system prompt.
 
 The tool description visible to the model SHALL frame the tool as
 "declare your project root and expand your trusted scope so shell
@@ -128,16 +127,16 @@ approval friction depends on doing so when the work is project-scoped.
 - **THEN** the session project directory is set to
   `/home/user/workspaces/akadonic`
 - **AND** the project's identity file is loaded on the next LLM call
-- **AND** subsequent shell calls with cwd inside that directory may
-  participate in the safe-verb auto-allow short-circuit
+- **AND** subsequent shell calls with cwd inside that directory may receive
+  reviewed-safe coverage
 
-#### Scenario: set_working_directory rejected outside allowed roots
+#### Scenario: set_working_directory rejected outside trusted roots
 
 - **GIVEN** a session with audience profile allowing reads only under
   `/home/user`
 - **WHEN** the agent invokes `set_working_directory` with path `/etc/nginx`
 - **THEN** the project directory remains unchanged
-- **AND** the tool returns an error indicating the path is outside allowed
+- **AND** the tool returns an error indicating the path is outside trusted
   roots
 
 #### Scenario: set_working_directory rejected for nonexistent directory
@@ -148,15 +147,16 @@ approval friction depends on doing so when the work is project-scoped.
 - **THEN** the project directory remains unchanged
 - **AND** the tool returns an error indicating the directory does not exist
 
-#### Scenario: Personal audience clamps to the autonomous zone
+#### Scenario: Personal audience limits project declaration to trusted roots
 
 - **GIVEN** a session with personal audience (`ToolFilesystemMode.All`)
-- **AND** the target directory is outside the autonomous zone
+- **AND** the target directory is outside the trusted roots for project
+  declaration
   (session directory, project directory, and configured global read roots)
 - **WHEN** the agent invokes `set_working_directory` with that valid directory
 - **THEN** the project directory is NOT updated
 - **AND** the tool returns an error indicating the target is outside the
-  session, project, or configured autonomous roots
+  session, project, or configured trusted roots
 - **AND** `file_read` / `file_list` / `attach_file` on the same path still
   resolve (interactive Personal shell-equivalent reach, netclaw-dev/netclaw#1724)
 
@@ -174,10 +174,10 @@ approval friction depends on doing so when the work is project-scoped.
 - **THEN** the project directory changes to `/home/user/workspaces/other-project`
 - **AND** the next LLM call loads identity files from the new project
 - **AND** the old project's identity files are no longer injected
-- **AND** the approval safe-space root for shell invocations switches
+- **AND** the project trusted root for shell invocations switches
   to the new project directory
 
-### Requirement: Shell tool cwd defaults to declared safe spaces
+### Requirement: Shell tool cwd defaults to a declared trusted root
 
 `ShellTool` SHALL resolve the working directory for every invocation
 in this priority order: explicit `WorkingDirectory` argument when
@@ -187,9 +187,9 @@ provided, else `WorkingContext.ProjectDirectory` when set, else
 through to `ProcessStartInfo`'s default behavior of inheriting the
 daemon process's cwd.
 
-This guarantees every shell invocation has a known cwd parented under a
-declared safe space (or an explicit override), which is the precondition
-the approval policy depends on.
+This rule gives each shell invocation a known cwd below a declared trusted
+root, unless the call supplies an explicit override. The approval policy uses
+the applicable path access decision for that cwd.
 
 #### Scenario: Cwd defaults to project_dir when set
 
@@ -213,7 +213,7 @@ the approval policy depends on.
 - **WHEN** the agent invokes `shell_execute` with command `pwd` and
   `WorkingDirectory` `/tmp/`
 - **THEN** the command runs with cwd `/tmp/`
-- **AND** the approval gate evaluates safe-space membership against `/tmp/`
+- **AND** the approval gate requests a path access decision for `/tmp/`
 
 #### Scenario: Cwd never inherits daemon process cwd
 
@@ -224,13 +224,24 @@ the approval policy depends on.
 - **THEN** the command does NOT run with cwd `/var/lib/netclawd/`
 - **AND** the resolved cwd is `session_dir`
 
-### Requirement: Shell tool failure-path hint for cwd outside safe spaces
+### Requirement: Shell tool failure-path hint for cwd outside trusted roots
 
-`ShellTool` SHALL include a one-line remediation hint in the tool result returned to the model when a call is denied because its cwd is outside both `session_dir` and `project_dir` and a safe correction is available.
+`ShellTool` SHALL include a one-line remediation hint in the model result when
+a call is denied because its cwd is outside trusted roots. The remediation
+presenter SHALL add the hint only when an applicable remediation is available.
 
-For a non-temp cwd, the hint SHALL suggest `set_working_directory <path>` only when that tool is exposed and the same filesystem policy used by `set_working_directory` accepts the exact path without substitution. For a Personal cwd equal to the captured platform temporary root, the hint SHALL instead identify the exact session directory as private scratch and SHALL NOT suggest declaring the platform temporary root. Team and Public shell calls retain their existing earlier denial boundary, and Public results SHALL retain existing path redaction.
+For a non-temp cwd, the hint SHALL suggest `set_working_directory <path>` only
+when that tool is exposed. The same path access decision used by that tool
+SHALL accept the exact path without substitution. For a Personal cwd at the
+captured platform temporary root, the hint SHALL identify the managed
+temporary directory. It SHALL NOT suggest a project declaration for the
+platform temporary root. Team and Public calls retain their earlier denial
+boundary. Public results retain existing path redaction.
 
-The hint SHALL NOT be emitted for hard-deny-list refusals, `ToolPathPolicy` denials, an unavailable session scratch path, or a foreign non-temp cwd that `set_working_directory` would reject.
+The hint SHALL NOT appear for hard-deny-list refusals or protected-path
+denials. It SHALL NOT appear when the managed temporary directory is
+unavailable. It SHALL NOT appear when `set_working_directory` would reject a
+non-temp cwd.
 
 #### Scenario: Denial in declarable foreign tree includes set_working_directory hint
 
@@ -240,12 +251,14 @@ The hint SHALL NOT be emitted for hard-deny-list refusals, `ToolPathPolicy` deni
 - **AND** the user denies the resulting prompt
 - **THEN** the tool result includes a hint pointing at `set_working_directory ~/repos/bar/`
 
-#### Scenario: Denied platform-temp retry retains scratch recommendation
+#### Scenario: Denied platform-temp retry retains managed-temp recommendation
 
-- **GIVEN** an agent received the session-scratch correction for the platform temporary root
+- **GIVEN** an agent received the managed-temp remediation for the platform
+  temporary root
 - **AND** it repeated the original call unchanged to request ordinary approval
 - **WHEN** the user denies that approval
-- **THEN** the tool result identifies the exact session directory as private scratch
+- **THEN** the remediation presenter identifies the exact managed temporary
+  directory
 - **AND** it does not suggest `set_working_directory` for the platform temporary root
 
 #### Scenario: Undeclarable foreign tree has no project declaration hint
@@ -263,23 +276,21 @@ The hint SHALL NOT be emitted for hard-deny-list refusals, `ToolPathPolicy` deni
 #### Scenario: Hint is not emitted when remediation tools are unavailable
 
 - **GIVEN** a Public session where `set_working_directory` is not exposed
-- **AND** no private session-scratch correction is available
-- **WHEN** a shell call is denied for cwd-outside-safe-space
+- **AND** no private managed-temp remediation is available
+- **WHEN** a shell call is denied because its cwd is outside trusted roots
 - **THEN** the result does NOT include a working-directory remediation hint
 
-### Requirement: set_working_directory expands the approval safe space
+### Requirement: set_working_directory adds a project trusted root
 
-Setting `WorkingContext.ProjectDirectory` SHALL expand the approval gate's
-safe-space root set for Personal and Team audiences: subsequent shell
-invocations whose cwd resolves under the new project directory SHALL
-participate in the safe-verb auto-allow short-circuit (subject to the
-safe-verbs list and symlink-segment guard). For Public audience,
-`set_working_directory` SHALL NOT be available and the safe space SHALL
-remain `session_dir` only.
+Setting `WorkingContext.ProjectDirectory` SHALL add that directory to the
+trusted roots for Personal and Team audiences. A later shell invocation below
+that root can receive reviewed-safe coverage. The reviewed-safe
+catalog and link checks still apply. Public audiences SHALL NOT receive
+`set_working_directory`, and their trusted roots SHALL remain unchanged.
 
-This requirement formalizes the dependency between session_cwd and
-tool-approval-gates: the act of declaring the project root is the act
-of opening the approval trust boundary.
+This requirement defines the dependency between `session-cwd` and
+`tool-approval-gates`. A project declaration supplies a trusted root. The path
+access decision remains the authority owner.
 
 #### Scenario: Setting project_dir relaxes future approval prompts
 
@@ -288,15 +299,15 @@ of opening the approval trust boundary.
   `~/repos/foo/`
 - **WHEN** the agent calls `set_working_directory ~/repos/foo/`
 - **AND** the agent retries `grep -r "x" .` with cwd `~/repos/foo/`
-- **THEN** the approval gate short-circuits (safe verb in safe space)
+- **THEN** reviewed-safe policy covers the call below the trusted root
 - **AND** no prompt is rendered
 
-#### Scenario: Public audience does not get safe-space expansion
+#### Scenario: Public audience does not get a project trusted root
 
 - **GIVEN** a Public session
 - **WHEN** the tool exposure list is computed
 - **THEN** `set_working_directory` is not included
-- **AND** the only safe space remains `session_dir`
+- **AND** its trusted roots remain unchanged
 
 ### Requirement: Working context block includes project directory
 
