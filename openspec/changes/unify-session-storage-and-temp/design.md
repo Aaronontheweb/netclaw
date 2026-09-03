@@ -109,6 +109,18 @@ The contract separates three responsibilities:
 | Path authority | Path facts, operation, audience, and trusted roots | A typed allow or deny decision with a reason |
 | Remediation | A denied request and trusted runtime guidance | Optional advice that grants no authority |
 
+Each capability has one policy owner:
+
+| Capability | Owner | Excluded responsibility |
+|---|---|---|
+| Filesystem authorization | `netclaw-tools` | Session layout and approval presentation |
+| Trusted sessions root and named directories | `netclaw-session` | File-operation authorization |
+| Working and managed temporary directory selection | `session-cwd` | General path authority |
+| Approval and remediation after authorization | `tool-approval-gates` | Path normalization and containment |
+
+Other specifications SHALL reference the owning requirement. They SHALL NOT
+repeat its policy with different terms or another decision path.
+
 The source of a path does not create another safety model. A structured file
 argument, shell syntax fact, working directory, and temporary-path candidate
 all use the same path facts and path authority contract.
@@ -130,6 +142,10 @@ Terms such as `safe root`, `authority root`, `safe-space root`, `autonomous
 zone`, and `current-session root` will not define competing path models. The
 inventory will map each existing type and call site to the common contract
 before the implementation changes.
+
+The final edit will condense or remove duplicate requirements, scenarios,
+helpers, and tests. It will not preserve an old abstraction only to avoid a
+mechanical change.
 
 The Netclaw sessions directory is a trusted root for every parent and child
 run. All session directories are below this root and are accessible to other
