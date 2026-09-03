@@ -736,23 +736,23 @@ public sealed class ToolAccessPolicy
         }
         else
         {
-            var reusableApproval = !isMessy
-                                   && (!isShell || approvalCandidates.All(HasReusableShellPhrase));
-            var directoryApproval = matcher is ShellApprovalMatcher
-                ? GetShellDirectoryApprovalAvailability(
+            var persistence = GetApprovalPersistenceAvailability(
+                isMessy,
+                !isShell || approvalCandidates.All(HasReusableShellPhrase));
+            var directory = DirectoryApprovalOption.Omit;
+            if (matcher is ShellApprovalMatcher)
+            {
+                directory = GetShellDirectoryApprovalAvailability(
                     approvalCandidates,
                     context.Approval.Cwd,
                     GetSessionOwnedApprovalDirectories(context),
-                    ShellEnvironment.PathStyle)
-                : DirectoryApprovalOption.Omit;
+                    ShellEnvironment.PathStyle);
+            }
+
             var optionPolicy = new ApprovalOptionPolicy(
-                reusableApproval
-                    ? ApprovalPersistenceAvailability.Reusable
-                    : ApprovalPersistenceAvailability.OneShotOnly,
-                directoryApproval,
-                toolName.IsMcp
-                    ? ApprovalOptionLabelKind.McpTool
-                    : ApprovalOptionLabelKind.Standard);
+                persistence,
+                directory,
+                GetApprovalOptionLabelKind(toolName));
             options = BuildApprovalOptions(optionPolicy);
         }
 
@@ -821,9 +821,10 @@ public sealed class ToolAccessPolicy
         else
         {
             var optionPolicy = new ApprovalOptionPolicy(
-                unapprovedCandidates.All(HasReusableShellPhrase)
-                    ? ApprovalPersistenceAvailability.Reusable
-                    : ApprovalPersistenceAvailability.OneShotOnly,
+                GetApprovalPersistenceAvailability(
+                    isMessy: false,
+                    hasReusablePhraseForEveryCandidate:
+                    unapprovedCandidates.All(HasReusableShellPhrase)),
                 GetShellDirectoryApprovalAvailability(
                     unapprovedCandidates,
                     context.Cwd,
@@ -902,9 +903,28 @@ public sealed class ToolAccessPolicy
         if (IsCwdTooShallow(cwd, pathStyle))
             return DirectoryApprovalOption.Omit;
 
-        return AllCandidatesResolveToSessionOwnedDirectory(candidates, cwd, sessionOwnedDirectories)
-            ? DirectoryApprovalOption.Omit
-            : DirectoryApprovalOption.Include;
+        if (AllCandidatesResolveToSessionOwnedDirectory(candidates, cwd, sessionOwnedDirectories))
+            return DirectoryApprovalOption.Omit;
+
+        return DirectoryApprovalOption.Include;
+    }
+
+    private static ApprovalPersistenceAvailability GetApprovalPersistenceAvailability(
+        bool isMessy,
+        bool hasReusablePhraseForEveryCandidate)
+    {
+        if (isMessy || !hasReusablePhraseForEveryCandidate)
+            return ApprovalPersistenceAvailability.OneShotOnly;
+
+        return ApprovalPersistenceAvailability.Reusable;
+    }
+
+    private static ApprovalOptionLabelKind GetApprovalOptionLabelKind(ToolName toolName)
+    {
+        if (toolName.IsMcp)
+            return ApprovalOptionLabelKind.McpTool;
+
+        return ApprovalOptionLabelKind.Standard;
     }
 
     /// <summary>
