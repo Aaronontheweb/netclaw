@@ -37,8 +37,8 @@ public sealed class PlatformTemporaryScopePolicyTests
 
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
         var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
-        Assert.Equal(Path.Combine(PosixSession, "tmp", "parent"), correction.ManagedTemporaryDirectory);
-        Assert.Equal(PosixTemp, correction.PlatformTemporaryRoot);
+        Assert.Equal(Path.Combine(PosixSession, "tmp", "parent"), correction.Target.ManagedTemporaryDirectory);
+        Assert.Equal(PosixTemp, correction.Target.PlatformTemporaryRoot);
         Assert.Null(context.SuggestedProjectDirectory);
     }
 
@@ -56,7 +56,7 @@ public sealed class PlatformTemporaryScopePolicyTests
 
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
         var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
-        Assert.Equal("/private/tmp", correction.PlatformTemporaryRoot);
+        Assert.Equal("/private/tmp", correction.Target.PlatformTemporaryRoot);
     }
 
     [SlopwatchSuppress("SW001", "This theory requires a POSIX storage path and Bash temporary path semantics.")]
@@ -100,7 +100,7 @@ public sealed class PlatformTemporaryScopePolicyTests
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
         var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(
             context.AgentCorrection);
-        Assert.Equal("/private/tmp", correction.PlatformTemporaryRoot);
+        Assert.Equal("/private/tmp", correction.Target.PlatformTemporaryRoot);
     }
 
     [Fact]
@@ -119,9 +119,9 @@ public sealed class PlatformTemporaryScopePolicyTests
             inspector,
             [PosixTemp]);
 
-        Assert.True(policy.IsSafePlatformTemporaryPath("/tmp/work/result.log"));
-        Assert.True(policy.IsSafePlatformTemporaryPath("/private/tmp/work/result.log"));
-        Assert.False(policy.IsSafePlatformTemporaryPath("/var/external/result.log"));
+        Assert.True(policy.IsEligiblePlatformTemporaryPath("/tmp/work/result.log"));
+        Assert.True(policy.IsEligiblePlatformTemporaryPath("/private/tmp/work/result.log"));
+        Assert.False(policy.IsEligiblePlatformTemporaryPath("/var/external/result.log"));
     }
 
     [SlopwatchSuppress("SW001", "This test requires the native macOS temporary path alias configuration.")]
@@ -146,7 +146,7 @@ public sealed class PlatformTemporaryScopePolicyTests
 
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
         var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
-        Assert.Equal(Path.Combine(WindowsSession, "tmp", "parent"), correction.ManagedTemporaryDirectory);
+        Assert.Equal(Path.Combine(WindowsSession, "tmp", "parent"), correction.Target.ManagedTemporaryDirectory);
     }
 
     [SlopwatchSuppress("SW001", "This test requires native Windows case rules for temporary paths.")]
@@ -331,7 +331,7 @@ public sealed class PlatformTemporaryScopePolicyTests
 
         try
         {
-            Assert.False(HostPlatformTemporaryPathInspector.Instance.IsSafeDescendant(
+            Assert.False(HostPlatformTemporaryPathInspector.Instance.HasNoLinkEscape(
                 testRoot,
                 Path.Combine(link, "result.log"),
                 ShellPathStyle.Posix));
@@ -401,7 +401,7 @@ public sealed class PlatformTemporaryScopePolicyTests
 
             var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
             var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
-            Assert.Equal(realTemp, correction.PlatformTemporaryRoot);
+            Assert.Equal(realTemp, correction.Target.PlatformTemporaryRoot);
         }
         finally
         {
@@ -515,11 +515,11 @@ public sealed class PlatformTemporaryScopePolicyTests
             return ShellPathRules.TryNormalize(root, pathStyle, out resolvedRoot);
         }
 
-        public bool IsSafeDescendant(string root, string path, ShellPathStyle pathStyle)
+        public bool HasNoLinkEscape(string root, string path, ShellPathStyle pathStyle)
             => !_failDescendantInspection;
 
-        public bool ContainsInvalidPathState(string path, ShellPathStyle pathStyle)
-            => false;
+        public bool SupportsPathInspection(ShellPathStyle pathStyle)
+            => true;
     }
 
     private sealed class MappedPathInspector(
@@ -535,10 +535,10 @@ public sealed class PlatformTemporaryScopePolicyTests
                    && ShellPathRules.TryNormalize(mapped, pathStyle, out resolvedRoot);
         }
 
-        public bool IsSafeDescendant(string root, string path, ShellPathStyle pathStyle)
+        public bool HasNoLinkEscape(string root, string path, ShellPathStyle pathStyle)
             => ShellPathRules.IsWithinRoot(path, root, pathStyle);
 
-        public bool ContainsInvalidPathState(string path, ShellPathStyle pathStyle)
-            => false;
+        public bool SupportsPathInspection(ShellPathStyle pathStyle)
+            => true;
     }
 }

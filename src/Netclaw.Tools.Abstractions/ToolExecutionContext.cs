@@ -407,12 +407,31 @@ public sealed class ToolExecutionOutputs
         => _subAgentActivitySink is null ? new ToolExecutionOutputs() : new ToolExecutionOutputs(_subAgentActivitySink);
 }
 
-/// <summary>Identifies one corrected retry against an explicitly authored platform temporary root.</summary>
-/// <param name="ManagedTemporaryDirectory">The replacement directory that Netclaw suggested.</param>
-/// <param name="PlatformTemporaryRoot">The original platform temporary root.</param>
-internal readonly record struct ManagedTemporaryRetry(
-    string ManagedTemporaryDirectory,
-    string PlatformTemporaryRoot);
+/// <summary>
+/// Identifies the managed directory and the platform temporary root for one correction.
+/// </summary>
+internal readonly record struct ManagedTemporaryCorrectionTarget
+{
+    /// <summary>Creates one correction target from the suggested and original directories.</summary>
+    /// <param name="managedTemporaryDirectory">The replacement directory that Netclaw suggested.</param>
+    /// <param name="platformTemporaryRoot">The original platform temporary root.</param>
+    internal ManagedTemporaryCorrectionTarget(
+        string managedTemporaryDirectory,
+        string platformTemporaryRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(managedTemporaryDirectory);
+        ArgumentException.ThrowIfNullOrWhiteSpace(platformTemporaryRoot);
+
+        ManagedTemporaryDirectory = managedTemporaryDirectory;
+        PlatformTemporaryRoot = platformTemporaryRoot;
+    }
+
+    /// <summary>Gets the replacement directory that Netclaw suggested.</summary>
+    internal string ManagedTemporaryDirectory { get; }
+
+    /// <summary>Gets the original platform temporary root.</summary>
+    internal string PlatformTemporaryRoot { get; }
+}
 
 /// <summary>
 /// Mutable authorization state for one invocation attempt. The dispatcher and
@@ -436,7 +455,7 @@ public sealed class ToolApprovalAttempt
     public IReadOnlySet<string> OneTimeApprovedPatterns => _oneTimeApprovedPatterns ?? EmptyPatterns;
     public string? AppliedDecision { get; private set; }
     public string? AppliedPattern { get; private set; }
-    internal ManagedTemporaryRetry? ManagedTemporaryRetry { get; private set; }
+    internal ManagedTemporaryCorrectionTarget? ManagedTemporaryRetry { get; private set; }
 
     public void SetCwd(string? cwd) => Cwd = cwd;
 
@@ -464,7 +483,7 @@ public sealed class ToolApprovalAttempt
         AppliedPattern = null;
     }
 
-    internal void MarkManagedTemporaryRetry(ManagedTemporaryRetry retry)
+    internal void MarkManagedTemporaryRetry(ManagedTemporaryCorrectionTarget retry)
         => ManagedTemporaryRetry = retry;
 
     internal void RestoreAuthorizationAttemptId(AuthorizationAttemptId authorizationAttemptId)
@@ -509,7 +528,6 @@ public sealed class ToolInvocationContext
         if (runScope.Session is ToolSessionScope.Bound bound)
         {
             SessionId = bound.SessionId;
-            SessionDirectory = bound.SessionDirectory;
             SessionStorage = bound.Storage;
         }
     }
@@ -584,7 +602,7 @@ public sealed class ToolInvocationContext
     /// <summary>
     /// Session workspace used as the default base for relative tool paths.
     /// </summary>
-    public string? SessionDirectory { get; }
+    public string? SessionDirectory => SessionStorage?.SessionDirectory;
 
     /// <summary>Gets the complete resolved storage layout for a bound session.</summary>
     public SessionStoragePaths? SessionStorage { get; }

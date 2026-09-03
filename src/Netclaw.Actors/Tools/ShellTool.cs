@@ -115,10 +115,7 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
         var psi = _environment.CreateProcessStartInfo(args.Command);
         var storage = context.SessionStorage
             ?? throw new InvalidOperationException("Shell execution requires resolved session storage.");
-        var temporaryDirectoryError = ManagedTemporaryEnvironment.Prepare(
-            psi,
-            storage.ManagedTemporary.Directory,
-            storage.ManagedTemporary.StorageRoot);
+        var temporaryDirectoryError = ManagedTemporaryEnvironment.Prepare(psi, storage.ManagedTemporary);
         if (temporaryDirectoryError is not null)
             return temporaryDirectoryError;
 
@@ -348,10 +345,7 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
             var psi = _environment.CreateProcessStartInfo(args.Command);
             var storage = context.SessionStorage
                 ?? throw new InvalidOperationException("Shell execution requires resolved session storage.");
-            var temporaryDirectoryError = ManagedTemporaryEnvironment.Prepare(
-                psi,
-                storage.ManagedTemporary.Directory,
-                storage.ManagedTemporary.StorageRoot);
+            var temporaryDirectoryError = ManagedTemporaryEnvironment.Prepare(psi, storage.ManagedTemporary);
             if (temporaryDirectoryError is not null)
             {
                 output.TryWrite(new ToolCompletedUpdate(temporaryDirectoryError));

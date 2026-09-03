@@ -17,8 +17,7 @@ internal abstract record ToolAgentCorrection
 
     /// <summary>Suggests the current run's managed temporary directory instead of a platform temporary root.</summary>
     internal sealed record ManagedTemporaryDirectorySuggested(
-        string ManagedTemporaryDirectory,
-        string PlatformTemporaryRoot) : ToolAgentCorrection;
+        ManagedTemporaryCorrectionTarget Target) : ToolAgentCorrection;
 
     /// <summary>Suggests a native tool instead of invoking that tool name through the shell.</summary>
     internal sealed record NativeToolSuggested(ToolName ToolName) : ToolAgentCorrection;
@@ -53,8 +52,7 @@ internal abstract record ManagedTemporaryCallSemantics(string ToolName, TimeSpan
 /// <summary>Binds one exact corrected call to the platform root and suggested managed directory.</summary>
 internal readonly record struct ManagedTemporaryCorrectionKey(
     ManagedTemporaryCallSemantics Call,
-    string PlatformTemporaryRoot,
-    string ManagedTemporaryDirectory);
+    ManagedTemporaryCorrectionTarget Target);
 
 /// <summary>Describes an actor-owned change to the one-turn correction state.</summary>
 internal abstract record ManagedTemporaryCorrectionChange

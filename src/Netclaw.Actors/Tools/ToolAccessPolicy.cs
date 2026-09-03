@@ -14,8 +14,34 @@ using ShellSyntaxTree;
 
 namespace Netclaw.Actors.Tools;
 
+/// <summary>
+/// Applies the configured tool, path, shell, and approval policies to one tool invocation.
+/// </summary>
 public sealed class ToolAccessPolicy
 {
+    private enum ApprovalPersistenceAvailability
+    {
+        OneShotOnly,
+        Reusable
+    }
+
+    private enum DirectoryApprovalOption
+    {
+        Include,
+        Omit
+    }
+
+    private enum ApprovalOptionLabelKind
+    {
+        Standard,
+        McpTool
+    }
+
+    private readonly record struct ApprovalOptionPolicy(
+        ApprovalPersistenceAvailability Persistence,
+        DirectoryApprovalOption Directory,
+        ApprovalOptionLabelKind LabelKind);
+
     private static readonly IReadOnlyList<ToolApprovalOption> ManagedTemporaryRetryOptions =
         Array.AsReadOnly<ToolApprovalOption>(
         [
@@ -49,8 +75,8 @@ public sealed class ToolAccessPolicy
 
     internal PathAccessPolicy SharedPathAccessPolicy => _pathAccessPolicy;
 
-    internal bool IsSafePlatformTemporaryPath(string path)
-        => _platformTemporaryScopePolicy.IsSafePlatformTemporaryPath(path);
+    internal bool IsEligiblePlatformTemporaryPath(string path)
+        => _platformTemporaryScopePolicy.IsEligiblePlatformTemporaryPath(path);
 
     public ToolAccessPolicy(
         NetclawPaths paths,
@@ -436,7 +462,7 @@ public sealed class ToolAccessPolicy
             return false;
         }
 
-        if (_platformTemporaryScopePolicy.IsSafePlatformTemporaryPath(normalized))
+        if (_platformTemporaryScopePolicy.IsEligiblePlatformTemporaryPath(normalized))
             return true;
 
         try
@@ -703,19 +729,32 @@ public sealed class ToolAccessPolicy
 
         var managedTemporaryRetry = context.Approval.ManagedTemporaryRetry;
         var isManagedTemporaryRetry = managedTemporaryRetry is not null;
-        var options = isManagedTemporaryRetry
-            ? ManagedTemporaryRetryOptions
-            : BuildApprovalOptions(
-                isMessy,
-                hasReusablePhraseForEveryCandidate: !isShell ||
-                    approvalCandidates.All(HasReusableShellPhrase),
-                isCwdShallow: IsCwdTooShallow(context.Approval.Cwd, ShellEnvironment.PathStyle),
-                allEffectiveDirsAreSessionOwned: AllCandidatesResolveToSessionOwnedDirectory(
+        IReadOnlyList<ToolApprovalOption> options;
+        if (isManagedTemporaryRetry)
+        {
+            options = ManagedTemporaryRetryOptions;
+        }
+        else
+        {
+            var reusableApproval = !isMessy
+                                   && (!isShell || approvalCandidates.All(HasReusableShellPhrase));
+            var directoryApproval = matcher is ShellApprovalMatcher
+                ? GetShellDirectoryApprovalAvailability(
                     approvalCandidates,
                     context.Approval.Cwd,
-                    GetSessionOwnedApprovalDirectories(context)),
-                supportsDirectoryScope: matcher is ShellApprovalMatcher,
-                isMcpTool: toolName.IsMcp);
+                    GetSessionOwnedApprovalDirectories(context),
+                    ShellEnvironment.PathStyle)
+                : DirectoryApprovalOption.Omit;
+            var optionPolicy = new ApprovalOptionPolicy(
+                reusableApproval
+                    ? ApprovalPersistenceAvailability.Reusable
+                    : ApprovalPersistenceAvailability.OneShotOnly,
+                directoryApproval,
+                toolName.IsMcp
+                    ? ApprovalOptionLabelKind.McpTool
+                    : ApprovalOptionLabelKind.Standard);
+            options = BuildApprovalOptions(optionPolicy);
+        }
 
         var approvalContext = new ToolApprovalContext(
             toolName.Value,
@@ -774,17 +813,25 @@ public sealed class ToolAccessPolicy
             .Select(static candidate => candidate.Verb)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
-        var options = context.IsManagedTemporaryRetry
-            ? ManagedTemporaryRetryOptions
-            : BuildApprovalOptions(
-                isMessy: false,
-                hasReusablePhraseForEveryCandidate:
-                    unapprovedCandidates.All(HasReusableShellPhrase),
-                isCwdShallow: IsCwdTooShallow(context.Cwd, pathStyle),
-                allEffectiveDirsAreSessionOwned: AllCandidatesResolveToSessionOwnedDirectory(
-                    unapprovedCandidates, context.Cwd, sessionOwnedDirectories),
-                supportsDirectoryScope: true,
-                isMcpTool: false);
+        IReadOnlyList<ToolApprovalOption> options;
+        if (context.IsManagedTemporaryRetry)
+        {
+            options = ManagedTemporaryRetryOptions;
+        }
+        else
+        {
+            var optionPolicy = new ApprovalOptionPolicy(
+                unapprovedCandidates.All(HasReusableShellPhrase)
+                    ? ApprovalPersistenceAvailability.Reusable
+                    : ApprovalPersistenceAvailability.OneShotOnly,
+                GetShellDirectoryApprovalAvailability(
+                    unapprovedCandidates,
+                    context.Cwd,
+                    sessionOwnedDirectories,
+                    pathStyle),
+                ApprovalOptionLabelKind.Standard);
+            options = BuildApprovalOptions(optionPolicy);
+        }
 
         return context with
         {
@@ -846,6 +893,20 @@ public sealed class ToolAccessPolicy
             .ToArray();
     }
 
+    private static DirectoryApprovalOption GetShellDirectoryApprovalAvailability(
+        IReadOnlyList<ApprovalCandidate> candidates,
+        string? cwd,
+        IReadOnlyCollection<string> sessionOwnedDirectories,
+        ShellPathStyle pathStyle)
+    {
+        if (IsCwdTooShallow(cwd, pathStyle))
+            return DirectoryApprovalOption.Omit;
+
+        return AllCandidatesResolveToSessionOwnedDirectory(candidates, cwd, sessionOwnedDirectories)
+            ? DirectoryApprovalOption.Omit
+            : DirectoryApprovalOption.Include;
+    }
+
     /// <summary>
     /// Builds the prompt's button row. The five-button default
     /// (Once / This chat / Always here / Always anywhere / Deny) is pruned
@@ -872,15 +933,9 @@ public sealed class ToolAccessPolicy
     /// allow this tool</c> because it persists a canonical-tool grant.</item>
     /// </list>
     /// </summary>
-    private static IReadOnlyList<ToolApprovalOption> BuildApprovalOptions(
-        bool isMessy,
-        bool hasReusablePhraseForEveryCandidate,
-        bool isCwdShallow,
-        bool allEffectiveDirsAreSessionOwned,
-        bool supportsDirectoryScope,
-        bool isMcpTool)
+    private static IReadOnlyList<ToolApprovalOption> BuildApprovalOptions(ApprovalOptionPolicy policy)
     {
-        if (isMessy || !hasReusablePhraseForEveryCandidate)
+        if (policy.Persistence is ApprovalPersistenceAvailability.OneShotOnly)
         {
             return
             [
@@ -895,14 +950,16 @@ public sealed class ToolAccessPolicy
             new ToolApprovalOption(ApprovalOptionKeys.ApproveSessionKey, ApprovalOptionKeys.ApproveSessionLabel)
         };
 
-        if (supportsDirectoryScope && !isCwdShallow && !allEffectiveDirsAreSessionOwned)
+        if (policy.Directory is DirectoryApprovalOption.Include)
         {
             options.Add(new ToolApprovalOption(ApprovalOptionKeys.ApproveAlwaysKey, ApprovalOptionKeys.ApproveAlwaysLabel));
         }
 
         options.Add(new ToolApprovalOption(
             ApprovalOptionKeys.ApproveEverywhereKey,
-            ApprovalOptionKeys.LabelFor(ApprovalOptionKeys.ApproveEverywhere, isMcpTool)));
+            ApprovalOptionKeys.LabelFor(
+                ApprovalOptionKeys.ApproveEverywhere,
+                policy.LabelKind is ApprovalOptionLabelKind.McpTool)));
         options.Add(new ToolApprovalOption(ApprovalOptionKeys.DenyKey, ApprovalOptionKeys.DenyLabel));
 
         return options;

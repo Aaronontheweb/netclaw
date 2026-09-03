@@ -87,7 +87,7 @@ internal sealed class ShellPolicyCoordinator(
                 continuation.Analysis,
                 continuation.ApprovalContext,
                 context,
-                policy.IsSafePlatformTemporaryPath,
+                policy.IsEligiblePlatformTemporaryPath,
                 out var projection)
             || projection is null)
         {

@@ -67,11 +67,7 @@ internal sealed class PlatformTemporaryScopePolicy
     {
         if (!analysis.IsResolved
             || analysis.HasDynamicSyntax
-            || context.RunScope.InteractiveApproval is not InteractiveApprovalCapability.Available
-            || context.Audience != TrustAudience.Personal
-            || !TryNormalizeManagedTemporaryDirectory(
-                context.SessionStorage?.ManagedTemporary.Directory,
-                out var managedTemporaryDirectory)
+            || !TryGetManagedTemporaryDirectoryForCorrection(context, out var managedTemporaryDirectory)
             || !TryGetExplicitTemporaryRoot(analysis, arguments, out var temporaryRoot)
             || !AllScopesStayWithinTemporaryRoot(analysis, candidates, temporaryRoot))
         {
@@ -79,10 +75,15 @@ internal sealed class PlatformTemporaryScopePolicy
         }
 
         return new ToolAgentCorrection.ManagedTemporaryDirectorySuggested(
-            managedTemporaryDirectory,
-            temporaryRoot.Canonical);
+            new ManagedTemporaryCorrectionTarget(
+                managedTemporaryDirectory,
+                temporaryRoot.Canonical));
     }
 
+    /// <summary>
+    /// Returns advice for an interactive Personal file change below a platform temporary root.
+    /// The method rejects protected paths and grants no file authority.
+    /// </summary>
     internal ToolAgentCorrection.ManagedTemporaryDirectorySuggested? EvaluateStructuredFileChange(
         ToolName toolName,
         IDictionary<string, object?>? arguments,
@@ -90,11 +91,7 @@ internal sealed class PlatformTemporaryScopePolicy
         ToolPathPolicy pathPolicy)
     {
         if (toolName.Value is not (FileWriteTool.ToolName or FileEditTool.ToolName)
-            || context.RunScope.InteractiveApproval is not InteractiveApprovalCapability.Available
-            || context.Audience != TrustAudience.Personal
-            || !TryNormalizeManagedTemporaryDirectory(
-                context.SessionStorage?.ManagedTemporary.Directory,
-                out var managedTemporaryDirectory))
+            || !TryGetManagedTemporaryDirectoryForCorrection(context, out var managedTemporaryDirectory))
         {
             return null;
         }
@@ -104,20 +101,21 @@ internal sealed class PlatformTemporaryScopePolicy
         if (string.IsNullOrWhiteSpace(path)
             || !Path.IsPathFullyQualified(path)
             || pathPolicy.IsDenied(path)
-            || !TryGetSafeTemporaryRoot(path, out var temporaryRoot))
+            || !TryGetEligibleTemporaryRoot(path, out var temporaryRoot))
         {
             return null;
         }
 
         return new ToolAgentCorrection.ManagedTemporaryDirectorySuggested(
-            managedTemporaryDirectory,
-            temporaryRoot);
+            new ManagedTemporaryCorrectionTarget(
+                managedTemporaryDirectory,
+                temporaryRoot));
     }
 
     internal bool IsPlatformTemporaryRoot(string? path)
         => TryGetTemporaryRoot(path, out _);
 
-    internal bool IsSafePlatformTemporaryPath(string? path)
+    internal bool IsEligiblePlatformTemporaryPath(string? path)
     {
         if (!TryNormalizePath(path, out var normalized))
             return false;
@@ -126,7 +124,7 @@ internal sealed class PlatformTemporaryScopePolicy
         {
             if ((IsWithinRoot(normalized, root.Authored)
                  || IsWithinRoot(normalized, root.Canonical))
-                && IsSafeTemporaryPath(normalized, root))
+                && IsLinkFreeTemporaryPath(normalized, root))
             {
                 return true;
             }
@@ -135,7 +133,10 @@ internal sealed class PlatformTemporaryScopePolicy
         return false;
     }
 
-    private bool TryGetSafeTemporaryRoot(string path, out string temporaryRoot)
+    /// <summary>
+    /// Gets the canonical platform temporary root when the path stays below it without a link escape.
+    /// </summary>
+    private bool TryGetEligibleTemporaryRoot(string path, out string temporaryRoot)
     {
         if (TryNormalizePath(path, out var normalized))
         {
@@ -143,7 +144,7 @@ internal sealed class PlatformTemporaryScopePolicy
             {
                 if ((IsWithinRoot(normalized, root.Authored)
                      || IsWithinRoot(normalized, root.Canonical))
-                    && IsSafeTemporaryPath(normalized, root))
+                    && IsLinkFreeTemporaryPath(normalized, root))
                 {
                     temporaryRoot = root.Canonical;
                     return true;
@@ -197,15 +198,15 @@ internal sealed class PlatformTemporaryScopePolicy
             if (candidate.Directory is null)
                 continue;
 
-            if (!IsSafeTemporaryPath(candidate.Directory, temporaryRoot))
+            if (!IsLinkFreeTemporaryPath(candidate.Directory, temporaryRoot))
                 return false;
         }
 
         foreach (var command in analysis.Commands)
         {
-            if (!HasSafeDirectoryTransitionEffect(command, temporaryRoot)
+            if (!HasLinkFreeDirectoryTransitionEffect(command, temporaryRoot)
                 && (command.WorkingDirectory is not ShellValueDomain.Exact workingDirectory
-                    || !IsSafeTemporaryPath(workingDirectory.Value, temporaryRoot)))
+                    || !IsLinkFreeTemporaryPath(workingDirectory.Value, temporaryRoot)))
             {
                 return false;
             }
@@ -216,7 +217,7 @@ internal sealed class PlatformTemporaryScopePolicy
                     continue;
 
                 if (string.IsNullOrWhiteSpace(argument.Resolved)
-                    || !IsSafeTemporaryPath(argument.Resolved, temporaryRoot))
+                    || !IsLinkFreeTemporaryPath(argument.Resolved, temporaryRoot))
                 {
                     return false;
                 }
@@ -224,10 +225,10 @@ internal sealed class PlatformTemporaryScopePolicy
 
             foreach (var redirect in command.Redirects)
             {
-                var safe = redirect switch
+                var eligible = redirect switch
                 {
                     FileRedirectAnalysis file =>
-                        HasSafeRedirectTarget(file.Target, temporaryRoot),
+                        HasLinkFreeRedirectTarget(file.Target, temporaryRoot),
                     DescriptorDuplicateRedirectAnalysis => true,
                     DescriptorMoveRedirectAnalysis => true,
                     DescriptorCloseRedirectAnalysis => true,
@@ -235,7 +236,7 @@ internal sealed class PlatformTemporaryScopePolicy
                     HereStringRedirectAnalysis => true,
                     _ => false
                 };
-                if (!safe)
+                if (!eligible)
                 {
                     return false;
                 }
@@ -245,7 +246,7 @@ internal sealed class PlatformTemporaryScopePolicy
         return true;
     }
 
-    private bool HasSafeDirectoryTransitionEffect(
+    private bool HasLinkFreeDirectoryTransitionEffect(
         CommandOccurrence command,
         PlatformTemporaryRoot temporaryRoot)
         => _environment.Grammar == ShellGrammar.Bash
@@ -254,24 +255,24 @@ internal sealed class PlatformTemporaryScopePolicy
            {
                Target: ShellValueDomain.Exact exact
            }
-           && IsSafeTemporaryPath(exact.Value, temporaryRoot);
+           && IsLinkFreeTemporaryPath(exact.Value, temporaryRoot);
 
-    private bool HasSafeRedirectTarget(
+    private bool HasLinkFreeRedirectTarget(
         ShellValueDomain target,
         PlatformTemporaryRoot temporaryRoot)
         => target switch
         {
             ShellValueDomain.Exact exact =>
-                IsSafeTemporaryPath(exact.Value, temporaryRoot),
+                IsLinkFreeTemporaryPath(exact.Value, temporaryRoot),
             ShellValueDomain.FiniteSet finite =>
                 finite.Values.Count > 0
-                && finite.Values.All(path => IsSafeTemporaryPath(path, temporaryRoot)),
+                && finite.Values.All(path => IsLinkFreeTemporaryPath(path, temporaryRoot)),
             ShellValueDomain.PathPattern pattern =>
-                IsSafeTemporaryPath(pattern.CoveringDirectory, temporaryRoot),
+                IsLinkFreeTemporaryPath(pattern.CoveringDirectory, temporaryRoot),
             _ => false
         };
 
-    private bool IsSafeTemporaryPath(
+    private bool IsLinkFreeTemporaryPath(
         string path,
         PlatformTemporaryRoot temporaryRoot)
     {
@@ -284,7 +285,7 @@ internal sealed class PlatformTemporaryScopePolicy
             return false;
         }
 
-        return _pathInspector.IsSafeDescendant(
+        return _pathInspector.HasNoLinkEscape(
             temporaryRoot.Canonical,
             canonicalPath,
             _environment.PathStyle);
@@ -355,12 +356,23 @@ internal sealed class PlatformTemporaryScopePolicy
         return false;
     }
 
-    private bool TryNormalizeManagedTemporaryDirectory(string? path, out string normalized)
+    private bool TryGetManagedTemporaryDirectoryForCorrection(
+        ToolInvocationContext context,
+        out string managedTemporaryDirectory)
     {
-        if (!TryNormalizePath(path, out normalized))
+        managedTemporaryDirectory = string.Empty;
+        if (context.RunScope.InteractiveApproval is not InteractiveApprovalCapability.Available
+            || context.Audience != TrustAudience.Personal
+            || !TryNormalizePath(
+                context.SessionStorage?.ManagedTemporary.Directory,
+                out var normalized)
+            || !_pathInspector.SupportsPathInspection(_environment.PathStyle))
+        {
             return false;
+        }
 
-        return !_pathInspector.ContainsInvalidPathState(normalized, _environment.PathStyle);
+        managedTemporaryDirectory = normalized;
+        return true;
     }
 
     private bool TryNormalizePath(string? path, out string normalized)
@@ -377,15 +389,19 @@ internal sealed class PlatformTemporaryScopePolicy
         string Canonical);
 }
 
+/// <summary>
+/// Resolves platform temporary roots and verifies host path relationships without a link escape.
+/// </summary>
 internal interface IPlatformTemporaryPathInspector
 {
     bool TryResolveRoot(string path, ShellPathStyle pathStyle, out string resolvedRoot);
 
-    bool IsSafeDescendant(string root, string path, ShellPathStyle pathStyle);
+    bool HasNoLinkEscape(string root, string path, ShellPathStyle pathStyle);
 
-    bool ContainsInvalidPathState(string path, ShellPathStyle pathStyle);
+    bool SupportsPathInspection(ShellPathStyle pathStyle);
 }
 
+/// <summary>Uses host filesystem metadata to inspect platform temporary paths.</summary>
 internal sealed class HostPlatformTemporaryPathInspector : IPlatformTemporaryPathInspector
 {
     internal static HostPlatformTemporaryPathInspector Instance { get; } = new();
@@ -439,10 +455,10 @@ internal sealed class HostPlatformTemporaryPathInspector : IPlatformTemporaryPat
         }
     }
 
-    public bool IsSafeDescendant(string root, string path, ShellPathStyle pathStyle)
+    public bool HasNoLinkEscape(string root, string path, ShellPathStyle pathStyle)
         => ShellPathRules.UsesHostPathStyle(pathStyle)
            && !PathUtility.ContainsSymlinkSegment(root, path);
 
-    public bool ContainsInvalidPathState(string path, ShellPathStyle pathStyle)
-        => !ShellPathRules.UsesHostPathStyle(pathStyle);
+    public bool SupportsPathInspection(ShellPathStyle pathStyle)
+        => ShellPathRules.UsesHostPathStyle(pathStyle);
 }

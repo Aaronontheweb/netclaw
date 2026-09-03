@@ -1450,9 +1450,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     && managedTemporaryCorrections.TryConsume(call, out var correctionKey))
                 {
                     consumedManagedTemporaryKey = correctionKey;
-                    toolContext.Approval.MarkManagedTemporaryRetry(new ManagedTemporaryRetry(
-                        correctionKey.ManagedTemporaryDirectory,
-                        correctionKey.PlatformTemporaryRoot));
+                    toolContext.Approval.MarkManagedTemporaryRetry(correctionKey.Target);
                 }
                 try
                 {
@@ -1493,11 +1491,10 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                             ToolInvocationOutcomeCategory.RecoverableCorrection,
                             remediationCode: ToolRemediationCode.UseManagedTemporaryDirectory));
                         var correctionText = ManagedTemporaryCorrection.BuildSuggestion(
-                            managedTemporaryCorrection.ManagedTemporaryDirectory);
+                            managedTemporaryCorrection.Target.ManagedTemporaryDirectory);
                         var newCorrectionKey = new ManagedTemporaryCorrectionKey(
                             correctedCall,
-                            managedTemporaryCorrection.PlatformTemporaryRoot,
-                            managedTemporaryCorrection.ManagedTemporaryDirectory);
+                            managedTemporaryCorrection.Target);
                         return BuildToolResult(
                             cleanedTc,
                             correctionText,
@@ -1609,7 +1606,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     if (decision == ParentApprovalDecision.Denied
                         && consumedManagedTemporaryKey is { } deniedManagedTemporaryRetry)
                     {
-                        reason = $"{reason}\n{ManagedTemporaryCorrection.BuildDenialHint(deniedManagedTemporaryRetry.ManagedTemporaryDirectory)}";
+                        reason = $"{reason}\n{ManagedTemporaryCorrection.BuildDenialHint(deniedManagedTemporaryRetry.Target.ManagedTemporaryDirectory)}";
                     }
 
                     toolContext.Outputs.TryComplete(

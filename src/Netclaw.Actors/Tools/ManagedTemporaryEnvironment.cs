@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System.Diagnostics;
 using Netclaw.Security;
+using Netclaw.Tools;
 
 namespace Netclaw.Actors.Tools;
 
@@ -18,19 +19,14 @@ internal static class ManagedTemporaryEnvironment
     /// <returns><c>null</c> on success; otherwise, a stable error that prevents process launch.</returns>
     internal static string? Prepare(
         ProcessStartInfo startInfo,
-        string temporaryDirectory,
-        string storageRoot)
+        ManagedTemporaryLocation location)
     {
         ArgumentNullException.ThrowIfNull(startInfo);
-        ArgumentException.ThrowIfNullOrWhiteSpace(temporaryDirectory);
-        ArgumentException.ThrowIfNullOrWhiteSpace(storageRoot);
 
         try
         {
-            var normalizedRoot = PathUtility.Normalize(storageRoot);
-            var normalizedTemporaryDirectory = PathUtility.Normalize(temporaryDirectory);
-            if (!PathUtility.IsWithinRoot(normalizedTemporaryDirectory, normalizedRoot))
-                return "Error: The managed temporary directory is outside its storage root.";
+            var normalizedRoot = PathUtility.Normalize(location.StorageRoot);
+            var normalizedTemporaryDirectory = PathUtility.Normalize(location.Directory);
 
             if (PathUtility.ContainsSymlinkSegment(
                     normalizedRoot,

@@ -480,7 +480,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
                 sessionId,
                 probe.Ref)
             .WithTurnContext(InteractiveTurnContext(sessionId))
-            .InSessionDirectory(key.ManagedTemporaryDirectory)
+            .InSessionDirectory(key.Target.ManagedTemporaryDirectory)
             .WithManagedTemporaryCorrections(key)
             .WithApprovals(
                 approvalChannel,
@@ -1321,8 +1321,9 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
                 WorkingDirectory: "/tmp",
                 Background: false,
                 Timeout: TimeSpan.FromSeconds(5)),
-            PlatformTemporaryRoot: "/tmp",
-            ManagedTemporaryDirectory: TestManagedTemporaryDirectory);
+            new ManagedTemporaryCorrectionTarget(
+                TestManagedTemporaryDirectory,
+                "/tmp"));
 
         public Task AuthorizeAsync(
             FunctionCallContent toolCall,
@@ -1342,8 +1343,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
                 Options: [])
             {
                 AgentCorrection = new ToolAgentCorrection.ManagedTemporaryDirectorySuggested(
-                    Key.ManagedTemporaryDirectory,
-                    Key.PlatformTemporaryRoot)
+                    Key.Target)
             });
     }
 
@@ -1380,8 +1380,8 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
                 Cwd: "/tmp")
             {
                 IsManagedTemporaryRetry = retryMarked,
-                ManagedTemporaryDirectory = ManagedTemporaryCorrectionRequiredExecutor.Key.ManagedTemporaryDirectory,
-                PlatformTemporaryRoot = ManagedTemporaryCorrectionRequiredExecutor.Key.PlatformTemporaryRoot
+                ManagedTemporaryDirectory = ManagedTemporaryCorrectionRequiredExecutor.Key.Target.ManagedTemporaryDirectory,
+                PlatformTemporaryRoot = ManagedTemporaryCorrectionRequiredExecutor.Key.Target.PlatformTemporaryRoot
             });
         }
     }

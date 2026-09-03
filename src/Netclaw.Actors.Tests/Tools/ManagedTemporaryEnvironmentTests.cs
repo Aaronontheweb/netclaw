@@ -6,6 +6,7 @@
 using System.Diagnostics;
 using Netclaw.Actors.Tools;
 using Netclaw.Tests.Utilities;
+using Netclaw.Tools;
 
 namespace Netclaw.Actors.Tests.Tools;
 
@@ -40,7 +41,9 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
             startInfo.ArgumentList.Add("printf '%s' \"$TMPDIR|$TMP|$TEMP\"");
         }
 
-        Assert.Null(ManagedTemporaryEnvironment.Prepare(startInfo, managed, _directory.Path));
+        Assert.Null(ManagedTemporaryEnvironment.Prepare(
+            startInfo,
+            new ManagedTemporaryLocation(managed, _directory.Path)));
         using var process = Process.Start(startInfo)!;
         var output = await process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
         await process.WaitForExitAsync(TestContext.Current.CancellationToken);
@@ -66,7 +69,9 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
         startInfo.ArgumentList.Add("-Command");
         startInfo.ArgumentList.Add("[Console]::Write([IO.Path]::GetTempPath())");
 
-        Assert.Null(ManagedTemporaryEnvironment.Prepare(startInfo, managed, _directory.Path));
+        Assert.Null(ManagedTemporaryEnvironment.Prepare(
+            startInfo,
+            new ManagedTemporaryLocation(managed, _directory.Path)));
         using var process = Process.Start(startInfo)!;
         var output = await process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
         await process.WaitForExitAsync(TestContext.Current.CancellationToken);
@@ -85,25 +90,11 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
         var managed = Path.Combine(blockingFile, "managed");
         var startInfo = CreateStartInfoWithoutTemporaryVariables();
 
-        var error = ManagedTemporaryEnvironment.Prepare(startInfo, managed, _directory.Path);
+        var error = ManagedTemporaryEnvironment.Prepare(
+            startInfo,
+            new ManagedTemporaryLocation(managed, _directory.Path));
 
         Assert.StartsWith("Error preparing managed temporary directory:", error, StringComparison.Ordinal);
-        Assert.False(startInfo.Environment.ContainsKey("TMPDIR"));
-        Assert.False(startInfo.Environment.ContainsKey("TMP"));
-        Assert.False(startInfo.Environment.ContainsKey("TEMP"));
-    }
-
-    [Fact]
-    public void Directory_outside_storage_root_is_rejected_before_creation()
-    {
-        var root = Path.Combine(_directory.Path, "root");
-        var outside = Path.Combine(_directory.Path, "outside");
-        var startInfo = CreateStartInfoWithoutTemporaryVariables();
-
-        var error = ManagedTemporaryEnvironment.Prepare(startInfo, outside, root);
-
-        Assert.Equal("Error: The managed temporary directory is outside its storage root.", error);
-        Assert.False(Directory.Exists(outside));
         Assert.False(startInfo.Environment.ContainsKey("TMPDIR"));
         Assert.False(startInfo.Environment.ContainsKey("TMP"));
         Assert.False(startInfo.Environment.ContainsKey("TEMP"));
@@ -120,7 +111,9 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
         Directory.CreateSymbolicLink(linked, outside);
         var startInfo = CreateStartInfoWithoutTemporaryVariables();
 
-        var error = ManagedTemporaryEnvironment.Prepare(startInfo, linked, root);
+        var error = ManagedTemporaryEnvironment.Prepare(
+            startInfo,
+            new ManagedTemporaryLocation(linked, root));
 
         Assert.Equal("Error: The managed temporary directory contains an unsafe filesystem link.", error);
         Assert.False(startInfo.Environment.ContainsKey("TMPDIR"));
@@ -138,7 +131,9 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
         var managed = Path.Combine(linkedRoot, "tmp", "parent");
         var startInfo = CreateStartInfoWithoutTemporaryVariables();
 
-        var error = ManagedTemporaryEnvironment.Prepare(startInfo, managed, linkedRoot);
+        var error = ManagedTemporaryEnvironment.Prepare(
+            startInfo,
+            new ManagedTemporaryLocation(managed, linkedRoot));
 
         Assert.Equal("Error: The managed temporary directory contains an unsafe filesystem link.", error);
         Assert.False(startInfo.Environment.ContainsKey("TMPDIR"));

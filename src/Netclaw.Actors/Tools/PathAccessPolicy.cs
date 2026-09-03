@@ -10,6 +10,9 @@ using ShellSyntaxTree;
 
 namespace Netclaw.Actors.Tools;
 
+/// <summary>
+/// Owns canonical path resolution and path access decisions for structured tools and reviewed shell diagnostics.
+/// </summary>
 internal sealed class PathAccessPolicy
 {
     internal enum PathAccessFailure

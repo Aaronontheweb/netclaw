@@ -567,9 +567,7 @@ internal sealed class SessionToolExecutionPipeline
             && batch.ManagedTemporaryCorrections.TryConsume(call, out var correctionKey))
         {
             consumedManagedTemporaryKey = correctionKey;
-            context.Approval.MarkManagedTemporaryRetry(new ManagedTemporaryRetry(
-                correctionKey.ManagedTemporaryDirectory,
-                correctionKey.PlatformTemporaryRoot));
+            context.Approval.MarkManagedTemporaryRetry(correctionKey.Target);
         }
 
         // Re-drive of an ApprovedOnce approval: the user already clicked
@@ -688,11 +686,10 @@ internal sealed class SessionToolExecutionPipeline
             {
                 sw.Stop();
                 resultText = ManagedTemporaryCorrection.BuildSuggestion(
-                    managedTemporaryCorrection.ManagedTemporaryDirectory);
+                    managedTemporaryCorrection.Target.ManagedTemporaryDirectory);
                 var newCorrectionKey = new ManagedTemporaryCorrectionKey(
                     correctedCall,
-                    managedTemporaryCorrection.PlatformTemporaryRoot,
-                    managedTemporaryCorrection.ManagedTemporaryDirectory);
+                    managedTemporaryCorrection.Target);
                 var correctionReceipt = new ToolInvocationReceipt(
                     ToolInvocationOutcomeCategory.RecoverableCorrection,
                     remediationCode: ToolRemediationCode.UseManagedTemporaryDirectory);

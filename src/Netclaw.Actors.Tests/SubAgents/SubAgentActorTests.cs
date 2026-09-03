@@ -1537,11 +1537,11 @@ public class SubAgentActorTests : TestKit
             out string resolvedRoot)
             => ShellPathRules.TryNormalize(path, pathStyle, out resolvedRoot);
 
-        public bool IsSafeDescendant(string root, string path, ShellPathStyle pathStyle)
+        public bool HasNoLinkEscape(string root, string path, ShellPathStyle pathStyle)
             => true;
 
-        public bool ContainsInvalidPathState(string path, ShellPathStyle pathStyle)
-            => false;
+        public bool SupportsPathInspection(ShellPathStyle pathStyle)
+            => true;
     }
 
     private static void AssertPromptOrder(string prompt, params string[] markers)
