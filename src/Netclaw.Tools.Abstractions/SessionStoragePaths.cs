@@ -90,7 +90,8 @@ public readonly record struct ManagedTemporaryLocation
         AuthorityRoot = SessionStoragePaths.NormalizeAbsolute(authorityRoot, nameof(authorityRoot));
 
         var relative = Path.GetRelativePath(AuthorityRoot, Directory);
-        if (Path.IsPathRooted(relative)
+        if (relative == "."
+            || Path.IsPathRooted(relative)
             || relative == ".."
             || relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
         {
@@ -133,10 +134,10 @@ public sealed record SessionStoragePaths
         ManagedTemporary = managedTemporary;
         WorktreeDirectory = NormalizeAbsolute(worktreeDirectory, nameof(worktreeDirectory));
         LogPath = NormalizeAbsolute(logPath, nameof(logPath));
-        CurrentSessionRoots = currentSessionRoots
+        CurrentSessionRoots = Array.AsReadOnly(currentSessionRoots
             .Select(root => NormalizeAbsolute(root, nameof(currentSessionRoots)))
             .Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal)
-            .ToArray();
+            .ToArray());
         LegacyLogsBasePath = legacyLogsBasePath;
     }
 

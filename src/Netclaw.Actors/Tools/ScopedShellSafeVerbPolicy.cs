@@ -16,9 +16,9 @@ namespace Netclaw.Actors.Tools;
 /// only when all parser-owned source and scope guards pass.
 ///
 /// Mirrors <see cref="ScopedFileAccessPolicy"/> for the audience model and
-/// the symlink-segment guard. Personal and Team audiences get
-/// <c>session_dir + project_dir</c> as their safe-space roots; Public gets
-/// <c>session_dir</c> only — Public sessions cannot expand their safe space
+/// the symlink-segment guard. Personal and Team audiences get the current
+/// session roots plus <c>project_dir</c>; Public gets the current session
+/// roots only — Public sessions cannot expand their safe space
 /// via <c>set_working_directory</c>, mirroring the read-roots restriction
 /// <see cref="ScopedFileAccessPolicy"/> enforces for file_read.
 ///

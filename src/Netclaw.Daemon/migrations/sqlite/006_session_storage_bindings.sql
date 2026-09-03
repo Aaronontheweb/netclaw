@@ -5,6 +5,3 @@ CREATE TABLE IF NOT EXISTS session_storage_bindings (
     envelope_root   TEXT NOT NULL UNIQUE,
     created_at      INTEGER NOT NULL
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS session_storage_bindings_envelope_root_idx
-    ON session_storage_bindings(envelope_root);

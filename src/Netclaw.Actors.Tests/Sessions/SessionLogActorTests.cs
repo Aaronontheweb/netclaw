@@ -33,9 +33,15 @@ public sealed class SessionLogActorTests : TestKit
             new SessionMessageExtractor(),
             entityId => SessionLogActor.CreatePropsForPath(
                 new SessionId(entityId),
-                new SessionLogPath(SessionLogFile.GetLogPath(new SessionId(entityId), basePath)),
+                new SessionLogPath(GetLegacyLogPath(new SessionId(entityId), basePath)),
                 timeProvider,
                 idleTimeout)));
+
+    private static string GetLegacyLogPath(SessionId sessionId, string basePath)
+        => Path.Combine(
+            basePath,
+            SessionDirectoryHelper.SanitizeSessionId(sessionId),
+            "session.log");
 
     /// <summary>
     /// Spins on <see cref="Directory.Delete"/> via <see cref="TestKit.AwaitAssertAsync"/>.
@@ -90,7 +96,7 @@ public sealed class SessionLogActorTests : TestKit
 
             await AwaitAssertAsync(async () =>
             {
-                var logFile = SessionLogFile.GetLogPath(sessionId, basePath);
+                var logFile = GetLegacyLogPath(sessionId, basePath);
                 var text = await ReadLogAsync(logFile, TestContext.Current.CancellationToken);
                 Assert.Contains("Thinking delta: step by step", text, StringComparison.Ordinal);
             }, cancellationToken: TestContext.Current.CancellationToken);
@@ -127,7 +133,7 @@ public sealed class SessionLogActorTests : TestKit
 
                 await AwaitAssertAsync(async () =>
                 {
-                    var logFile = SessionLogFile.GetLogPath(sessionId, basePath);
+                    var logFile = GetLegacyLogPath(sessionId, basePath);
                     var text = await ReadLogAsync(logFile, TestContext.Current.CancellationToken);
                     Assert.Contains("Assistant: first", text, StringComparison.Ordinal);
                 }, cancellationToken: TestContext.Current.CancellationToken);
@@ -141,7 +147,7 @@ public sealed class SessionLogActorTests : TestKit
 
                 await AwaitAssertAsync(async () =>
                 {
-                    var logFile = SessionLogFile.GetLogPath(sessionId, basePath);
+                    var logFile = GetLegacyLogPath(sessionId, basePath);
                     Assert.True(File.Exists(logFile));
                     Assert.Single(Directory.GetFiles(Path.GetDirectoryName(logFile)!, "*.log", SearchOption.TopDirectoryOnly));
 
@@ -174,8 +180,8 @@ public sealed class SessionLogActorTests : TestKit
 
             await AwaitAssertAsync(async () =>
             {
-                var pathA = SessionLogFile.GetLogPath(sessionA, basePath);
-                var pathB = SessionLogFile.GetLogPath(sessionB, basePath);
+                var pathA = GetLegacyLogPath(sessionA, basePath);
+                var pathB = GetLegacyLogPath(sessionB, basePath);
                 var textA = await ReadLogAsync(pathA, TestContext.Current.CancellationToken);
                 var textB = await ReadLogAsync(pathB, TestContext.Current.CancellationToken);
 
@@ -212,7 +218,7 @@ public sealed class SessionLogActorTests : TestKit
 
             await AwaitAssertAsync(async () =>
             {
-                var path = SessionLogFile.GetLogPath(sessionId, basePath);
+                var path = GetLegacyLogPath(sessionId, basePath);
                 var text = await ReadLogAsync(path, TestContext.Current.CancellationToken);
                 Assert.Contains("Assistant: audit-line", text, StringComparison.Ordinal);
                 Assert.Contains("Diagnostic: provider sent request", text, StringComparison.Ordinal);

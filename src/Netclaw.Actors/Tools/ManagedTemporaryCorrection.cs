@@ -25,19 +25,30 @@ internal abstract record ToolAgentCorrection
 }
 
 /// <summary>Captures the execution-relevant arguments of one corrected tool call.</summary>
-internal readonly record struct ManagedTemporaryCallSemantics(
-    string ToolName,
-    ApprovalShell? Shell,
-    string? Command,
-    bool HasExplicitWorkingDirectory,
-    string? ExplicitWorkingDirectory,
-    bool Background,
-    TimeSpan Timeout,
-    string? Path,
-    string? Content,
-    string? OldString,
-    string? NewString,
-    bool? ReplaceAll);
+internal abstract record ManagedTemporaryCallSemantics(string ToolName, TimeSpan Timeout)
+{
+    /// <summary>Captures one shell call without model-facing rationale.</summary>
+    internal sealed record ShellCall(
+        ApprovalShell Shell,
+        string Command,
+        string? WorkingDirectory,
+        bool Background,
+        TimeSpan Timeout)
+        : ManagedTemporaryCallSemantics(ShellTool.ToolName, Timeout);
+
+    /// <summary>Captures one structured file-write call.</summary>
+    internal sealed record FileWriteCall(string Path, string? Content, TimeSpan Timeout)
+        : ManagedTemporaryCallSemantics(FileWriteTool.ToolName, Timeout);
+
+    /// <summary>Captures one structured file-edit call.</summary>
+    internal sealed record FileEditCall(
+        string Path,
+        string? OldString,
+        string? NewString,
+        bool? ReplaceAll,
+        TimeSpan Timeout)
+        : ManagedTemporaryCallSemantics(FileEditTool.ToolName, Timeout);
+}
 
 /// <summary>Binds one exact corrected call to the platform root and suggested managed directory.</summary>
 internal readonly record struct ManagedTemporaryCorrectionKey(
@@ -50,7 +61,10 @@ internal abstract record ManagedTemporaryCorrectionChange
 {
     private ManagedTemporaryCorrectionChange() { }
 
+    /// <summary>Commits a correction key after its guidance reaches the model.</summary>
     internal sealed record Arm(ManagedTemporaryCorrectionKey Key) : ManagedTemporaryCorrectionChange;
+
+    /// <summary>Removes a correction key after one matching retry claims it.</summary>
     internal sealed record Consume(ManagedTemporaryCorrectionKey Key) : ManagedTemporaryCorrectionChange;
 }
 
@@ -122,19 +136,12 @@ internal static class ManagedTemporaryCorrection
                 return null;
 
             var explicitCwd = ToolArgumentHelper.GetString(toolCall.Arguments, "WorkingDirectory");
-            return new ManagedTemporaryCallSemantics(
-                toolCall.Name,
+            return new ManagedTemporaryCallSemantics.ShellCall(
                 shell,
                 command,
-                !string.IsNullOrWhiteSpace(explicitCwd),
-                explicitCwd,
+                string.IsNullOrWhiteSpace(explicitCwd) ? null : explicitCwd,
                 meta?.Background == true,
-                timeout,
-                null,
-                null,
-                null,
-                null,
-                null);
+                timeout);
         }
 
         if (toolCall.Name is not (FileWriteTool.ToolName or FileEditTool.ToolName))
@@ -145,19 +152,17 @@ internal static class ManagedTemporaryCorrection
         if (string.IsNullOrWhiteSpace(path))
             return null;
 
-        return new ManagedTemporaryCallSemantics(
-            toolCall.Name,
-            null,
-            null,
-            false,
-            null,
-            false,
-            timeout,
-            path,
-            ToolArgumentHelper.GetString(toolCall.Arguments, "Content"),
-            ToolArgumentHelper.GetString(toolCall.Arguments, "OldString"),
-            ToolArgumentHelper.GetString(toolCall.Arguments, "NewString"),
-            ToolArgumentHelper.GetBoolStrict(toolCall.Arguments, "ReplaceAll"));
+        return toolCall.Name == FileWriteTool.ToolName
+            ? new ManagedTemporaryCallSemantics.FileWriteCall(
+                path,
+                ToolArgumentHelper.GetString(toolCall.Arguments, "Content"),
+                timeout)
+            : new ManagedTemporaryCallSemantics.FileEditCall(
+                path,
+                ToolArgumentHelper.GetString(toolCall.Arguments, "OldString"),
+                ToolArgumentHelper.GetString(toolCall.Arguments, "NewString"),
+                ToolArgumentHelper.GetBoolStrict(toolCall.Arguments, "ReplaceAll"),
+                timeout);
     }
 
     /// <summary>Builds the correction returned before an approval request.</summary>

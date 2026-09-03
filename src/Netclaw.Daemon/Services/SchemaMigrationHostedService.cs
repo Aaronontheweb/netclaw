@@ -11,6 +11,7 @@ using Netclaw.Daemon.Configuration;
 
 namespace Netclaw.Daemon.Services;
 
+/// <summary>Applies required SQLite schema migrations before dependent hosted services start.</summary>
 public sealed class SchemaMigrationHostedService : IHostedService
 {
     private readonly DaemonPersistenceOptions _options;
@@ -19,6 +20,12 @@ public sealed class SchemaMigrationHostedService : IHostedService
     private readonly SQLiteMemoryStore _memoryStore;
     private readonly ILogger<SchemaMigrationHostedService> _logger;
 
+    /// <summary>Creates the startup migration service.</summary>
+    /// <param name="options">The selected persistence settings.</param>
+    /// <param name="paths">The daemon filesystem paths.</param>
+    /// <param name="migrator">The SQLite schema migrator.</param>
+    /// <param name="memoryStore">The independently persisted memory store.</param>
+    /// <param name="logger">The startup logger.</param>
     public SchemaMigrationHostedService(
         DaemonPersistenceOptions options,
         NetclawPaths paths,
@@ -33,6 +40,7 @@ public sealed class SchemaMigrationHostedService : IHostedService
         _logger = logger;
     }
 
+    /// <inheritdoc />
     public async Task StartAsync(CancellationToken cancellationToken)
     {
         if (_options.Provider is not PersistenceProvider.Sqlite || _options.Sqlite.AutoMigrate)
@@ -47,5 +55,6 @@ public sealed class SchemaMigrationHostedService : IHostedService
         await _memoryStore.InitializeAsync(cancellationToken);
     }
 
+    /// <inheritdoc />
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }

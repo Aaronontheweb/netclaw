@@ -25,6 +25,7 @@ public sealed class SessionStoragePathsTests
         Assert.Equal(Path.Combine(envelope, "worktrees"), storage.WorktreeDirectory);
         Assert.Equal(Path.Combine(envelope, "logs", "session.log"), storage.LogPath);
         Assert.Equal([envelope], storage.CurrentSessionRoots);
+        Assert.False(storage.CurrentSessionRoots is string[]);
     }
 
     [Fact]
@@ -63,6 +64,7 @@ public sealed class SessionStoragePathsTests
         var outside = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "netclaw-storage", "outside"));
 
         Assert.Throws<ArgumentException>(() => new ManagedTemporaryLocation(outside, root));
+        Assert.Throws<ArgumentException>(() => new ManagedTemporaryLocation(root, root));
     }
 
     [Fact]

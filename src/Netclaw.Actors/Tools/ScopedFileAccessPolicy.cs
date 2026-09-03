@@ -416,7 +416,7 @@ internal sealed class ScopedFileAccessPolicy
     /// Single source of truth for root resolution — used by both
     /// <see cref="GetRootsForContext"/> and <see cref="TryResolvePath"/>.
     /// Public audience is excluded from global read roots (skills, identity,
-    /// workspaces) — it may only access its session directory.
+    /// workspaces) — it may only access its current-session roots.
     /// </summary>
     private IReadOnlyList<string> ResolveAndMergeRoots(
         ToolFilesystemAccessProfile access,
@@ -444,7 +444,7 @@ internal sealed class ScopedFileAccessPolicy
     /// Confines an autonomous (non-interactive) session whose audience would
     /// otherwise grant unrestricted (<see cref="ToolFilesystemMode.All"/>) access to
     /// the autonomous zone. Fails closed when the zone is empty (the session
-    /// directory is normally always present, so this is a defensive guard).
+    /// storage roots are normally always present, so this is a defensive guard).
     /// </summary>
     private bool TryResolveWithinAutonomousZone(
         string fullPath,
@@ -480,15 +480,15 @@ internal sealed class ScopedFileAccessPolicy
 
     /// <summary>
     /// Resolves the autonomous filesystem zone from the data already on the
-    /// execution context: the per-session directory and the current project
-    /// directory, always present for both reads and writes. Read access
+    /// execution context: the current-session roots and current project
+    /// directory, available for both reads and writes. Read access
     /// additionally includes the non-sensitive global read roots (skills,
     /// identity, workspaces). Write/attach access additionally includes the
     /// configured <em>workspaces</em> directory only — the operator's designated
     /// writable working area — but NOT skills/identity, which are system-managed
     /// (an autonomous session must never rewrite its own identity or skills).
     /// Plain file writes are not gated by the interactive approval system, so
-    /// confining them to session+project blocked legitimate cross-run state in
+    /// confining them to current-session roots plus project blocked legitimate cross-run state in
     /// the workspace without a security benefit. No additional plumbing — the
     /// cached read roots and workspaces root already exist on this policy.
     /// </summary>

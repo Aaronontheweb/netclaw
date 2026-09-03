@@ -582,11 +582,11 @@ public sealed class ToolInvocationContext
     public string? SessionId { get; }
 
     /// <summary>
-    /// Session-scoped temp directory for tools that write files to disk.
-    /// Created lazily on first access.
+    /// Session workspace used as the default base for relative tool paths.
     /// </summary>
     public string? SessionDirectory { get; }
 
+    /// <summary>Gets the complete resolved storage layout for a bound session.</summary>
     public SessionStoragePaths? SessionStorage { get; }
 
     /// <summary>

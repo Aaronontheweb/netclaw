@@ -127,10 +127,16 @@ public static class SubAgentProtocol
         public ChannelWriter<ToolActivityUpdate>? ActivitySink { get; init; }
     }
 
+    /// <summary>Immutable authority, storage, and working context assigned to one child run.</summary>
     public sealed record ChildRunScope
     {
+        /// <summary>Gets the child scope identifier used for logs and telemetry.</summary>
         public required SubAgentScopeId ScopeId { get; init; }
+
+        /// <summary>Gets the framework-owned authority and resolved session storage.</summary>
         public required ToolRunScope Authority { get; init; }
+
+        /// <summary>Gets the working-context snapshot inherited from the parent.</summary>
         public required WorkingContextSnapshot InitialWorkingSnapshot { get; init; }
     }
 

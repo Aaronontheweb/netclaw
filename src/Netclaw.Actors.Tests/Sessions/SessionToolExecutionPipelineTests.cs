@@ -505,7 +505,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
     }
 
     [Fact]
-    public void Scratch_retry_key_is_consumed_once()
+    public void Managed_temporary_retry_key_is_consumed_once()
     {
         var key = ManagedTemporaryCorrectionRequiredExecutor.Key;
         var dispatch = new ManagedTemporaryCorrectionDispatch([key]);
@@ -516,25 +516,24 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
     }
 
     [Theory]
-    [InlineData("different-command", true, "/tmp", false, 5)]
-    [InlineData("gh api repos/example/project", false, null, false, 5)]
-    [InlineData("gh api repos/example/project", true, "/var/tmp", false, 5)]
-    [InlineData("gh api repos/example/project", true, "/tmp", true, 5)]
-    [InlineData("gh api repos/example/project", true, "/tmp", false, 30)]
+    [InlineData("different-command", "/tmp", false, 5)]
+    [InlineData("gh api repos/example/project", null, false, 5)]
+    [InlineData("gh api repos/example/project", "/var/tmp", false, 5)]
+    [InlineData("gh api repos/example/project", "/tmp", true, 5)]
+    [InlineData("gh api repos/example/project", "/tmp", false, 30)]
     public void Execution_change_does_not_consume_managed_temporary_retry_key(
         string command,
-        bool hasExplicitWorkingDirectory,
         string? workingDirectory,
         bool background,
         int timeoutSeconds)
     {
         var key = ManagedTemporaryCorrectionRequiredExecutor.Key;
         var dispatch = new ManagedTemporaryCorrectionDispatch([key]);
-        var changedCall = key.Call with
+        var originalCall = Assert.IsType<ManagedTemporaryCallSemantics.ShellCall>(key.Call);
+        var changedCall = originalCall with
         {
             Command = command,
-            HasExplicitWorkingDirectory = hasExplicitWorkingDirectory,
-            ExplicitWorkingDirectory = workingDirectory,
+            WorkingDirectory = workingDirectory,
             Background = background,
             Timeout = TimeSpan.FromSeconds(timeoutSeconds)
         };
@@ -563,14 +562,15 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
     {
         var key = ManagedTemporaryCorrectionRequiredExecutor.Key;
         var dispatch = new ManagedTemporaryCorrectionDispatch([key]);
+        var originalCall = Assert.IsType<ManagedTemporaryCallSemantics.ShellCall>(key.Call);
 
         Assert.False(dispatch.TryConsume(
-            key.Call with { Shell = ApprovalShell.PowerShell },
+            originalCall with { Shell = ApprovalShell.PowerShell },
             out _));
     }
 
     [Fact]
-    public void Scratch_correction_state_clears_lifecycle_authority()
+    public void Managed_temporary_correction_state_clears_lifecycle_authority()
     {
         var key = ManagedTemporaryCorrectionRequiredExecutor.Key;
         var state = new ManagedTemporaryCorrectionState();
@@ -581,7 +581,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
     }
 
     [Fact]
-    public void Scratch_correction_state_removes_consumed_key_after_history_commit()
+    public void Managed_temporary_correction_state_removes_consumed_key_after_history_commit()
     {
         var key = ManagedTemporaryCorrectionRequiredExecutor.Key;
         var state = new ManagedTemporaryCorrectionState();
@@ -1312,20 +1312,15 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
 
     private sealed class ManagedTemporaryCorrectionRequiredExecutor : IToolExecutor
     {
+        private const string Command = "gh api repos/example/project";
+
         internal static ManagedTemporaryCorrectionKey Key { get; } = new(
-            new ManagedTemporaryCallSemantics(
-                ToolName: ShellTool.ToolName,
+            new ManagedTemporaryCallSemantics.ShellCall(
                 Shell: ApprovalShell.Bash,
-                Command: "gh api repos/example/project",
-                HasExplicitWorkingDirectory: true,
-                ExplicitWorkingDirectory: "/tmp",
+                Command: Command,
+                WorkingDirectory: "/tmp",
                 Background: false,
-                Timeout: TimeSpan.FromSeconds(5),
-                Path: null,
-                Content: null,
-                OldString: null,
-                NewString: null,
-                ReplaceAll: null),
+                Timeout: TimeSpan.FromSeconds(5)),
             PlatformTemporaryRoot: "/tmp",
             ManagedTemporaryDirectory: TestManagedTemporaryDirectory);
 
@@ -1341,7 +1336,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
             CancellationToken ct = default)
             => throw new ToolApprovalRequiredException(new ToolApprovalContext(
                 ToolName: toolCall.Name,
-                DisplayText: Key.Call.Command!,
+                DisplayText: Command,
                 Patterns: ["gh api"],
                 CandidateVerbs: ["gh api"],
                 Options: [])

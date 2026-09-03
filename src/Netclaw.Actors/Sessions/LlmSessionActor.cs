@@ -125,7 +125,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     // Reference to the singleton SessionLogDispatcher; resolved lazily on
     // recovery completion. The dispatcher owns one SessionLogActor child per
-    // session id and is the single writer per session.log file. Audit messages
+    // resolved log path and is the single writer for that file. Audit messages
     // (SendUserMessage, SessionOutput) are forwarded through it.
     private IActorRef? _logActor;
 

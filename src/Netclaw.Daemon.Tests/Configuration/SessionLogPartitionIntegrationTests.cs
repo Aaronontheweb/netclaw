@@ -73,7 +73,10 @@ public sealed class SessionLogPartitionIntegrationTests : TestKit
         var probe = Sys.ActorOf(Props.Create(() => new SessionTaggedLogger()), "session-tagged-logger");
         probe.Tell(new LogIt(sessionId.Value, marker));
 
-        var sessionLogPath = SessionLogFile.GetLogPath(sessionId, SessionsDir);
+        var sessionLogPath = Path.Combine(
+            SessionsDir,
+            SessionDirectoryHelper.SanitizeSessionId(sessionId),
+            "session.log");
         await AwaitAssertAsync(
             async () =>
             {
