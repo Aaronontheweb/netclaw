@@ -106,7 +106,7 @@ The contract separates three responsibilities:
 |---|---|---|
 | Path facts | A raw path | Its canonical path, link state, and relationship to a trusted root |
 | Path access decision | Path facts, operation, audience, and trusted roots | A typed allow or deny decision with a reason |
-| Remediation | A denied request and trusted runtime guidance | Optional advice that grants no authority |
+| Remediation | A request that passed terminal authorization checks and would otherwise require approval, plus trusted runtime guidance | Optional advice that grants no authority |
 
 Each capability has one policy owner:
 
@@ -120,9 +120,12 @@ Each capability has one policy owner:
 Other specifications SHALL reference the owning requirement. They SHALL NOT
 repeat its policy with different terms or another decision path.
 
-The source of a path does not create another safety model. A structured file
-argument, shell syntax fact, working directory, and temporary-path candidate
-all use the same path facts and path access decision contract.
+The source of a path does not create another safety model. Structured file
+arguments, project-directory declarations, unattended shell path facts, and
+reviewed-safe shell candidates use the same path facts and path access decision
+contract. Interactive Personal shell calls may instead reach the user approval
+gate for paths outside trusted roots; that approval is an explicit authority
+boundary, not a second automatic path policy.
 
 The target glossary uses these terms:
 
@@ -134,8 +137,9 @@ The target glossary uses these terms:
   descendant, or is outside it.
 - **File operation:** The requested read, list, search, write, edit, attach,
   working-directory, or execution use.
-- **Path access decision:** A typed allow or deny result with the canonical
-  path, matched root, and reason.
+- **Path access decision:** A typed allow or deny result. It carries the
+  canonical path when resolution succeeds; a denial also carries a failure
+  category and human-readable detail.
 
 Terms such as `safe root`, `authority root`, `safe-space root`, `autonomous
 zone`, and `current-session root` will not define competing path models. The
@@ -153,20 +157,22 @@ one session analyze another session's logs, which supports diagnosis on a
 heavily used Netclaw agent.
 
 ```text
-file argument or shell path fact
+structured file argument, project declaration, or unattended shell path fact
   -> canonical path and trusted-root relationship
   -> audience plus operation decision
-  -> allow, deny, or optional remediation after denial
+  -> deny terminally
+  -> or pass terminal checks, then optional remediation before an approval prompt
 ```
 
 **Counterexample:** Session identity does not create a separate access-control
 list. The shared sessions root provides containment, while audience and
 operation permissions still control the requested action.
 
-**Counterexample:** Temporary-path detection does not produce a path access
-decision.
-It can propose `temp_dir` only after the common path decision denies the
-original destination.
+**Counterexample:** Temporary-path detection does not produce or override a path
+access decision. After terminal path and shell-policy checks pass, it may use
+path and syntax facts to propose `temp_dir` before the call would otherwise
+prompt for approval. The replacement call is authorized from the beginning. A
+denied call receives no remediation that could be mistaken for authority.
 
 ### Bind one physical session storage envelope
 

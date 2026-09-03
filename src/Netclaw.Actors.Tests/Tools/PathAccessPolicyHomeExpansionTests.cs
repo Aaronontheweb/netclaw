@@ -8,6 +8,7 @@ using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
+using static Netclaw.Actors.Tests.Tools.PathAccessDecisionAssertions;
 using Xunit;
 
 namespace Netclaw.Actors.Tests.Tools;
@@ -61,9 +62,9 @@ public sealed class PathAccessPolicyHomeExpansionTests : IDisposable
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var target = Path.Combine(home, "repositories", "any-project", "RELEASE_NOTES.md");
 
-        var allowed = policy.TryResolveWritePath(target, context, out _, out var error);
+        var decision = policy.Evaluate(target, context, PathAccessPolicy.FileOperation.Write);
 
-        Assert.True(allowed, error);
+        AssertAllowed(decision, target);
     }
 
     [Fact]
@@ -75,9 +76,9 @@ public sealed class PathAccessPolicyHomeExpansionTests : IDisposable
 
         var unrelated = Path.Combine(Path.GetTempPath(), "outside-the-root.txt");
 
-        var allowed = policy.TryResolveWritePath(unrelated, context, out _, out _);
+        var decision = policy.Evaluate(unrelated, context, PathAccessPolicy.FileOperation.Write);
 
-        Assert.False(allowed);
+        AssertDenied(decision, Path.GetFullPath(unrelated));
     }
 
     private static ToolConfig BuildPersonalWriteRootsConfig(string configuredRoot)

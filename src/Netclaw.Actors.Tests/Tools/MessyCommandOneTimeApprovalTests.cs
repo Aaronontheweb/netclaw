@@ -62,19 +62,14 @@ public sealed class MessyCommandOneTimeApprovalTests : TestKit
             TrustAudience.Personal,
             ShellExecutionMode.HostAllowed,
             UsedStrictFallback: false));
-        services.AddSingleton<ToolAccessPolicy>(sp => new ToolAccessPolicy(
+        services.AddSingleton<ToolAccessPolicy>(sp => new ToolAccessPolicy(new NetclawPaths(),
             sp.GetRequiredService<ToolConfig>(),
             sp.GetRequiredService<EffectivePolicyDefaults>(),
             new Netclaw.Security.ShellCommandPolicy(),
             new Netclaw.Security.ToolPathPolicy([])));
 
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            toolConfig,
-            new NetclawPaths(),
-            new Netclaw.Security.ToolPathPolicy([]),
-            new Netclaw.Security.ShellCommandPolicy(),
-            toolAccessPolicy: TestToolAccessPolicy.Create(toolConfig));
+        registry.WithFirstPartyTools(TestToolAccessPolicy.Create(toolConfig));
         services.AddSingleton(registry);
     }
 

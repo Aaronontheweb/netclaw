@@ -449,6 +449,7 @@ public sealed class PlatformTemporaryScopePolicyTests
                 pathInspector,
                 additionalTemporaryRoots);
         var policy = new ToolAccessPolicy(
+            new NetclawPaths(),
             config,
             new EffectivePolicyDefaults(
                 DeploymentPosture.Personal,

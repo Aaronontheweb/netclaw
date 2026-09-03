@@ -14,7 +14,6 @@ internal sealed class PathAccessPolicy
 {
     internal enum PathAccessFailure
     {
-        None,
         InvalidInput,
         AccessDenied,
         MissingBase
@@ -117,7 +116,10 @@ internal sealed class PathAccessPolicy
                 out var failure,
                 allowInteractivePersonalReach))
         {
-            return PathAccessDecision.Deny(error, failure, canonicalPath);
+            return PathAccessDecision.Deny(
+                error,
+                failure ?? throw new InvalidOperationException("A denied path decision must include a failure."),
+                canonicalPath);
         }
 
         return AllowIfUnprotected(canonicalPath, profileOperation);
@@ -216,75 +218,16 @@ internal sealed class PathAccessPolicy
             canonicalPath);
     }
 
-    public bool TryResolveReadPath(string rawPath, ToolInvocationContext context, out string fullPath, out string error)
-        => TryResolvePath(rawPath, context, FileOperation.Read, out fullPath, out error);
-
-    internal bool TryResolveReadPath(
-        string rawPath,
-        ToolInvocationContext context,
-        out string fullPath,
-        out string error,
-        out PathAccessFailure failure)
-        => TryResolvePath(rawPath, context, FileOperation.Read, out fullPath, out error, out failure);
-
-    /// <summary>
-    /// Resolves a path for <c>set_working_directory</c>. Deliberately does NOT
-    /// grant interactive Personal shell-equivalent reach: the working directory
-    /// can affect reviewed shell approval and feeds project identity files
-    /// into the system prompt, so it is confined to trusted roots (session,
-    /// project, and global read roots) in every mode, even the default
-    /// <c>Mode.All</c> Personal profile.
-    /// </summary>
-    public bool TryResolveWorkingDirectory(string rawPath, ToolInvocationContext context, out string fullPath, out string error)
-        => TryResolvePath(rawPath, context, FileOperation.Read, out fullPath, out error, allowInteractivePersonalReach: false);
-
-    internal bool TryResolveWorkingDirectory(
-        string rawPath,
-        ToolInvocationContext context,
-        out string fullPath,
-        out string error,
-        out PathAccessFailure failure)
-        => TryResolvePath(
-            rawPath,
-            context,
-            FileOperation.Read,
-            out fullPath,
-            out error,
-            out failure,
-            allowInteractivePersonalReach: false);
-
     /// <summary>
     /// True when an interactive Personal-audience session gets shell-equivalent
     /// file reach: read and attach tools resolve outside the configured roots,
-    /// matching the approval-gated shell surface. Autonomous sessions, Team,
-    /// and Public audiences are never granted this — they keep their
-    /// roots-scoped or fail-closed behavior.
+    /// matching the approval-gated shell surface. Unattended sessions, Team,
+    /// and Public audiences are never granted this — their access remains
+    /// bounded by trusted roots or fails closed.
     /// </summary>
     internal static bool HasInteractivePersonalReach(ToolInvocationContext context)
         => context.Audience == TrustAudience.Personal
            && context.RunScope.InteractiveApproval is InteractiveApprovalCapability.Available;
-
-    public bool TryResolveWritePath(string rawPath, ToolInvocationContext context, out string fullPath, out string error)
-        => TryResolvePath(rawPath, context, FileOperation.Write, out fullPath, out error);
-
-    internal bool TryResolveWritePath(
-        string rawPath,
-        ToolInvocationContext context,
-        out string fullPath,
-        out string error,
-        out PathAccessFailure failure)
-        => TryResolvePath(rawPath, context, FileOperation.Write, out fullPath, out error, out failure);
-
-    public bool TryResolveAttachPath(string rawPath, ToolInvocationContext context, out string fullPath, out string error)
-        => TryResolvePath(rawPath, context, FileOperation.Attach, out fullPath, out error);
-
-    internal bool TryResolveAttachPath(
-        string rawPath,
-        ToolInvocationContext context,
-        out string fullPath,
-        out string error,
-        out PathAccessFailure failure)
-        => TryResolvePath(rawPath, context, FileOperation.Attach, out fullPath, out error, out failure);
 
     public IReadOnlyList<string> GetTrustedRoots(ToolInvocationContext context, FileOperation accessKind)
     {
@@ -305,23 +248,7 @@ internal sealed class PathAccessPolicy
         FileOperation accessKind,
         out string fullPath,
         out string error,
-        bool allowInteractivePersonalReach = true)
-        => TryResolvePath(
-            rawPath,
-            context,
-            accessKind,
-            out fullPath,
-            out error,
-            out _,
-            allowInteractivePersonalReach);
-
-    private bool TryResolvePath(
-        string rawPath,
-        ToolInvocationContext context,
-        FileOperation accessKind,
-        out string fullPath,
-        out string error,
-        out PathAccessFailure failure,
+        out PathAccessFailure? failure,
         bool allowInteractivePersonalReach = true)
     {
         try
@@ -389,21 +316,21 @@ internal sealed class PathAccessPolicy
             // project, and operator-configured roots) instead of being
             // granted blanket filesystem access. Interactive channels keep the
             // blanket grant — the live approval gate is their backstop. This is the
-            // single seam that covers shell (via TryResolveWritePath) and every file
-            // tool at once. set_working_directory opts out (allowInteractivePersonalReach
-            // == false) and is confined to trusted roots even for default
-            // Mode.All profiles: its declaration widens the safe-verb auto-approve
-            // zone and feeds project identity files into the system prompt.
+            // single seam that covers shell and every structured file tool.
+            // Project-scope declarations opt out of interactive Personal reach.
+            // They stay confined to trusted roots even for default
+            // Mode.All profiles: its declaration supplies the project directory
+            // to reviewed-safe policy and feeds project identity files into the prompt.
             if (!allowInteractivePersonalReach
                 || context.RunScope.InteractiveApproval is InteractiveApprovalCapability.Unavailable)
             {
                 var allowed = TryResolveWithinTrustedRoots(fullPath, context, accessKind, out error);
-                failure = allowed ? PathAccessFailure.None : PathAccessFailure.AccessDenied;
+                failure = allowed ? null : PathAccessFailure.AccessDenied;
                 return allowed;
             }
 
             error = string.Empty;
-            failure = PathAccessFailure.None;
+            failure = null;
             return true;
         }
 
@@ -422,15 +349,15 @@ internal sealed class PathAccessPolicy
         // (cat, cp-into-session) for legitimate out-of-roots files. The hard deny
         // surface still applies inside the tools via ToolPathPolicy.IsReadDenied
         // (file_read, file_list, attach_file), and autonomous sessions never reach
-        // this branch — InteractiveApproval is Unavailable there, so they clamp to
-        // the zone or fail closed below. set_working_directory opts out via
-        // TryResolveWorkingDirectory because its reach widens the safe-verb zone.
+        // this branch — InteractiveApproval is Unavailable there, so path access
+        // stays within trusted roots or fails closed below. Project-scope
+        // declarations opt out because their result feeds reviewed-safe policy.
         if (allowInteractivePersonalReach
             && accessKind is (FileOperation.Read or FileOperation.Attach)
             && HasInteractivePersonalReach(context))
         {
             error = string.Empty;
-            failure = PathAccessFailure.None;
+            failure = null;
             return true;
         }
 
@@ -456,7 +383,7 @@ internal sealed class PathAccessPolicy
             }
 
             error = string.Empty;
-            failure = PathAccessFailure.None;
+            failure = null;
             return true;
         }
 
@@ -596,7 +523,7 @@ internal sealed class PathAccessPolicy
     /// Single source of truth for root resolution — used by both
     /// <see cref="GetTrustedRoots"/> and <see cref="TryResolvePath"/>.
     /// Public audience is excluded from global read roots (skills, identity,
-    /// workspaces) — it may only access its current-session roots.
+    /// workspaces) — it may only access the shared session trusted roots.
     /// </summary>
     private IReadOnlyList<string> ResolveAndMergeRoots(
         ToolFilesystemAccessProfile access,
@@ -666,7 +593,7 @@ internal sealed class PathAccessPolicy
     /// writable working area — but NOT skills/identity, which are system-managed
     /// (an unattended session must never rewrite its own identity or skills).
     /// Plain file writes are not gated by the interactive approval system, so
-    /// confining them to current-session roots plus project blocked legitimate cross-run state in
+    /// confining them to only the current session and project blocked legitimate cross-run state in
     /// the workspace without a security benefit. No additional plumbing — the
     /// cached read roots and workspaces root already exist on this policy.
     /// </summary>

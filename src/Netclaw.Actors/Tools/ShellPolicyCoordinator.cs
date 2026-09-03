@@ -254,7 +254,7 @@ internal sealed class ShellPolicyCoordinator(
         if (uncovered.Count > 0)
         {
             var remainingContext = evaluation.GetUncoveredApprovalContext(
-                context.SessionDirectory);
+                ToolAccessPolicy.GetSessionOwnedApprovalDirectories(context));
             if (projection.HasExactOneTimeApproval(toolCall.Name, remainingContext))
             {
                 foreach (var candidate in uncovered)
@@ -330,7 +330,8 @@ internal sealed class ShellPolicyCoordinator(
         {
             return evaluation.Complete(
                 ToolAuthorizationDecision.RequiresApproval(
-                    evaluation.GetUncoveredApprovalContext(context.SessionDirectory),
+                    evaluation.GetUncoveredApprovalContext(
+                        ToolAccessPolicy.GetSessionOwnedApprovalDirectories(context)),
                     approvalMatches));
         }
 
@@ -368,7 +369,7 @@ internal sealed class ShellPolicyCoordinator(
             ToolAuthorizationDecision.Allow(
                 grantCandidates.Count == 0
                     ? ToolAllowReason.ApprovalExemptShellCandidates
-                    : ToolAllowReason.SafeVerbInTrustedScope));
+                    : ToolAllowReason.ReviewedSafePolicy));
     }
 
     private static string FormatApprovalMatches(IReadOnlyList<ToolApprovalMatch> matches)

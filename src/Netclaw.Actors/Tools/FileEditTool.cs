@@ -37,8 +37,13 @@ public sealed partial class FileEditTool : NetclawTool<FileEditTool.Params>
         [property: Description("Full content to write to the file, creating parent directories if needed. Mutually exclusive with OldString/NewString.")] string? Content = null);
 
     public FileEditTool(ToolConfig config, NetclawPaths paths, ToolPathPolicy pathPolicy)
+        : this(new PathAccessPolicy(config, paths, pathPolicy))
     {
-        _pathAccessPolicy = new PathAccessPolicy(config, paths, pathPolicy);
+    }
+
+    internal FileEditTool(PathAccessPolicy pathAccessPolicy)
+    {
+        _pathAccessPolicy = pathAccessPolicy;
     }
 
     protected override async Task<string> ExecuteAsync(Params args, ToolInvocationContext context, CancellationToken ct)

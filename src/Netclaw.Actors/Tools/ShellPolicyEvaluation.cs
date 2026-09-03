@@ -90,7 +90,6 @@ internal sealed class ShellPolicyEvaluation
     private readonly ShellPolicyCoverageSource[] _coverage;
     private readonly ShellPolicyDecisionTraceBuilder _trace = new();
     private ValidatedShellGrantEvidence? _grantEvidence;
-    private (string? SessionDirectory, ToolApprovalContext Context)? _uncoveredApprovalContext;
 
     internal ShellPolicyEvaluation(ShellPolicyProjection projection)
     {
@@ -118,27 +117,20 @@ internal sealed class ShellPolicyEvaluation
 
     internal bool HasOneTimeCoverage => _coverage.Contains(ShellPolicyCoverageSource.OneTime);
 
-    internal ToolApprovalContext GetUncoveredApprovalContext(string? sessionDirectory)
+    internal ToolApprovalContext GetUncoveredApprovalContext(
+        IReadOnlyCollection<string> sessionOwnedDirectories)
     {
         var uncovered = UncoveredCandidates;
         if (uncovered.Count == 0)
             throw new InvalidOperationException("No uncovered shell candidates remain.");
 
-        if (_uncoveredApprovalContext is { } cached
-            && string.Equals(cached.SessionDirectory, sessionDirectory, StringComparison.Ordinal))
-        {
-            return cached.Context;
-        }
-
-        var context = Projection.HasCausalIntent
+        return Projection.HasCausalIntent
             ? Projection.ApprovalContext
             : ToolAccessPolicy.NarrowShellApprovalContext(
                 Projection.ApprovalContext,
                 uncovered.Select(static candidate => candidate.Candidate).ToArray(),
-                sessionDirectory,
+                sessionOwnedDirectories,
                 Projection.Environment.PathStyle);
-        _uncoveredApprovalContext = (sessionDirectory, context);
-        return context;
     }
 
     internal ShellPolicyCoverageSource CoverageFor(ShellPolicyCandidateId candidateId)
@@ -212,7 +204,6 @@ internal sealed class ShellPolicyEvaluation
 
         _trace.AddCoverage(source, candidate, grantTimestamp);
         _coverage[index] = source;
-        _uncoveredApprovalContext = null;
     }
 
     internal ToolAuthorizationDecision Complete(

@@ -872,7 +872,7 @@ internal sealed class SessionToolExecutionPipeline
         catch (ToolAccessDeniedException ex)
         {
             sw.Stop();
-            resultText = $"Tool access denied: {ex.DenyReason}";
+            resultText = ex.ToAgentResult();
             context.Outputs.TryComplete(new ToolInvocationReceipt(ToolInvocationOutcomeCategory.AccessDenied));
 
         }
@@ -1397,24 +1397,24 @@ internal sealed class SessionToolExecutionPipeline
             return string.Empty;
         }
 
-        // Already inside a safe space — denial was for a different reason.
-        if (IsCwdInsideSafeSpace(cwd, sessionDirectory)
-            || IsCwdInsideSafeSpace(cwd, projectDirectory))
+        // Already inside a known working directory — denial was for a different reason.
+        if (IsCwdInsideWorkingDirectory(cwd, sessionDirectory)
+            || IsCwdInsideWorkingDirectory(cwd, projectDirectory))
         {
             return string.Empty;
         }
 
-        return $"Hint: '{cwd}' is outside the session's trusted scope. Call set_working_directory \"{cwd}\" first, then retry — that brings the directory into your trusted scope so the approval policy can reason about it.";
+        return $"Hint: '{cwd}' is outside the session and declared project directories. Call set_working_directory \"{cwd}\" first, then retry so the approval policy can reason about the declared project directory.";
     }
 
-    private static bool IsCwdInsideSafeSpace(string cwd, string? safeSpace)
+    private static bool IsCwdInsideWorkingDirectory(string cwd, string? workingDirectory)
     {
-        if (string.IsNullOrWhiteSpace(safeSpace))
+        if (string.IsNullOrWhiteSpace(workingDirectory))
             return false;
 
         try
         {
-            return Netclaw.Security.PathUtility.IsWithinRoot(cwd, safeSpace);
+            return Netclaw.Security.PathUtility.IsWithinRoot(cwd, workingDirectory);
         }
         catch (Exception ex) when (ex is ArgumentException or IOException)
         {

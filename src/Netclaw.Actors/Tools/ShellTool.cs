@@ -128,8 +128,8 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
         // ProcessStartInfo's default of inheriting the daemon process's cwd —
         // that location is wherever the daemon happened to be launched and is
         // unrelated to what the agent is "working on," which makes it
-        // impossible for the approval policy to reason about safe-space
-        // membership. The matcher reads context.Cwd against the same
+        // impossible for the approval policy to reason about path containment.
+        // The matcher reads context.Cwd against the same
         // resolution chain so the gate evaluates folder-scoped ApprovalEntry
         // records against the directory the spawned process will run in.
         var workingDirectoryError = PrepareWorkingDirectory(

@@ -49,7 +49,7 @@ public sealed class SubAgentSpawnerTests : TestKit
         var spawner = new SubAgentSpawner(
             new SingleClientProvider(new FakeChatClient()),
             toolRegistry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 new ToolConfig(),
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -185,7 +185,7 @@ public sealed class SubAgentSpawnerTests : TestKit
         var spawner = new SubAgentSpawner(
             new SingleClientProvider(new FakeChatClient()),
             toolRegistry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 new ToolConfig(),
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -529,7 +529,7 @@ public sealed class SubAgentSpawnerTests : TestKit
         var spawner = new SubAgentSpawner(
             new SingleClientProvider(chatClient),
             toolRegistry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 new ToolConfig(),
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -587,7 +587,7 @@ public sealed class SubAgentSpawnerTests : TestKit
         return new SubAgentSpawner(
             new SingleClientProvider(new FakeChatClient()),
             toolRegistry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 new ToolConfig(),
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,

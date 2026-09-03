@@ -173,5 +173,5 @@ internal static class ManagedTemporaryCorrection
     /// <summary>Builds the hint returned when the user denies the corrected retry.</summary>
     internal static string BuildDenialHint(string managedTemporaryDirectory)
         => $"Hint: Use the managed temporary directory '{managedTemporaryDirectory}' for disposable artifacts. " +
-           "The shared platform temporary root remains outside the session's trusted scope.";
+           "The shared platform temporary root is not a trusted root for this session.";
 }

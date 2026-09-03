@@ -23,6 +23,8 @@ namespace Netclaw.Actors.Tools;
     Grant = "file")]
 public sealed partial class AttachFileTool : NetclawTool<AttachFileTool.Params>
 {
+    public const string ToolName = "attach_file";
+
     private readonly PathAccessPolicy _pathAccessPolicy;
 
     public record Params(
@@ -30,8 +32,13 @@ public sealed partial class AttachFileTool : NetclawTool<AttachFileTool.Params>
         [property: Description("Optional display name for the file")] string? DisplayName = null);
 
     public AttachFileTool(ToolConfig config, NetclawPaths paths, ToolPathPolicy pathPolicy)
+        : this(new PathAccessPolicy(config, paths, pathPolicy))
     {
-        _pathAccessPolicy = new PathAccessPolicy(config, paths, pathPolicy);
+    }
+
+    internal AttachFileTool(PathAccessPolicy pathAccessPolicy)
+    {
+        _pathAccessPolicy = pathAccessPolicy;
     }
 
     protected override Task<string> ExecuteAsync(Params args, ToolInvocationContext context, CancellationToken ct)

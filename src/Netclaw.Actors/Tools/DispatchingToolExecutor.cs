@@ -551,7 +551,8 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
         {
             throw new ToolAccessDeniedException(
                 decision.DenyReason
-                ?? throw new InvalidOperationException("Denied decision missing a deny reason."));
+                ?? throw new InvalidOperationException("Denied decision missing a deny reason."),
+                decision.DenyMessage);
         }
 
         var tool = _registry.GetByName(toolCall.Name)

@@ -57,9 +57,24 @@ public sealed partial class FileReadTool : NetclawTool<FileReadTool.Params>
         SkillRegistry? skillRegistry = null,
         ISessionMetrics? sessionMetrics = null,
         ILogger<FileReadTool>? logger = null)
+        : this(
+            config,
+            new PathAccessPolicy(config, paths, pathPolicy),
+            skillRegistry,
+            sessionMetrics,
+            logger)
+    {
+    }
+
+    internal FileReadTool(
+        ToolConfig config,
+        PathAccessPolicy pathAccessPolicy,
+        SkillRegistry? skillRegistry = null,
+        ISessionMetrics? sessionMetrics = null,
+        ILogger<FileReadTool>? logger = null)
     {
         _config = config;
-        _pathAccessPolicy = new PathAccessPolicy(config, paths, pathPolicy);
+        _pathAccessPolicy = pathAccessPolicy;
         _skillRegistry = skillRegistry;
         _sessionMetrics = sessionMetrics;
         _logger = logger;

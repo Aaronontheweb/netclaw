@@ -254,7 +254,7 @@ results SHALL take precedence. One call SHALL return at most one correction.
 - **GIVEN** an eligible unmanaged temporary write
 - **WHEN** the dispatcher creates its recoverable-correction receipt
 - **THEN** the remediation code is `UseManagedTemporaryDirectory`
-- **AND** the trusted correction path is the current run's `temp_dir`
+- **AND** the correction destination is the current run's `temp_dir`
 - **AND** neither the code nor presenter calls `session_dir` session scratch
 
 #### Scenario: Counterexample - legacy persisted path is not reinterpreted

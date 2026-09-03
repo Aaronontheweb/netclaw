@@ -108,12 +108,53 @@ public class ToolRegistrationExtensionsTests
         var registry = new ToolRegistry();
         var config = new ToolConfig();
 
-        Assert.Throws<ArgumentNullException>(() => registry.WithFirstPartyTools(
-            config,
-            new NetclawPaths(),
-            new ToolPathPolicy([]),
-            new ShellCommandPolicy()));
+        Assert.Throws<ArgumentNullException>(() => registry.WithFirstPartyTools(null!));
         Assert.Empty(registry.GetAllRegistrations());
+    }
+
+    [Fact]
+    public async Task First_party_structured_tools_reuse_the_access_policy_custom_root()
+    {
+        using var directory = new DisposableTempDir();
+        var paths = new NetclawPaths(Path.Combine(directory.Path, "custom-home"));
+        var config = new ToolConfig();
+        var pathPolicy = new ToolPathPolicy([]);
+        var commandPolicy = new ShellCommandPolicy();
+        var policy = new ToolAccessPolicy(
+            paths,
+            config,
+            new EffectivePolicyDefaults(
+                DeploymentPosture.Personal,
+                TrustAudience.Personal,
+                ShellExecutionMode.HostAllowed,
+                UsedStrictFallback: false),
+            commandPolicy,
+            pathPolicy);
+        var registry = new ToolRegistry();
+        registry.WithFirstPartyTools(policy);
+        var tool = Assert.IsType<FileWriteTool>(registry.GetByName(FileWriteTool.ToolName));
+        var targetPath = Path.Combine(paths.SessionsDirectory, "other-session", "result.txt");
+        var currentSession = Path.Combine(directory.Path, "current-session");
+        Directory.CreateDirectory(currentSession);
+        var context = TestToolExecutionContext.CreateBound(
+            "signalr/current-session",
+            currentSession,
+            new TestToolExecutionContextOptions
+            {
+                Audience = TrustAudience.Personal,
+                Boundary = TrustBoundary.TrustedInstance,
+                ChannelType = "signalr"
+            });
+        var arguments = ToolInput.Create("Path", targetPath, "Content", "shared policy");
+
+        var preflight = policy.AuthorizeInvocation(tool, context, arguments);
+        var result = await tool.ExecuteAsync(arguments, context, TestContext.Current.CancellationToken);
+
+        Assert.True(preflight.Allowed);
+        Assert.Contains("Successfully wrote", result, StringComparison.Ordinal);
+        Assert.Equal(
+            "shared policy",
+            await File.ReadAllTextAsync(targetPath, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -137,14 +178,9 @@ public class ToolRegistrationExtensionsTests
     {
         var paths = new NetclawPaths(Path.Combine(Path.GetTempPath(), "netclaw-core-tool-contract"));
         var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
-        var policy = CreateAccessPolicy(config);
+        var policy = CreateAccessPolicy(config, paths);
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            config,
-            paths,
-            new ToolPathPolicy([]),
-            new ShellCommandPolicy(),
-            toolAccessPolicy: policy);
+        registry.WithFirstPartyTools(policy);
 
         var skillRegistry = new SkillRegistry();
         var scanner = new NoOpSkillContentScanner();
@@ -168,8 +204,9 @@ public class ToolRegistrationExtensionsTests
         return registry;
     }
 
-    private static ToolAccessPolicy CreateAccessPolicy(ToolConfig config) =>
+    private static ToolAccessPolicy CreateAccessPolicy(ToolConfig config, NetclawPaths? paths = null) =>
         new(
+            paths ?? new NetclawPaths(),
             config,
             new EffectivePolicyDefaults(
                 DeploymentPosture.Personal,

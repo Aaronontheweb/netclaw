@@ -29,10 +29,10 @@ public sealed class ToolAccessPolicy
     private readonly ShellCommandPolicy _shellCommandPolicy;
     private readonly ToolPathPolicy _toolPathPolicy;
     private readonly ShellApprovalMatcher _shellApprovalMatcher;
-    private readonly PathAccessPolicy? _pathAccessPolicy;
+    private readonly PathAccessPolicy _pathAccessPolicy;
     private readonly IToolApprovalMatcher _fileApprovalMatcher;
     private readonly FeatureGates _featureGates;
-    private readonly ScopedShellSafeVerbPolicy? _safeVerbPolicy;
+    private readonly ReviewedSafeShellPolicy? _safeVerbPolicy;
     private readonly PlatformTemporaryScopePolicy _platformTemporaryScopePolicy;
 
     internal ApprovalShell Shell => _shellCommandPolicy.Environment.Grammar == ShellGrammar.Bash
@@ -41,19 +41,28 @@ public sealed class ToolAccessPolicy
 
     internal ShellExecutionEnvironment ShellEnvironment => _shellCommandPolicy.Environment;
 
+    internal ToolConfig ToolConfig => _toolConfig;
+
+    internal ToolPathPolicy ProtectedPathPolicy => _toolPathPolicy;
+
+    internal ShellCommandPolicy ShellCommandPolicy => _shellCommandPolicy;
+
+    internal PathAccessPolicy SharedPathAccessPolicy => _pathAccessPolicy;
+
     internal bool IsSafePlatformTemporaryPath(string path)
         => _platformTemporaryScopePolicy.IsSafePlatformTemporaryPath(path);
 
     public ToolAccessPolicy(
+        NetclawPaths paths,
         ToolConfig toolConfig,
         EffectivePolicyDefaults defaults,
         ShellCommandPolicy shellCommandPolicy,
         ToolPathPolicy toolPathPolicy,
         IToolApprovalMatcher? fileApprovalMatcher = null,
         FeatureGates? featureGates = null,
-        NetclawPaths? paths = null,
         SafeVerbList? safeVerbs = null)
         : this(
+            paths,
             toolConfig,
             defaults,
             shellCommandPolicy,
@@ -61,12 +70,12 @@ public sealed class ToolAccessPolicy
             PlatformTemporaryScopePolicy.Create(shellCommandPolicy.Environment),
             fileApprovalMatcher,
             featureGates,
-            paths,
             safeVerbs)
     {
     }
 
     internal ToolAccessPolicy(
+        NetclawPaths paths,
         ToolConfig toolConfig,
         EffectivePolicyDefaults defaults,
         ShellCommandPolicy shellCommandPolicy,
@@ -74,9 +83,10 @@ public sealed class ToolAccessPolicy
         PlatformTemporaryScopePolicy platformTemporaryScopePolicy,
         IToolApprovalMatcher? fileApprovalMatcher = null,
         FeatureGates? featureGates = null,
-        NetclawPaths? paths = null,
         SafeVerbList? safeVerbs = null)
     {
+        ArgumentNullException.ThrowIfNull(paths);
+
         // shellCommandPolicy (deny-list) and toolPathPolicy (protected paths) are
         // required security controls — non-nullable so a caller cannot omit them.
         // The shell gate below dereferences them directly, so a stray null fails
@@ -94,21 +104,15 @@ public sealed class ToolAccessPolicy
         }
 
         _shellApprovalMatcher = new ShellApprovalMatcher(shellCommandPolicy.Environment);
-        _pathAccessPolicy = paths is null
-            ? null
-            : new PathAccessPolicy(toolConfig, paths, toolPathPolicy);
+        _pathAccessPolicy = new PathAccessPolicy(
+            toolConfig,
+            paths,
+            toolPathPolicy);
         _fileApprovalMatcher = fileApprovalMatcher ?? DefaultApprovalMatcher.Instance;
         _featureGates = featureGates ?? FeatureGates.AllEnabled;
-        if (safeVerbs is not null && _pathAccessPolicy is null)
-        {
-            throw new ArgumentException(
-                "Netclaw paths are required when reviewed-safe shell verbs are configured.",
-                nameof(paths));
-        }
-
         _safeVerbPolicy = safeVerbs is null
             ? null
-            : new ScopedShellSafeVerbPolicy(safeVerbs, _pathAccessPolicy!);
+            : new ReviewedSafeShellPolicy(safeVerbs, _pathAccessPolicy);
         _platformTemporaryScopePolicy = platformTemporaryScopePolicy;
     }
 
@@ -265,6 +269,13 @@ public sealed class ToolAccessPolicy
         {
             var matcher = SelectMatcherForTool(toolName);
             var approvalMode = GetApprovalMode(toolName, context, arguments, matcher);
+            if (approvalMode == ToolApprovalMode.Deny)
+                return ToolAccessDecision.Deny("tool_denied_by_approval_policy");
+
+            var pathDenial = PreflightStructuredPathAccess(tool, context.Invocation, arguments);
+            if (pathDenial is not null)
+                return pathDenial;
+
             return CheckApprovalGate(toolName, context, arguments, matcher, approvalMode);
         }
 
@@ -318,24 +329,15 @@ public sealed class ToolAccessPolicy
 
         // Non-interactive channels: confine shell commands to trusted roots.
         // Even if the verb-chain is pre-approved, path arguments must pass the
-        // shared path access decision. Fail closed when no path access
-        // policy is configured, deny any shell command with path arguments.
+        // shared path access decision.
         if (context.RunScope.InteractiveApproval is InteractiveApprovalCapability.Unavailable && shellCommand is not null)
         {
-            if (_pathAccessPolicy is null)
-            {
-                if (ShellCommandHasTrustZoneSensitiveInputs(shellApproval, workingDirectory))
-                    return ToolAccessDecision.Deny("shell_trust_zone_policy_not_configured");
-            }
-            else
-            {
-                var pathAccessDeny = EnforceShellPathAccess(
-                    shellApproval!,
-                    workingDirectory,
-                    context);
-                if (pathAccessDeny is not null)
-                    return pathAccessDeny;
-            }
+            var pathAccessDeny = EnforceShellPathAccess(
+                shellApproval!,
+                workingDirectory,
+                context);
+            if (pathAccessDeny is not null)
+                return pathAccessDeny;
         }
 
         authorizedAnalysis = shellAnalysis;
@@ -504,14 +506,42 @@ public sealed class ToolAccessPolicy
         return null;
     }
 
-    private static bool ShellCommandHasTrustZoneSensitiveInputs(
-        ShellApprovalAnalysis? approval,
-        string? workingDirectory)
-        => !string.IsNullOrWhiteSpace(workingDirectory)
-           || approval is null
-           || approval.IsMessy
-           || approval.Candidates.Any(static candidate =>
-               !string.IsNullOrWhiteSpace(candidate.Directory));
+    private ToolAccessDecision? PreflightStructuredPathAccess(
+        INetclawTool tool,
+        ToolInvocationContext context,
+        IDictionary<string, object?>? arguments)
+    {
+        if (!string.Equals(tool.GrantCategory, "file", StringComparison.Ordinal))
+            return null;
+
+        var request = tool.Name switch
+        {
+            FileReadTool.ToolName or FileListTool.ToolName =>
+                (Argument: "Path", Operation: PathAccessPolicy.FileOperation.Read),
+            FileSearchTool.ToolName =>
+                (Argument: "Root", Operation: PathAccessPolicy.FileOperation.Read),
+            FileWriteTool.ToolName or FileEditTool.ToolName =>
+                (Argument: "Path", Operation: PathAccessPolicy.FileOperation.Write),
+            AttachFileTool.ToolName =>
+                (Argument: "Path", Operation: PathAccessPolicy.FileOperation.Attach),
+            SetWorkingDirectoryTool.ToolName =>
+                (Argument: "Path", Operation: PathAccessPolicy.FileOperation.DeclareProjectScope),
+            _ => default
+        };
+
+        if (request.Argument is null)
+            return ToolAccessDecision.Deny("path_access_descriptor_missing");
+
+        var rawPath = ToolArgumentHelper.GetString(arguments, request.Argument);
+        if (string.IsNullOrWhiteSpace(rawPath))
+            return null;
+
+        var decision = _pathAccessPolicy.Evaluate(rawPath, context, request.Operation);
+        return !decision.Allowed
+               && decision.Failure is PathAccessPolicy.PathAccessFailure.AccessDenied
+            ? ToolAccessDecision.Deny("path_access_denied", decision.Error)
+            : null;
+    }
 
     private static string? ExtractShellCommand(IDictionary<string, object?>? arguments)
     {
@@ -633,9 +663,9 @@ public sealed class ToolAccessPolicy
                 _toolPathPolicy);
         }
 
-        // A clean shell command can combine safe candidates with candidates
+        // A clean shell command can combine reviewed-safe candidates with candidates
         // that need a stored grant. Remove only candidates that independently
-        // satisfy both the safe-verb and safe-space rules. The approval store
+        // satisfy both the safe-verb and reviewed diagnostic path rules. The approval store
         // must still cover every remaining candidate.
         if (_safeVerbPolicy is not null
             && isShell
@@ -662,7 +692,7 @@ public sealed class ToolAccessPolicy
                     .ToList();
 
                 if (approvalCandidates.Count == 0)
-                    return ToolAccessDecision.Allow(ToolAllowReason.SafeVerbInTrustedScope);
+                    return ToolAccessDecision.Allow(ToolAllowReason.ReviewedSafePolicy);
             }
         }
 
@@ -681,7 +711,9 @@ public sealed class ToolAccessPolicy
                     approvalCandidates.All(HasReusableShellPhrase),
                 isCwdShallow: IsCwdTooShallow(context.Approval.Cwd, ShellEnvironment.PathStyle),
                 allEffectiveDirsAreSessionOwned: AllCandidatesResolveToSessionOwnedDirectory(
-                    approvalCandidates, context.Approval.Cwd, context.SessionDirectory),
+                    approvalCandidates,
+                    context.Approval.Cwd,
+                    GetSessionOwnedApprovalDirectories(context)),
                 supportsDirectoryScope: matcher is ShellApprovalMatcher,
                 isMcpTool: toolName.IsMcp);
 
@@ -735,7 +767,7 @@ public sealed class ToolAccessPolicy
     internal static ToolApprovalContext NarrowShellApprovalContext(
         ToolApprovalContext context,
         IReadOnlyList<ApprovalCandidate> unapprovedCandidates,
-        string? sessionDirectory,
+        IReadOnlyCollection<string> sessionOwnedDirectories,
         ShellPathStyle pathStyle)
     {
         var candidateVerbs = unapprovedCandidates
@@ -750,7 +782,7 @@ public sealed class ToolAccessPolicy
                     unapprovedCandidates.All(HasReusableShellPhrase),
                 isCwdShallow: IsCwdTooShallow(context.Cwd, pathStyle),
                 allEffectiveDirsAreSessionOwned: AllCandidatesResolveToSessionOwnedDirectory(
-                    unapprovedCandidates, context.Cwd, sessionDirectory),
+                    unapprovedCandidates, context.Cwd, sessionOwnedDirectories),
                 supportsDirectoryScope: true,
                 isMcpTool: false);
 
@@ -764,20 +796,19 @@ public sealed class ToolAccessPolicy
     }
 
     /// <summary>
-    /// Returns true when every candidate's effective directory resolves to
-    /// the session's ephemeral <c>session_dir</c>. Persisting an "Always
-    /// here" grant scoped to that directory is dead-on-arrival because the
-    /// next session has a fresh session_dir; matching against the saved
-    /// entry would never succeed. The button is hidden in that case so
+    /// Returns true when every candidate's effective directory is one of the
+    /// current session's named storage directories. Persisting an "Always
+    /// here" grant scoped to one of those directories is dead-on-arrival because
+    /// the next session has different paths. The button is hidden in that case so
     /// operators can pick "This chat" (the equivalent in-session
     /// semantics) or "Always anywhere" (folder-agnostic) instead.
     /// </summary>
     private static bool AllCandidatesResolveToSessionOwnedDirectory(
         IReadOnlyList<ApprovalCandidate> candidates,
         string? cwd,
-        string? sessionDirectory)
+        IReadOnlyCollection<string> sessionOwnedDirectories)
     {
-        if (string.IsNullOrEmpty(sessionDirectory) || candidates.Count == 0)
+        if (sessionOwnedDirectories.Count == 0 || candidates.Count == 0)
             return false;
 
         foreach (var candidate in candidates)
@@ -786,11 +817,33 @@ public sealed class ToolAccessPolicy
             if (string.IsNullOrEmpty(effective))
                 return false;
 
-            if (!PathUtility.AreEquivalentPaths(effective, sessionDirectory))
+            if (!sessionOwnedDirectories.Any(directory =>
+                    PathUtility.AreEquivalentPaths(effective, directory)))
                 return false;
         }
 
         return true;
+    }
+
+    internal static IReadOnlyCollection<string> GetSessionOwnedApprovalDirectories(
+        ToolExecutionContext context)
+    {
+        if (context.SessionStorage is not { } storage)
+            return context.SessionDirectory is { Length: > 0 } sessionDirectory
+                ? [sessionDirectory]
+                : [];
+
+        return new[]
+            {
+                storage.SessionDirectory,
+                storage.ManagedTemporary.Directory,
+                storage.ArtifactDirectory,
+                storage.WorktreeDirectory
+            }
+            .Distinct(OperatingSystem.IsWindows()
+                ? StringComparer.OrdinalIgnoreCase
+                : StringComparer.Ordinal)
+            .ToArray();
     }
 
     /// <summary>
@@ -807,7 +860,8 @@ public sealed class ToolAccessPolicy
     /// a folder-scoped grant for a too-shallow root like <c>/etc/</c>.
     /// <c>This chat</c> and <c>Always anywhere</c> remain available.</item>
     /// <item><b>Session-owned effective directory</b> (every candidate's
-    /// effective directory is the session's ephemeral <c>session_dir</c>) —
+    /// effective directory is one of the current session's named storage
+    /// directories) —
     /// <c>Always here</c> is omitted because the saved grant would be scoped
     /// to a directory that won't recur. <c>This chat</c> already provides
     /// the equivalent in-session semantics without polluting the persistent
@@ -999,6 +1053,12 @@ public sealed record ToolAccessDecision(bool Allowed, string? DenyReason = null,
     /// </summary>
     internal ToolAllowReason? AllowReason { get; private init; }
 
+    /// <summary>
+    /// Gets optional human-readable denial detail. Unlike <see cref="DenyReason"/>,
+    /// this value is not a stable telemetry key.
+    /// </summary>
+    internal string? DenyMessage { get; private init; }
+
     /// <summary>True when the decision is <see cref="RequiresApproval"/>.</summary>
     public bool NeedsApproval => ApprovalContext is not null && Allowed;
 
@@ -1007,6 +1067,9 @@ public sealed record ToolAccessDecision(bool Allowed, string? DenyReason = null,
     internal static ToolAccessDecision Allow(ToolAllowReason reason) => new(true) { AllowReason = reason };
 
     public static ToolAccessDecision Deny(string reason) => new(false, reason);
+
+    internal static ToolAccessDecision Deny(string reason, string message) =>
+        new(false, reason) { DenyMessage = message };
 
     public static ToolAccessDecision RequiresApproval(ToolApprovalContext context) => new(true, null, context);
 }
@@ -1061,12 +1124,22 @@ public sealed record ToolApprovalOption(ApprovalOptionKey Key, string Label);
 public sealed class ToolAccessDeniedException : InvalidOperationException
 {
     public ToolAccessDeniedException(string denyReason)
-        : base(denyReason)
+        : this(denyReason, null)
+    {
+    }
+
+    internal ToolAccessDeniedException(string denyReason, string? denyMessage)
+        : base(denyMessage ?? denyReason)
     {
         DenyReason = denyReason;
+        DenyMessage = denyMessage;
     }
 
     public string DenyReason { get; }
+
+    internal string? DenyMessage { get; }
+
+    internal string ToAgentResult() => DenyMessage ?? $"Tool access denied: {DenyReason}";
 }
 
 /// <summary>

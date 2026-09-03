@@ -646,8 +646,8 @@ public sealed class ToolInvocationContext
     /// Returns <c>null</c> only when none of the four is available, which is
     /// the contract for tools that are not directory-anchored. Shell tools
     /// SHALL never inherit the daemon process's cwd — that defeats the
-    /// approval policy's safe-space invariant because the daemon's cwd is
-    /// unrelated to what the agent is "working on."
+    /// approval policy's path-containment invariant because the daemon's cwd
+    /// is unrelated to what the agent is "working on."
     /// </summary>
     public string? ResolveShellCwd(string? explicitArg)
     {

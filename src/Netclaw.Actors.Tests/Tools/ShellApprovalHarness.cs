@@ -188,14 +188,10 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
             : []);
         var pathPolicy = new ToolPathPolicy(environment, effectiveDeniedPaths);
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            config,
-            new NetclawPaths(),
-            pathPolicy,
-            commandPolicy,
-            toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
+        registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
 
         var policy = new ToolAccessPolicy(
+            new NetclawPaths(rootDirectory, Path.Combine(rootDirectory, "workspaces")),
             config,
             new EffectivePolicyDefaults(
                 DeploymentPosture.Personal,
@@ -204,7 +200,6 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
                 UsedStrictFallback: false),
             shellCommandPolicy: commandPolicy,
             toolPathPolicy: pathPolicy,
-            paths: new NetclawPaths(rootDirectory, Path.Combine(rootDirectory, "workspaces")),
             safeVerbs: safeVerbs ?? SafeVerbLoader.Load(environment.Platform == ShellPlatform.Windows));
         var executor = new DispatchingToolExecutor(registry, policy, countingApprovalService);
 

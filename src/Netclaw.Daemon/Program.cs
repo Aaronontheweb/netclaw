@@ -684,13 +684,13 @@ static void ConfigureDaemonServices(
     services.AddSingleton(safeVerbs);
 
     var toolAccessPolicy = new ToolAccessPolicy(
+        paths,
         toolConfig,
         effectivePolicyDefaults,
         shellCommandPolicy,
         toolPathPolicy,
         fileApprovalMatcher,
         featureGates,
-        paths,
         safeVerbs);
     services.AddSingleton(toolAccessPolicy);
 
@@ -708,7 +708,7 @@ static void ConfigureDaemonServices(
     services.AddSingleton<IToolApprovalService, AkkaToolApprovalService>();
 
     var toolRegistry = new ToolRegistry();
-    toolRegistry.WithFirstPartyTools(toolConfig, paths, toolPathPolicy, shellCommandPolicy, searchBackend, toolAccessPolicy,
+    toolRegistry.WithFirstPartyTools(toolAccessPolicy, searchBackend,
         webhooksConfig.Enabled ? webhookRouteStore : null);
 
     // Skills system: seed built-in skills to .system/, register sync service

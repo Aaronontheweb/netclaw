@@ -36,8 +36,13 @@ public sealed partial class FileSearchTool : NetclawTool<FileSearchTool.Params>
         [property: Description("Maximum file-content bytes inspected (default 1048576, maximum 4194304).")] int? MaxContentBytes = null);
 
     public FileSearchTool(ToolConfig config, NetclawPaths paths, ToolPathPolicy pathPolicy)
+        : this(new PathAccessPolicy(config, paths, pathPolicy))
     {
-        _pathAccessPolicy = new PathAccessPolicy(config, paths, pathPolicy);
+    }
+
+    internal FileSearchTool(PathAccessPolicy pathAccessPolicy)
+    {
+        _pathAccessPolicy = pathAccessPolicy;
     }
 
     protected override async Task<string> ExecuteAsync(Params args, ToolInvocationContext context, CancellationToken ct)

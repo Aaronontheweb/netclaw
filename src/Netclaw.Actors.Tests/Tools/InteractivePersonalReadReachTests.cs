@@ -8,6 +8,7 @@ using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
+using static Netclaw.Actors.Tests.Tools.PathAccessDecisionAssertions;
 using Xunit;
 
 namespace Netclaw.Actors.Tests.Tools;
@@ -105,9 +106,14 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
             ? Path.Combine(_outsideDir, "notes.txt")
             : Path.Combine(_sessionDir, "notes.txt");
 
-        var allowed = policy.TryResolveReadPath(path, ctx, out _, out _);
+        var decision = policy.Evaluate(path, ctx, PathAccessPolicy.FileOperation.Read);
 
-        Assert.Equal(expectedAllow, allowed);
+        Assert.Equal(expectedAllow, decision.Allowed);
+        Assert.Equal(Path.GetFullPath(path), decision.CanonicalPath);
+        Assert.Equal(expectedAllow, string.IsNullOrEmpty(decision.Error));
+        Assert.Equal(
+            expectedAllow ? null : PathAccessPolicy.PathAccessFailure.AccessDenied,
+            decision.Failure);
     }
 
     [Theory]
@@ -129,9 +135,14 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
             ? Path.Combine(_outsideDir, "report.png")
             : Path.Combine(_sessionDir, "report.png");
 
-        var allowed = policy.TryResolveAttachPath(path, ctx, out _, out _);
+        var decision = policy.Evaluate(path, ctx, PathAccessPolicy.FileOperation.Attach);
 
-        Assert.Equal(expectedAllow, allowed);
+        Assert.Equal(expectedAllow, decision.Allowed);
+        Assert.Equal(Path.GetFullPath(path), decision.CanonicalPath);
+        Assert.Equal(expectedAllow, string.IsNullOrEmpty(decision.Error));
+        Assert.Equal(
+            expectedAllow ? null : PathAccessPolicy.PathAccessFailure.AccessDenied,
+            decision.Failure);
     }
 
     public static TheoryData<TrustAudience, bool, bool> AttachToolReachCases => new()
@@ -223,9 +234,13 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
         var outside = Path.Combine(_outsideDir, "notes.txt");
 
         // Reads resolve (shell-equivalent reach)...
-        Assert.True(policy.TryResolveReadPath(outside, ctx, out _, out _));
+        AssertAllowed(
+            policy.Evaluate(outside, ctx, PathAccessPolicy.FileOperation.Read),
+            outside);
         // ...but the working-directory declaration stays roots-scoped.
-        Assert.False(policy.TryResolveWorkingDirectory(outside, ctx, out _, out _));
+        AssertDenied(
+            policy.Evaluate(outside, ctx, PathAccessPolicy.FileOperation.DeclareProjectScope),
+            Path.GetFullPath(outside));
     }
 
     [Fact]
@@ -241,9 +256,13 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
         var outside = Path.Combine(_outsideDir, "notes.txt");
 
         // Reads resolve under Mode.All interactive...
-        Assert.True(policy.TryResolveReadPath(outside, ctx, out _, out _));
-        // ...but the working-directory declaration clamps to the autonomous zone.
-        Assert.False(policy.TryResolveWorkingDirectory(outside, ctx, out _, out _));
+        AssertAllowed(
+            policy.Evaluate(outside, ctx, PathAccessPolicy.FileOperation.Read),
+            outside);
+        // ...but declaring project scope still requires an allowed path access decision.
+        AssertDenied(
+            policy.Evaluate(outside, ctx, PathAccessPolicy.FileOperation.DeclareProjectScope),
+            Path.GetFullPath(outside));
     }
 
     public static TheoryData<bool, bool> AttachRootsModeCases => new()
@@ -275,8 +294,13 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
         var ctx = Ctx(TrustAudience.Personal, autonomous: !interactive);
 
         var path = Path.Combine(_outsideDir, "report.png");
-        var allowed = policy.TryResolveAttachPath(path, ctx, out _, out _);
+        var decision = policy.Evaluate(path, ctx, PathAccessPolicy.FileOperation.Attach);
 
-        Assert.Equal(expectedAllow, allowed);
+        Assert.Equal(expectedAllow, decision.Allowed);
+        Assert.Equal(Path.GetFullPath(path), decision.CanonicalPath);
+        Assert.Equal(expectedAllow, string.IsNullOrEmpty(decision.Error));
+        Assert.Equal(
+            expectedAllow ? null : PathAccessPolicy.PathAccessFailure.AccessDenied,
+            decision.Failure);
     }
 }

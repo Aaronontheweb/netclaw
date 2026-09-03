@@ -8,6 +8,7 @@ using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
+using static Netclaw.Actors.Tests.Tools.PathAccessDecisionAssertions;
 using Xunit;
 
 namespace Netclaw.Actors.Tests.Tools;
@@ -92,17 +93,20 @@ public sealed class PublicAudienceFileAccessPolicyTests : IDisposable
 
         // Try to read a file outside the session directory
         var outsidePath = Path.Combine(_paths.SkillsDirectory, "secret-skill", "SKILL.md");
-        var allowed = policy.TryResolveReadPath(outsidePath, publicContext, out _, out var error);
+        var decision = policy.Evaluate(
+            outsidePath,
+            publicContext,
+            PathAccessPolicy.FileOperation.Read);
 
-        Assert.False(allowed);
+        AssertDenied(decision, Path.GetFullPath(outsidePath));
         // Error must mention "Public" audience but should contain only session-scoped
         // roots (the session dir), not global infrastructure paths
-        Assert.Contains("Public", error);
-        Assert.DoesNotContain(_sessionDir, error);
-        Assert.DoesNotContain("configured roots", error, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain(_paths.SkillsDirectory, error);
-        Assert.DoesNotContain(_paths.IdentityDirectory, error);
-        Assert.DoesNotContain(_paths.WorkspacesDirectory, error);
+        Assert.Contains("Public", decision.Error);
+        Assert.DoesNotContain(_sessionDir, decision.Error);
+        Assert.DoesNotContain("configured roots", decision.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(_paths.SkillsDirectory, decision.Error);
+        Assert.DoesNotContain(_paths.IdentityDirectory, decision.Error);
+        Assert.DoesNotContain(_paths.WorkspacesDirectory, decision.Error);
     }
 
     [Fact]
@@ -121,13 +125,16 @@ public sealed class PublicAudienceFileAccessPolicyTests : IDisposable
         var publicContext = CreateContext(TrustAudience.Public);
 
         var path = Path.Combine(Path.GetTempPath(), "netclaw-public-denied.txt");
-        var allowed = policy.TryResolveWritePath(path, publicContext, out _, out var error);
+        var decision = policy.Evaluate(
+            path,
+            publicContext,
+            PathAccessPolicy.FileOperation.Write);
 
-        Assert.False(allowed);
-        Assert.Contains("Public", error);
-        Assert.Contains("does not allow", error);
+        AssertDenied(decision, Path.GetFullPath(path));
+        Assert.Contains("Public", decision.Error);
+        Assert.Contains("does not allow", decision.Error);
         // Ensure no internal paths leak
-        Assert.DoesNotContain(_paths.BasePath, error);
+        Assert.DoesNotContain(_paths.BasePath, decision.Error);
     }
 
     private ToolInvocationContext CreateContext(TrustAudience audience)

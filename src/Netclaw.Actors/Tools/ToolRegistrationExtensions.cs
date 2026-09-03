@@ -27,30 +27,30 @@ public static class ToolRegistrationExtensions
 {
     public static ToolRegistry WithFirstPartyTools(
         this ToolRegistry registry,
-        ToolConfig config,
-        NetclawPaths paths,
-        ToolPathPolicy pathPolicy,
-        ShellCommandPolicy shellCommandPolicy,
+        ToolAccessPolicy toolAccessPolicy,
         ISearchBackend? searchBackend = null,
-        ToolAccessPolicy? toolAccessPolicy = null,
         WebhookRouteStore? webhookRouteStore = null)
     {
         ArgumentNullException.ThrowIfNull(toolAccessPolicy);
+        var config = toolAccessPolicy.ToolConfig;
+        var pathPolicy = toolAccessPolicy.ProtectedPathPolicy;
+        var shellCommandPolicy = toolAccessPolicy.ShellCommandPolicy;
+        var sharedPathAccessPolicy = toolAccessPolicy.SharedPathAccessPolicy;
 
         registry.RegisterCore(new ShellTool(config, pathPolicy, shellCommandPolicy));
-        registry.RegisterCore(new FileReadTool(config, paths, pathPolicy));
-        registry.RegisterCore(new FileListTool(config, paths, pathPolicy));
-        registry.RegisterCore(new FileSearchTool(config, paths, pathPolicy));
+        registry.RegisterCore(new FileReadTool(config, sharedPathAccessPolicy));
+        registry.RegisterCore(new FileListTool(sharedPathAccessPolicy));
+        registry.RegisterCore(new FileSearchTool(sharedPathAccessPolicy));
         registry.RegisterCore(new ToolOutputReadTool());
-        registry.RegisterCore(new FileWriteTool(config, paths, pathPolicy));
-        registry.RegisterCore(new FileEditTool(config, paths, pathPolicy));
-        registry.RegisterCore(new AttachFileTool(config, paths, pathPolicy));
+        registry.RegisterCore(new FileWriteTool(sharedPathAccessPolicy));
+        registry.RegisterCore(new FileEditTool(sharedPathAccessPolicy));
+        registry.RegisterCore(new AttachFileTool(sharedPathAccessPolicy));
         if (webhookRouteStore is not null)
             registry.Register(new ListWebhooksTool(webhookRouteStore));
         if (searchBackend is not null)
             registry.Register(new WebSearchTool(searchBackend));
         registry.Register(new WebFetchTool(config));
-        registry.RegisterCore(new SetWorkingDirectoryTool(config, paths, pathPolicy));
+        registry.RegisterCore(new SetWorkingDirectoryTool(sharedPathAccessPolicy));
 
         // Register search_tools and load_tool meta-tools (always loaded, "builtin" grant)
         registry.RegisterCore(new SearchToolsTool(registry, toolAccessPolicy));

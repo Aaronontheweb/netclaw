@@ -67,7 +67,8 @@ artifact_dir: "/srv/netclaw/sessions/s-42/subagents/run-7/artifacts"
 ### Requirement: One path access decision owns filesystem authorization
 
 `netclaw-tools` SHALL own one path access decision for structured file tools,
-project-directory declarations, and shell path facts. The decision SHALL use:
+project-directory declarations, unattended shell path facts, and shell calls
+considered for reviewed-safe automatic authorization. The decision SHALL use:
 
 - the canonical path;
 - its relationship to a trusted root;
@@ -75,12 +76,17 @@ project-directory declarations, and shell path facts. The decision SHALL use:
 - the audience policy; and
 - protected-path and filesystem-link results.
 
-The decision SHALL return an allowed or denied result with one reason. A
-caller SHALL NOT repeat root assembly, containment, or filesystem-link policy.
+The decision SHALL return an allowed or denied result. A denied result SHALL
+carry one failure category and human-readable detail. A caller SHALL NOT repeat
+root assembly, containment, or filesystem-link policy.
 
 The existing `file_read`, `file_search`, `file_list`, `file_write`,
 `file_edit`, and `attach_file` tools SHALL use this decision. They SHALL keep
 their existing output, pagination, query, and approval contracts.
+
+An interactive Personal shell call MAY reach explicit user approval for a path
+outside trusted roots. That approval boundary is not reviewed-safe automatic
+authorization and SHALL NOT create a second automatic path policy.
 
 The Netclaw sessions root SHALL be a trusted root for parent and child runs.
 A path in another session SHALL use the same decision as any other path below

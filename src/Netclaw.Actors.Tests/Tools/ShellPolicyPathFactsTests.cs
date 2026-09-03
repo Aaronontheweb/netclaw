@@ -185,10 +185,10 @@ public sealed class ShellPolicyPathFactsTests
         var evaluation = CreateEvaluation(
             BashCandidate("git status", "/work/repo"),
             BashCandidate("git push", "/work/repo"));
-        var sessionOwned = evaluation.GetUncoveredApprovalContext("/work/repo");
+        var sessionOwned = evaluation.GetUncoveredApprovalContext(["/work/repo"]);
 
         evaluation.Cover(evaluation.Candidates[0], ShellPolicyCoverageSource.Session);
-        var remaining = evaluation.GetUncoveredApprovalContext("/work/session");
+        var remaining = evaluation.GetUncoveredApprovalContext(["/work/session"]);
 
         Assert.NotSame(sessionOwned, remaining);
         Assert.Equal([evaluation.Candidates[1].Candidate], remaining.Candidates);

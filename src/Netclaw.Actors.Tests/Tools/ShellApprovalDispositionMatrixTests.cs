@@ -59,7 +59,7 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
             "interactive-reviewed-safe-allows",
             invocation,
             Approvals.None,
-            ExpectedApproval.Allow(ToolAllowReason.SafeVerbInTrustedScope)));
+            ExpectedApproval.Allow(ToolAllowReason.ReviewedSafePolicy)));
     }
 
     [Fact]

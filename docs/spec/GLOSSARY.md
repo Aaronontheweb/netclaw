@@ -229,6 +229,15 @@ schema exposed + approval required + no approval
   -> Netclaw does not execute the tool
 ```
 
+### Reviewed-safe policy
+
+Reviewed-safe policy is a shell approval rule for a small configured set of
+read-only command phrases. It can avoid a prompt only after parsing succeeds
+and the shared path access policy allows every relevant path. It does not
+define trusted roots or grant filesystem authority by itself.
+
+**Code anchors:** `ReviewedSafeShellPolicy`, `ReviewedSafePolicy`
+
 ### Tool result
 
 The tool result is the text that Netclaw returns to the model. Normal dispatcher
@@ -256,7 +265,7 @@ receipt:
 
 ### File activity
 
-File activity is a canonical path and an operation kind recorded in a successful
+File activity is a canonical path and file operation recorded in a successful
 receipt. The working context uses it instead of guessing paths from authored
 arguments or result text.
 
@@ -501,11 +510,10 @@ and child use the ordinary path access decision to inspect it.
 
 ### Session-owned directory
 
-A session-owned directory has a lifetime or authority scope tied to one
-session or run. Session directories, managed temporary directories, artifact
-directories, and managed worktree directories are session-owned, but they do
-not have the same purpose or access policy. Approval code uses this broader
-term only when the rule intentionally applies to more than one of them.
+A session-owned directory has a storage lifetime tied to one session or run.
+Session directories, managed temporary directories, artifact directories, and
+managed worktree directories are session-owned, but the label grants no
+filesystem authority. Authorization still comes from a path access decision.
 
 ### Trusted root
 
@@ -545,23 +553,34 @@ access.
 
 ### File operation
 
-A file operation is the requested use of a path. Examples include read, list,
-write, edit, attach, and shell access. One path can have a different decision
-for each operation.
+A file operation is the requested authorization category for a path. `Read`
+includes reading, listing, and searching. `Write` includes creating and
+editing. `Attach` and `DeclareProjectScope` remain distinct because they have
+different policy rules. One path can have a different decision for each
+operation.
 
 ### Path access decision
 
 A path access decision is the typed allow or deny result for one canonical
-path and file operation. The decision contains a reason. The `netclaw-tools`
-capability owns this decision and applies these inputs:
+path and file operation. A denied decision contains a failure category and
+human-readable detail. The `netclaw-tools` capability owns this decision and
+applies these inputs:
 
 - the path relationship to each trusted root;
 - the file operation;
 - the audience policy;
 - link and protected-path facts.
 
-File tools, shell policy, and temporary-path correction use this same decision.
-They do not implement separate meanings for path safety.
+Structured file tools, project-directory declarations, unattended shell path
+facts, and reviewed-safe shell candidates use this decision directly. An
+interactive Personal shell call may instead reach explicit user approval for a
+path outside trusted roots; that is an authority boundary, not a second
+automatic path policy.
+
+Temporary-path correction does not consume, make, or override a path access
+decision. After terminal authorization checks pass, it may use path and syntax
+facts to offer remediation before an approval prompt. The replacement call is
+authorized from the beginning.
 
 ### Relative base availability
 

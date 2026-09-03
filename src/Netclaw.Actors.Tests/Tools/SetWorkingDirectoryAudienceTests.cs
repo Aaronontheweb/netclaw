@@ -45,7 +45,7 @@ public sealed class SetWorkingDirectoryAudienceTests
     public void SetWorkingDirectory_BlockedForPublicAudience_ByDefault()
     {
         var config = new ToolConfig();
-        var policy = new ToolAccessPolicy(config, Defaults, new ShellCommandPolicy(), new ToolPathPolicy([]));
+        var policy = new ToolAccessPolicy(new NetclawPaths(), config, Defaults, new ShellCommandPolicy(), new ToolPathPolicy([]));
         var tool = CreateFakeTool();
 
         Assert.False(policy.IsToolExposed(tool, TrustAudience.Public));
@@ -55,7 +55,7 @@ public sealed class SetWorkingDirectoryAudienceTests
     public void SetWorkingDirectory_AllowedForTeamAudience_ByDefault()
     {
         var config = new ToolConfig();
-        var policy = new ToolAccessPolicy(config, Defaults, new ShellCommandPolicy(), new ToolPathPolicy([]));
+        var policy = new ToolAccessPolicy(new NetclawPaths(), config, Defaults, new ShellCommandPolicy(), new ToolPathPolicy([]));
         var tool = CreateFakeTool();
 
         Assert.True(policy.IsToolExposed(tool, TrustAudience.Team));
@@ -65,7 +65,7 @@ public sealed class SetWorkingDirectoryAudienceTests
     public void SetWorkingDirectory_AllowedForPersonalAudience_ByDefault()
     {
         var config = new ToolConfig();
-        var policy = new ToolAccessPolicy(config, Defaults, new ShellCommandPolicy(), new ToolPathPolicy([]));
+        var policy = new ToolAccessPolicy(new NetclawPaths(), config, Defaults, new ShellCommandPolicy(), new ToolPathPolicy([]));
         var tool = CreateFakeTool();
 
         Assert.True(policy.IsToolExposed(tool, TrustAudience.Personal));

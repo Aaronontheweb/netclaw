@@ -34,7 +34,7 @@ Resolution examples and counterexamples:
 - **THEN** it authorizes and reads `/workspace/project/src/App.cs`
 - **AND** it does not use the daemon current directory
 
-#### Scenario: Relative write falls back to session scratch
+#### Scenario: Relative write falls back to the session directory
 
 - **GIVEN** no declared project and session directory `/session/current`
 - **WHEN** `file_write` receives `notes/result.md`

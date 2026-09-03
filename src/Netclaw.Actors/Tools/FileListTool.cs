@@ -33,8 +33,13 @@ public sealed partial class FileListTool : NetclawTool<FileListTool.Params>
         [property: Description("Directory path to list. Relative paths use the current project, then session_dir.")] string Path);
 
     public FileListTool(ToolConfig config, NetclawPaths paths, ToolPathPolicy pathPolicy)
+        : this(new PathAccessPolicy(config, paths, pathPolicy))
     {
-        _pathAccessPolicy = new PathAccessPolicy(config, paths, pathPolicy);
+    }
+
+    internal FileListTool(PathAccessPolicy pathAccessPolicy)
+    {
+        _pathAccessPolicy = pathAccessPolicy;
     }
 
     protected override Task<string> ExecuteAsync(Params args, ToolInvocationContext context, CancellationToken ct)

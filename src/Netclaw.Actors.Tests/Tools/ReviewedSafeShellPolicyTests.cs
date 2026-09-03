@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="ScopedShellSafeVerbPolicyTests.cs" company="Petabridge, LLC">
+// <copyright file="ReviewedSafeShellPolicyTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
@@ -12,7 +12,7 @@ using Xunit;
 
 namespace Netclaw.Actors.Tests.Tools;
 
-public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
+public sealed class ReviewedSafeShellPolicyTests : IDisposable
 {
     private readonly string _rootDir;
     private readonly string _projectDir;
@@ -21,7 +21,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     private readonly string _outsideDir;
     private readonly NetclawPaths _paths;
 
-    public ScopedShellSafeVerbPolicyTests()
+    public ReviewedSafeShellPolicyTests()
     {
         _rootDir = CreateTempDir("policy");
         _paths = new NetclawPaths(_rootDir);
@@ -69,7 +69,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     private static SafeVerbList VerbList(params string[] verbs)
         => SafeVerbList.FromVerbs(ApprovalShell.Bash, verbs);
 
-    private ScopedShellSafeVerbPolicy CreatePolicy(SafeVerbList safeVerbs)
+    private ReviewedSafeShellPolicy CreatePolicy(SafeVerbList safeVerbs)
         => new(
             safeVerbs,
             new PathAccessPolicy(
@@ -107,14 +107,14 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
         => verbs.Select(verb => Candidate(verb)).ToList();
 
     private static bool ShortCircuits(
-        ScopedShellSafeVerbPolicy policy,
+        ReviewedSafeShellPolicy policy,
         string verb,
         string? cwd,
         ToolInvocationContext context) =>
         AllShortCircuit(policy, [Candidate(verb)], cwd, context);
 
     private static bool AllShortCircuit(
-        ScopedShellSafeVerbPolicy policy,
+        ReviewedSafeShellPolicy policy,
         IReadOnlyList<ApprovalCandidate> candidates,
         string? cwd,
         ToolInvocationContext context)
@@ -158,7 +158,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     }
 
     [Fact]
-    public void Safe_verb_in_session_worktree_directory_uses_current_session_root()
+    public void Reviewed_verb_in_session_worktree_directory_uses_shared_session_trusted_root()
     {
         var storage = SessionStoragePaths.CreateVersion2(
             new SessionStorageEnvelopeRoot(Path.GetFullPath(_sessionDir)));
@@ -191,7 +191,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     }
 
     [Fact]
-    public void Safe_verb_outside_safe_spaces_falls_through_to_prompt()
+    public void Reviewed_verb_outside_trusted_roots_falls_through_to_prompt()
     {
         var policy = CreatePolicy(VerbList("grep"));
         var ctx = PersonalContext(projectDir: _projectDir);
@@ -200,10 +200,10 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     }
 
     [Fact]
-    public void Mutating_verb_in_safe_space_falls_through_to_prompt()
+    public void Mutating_verb_inside_trusted_root_falls_through_to_prompt()
     {
         // The verb list deliberately omits "git push"; even with cwd inside
-        // the safe space the policy refuses the short-circuit.
+        // the trusted root, the policy refuses the short-circuit.
         var policy = CreatePolicy(VerbList("git status", "git log"));
         var ctx = PersonalContext(projectDir: _projectDir);
 
@@ -211,7 +211,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     }
 
     [Fact]
-    public void Public_audience_does_not_get_project_directory_safe_space()
+    public void Public_audience_does_not_get_project_directory_authority()
     {
         var policy = CreatePolicy(VerbList("grep"));
         // Public has project_dir set (somehow), but it should be ignored.
@@ -283,7 +283,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     }
 
     [Fact]
-    public void Newly_added_read_only_verb_short_circuits_in_safe_space()
+    public void Newly_added_read_only_verb_short_circuits_inside_trusted_root()
     {
         // Mirrors the reviewed catalog: a read-only system verb and a
         // read-only gh query short-circuit inside a trusted
@@ -353,7 +353,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     [InlineData("wc --files0-from=/external/list", "wc")]
     [InlineData("du --exclude-from=/external/patterns ./data", "du")]
     [InlineData("realpath --relative-to=/external ./data", "realpath")]
-    public void Path_shaped_option_operand_outside_safe_root_stays_strict(
+    public void Path_shaped_option_operand_outside_trusted_roots_stays_strict(
         string command,
         string phrase)
     {
@@ -372,7 +372,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     }
 
     [Fact]
-    public void Path_shaped_option_operand_under_safe_root_remains_eligible()
+    public void Path_shaped_option_operand_under_trusted_root_remains_eligible()
     {
         var policy = CreatePolicy(VerbList("grep"));
         var ctx = PersonalContext(projectDir: _projectDir);
@@ -390,7 +390,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     }
 
     [Fact]
-    public void Path_shaped_data_under_safe_root_does_not_create_new_authority()
+    public void Path_shaped_data_under_trusted_root_does_not_create_new_authority()
     {
         var policy = CreatePolicy(VerbList("gh run list"));
         var ctx = PersonalContext(projectDir: _projectDir);
@@ -537,7 +537,7 @@ public sealed class ScopedShellSafeVerbPolicyTests : IDisposable
     }
 
     [Fact]
-    public void Candidate_path_outside_safe_spaces_falls_through_to_prompt()
+    public void Candidate_path_outside_trusted_roots_falls_through_to_prompt()
     {
         var policy = CreatePolicy(VerbList("cat"));
         var ctx = PersonalContext(projectDir: _projectDir);

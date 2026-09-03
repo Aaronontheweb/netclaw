@@ -66,14 +66,14 @@ internal enum ToolAllowReason
     BackgroundJobLifecycle,
 
     /// <summary>
-    /// The shell safe-verb policy allows every command candidate.
+    /// Reviewed-safe shell policy allows every command candidate.
     /// </summary>
     /// <remarks>
     /// The parser must produce a clean candidate set.
-    /// Each verb must occur in the safe-verb list.
-    /// Each effective directory must occur inside an applicable safe area.
+    /// Each phrase must occur in the reviewed list.
+    /// Shared path authorization must allow every effective directory and path.
     /// </remarks>
-    SafeVerbInTrustedScope,
+    ReviewedSafePolicy,
 
     /// <summary>
     /// Every parsed shell candidate belongs to the fixed approval-exempt set.
@@ -127,8 +127,8 @@ internal static class ToolAllowReasonExtensions
                 "The resolved approval policy allowed the tool automatically.",
             ToolAllowReason.BackgroundJobLifecycle =>
                 "The initial shell approval covered control of the session-owned background job.",
-            ToolAllowReason.SafeVerbInTrustedScope =>
-                "The shell safe-verb policy allowed every candidate inside a trusted scope.",
+            ToolAllowReason.ReviewedSafePolicy =>
+                "Reviewed-safe shell policy allowed every candidate after path authorization.",
             ToolAllowReason.ApprovalExemptShellCandidates =>
                 "Every parsed shell candidate was exempt from stored approval checks.",
             ToolAllowReason.StoredApproval =>
@@ -152,6 +152,7 @@ internal sealed record ToolAuthorizationDecision
         ToolAuthorizationOutcome outcome,
         ToolAllowReason? allowReason,
         string? denyReason,
+        string? denyMessage,
         ToolApprovalContext? approvalContext,
         ToolAgentCorrection? agentCorrection,
         IReadOnlyList<ToolApprovalMatch> approvalMatches,
@@ -160,6 +161,7 @@ internal sealed record ToolAuthorizationDecision
         Outcome = outcome;
         AllowReason = allowReason;
         DenyReason = denyReason;
+        DenyMessage = denyMessage;
         ApprovalContext = approvalContext;
         AgentCorrection = agentCorrection;
         ApprovalMatches = approvalMatches;
@@ -180,6 +182,11 @@ internal sealed record ToolAuthorizationDecision
     /// Gets the stable deny reason when <see cref="Outcome"/> is <see cref="ToolAuthorizationOutcome.Denied"/>.
     /// </summary>
     public string? DenyReason { get; }
+
+    /// <summary>
+    /// Gets optional human-readable denial detail returned to the agent.
+    /// </summary>
+    public string? DenyMessage { get; }
 
     /// <summary>
     /// Gets the prompt data when <see cref="Outcome"/> is <see cref="ToolAuthorizationOutcome.RequiresApproval"/>.
@@ -211,7 +218,7 @@ internal sealed record ToolAuthorizationDecision
     public static ToolAuthorizationDecision Allow(ToolAllowReason reason)
     {
         ValidateAllowReason(reason);
-        return new ToolAuthorizationDecision(ToolAuthorizationOutcome.Allowed, reason, null, null, null, []);
+        return new ToolAuthorizationDecision(ToolAuthorizationOutcome.Allowed, reason, null, null, null, null, []);
     }
 
     /// <summary>
@@ -229,16 +236,17 @@ internal sealed record ToolAuthorizationDecision
             null,
             null,
             null,
+            null,
             [.. approvalMatches]);
     }
 
     /// <summary>
     /// Creates a hard-deny result.
     /// </summary>
-    public static ToolAuthorizationDecision Deny(string reason)
+    public static ToolAuthorizationDecision Deny(string reason, string? message = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(reason);
-        return new ToolAuthorizationDecision(ToolAuthorizationOutcome.Denied, null, reason, null, null, []);
+        return new ToolAuthorizationDecision(ToolAuthorizationOutcome.Denied, null, reason, message, null, null, []);
     }
 
     /// <summary>
@@ -247,7 +255,7 @@ internal sealed record ToolAuthorizationDecision
     public static ToolAuthorizationDecision RequiresApproval(ToolApprovalContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        return new ToolAuthorizationDecision(ToolAuthorizationOutcome.RequiresApproval, null, null, context, null, []);
+        return new ToolAuthorizationDecision(ToolAuthorizationOutcome.RequiresApproval, null, null, null, context, null, []);
     }
 
     /// <summary>
@@ -261,6 +269,7 @@ internal sealed record ToolAuthorizationDecision
         ArgumentNullException.ThrowIfNull(approvalMatches);
         return new ToolAuthorizationDecision(
             ToolAuthorizationOutcome.RequiresApproval,
+            null,
             null,
             null,
             context,
@@ -279,6 +288,7 @@ internal sealed record ToolAuthorizationDecision
             null,
             null,
             null,
+            null,
             correction,
             []);
     }
@@ -294,7 +304,7 @@ internal sealed record ToolAuthorizationDecision
         {
             { NeedsApproval: true, ApprovalContext: { } context } =>
                 RequiresApproval(context, approvalMatches),
-            { Allowed: false, DenyReason: { } reason } => Deny(reason),
+            { Allowed: false, DenyReason: { } reason } => Deny(reason, decision.DenyMessage),
             { Allowed: true, AllowReason: { } reason } => Allow(reason, approvalMatches),
             _ => throw new InvalidOperationException("Tool access decision is incomplete.")
         };

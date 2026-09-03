@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="ScopedShellSafeVerbPolicy.cs" company="Petabridge, LLC">
+// <copyright file="ReviewedSafeShellPolicy.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
@@ -23,12 +23,12 @@ namespace Netclaw.Actors.Tools;
 /// in <see cref="ToolAccessPolicy"/>. It only relaxes the interactive
 /// approval gate (layer 2) for phrases that the bundled catalog reviews.
 /// </summary>
-internal sealed class ScopedShellSafeVerbPolicy
+internal sealed class ReviewedSafeShellPolicy
 {
     private readonly SafeVerbList _safeVerbs;
     private readonly PathAccessPolicy _pathAccessPolicy;
 
-    public ScopedShellSafeVerbPolicy(
+    public ReviewedSafeShellPolicy(
         SafeVerbList safeVerbs,
         PathAccessPolicy pathAccessPolicy)
     {

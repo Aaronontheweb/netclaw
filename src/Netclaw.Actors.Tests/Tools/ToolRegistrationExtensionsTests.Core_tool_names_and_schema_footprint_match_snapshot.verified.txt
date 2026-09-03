@@ -16,6 +16,6 @@
   ],
   Footprint: {
     Count: 13,
-    SerializedDefinitionBytes: 16540
+    SerializedDefinitionBytes: 16521
   }
 }

@@ -99,7 +99,7 @@ public sealed class FileSystemPromptProviderAudienceTests : IDisposable
         Assert.Contains("Keep the project root unless the user requests", prompt);
         Assert.Contains("A denied child-directory call does not permit a project change", prompt);
         Assert.Contains("Path arguments give the approval gate an exact candidate scope", prompt);
-        Assert.Contains("safe-space root", prompt);
+        Assert.Contains("add a trusted root", prompt);
         Assert.DoesNotContain("path argument IS the declaration", prompt);
         Assert.Contains("before the first project tool call", prompt);
         Assert.Contains("The work needs a shell or file tool", prompt);

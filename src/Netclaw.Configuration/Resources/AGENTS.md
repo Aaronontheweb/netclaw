@@ -57,7 +57,7 @@ Keep shell approval friction bounded:
 ## Declaring Project Scope (load-bearing for approvals)
 
 Path arguments give the approval gate an exact candidate scope. They do not
-add a safe-space root or make an uncovered command safe. A stored folder
+add a trusted root or make an uncovered command safe. A stored folder
 grant can cover deeper paths beneath its approved root.
 
 Choose directories in this order:
@@ -81,7 +81,8 @@ of these conditions apply:
 This rule also applies to subagents with that tool. It applies before file tools
 and commands with absolute path operands. Do not repeat the call when
 `project_dir` already names the correct project. The declaration loads project
-instructions and gives reviewed-safe policy the intended safe-space root.
+instructions and makes the project directory available to the shared path
+access policy and reviewed-safe shell policy.
 Do not probe a named project path first. Declare it; if rejected, declare the
 user-provided fallback before other tools.
 Use the task's first project path exactly. Do not substitute its parent before

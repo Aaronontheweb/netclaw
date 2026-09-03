@@ -21,7 +21,7 @@
 - [x] 3.2 Inject `TMPDIR`, `TMP`, and `TEMP` into every POSIX and Windows child process without changing the daemon environment; verify native and .NET temporary APIs return a path below the validated run `temp_dir`
 - [x] 3.3 Extend the existing parent and child `[session]` context blocks with `temp_dir`, `artifact_dir`, `worktree_dir`, and `log_path`; preserve current `session_dir` assembly and Public path policy, and verify no second block or per-turn duplicate appears
 - [x] 3.4 Use `<session-envelope>/workspace` as the shell cwd fallback when no project or explicit cwd exists; verify the complete envelope is never the fallback and the managed temporary environment operates independently
-- [x] 3.5 Audit every production use of “session scratch” and classify it as session-directory fallback, managed temporary storage, or session-owned approval scope; update model prompts, `AGENTS.md`, tool schemas, comments, and identifiers to the correct term
+- [x] 3.5 Audit every production use of “session scratch” and classify it as session-directory fallback, managed temporary storage, or trusted-root path authorization; update model prompts, `AGENTS.md`, tool schemas, comments, and identifiers to the correct term
 - [x] 3.6 Accept persisted background-job JSON with no `ManagedTemporaryDirectory`; preserve terminal history, apply the existing `Lost` transition and notification to pending or running jobs, and never resume them with host temp
 
 ## 4. Complete the Managed-Temp Correction
@@ -38,12 +38,12 @@
 ## 5. Compose Session Data Access from Existing File Tools
 
 - [x] 5.1 Extend successful `spawn_agent` outcomes with the child run identifier, exact child log path, and exact child artifact directory; create the log target before success and verify failed spawns contain no usable child location
-- [ ] 5.2 Remove the special same-session log scope and child ownership ACL. Use the common path access decision for `file_read`, `file_list`, `file_search`, `file_write`, `file_edit`, and `attach_file`
-- [ ] 5.3 Supply the Netclaw sessions directory as a trusted root to every parent and child run; verify one session can analyze another session's logs when audience and operation permissions allow it
+- [x] 5.2 Remove the special same-session log scope and child ownership ACL. Use the common path access decision for `file_read`, `file_list`, `file_search`, `file_write`, `file_edit`, and `attach_file`
+- [x] 5.3 Supply the Netclaw sessions directory as a trusted root to every parent and child run; verify one session can analyze another session's logs when audience and operation permissions allow it
 - [x] 5.4 Use an active-writer-compatible read share mode for `file_read` and `file_search`; verify active Windows and POSIX writers continue after a read
-- [ ] 5.5 Validate every trusted root and canonical path against symbolic-link, junction, and reparse-point escape through the common path access decision
-- [ ] 5.6 Inventory every filesystem path term, OpenSpec requirement, policy type, decision method, and call site; map each item to one owner and identify whether it survives, merges, or is removed
-- [ ] 5.7 Condense the four affected delta specs around one owning requirement, then replace competing root terms and Boolean path decisions with one shared contract; remove duplicate helpers, call sites, and tests
+- [x] 5.5 Validate every trusted root and canonical path against symbolic-link, junction, and reparse-point escape through the common path access decision
+- [x] 5.6 Inventory every filesystem path term, OpenSpec requirement, policy type, decision method, and call site; map each item to one owner and identify whether it survives, merges, or is removed
+- [x] 5.7 Condense the four affected delta specs around one owning requirement, then replace competing root terms and Boolean path decisions with one shared contract; remove duplicate helpers, call sites, and tests
 
 ## 6. Compose Git Worktrees from Existing Tools
 
@@ -70,9 +70,9 @@
 
 ## 9. Documentation and Release Verification
 
-- [ ] 9.1 Condense the engineering glossary, active OpenSpec text, and runbooks around the shared path access decision; remove duplicate authority terms and stale session-isolation claims
+- [x] 9.1 Condense the engineering glossary, active OpenSpec text, and runbooks around the shared path access decision; remove duplicate authority terms and stale session-isolation claims
 - [x] 9.2 Update the implementation plan and release notes for the versioned layout, managed temp environment, composed worktree workflow, and independent structured-read policy; verify public text contains no private provider, hardware, host, or user detail
 - [x] 9.3 Remove or correct evidence that used changed prompts or assertions as a locked comparison, remove invalid headless results, and record exact evidence revisions without changing archived evidence
-- [ ] 9.4 Run `openspec validate unify-session-storage-and-temp --strict`, focused tests, `dotnet build -c Release`, `dotnet test -c Release`, header verification, and Slopwatch; report existing skipped tests accurately instead of claiming zero skips
+- [x] 9.4 Run `openspec validate unify-session-storage-and-temp --strict`, focused tests, `dotnet build -c Release`, `dotnet test -c Release`, header verification, and Slopwatch; report existing skipped tests accurately instead of claiming zero skips
 - [ ] 9.5 Upgrade one existing session and restart one newly bound session; verify established and new paths remain usable, active writers remain healthy, paths stay stable, and no data is moved or deleted
 - [ ] 9.6 Harvest sanitized live traffic after the swap and classify remaining temp, log-discovery, worktree, configuration-read, and approval-friction patterns; add evidence to the corpus only after manual PII review

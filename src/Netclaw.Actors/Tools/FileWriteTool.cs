@@ -33,8 +33,13 @@ public sealed partial class FileWriteTool : NetclawTool<FileWriteTool.Params>
         [property: Description("Content to write to the file")] string Content);
 
     public FileWriteTool(ToolConfig config, NetclawPaths paths, ToolPathPolicy pathPolicy)
+        : this(new PathAccessPolicy(config, paths, pathPolicy))
     {
-        _editTool = new FileEditTool(config, paths, pathPolicy);
+    }
+
+    internal FileWriteTool(PathAccessPolicy pathAccessPolicy)
+    {
+        _editTool = new FileEditTool(pathAccessPolicy);
     }
 
     protected override Task<string> ExecuteAsync(Params args, ToolInvocationContext context, CancellationToken ct)

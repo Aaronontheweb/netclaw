@@ -9,6 +9,7 @@ using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
+using static Netclaw.Actors.Tests.Tools.PathAccessDecisionAssertions;
 
 namespace Netclaw.Actors.Tests.Tools;
 
@@ -48,10 +49,18 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
             new SubAgentRunId("run-1"),
             new SubAgentScopeId("signalr/current-session/subagent/test/run-1"));
 
-        Assert.True(_policy.TryResolveReadPath(_storage.LogPath, _context, out _, out _));
-        Assert.True(_policy.TryResolveReadPath(child.LogPath, _context, out _, out _));
-        Assert.True(_policy.TryResolveWritePath(_storage.LogPath, _context, out _, out _));
-        Assert.True(_policy.TryResolveAttachPath(child.LogPath, _context, out _, out _));
+        AssertAllowed(
+            _policy.Evaluate(_storage.LogPath, _context, PathAccessPolicy.FileOperation.Read),
+            _storage.LogPath);
+        AssertAllowed(
+            _policy.Evaluate(child.LogPath, _context, PathAccessPolicy.FileOperation.Read),
+            child.LogPath);
+        AssertAllowed(
+            _policy.Evaluate(_storage.LogPath, _context, PathAccessPolicy.FileOperation.Write),
+            _storage.LogPath);
+        AssertAllowed(
+            _policy.Evaluate(child.LogPath, _context, PathAccessPolicy.FileOperation.Attach),
+            child.LogPath);
     }
 
     [Fact]
@@ -70,8 +79,12 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
             "logs",
             "session.log");
 
-        Assert.True(_policy.TryResolveReadPath(foreignMain, _context, out _, out _));
-        Assert.True(_policy.TryResolveReadPath(foreignChild, _context, out _, out _));
+        AssertAllowed(
+            _policy.Evaluate(foreignMain, _context, PathAccessPolicy.FileOperation.Read),
+            foreignMain);
+        AssertAllowed(
+            _policy.Evaluate(foreignChild, _context, PathAccessPolicy.FileOperation.Read),
+            foreignChild);
     }
 
     [Fact]
@@ -88,18 +101,22 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
             "subagents",
             "run-1");
 
-        Assert.True(_policy.TryResolveWritePath(
-            Path.Combine(_storage.ManagedTemporary.Directory, "result.txt"),
-            _context,
-            out _,
-            out _));
-        Assert.True(_policy.TryResolveReadPath(childArtifact, _context, out _, out _));
-        Assert.True(_policy.TryResolveReadPath(broadChildRoot, _context, out _, out _));
-        Assert.True(_policy.TryResolveReadPath(
-            _storage.Binding.EnvelopeRoot.Value,
-            _context,
-            out _,
-            out _));
+        var temporaryResult = Path.Combine(_storage.ManagedTemporary.Directory, "result.txt");
+        AssertAllowed(
+            _policy.Evaluate(temporaryResult, _context, PathAccessPolicy.FileOperation.Write),
+            temporaryResult);
+        AssertAllowed(
+            _policy.Evaluate(childArtifact, _context, PathAccessPolicy.FileOperation.Read),
+            childArtifact);
+        AssertAllowed(
+            _policy.Evaluate(broadChildRoot, _context, PathAccessPolicy.FileOperation.Read),
+            broadChildRoot);
+        AssertAllowed(
+            _policy.Evaluate(
+                _storage.Binding.EnvelopeRoot.Value,
+                _context,
+                PathAccessPolicy.FileOperation.Read),
+            _storage.Binding.EnvelopeRoot.Value);
     }
 
     [Fact]
@@ -154,13 +171,13 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
                 ChannelType = "signalr"
             }).Invocation;
 
-        var allowed = _policy.TryResolveReadPath(
-            Path.Combine(linkedEnvelope, "logs", "session.log"),
+        var requestedPath = Path.Combine(linkedEnvelope, "logs", "session.log");
+        var decision = _policy.Evaluate(
+            requestedPath,
             context,
-            out _,
-            out var error);
+            PathAccessPolicy.FileOperation.Read);
 
-        Assert.False(allowed);
-        Assert.Contains("symlinked paths", error, StringComparison.Ordinal);
+        AssertDenied(decision, Path.GetFullPath(requestedPath));
+        Assert.Contains("symlinked paths", decision.Error, StringComparison.Ordinal);
     }
 }

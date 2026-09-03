@@ -474,7 +474,7 @@ public sealed class ChatPageTests
                 ["Dropbox"] = ToolApprovalMode.Approval
             }
         };
-        var policy = new ToolAccessPolicy(
+        var policy = new ToolAccessPolicy(new NetclawPaths(),
             config,
             new EffectivePolicyDefaults(
                 DeploymentPosture.Personal,

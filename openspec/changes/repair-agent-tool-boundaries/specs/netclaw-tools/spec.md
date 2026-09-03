@@ -27,12 +27,11 @@ policy denial before tool execution:
   remediation   = none
   model result  = "Tool access denied: tool_not_allowed_for_audience_profile"
 
-filesystem scope denial inside file_read:
+path access denial inside file_read:
   category      = AccessDenied
   file activity = empty
   remediation   = none
-  model result  = "Error: Team trust context may only access files inside the
-                   current session directory or configured roots: /workspace."
+  model result  = "Error: Path is outside trusted roots: /workspace."
 
 correctable missing path base:
   category      = RecoverableCorrection
@@ -113,7 +112,7 @@ file_read receipt carries DeclaredProjectDirectory("/outside")
 - **WHEN** the tool returns an access-denied outcome
 - **THEN** the authored path is absent from `RecentFiles`
 
-#### Scenario: Parallel reads record bounded canonical activity
+#### Scenario: Successful batch read records canonical files
 
 - **GIVEN** `README.md` and `docs/guide.md` resolve under `/workspace/project`
 - **AND** separate `file_read` calls read both paths in one tool batch

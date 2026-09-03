@@ -1324,6 +1324,7 @@ public class SubAgentActorTests : TestKit
     }
 
     private static ToolAccessPolicy PermissivePolicy() => new(
+        new NetclawPaths(),
         new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed },
         new EffectivePolicyDefaults(
             DeploymentPosture.Personal,
@@ -1345,6 +1346,7 @@ public class SubAgentActorTests : TestKit
         };
         var environment = TestShellEnvironment.Current;
         return new ToolAccessPolicy(
+            netclawHome is null ? new NetclawPaths() : new NetclawPaths(netclawHome),
             toolConfig,
             new EffectivePolicyDefaults(
                 DeploymentPosture.Personal,
@@ -1352,10 +1354,7 @@ public class SubAgentActorTests : TestKit
                 ShellExecutionMode.HostAllowed,
                 UsedStrictFallback: false),
             new ShellCommandPolicy(environment),
-            new ToolPathPolicy(environment, []),
-            paths: netclawHome is null
-                ? null
-                : new NetclawPaths(netclawHome));
+            new ToolPathPolicy(environment, []));
     }
 
     private static ToolAccessPolicy CreateManagedTemporaryCorrectionPolicy()
@@ -1372,6 +1371,7 @@ public class SubAgentActorTests : TestKit
         var commandPolicy = new ShellCommandPolicy(environment);
         var pathPolicy = new ToolPathPolicy(environment, []);
         return new ToolAccessPolicy(
+            new NetclawPaths(),
             toolConfig,
             new EffectivePolicyDefaults(
                 DeploymentPosture.Personal,
@@ -1477,6 +1477,7 @@ public class SubAgentActorTests : TestKit
             ? new[] { "pwd", "whoami" }
             : ["Get-Location", "Get-Date"];
         return new ToolAccessPolicy(
+            new NetclawPaths(workspacesDirectory, workspacesDirectory),
             toolConfig,
             new EffectivePolicyDefaults(
                 DeploymentPosture.Personal,
@@ -1485,7 +1486,6 @@ public class SubAgentActorTests : TestKit
                 UsedStrictFallback: false),
             new ShellCommandPolicy(environment),
             new ToolPathPolicy(environment, []),
-            paths: new NetclawPaths(workspacesDirectory, workspacesDirectory),
             safeVerbs: SafeVerbList.FromVerbs(approvalShell, safeVerbs));
     }
 
@@ -1816,7 +1816,7 @@ public class SubAgentActorTests : TestKit
 
         var toolConfig = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
         toolConfig.AudienceProfiles.Team.McpServersMode = ToolProfileMode.All;
-        var policy = new ToolAccessPolicy(
+        var policy = new ToolAccessPolicy(new NetclawPaths(),
             toolConfig,
             new EffectivePolicyDefaults(
                 DeploymentPosture.Personal,

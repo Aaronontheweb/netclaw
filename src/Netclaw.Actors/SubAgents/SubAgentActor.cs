@@ -1649,9 +1649,12 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         _ => ToolInvocationOutcomeCategory.TransientFailure
                     };
                     toolContext.Outputs.TryComplete(new ToolInvocationReceipt(category));
+                    var error = ex is ToolAccessDeniedException denied
+                        ? denied.ToAgentResult()
+                        : $"Error: {ex.Message}";
                     return BuildToolResult(
                         tc,
-                        $"Error: {ex.Message}",
+                        error,
                         toolContext,
                         modelInputBudget,
                         consumedManagedTemporaryKey is { } failedConsumed

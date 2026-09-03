@@ -58,15 +58,10 @@ public class DispatchingToolExecutorTests
         var commandPolicy = new ShellCommandPolicy(ShellEnvironment);
         var pathPolicy = new ToolPathPolicy(ShellEnvironment, []);
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            baseConfig,
-            new NetclawPaths(),
-            pathPolicy,
-            commandPolicy,
-            toolAccessPolicy: TestToolAccessPolicy.Create(baseConfig, commandPolicy, pathPolicy));
+        registry.WithFirstPartyTools(TestToolAccessPolicy.Create(baseConfig, commandPolicy, pathPolicy));
         _executor = new DispatchingToolExecutor(
             registry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 baseConfig,
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -89,18 +84,13 @@ public class DispatchingToolExecutorTests
         var restrictedCommandPolicy = new ShellCommandPolicy(ShellEnvironment);
         var restrictedPathPolicy = new ToolPathPolicy(ShellEnvironment, []);
         var restrictedRegistry = new ToolRegistry();
-        restrictedRegistry.WithFirstPartyTools(
+        restrictedRegistry.WithFirstPartyTools(TestToolAccessPolicy.Create(
             restrictedConfig,
-            new NetclawPaths(),
-            restrictedPathPolicy,
             restrictedCommandPolicy,
-            toolAccessPolicy: TestToolAccessPolicy.Create(
-                restrictedConfig,
-                restrictedCommandPolicy,
-                restrictedPathPolicy));
+            restrictedPathPolicy));
         _restrictedExecutor = new DispatchingToolExecutor(
             restrictedRegistry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 restrictedConfig,
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -255,7 +245,7 @@ public class DispatchingToolExecutorTests
         var logger = new RecordingLogger<DispatchingToolExecutor>();
         var executor = new DispatchingToolExecutor(
             registry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 config,
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -477,16 +467,11 @@ public class DispatchingToolExecutorTests
         var commandPolicy = new ShellCommandPolicy(ShellEnvironment);
         var pathPolicy = new ToolPathPolicy(ShellEnvironment, []);
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            config,
-            new NetclawPaths(),
-            pathPolicy,
-            commandPolicy,
-            toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
+        registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
 
         var executor = new DispatchingToolExecutor(
             registry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 config,
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -521,16 +506,11 @@ public class DispatchingToolExecutorTests
         var commandPolicy = new ShellCommandPolicy(ShellEnvironment);
         var pathPolicy = new ToolPathPolicy(ShellEnvironment, []);
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            config,
-            new NetclawPaths(),
-            pathPolicy,
-            commandPolicy,
-            toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
+        registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
 
         var executor = new DispatchingToolExecutor(
             registry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 config,
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -671,18 +651,13 @@ public class DispatchingToolExecutorTests
             }
         };
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            config,
-            new NetclawPaths(),
-            new ToolPathPolicy([]),
-            new ShellCommandPolicy(),
-            toolAccessPolicy: TestToolAccessPolicy.Create(config));
+        registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config));
         var approvedMatch = new ToolApprovalMatch("git status", "session", "this chat");
         var approvalService = new FixedApprovalService(
             new ToolApprovalCheckResult(["git push"], [approvedMatch]));
         var executor = new DispatchingToolExecutor(
             registry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 config,
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -728,12 +703,7 @@ public class DispatchingToolExecutorTests
             }
         };
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            config,
-            new NetclawPaths(),
-            new ToolPathPolicy([]),
-            new ShellCommandPolicy(),
-            toolAccessPolicy: TestToolAccessPolicy.Create(config));
+        registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config));
         var approvedMatch = new ToolApprovalMatch("git status", "session", "this chat");
         var context = CreateInteractivePersonalContext("signalr/thread-exact-partial-approval");
         var approvedCandidate = BashCandidate("git status", context.SessionDirectory);
@@ -751,7 +721,7 @@ public class DispatchingToolExecutorTests
             });
         var executor = new DispatchingToolExecutor(
             registry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 config,
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -797,12 +767,7 @@ public class DispatchingToolExecutorTests
             var commandPolicy = new ShellCommandPolicy(ShellEnvironment);
             var pathPolicy = new ToolPathPolicy(ShellEnvironment, []);
             var registry = new ToolRegistry();
-            registry.WithFirstPartyTools(
-                config,
-                new NetclawPaths(),
-                pathPolicy,
-                commandPolicy,
-                toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
+            registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
             var approvalService = new FixedShellApprovalService(request =>
             {
                 var matches = request.Candidates.Select(candidate =>
@@ -829,6 +794,7 @@ public class DispatchingToolExecutorTests
             var executor = new DispatchingToolExecutor(
                 registry,
                 new ToolAccessPolicy(
+                    new NetclawPaths(),
                     config,
                     new EffectivePolicyDefaults(
                         DeploymentPosture.Personal,
@@ -1697,7 +1663,7 @@ public class DispatchingToolExecutorTests
                     SourceOccurrence: null));
         }
 
-        var decision = ToolAuthorizationDecision.Allow(ToolAllowReason.SafeVerbInTrustedScope);
+        var decision = ToolAuthorizationDecision.Allow(ToolAllowReason.ReviewedSafePolicy);
         var trace = builder.Complete(decision);
 
         Assert.Equal(ToolAuthorizationOutcome.Allowed, decision.Outcome);
@@ -1752,7 +1718,7 @@ public class DispatchingToolExecutorTests
                 BashCandidate($"/usr/bin/{secret}\r\n\u202Espoof"),
                 SourceOccurrence: null));
         var trace = builder.Complete(
-            ToolAuthorizationDecision.Allow(ToolAllowReason.SafeVerbInTrustedScope));
+            ToolAuthorizationDecision.Allow(ToolAllowReason.ReviewedSafePolicy));
 
         var call = new FunctionCallContent("call-malicious-trace", ShellTool.ToolName);
         var context = CreateInteractivePersonalContext("signalr/malicious-trace");
@@ -1799,7 +1765,7 @@ public class DispatchingToolExecutorTests
 
         builder.AddActorEvidence(candidate, actorMatch);
         var trace = builder.Complete(
-            ToolAuthorizationDecision.Allow(ToolAllowReason.SafeVerbInTrustedScope));
+            ToolAuthorizationDecision.Allow(ToolAllowReason.ReviewedSafePolicy));
 
         Assert.Equal(traceReason, trace.Rows[0].Reason);
         Assert.Equal(ShellPolicyTraceOutcome.Uncovered, trace.Rows[0].Outcome);
@@ -2225,12 +2191,7 @@ public class DispatchingToolExecutorTests
                 }
             };
             var registry = new ToolRegistry();
-            registry.WithFirstPartyTools(
-                config,
-                new NetclawPaths(),
-                new ToolPathPolicy([]),
-                new ShellCommandPolicy(),
-                toolAccessPolicy: TestToolAccessPolicy.Create(config));
+            registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config));
             var approvedScope = ApprovalEntry.CreateTokenPrefix(
                 ApprovalShell.Bash,
                 ["git", "push"],
@@ -2252,6 +2213,7 @@ public class DispatchingToolExecutorTests
             var executor = new DispatchingToolExecutor(
                 registry,
                 new ToolAccessPolicy(
+                    new NetclawPaths(),
                     config,
                     new EffectivePolicyDefaults(
                         DeploymentPosture.Personal,
@@ -2299,12 +2261,7 @@ public class DispatchingToolExecutorTests
             }
         };
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            config,
-            new NetclawPaths(),
-            new ToolPathPolicy([]),
-            new ShellCommandPolicy(),
-            toolAccessPolicy: TestToolAccessPolicy.Create(config));
+        registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config));
         var approvalService = new FixedApprovalService(
             new ToolApprovalCheckResult(
                 ["git push"],
@@ -2319,7 +2276,7 @@ public class DispatchingToolExecutorTests
             });
         var executor = new DispatchingToolExecutor(
             registry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 config,
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -2356,12 +2313,7 @@ public class DispatchingToolExecutorTests
             }
         };
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            config,
-            new NetclawPaths(),
-            new ToolPathPolicy([]),
-            new ShellCommandPolicy(),
-            toolAccessPolicy: TestToolAccessPolicy.Create(config));
+        registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config));
         var forgedCandidate = new ApprovalCandidate("git status", Directory: null)
         {
             Shell = ApprovalShell.Bash,
@@ -2380,7 +2332,7 @@ public class DispatchingToolExecutorTests
             });
         var executor = new DispatchingToolExecutor(
             registry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 config,
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -2417,12 +2369,7 @@ public class DispatchingToolExecutorTests
             }
         };
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            config,
-            new NetclawPaths(),
-            new ToolPathPolicy([]),
-            new ShellCommandPolicy(),
-            toolAccessPolicy: TestToolAccessPolicy.Create(config));
+        registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config));
         var approvalService = new FixedApprovalService(
             new ToolApprovalCheckResult(
                 [],
@@ -2437,7 +2384,7 @@ public class DispatchingToolExecutorTests
             });
         var executor = new DispatchingToolExecutor(
             registry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 config,
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -2478,7 +2425,7 @@ public class DispatchingToolExecutorTests
         var logger = new RecordingLogger<DispatchingToolExecutor>();
         var executor = new DispatchingToolExecutor(
             registry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 config,
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -2571,11 +2518,14 @@ public class DispatchingToolExecutorTests
                 ChannelType = "slack"
             });
 
-            var result = await _restrictedExecutor.ExecuteAsync(toolCall, context, TestContext.Current.CancellationToken);
+            var exception = await Assert.ThrowsAsync<ToolAccessDeniedException>(() =>
+                _restrictedExecutor.ExecuteAsync(toolCall, context, TestContext.Current.CancellationToken));
             foreach (var phrase in expectedPhrases)
             {
-                Assert.Contains(phrase, result);
+                Assert.Contains(phrase, exception.Message);
             }
+
+            Assert.Equal("path_access_denied", exception.DenyReason);
 
             if (assertFileMissingAfter)
             {
@@ -2663,7 +2613,7 @@ public class DispatchingToolExecutorTests
         // Default profile (no explicit AllowedTools override).
         var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
 
-        var policy = new ToolAccessPolicy(
+        var policy = new ToolAccessPolicy(new NetclawPaths(),
             config,
             new EffectivePolicyDefaults(
                 DeploymentPosture.Personal,
@@ -2676,7 +2626,7 @@ public class DispatchingToolExecutorTests
         var registry = new ToolRegistry();
         var paths = new NetclawPaths(Path.Combine(Path.GetTempPath(), $"netclaw-{audience}-tools-{Guid.NewGuid():N}"));
         paths.EnsureDirectoriesExist();
-        registry.WithFirstPartyTools(config, paths: paths, pathPolicy: new ToolPathPolicy([]), shellCommandPolicy: new ShellCommandPolicy(), toolAccessPolicy: policy, webhookRouteStore: new WebhookRouteStore(paths));
+        registry.WithFirstPartyTools(policy, webhookRouteStore: new WebhookRouteStore(paths));
         // set_webhook and delete_webhook ask WebhookRouteActor. This test reads
         // exposure metadata only and never executes them, so an unresolvable
         // actor reference is enough to put them in the registry.
@@ -2706,7 +2656,7 @@ public class DispatchingToolExecutorTests
         var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
         var executor = new DispatchingToolExecutor(
             registry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 config,
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -2885,16 +2835,11 @@ public class DispatchingToolExecutorTests
             };
 
             var registry = new ToolRegistry();
-            registry.WithFirstPartyTools(
-                config,
-                new NetclawPaths(),
-                new ToolPathPolicy([]),
-                new ShellCommandPolicy(),
-                toolAccessPolicy: TestToolAccessPolicy.Create(config));
+            registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config));
 
             var executor = new DispatchingToolExecutor(
                 registry,
-                new ToolAccessPolicy(
+                new ToolAccessPolicy(new NetclawPaths(),
                     config,
                     new EffectivePolicyDefaults(
                         DeploymentPosture.Personal,
@@ -2947,6 +2892,70 @@ public class DispatchingToolExecutorTests
             if (Directory.Exists(controlPlaneRoot))
                 Directory.Delete(controlPlaneRoot, recursive: true);
         }
+    }
+
+    [Theory]
+    [InlineData(FileReadTool.ToolName, "Path", false)]
+    [InlineData(FileListTool.ToolName, "Path", true)]
+    [InlineData(FileSearchTool.ToolName, "Root", true)]
+    [InlineData(FileWriteTool.ToolName, "Path", false)]
+    [InlineData(FileEditTool.ToolName, "Path", false)]
+    [InlineData(AttachFileTool.ToolName, "Path", false)]
+    [InlineData(SetWorkingDirectoryTool.ToolName, "Path", true)]
+    public async Task Structured_path_denial_precedes_approval(
+        string toolName,
+        string pathArgument,
+        bool useDirectory)
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"netclaw-path-preflight-{Guid.NewGuid():N}");
+        var paths = new NetclawPaths(basePath);
+        var protectedPaths = new ToolPathPolicy([paths.ConfigDirectory]);
+        var config = new ToolConfig();
+        config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
+        {
+            DefaultMode = ToolApprovalMode.Approval
+        };
+        var commandPolicy = new ShellCommandPolicy();
+        var policy = new ToolAccessPolicy(
+            paths,
+            config,
+            new EffectivePolicyDefaults(
+                DeploymentPosture.Personal,
+                TrustAudience.Personal,
+                ShellExecutionMode.HostAllowed,
+                UsedStrictFallback: false),
+            commandPolicy,
+            protectedPaths,
+            fileApprovalMatcher: new FilePathApprovalMatcher(paths.ConfigDirectory));
+        var registry = new ToolRegistry();
+        registry.WithFirstPartyTools(policy);
+        var executor = new DispatchingToolExecutor(registry, policy, new UnexpectedApprovalService());
+        var targetPath = useDirectory ? paths.ConfigDirectory : paths.NetclawConfigPath;
+        var toolCall = CreateToolCall(
+            $"call-path-preflight-{toolName}",
+            toolName,
+            ToolInput.Create(pathArgument, targetPath));
+        var context = TestToolExecutionContext.CreateBound(
+            "signalr/path-preflight",
+            Path.Combine(paths.SessionsDirectory, "signalr", "path-preflight"),
+            new TestToolExecutionContextOptions
+            {
+                Audience = TrustAudience.Personal,
+                Boundary = TrustBoundary.TrustedInstance,
+                ChannelType = "signalr",
+                InteractiveApproval = TestToolExecutionContext.InteractiveApproval(true)
+            });
+
+        var decision = await executor.EvaluateAuthorizationAsync(
+            toolCall,
+            context,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(ToolAuthorizationOutcome.Denied, decision.Outcome);
+        Assert.Equal("path_access_denied", decision.DenyReason);
+        Assert.StartsWith("Error:", decision.DenyMessage, StringComparison.Ordinal);
+        Assert.NotEqual(decision.DenyReason, decision.DenyMessage);
+        Assert.Null(decision.ApprovalContext);
     }
 
     [Fact]
@@ -3033,12 +3042,7 @@ public class DispatchingToolExecutorTests
         };
 
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            config,
-            new NetclawPaths(),
-            new ToolPathPolicy([]),
-            new ShellCommandPolicy(),
-            toolAccessPolicy: TestToolAccessPolicy.Create(config));
+        registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config));
 
         var tempFile = Path.GetTempFileName();
         var system = ActorSystem.Create($"tool-approval-audit-{Guid.NewGuid():N}");
@@ -3057,7 +3061,7 @@ public class DispatchingToolExecutorTests
             var approvalService = new AkkaToolApprovalService(new StubRequiredActor(approvalActor), ShellEnvironment);
             var executor = new DispatchingToolExecutor(
                 registry,
-                new ToolAccessPolicy(
+                new ToolAccessPolicy(new NetclawPaths(),
                     config,
                     new EffectivePolicyDefaults(
                         DeploymentPosture.Personal,
@@ -3117,12 +3121,7 @@ public class DispatchingToolExecutorTests
         };
 
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            config,
-            new NetclawPaths(),
-            new ToolPathPolicy([]),
-            new ShellCommandPolicy(),
-            toolAccessPolicy: TestToolAccessPolicy.Create(config));
+        registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config));
 
         var system = ActorSystem.Create($"tool-approval-session-{Guid.NewGuid():N}");
         try
@@ -3131,7 +3130,7 @@ public class DispatchingToolExecutorTests
             var approvalService = new AkkaToolApprovalService(new StubRequiredActor(approvalActor), ShellEnvironment);
             var executor = new DispatchingToolExecutor(
                 registry,
-                new ToolAccessPolicy(
+                new ToolAccessPolicy(new NetclawPaths(),
                     config,
                     new EffectivePolicyDefaults(
                         DeploymentPosture.Personal,
@@ -3244,7 +3243,7 @@ public class DispatchingToolExecutorTests
             var approvalService = new AkkaToolApprovalService(new StubRequiredActor(approvalActor), ShellEnvironment);
             var executor = new DispatchingToolExecutor(
                 registry,
-                new ToolAccessPolicy(
+                new ToolAccessPolicy(new NetclawPaths(),
                     config,
                     new EffectivePolicyDefaults(
                         DeploymentPosture.Personal,
@@ -3329,7 +3328,7 @@ public class DispatchingToolExecutorTests
         registry.WithBackgroundJobTools(ActorRefs.Nobody);
         var executor = new DispatchingToolExecutor(
             registry,
-            new ToolAccessPolicy(
+            new ToolAccessPolicy(new NetclawPaths(),
                 config,
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -3375,6 +3374,7 @@ public class DispatchingToolExecutorTests
                 ? ApprovalShell.PowerShell
                 : ApprovalShell.Bash;
             var policy = new ToolAccessPolicy(
+                new NetclawPaths(),
                 config,
                 new EffectivePolicyDefaults(
                     DeploymentPosture.Personal,
@@ -3950,6 +3950,7 @@ public class DispatchingToolExecutorTests
         IEnumerable<string>? deniedPaths = null,
         NetclawPaths? paths = null)
     {
+        paths ??= new NetclawPaths();
         var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
         config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
         {
@@ -3961,13 +3962,9 @@ public class DispatchingToolExecutorTests
         var pathPolicy = new ToolPathPolicy(environment, deniedPaths ?? []);
         var commandPolicy = new ShellCommandPolicy(environment);
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            config,
-            new NetclawPaths(),
-            pathPolicy,
-            commandPolicy,
-            toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
+        registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
         var policy = new ToolAccessPolicy(
+            paths,
             config,
             new EffectivePolicyDefaults(
                 DeploymentPosture.Personal,
@@ -3976,7 +3973,6 @@ public class DispatchingToolExecutorTests
                 UsedStrictFallback: false),
             commandPolicy,
             pathPolicy,
-            paths: paths,
             safeVerbs: safeVerbs);
         return (registry, policy);
     }
@@ -4134,7 +4130,7 @@ public class DispatchingToolExecutorTests
         var environment = ShellExecutionEnvironmentDefaults.Bash;
         var commandPolicy = new ShellCommandPolicy(environment);
         var pathPolicy = new ToolPathPolicy(environment, []);
-        var policy = new ToolAccessPolicy(
+        var policy = new ToolAccessPolicy(new NetclawPaths(),
             config,
             new EffectivePolicyDefaults(
                 DeploymentPosture.Personal,
@@ -4144,12 +4140,7 @@ public class DispatchingToolExecutorTests
             commandPolicy,
             pathPolicy);
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            config,
-            new NetclawPaths(),
-            pathPolicy,
-            commandPolicy,
-            toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
+        registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
         var analysis = new ShellCommandAnalyzer(environment).Analyze("file_read", "/workspace");
         var context = TestToolExecutionContext.CreateBound(
             "signalr/native-detector-visibility",
