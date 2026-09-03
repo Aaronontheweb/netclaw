@@ -1117,7 +1117,7 @@ internal sealed class SessionToolExecutionPipeline
             Command = command,
             WorkingDirectory = workingDirectory,
             ManagedTemporaryDirectory = storage.ManagedTemporary.Directory,
-            ManagedTemporaryAuthorityRoot = storage.ManagedTemporary.AuthorityRoot,
+            ManagedTemporaryStorageRoot = storage.ManagedTemporary.StorageRoot,
             SessionId = batch.SessionId,
             Rationale = meta.Rationale ?? "background shell execution",
             Audience = batch.TurnContext.Audience,

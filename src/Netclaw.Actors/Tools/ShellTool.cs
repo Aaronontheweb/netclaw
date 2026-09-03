@@ -118,7 +118,7 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
         var temporaryDirectoryError = ManagedTemporaryEnvironment.Prepare(
             psi,
             storage.ManagedTemporary.Directory,
-            storage.ManagedTemporary.AuthorityRoot);
+            storage.ManagedTemporary.StorageRoot);
         if (temporaryDirectoryError is not null)
             return temporaryDirectoryError;
 
@@ -351,7 +351,7 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
             var temporaryDirectoryError = ManagedTemporaryEnvironment.Prepare(
                 psi,
                 storage.ManagedTemporary.Directory,
-                storage.ManagedTemporary.AuthorityRoot);
+                storage.ManagedTemporary.StorageRoot);
             if (temporaryDirectoryError is not null)
             {
                 output.TryWrite(new ToolCompletedUpdate(temporaryDirectoryError));

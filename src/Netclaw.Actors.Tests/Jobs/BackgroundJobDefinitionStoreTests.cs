@@ -91,6 +91,8 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
         // Re-open from a fresh store instance to exercise deserialization
         var freshStore = new BackgroundJobDefinitionStore(_paths);
         var loaded = freshStore.Get(new BackgroundJobId(jobId));
+        var documentPath = Path.Combine(_paths.JobsDirectory, $"{Uri.EscapeDataString(jobId)}.json");
+        using var document = JsonDocument.Parse(File.ReadAllText(documentPath));
 
         Assert.NotNull(loaded);
         Assert.Equal(TrustAudience.Team, loaded!.Audience);
@@ -98,6 +100,11 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
         Assert.Equal(jobId, loaded.Id.Value);
         Assert.Equal("dotnet test", loaded.Command);
         Assert.Equal("C0ABC/1712000000.000001", loaded.SessionId.Value);
+        Assert.Equal(_basePath, loaded.ManagedTemporaryAuthorityRoot);
+        Assert.Equal(
+            _basePath,
+            document.RootElement.GetProperty("managedTemporaryAuthorityRoot").GetString());
+        Assert.False(document.RootElement.TryGetProperty("managedTemporaryStorageRoot", out _));
     }
 
     /// <summary>

@@ -106,7 +106,7 @@ public class BackgroundJobManagerActorTests : TestKit
     {
         Command = command,
         ManagedTemporaryDirectory = Path.Combine(Path.GetTempPath(), "netclaw-tests", "managed-temp"),
-        ManagedTemporaryAuthorityRoot = Path.Combine(Path.GetTempPath(), "netclaw-tests"),
+        ManagedTemporaryStorageRoot = Path.Combine(Path.GetTempPath(), "netclaw-tests"),
         SessionId = new SessionId("test/thread"),
         Rationale = "test run",
         Audience = TrustAudience.Personal,

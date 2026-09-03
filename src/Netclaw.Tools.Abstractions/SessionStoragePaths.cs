@@ -77,26 +77,26 @@ public sealed record SessionStorageBinding(
     SessionStorageEnvelopeRoot EnvelopeRoot);
 
 /// <summary>
-/// The validated directory and authority root for one run's temporary files.
+/// The validated directory and storage root for one run's temporary files.
 /// </summary>
 public readonly record struct ManagedTemporaryLocation
 {
-    /// <summary>Creates a managed temporary location below its authority root.</summary>
+    /// <summary>Creates a managed temporary location below its storage root.</summary>
     /// <param name="directory">The absolute temporary directory.</param>
-    /// <param name="authorityRoot">The absolute root that contains the directory.</param>
-    public ManagedTemporaryLocation(string directory, string authorityRoot)
+    /// <param name="storageRoot">The absolute storage root that contains the directory.</param>
+    public ManagedTemporaryLocation(string directory, string storageRoot)
     {
         Directory = SessionStoragePaths.NormalizeAbsolute(directory, nameof(directory));
-        AuthorityRoot = SessionStoragePaths.NormalizeAbsolute(authorityRoot, nameof(authorityRoot));
+        StorageRoot = SessionStoragePaths.NormalizeAbsolute(storageRoot, nameof(storageRoot));
 
-        var relative = Path.GetRelativePath(AuthorityRoot, Directory);
+        var relative = Path.GetRelativePath(StorageRoot, Directory);
         if (relative == "."
             || Path.IsPathRooted(relative)
             || relative == ".."
             || relative.StartsWith($"..{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
         {
             throw new ArgumentException(
-                "The managed temporary directory must be inside its authority root.",
+                "The managed temporary directory must be inside its storage root.",
                 nameof(directory));
         }
     }
@@ -104,8 +104,8 @@ public readonly record struct ManagedTemporaryLocation
     /// <summary>Gets the process-specific temporary directory.</summary>
     public string Directory { get; }
 
-    /// <summary>Gets the root that authorizes creation of <see cref="Directory"/>.</summary>
-    public string AuthorityRoot { get; }
+    /// <summary>Gets the storage root that contains <see cref="Directory"/>.</summary>
+    public string StorageRoot { get; }
 }
 
 /// <summary>
@@ -122,7 +122,6 @@ public sealed record SessionStoragePaths
         ManagedTemporaryLocation managedTemporary,
         string worktreeDirectory,
         string logPath,
-        IReadOnlyList<string> currentSessionRoots,
         string? legacyLogsBasePath)
     {
         Binding = binding;
@@ -134,10 +133,6 @@ public sealed record SessionStoragePaths
         ManagedTemporary = managedTemporary;
         WorktreeDirectory = NormalizeAbsolute(worktreeDirectory, nameof(worktreeDirectory));
         LogPath = NormalizeAbsolute(logPath, nameof(logPath));
-        CurrentSessionRoots = Array.AsReadOnly(currentSessionRoots
-            .Select(root => NormalizeAbsolute(root, nameof(currentSessionRoots)))
-            .Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal)
-            .ToArray());
         LegacyLogsBasePath = legacyLogsBasePath;
     }
 
@@ -155,8 +150,6 @@ public sealed record SessionStoragePaths
     public string WorktreeDirectory { get; }
     /// <summary>Gets the current run's raw session log path.</summary>
     public string LogPath { get; }
-    /// <summary>Gets the ordinary filesystem authority roots for the current session.</summary>
-    public IReadOnlyList<string> CurrentSessionRoots { get; }
     private string? LegacyLogsBasePath { get; }
 
     /// <summary>Creates the version-2 parent layout below one persisted envelope.</summary>
@@ -173,7 +166,6 @@ public sealed record SessionStoragePaths
             new ManagedTemporaryLocation(Path.Combine(root, "tmp", "parent"), root),
             Path.Combine(root, "worktrees"),
             Path.Combine(root, "logs", "session.log"),
-            [root],
             null);
     }
 
@@ -204,7 +196,6 @@ public sealed record SessionStoragePaths
                 normalizedSessionDirectory),
             Path.Combine(normalizedSessionDirectory, "worktrees"),
             Path.Combine(normalizedLogsBase, sanitizedSessionId, "session.log"),
-            [normalizedSessionDirectory, normalizedLogsBase],
             normalizedLogsBase);
     }
 
@@ -228,7 +219,6 @@ public sealed record SessionStoragePaths
                 new ManagedTemporaryLocation(Path.Combine(childRoot, "tmp"), binding.EnvelopeRoot.Value),
                 WorktreeDirectory,
                 Path.Combine(childRoot, "logs", "session.log"),
-                CurrentSessionRoots,
                 null);
         }
 
@@ -246,7 +236,6 @@ public sealed record SessionStoragePaths
                 ?? throw new InvalidOperationException("Legacy storage is missing its log base."),
                 sanitizedScopeId,
                 "session.log"),
-            CurrentSessionRoots,
             LegacyLogsBasePath);
     }
 

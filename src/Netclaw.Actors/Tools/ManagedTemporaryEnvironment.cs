@@ -19,18 +19,18 @@ internal static class ManagedTemporaryEnvironment
     internal static string? Prepare(
         ProcessStartInfo startInfo,
         string temporaryDirectory,
-        string authorityRoot)
+        string storageRoot)
     {
         ArgumentNullException.ThrowIfNull(startInfo);
         ArgumentException.ThrowIfNullOrWhiteSpace(temporaryDirectory);
-        ArgumentException.ThrowIfNullOrWhiteSpace(authorityRoot);
+        ArgumentException.ThrowIfNullOrWhiteSpace(storageRoot);
 
         try
         {
-            var normalizedRoot = PathUtility.Normalize(authorityRoot);
+            var normalizedRoot = PathUtility.Normalize(storageRoot);
             var normalizedTemporaryDirectory = PathUtility.Normalize(temporaryDirectory);
             if (!PathUtility.IsWithinRoot(normalizedTemporaryDirectory, normalizedRoot))
-                return "Error: The managed temporary directory is outside its session root.";
+                return "Error: The managed temporary directory is outside its storage root.";
 
             if (PathUtility.ContainsSymlinkSegment(
                     normalizedRoot,

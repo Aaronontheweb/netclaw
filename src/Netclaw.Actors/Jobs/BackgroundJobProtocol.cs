@@ -79,8 +79,8 @@ public static partial class BackgroundJobProtocol
         public string? WorkingDirectory { get; init; }
         /// <summary>Gets the directory exposed through the child process temporary variables.</summary>
         public required string ManagedTemporaryDirectory { get; init; }
-        /// <summary>Gets the session-owned root that must contain the managed temporary directory.</summary>
-        public required string ManagedTemporaryAuthorityRoot { get; init; }
+        /// <summary>Gets the storage root that must contain the managed temporary directory.</summary>
+        public required string ManagedTemporaryStorageRoot { get; init; }
         public required Protocol.SessionId SessionId { get; init; }
         public required string Rationale { get; init; }
         public required TrustAudience Audience { get; init; }
@@ -198,6 +198,9 @@ public sealed record BackgroundJobDefinition
     public required string Command { get; init; }
     public string? WorkingDirectory { get; init; }
     public string? ManagedTemporaryDirectory { get; init; }
+    /// <summary>
+    /// Gets the storage root from the legacy persisted field name.
+    /// </summary>
     public string? ManagedTemporaryAuthorityRoot { get; init; }
     [JsonConverter(typeof(Protocol.SessionIdJsonConverter))]
     public required Protocol.SessionId SessionId { get; init; }

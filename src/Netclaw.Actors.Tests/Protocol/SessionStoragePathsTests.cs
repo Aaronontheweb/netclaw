@@ -21,11 +21,10 @@ public sealed class SessionStoragePathsTests
         Assert.Equal(Path.Combine(envelope, "attachment-staging"), storage.AttachmentStagingDirectory);
         Assert.Equal(Path.Combine(envelope, "artifacts"), storage.ArtifactDirectory);
         Assert.Equal(Path.Combine(envelope, "tmp", "parent"), storage.ManagedTemporary.Directory);
-        Assert.Equal(envelope, storage.ManagedTemporary.AuthorityRoot);
+        Assert.Equal(envelope, storage.ManagedTemporary.StorageRoot);
         Assert.Equal(Path.Combine(envelope, "worktrees"), storage.WorktreeDirectory);
         Assert.Equal(Path.Combine(envelope, "logs", "session.log"), storage.LogPath);
-        Assert.Equal([envelope], storage.CurrentSessionRoots);
-        Assert.False(storage.CurrentSessionRoots is string[]);
+        Assert.Equal(envelope, storage.Binding?.EnvelopeRoot.Value);
     }
 
     [Fact]
@@ -42,10 +41,10 @@ public sealed class SessionStoragePathsTests
         Assert.Equal(parent.SessionDirectory, child.SessionDirectory);
         Assert.Equal(Path.Combine(childRoot, "artifacts"), child.ArtifactDirectory);
         Assert.Equal(Path.Combine(childRoot, "tmp"), child.ManagedTemporary.Directory);
-        Assert.Equal(envelope, child.ManagedTemporary.AuthorityRoot);
+        Assert.Equal(envelope, child.ManagedTemporary.StorageRoot);
         Assert.Equal(Path.Combine(childRoot, "logs", "session.log"), child.LogPath);
         Assert.Equal(parent.WorktreeDirectory, child.WorktreeDirectory);
-        Assert.Equal(parent.CurrentSessionRoots, child.CurrentSessionRoots);
+        Assert.Equal(parent.Binding, child.Binding);
     }
 
     [Fact]
@@ -58,7 +57,7 @@ public sealed class SessionStoragePathsTests
     }
 
     [Fact]
-    public void Managed_temporary_location_rejects_a_directory_outside_its_authority_root()
+    public void Managed_temporary_location_rejects_a_directory_outside_its_storage_root()
     {
         var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "netclaw-storage", "root"));
         var outside = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "netclaw-storage", "outside"));
@@ -103,8 +102,7 @@ public sealed class SessionStoragePathsTests
         Assert.Null(storage.Binding);
         Assert.Equal(sessionDirectory, storage.SessionDirectory);
         Assert.Equal(Path.Combine(logBase, "signalr_example", "session.log"), storage.LogPath);
-        Assert.Equal(sessionDirectory, storage.ManagedTemporary.AuthorityRoot);
-        Assert.Equal([sessionDirectory, logBase], storage.CurrentSessionRoots);
+        Assert.Equal(sessionDirectory, storage.ManagedTemporary.StorageRoot);
 
         var child = storage.ForChild(
             new SubAgentRunId("run-7"),
