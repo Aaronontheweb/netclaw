@@ -41,7 +41,7 @@ public static class SessionDirectoryHelper
     public static string GetOrCreateInboxDirectory(SessionStoragePaths storage)
     {
         ArgumentNullException.ThrowIfNull(storage);
-        var inboxDir = Path.Combine(storage.SessionDirectory, InboxSubdirectory);
+        var inboxDir = Path.Combine(storage.SessionDirectory.Value, InboxSubdirectory);
         Directory.CreateDirectory(inboxDir);
         return inboxDir;
     }
@@ -52,8 +52,8 @@ public static class SessionDirectoryHelper
     public static string GetOrCreateAttachmentStagingDirectory(SessionStoragePaths storage)
     {
         ArgumentNullException.ThrowIfNull(storage);
-        Directory.CreateDirectory(storage.AttachmentStagingDirectory);
-        return storage.AttachmentStagingDirectory;
+        Directory.CreateDirectory(storage.AttachmentStagingDirectory.Value);
+        return storage.AttachmentStagingDirectory.Value;
     }
 
     /// <summary>

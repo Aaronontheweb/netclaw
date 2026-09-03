@@ -25,8 +25,8 @@ internal static class ManagedTemporaryEnvironment
 
         try
         {
-            var normalizedRoot = PathUtility.Normalize(location.StorageRoot);
-            var normalizedTemporaryDirectory = PathUtility.Normalize(location.Directory);
+            var normalizedRoot = PathUtility.Normalize(location.StorageRoot.Value);
+            var normalizedTemporaryDirectory = PathUtility.Normalize(location.Directory.Value);
 
             if (PathUtility.ContainsSymlinkSegment(
                     normalizedRoot,

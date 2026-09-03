@@ -50,17 +50,17 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
             new SubAgentScopeId("signalr/current-session/subagent/test/run-1"));
 
         AssertAllowed(
-            _policy.Evaluate(_storage.LogPath, _context, PathAccessPolicy.FileOperation.Read),
-            _storage.LogPath);
+            _policy.Evaluate(_storage.LogPath.Value, _context, PathAccessPolicy.FileOperation.Read),
+            _storage.LogPath.Value);
         AssertAllowed(
-            _policy.Evaluate(child.LogPath, _context, PathAccessPolicy.FileOperation.Read),
-            child.LogPath);
+            _policy.Evaluate(child.LogPath.Value, _context, PathAccessPolicy.FileOperation.Read),
+            child.LogPath.Value);
         AssertAllowed(
-            _policy.Evaluate(_storage.LogPath, _context, PathAccessPolicy.FileOperation.Write),
-            _storage.LogPath);
+            _policy.Evaluate(_storage.LogPath.Value, _context, PathAccessPolicy.FileOperation.Write),
+            _storage.LogPath.Value);
         AssertAllowed(
-            _policy.Evaluate(child.LogPath, _context, PathAccessPolicy.FileOperation.Attach),
-            child.LogPath);
+            _policy.Evaluate(child.LogPath.Value, _context, PathAccessPolicy.FileOperation.Attach),
+            child.LogPath.Value);
     }
 
     [Fact]
@@ -101,7 +101,7 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
             "subagents",
             "run-1");
 
-        var temporaryResult = Path.Combine(_storage.ManagedTemporary.Directory, "result.txt");
+        var temporaryResult = Path.Combine(_storage.ManagedTemporary.Directory.Value, "result.txt");
         AssertAllowed(
             _policy.Evaluate(temporaryResult, _context, PathAccessPolicy.FileOperation.Write),
             temporaryResult);
@@ -122,9 +122,9 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
     [Fact]
     public async Task File_read_and_search_do_not_interrupt_an_active_log_writer()
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(_storage.LogPath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(_storage.LogPath.Value)!);
         await using var stream = new FileStream(
-            _storage.LogPath,
+            _storage.LogPath.Value,
             FileMode.Append,
             FileAccess.Write,
             FileShare.ReadWrite | FileShare.Delete);
@@ -135,12 +135,12 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
         var readTool = new FileReadTool(new ToolConfig(), _paths, pathPolicy);
         var searchTool = new FileSearchTool(new ToolConfig(), _paths, pathPolicy);
         var read = await readTool.ExecuteAsync(
-            ToolInput.Create("Path", _storage.LogPath),
+            ToolInput.Create("Path", _storage.LogPath.Value),
             _context,
             TestContext.Current.CancellationToken);
         var search = await searchTool.ExecuteAsync(
             ToolInput.Create(
-                "Root", Path.GetDirectoryName(_storage.LogPath)!,
+                "Root", Path.GetDirectoryName(_storage.LogPath.Value)!,
                 "Query", "active marker",
                 "Mode", "content"),
             _context,

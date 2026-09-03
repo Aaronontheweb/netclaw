@@ -350,7 +350,7 @@ internal sealed class TemporaryPathCorrectionPolicy
         if (context.RunScope.InteractiveApproval is not InteractiveApprovalCapability.Available
             || context.Audience != TrustAudience.Personal
             || !TryNormalizePath(
-                context.SessionStorage?.ManagedTemporary.Directory,
+                context.SessionStorage?.ManagedTemporary.Directory.Value,
                 out var normalized)
             || !_pathInspector.SupportsPathInspection(_environment.PathStyle))
         {

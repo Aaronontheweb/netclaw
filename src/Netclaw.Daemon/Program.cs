@@ -448,6 +448,13 @@ static void ConfigureDaemonServices(
     var shellEnvironment = shellResolution.Environment;
     services.AddSingleton(shellEnvironment);
 
+    var persistenceSection = configuration.GetSection("Persistence");
+    if (persistenceSection.Value is not null || persistenceSection.GetChildren().Any())
+    {
+        throw new InvalidOperationException(
+            "Persistence configuration is not supported. Netclaw always uses its single SQLite database.");
+    }
+
     // Daemon bind address and exposure mode (computed once in RunDaemonAsync)
     services.AddSingleton(daemonConfig);
 
@@ -467,14 +474,7 @@ static void ConfigureDaemonServices(
         })
         .ValidateOnStart();
     services.AddSingleton<IValidateOptions<ModelSelection>, ModelSelectionValidator>();
-    services
-        .AddOptions<DaemonPersistenceOptions>()
-        .Bind(configuration.GetSection("Persistence"))
-        .ValidateOnStart();
-    services.AddSingleton<IValidateOptions<DaemonPersistenceOptions>, DaemonPersistenceOptionsValidator>();
-    var persistence = configuration.GetSection("Persistence")
-        .Get<DaemonPersistenceOptions>() ?? new DaemonPersistenceOptions();
-    services.AddSingleton(persistence);
+    var sqlitePath = paths.SqliteDbPath;
 
     services.Configure<HostOptions>(options =>
     {
@@ -735,9 +735,9 @@ static void ConfigureDaemonServices(
     services.AddSingleton<FileSubAgentDefinitionLoader>();
     services.AddSingleton<SubAgentSpawner>();
 
-    // New SQLite-backed memory substrate (uses existing daemon SQLite file by design)
+    // SQLite-backed memory uses the single Netclaw database.
     // Store is always created for schema migration; memory services are gated on MemoryConfig.Enabled.
-    var memoryStore = new SQLiteMemoryStore(paths.MemorySqliteDbPath, TimeProvider.System);
+    var memoryStore = new SQLiteMemoryStore(sqlitePath, TimeProvider.System);
     services.AddSingleton(memoryStore);
 
     // Schema migration hosted service must start before any memory consumer so
@@ -984,8 +984,6 @@ static void ConfigureDaemonServices(
     var promptProvider = new FileSystemPromptProvider(paths);
     services.AddSingleton<ISystemPromptProvider>(promptProvider);
 
-    var sqlitePath = persistence.GetSqlitePath(paths);
-
     // Model capability resolution chain:
     // [Ollama →] [OpenAI-compat →] OpenRouter oracle → HuggingFace → text-only default.
     // When the main provider is Ollama, query it first — it knows the true context window
@@ -1092,28 +1090,17 @@ static void ConfigureDaemonServices(
             setup.LogLevel = ToAkkaLogLevel(daemonLogLevel);
         });
 
-        if (persistence.Provider is PersistenceProvider.Sqlite)
-        {
-            var connectionString = $"Data Source={sqlitePath}";
-            akkaBuilder = akkaBuilder.WithSqlPersistence(
-                connectionString: connectionString,
-                providerName: "SQLite.MS");
-        }
-        else
-        {
-            akkaBuilder = akkaBuilder
-                .WithInMemoryJournal()
-                .WithInMemorySnapshotStore();
-        }
+        var connectionString = $"Data Source={sqlitePath}";
+        akkaBuilder = akkaBuilder.WithSqlPersistence(
+            connectionString: connectionString,
+            providerName: "SQLite.MS");
 
-        var reminderStorage = persistence.Provider is PersistenceProvider.Sqlite
-            ? new NetclawAkkaHostingExtensions.ReminderStorageOptions
-            {
-                SqliteConnectionString = $"Data Source={sqlitePath}",
-                TableName = "netclaw_reminders",
-                AutoInitialize = true
-            }
-            : null;
+        var reminderStorage = new NetclawAkkaHostingExtensions.ReminderStorageOptions
+        {
+            SqliteConnectionString = connectionString,
+            TableName = "netclaw_reminders",
+            AutoInitialize = true
+        };
 
         akkaBuilder.WithNetclawSerialization();
         akkaBuilder.WithNetclawActors(shellEnvironment, reminderStorage);

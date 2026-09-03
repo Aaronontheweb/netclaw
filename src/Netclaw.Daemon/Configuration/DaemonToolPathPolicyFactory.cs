@@ -14,11 +14,12 @@ internal static class DaemonToolPathPolicyFactory
         NetclawPaths paths,
         ShellExecutionEnvironment shellEnvironment)
     {
+        var sqlitePath = paths.SqliteDbPath;
         var sqliteSidecars = new[]
         {
-            paths.SqliteDbPath + "-wal",
-            paths.SqliteDbPath + "-shm",
-            paths.SqliteDbPath + "-journal"
+            sqlitePath + "-wal",
+            sqlitePath + "-shm",
+            sqlitePath + "-journal"
         };
         var processControlPaths = new[]
         {
@@ -32,7 +33,7 @@ internal static class DaemonToolPathPolicyFactory
             paths.ConfigDirectory,
             paths.SecretsPath,
             paths.KeysDirectory,
-            paths.SqliteDbPath,
+            sqlitePath,
             ..sqliteSidecars,
             ..processControlPaths,
             paths.SystemSkillsDirectory,
@@ -49,7 +50,7 @@ internal static class DaemonToolPathPolicyFactory
             paths.DaemonEnvironmentFilePath,
             paths.DevicesPath,
             paths.BootstrapStatePath,
-            paths.SqliteDbPath,
+            sqlitePath,
             ..sqliteSidecars,
             ..processControlPaths,
             paths.ToolingShadowDirectory,
@@ -60,7 +61,7 @@ internal static class DaemonToolPathPolicyFactory
             paths.SecretsPath,
             paths.WebhooksDirectory,
             paths.KeysDirectory,
-            paths.SqliteDbPath,
+            sqlitePath,
             ..sqliteSidecars,
             ..processControlPaths,
             paths.ToolingShadowDirectory,

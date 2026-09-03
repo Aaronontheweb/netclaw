@@ -450,6 +450,18 @@ root for a new-layout session. It has one root. A later configuration change
 does not recompute that root. Existing sessions keep the binding absent and use
 their established path behavior; absence is not a second descriptor shape.
 
+### Netclaw database
+
+The Netclaw database is the single SQLite database at
+`NetclawPaths.SqliteDbPath`. It is the source of truth for all SQLite-backed
+production data, including actor journal and snapshots, durable reminders, the
+session catalog, daily statistics, memory, and session storage bindings.
+
+Production configuration cannot select another database path or an in-memory
+persistence provider. Test harnesses may replace actor persistence internally,
+but that test seam is not part of the runtime configuration contract. A
+supplied `Persistence` section is invalid and fails daemon startup.
+
 ### Session directory
 
 The session directory is the agent-facing `workspace/` area inside the session

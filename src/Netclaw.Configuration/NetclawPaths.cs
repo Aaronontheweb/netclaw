@@ -53,9 +53,6 @@ public sealed class NetclawPaths
     public string CacheDirectory => Path.Combine(BasePath, "cache");
     public string RestartManifestPath => Path.Combine(CacheDirectory, "restart-manifest.json");
 
-    // ── Memory ──
-    public string MemorySqliteDbPath => SqliteDbPath;
-
     // ── Binary directory (install location for self-contained binaries) ──
     public string BinDirectory => Path.Combine(BasePath, "bin");
     public string BinarySyncStatePath => Path.Combine(BinDirectory, ".sync-state.json");

@@ -162,14 +162,14 @@ public sealed class ReviewedSafeShellPolicyTests : IDisposable
     {
         var storage = SessionStoragePaths.CreateVersion2(
             new SessionStorageEnvelopeRoot(Path.GetFullPath(_sessionDir)));
-        Directory.CreateDirectory(storage.WorktreeDirectory);
+        Directory.CreateDirectory(storage.WorktreeDirectory.Value);
         var context = TestToolExecutionContext.CreateBoundWithStorage(
             "session-1",
             storage,
             new TestToolExecutionContextOptions { Audience = TrustAudience.Personal }).Invocation;
         var policy = CreatePolicy(VerbList("cat"));
 
-        Assert.True(ShortCircuits(policy, "cat", storage.WorktreeDirectory, context));
+        Assert.True(ShortCircuits(policy, "cat", storage.WorktreeDirectory.Value, context));
     }
 
     [Fact]
@@ -185,8 +185,8 @@ public sealed class ReviewedSafeShellPolicyTests : IDisposable
 
         Assert.False(ShortCircuits(
             policy,
-            $"git worktree add {Path.Combine(storage.WorktreeDirectory, "fix")}",
-            storage.SessionDirectory,
+            $"git worktree add {Path.Combine(storage.WorktreeDirectory.Value, "fix")}",
+            storage.SessionDirectory.Value,
             context));
     }
 

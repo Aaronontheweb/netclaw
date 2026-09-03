@@ -24,7 +24,7 @@ public readonly record struct SessionStorageLayoutVersion
     /// <summary>Gets the positive wire value.</summary>
     public int Value { get; }
 
-    /// <inheritdoc />
+    /// <summary>Returns the wire value.</summary>
     public override string ToString() => Value.ToString(System.Globalization.CultureInfo.InvariantCulture);
 }
 
@@ -63,7 +63,7 @@ public readonly record struct SessionStorageEnvelopeRoot
     /// <summary>Gets the canonical absolute directory path.</summary>
     public string Value { get; }
 
-    /// <inheritdoc />
+    /// <summary>Returns the canonical absolute path.</summary>
     public override string ToString() => Value;
 }
 
@@ -86,10 +86,10 @@ public readonly record struct ManagedTemporaryLocation
     /// <param name="storageRoot">The absolute storage root that contains the directory.</param>
     public ManagedTemporaryLocation(string directory, string storageRoot)
     {
-        Directory = SessionStoragePaths.NormalizeAbsolute(directory, nameof(directory));
-        StorageRoot = SessionStoragePaths.NormalizeAbsolute(storageRoot, nameof(storageRoot));
+        Directory = new ManagedTemporaryDirectory(directory);
+        StorageRoot = new ManagedTemporaryStorageRoot(storageRoot);
 
-        var relative = Path.GetRelativePath(StorageRoot, Directory);
+        var relative = Path.GetRelativePath(StorageRoot.Value, Directory.Value);
         if (relative == "."
             || Path.IsPathRooted(relative)
             || relative == ".."
@@ -102,10 +102,10 @@ public readonly record struct ManagedTemporaryLocation
     }
 
     /// <summary>Gets the process-specific temporary directory.</summary>
-    public string Directory { get; }
+    public ManagedTemporaryDirectory Directory { get; }
 
     /// <summary>Gets the storage root that contains <see cref="Directory"/>.</summary>
-    public string StorageRoot { get; }
+    public ManagedTemporaryStorageRoot StorageRoot { get; }
 }
 
 /// <summary>
@@ -116,41 +116,39 @@ public sealed record SessionStoragePaths
 {
     private SessionStoragePaths(
         SessionStorageBinding? binding,
-        string sessionDirectory,
-        string attachmentStagingDirectory,
-        string artifactDirectory,
+        SessionWorkspaceDirectory sessionDirectory,
+        AttachmentStagingDirectory attachmentStagingDirectory,
+        ArtifactDirectory artifactDirectory,
         ManagedTemporaryLocation managedTemporary,
-        string worktreeDirectory,
-        string logPath,
-        string? legacyLogsBasePath)
+        WorktreeDirectory worktreeDirectory,
+        SessionLogPath logPath,
+        LegacySessionLogsDirectory? legacyLogsBasePath)
     {
         Binding = binding;
-        SessionDirectory = NormalizeAbsolute(sessionDirectory, nameof(sessionDirectory));
-        AttachmentStagingDirectory = NormalizeAbsolute(
-            attachmentStagingDirectory,
-            nameof(attachmentStagingDirectory));
-        ArtifactDirectory = NormalizeAbsolute(artifactDirectory, nameof(artifactDirectory));
+        SessionDirectory = sessionDirectory;
+        AttachmentStagingDirectory = attachmentStagingDirectory;
+        ArtifactDirectory = artifactDirectory;
         ManagedTemporary = managedTemporary;
-        WorktreeDirectory = NormalizeAbsolute(worktreeDirectory, nameof(worktreeDirectory));
-        LogPath = NormalizeAbsolute(logPath, nameof(logPath));
+        WorktreeDirectory = worktreeDirectory;
+        LogPath = logPath;
         LegacyLogsBasePath = legacyLogsBasePath;
     }
 
     /// <summary>Gets the durable versioned binding. A null value identifies an unchanged legacy layout.</summary>
     public SessionStorageBinding? Binding { get; }
     /// <summary>Gets the session workspace and default relative-path base.</summary>
-    public string SessionDirectory { get; }
+    public SessionWorkspaceDirectory SessionDirectory { get; }
     /// <summary>Gets the directory for untrusted attachments before content admission.</summary>
-    public string AttachmentStagingDirectory { get; }
+    public AttachmentStagingDirectory AttachmentStagingDirectory { get; }
     /// <summary>Gets the current run's retained artifact directory.</summary>
-    public string ArtifactDirectory { get; }
+    public ArtifactDirectory ArtifactDirectory { get; }
     /// <summary>Gets the current run's managed temporary location.</summary>
     public ManagedTemporaryLocation ManagedTemporary { get; }
     /// <summary>Gets the session-owned directory for Git worktrees.</summary>
-    public string WorktreeDirectory { get; }
+    public WorktreeDirectory WorktreeDirectory { get; }
     /// <summary>Gets the current run's raw session log path.</summary>
-    public string LogPath { get; }
-    private string? LegacyLogsBasePath { get; }
+    public SessionLogPath LogPath { get; }
+    private LegacySessionLogsDirectory? LegacyLogsBasePath { get; }
 
     /// <summary>Creates the version-2 parent layout below one persisted envelope.</summary>
     /// <param name="envelopeRoot">The persisted envelope root.</param>
@@ -160,12 +158,12 @@ public sealed record SessionStoragePaths
         var root = envelopeRoot.Value;
         return new SessionStoragePaths(
             new SessionStorageBinding(SessionStorageLayoutVersion.Version2, envelopeRoot),
-            Path.Combine(root, "workspace"),
-            Path.Combine(root, "attachment-staging"),
-            Path.Combine(root, "artifacts"),
+            new SessionWorkspaceDirectory(Path.Combine(root, "workspace")),
+            new AttachmentStagingDirectory(Path.Combine(root, "attachment-staging")),
+            new ArtifactDirectory(Path.Combine(root, "artifacts")),
             new ManagedTemporaryLocation(Path.Combine(root, "tmp", "parent"), root),
-            Path.Combine(root, "worktrees"),
-            Path.Combine(root, "logs", "session.log"),
+            new WorktreeDirectory(Path.Combine(root, "worktrees")),
+            new SessionLogPath(Path.Combine(root, "logs", "session.log")),
             null);
     }
 
@@ -180,22 +178,22 @@ public sealed record SessionStoragePaths
         string sanitizedSessionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sanitizedSessionId);
-        var normalizedSessionDirectory = NormalizeAbsolute(sessionDirectory, nameof(sessionDirectory));
-        var normalizedLogsBase = NormalizeAbsolute(sessionLogsBasePath, nameof(sessionLogsBasePath));
+        var normalizedSessionDirectory = new SessionWorkspaceDirectory(sessionDirectory);
+        var normalizedLogsBase = new LegacySessionLogsDirectory(sessionLogsBasePath);
         return new SessionStoragePaths(
             null,
             normalizedSessionDirectory,
-            Path.Combine(
-                Directory.GetParent(normalizedSessionDirectory)?.FullName
+            new AttachmentStagingDirectory(Path.Combine(
+                Directory.GetParent(normalizedSessionDirectory.Value)?.FullName
                 ?? throw new ArgumentException("The legacy session directory needs a parent.", nameof(sessionDirectory)),
                 ".attachment-staging",
-                sanitizedSessionId),
-            Path.Combine(normalizedSessionDirectory, "artifacts"),
+                sanitizedSessionId)),
+            new ArtifactDirectory(Path.Combine(normalizedSessionDirectory.Value, "artifacts")),
             new ManagedTemporaryLocation(
-                Path.Combine(normalizedSessionDirectory, "tmp", "parent"),
-                normalizedSessionDirectory),
-            Path.Combine(normalizedSessionDirectory, "worktrees"),
-            Path.Combine(normalizedLogsBase, sanitizedSessionId, "session.log"),
+                Path.Combine(normalizedSessionDirectory.Value, "tmp", "parent"),
+                normalizedSessionDirectory.Value),
+            new WorktreeDirectory(Path.Combine(normalizedSessionDirectory.Value, "worktrees")),
+            new SessionLogPath(Path.Combine(normalizedLogsBase.Value, sanitizedSessionId, "session.log")),
             normalizedLogsBase);
     }
 
@@ -215,36 +213,28 @@ public sealed record SessionStoragePaths
                 binding,
                 SessionDirectory,
                 AttachmentStagingDirectory,
-                Path.Combine(childRoot, "artifacts"),
+                new ArtifactDirectory(Path.Combine(childRoot, "artifacts")),
                 new ManagedTemporaryLocation(Path.Combine(childRoot, "tmp"), binding.EnvelopeRoot.Value),
                 WorktreeDirectory,
-                Path.Combine(childRoot, "logs", "session.log"),
+                new SessionLogPath(Path.Combine(childRoot, "logs", "session.log")),
                 null);
         }
 
-        var childRootLegacy = Path.Combine(SessionDirectory, "subagents", runId.Value);
+        var childRootLegacy = Path.Combine(SessionDirectory.Value, "subagents", runId.Value);
         var sanitizedScopeId = SanitizePathSegment(legacyScopeId.Value);
         return new SessionStoragePaths(
             null,
             SessionDirectory,
             AttachmentStagingDirectory,
-            Path.Combine(childRootLegacy, "artifacts"),
-            new ManagedTemporaryLocation(Path.Combine(childRootLegacy, "tmp"), SessionDirectory),
+            new ArtifactDirectory(Path.Combine(childRootLegacy, "artifacts")),
+            new ManagedTemporaryLocation(Path.Combine(childRootLegacy, "tmp"), SessionDirectory.Value),
             WorktreeDirectory,
-            Path.Combine(
-                LegacyLogsBasePath
+            new SessionLogPath(Path.Combine(
+                LegacyLogsBasePath?.Value
                 ?? throw new InvalidOperationException("Legacy storage is missing its log base."),
                 sanitizedScopeId,
-                "session.log"),
+                "session.log")),
             LegacyLogsBasePath);
-    }
-
-    internal static string NormalizeAbsolute(string path, string parameterName)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(path, parameterName);
-        if (path.Any(char.IsControl) || !Path.IsPathFullyQualified(path))
-            throw new ArgumentException("The path must be absolute.", parameterName);
-        return Path.GetFullPath(path);
     }
 
     private static string SanitizePathSegment(string value)

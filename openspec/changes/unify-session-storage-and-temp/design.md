@@ -141,11 +141,6 @@ The target glossary uses these terms:
   canonical path when resolution succeeds; a denial also carries a failure
   category and human-readable detail.
 
-Terms such as `safe root`, `authority root`, `safe-space root`, `autonomous
-zone`, and `current-session root` will not define competing path models. The
-inventory will map each existing type and call site to the common contract
-before the implementation changes.
-
 The final edit will condense or remove duplicate requirements, scenarios,
 helpers, and tests. It will not preserve an old abstraction only to avoid a
 mechanical change.
@@ -242,21 +237,26 @@ binding. Only new-layout sessions have this record. Channel ingress, the main
 session actor, child-run creation, and the log dispatcher will all use this
 resolver instead of computing paths independently.
 
-```text
-SessionStorageBinding
-  LayoutVersion
-  SessionEnvelopeRoot
+Each storage location has a distinct value-object type. This keeps a workspace,
+attachment-staging directory, artifact directory, managed temporary directory,
+worktree directory, and log path from being exchanged as unlabelled strings.
+The underlying string is used only at filesystem and database boundaries.
 
-ResolvedSessionStorage
-  SessionDirectory
-  ParentArtifactDirectory
-  ParentTemporaryDirectory
-  WorktreeDirectory
-  ParentRawLogPath
-  Child(run_id) -> child artifact, temporary, and raw-log paths
+```text
+SessionStoragePaths
+  Binding: SessionStorageBinding?
+    LayoutVersion: SessionStorageLayoutVersion
+    EnvelopeRoot: SessionStorageEnvelopeRoot
+  SessionDirectory: SessionWorkspaceDirectory
+  AttachmentStagingDirectory: AttachmentStagingDirectory
+  ArtifactDirectory: ArtifactDirectory
+  ManagedTemporary: ManagedTemporaryLocation
+  WorktreeDirectory: WorktreeDirectory
+  LogPath: SessionLogPath
+  ForChild(run_id) -> child artifact, temporary, and raw-log paths
 ```
 
-Consumers receive `ResolvedSessionStorage`; they do not branch on "legacy" or
+Consumers receive `SessionStoragePaths`; they do not branch on "legacy" or
 "unified" themselves. Only the shared resolver knows whether it used a stored
 binding or the unchanged existing-session path rules. This keeps path selection
 out of ingress, actor, tool, and logging call sites.
@@ -327,6 +327,25 @@ Legacy detection must query the persistence schema that the product actually
 ships. A journal-only session with no snapshot is still an existing session.
 Using a stale table name would misclassify it as new and create a second
 layout.
+
+Netclaw has exactly one SQLite database at `NetclawPaths.SqliteDbPath`. It is
+the source of truth for every SQLite-backed production feature: actor journal
+and snapshot data, durable reminders, the session catalog, daily statistics,
+memory, and storage bindings. The production configuration cannot select a
+different database or an in-memory persistence provider. A supplied
+`Persistence` section fails configuration validation and daemon startup instead
+of being silently ignored.
+
+The resolver maps one row from the Netclaw database to one storage-state
+object. It does not inspect table or column shapes at runtime. Startup
+migrations own schema compatibility.
+
+**Example:** A live daemon records a session event, snapshot, reminder, catalog
+entry, daily statistic, memory, and storage binding in the same `netclaw.db`.
+
+**Counterexample:** Netclaw does not open a second database for memory or
+control data. In-memory persistence used inside a test harness is not a runtime
+configuration option and does not change the production storage contract.
 
 ### Route session logs by storage binding and child run ID
 

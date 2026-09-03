@@ -857,10 +857,10 @@ public sealed class ToolAccessPolicy
 
         return new[]
             {
-                storage.SessionDirectory,
-                storage.ManagedTemporary.Directory,
-                storage.ArtifactDirectory,
-                storage.WorktreeDirectory
+                storage.SessionDirectory.Value,
+                storage.ManagedTemporary.Directory.Value,
+                storage.ArtifactDirectory.Value,
+                storage.WorktreeDirectory.Value
             }
             .Distinct(OperatingSystem.IsWindows()
                 ? StringComparer.OrdinalIgnoreCase

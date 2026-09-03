@@ -137,7 +137,7 @@ public sealed class SubAgentSpawner
         var parentStorage = context.SessionStorage
             ?? throw new InvalidOperationException("A subagent run requires resolved session storage.");
         var childStorage = parentStorage.ForChild(runId, scopeId);
-        CreateChildLogTarget(childStorage.LogPath);
+        CreateChildLogTarget(childStorage.LogPath.Value);
         var parentWorkingContext = new WorkingContext
         {
             ProjectDirectory = context.ProjectDirectory,
@@ -336,8 +336,8 @@ public sealed class SubAgentSpawner
             {
                 RunId = runId,
                 ScopeId = scopeId,
-                LogPath = result.Success ? childStorage.LogPath : null,
-                ArtifactDirectory = result.Success ? childStorage.ArtifactDirectory : null
+                LogPath = result.Success ? childStorage.LogPath.Value : null,
+                ArtifactDirectory = result.Success ? childStorage.ArtifactDirectory.Value : null
             };
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

@@ -17,13 +17,13 @@ public sealed class SessionStoragePathsTests
         var storage = SessionStoragePaths.CreateVersion2(new SessionStorageEnvelopeRoot(envelope));
 
         Assert.Equal(SessionStorageLayoutVersion.Version2, storage.Binding?.LayoutVersion);
-        Assert.Equal(Path.Combine(envelope, "workspace"), storage.SessionDirectory);
-        Assert.Equal(Path.Combine(envelope, "attachment-staging"), storage.AttachmentStagingDirectory);
-        Assert.Equal(Path.Combine(envelope, "artifacts"), storage.ArtifactDirectory);
-        Assert.Equal(Path.Combine(envelope, "tmp", "parent"), storage.ManagedTemporary.Directory);
-        Assert.Equal(envelope, storage.ManagedTemporary.StorageRoot);
-        Assert.Equal(Path.Combine(envelope, "worktrees"), storage.WorktreeDirectory);
-        Assert.Equal(Path.Combine(envelope, "logs", "session.log"), storage.LogPath);
+        Assert.Equal(Path.Combine(envelope, "workspace"), storage.SessionDirectory.Value);
+        Assert.Equal(Path.Combine(envelope, "attachment-staging"), storage.AttachmentStagingDirectory.Value);
+        Assert.Equal(Path.Combine(envelope, "artifacts"), storage.ArtifactDirectory.Value);
+        Assert.Equal(Path.Combine(envelope, "tmp", "parent"), storage.ManagedTemporary.Directory.Value);
+        Assert.Equal(envelope, storage.ManagedTemporary.StorageRoot.Value);
+        Assert.Equal(Path.Combine(envelope, "worktrees"), storage.WorktreeDirectory.Value);
+        Assert.Equal(Path.Combine(envelope, "logs", "session.log"), storage.LogPath.Value);
         Assert.Equal(envelope, storage.Binding?.EnvelopeRoot.Value);
     }
 
@@ -39,10 +39,10 @@ public sealed class SessionStoragePathsTests
 
         var childRoot = Path.Combine(envelope, "subagents", "run-7");
         Assert.Equal(parent.SessionDirectory, child.SessionDirectory);
-        Assert.Equal(Path.Combine(childRoot, "artifacts"), child.ArtifactDirectory);
-        Assert.Equal(Path.Combine(childRoot, "tmp"), child.ManagedTemporary.Directory);
-        Assert.Equal(envelope, child.ManagedTemporary.StorageRoot);
-        Assert.Equal(Path.Combine(childRoot, "logs", "session.log"), child.LogPath);
+        Assert.Equal(Path.Combine(childRoot, "artifacts"), child.ArtifactDirectory.Value);
+        Assert.Equal(Path.Combine(childRoot, "tmp"), child.ManagedTemporary.Directory.Value);
+        Assert.Equal(envelope, child.ManagedTemporary.StorageRoot.Value);
+        Assert.Equal(Path.Combine(childRoot, "logs", "session.log"), child.LogPath.Value);
         Assert.Equal(parent.WorktreeDirectory, child.WorktreeDirectory);
         Assert.Equal(parent.Binding, child.Binding);
     }
@@ -54,6 +54,18 @@ public sealed class SessionStoragePathsTests
 
         var noncanonical = Path.Combine(Path.GetTempPath(), "one", "..", "two");
         Assert.Throws<ArgumentException>(() => new SessionStorageEnvelopeRoot(noncanonical));
+    }
+
+    [Fact]
+    public void Named_storage_locations_reject_relative_paths()
+    {
+        Assert.Throws<ArgumentException>(() => new SessionWorkspaceDirectory("workspace"));
+        Assert.Throws<ArgumentException>(() => new AttachmentStagingDirectory("attachment-staging"));
+        Assert.Throws<ArgumentException>(() => new ArtifactDirectory("artifacts"));
+        Assert.Throws<ArgumentException>(() => new ManagedTemporaryDirectory("tmp"));
+        Assert.Throws<ArgumentException>(() => new ManagedTemporaryStorageRoot("session"));
+        Assert.Throws<ArgumentException>(() => new WorktreeDirectory("worktrees"));
+        Assert.Throws<ArgumentException>(() => new SessionLogPath("logs/session.log"));
     }
 
     [Fact]
@@ -100,15 +112,15 @@ public sealed class SessionStoragePathsTests
             "signalr_example");
 
         Assert.Null(storage.Binding);
-        Assert.Equal(sessionDirectory, storage.SessionDirectory);
-        Assert.Equal(Path.Combine(logBase, "signalr_example", "session.log"), storage.LogPath);
-        Assert.Equal(sessionDirectory, storage.ManagedTemporary.StorageRoot);
+        Assert.Equal(sessionDirectory, storage.SessionDirectory.Value);
+        Assert.Equal(Path.Combine(logBase, "signalr_example", "session.log"), storage.LogPath.Value);
+        Assert.Equal(sessionDirectory, storage.ManagedTemporary.StorageRoot.Value);
 
         var child = storage.ForChild(
             new SubAgentRunId("run-7"),
             new SubAgentScopeId("signalr/example/subagent/example/run-7"));
         Assert.Equal(
             Path.Combine(logBase, "signalr_example_subagent_example_run-7", "session.log"),
-            child.LogPath);
+            child.LogPath.Value);
     }
 }

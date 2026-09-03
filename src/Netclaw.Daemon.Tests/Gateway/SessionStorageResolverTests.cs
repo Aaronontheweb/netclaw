@@ -9,7 +9,6 @@ using Microsoft.Extensions.Time.Testing;
 using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
 using Netclaw.Daemon.Gateway;
-using Netclaw.Daemon.Configuration;
 using Netclaw.Daemon.Services;
 using Netclaw.Tools;
 using Xunit;
@@ -47,6 +46,33 @@ public sealed class SessionStorageResolverTests : IDisposable
     }
 
     [Fact]
+    public async Task Independent_resolvers_racing_first_use_receive_one_persisted_envelope()
+    {
+        var paths = CreatePaths();
+        await MigrateAsync(paths, paths.SqliteDbPath);
+        var sessionId = new SessionId("signalr/database-race");
+        var first = new SqliteSessionStorageResolver(
+            paths,
+            new FakeTimeProvider(),
+            Path.Combine(_basePath, "candidate-a"));
+        var second = new SqliteSessionStorageResolver(
+            paths,
+            new FakeTimeProvider(),
+            Path.Combine(_basePath, "candidate-b"));
+        using var ready = new CountdownEvent(2);
+        using var start = new ManualResetEventSlim();
+
+        var firstTask = Task.Run(() => ResolveAfterSignal(first, sessionId, ready, start));
+        var secondTask = Task.Run(() => ResolveAfterSignal(second, sessionId, ready, start));
+        ready.Wait(TestContext.Current.CancellationToken);
+        start.Set();
+        var results = await Task.WhenAll(firstTask, secondTask);
+
+        Assert.Equal(results[0].Binding, results[1].Binding);
+        Assert.Equal(1, CountBindings(paths));
+    }
+
+    [Fact]
     public async Task Persisted_binding_wins_after_the_configured_sessions_root_changes()
     {
         var paths = CreatePaths();
@@ -62,7 +88,7 @@ public sealed class SessionStorageResolverTests : IDisposable
             alternateSessionsRoot).Resolve(sessionId);
 
         Assert.Equal(first.Binding, second.Binding);
-        Assert.False(second.SessionDirectory.StartsWith(alternateSessionsRoot, StringComparison.Ordinal));
+        Assert.False(second.SessionDirectory.Value.StartsWith(alternateSessionsRoot, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -78,7 +104,7 @@ public sealed class SessionStorageResolverTests : IDisposable
         var storage = new SqliteSessionStorageResolver(paths, new FakeTimeProvider()).Resolve(sessionId);
 
         Assert.Null(storage.Binding);
-        Assert.Equal(legacyDirectory, storage.SessionDirectory);
+        Assert.Equal(legacyDirectory, storage.SessionDirectory.Value);
         Assert.True(File.Exists(Path.Combine(legacyDirectory, "existing.txt")));
         Assert.Equal(0, CountBindings(paths));
     }
@@ -121,7 +147,44 @@ public sealed class SessionStorageResolverTests : IDisposable
         Assert.Null(storage.Binding);
         Assert.Equal(
             SessionDirectoryHelper.GetSessionDirectory(sessionId, paths.SessionsDirectory),
-            storage.SessionDirectory);
+            storage.SessionDirectory.Value);
+        Assert.Equal(0, CountBindings(paths));
+    }
+
+    [Theory]
+    [InlineData("snapshot")]
+    [InlineData("journal_metadata")]
+    public async Task Compacted_persistence_evidence_keeps_legacy_paths_and_receives_no_binding(
+        string evidenceTable)
+    {
+        var paths = CreatePaths();
+        var sessionId = new SessionId($"signalr/{evidenceTable}-only");
+        await MigrateAsync(paths, paths.SqliteDbPath);
+        using (var connection = new SqliteConnection($"Data Source={paths.SqliteDbPath}"))
+        {
+            connection.Open();
+            using var command = connection.CreateCommand();
+            command.CommandText = evidenceTable switch
+            {
+                "snapshot" =>
+                    """
+                    INSERT INTO snapshot(persistence_id, sequence_number, created, snapshot)
+                    VALUES ($persistenceId, 1, 0, X'00')
+                    """,
+                "journal_metadata" =>
+                    """
+                    INSERT INTO journal_metadata(persistence_id, sequence_number)
+                    VALUES ($persistenceId, 1)
+                    """,
+                _ => throw new ArgumentOutOfRangeException(nameof(evidenceTable), evidenceTable, null)
+            };
+            command.Parameters.AddWithValue("$persistenceId", $"session-{sessionId.Value}");
+            command.ExecuteNonQuery();
+        }
+
+        var storage = new SqliteSessionStorageResolver(paths, new FakeTimeProvider()).Resolve(sessionId);
+
+        Assert.Null(storage.Binding);
         Assert.Equal(0, CountBindings(paths));
     }
 
@@ -141,45 +204,29 @@ public sealed class SessionStorageResolverTests : IDisposable
     }
 
     [Fact]
-    public async Task Configured_persistence_database_owns_journal_and_storage_bindings()
+    public async Task Catalog_only_session_keeps_legacy_paths_and_receives_no_binding()
     {
         var paths = CreatePaths();
-        var configuredDatabase = Path.Combine(_basePath, "persistence", "custom.db");
-        await MigrateAsync(paths, configuredDatabase);
-        var options = new DaemonPersistenceOptions
-        {
-            Sqlite = new SqlitePersistenceOptions { Path = configuredDatabase }
-        };
-        var sessionId = new SessionId("signalr/custom-database");
+        await MigrateAsync(paths, paths.SqliteDbPath);
+        var sessionId = new SessionId("signalr/catalog-only");
 
-        using (var connection = new SqliteConnection($"Data Source={configuredDatabase}"))
+        using (var connection = new SqliteConnection($"Data Source={paths.SqliteDbPath}"))
         {
             connection.Open();
             using var command = connection.CreateCommand();
             command.CommandText =
                 """
-                INSERT INTO journal(deleted, persistence_id, sequence_number, created, message)
-                VALUES (0, $persistenceId, 1, 0, X'00');
+                INSERT INTO sessions(persistence_id, channel, created_at, last_activity, status, turn_count)
+                VALUES ($persistenceId, 'signalr', 0, 0, 'inactive', 0)
                 """;
             command.Parameters.AddWithValue("$persistenceId", $"session-{sessionId.Value}");
             command.ExecuteNonQuery();
         }
 
-        var legacy = new SqliteSessionStorageResolver(
-            paths,
-            new FakeTimeProvider(),
-            options,
-            paths.SessionsDirectory).Resolve(sessionId);
-        var freshSession = new SessionId("signalr/custom-database-new");
-        var fresh = new SqliteSessionStorageResolver(
-            paths,
-            new FakeTimeProvider(),
-            options,
-            paths.SessionsDirectory).Resolve(freshSession);
+        var storage = new SqliteSessionStorageResolver(paths, new FakeTimeProvider()).Resolve(sessionId);
 
-        Assert.Null(legacy.Binding);
-        Assert.NotNull(fresh.Binding);
-        Assert.Equal(1, CountBindings(configuredDatabase));
+        Assert.Null(storage.Binding);
+        Assert.Equal(0, CountBindings(paths));
     }
 
     private NetclawPaths CreatePaths()
@@ -190,15 +237,23 @@ public sealed class SessionStorageResolverTests : IDisposable
     }
 
     private static long CountBindings(NetclawPaths paths)
-        => CountBindings(paths.SqliteDbPath);
-
-    private static long CountBindings(string sqlitePath)
     {
-        using var connection = new SqliteConnection($"Data Source={sqlitePath}");
+        using var connection = new SqliteConnection($"Data Source={paths.SqliteDbPath}");
         connection.Open();
         using var command = connection.CreateCommand();
         command.CommandText = "SELECT COUNT(*) FROM session_storage_bindings";
         return (long)(command.ExecuteScalar() ?? 0L);
+    }
+
+    private static SessionStoragePaths ResolveAfterSignal(
+        SqliteSessionStorageResolver resolver,
+        SessionId sessionId,
+        CountdownEvent ready,
+        ManualResetEventSlim start)
+    {
+        ready.Signal();
+        start.Wait(TestContext.Current.CancellationToken);
+        return resolver.Resolve(sessionId);
     }
 
     private static Task MigrateAsync(NetclawPaths paths, string sqlitePath)

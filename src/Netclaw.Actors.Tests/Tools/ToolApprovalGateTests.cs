@@ -1302,10 +1302,10 @@ public sealed class ToolApprovalGateTests
             new TestToolExecutionContextOptions { Audience = TrustAudience.Personal });
         var selectedDirectory = directoryKind switch
         {
-            "session" => storage.SessionDirectory,
-            "temporary" => storage.ManagedTemporary.Directory,
-            "artifact" => storage.ArtifactDirectory,
-            "worktree" => storage.WorktreeDirectory,
+            "session" => storage.SessionDirectory.Value,
+            "temporary" => storage.ManagedTemporary.Directory.Value,
+            "artifact" => storage.ArtifactDirectory.Value,
+            "worktree" => storage.WorktreeDirectory.Value,
             _ => throw new ArgumentOutOfRangeException(nameof(directoryKind))
         };
         var candidate = new ApprovalCandidate("git status", selectedDirectory)

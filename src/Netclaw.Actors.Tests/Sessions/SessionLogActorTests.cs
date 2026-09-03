@@ -258,10 +258,10 @@ public sealed class SessionLogActorTests : TestKit
             await AwaitAssertAsync(async () =>
             {
                 var parentText = await ReadLogAsync(
-                    storage.LogPath,
+                    storage.LogPath.Value,
                     TestContext.Current.CancellationToken);
                 var childText = await ReadLogAsync(
-                    child.LogPath,
+                    child.LogPath.Value,
                     TestContext.Current.CancellationToken);
                 Assert.Contains("parent audit", parentText, StringComparison.Ordinal);
                 Assert.DoesNotContain("child diagnostic", parentText, StringComparison.Ordinal);

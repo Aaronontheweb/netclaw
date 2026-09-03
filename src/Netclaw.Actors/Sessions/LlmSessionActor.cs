@@ -2600,7 +2600,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     internal static bool IsContextOverflowError(Exception? ex)
         => LlmFailureClassifier.IsContextOverflow(ex);
 
-    private string GetSessionDirectory() => _sessionStorage.SessionDirectory;
+    private string GetSessionDirectory() => _sessionStorage.SessionDirectory.Value;
 
     private long NowMs() => _timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
 

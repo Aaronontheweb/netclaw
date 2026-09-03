@@ -117,7 +117,7 @@ public static class SessionMessageAssembler
 
     public static List<AiChatMessage> Assemble(ContextAssemblyInput input)
     {
-        var sessionDir = input.Storage.SessionDirectory;
+        var sessionDir = input.Storage.SessionDirectory.Value;
         var messages = ChatMessageConverter.ToAiMessages(
             input.State.History,
             sessionDir,

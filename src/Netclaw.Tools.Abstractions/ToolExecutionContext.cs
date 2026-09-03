@@ -318,7 +318,7 @@ public abstract record ToolSessionScope
         public SessionStoragePaths Storage { get; }
 
         /// <summary>Gets the session workspace from <see cref="Storage"/>.</summary>
-        public string SessionDirectory => Storage.SessionDirectory;
+        public string SessionDirectory => Storage.SessionDirectory.Value;
     }
 }
 
@@ -602,7 +602,7 @@ public sealed class ToolInvocationContext
     /// <summary>
     /// Session workspace used as the default base for relative tool paths.
     /// </summary>
-    public string? SessionDirectory => SessionStorage?.SessionDirectory;
+    public string? SessionDirectory => SessionStorage?.SessionDirectory.Value;
 
     /// <summary>Gets the complete resolved storage layout for a bound session.</summary>
     public SessionStoragePaths? SessionStorage { get; }

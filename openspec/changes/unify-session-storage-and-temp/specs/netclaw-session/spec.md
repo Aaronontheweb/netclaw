@@ -20,6 +20,14 @@ SHALL be atomic for concurrent first consumers. A filesystem helper SHALL NOT
 independently choose a new-layout path from only the session identifier and
 current configuration.
 
+The system SHALL use exactly one SQLite database at
+`NetclawPaths.SqliteDbPath`. This Netclaw database SHALL be the source of truth
+for actor journal and snapshot data, durable reminders, the session catalog,
+daily statistics, memory, and session storage bindings. Production
+configuration SHALL NOT expose another database path or an in-memory
+persistence provider. A supplied `Persistence` section SHALL be rejected by
+configuration validation and daemon startup.
+
 #### Scenario: Example - new session binds one envelope before use
 
 - **GIVEN** a new session has no storage binding
@@ -82,6 +90,20 @@ current configuration.
 - **THEN** the helper does not compute a writable path from only the session ID
   and configured base
 - **AND** no file is created before the shared resolver selects the layout
+
+#### Scenario: Example - live deployment uses one database
+
+- **GIVEN** a live Netclaw daemon
+- **WHEN** it persists actor, reminder, catalog, statistics, memory, or storage data
+- **THEN** all SQLite records use `NetclawPaths.SqliteDbPath`
+- **AND** no second SQLite database is created
+
+#### Scenario: Counterexample - test persistence is not operator configuration
+
+- **GIVEN** a test harness uses an in-memory actor journal
+- **WHEN** a live deployment supplies a `Persistence` configuration section
+- **THEN** configuration validation and daemon startup reject it
+- **AND** no independent setting can redirect the Netclaw database
 
 ### Requirement: Existing sessions resume without migration
 

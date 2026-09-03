@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Akka.Actor;
 using Netclaw.Actors.Protocol;
+using Netclaw.Tools;
 
 namespace Netclaw.Actors.Sessions;
 
@@ -31,7 +32,7 @@ public sealed class SessionLogDispatcher : ReceiveActor
         _timeProvider = timeProvider;
 
         Receive<SessionLogDiagnostic>(diagnostic => Route(diagnostic, ResolvePath(diagnostic)));
-        Receive<IWithSessionId>(message => Route(message, _storageResolver.Resolve(message.SessionId).LogPath));
+        Receive<IWithSessionId>(message => Route(message, _storageResolver.Resolve(message.SessionId).LogPath.Value));
         Receive<Terminated>(terminated => RemoveWriter(terminated.ActorRef));
     }
 
@@ -39,7 +40,7 @@ public sealed class SessionLogDispatcher : ReceiveActor
     {
         var parent = _storageResolver.Resolve(diagnostic.SessionId);
         if (diagnostic.SubSessionId is not { } scopeId)
-            return parent.LogPath;
+            return parent.LogPath.Value;
 
         if (!scopeId.TryGetRunId(out var runId))
         {
@@ -48,7 +49,7 @@ public sealed class SessionLogDispatcher : ReceiveActor
                 nameof(diagnostic));
         }
 
-        return parent.ForChild(runId, scopeId).LogPath;
+        return parent.ForChild(runId, scopeId).LogPath.Value;
     }
 
     private void Route(object message, string logPath)

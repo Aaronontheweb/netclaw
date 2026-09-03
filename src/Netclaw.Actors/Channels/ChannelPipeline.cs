@@ -332,7 +332,7 @@ public sealed class SessionPipeline : ISessionPipeline
         var dataContents = input.Contents.OfType<DataContent>().ToList();
         if (dataContents.Count > 0)
         {
-            var sessionDir = storage.SessionDirectory;
+            var sessionDir = storage.SessionDirectory.Value;
             foreach (var data in dataContents)
                 content = SessionMediaStore.WriteMediaInto(data, sessionDir, mediaRefs, content);
         }

@@ -14,6 +14,7 @@
 - [x] 2.6 Make physical envelope names collision-resistant for distinct raw session IDs whose sanitized forms are equal; verify persistence rejects two sessions claiming one envelope
 - [x] 2.7 Detect journal-only existing sessions through the shipped `journal` schema; verify a legacy session with no snapshot does not receive a new binding
 - [x] 2.8 Carry the current session envelope or established legacy roots as implicit trusted roots in parent and child invocation context; preserve `workspace/` as the default cwd
+- [x] 2.9 Use one non-configurable Netclaw SQLite database for journal, snapshots, reminders, catalog data, daily statistics, memory, and storage bindings; remove the runtime custom-path and in-memory-provider configuration surface
 
 ## 3. Make Managed Temporary Storage Deterministic
 
