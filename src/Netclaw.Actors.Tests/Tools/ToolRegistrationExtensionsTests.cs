@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Netclaw.Actors.Skills;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
@@ -158,6 +159,69 @@ public class ToolRegistrationExtensionsTests
     }
 
     [Fact]
+    public async Task Skill_registration_preserves_file_read_logging()
+    {
+        using var directory = new DisposableTempDir();
+        var paths = new NetclawPaths(directory.Path);
+        paths.EnsureDirectoriesExist();
+        var skillDirectory = Path.Combine(paths.SkillsDirectory, "tracked-skill");
+        var skillFile = Path.Combine(skillDirectory, "SKILL.md");
+        Directory.CreateDirectory(skillDirectory);
+        await File.WriteAllTextAsync(
+            skillFile,
+            "---\nname: tracked-skill\ndescription: tracked\n---\n\n# Tracked",
+            TestContext.Current.CancellationToken);
+
+        var skillRegistry = new SkillRegistry();
+        var scan = SkillScanner.Scan(paths.SkillsDirectory);
+        skillRegistry.ReplaceAll(scan.AcceptedSkills, scan.Issues);
+        var policy = CreateAccessPolicy(new ToolConfig(), paths);
+        var registry = new ToolRegistry();
+        registry.WithFirstPartyTools(policy);
+        var indexPublisher = new SkillIndexPublisher(
+            skillRegistry,
+            new SkillIndexContextLayer(),
+            static (_, _) => true);
+        var refresher = new SkillInventoryRefresher(
+            paths,
+            new SkillFeedsConfig(),
+            [],
+            skillRegistry,
+            indexPublisher);
+        var logger = new RecordingLogger<FileReadTool>();
+        registry.WithSkillTools(
+            policy,
+            skillRegistry,
+            paths,
+            new NoOpSkillContentScanner(),
+            new UnavailablePromptLoader(),
+            refresher,
+            logger);
+        var context = TestToolExecutionContext.CreateBound(
+            "slack/thread-1",
+            Path.Combine(paths.SessionsDirectory, "thread-1"),
+            new TestToolExecutionContextOptions
+            {
+                Audience = TrustAudience.Team,
+                Boundary = TrustBoundary.Team,
+                ChannelType = "slack"
+            });
+        var tool = Assert.IsType<FileReadTool>(registry.GetByName(FileReadTool.ToolName));
+
+        var result = await tool.ExecuteAsync(
+            ToolInput.Create("Path", skillFile),
+            context,
+            TestContext.Current.CancellationToken);
+
+        Assert.Contains("# Tracked", result, StringComparison.Ordinal);
+        Assert.Contains(
+            logger.Messages,
+            static message => message.Contains(
+                "turn_skill_loaded skill=tracked-skill method=file_read",
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void McpToolAdapter_Truncated_SanitizedAIFunction_UsesClampedDescription()
     {
         var longDescription = new string('y', 10000);
@@ -200,7 +264,8 @@ public class ToolRegistrationExtensionsTests
             paths,
             scanner,
             new UnavailablePromptLoader(),
-            refresher);
+            refresher,
+            new RecordingLogger<FileReadTool>());
 
         return registry;
     }
@@ -252,5 +317,32 @@ public class ToolRegistrationExtensionsTests
             ToolInvocationContext context,
             CancellationToken cancellationToken) =>
             ValueTask.FromResult(McpPromptSkillLoadResult.Failed("unavailable"));
+    }
+
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull
+            => EmptyScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => Messages.Add(formatter(state, exception));
+
+        private sealed class EmptyScope : IDisposable
+        {
+            public static EmptyScope Instance { get; } = new();
+
+            public void Dispose()
+            {
+            }
+        }
     }
 }

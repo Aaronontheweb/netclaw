@@ -381,9 +381,16 @@ internal sealed class PathAccessPolicy
             return true;
         }
 
-        if (relationship is PathRelationship.CrossesLinkBoundary or PathRelationship.Unverifiable)
+        if (relationship == PathRelationship.CrossesLinkBoundary)
         {
             error = $"Error: {label} trust context may not access files through symlinked paths inside the current session directory or configured roots.";
+            failure = PathAccessFailure.AccessDenied;
+            return false;
+        }
+
+        if (relationship == PathRelationship.Unverifiable)
+        {
+            error = $"Error: {label} trust context could not verify the path relationship to the current session directory or configured roots.";
             failure = PathAccessFailure.AccessDenied;
             return false;
         }
@@ -553,9 +560,15 @@ internal sealed class PathAccessPolicy
             return true;
         }
 
-        if (relationship is PathRelationship.CrossesLinkBoundary or PathRelationship.Unverifiable)
+        if (relationship == PathRelationship.CrossesLinkBoundary)
         {
             error = "Error: unattended session may not access files through links inside trusted roots.";
+            return false;
+        }
+
+        if (relationship == PathRelationship.Unverifiable)
+        {
+            error = "Error: unattended session could not verify the path relationship to trusted roots.";
             return false;
         }
 

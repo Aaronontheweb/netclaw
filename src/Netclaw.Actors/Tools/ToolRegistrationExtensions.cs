@@ -71,6 +71,7 @@ public static class ToolRegistrationExtensions
         ISkillContentScanner scanner,
         IMcpPromptSkillLoader mcpPromptLoader,
         SkillInventoryRefresher inventoryRefresher,
+        ILogger<FileReadTool> fileReadLogger,
         ISessionMetrics? sessionMetrics = null,
         SubAgentDefinitionRegistry? subAgentRegistry = null,
         SubAgentSpawner? subAgentSpawner = null,
@@ -79,11 +80,13 @@ public static class ToolRegistrationExtensions
         ILogger<SkillLoadTool>? skillLoadLogger = null)
     {
         ArgumentNullException.ThrowIfNull(toolAccessPolicy);
+        ArgumentNullException.ThrowIfNull(fileReadLogger);
         registry.ReplaceCore(new FileReadTool(
             toolAccessPolicy.ToolConfig,
             toolAccessPolicy.SharedPathAccessPolicy,
             skillRegistry,
-            sessionMetrics));
+            sessionMetrics,
+            fileReadLogger));
         registry.RegisterCore(new SkillLoadTool(
             skillRegistry,
             scanner,

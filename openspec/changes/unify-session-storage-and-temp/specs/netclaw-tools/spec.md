@@ -1,6 +1,103 @@
 This delta uses terms from the
 [engineering glossary](../../../../../docs/spec/GLOSSARY.md).
 
+## MODIFIED Requirements
+
+### Requirement: Policy-gated tool invocation
+
+The system SHALL check ACL grants and approval policy before every tool
+execution. Tool invocations SHALL be logged with audit records including tool
+name, invoking session, timestamp, authorization result, and approval decision
+details when applicable.
+
+`ToolAuthorizationDecision` SHALL represent one of four outcomes:
+
+- `Allowed`, with the rule that grants execution;
+- `Denied`, with a stable reason and optional human-readable detail;
+- `RequiresApproval`, with the context needed to ask the user; or
+- `RequiresAgentCorrection`, with a typed correction that grants no authority.
+
+A `RequiresApproval` decision MAY also carry a typed correction. The execution
+pipeline SHALL first check existing stored or one-time authority. It SHALL
+present the correction only when that authority does not satisfy the request.
+
+When `RequiresApproval` remains after those checks, the tool execution pipeline
+SHALL pause the individual tool task and emit a `ToolInteractionRequest` to
+session subscribers. The pipeline SHALL NOT block other tool calls in the same
+batch.
+
+#### Scenario: Granted tool executes successfully
+
+- **GIVEN** the session has an ACL grant for `web_search`
+- **AND** `web_search` is in Auto approval mode
+- **WHEN** the LLM requests a web search tool call
+- **THEN** the ACL check passes
+- **AND** the authorization outcome is `Allowed`
+- **AND** the tool executes
+- **AND** an audit record is logged with tool name, session ID, timestamp, and
+  allow result
+
+#### Scenario: Ungrantable tool denied at invocation
+
+- **GIVEN** the session does not have an ACL grant for `shell_execute`
+- **WHEN** the LLM requests a shell tool call
+- **THEN** the ACL check fails
+- **AND** the authorization outcome is `Denied`
+- **AND** the tool is not executed
+- **AND** a policy denial with reason code is returned to the LLM
+- **AND** an audit record is logged with tool name, session ID, timestamp, and
+  deny result
+
+#### Scenario: Tool requires approval and is approved
+
+- **GIVEN** the session has an ACL grant for `shell_execute`
+- **AND** `shell_execute` is in Approval mode for the session's audience
+- **AND** the command pattern is not already approved in `IToolApprovalService`
+- **WHEN** the LLM requests a shell tool call
+- **THEN** `ToolAccessPolicy` returns `RequiresApproval`
+- **AND** `DispatchingToolExecutor` consults `IToolApprovalService`
+- **AND** the pipeline emits a `ToolInteractionRequest` and pauses the task
+- **AND** when the user approves, the tool executes
+- **AND** an audit record is logged with `approved` result
+
+#### Scenario: Tool requires approval and is denied by user
+
+- **GIVEN** the pipeline has emitted an approval prompt
+- **WHEN** the user denies
+- **THEN** the tool result is "Command denied by user"
+- **AND** an audit record is logged with `denied_by_user` result
+
+#### Scenario: Example - unmet authority exposes a correction
+
+- **GIVEN** a tool request requires user approval
+- **AND** the request has a typed correction for a more direct native tool
+- **AND** neither stored nor one-time authority satisfies the request
+- **WHEN** the pipeline completes authorization
+- **THEN** the result carries the correction to the LLM
+- **AND** the correction grants no authority to execute the original request
+
+#### Scenario: Counterexample - stored authority suppresses a correction
+
+- **GIVEN** a `RequiresApproval` decision also carries a typed correction
+- **AND** stored authority satisfies every approval candidate
+- **WHEN** the pipeline completes authorization
+- **THEN** the final outcome is `Allowed`
+- **AND** the correction is not presented to the LLM
+
+#### Scenario: Counterexample - correction does not execute a tool
+
+- **GIVEN** authorization returns `RequiresAgentCorrection`
+- **WHEN** the pipeline handles the result
+- **THEN** the original tool does not execute
+- **AND** the agent must make a new tool call under normal authorization
+
+#### Scenario: Audit records available in diagnostics
+
+- **GIVEN** tool invocations have occurred
+- **WHEN** the operator views diagnostics
+- **THEN** audit records show tool name, invoking session, timestamp, and
+  authorization result for each invocation
+
 ## ADDED Requirements
 
 ### Requirement: Spawned child references are machine-actionable

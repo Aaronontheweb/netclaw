@@ -46,6 +46,7 @@ internal static class SkillToolRegistration
             scanner,
             mcpPromptLoader,
             inventoryRefresher,
+            loggerFactory.CreateLogger<FileReadTool>(),
             metrics,
             subAgentRegistry,
             subAgentSpawner,
