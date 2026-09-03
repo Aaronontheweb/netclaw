@@ -83,10 +83,7 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
         var blockingFile = Path.Combine(_directory.Path, "blocking-file");
         File.WriteAllText(blockingFile, "not a directory");
         var managed = Path.Combine(blockingFile, "managed");
-        var startInfo = new ProcessStartInfo();
-        startInfo.Environment.Remove("TMPDIR");
-        startInfo.Environment.Remove("TMP");
-        startInfo.Environment.Remove("TEMP");
+        var startInfo = CreateStartInfoWithoutTemporaryVariables();
 
         var error = ManagedTemporaryEnvironment.Prepare(startInfo, managed, _directory.Path);
 
@@ -101,7 +98,7 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
     {
         var root = Path.Combine(_directory.Path, "root");
         var outside = Path.Combine(_directory.Path, "outside");
-        var startInfo = new ProcessStartInfo();
+        var startInfo = CreateStartInfoWithoutTemporaryVariables();
 
         var error = ManagedTemporaryEnvironment.Prepare(startInfo, outside, root);
 
@@ -121,7 +118,7 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
         Directory.CreateDirectory(outside);
         Directory.CreateDirectory(root);
         Directory.CreateSymbolicLink(linked, outside);
-        var startInfo = new ProcessStartInfo();
+        var startInfo = CreateStartInfoWithoutTemporaryVariables();
 
         var error = ManagedTemporaryEnvironment.Prepare(startInfo, linked, root);
 
@@ -139,7 +136,7 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
         Directory.CreateDirectory(outside);
         Directory.CreateSymbolicLink(linkedRoot, outside);
         var managed = Path.Combine(linkedRoot, "tmp", "parent");
-        var startInfo = new ProcessStartInfo();
+        var startInfo = CreateStartInfoWithoutTemporaryVariables();
 
         var error = ManagedTemporaryEnvironment.Prepare(startInfo, managed, linkedRoot);
 
@@ -147,5 +144,14 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
         Assert.False(startInfo.Environment.ContainsKey("TMPDIR"));
         Assert.False(startInfo.Environment.ContainsKey("TMP"));
         Assert.False(startInfo.Environment.ContainsKey("TEMP"));
+    }
+
+    private static ProcessStartInfo CreateStartInfoWithoutTemporaryVariables()
+    {
+        var startInfo = new ProcessStartInfo();
+        startInfo.Environment.Remove("TMPDIR");
+        startInfo.Environment.Remove("TMP");
+        startInfo.Environment.Remove("TEMP");
+        return startInfo;
     }
 }

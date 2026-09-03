@@ -236,7 +236,7 @@ public static class SessionMessageAssembler
         }
 
         // Working context is suppressed for Public audience to avoid leaking
-        // internal operational state (project paths, scratch notes, etc.).
+        // internal operational state (project paths, temporary notes, etc.).
         if (!string.IsNullOrWhiteSpace(input.WorkingContextBlock) && input.Audience != TrustAudience.Public)
             parts.Add(input.WorkingContextBlock);
 

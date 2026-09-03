@@ -425,13 +425,13 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
     public async Task Parallel_platform_temp_calls_all_return_corrections_before_prompt()
     {
         var executor = new ManagedTemporaryCorrectionRequiredExecutor();
-        var probe = CreateTestProbe("scratch-parallel-correction-probe");
+        var probe = CreateTestProbe("managed-temporary-parallel-correction-probe");
         var approvals = new List<ToolInteractionRequest>();
-        var sessionId = new SessionId("D1/scratch-parallel-correction");
+        var sessionId = new SessionId("D1/managed-temporary-parallel-correction");
         var calls = new List<FunctionCallContent>
         {
-            ScratchCall("scratch-1"),
-            ScratchCall("scratch-2")
+            PlatformTemporaryCall("managed-temporary-1"),
+            PlatformTemporaryCall("managed-temporary-2")
         };
 
         var pipelineTask = new SessionToolPipelineTestFixture(executor, calls, sessionId, probe.Ref)
@@ -469,14 +469,14 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
         var key = ManagedTemporaryCorrectionRequiredExecutor.Key;
         var executor = new ManagedTemporaryRetryApprovalExecutor();
         var approvalChannel = new ApprovalChannel();
-        var probe = CreateTestProbe("scratch-retry-probe");
+        var probe = CreateTestProbe("managed-temporary-retry-probe");
         var approvalRequest = new TaskCompletionSource<ToolInteractionRequest>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var sessionId = new SessionId("D1/scratch-retry");
+        var sessionId = new SessionId("D1/managed-temporary-retry");
 
         var pipelineTask = new SessionToolPipelineTestFixture(
                 executor,
-                [ScratchCall("scratch-retry")],
+                [PlatformTemporaryCall("managed-temporary-retry")],
                 sessionId,
                 probe.Ref)
             .WithTurnContext(InteractiveTurnContext(sessionId))
@@ -521,7 +521,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
     [InlineData("gh api repos/example/project", true, "/var/tmp", false, 5)]
     [InlineData("gh api repos/example/project", true, "/tmp", true, 5)]
     [InlineData("gh api repos/example/project", true, "/tmp", false, 30)]
-    public void Execution_change_does_not_consume_scratch_retry_key(
+    public void Execution_change_does_not_consume_managed_temporary_retry_key(
         string command,
         bool hasExplicitWorkingDirectory,
         string? workingDirectory,
@@ -543,9 +543,9 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
     }
 
     [Fact]
-    public void Rationale_is_not_part_of_scratch_retry_semantics()
+    public void Rationale_is_not_part_of_managed_temporary_retry_semantics()
     {
-        var call = ScratchCall("scratch-rationale");
+        var call = PlatformTemporaryCall("managed-temporary-rationale");
         var first = ManagedTemporaryCorrection.BuildCallSemantics(
             call,
             new ToolCallMeta { Rationale = "first explanation" },
@@ -559,7 +559,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
     }
 
     [Fact]
-    public void Shell_change_does_not_consume_scratch_retry_key()
+    public void Shell_change_does_not_consume_managed_temporary_retry_key()
     {
         var key = ManagedTemporaryCorrectionRequiredExecutor.Key;
         var dispatch = new ManagedTemporaryCorrectionDispatch([key]);
@@ -591,7 +591,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
         Assert.False(state.Snapshot().TryConsume(key.Call, out _));
     }
 
-    private static FunctionCallContent ScratchCall(string callId)
+    private static FunctionCallContent PlatformTemporaryCall(string callId)
         => new(callId, ShellTool.ToolName, new Dictionary<string, object?>
         {
             ["Command"] = "gh api repos/example/project",

@@ -307,8 +307,8 @@ internal sealed class SessionToolExecutionPipeline
                     batch.DecisionOverrides.TryGetValue(tc.CallId, out var overrideDecision)
                         ? overrideDecision
                         : null,
-                    batch.ManagedTemporaryDenialDirectories.TryGetValue(tc.CallId, out var scratchDirectory)
-                        ? scratchDirectory
+                    batch.ManagedTemporaryDenialDirectories.TryGetValue(tc.CallId, out var managedTemporaryDirectory)
+                        ? managedTemporaryDirectory
                         : null,
                     modelInputBudget);
                 result = result with

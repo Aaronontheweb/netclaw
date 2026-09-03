@@ -396,7 +396,7 @@ public sealed class SessionMessageAssemblerTests
     [Fact]
     public void Public_audience_suppresses_working_context_in_volatile_block()
     {
-        // Working context leaks internal paths and scratch notes — Public must not see it.
+        // Working context leaks internal paths and temporary notes — Public must not see it.
         var stateWithWorkingContext = SessionState.Empty with
         {
             History = SeedHistory("hi"),

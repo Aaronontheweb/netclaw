@@ -1392,12 +1392,12 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
     }
 
     [Fact]
-    public async Task Cold_recovered_denied_scratch_retry_preserves_session_directory_hint()
+    public async Task Cold_recovered_denied_managed_temporary_retry_preserves_directory_hint()
     {
-        const string callId = "call-shell-scratch-denied";
-        const string scratchDirectory = "/home/user/.netclaw/sessions/example";
+        const string callId = "call-shell-managed-temporary-denied";
+        const string managedTemporaryDirectory = "/home/user/.netclaw/sessions/example";
         _toolExecutor.GatedTools.Add("shell_execute");
-        _toolExecutor.ManagedTemporaryRetryTools["shell_execute"] = scratchDirectory;
+        _toolExecutor.ManagedTemporaryRetryTools["shell_execute"] = managedTemporaryDirectory;
 
         _fakeChatClient.ToolCallsOnFirstCall =
         [
@@ -1405,9 +1405,9 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
                 new Dictionary<string, object?> { ["command"] = "git status" })
         ];
 
-        var sessionId = new SessionId("test-channel/scratch-denied-redrive");
+        var sessionId = new SessionId("test-channel/managed-temporary-denied-redrive");
         var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
-        var subscriber = CreateTestProbe("scratch-denied-redrive-sub");
+        var subscriber = CreateTestProbe("managed-temporary-denied-redrive-sub");
 
         await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
         {
@@ -1430,7 +1430,7 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
 
         await ColdRespawnAsync(sessionId);
 
-        var subscriberB = CreateTestProbe("scratch-denied-redrive-sub-b");
+        var subscriberB = CreateTestProbe("managed-temporary-denied-redrive-sub-b");
         await sessionManager.Ask<SessionJoined>(new JoinSession(subscriberB)
         {
             SessionId = sessionId,
@@ -1454,7 +1454,7 @@ public sealed class ApprovalRehydrationTests : LlmSessionTestBase
             TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Contains("approval_denied_by_user", toolResult.Result, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(scratchDirectory, toolResult.Result, StringComparison.Ordinal);
+        Assert.Contains(managedTemporaryDirectory, toolResult.Result, StringComparison.Ordinal);
         Assert.DoesNotContain("set_working_directory", toolResult.Result, StringComparison.Ordinal);
         Assert.Equal(0, _toolExecutor.SuccessfulExecutions);
     }
@@ -1776,12 +1776,12 @@ internal sealed class ApprovalGateToolExecutor : IToolExecutor
                     Cwd: null,
                     IsMessy: false,
                     Candidates: [new Netclaw.Security.ApprovalCandidate(toolCall.Name, Directory: null)]);
-                if (ManagedTemporaryRetryTools.TryGetValue(toolCall.Name, out var scratchDirectory))
+                if (ManagedTemporaryRetryTools.TryGetValue(toolCall.Name, out var managedTemporaryDirectory))
                 {
                     approvalContext = approvalContext with
                     {
                         IsManagedTemporaryRetry = true,
-                        ManagedTemporaryDirectory = scratchDirectory
+                        ManagedTemporaryDirectory = managedTemporaryDirectory
                     };
                 }
 

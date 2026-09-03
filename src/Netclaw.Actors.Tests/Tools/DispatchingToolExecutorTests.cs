@@ -947,7 +947,7 @@ public class DispatchingToolExecutorTests
             safeVerbs: SafeVerbList.FromVerbs(
                 ApprovalShell.Bash,
                 ["wc", "head"]));
-        var command = "cd /tmp && gh api repos/example/project/actions/jobs/123456/logs "
+        var command = "cd /work/intent && gh api repos/example/project/actions/jobs/123456/logs "
                       + "> slopwatch.log 2>&1; wc -c slopwatch.log; head -100 slopwatch.log";
         var call = new FunctionCallContent(
             "call-causal-intent",
@@ -1008,7 +1008,7 @@ public class DispatchingToolExecutorTests
                             ApprovalShell.Bash,
                             Assert.IsAssignableFrom<IReadOnlyList<string>>(
                                 candidate.Candidate.VerbTokens),
-                            "/tmp",
+                            "/work/intent",
                             createdAt: null).FormatScope());
                 return new ShellGrantCandidateMatch(
                     candidate.CandidateId,
@@ -1028,7 +1028,7 @@ public class DispatchingToolExecutorTests
             "shell_execute",
             ToolInput.Create(
                 "Command",
-                "cd /tmp && inspect; head result.log",
+                "cd /work/intent && inspect; head result.log",
                 "WorkingDirectory",
                 "/work"));
 
@@ -1042,7 +1042,7 @@ public class DispatchingToolExecutorTests
         Assert.Equal(["cd", "inspect"], request.Candidates
             .Select(candidate => candidate.Candidate.Verb).ToArray());
         Assert.All(request.Candidates, candidate =>
-            Assert.Equal("/tmp", candidate.Candidate.Directory));
+            Assert.Equal("/work/intent", candidate.Candidate.Directory));
         Assert.Equal(
             2,
             decision.ShellPolicyTrace.Rows.Count(row =>
@@ -1225,8 +1225,8 @@ public class DispatchingToolExecutorTests
 
     [SlopwatchSuppress("SW001", "This test pins Bash causal approval intent on POSIX hosts.")]
     [Theory(SkipUnless = nameof(IsPosix), Skip = "POSIX-only shell directory semantics")]
-    [InlineData("command cd /tmp && inspect; head result.log")]
-    [InlineData("builtin cd /tmp && inspect; head result.log")]
+    [InlineData("command cd /work/intent && inspect; head result.log")]
+    [InlineData("builtin cd /work/intent && inspect; head result.log")]
     public async Task Parser_owned_directory_effect_allows_wrapped_transition(
         string command)
     {

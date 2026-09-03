@@ -305,7 +305,7 @@ internal static class SlackApprovalBlockBuilder
     /// <c>/repo</c>).</item>
     /// <item><c>cwd</c> if no path arguments are present.</item>
     /// <item><c>this session</c> when the cwd is the per-session ephemeral
-    /// scratch directory — that path won't recur, so calling it out by name
+    /// managed temporary directory — that path won't recur, so calling it out by name
     /// would be misleading.</item>
     /// </list>
     /// </remarks>

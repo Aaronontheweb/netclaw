@@ -574,7 +574,7 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
-    public async Task Session_scratch_context_does_not_authorize_headless_prompt_worthy_shell()
+    public async Task Session_storage_context_does_not_authorize_headless_prompt_worthy_shell()
     {
         using var netclawHome = new DisposableTempDir();
         var sessionDirectory = Path.Combine(netclawHome.Path, "sessions", "example");
@@ -671,7 +671,7 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
-    public async Task Subagent_platform_temp_call_receives_scratch_correction_before_parent_bridge()
+    public async Task Subagent_platform_temp_call_receives_managed_temporary_correction_before_parent_bridge()
     {
         var sessionDirectory = TestPath("sessions", "managed-temporary-example");
         var fakeTool = new FakeNetclawTool(ShellTool.ToolName, "should not run");
@@ -679,7 +679,7 @@ public class SubAgentActorTests : TestKit
         {
             ToolCallsOnFirstCall =
             [
-                ScratchCall("call-scratch-correction")
+                PlatformTemporaryCall("call-managed-temporary-correction")
             ]
         };
         var approvalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.ApprovedOnce);
@@ -707,7 +707,7 @@ public class SubAgentActorTests : TestKit
             "Tool execution deferred: use_managed_temporary_directory\n" +
             $"Managed temporary directory: '{Path.Combine(sessionDirectory, "subagents", "run", "tmp")}'.\n" +
             "Next action: use the managed temporary directory from this result for disposable files, or retry unchanged for exact platform paths.",
-            GetLastToolResult(fakeClient, "call-scratch-correction"));
+            GetLastToolResult(fakeClient, "call-managed-temporary-correction"));
     }
 
     [Theory]
@@ -942,8 +942,8 @@ public class SubAgentActorTests : TestKit
         {
             ToolCallsOnFirstCall =
             [
-                ScratchCall("call-scratch-parallel-1"),
-                ScratchCall("call-scratch-parallel-2")
+                PlatformTemporaryCall("call-managed-temporary-parallel-1"),
+                PlatformTemporaryCall("call-managed-temporary-parallel-2")
             ]
         };
         var approvalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.ApprovedOnce);
@@ -969,10 +969,10 @@ public class SubAgentActorTests : TestKit
         Assert.Equal(0, approvalBridge.RequestCount);
         Assert.Contains(
             "use_managed_temporary_directory",
-            GetLastToolResult(fakeClient, "call-scratch-parallel-1"));
+            GetLastToolResult(fakeClient, "call-managed-temporary-parallel-1"));
         Assert.Contains(
             "use_managed_temporary_directory",
-            GetLastToolResult(fakeClient, "call-scratch-parallel-2"));
+            GetLastToolResult(fakeClient, "call-managed-temporary-parallel-2"));
     }
 
     [Fact]
@@ -982,8 +982,8 @@ public class SubAgentActorTests : TestKit
         var fakeTool = new FakeNetclawTool(ShellTool.ToolName, "should not run");
         var fakeClient = new SequencedToolCallChatClient(
         [
-            ScratchCall("call-scratch-first"),
-            ScratchCall("call-scratch-retry")
+            PlatformTemporaryCall("call-managed-temporary-first"),
+            PlatformTemporaryCall("call-managed-temporary-retry")
         ]);
         var approvalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.Denied);
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(
@@ -1009,7 +1009,7 @@ public class SubAgentActorTests : TestKit
         Assert.Equal(
             [ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.Deny],
             approvalBridge.RequestedOptions.Select(option => option.Key));
-        var denial = GetLastToolResult(fakeClient.LastReceivedMessages, "call-scratch-retry");
+        var denial = GetLastToolResult(fakeClient.LastReceivedMessages, "call-managed-temporary-retry");
         Assert.Contains("approval_denied_by_user", denial, StringComparison.Ordinal);
         Assert.Contains(sessionDirectory, denial, StringComparison.Ordinal);
         Assert.DoesNotContain("set_working_directory", denial, StringComparison.Ordinal);
@@ -1488,7 +1488,7 @@ public class SubAgentActorTests : TestKit
             safeVerbs: SafeVerbList.FromVerbs(approvalShell, safeVerbs));
     }
 
-    private static FunctionCallContent ScratchCall(string callId)
+    private static FunctionCallContent PlatformTemporaryCall(string callId)
         => new(callId, ShellTool.ToolName, new Dictionary<string, object?>
         {
             ["Command"] = TestShellEnvironment.Current.Grammar == ShellGrammar.Bash
