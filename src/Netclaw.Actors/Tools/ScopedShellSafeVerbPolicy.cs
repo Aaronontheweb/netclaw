@@ -166,10 +166,7 @@ internal sealed class ScopedShellSafeVerbPolicy
                 State: ShellPolicyPathResolutionState.Known,
                 Path: { } intentPath
             }
-            || !IsSafePath(
-                intentPath.Value,
-                intentPath.Value,
-                ShellPathStyle.Posix)
+            || !IsSafeCausalPath(intentPath.Value, intentPath.Value)
             || !IsReviewedDiagnostic(
                 candidate,
                 projected.SourceOccurrence,
@@ -312,10 +309,7 @@ internal sealed class ScopedShellSafeVerbPolicy
                     (ShellValueDomain.Exact or ShellValueDomain.FiniteSet)
                 || fact.State != ShellPolicyPathResolutionState.Known
                 || fact.Paths.Count == 0
-                || fact.Paths.Any(path => !IsSafePath(
-                    path.Value,
-                    intentDirectory,
-                    ShellPathStyle.Posix)))
+                || fact.Paths.Any(path => !IsSafeCausalPath(path.Value, intentDirectory)))
             {
                 return false;
             }
@@ -328,10 +322,7 @@ internal sealed class ScopedShellSafeVerbPolicy
                 || fact.Source.Domain is not ShellValueDomain.Exact
                 || fact.State != ShellPolicyPathResolutionState.Known
                 || fact.Paths.Count != 1
-                || !IsSafePath(
-                    fact.Paths[0].Value,
-                    intentDirectory,
-                    ShellPathStyle.Posix))
+                || !IsSafeCausalPath(fact.Paths[0].Value, intentDirectory))
             {
                 return false;
             }
@@ -376,10 +367,16 @@ internal sealed class ScopedShellSafeVerbPolicy
         }
     }
 
+    // A parser-derived intent is not an authority root. Permit a root alias such as macOS /tmp,
+    // while still rejecting linked descendants below it.
+    private static bool IsSafeCausalPath(string path, string intentRoot)
+        => IsSafePath(path, intentRoot, ShellPathStyle.Posix, includeRoot: false);
+
     private static bool IsSafePath(
         string path,
         string root,
-        ShellPathStyle pathStyle)
+        ShellPathStyle pathStyle,
+        bool includeRoot = true)
     {
         try
         {
@@ -393,7 +390,7 @@ internal sealed class ScopedShellSafeVerbPolicy
                        || !PathUtility.ContainsSymlinkSegment(
                            normalizedRoot,
                            normalizedPath,
-                           includeRoot: true));
+                           includeRoot));
         }
         catch (Exception ex) when (ex is ArgumentException
                                       or IOException
