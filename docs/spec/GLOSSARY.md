@@ -268,10 +268,13 @@ recoverable correction.
 
 **Code anchor:** `ToolInvocationOutcomeCategory`
 
-### Remediation code or next-action code
+### Remediation and remediation code
 
-A remediation code is a closed internal value for one bounded correction
-strategy. It contains no path or free-form instruction.
+A remediation is bounded advice for the model after a denied or correctable
+request. It does not change the path access decision or grant authority.
+
+A remediation code is a closed internal value that selects one remediation.
+It contains no path or free-form instruction.
 
 **Code anchor:** `ToolRemediationCode`
 
@@ -455,11 +458,10 @@ A raw session log is the diagnostic file for one main session or subagent run.
 New-layout raw logs are physically inside the session storage envelope but are
 outside the session directory.
 
-Every parent and child run receives its current session storage as an implicit
-trusted root. Existing file tools can inspect logs when the audience and
-operation permissions allow the request. A path in another session follows
-ordinary configured-root and audience policy; session identity does not add a
-special allow or deny.
+All session storage is below the configured trusted sessions root. Parent and
+child runs inherit this root, so one session can access another session's data.
+This permits one session to analyze another session's logs on a busy agent.
+The normal audience and file-operation permissions still apply.
 
 These reads return normal bounded file-tool output. A raw session log does not
 use a separate activity projection or log-specific redaction layer.
@@ -505,11 +507,15 @@ directories, and managed worktree directories are session-owned, but they do
 not have the same purpose or access policy. Approval code uses this broader
 term only when the rule intentionally applies to more than one of them.
 
-### Allowed root
+### Trusted root
 
-An allowed root is a configured or context-derived directory boundary for a
-specific access type. A path inside one root can still fail another security
-check.
+A trusted root is a configured or context-derived directory boundary that can
+supply filesystem authority. A path below this root can still fail an audience,
+file-operation, link, or protected-path check.
+
+The `netclaw-tools` capability owns the trusted-root interpretation and the
+filesystem authorization decision. Session and cwd capabilities only supply
+roots and candidate paths.
 
 ### Ordinary configuration
 
@@ -527,32 +533,53 @@ Those stores and control-plane state remain read-denied.
 A canonical path is a fully qualified, normalized path with no unresolved dot
 segments. Canonical form does not by itself grant access.
 
-### Safe, unavailable, and unsafe path bases
+### Path relationship
 
-These states describe a candidate base for a relative path:
+A path relationship states whether a canonical path is the trusted root, is a
+descendant of that root, or is outside that root. This fact does not grant
+access.
 
-- **Safe:** The base is usable and passes the required authority and link checks.
-- **Unavailable:** The base is absent, not a fully qualified path, or is a
-  missing project directory. Policy can try the next documented base before
-  authorization starts.
-- **Unsafe:** The base is present but normalization or inspection fails, has no
-  owning authority root, or crosses a link boundary. Netclaw denies the call and
-  does not try another base.
+### File operation
+
+A file operation is the requested use of a path. Examples include read, list,
+write, edit, attach, and shell access. One path can have a different decision
+for each operation.
+
+### Path access decision
+
+A path access decision is the typed allow or deny result for one canonical
+path and file operation. The decision contains a reason. The `netclaw-tools`
+capability owns this decision and applies these inputs:
+
+- the path relationship to each trusted root;
+- the file operation;
+- the audience policy;
+- link and protected-path facts.
+
+File tools, shell policy, and temporary-path correction use this same decision.
+They do not implement separate meanings for path safety.
+
+### Relative base availability
+
+Relative base availability states whether `session-cwd` can select a base for a
+relative path. An available base can enter filesystem authorization. An
+unavailable base is absent or unusable before authorization starts.
+
+Availability does not mean that a path is safe or authorized. After
+`session-cwd` selects a base, `netclaw-tools` creates the path access decision.
+Netclaw does not try another base after that decision denies access.
 
 Example:
 
 ```text
-project missing
-  -> Unavailable
+project base unavailable
   -> try the session directory
 
 project ancestor is a link to /outside
-  -> Unsafe
-  -> AccessDenied
+  -> selected project base
+  -> path access decision = Denied(link boundary)
   -> do not try the session directory
 ```
-
-**Code anchor:** `ScopedFileAccessPolicy`
 
 ### Spill and output continuation
 

@@ -52,8 +52,8 @@ Counterexamples:
 
 #### Scenario: Access denial has no successful file activity
 
-- **GIVEN** `file_read` is called for a path outside the current read authority
-- **WHEN** scoped access denies the call
+- **GIVEN** `file_read` is called for a path outside the trusted roots
+- **WHEN** the path access decision denies the call
 - **THEN** the outcome category is `access_denied`
 - **AND** the outcome contains no successful file activity
 - **AND** the model receives a bounded denial string
