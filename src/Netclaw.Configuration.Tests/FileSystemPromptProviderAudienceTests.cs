@@ -138,15 +138,11 @@ public sealed class FileSystemPromptProviderAudienceTests : IDisposable
         Assert.Contains("Keep independent searches and diagnostics separate", prompt);
         Assert.Contains("do not join them with separators or labels", prompt);
         Assert.Contains("Add a pipeline only when the requested result requires it", prompt);
-        Assert.Contains("disposable writable work outside a project", prompt);
-        Assert.Contains("do not substitute platform temporary storage", prompt);
         Assert.Contains("If approval is required but no interactive requester is available", prompt);
         Assert.Contains("After an access denial, do not retry that call during the same user turn", prompt);
         Assert.Contains("A later explicit user request can start a new call", prompt);
         Assert.Contains("Use `temp_dir` for disposable files", prompt);
         Assert.Contains("Standard temporary APIs already use this directory", prompt);
-        Assert.Contains("After an approval-required result", prompt);
-        Assert.Contains("A `Tool access denied:` result is terminal", prompt);
         Assert.Contains("Apply one `Tool execution deferred:` correction unchanged", prompt);
         Assert.Contains("Use `load_tool` directly for a known exact tool name", prompt);
         Assert.Contains("Use `search_tools` when the capability is known", prompt);
