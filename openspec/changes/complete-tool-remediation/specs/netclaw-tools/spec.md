@@ -42,14 +42,14 @@ shared presenter returns:
 
 #### Scenario: Access denial has no successful file activity
 
-- **GIVEN** `file_read` is called for a path outside the trusted roots
+- **GIVEN** `file_read` is called for a path outside the current audience's read authority
 - **WHEN** the path access decision denies the call
 - **THEN** the outcome category is `access_denied`
 - **AND** the outcome contains no successful file activity
 - **AND** the outcome contains no remediation
 - **AND** the model receives a bounded denial string
 
-#### Scenario: Missing declaration has a closed correction code
+#### Scenario: Recoverable correction stays distinct from failure
 
 - **GIVEN** a workspace tool can continue after the project directory is declared
 - **AND** `set_working_directory` is visible to the current model
