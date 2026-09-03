@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Netclaw.Tools;
+using Netclaw.Actors.Sessions;
 
 namespace Netclaw.Actors.Tests.Protocol;
 
@@ -19,8 +20,8 @@ public sealed class SessionStoragePathsTests
         Assert.Equal(Path.Combine(envelope, "workspace"), storage.SessionDirectory);
         Assert.Equal(Path.Combine(envelope, "attachment-staging"), storage.AttachmentStagingDirectory);
         Assert.Equal(Path.Combine(envelope, "artifacts"), storage.ArtifactDirectory);
-        Assert.Equal(Path.Combine(envelope, "tmp", "parent"), storage.TemporaryDirectory);
-        Assert.Equal(envelope, storage.TemporaryDirectoryRoot);
+        Assert.Equal(Path.Combine(envelope, "tmp", "parent"), storage.ManagedTemporary.Directory);
+        Assert.Equal(envelope, storage.ManagedTemporary.AuthorityRoot);
         Assert.Equal(Path.Combine(envelope, "worktrees"), storage.WorktreeDirectory);
         Assert.Equal(Path.Combine(envelope, "logs", "session.log"), storage.LogPath);
         Assert.Equal([envelope], storage.CurrentSessionRoots);
@@ -39,8 +40,8 @@ public sealed class SessionStoragePathsTests
         var childRoot = Path.Combine(envelope, "subagents", "run-7");
         Assert.Equal(parent.SessionDirectory, child.SessionDirectory);
         Assert.Equal(Path.Combine(childRoot, "artifacts"), child.ArtifactDirectory);
-        Assert.Equal(Path.Combine(childRoot, "tmp"), child.TemporaryDirectory);
-        Assert.Equal(envelope, child.TemporaryDirectoryRoot);
+        Assert.Equal(Path.Combine(childRoot, "tmp"), child.ManagedTemporary.Directory);
+        Assert.Equal(envelope, child.ManagedTemporary.AuthorityRoot);
         Assert.Equal(Path.Combine(childRoot, "logs", "session.log"), child.LogPath);
         Assert.Equal(parent.WorktreeDirectory, child.WorktreeDirectory);
         Assert.Equal(parent.CurrentSessionRoots, child.CurrentSessionRoots);
@@ -53,6 +54,28 @@ public sealed class SessionStoragePathsTests
 
         var noncanonical = Path.Combine(Path.GetTempPath(), "one", "..", "two");
         Assert.Throws<ArgumentException>(() => new SessionStorageEnvelopeRoot(noncanonical));
+    }
+
+    [Fact]
+    public void Managed_temporary_location_rejects_a_directory_outside_its_authority_root()
+    {
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "netclaw-storage", "root"));
+        var outside = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "netclaw-storage", "outside"));
+
+        Assert.Throws<ArgumentException>(() => new ManagedTemporaryLocation(outside, root));
+    }
+
+    [Fact]
+    public void Parent_and_child_contexts_share_the_same_storage_guidance()
+    {
+        var envelope = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "netclaw-storage", "session-42"));
+        var storage = SessionStoragePaths.CreateVersion2(new SessionStorageEnvelopeRoot(envelope));
+
+        var parentContext = SessionContextFormatter.Format(storage, "session-42");
+        var childContext = SessionContextFormatter.Format(storage);
+
+        Assert.Equal(parentContext.Replace("\nid: session-42", string.Empty, StringComparison.Ordinal), childContext);
+        Assert.Contains("Use an explicitly required platform temporary path unchanged.", childContext);
     }
 
     [Theory]
@@ -78,7 +101,7 @@ public sealed class SessionStoragePathsTests
         Assert.Null(storage.Binding);
         Assert.Equal(sessionDirectory, storage.SessionDirectory);
         Assert.Equal(Path.Combine(logBase, "signalr_example", "session.log"), storage.LogPath);
-        Assert.Equal(sessionDirectory, storage.TemporaryDirectoryRoot);
+        Assert.Equal(sessionDirectory, storage.ManagedTemporary.AuthorityRoot);
         Assert.Equal([sessionDirectory, logBase], storage.CurrentSessionRoots);
 
         var child = storage.ForChild(

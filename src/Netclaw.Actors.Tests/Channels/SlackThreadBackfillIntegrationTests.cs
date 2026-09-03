@@ -109,7 +109,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
             httpClient,
             new NullContentScanner(),
-            new NetclawPaths(Path.GetTempPath()),
             ToolAudienceProfileDefaults.CreateProfiles(),
             TestSlackGatewayDeps.DefaultVisionCapableModel,
             NullLogger<SlackThreadHistoryFetcher>.Instance,
@@ -136,7 +135,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             ThreadHistoryFetcher: fetcher,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -203,7 +201,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
             httpClient,
             new NullContentScanner(),
-            new NetclawPaths(Path.GetTempPath()),
             ToolAudienceProfileDefaults.CreateProfiles(),
             TestSlackGatewayDeps.DefaultVisionCapableModel,
             NullLogger<SlackThreadHistoryFetcher>.Instance,
@@ -230,7 +227,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             ThreadHistoryFetcher: countingFetcher,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -342,7 +338,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
             httpClient,
             new NullContentScanner(),
-            new NetclawPaths(Path.GetTempPath()),
             ToolAudienceProfileDefaults.CreateProfiles(),
             TestSlackGatewayDeps.DefaultVisionCapableModel,
             NullLogger<SlackThreadHistoryFetcher>.Instance,
@@ -368,7 +363,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             ThreadHistoryFetcher: fetcher,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             HttpClient: httpClient,
             PromptInjectionDetector: new ContainsIgnorePromptInjectionDetector());
@@ -469,7 +463,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
             httpClient,
             new NullContentScanner(),
-            new NetclawPaths(Path.GetTempPath()),
             ToolAudienceProfileDefaults.CreateProfiles(),
             TestSlackGatewayDeps.DefaultVisionCapableModel,
             NullLogger<SlackThreadHistoryFetcher>.Instance,
@@ -496,7 +489,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             ThreadHistoryFetcher: fetcher,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -582,7 +574,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
             httpClient,
             new NullContentScanner(),
-            new NetclawPaths(Path.GetTempPath()),
             ToolAudienceProfileDefaults.CreateProfiles(),
             TestSlackGatewayDeps.DefaultVisionCapableModel,
             NullLogger<SlackThreadHistoryFetcher>.Instance,
@@ -609,7 +600,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             ThreadHistoryFetcher: fetcher,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -699,7 +689,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
             httpClient,
             new NullContentScanner(),
-            new NetclawPaths(Path.GetTempPath()),
             ToolAudienceProfileDefaults.CreateProfiles(),
             TestSlackGatewayDeps.DefaultVisionCapableModel,
             NullLogger<SlackThreadHistoryFetcher>.Instance,
@@ -730,7 +719,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             ThreadHistoryFetcher: fetcher,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -793,7 +781,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
             httpClient,
             new NullContentScanner(),
-            new NetclawPaths(Path.GetTempPath()),
             ToolAudienceProfileDefaults.CreateProfiles(),
             TestSlackGatewayDeps.DefaultVisionCapableModel,
             NullLogger<SlackThreadHistoryFetcher>.Instance,
@@ -820,7 +807,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             ThreadHistoryFetcher: fetcher,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -923,7 +909,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
             httpClient,
             new NullContentScanner(),
-            new NetclawPaths(Path.GetTempPath()),
             profiles,
             TestSlackGatewayDeps.DefaultVisionCapableModel,
             NullLogger<SlackThreadHistoryFetcher>.Instance,
@@ -954,7 +939,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             ThreadHistoryFetcher: fetcher,
             AudienceProfiles: profiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -1026,7 +1010,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             new SlackChannelOptions { BotToken = new SensitiveString("xoxb-fake") },
             httpClient,
             new NullContentScanner(),
-            new NetclawPaths(Path.GetTempPath()),
             ToolAudienceProfileDefaults.CreateProfiles(),
             TestSlackGatewayDeps.DefaultVisionCapableModel,
             NullLogger<SlackThreadHistoryFetcher>.Instance,
@@ -1054,7 +1037,6 @@ public sealed class SlackThreadBackfillIntegrationTests : TestKit
             ThreadHistoryFetcher: countingFetcher,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 

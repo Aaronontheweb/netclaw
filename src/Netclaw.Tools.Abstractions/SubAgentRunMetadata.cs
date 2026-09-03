@@ -19,6 +19,7 @@ public enum SubAgentRunOutcome
 /// <summary>Spawner-generated subagent run id used to correlate logs and notifications.</summary>
 public readonly record struct SubAgentRunId
 {
+    /// <summary>Creates a validated run identifier.</summary>
     public SubAgentRunId(string value)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(value);
@@ -33,20 +34,26 @@ public readonly record struct SubAgentRunId
         Value = value;
     }
 
+    /// <summary>Gets the validated identifier.</summary>
     public string Value { get; }
 
+    /// <summary>Creates a new random run identifier.</summary>
     public static SubAgentRunId New() => new(Guid.NewGuid().ToString("N"));
 
+    /// <summary>Converts a string into a validated run identifier.</summary>
     public static explicit operator SubAgentRunId(string value) => new(value);
 
+    /// <inheritdoc />
     public override string ToString() => Value;
 }
 
 /// <summary>Subagent execution scope id used in structured logs.</summary>
 public readonly record struct SubAgentScopeId(string Value)
 {
+    /// <summary>Converts a string into a child execution scope identifier.</summary>
     public static explicit operator SubAgentScopeId(string value) => new(value);
 
+    /// <summary>Extracts the final run identifier from a composite child scope.</summary>
     public bool TryGetRunId(out SubAgentRunId runId)
     {
         var marker = Value.LastIndexOf("/subagent/", StringComparison.Ordinal);
@@ -61,6 +68,7 @@ public readonly record struct SubAgentScopeId(string Value)
         return true;
     }
 
+    /// <inheritdoc />
     public override string ToString() => Value;
 }
 

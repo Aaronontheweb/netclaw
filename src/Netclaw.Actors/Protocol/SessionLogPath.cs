@@ -10,6 +10,8 @@ namespace Netclaw.Actors.Protocol;
 /// </summary>
 public readonly record struct SessionLogPath
 {
+    /// <summary>Creates a canonical absolute session log path.</summary>
+    /// <param name="value">The canonical absolute path.</param>
     public SessionLogPath(string value)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(value);
@@ -23,7 +25,9 @@ public readonly record struct SessionLogPath
         Value = canonical;
     }
 
+    /// <summary>Gets the canonical absolute path.</summary>
     public string Value { get; }
 
+    /// <inheritdoc />
     public override string ToString() => Value;
 }

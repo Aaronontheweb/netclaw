@@ -486,7 +486,12 @@ public sealed class ChatPageTests
         var executionContext = new ToolExecutionContext(
             new ToolRunScope
             {
-                Session = new ToolSessionScope.Bound("test-session", null),
+                Session = new ToolSessionScope.Bound(
+                    "test-session",
+                    SessionStoragePaths.CreateLegacy(
+                        Path.GetFullPath(Path.Combine(Path.GetTempPath(), "netclaw-chat-page-session")),
+                        Path.GetFullPath(Path.Combine(Path.GetTempPath(), "netclaw-chat-page-logs")),
+                        "test-session")),
                 Audience = TrustAudience.Personal,
                 InlineOutputBudget = InlineOutputBudget.Default,
                 InteractiveApproval = new InteractiveApprovalCapability.Unavailable()

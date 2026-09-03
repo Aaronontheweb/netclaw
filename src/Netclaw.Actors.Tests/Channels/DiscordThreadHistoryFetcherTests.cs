@@ -488,7 +488,6 @@ public sealed class DiscordThreadHistoryFetcherTests
             scanner ?? new NullContentScanner(),
             profiles ?? ToolAudienceProfileDefaults.CreateProfiles(),
             modelCapabilities ?? TestDiscordGatewayDeps.DefaultVisionCapableModel,
-            testPaths,
             NullLogger<DiscordThreadHistoryFetcher>.Instance,
             new Netclaw.Actors.Protocol.TestSessionStorageResolver(testPaths));
     }

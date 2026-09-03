@@ -50,9 +50,12 @@ public sealed class SessionLogActor : ReceiveActor, IWithTimers
 
     public ITimerScheduler Timers { get; set; } = null!;
 
-    public static Props CreateProps(SessionId sessionId, string sessionLogsBasePath, TimeProvider timeProvider, TimeSpan? idleTimeout = null) =>
-        Props.Create(() => new SessionLogActor(sessionId, sessionLogsBasePath, timeProvider, idleTimeout ?? TimeSpan.FromMinutes(10)));
-
+    /// <summary>Creates a writer for one already resolved session log path.</summary>
+    /// <param name="sessionId">The owning session.</param>
+    /// <param name="logPath">The canonical path resolved for this writer.</param>
+    /// <param name="timeProvider">The clock used for audit timestamps.</param>
+    /// <param name="idleTimeout">The optional writer passivation timeout.</param>
+    /// <returns>Actor properties for the resolved writer.</returns>
     public static Props CreatePropsForPath(
         SessionId sessionId,
         SessionLogPath logPath,
@@ -64,15 +67,11 @@ public sealed class SessionLogActor : ReceiveActor, IWithTimers
             timeProvider,
             idleTimeout ?? TimeSpan.FromMinutes(10)));
 
-    public SessionLogActor(SessionId sessionId, string sessionLogsBasePath, TimeProvider timeProvider, TimeSpan idleTimeout)
-        : this(
-            sessionId,
-            new SessionLogPath(SessionLogFile.GetLogPath(sessionId, sessionLogsBasePath)),
-            timeProvider,
-            idleTimeout)
-    {
-    }
-
+    /// <summary>Creates the sole writer for <paramref name="logPath"/>.</summary>
+    /// <param name="sessionId">The owning session.</param>
+    /// <param name="logPath">The canonical path resolved for this writer.</param>
+    /// <param name="timeProvider">The clock used for audit timestamps.</param>
+    /// <param name="idleTimeout">The writer passivation timeout.</param>
     public SessionLogActor(
         SessionId sessionId,
         SessionLogPath logPath,

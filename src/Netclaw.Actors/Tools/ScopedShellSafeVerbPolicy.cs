@@ -425,8 +425,6 @@ internal sealed class ScopedShellSafeVerbPolicy
 
         if (context.SessionStorage is { } storage)
             roots.AddRange(storage.CurrentSessionRoots.Select(mapPath));
-        else if (!string.IsNullOrWhiteSpace(context.SessionDirectory))
-            roots.Add(mapPath(context.SessionDirectory));
 
         // Public audience cannot expand its safe space via project_dir —
         // mirrors the file_read read-roots restriction enforced by

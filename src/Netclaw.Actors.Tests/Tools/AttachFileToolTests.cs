@@ -134,7 +134,10 @@ public class AttachFileToolTests : IDisposable
     [Fact]
     public async Task No_session_directory_returns_error()
     {
-        var context = TestToolExecutionContext.CreateBound("test-session", null, TrustAudience.Personal);
+        var context = TestToolExecutionContext.CreateUnbound(new TestToolExecutionContextOptions
+        {
+            Audience = TrustAudience.Personal
+        });
         var args = ToolInput.Create("Path", "/tmp/anything.png");
 
         var result = await _tool.ExecuteAsync(args, context, CancellationToken.None);

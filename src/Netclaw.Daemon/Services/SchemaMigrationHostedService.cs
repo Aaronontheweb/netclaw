@@ -35,9 +35,9 @@ public sealed class SchemaMigrationHostedService : IHostedService
 
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-        if (_options.Provider is PersistenceProvider.Sqlite && _options.Sqlite.AutoMigrate)
+        if (_options.Provider is not PersistenceProvider.Sqlite || _options.Sqlite.AutoMigrate)
         {
-            var sqlitePath = ResolveSqlitePath();
+            var sqlitePath = _options.GetSqlitePath(_paths);
             _logger.LogInformation("Running SQLite schema migrations at {Path}", sqlitePath);
             await _migrator.MigrateAsync(sqlitePath, cancellationToken);
         }
@@ -48,9 +48,4 @@ public sealed class SchemaMigrationHostedService : IHostedService
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-
-    private string ResolveSqlitePath()
-        => string.IsNullOrWhiteSpace(_options.Sqlite.Path)
-            ? _paths.SqliteDbPath
-            : _options.Sqlite.Path!;
 }

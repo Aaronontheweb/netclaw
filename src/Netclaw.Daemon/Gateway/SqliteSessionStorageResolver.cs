@@ -9,6 +9,7 @@ using System.Text;
 using Microsoft.Data.Sqlite;
 using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
+using Netclaw.Daemon.Configuration;
 using Netclaw.Tools;
 
 namespace Netclaw.Daemon.Gateway;
@@ -19,36 +20,72 @@ namespace Netclaw.Daemon.Gateway;
 public sealed class SqliteSessionStorageResolver : ISessionStorageResolver
 {
     private readonly string _connectionString;
+    private readonly string? _catalogConnectionString;
     private readonly string _sessionsDirectory;
     private readonly string _sessionLogsDirectory;
     private readonly TimeProvider _timeProvider;
     private readonly ConcurrentDictionary<string, SessionStoragePaths> _resolved =
         new(StringComparer.Ordinal);
 
-    public SqliteSessionStorageResolver(NetclawPaths paths, TimeProvider timeProvider)
-        : this(paths, timeProvider, paths.SessionsDirectory)
-    {
-    }
-
+    /// <summary>Creates a resolver that stores bindings beside the selected persistence journal.</summary>
+    /// <param name="paths">The default Netclaw paths.</param>
+    /// <param name="timeProvider">The clock used for binding timestamps.</param>
+    /// <param name="persistenceOptions">The persistence database selection.</param>
     public SqliteSessionStorageResolver(
         NetclawPaths paths,
         TimeProvider timeProvider,
+        DaemonPersistenceOptions persistenceOptions)
+        : this(paths, timeProvider, persistenceOptions, paths.SessionsDirectory)
+    {
+    }
+
+    internal SqliteSessionStorageResolver(NetclawPaths paths, TimeProvider timeProvider)
+        : this(paths, timeProvider, new DaemonPersistenceOptions(), paths.SessionsDirectory)
+    {
+    }
+
+    internal SqliteSessionStorageResolver(
+        NetclawPaths paths,
+        TimeProvider timeProvider,
+        string sessionsDirectory)
+        : this(paths, timeProvider, new DaemonPersistenceOptions(), sessionsDirectory)
+    {
+    }
+
+    internal SqliteSessionStorageResolver(
+        NetclawPaths paths,
+        TimeProvider timeProvider,
+        DaemonPersistenceOptions persistenceOptions,
         string sessionsDirectory)
     {
         ArgumentNullException.ThrowIfNull(paths);
         ArgumentNullException.ThrowIfNull(timeProvider);
+        ArgumentNullException.ThrowIfNull(persistenceOptions);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionsDirectory);
 
+        var sqlitePath = persistenceOptions.GetSqlitePath(paths);
         _connectionString = new SqliteConnectionStringBuilder
         {
-            DataSource = paths.SqliteDbPath,
+            DataSource = sqlitePath,
             Mode = SqliteOpenMode.ReadWriteCreate
         }.ToString();
+        if (!string.Equals(
+                Path.GetFullPath(sqlitePath),
+                Path.GetFullPath(paths.SqliteDbPath),
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+        {
+            _catalogConnectionString = new SqliteConnectionStringBuilder
+            {
+                DataSource = paths.SqliteDbPath,
+                Mode = SqliteOpenMode.ReadWriteCreate
+            }.ToString();
+        }
         _sessionsDirectory = Path.GetFullPath(sessionsDirectory);
         _sessionLogsDirectory = paths.SessionLogsDirectory;
         _timeProvider = timeProvider;
     }
 
+    /// <inheritdoc />
     public SessionStoragePaths Resolve(SessionId sessionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId.Value);
@@ -66,8 +103,6 @@ public sealed class SqliteSessionStorageResolver : ISessionStorageResolver
         using var connection = new SqliteConnection(_connectionString);
         connection.Open();
         using var transaction = connection.BeginTransaction(deferred: false);
-
-        EnsureBindingsTable(connection, transaction);
 
         var binding = ReadBinding(connection, transaction, sessionId);
         if (binding is not null)
@@ -96,25 +131,6 @@ public sealed class SqliteSessionStorageResolver : ISessionStorageResolver
         InsertBinding(connection, transaction, sessionId, newBinding);
         transaction.Commit();
         return SessionStoragePaths.CreateVersion2(envelopeRoot);
-    }
-
-    private static void EnsureBindingsTable(SqliteConnection connection, SqliteTransaction transaction)
-    {
-        using var command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText =
-            """
-            CREATE TABLE IF NOT EXISTS session_storage_bindings (
-                session_id      TEXT NOT NULL PRIMARY KEY,
-                layout_version  INTEGER NOT NULL,
-                envelope_root   TEXT NOT NULL UNIQUE,
-                created_at      INTEGER NOT NULL
-            );
-
-            CREATE UNIQUE INDEX IF NOT EXISTS session_storage_bindings_envelope_root_idx
-                ON session_storage_bindings(envelope_root);
-            """;
-        command.ExecuteNonQuery();
     }
 
     private static SessionStorageBinding? ReadBinding(
@@ -162,7 +178,19 @@ public sealed class SqliteSessionStorageResolver : ISessionStorageResolver
         }
 
         return HasCatalogEntry(connection, transaction, sessionId)
+               || HasCatalogEntryInControlDatabase(sessionId)
                || HasJournalEntry(connection, transaction, sessionId);
+    }
+
+    private bool HasCatalogEntryInControlDatabase(SessionId sessionId)
+    {
+        if (_catalogConnectionString is null)
+            return false;
+
+        using var connection = new SqliteConnection(_catalogConnectionString);
+        connection.Open();
+        using var transaction = connection.BeginTransaction();
+        return HasCatalogEntry(connection, transaction, sessionId);
     }
 
     private static bool HasCatalogEntry(

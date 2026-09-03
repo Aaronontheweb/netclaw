@@ -4,7 +4,6 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Microsoft.Extensions.AI;
-using System.Runtime.CompilerServices;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Jobs;
 using Netclaw.Actors.Protocol;
@@ -35,8 +34,6 @@ public sealed class ToolAccessPolicy
     private readonly FeatureGates _featureGates;
     private readonly ScopedShellSafeVerbPolicy? _safeVerbPolicy;
     private readonly PlatformTemporaryScopePolicy _platformTemporaryScopePolicy;
-    private readonly ConditionalWeakTable<ToolExecutionContext, ManagedTemporaryRetryMarker>
-        _managedTemporaryRetries = new();
 
     internal ApprovalShell Shell => _shellCommandPolicy.Environment.Grammar == ShellGrammar.Bash
         ? ApprovalShell.Bash
@@ -344,14 +341,6 @@ public sealed class ToolAccessPolicy
             shellApproval,
             shellAnalysis,
             deferReviewedSafeCoverage);
-    }
-
-    internal void MarkManagedTemporaryRetry(
-        ToolExecutionContext context,
-        ToolAgentCorrection.ManagedTemporaryDirectorySuggested correction)
-    {
-        _managedTemporaryRetries.Remove(context);
-        _managedTemporaryRetries.Add(context, new ManagedTemporaryRetryMarker(correction));
     }
 
     internal bool IsReviewedSafeCandidate(
@@ -665,7 +654,8 @@ public sealed class ToolAccessPolicy
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var isManagedTemporaryRetry = _managedTemporaryRetries.TryGetValue(context, out var retryMarker);
+        var managedTemporaryRetry = context.Approval.ManagedTemporaryRetry;
+        var isManagedTemporaryRetry = managedTemporaryRetry is not null;
         var options = isManagedTemporaryRetry
             ? ManagedTemporaryRetryOptions
             : BuildApprovalOptions(
@@ -691,8 +681,8 @@ public sealed class ToolAccessPolicy
             SuggestedProjectDirectory = suggestedProjectDirectory,
             AgentCorrection = isManagedTemporaryRetry ? null : agentCorrection,
             IsManagedTemporaryRetry = isManagedTemporaryRetry,
-            ManagedTemporaryDirectory = retryMarker?.Correction.ManagedTemporaryDirectory,
-            PlatformTemporaryRoot = retryMarker?.Correction.TemporaryRoot
+            ManagedTemporaryDirectory = managedTemporaryRetry?.ManagedTemporaryDirectory,
+            PlatformTemporaryRoot = managedTemporaryRetry?.PlatformTemporaryRoot
         };
 
         return ToolAccessDecision.RequiresApproval(approvalContext);
@@ -1047,12 +1037,6 @@ public sealed record ToolApprovalContext(
     internal string? ManagedTemporaryDirectory { get; init; }
 
     internal string? PlatformTemporaryRoot { get; init; }
-}
-
-internal sealed class ManagedTemporaryRetryMarker(
-    ToolAgentCorrection.ManagedTemporaryDirectorySuggested correction)
-{
-    internal ToolAgentCorrection.ManagedTemporaryDirectorySuggested Correction { get; } = correction;
 }
 
 public sealed record ToolApprovalOption(ApprovalOptionKey Key, string Label);

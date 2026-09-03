@@ -183,7 +183,7 @@ public sealed class SubAgentSpawner
             ScopeId = scopeId,
             Authority = new ToolRunScope
             {
-                Session = ToolSessionScope.Bound.WithStorage(scopeId.Value, childStorage),
+                Session = new ToolSessionScope.Bound(scopeId.Value, childStorage),
                 Audience = context.Audience,
                 InlineOutputBudget = InlineOutputBudget.Default,
                 Boundary = context.Boundary,

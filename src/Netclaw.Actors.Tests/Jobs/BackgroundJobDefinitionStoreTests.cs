@@ -78,7 +78,7 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
             Id = new BackgroundJobId(jobId),
             Command = "dotnet test",
             ManagedTemporaryDirectory = Path.Combine(_basePath, "managed-temp"),
-            ManagedTemporaryRoot = _basePath,
+            ManagedTemporaryAuthorityRoot = _basePath,
             SessionId = new Netclaw.Actors.Protocol.SessionId("C0ABC/1712000000.000001"),
             Rationale = "Run the test suite.",
             Status = BackgroundJobStatus.Pending,
@@ -116,7 +116,7 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
             Id = jobId,
             Command = "dotnet test",
             ManagedTemporaryDirectory = Path.Combine(_basePath, "managed-temp"),
-            ManagedTemporaryRoot = _basePath,
+            ManagedTemporaryAuthorityRoot = _basePath,
             SessionId = new Netclaw.Actors.Protocol.SessionId("C0ABC/1712000000.000001"),
             Rationale = "Run the test suite.",
             Status = BackgroundJobStatus.Completed,
@@ -175,7 +175,7 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
             Id = jobId,
             Command = "dotnet test",
             ManagedTemporaryDirectory = Path.Combine(_basePath, "managed-temp"),
-            ManagedTemporaryRoot = _basePath,
+            ManagedTemporaryAuthorityRoot = _basePath,
             SessionId = new Netclaw.Actors.Protocol.SessionId("C0ABC/1712000000.000001"),
             Rationale = "Run the test suite.",
             Status = BackgroundJobStatus.Completed,
@@ -277,7 +277,7 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
             Id = victimId,
             Command = "dotnet test",
             ManagedTemporaryDirectory = Path.Combine(_basePath, "managed-temp"),
-            ManagedTemporaryRoot = _basePath,
+            ManagedTemporaryAuthorityRoot = _basePath,
             SessionId = new Netclaw.Actors.Protocol.SessionId("C0ABC/1712000000.000001"),
             Rationale = "Run the test suite.",
             Status = BackgroundJobStatus.Completed,
@@ -322,7 +322,7 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
             Id = new BackgroundJobId("job-byte-eq"),
             Command = "dotnet test",
             ManagedTemporaryDirectory = Path.Combine(_basePath, "managed-temp"),
-            ManagedTemporaryRoot = _basePath,
+            ManagedTemporaryAuthorityRoot = _basePath,
             SessionId = new Netclaw.Actors.Protocol.SessionId("C0ABC/1712000000.000001"),
             Rationale = "Run the test suite.",
             Audience = TrustAudience.Team,
@@ -373,7 +373,7 @@ public sealed class BackgroundJobDefinitionStoreTests : IDisposable
         Assert.Equal(new BackgroundJobId(jobId), definition.Id);
         Assert.Equal(BackgroundJobStatus.Running, definition.Status);
         Assert.Null(definition.ManagedTemporaryDirectory);
-        Assert.Null(definition.ManagedTemporaryRoot);
+        Assert.Null(definition.ManagedTemporaryAuthorityRoot);
     }
 
     public void Dispose()

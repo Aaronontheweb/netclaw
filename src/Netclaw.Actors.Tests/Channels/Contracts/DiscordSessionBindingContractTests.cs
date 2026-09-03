@@ -55,7 +55,6 @@ public sealed class DiscordSessionBindingContractTests(ITestOutputHelper output)
             ContentScanner: new NullContentScanner(),
             AudienceProfiles: TestDiscordGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestDiscordGatewayDeps.DefaultVisionCapableModel,
-            Paths: TestDiscordGatewayDeps.NewTestPaths(),
                         StorageResolver: Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance,
             PromptInjectionDetector: detector);
 
@@ -197,7 +196,6 @@ public sealed class DiscordSessionBindingContractTests(ITestOutputHelper output)
             ContentScanner: new NullContentScanner(),
             AudienceProfiles: TestDiscordGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestDiscordGatewayDeps.DefaultVisionCapableModel,
-            Paths: TestDiscordGatewayDeps.NewTestPaths(),
                         StorageResolver: Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance,
             PromptInjectionDetector: detector,
             ThreadHistoryFetcher: historyFetcher);

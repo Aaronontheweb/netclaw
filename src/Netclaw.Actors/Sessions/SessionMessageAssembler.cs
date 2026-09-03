@@ -189,20 +189,7 @@ public static class SessionMessageAssembler
         }
         else
         {
-            var sessionBlock = $"[session]\nid: {input.SessionId.Value}" +
-                               $"\nsession_dir: {sessionDir}" +
-                               $"\ntemp_dir: {input.Storage.TemporaryDirectory}" +
-                               $"\nartifact_dir: {input.Storage.ArtifactDirectory}" +
-                               $"\nworktree_dir: {input.Storage.WorktreeDirectory}" +
-                               $"\nlog_path: {input.Storage.LogPath}" +
-                               $"\n{ToolChoiceGuidance.StructuredWorkspaceSelection}" +
-                               $"\n{ToolChoiceGuidance.DirectorySelectionOrder}" +
-                               $"\n{ToolChoiceGuidance.ShellCompositionOrder}" +
-                               "\ntemp_dir is private managed temporary storage for disposable files. " +
-                               "session_dir is the default workspace when no project is active. " +
-                               "Use an explicitly required platform temporary path unchanged. " +
-                               "Netclaw does not automatically clean managed temporary storage yet.";
-            parts.Add(sessionBlock);
+            parts.Add(SessionContextFormatter.Format(input.Storage, input.SessionId.Value));
         }
 
         if (input.FileReadGranted)

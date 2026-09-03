@@ -167,7 +167,6 @@ public sealed class SlackSessionBindingContractTests(ITestOutputHelper output)
             ThreadHistoryFetcher: historyFetcher ?? EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultTextOnlyModel,
-            Paths: paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(paths),
             PromptInjectionDetector: detector);
 

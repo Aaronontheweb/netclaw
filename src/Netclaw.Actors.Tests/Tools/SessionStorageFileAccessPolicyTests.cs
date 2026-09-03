@@ -88,7 +88,7 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
             "run-1");
 
         Assert.True(_policy.TryResolveWritePath(
-            Path.Combine(_storage.TemporaryDirectory, "result.txt"),
+            Path.Combine(_storage.ManagedTemporary.Directory, "result.txt"),
             _context,
             out _,
             out _));

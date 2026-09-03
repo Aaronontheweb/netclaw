@@ -500,7 +500,6 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
             cancellationToken: TestContext.Current.CancellationToken);
         await pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
 
-        Assert.True(executor.RetryMarked);
         var change = Assert.Single(completed.ManagedTemporaryCorrectionChanges);
         Assert.Equal(key, Assert.IsType<ManagedTemporaryCorrectionChange.Consume>(change).Key);
     }
@@ -547,11 +546,11 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
     public void Rationale_is_not_part_of_scratch_retry_semantics()
     {
         var call = ScratchCall("scratch-rationale");
-        var first = SessionToolExecutionPipeline.BuildManagedTemporaryCallSemantics(
+        var first = ManagedTemporaryCorrection.BuildCallSemantics(
             call,
             new ToolCallMeta { Rationale = "first explanation" },
             TimeSpan.FromSeconds(5));
-        var second = SessionToolExecutionPipeline.BuildManagedTemporaryCallSemantics(
+        var second = ManagedTemporaryCorrection.BuildCallSemantics(
             call,
             new ToolCallMeta { Rationale = "different explanation" },
             TimeSpan.FromSeconds(5));
@@ -1327,7 +1326,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
                 OldString: null,
                 NewString: null,
                 ReplaceAll: null),
-            TemporaryRoot: "/tmp",
+            PlatformTemporaryRoot: "/tmp",
             ManagedTemporaryDirectory: TestManagedTemporaryDirectory);
 
         public Task AuthorizeAsync(
@@ -1349,21 +1348,14 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
             {
                 AgentCorrection = new ToolAgentCorrection.ManagedTemporaryDirectorySuggested(
                     Key.ManagedTemporaryDirectory,
-                    Key.TemporaryRoot)
+                    Key.PlatformTemporaryRoot)
             });
     }
 
     private sealed class ManagedTemporaryRetryApprovalExecutor
-        : IToolExecutor, IManagedTemporaryRetryAwareExecutor
+        : IToolExecutor, IApprovalShellProvider
     {
         public ApprovalShell Shell => ApprovalShell.Bash;
-
-        public bool RetryMarked { get; private set; }
-
-        public void MarkManagedTemporaryRetry(
-            ToolExecutionContext context,
-            ToolAgentCorrection.ManagedTemporaryDirectorySuggested correction)
-            => RetryMarked = true;
 
         public Task AuthorizeAsync(
             FunctionCallContent toolCall,
@@ -1376,7 +1368,8 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
             ToolExecutionContext? context = null,
             CancellationToken ct = default)
         {
-            var options = RetryMarked
+            var retryMarked = context?.Approval.ManagedTemporaryRetry is not null;
+            var options = retryMarked
                 ? new ToolApprovalOption[]
                 {
                     new(ApprovalOptionKeys.ApproveOnceKey, ApprovalOptionKeys.ApproveOnceLabel),
@@ -1391,9 +1384,9 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
                 Options: options,
                 Cwd: "/tmp")
             {
-                IsManagedTemporaryRetry = RetryMarked,
+                IsManagedTemporaryRetry = retryMarked,
                 ManagedTemporaryDirectory = ManagedTemporaryCorrectionRequiredExecutor.Key.ManagedTemporaryDirectory,
-                PlatformTemporaryRoot = ManagedTemporaryCorrectionRequiredExecutor.Key.TemporaryRoot
+                PlatformTemporaryRoot = ManagedTemporaryCorrectionRequiredExecutor.Key.PlatformTemporaryRoot
             });
         }
     }

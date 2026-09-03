@@ -5,7 +5,6 @@
 // -----------------------------------------------------------------------
 using System.Diagnostics;
 using System.Collections.Frozen;
-using System.Collections.Concurrent;
 using Akka.Actor;
 using Akka.Event;
 using Microsoft.Extensions.AI;
@@ -42,88 +41,6 @@ internal sealed record ToolCallResult(
     string? FailureCode = null,
     ToolInvocationReceipt? Receipt = null,
     ToolExposureRequest? ExposureRequest = null);
-
-internal abstract record ManagedTemporaryCorrectionChange
-{
-    private ManagedTemporaryCorrectionChange()
-    {
-    }
-
-    internal sealed record Arm(ManagedTemporaryCorrectionKey Key) : ManagedTemporaryCorrectionChange;
-
-    internal sealed record Consume(ManagedTemporaryCorrectionKey Key) : ManagedTemporaryCorrectionChange;
-}
-
-internal sealed class ManagedTemporaryCorrectionDispatch
-{
-    internal static ManagedTemporaryCorrectionDispatch Empty { get; } = new([]);
-
-    private readonly IReadOnlyList<ManagedTemporaryCorrectionKey> _armed;
-    private readonly ConcurrentDictionary<ManagedTemporaryCorrectionKey, byte> _consumed = new();
-
-    internal ManagedTemporaryCorrectionDispatch(IEnumerable<ManagedTemporaryCorrectionKey> armed)
-        => _armed = Array.AsReadOnly(armed.ToArray());
-
-    internal bool TryConsume(
-        ManagedTemporaryCallSemantics call,
-        out ManagedTemporaryCorrectionKey key)
-    {
-        foreach (var candidate in _armed)
-        {
-            if (!HasSameExecutionSemantics(candidate.Call, call)
-                || !_consumed.TryAdd(candidate, 0))
-                continue;
-
-            key = candidate;
-            return true;
-        }
-
-        key = default;
-        return false;
-    }
-
-    private static bool HasSameExecutionSemantics(
-        ManagedTemporaryCallSemantics left,
-        ManagedTemporaryCallSemantics right)
-        => string.Equals(left.ToolName, right.ToolName, StringComparison.Ordinal)
-           && left.Shell == right.Shell
-           && string.Equals(left.Command, right.Command, StringComparison.Ordinal)
-           && left.HasExplicitWorkingDirectory == right.HasExplicitWorkingDirectory
-           && string.Equals(
-               left.ExplicitWorkingDirectory,
-               right.ExplicitWorkingDirectory,
-               StringComparison.Ordinal)
-           && left.Background == right.Background
-           && left.Timeout == right.Timeout
-           && string.Equals(left.Path, right.Path, StringComparison.Ordinal)
-           && string.Equals(left.Content, right.Content, StringComparison.Ordinal)
-           && string.Equals(left.OldString, right.OldString, StringComparison.Ordinal)
-           && string.Equals(left.NewString, right.NewString, StringComparison.Ordinal)
-           && left.ReplaceAll == right.ReplaceAll;
-}
-
-internal sealed class ManagedTemporaryCorrectionState
-{
-    private readonly HashSet<ManagedTemporaryCorrectionKey> _keys = [];
-
-    internal ManagedTemporaryCorrectionDispatch Snapshot()
-        => new(_keys);
-
-    internal void Apply(ManagedTemporaryCorrectionChange? change)
-    {
-        switch (change)
-        {
-            case ManagedTemporaryCorrectionChange.Arm arm:
-                _keys.Add(arm.Key);
-                break;
-            case ManagedTemporaryCorrectionChange.Consume consume:
-                _keys.Remove(consume.Key);
-                break;
-        }
-    }
-
-    internal void Clear() => _keys.Clear();
-}
 
 internal sealed record ModelInputMaterializationResult(
     IReadOnlyList<SerializableMediaReference> MediaReferences,
@@ -243,7 +160,7 @@ internal sealed class SessionToolBatch
         TurnContext = turnContext;
         RunScope = new ToolRunScope
         {
-            Session = ToolSessionScope.Bound.WithStorage(turnContext.SessionId.Value, environment.Storage),
+            Session = new ToolSessionScope.Bound(turnContext.SessionId.Value, environment.Storage),
             Audience = turnContext.Audience,
             Boundary = turnContext.Boundary,
             ChannelType = turnContext.ChannelType?.ToWireValue(),
@@ -641,21 +558,18 @@ internal sealed class SessionToolExecutionPipeline
             new ToolExecutionTimeout(timeout),
             outputs);
         context.Approval.RestoreAuthorizationAttemptId(authorizationAttemptId);
-        var scratchShell = _executor is IManagedTemporaryRetryAwareExecutor scratchAwareExecutor
-            ? scratchAwareExecutor.Shell
+        var approvalShell = _executor is IApprovalShellProvider shellProvider
+            ? shellProvider.Shell
             : ApprovalShell.Bash;
-        var scratchCall = BuildManagedTemporaryCallSemantics(tc, meta, timeout, scratchShell);
+        var managedTemporaryCall = ManagedTemporaryCorrection.BuildCallSemantics(tc, meta, timeout, approvalShell);
         ManagedTemporaryCorrectionKey? consumedManagedTemporaryKey = null;
-        if (scratchCall is { } call
-            && batch.ManagedTemporaryCorrections.TryConsume(call, out var correctionKey)
-            && _executor is IManagedTemporaryRetryAwareExecutor retryAwareExecutor)
+        if (managedTemporaryCall is { } call
+            && batch.ManagedTemporaryCorrections.TryConsume(call, out var correctionKey))
         {
             consumedManagedTemporaryKey = correctionKey;
-            retryAwareExecutor.MarkManagedTemporaryRetry(
-                context,
-                new ToolAgentCorrection.ManagedTemporaryDirectorySuggested(
-                    correctionKey.ManagedTemporaryDirectory,
-                    correctionKey.TemporaryRoot));
+            context.Approval.MarkManagedTemporaryRetry(new ManagedTemporaryRetry(
+                correctionKey.ManagedTemporaryDirectory,
+                correctionKey.PlatformTemporaryRoot));
         }
 
         // Re-drive of an ApprovedOnce approval: the user already clicked
@@ -680,7 +594,7 @@ internal sealed class SessionToolExecutionPipeline
                 if (decisionOverride == ApprovalDecision.Denied
                     && managedTemporaryDenialDirectory is { Length: > 0 })
                 {
-                    resultText = $"{resultText}\n{BuildManagedTemporaryDenialHint(managedTemporaryDenialDirectory)}";
+                    resultText = $"{resultText}\n{ManagedTemporaryCorrection.BuildDenialHint(managedTemporaryDenialDirectory)}";
                 }
 
                 var deniedMessage = new SerializableChatMessage
@@ -770,13 +684,14 @@ internal sealed class SessionToolExecutionPipeline
         {
             if (approvalEx.ApprovalContext.AgentCorrection is
                 ToolAgentCorrection.ManagedTemporaryDirectorySuggested managedTemporaryCorrection
-                && scratchCall is { } correctedCall)
+                && managedTemporaryCall is { } correctedCall)
             {
                 sw.Stop();
-                resultText = BuildManagedTemporaryCorrection(managedTemporaryCorrection.ManagedTemporaryDirectory);
+                resultText = ManagedTemporaryCorrection.BuildSuggestion(
+                    managedTemporaryCorrection.ManagedTemporaryDirectory);
                 var newCorrectionKey = new ManagedTemporaryCorrectionKey(
                     correctedCall,
-                    managedTemporaryCorrection.TemporaryRoot,
+                    managedTemporaryCorrection.PlatformTemporaryRoot,
                     managedTemporaryCorrection.ManagedTemporaryDirectory);
                 var correctionReceipt = new ToolInvocationReceipt(
                     ToolInvocationOutcomeCategory.RecoverableCorrection,
@@ -1020,58 +935,6 @@ internal sealed class SessionToolExecutionPipeline
     internal static string BuildNativeToolCorrection(ToolName toolName)
         => $"Shell execution stopped because '{toolName.Value}' is a native Netclaw tool.";
 
-    internal static ManagedTemporaryCallSemantics? BuildManagedTemporaryCallSemantics(
-        FunctionCallContent toolCall,
-        ToolCallMeta? meta,
-        TimeSpan timeout,
-        ApprovalShell shell = ApprovalShell.Bash)
-    {
-        if (string.Equals(toolCall.Name, Tools.ShellTool.ToolName, StringComparison.Ordinal))
-        {
-            var command = ToolArgumentHelper.GetString(toolCall.Arguments, "Command")
-                ?? ToolArgumentHelper.GetString(toolCall.Arguments, "command");
-            if (string.IsNullOrWhiteSpace(command))
-                return null;
-
-            var explicitCwd = ToolArgumentHelper.GetString(toolCall.Arguments, "WorkingDirectory");
-            return new ManagedTemporaryCallSemantics(
-                ToolName: toolCall.Name,
-                Shell: shell,
-                Command: command,
-                HasExplicitWorkingDirectory: !string.IsNullOrWhiteSpace(explicitCwd),
-                ExplicitWorkingDirectory: explicitCwd,
-                Background: meta?.Background == true,
-                Timeout: timeout,
-                Path: null,
-                Content: null,
-                OldString: null,
-                NewString: null,
-                ReplaceAll: null);
-        }
-
-        if (toolCall.Name is not (FileWriteTool.ToolName or FileEditTool.ToolName))
-            return null;
-
-        var path = ToolArgumentHelper.GetString(toolCall.Arguments, "Path")
-            ?? ToolArgumentHelper.GetString(toolCall.Arguments, "path");
-        if (string.IsNullOrWhiteSpace(path))
-            return null;
-
-        return new ManagedTemporaryCallSemantics(
-            ToolName: toolCall.Name,
-            Shell: null,
-            Command: null,
-            HasExplicitWorkingDirectory: false,
-            ExplicitWorkingDirectory: null,
-            Background: false,
-            Timeout: timeout,
-            Path: path,
-            Content: ToolArgumentHelper.GetString(toolCall.Arguments, "Content"),
-            OldString: ToolArgumentHelper.GetString(toolCall.Arguments, "OldString"),
-            NewString: ToolArgumentHelper.GetString(toolCall.Arguments, "NewString"),
-            ReplaceAll: ToolArgumentHelper.GetBoolStrict(toolCall.Arguments, "ReplaceAll"));
-    }
-
     private static async Task<string> ExecuteToolAttemptAsync(
         IToolExecutor executor,
         FunctionCallContent toolCall,
@@ -1253,8 +1116,8 @@ internal sealed class SessionToolExecutionPipeline
         {
             Command = command,
             WorkingDirectory = workingDirectory,
-            ManagedTemporaryDirectory = storage.TemporaryDirectory,
-            ManagedTemporaryRoot = storage.TemporaryDirectoryRoot,
+            ManagedTemporaryDirectory = storage.ManagedTemporary.Directory,
+            ManagedTemporaryAuthorityRoot = storage.ManagedTemporary.AuthorityRoot,
             SessionId = batch.SessionId,
             Rationale = meta.Rationale ?? "background shell execution",
             Audience = batch.TurnContext.Audience,
@@ -1464,10 +1327,6 @@ internal sealed class SessionToolExecutionPipeline
     private static bool CanRequestInteractiveApproval(TurnContext turnContext)
         => turnContext.SupportsInteractiveApproval && turnContext.HasApprovalRequester;
 
-    internal static string BuildManagedTemporaryCorrection(string managedTemporaryDirectory)
-        => "Tool execution deferred: use_managed_temporary_directory\n" +
-           $"Managed temporary directory: '{managedTemporaryDirectory}'.";
-
     /// <summary>
     /// Builds the agent-facing correction for reviewed-safe shell work whose
     /// requested directory has not yet been declared as project scope.
@@ -1523,7 +1382,7 @@ internal sealed class SessionToolExecutionPipeline
                 ManagedTemporaryDirectory: { Length: > 0 } managedTemporaryDirectory
             })
         {
-            return BuildManagedTemporaryDenialHint(managedTemporaryDirectory);
+            return ManagedTemporaryCorrection.BuildDenialHint(managedTemporaryDirectory);
         }
 
         if (!setWorkingDirectoryAvailable)
@@ -1547,10 +1406,6 @@ internal sealed class SessionToolExecutionPipeline
 
         return $"Hint: '{cwd}' is outside the session's trusted scope. Call set_working_directory \"{cwd}\" first, then retry — that brings the directory into your trusted scope so the approval policy can reason about it.";
     }
-
-    internal static string BuildManagedTemporaryDenialHint(string managedTemporaryDirectory)
-        => $"Hint: Use the managed temporary directory '{managedTemporaryDirectory}' for disposable artifacts. " +
-           "The shared platform temporary root remains outside the session's trusted scope.";
 
     private static bool IsCwdInsideSafeSpace(string cwd, string? safeSpace)
     {

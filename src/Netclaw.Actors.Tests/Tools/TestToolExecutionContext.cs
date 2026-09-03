@@ -44,7 +44,7 @@ internal static class TestToolExecutionContext
         string sessionId,
         SessionStoragePaths storage,
         TestToolExecutionContextOptions options)
-        => Create(ToolSessionScope.Bound.WithStorage(sessionId, storage), options);
+        => Create(new ToolSessionScope.Bound(sessionId, storage), options);
 
     private static ToolExecutionContext Create(ToolSessionScope session, TestToolExecutionContextOptions options)
     {
@@ -76,18 +76,17 @@ internal static class TestToolExecutionContext
 
     private static ToolSessionScope CreateSessionScope(string sessionId, string? sessionDirectory)
     {
-        if (sessionDirectory is null
-            || sessionDirectory.Any(char.IsControl)
-            || !Path.IsPathFullyQualified(sessionDirectory))
-        {
-            return new ToolSessionScope.Bound(sessionId, sessionDirectory);
-        }
+        var resolvedSessionDirectory = sessionDirectory is not null
+            && !sessionDirectory.Any(char.IsControl)
+            && Path.IsPathFullyQualified(sessionDirectory)
+                ? Path.GetFullPath(sessionDirectory)
+                : Path.Combine(AppContext.BaseDirectory, "netclaw-test-session-workspace");
 
         var storage = SessionStoragePaths.CreateLegacy(
-            Path.GetFullPath(sessionDirectory),
-            Path.Combine(Path.GetTempPath(), "netclaw-test-session-logs"),
+            resolvedSessionDirectory,
+            Path.Combine(AppContext.BaseDirectory, "netclaw-test-session-logs"),
             "test-session");
-        return ToolSessionScope.Bound.WithStorage(sessionId, storage);
+        return new ToolSessionScope.Bound(sessionId, storage);
     }
 }
 

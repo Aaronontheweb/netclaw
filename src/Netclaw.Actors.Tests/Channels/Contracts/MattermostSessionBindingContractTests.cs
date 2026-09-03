@@ -60,7 +60,6 @@ public sealed class MattermostSessionBindingContractTests(ITestOutputHelper outp
             ContentScanner: new NullContentScanner(),
             AudienceProfiles: TestMattermostGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestMattermostGatewayDeps.DefaultVisionCapableModel,
-            Paths: TestMattermostGatewayDeps.NewTestPaths(),
                         StorageResolver: Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance,
             PromptInjectionDetector: detector);
 
@@ -200,7 +199,6 @@ public sealed class MattermostSessionBindingContractTests(ITestOutputHelper outp
             ContentScanner: new NullContentScanner(),
             AudienceProfiles: TestMattermostGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestMattermostGatewayDeps.DefaultVisionCapableModel,
-            Paths: TestMattermostGatewayDeps.NewTestPaths(),
                         StorageResolver: Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance,
             PromptInjectionDetector: detector,
             ThreadHistoryFetcher: historyFetcher);
@@ -398,7 +396,6 @@ public sealed class MattermostSessionBindingContractTests(ITestOutputHelper outp
             ContentScanner: new NullContentScanner(),
             AudienceProfiles: TestMattermostGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestMattermostGatewayDeps.DefaultVisionCapableModel,
-            Paths: TestMattermostGatewayDeps.NewTestPaths(),
                         StorageResolver: Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance,
             CallbackUrl: options.CallbackUrl,
             PromptInjectionDetector: detector,

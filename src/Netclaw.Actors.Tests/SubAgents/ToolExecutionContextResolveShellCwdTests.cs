@@ -59,7 +59,7 @@ public class ToolExecutionContextResolveShellCwdTests
     [Fact]
     public void Inherited_cwd_is_last_resort_fallback_before_null()
     {
-        var context = TestToolExecutionContext.CreateBound("sess", null, new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateUnbound(new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             InheritedCwd = "/home/user/repos/inherited",
@@ -74,7 +74,7 @@ public class ToolExecutionContextResolveShellCwdTests
         // Cwd is the per-call resolved output the approval gate writes; it
         // must not feed back into ResolveShellCwd or a stale value could
         // shadow a later ProjectDirectory/SessionDirectory change.
-        var context = TestToolExecutionContext.CreateBound("sess", null, new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateUnbound(new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             Cwd = "/stale/cwd",
@@ -86,7 +86,7 @@ public class ToolExecutionContextResolveShellCwdTests
     [Fact]
     public void Returns_null_when_no_source_is_available()
     {
-        var context = TestToolExecutionContext.CreateBound("sess", null, new TestToolExecutionContextOptions
+        var context = TestToolExecutionContext.CreateUnbound(new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
         });

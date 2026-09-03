@@ -258,7 +258,6 @@ public sealed class MattermostThreadHistoryFetcherTests
             BotUserId,
             profiles ?? TestMattermostGatewayDeps.DefaultAudienceProfiles,
             modelCapabilities ?? TestMattermostGatewayDeps.DefaultVisionCapableModel,
-            testPaths,
             NullLogger<MattermostThreadHistoryFetcher>.Instance,
             new Netclaw.Actors.Protocol.TestSessionStorageResolver(testPaths));
     }

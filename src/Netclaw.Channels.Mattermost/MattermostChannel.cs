@@ -32,7 +32,6 @@ public sealed class MattermostChannel : IChannel
     private readonly ILogger<MattermostChannel> _logger;
     private readonly ToolAudienceProfiles _audienceProfiles;
     private readonly ModelCapabilities _modelCapabilities;
-    private readonly NetclawPaths _paths;
     private readonly ISessionStorageResolver _storageResolver;
     private readonly MattermostCallbackActionStore? _callbackActionStore;
 
@@ -64,7 +63,6 @@ public sealed class MattermostChannel : IChannel
         ILogger<MattermostChannel> logger,
         ToolConfig toolConfig,
         ModelCapabilities modelCapabilities,
-        NetclawPaths paths,
         ISessionStorageResolver storageResolver,
         MattermostCallbackActionStore? callbackActionStore = null)
     {
@@ -84,7 +82,6 @@ public sealed class MattermostChannel : IChannel
         _logger = logger;
         _audienceProfiles = toolConfig.AudienceProfiles;
         _modelCapabilities = modelCapabilities;
-        _paths = paths;
         _storageResolver = storageResolver;
         _callbackActionStore = callbackActionStore;
 
@@ -201,7 +198,6 @@ public sealed class MattermostChannel : IChannel
                 ContentScanner: _contentScanner,
                 AudienceProfiles: _audienceProfiles,
                 ModelCapabilities: _modelCapabilities,
-                Paths: _paths,
                 StorageResolver: _storageResolver,
                 ServerUrl: serverUrl,
                 CallbackUrl: _options.CallbackUrl,

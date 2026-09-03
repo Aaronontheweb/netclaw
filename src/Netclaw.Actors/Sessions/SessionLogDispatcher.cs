@@ -20,6 +20,9 @@ public sealed class SessionLogDispatcher : ReceiveActor
     private readonly Dictionary<string, IActorRef> _writers = new(StringComparer.Ordinal);
     private readonly Dictionary<IActorRef, string> _paths = [];
 
+    /// <summary>Creates a dispatcher that resolves each session before it creates a writer.</summary>
+    /// <param name="storageResolver">Resolves the immutable parent and child log paths.</param>
+    /// <param name="timeProvider">Supplies timestamps to each log writer.</param>
     public SessionLogDispatcher(
         ISessionStorageResolver storageResolver,
         TimeProvider timeProvider)

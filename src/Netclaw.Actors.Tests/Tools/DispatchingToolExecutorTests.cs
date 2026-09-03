@@ -735,8 +735,9 @@ public class DispatchingToolExecutorTests
             new ShellCommandPolicy(),
             toolAccessPolicy: TestToolAccessPolicy.Create(config));
         var approvedMatch = new ToolApprovalMatch("git status", "session", "this chat");
-        var approvedCandidate = BashCandidate("git status");
-        var unapprovedCandidate = BashCandidate("git push");
+        var context = CreateInteractivePersonalContext("signalr/thread-exact-partial-approval");
+        var approvedCandidate = BashCandidate("git status", context.SessionDirectory);
+        var unapprovedCandidate = BashCandidate("git push", context.SessionDirectory);
         var approvalService = new FixedApprovalService(
             new ToolApprovalCheckResult(
                 ["git push"],
@@ -764,8 +765,6 @@ public class DispatchingToolExecutorTests
             "call-exact-partial-approval",
             "shell_execute",
             ToolInput.Create("Command", "git status && git push"));
-        var context = CreateInteractivePersonalContext("signalr/thread-exact-partial-approval");
-
         var decision = await executor.EvaluateAuthorizationAsync(
             call,
             context,

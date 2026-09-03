@@ -469,7 +469,7 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
-    public async Task Tool_execution_with_null_parent_cwd_resolves_to_session_dir_or_null()
+    public async Task Tool_execution_with_null_parent_cwd_resolves_to_child_session_directory()
     {
         var fakeTool = new FakeNetclawTool("inspect_context", "ok");
         var fakeClient = new FakeChatClient
@@ -491,37 +491,7 @@ public class SubAgentActorTests : TestKit
         Assert.True(result.Success);
         Assert.NotNull(fakeTool.LastContext);
         Assert.Null(fakeTool.LastContext!.InheritedCwd);
-        Assert.Null(fakeTool.LastContext.ResolveShellCwd(null));
-    }
-
-    [Fact]
-    public async Task Tool_execution_inherits_parent_cwd_when_child_has_no_project_or_session_dir()
-    {
-        // The original bug shape: a sub-agent whose parent had a resolved cwd
-        // but no ProjectDirectory/SessionDirectory propagating to the child.
-        // InheritedCwd is the only path that surfaces the parent's effective
-        // working directory to the approval gate; without it, the prompt
-        // header reads "(no working directory)".
-        var fakeTool = new FakeNetclawTool("inspect_context", "ok");
-        var fakeClient = new FakeChatClient
-        {
-            ToolCallsOnFirstCall = [CreateToolCall("call-inherit-only", "inspect_context")]
-        };
-
-        var agent = Sys.ActorOf(SubAgentActor.CreateProps(CreateDefinition([fakeTool]), fakeClient, PermissivePolicy()));
-
-        var result = await agent.Ask<SubAgentResult>(
-            new RunSubAgent
-            {
-                Scope = SubAgentTestScope.Create(inheritedCwd: "/home/user/repos/foo"),
-                Task = "Inspect inherited cwd with no other sources.",
-                Timeout = TimeSpan.FromSeconds(5)
-            },
-            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
-
-        Assert.True(result.Success);
-        Assert.NotNull(fakeTool.LastContext);
-        Assert.Equal("/home/user/repos/foo", fakeTool.LastContext!.ResolveShellCwd(null));
+        Assert.Equal(fakeTool.LastContext.SessionDirectory, fakeTool.LastContext.ResolveShellCwd(null));
     }
 
     [Fact]
@@ -2038,7 +2008,7 @@ public class SubAgentActorTests : TestKit
     }
 
     [Fact]
-    public async Task Null_RuntimeContext_leaves_first_user_message_as_raw_task()
+    public async Task Null_runtime_context_still_includes_session_storage_context()
     {
         var fakeClient = new FakeChatClient();
         var definition = CreateDefinition();
@@ -2055,8 +2025,10 @@ public class SubAgentActorTests : TestKit
 
         Assert.True(result.Success);
         Assert.NotNull(fakeClient.LastReceivedMessages);
-        Assert.Equal("Do the thing.", fakeClient.LastReceivedMessages[1].Text);
-        Assert.DoesNotContain("Context:", fakeClient.LastReceivedMessages[1].Text);
+        var userText = fakeClient.LastReceivedMessages[1].Text;
+        Assert.Contains("Context:", userText);
+        Assert.Contains("[session]", userText);
+        Assert.Contains("Task:\nDo the thing.", userText);
     }
 
     [Fact]

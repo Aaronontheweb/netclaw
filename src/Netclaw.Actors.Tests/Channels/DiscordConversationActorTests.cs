@@ -502,7 +502,6 @@ public sealed class DiscordConversationActorTests(ITestOutputHelper output) : Te
             ContentScanner: new NullContentScanner(),
             AudienceProfiles: TestDiscordGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestDiscordGatewayDeps.DefaultVisionCapableModel,
-            Paths: TestDiscordGatewayDeps.NewTestPaths(),
                         StorageResolver: Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance,
             BotUserId: botUserId,
             PromptInjectionDetector: SafePromptInjectionDetector.Instance,

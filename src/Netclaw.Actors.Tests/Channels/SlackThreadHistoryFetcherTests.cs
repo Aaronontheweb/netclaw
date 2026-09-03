@@ -41,7 +41,6 @@ public sealed class SlackThreadHistoryFetcherTests
             options ?? _options,
             new HttpClient(handler ?? new FakeHttpHandler()),
             scanner ?? new NullContentScanner(),
-            testPaths,
             profiles ?? ToolAudienceProfileDefaults.CreateProfiles(),
             modelCapabilities ?? TestSlackGatewayDeps.DefaultVisionCapableModel,
             NullLogger<SlackThreadHistoryFetcher>.Instance,

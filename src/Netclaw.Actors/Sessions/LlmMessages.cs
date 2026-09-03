@@ -8,6 +8,7 @@ using Microsoft.Extensions.AI;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Sessions.Pipelines;
 using Netclaw.Actors.SubAgents;
+using Netclaw.Actors.Tools;
 using Netclaw.Tools;
 
 namespace Netclaw.Actors.Sessions;

@@ -125,7 +125,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             HttpClient: httpClient,
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
@@ -213,7 +212,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             HttpClient: httpClient,
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
@@ -290,7 +288,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             HttpClient: httpClient,
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
@@ -363,7 +360,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: new AlwaysHighRiskPromptInjectionDetector());
 
@@ -418,7 +414,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -474,7 +469,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -552,7 +546,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -629,7 +622,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -690,7 +682,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -756,7 +747,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -849,7 +839,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -923,7 +912,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -997,7 +985,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -1066,7 +1053,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -1130,7 +1116,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -1195,7 +1180,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
 
@@ -1247,7 +1231,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             HttpClient: httpClient,
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
@@ -1313,7 +1296,6 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: _paths,
             StorageResolver: new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths),
             HttpClient: httpClient,
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
@@ -1355,8 +1337,9 @@ public sealed class SlackFileFlowIntegrationTests : TestKit
             m => m.Text.Contains("Couldn't scan `drawing.png`", StringComparison.Ordinal));
 
         var sessionId = new SessionId("D_FS/11000.1");
-        var inboxDir = SessionDirectoryHelper.GetOrCreateInboxDirectory(sessionId, _paths.SessionsDirectory);
-        var stagingDir = SessionDirectoryHelper.GetOrCreateAttachmentStagingDirectory(sessionId, _paths.SessionsDirectory);
+        var storage = new Netclaw.Actors.Protocol.TestSessionStorageResolver(_paths).Resolve(sessionId);
+        var inboxDir = SessionDirectoryHelper.GetOrCreateInboxDirectory(storage);
+        var stagingDir = SessionDirectoryHelper.GetOrCreateAttachmentStagingDirectory(storage);
         Assert.Empty(Directory.GetFiles(inboxDir));
         Assert.Empty(Directory.GetFiles(stagingDir));
     }

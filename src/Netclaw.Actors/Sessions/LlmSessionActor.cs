@@ -3293,7 +3293,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             });
             var context = new ToolExecutionContext(new ToolRunScope
             {
-                Session = ToolSessionScope.Bound.WithStorage(_sessionId.Value, _sessionStorage),
+                Session = new ToolSessionScope.Bound(_sessionId.Value, _sessionStorage),
                 // No active turn context/source carries no trust context — fall closed.
                 Audience = _currentTurnContext?.Audience ?? _currentTurnSource?.Audience ?? TrustAudience.Public,
                 InlineOutputBudget = new InlineOutputBudget(_config.Tuning.MaxInlineToolResultChars),

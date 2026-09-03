@@ -84,13 +84,10 @@ public interface IToolExecutor
     }
 }
 
-internal interface IManagedTemporaryRetryAwareExecutor
+/// <summary>Exposes the shell grammar used to compare one managed-temporary correction retry.</summary>
+internal interface IApprovalShellProvider
 {
     ApprovalShell Shell { get; }
-
-    void MarkManagedTemporaryRetry(
-        ToolExecutionContext context,
-        ToolAgentCorrection.ManagedTemporaryDirectorySuggested correction);
 }
 
 /// <summary>

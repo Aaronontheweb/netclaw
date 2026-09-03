@@ -17,6 +17,13 @@ namespace Netclaw.Actors.Sessions;
 /// <summary>
 /// Core runtime services required by every session actor.
 /// </summary>
+/// <param name="ClientProvider">Resolves the selected chat client.</param>
+/// <param name="PromptProvider">Supplies the system prompt.</param>
+/// <param name="ContextLayers">Supplies model context layers.</param>
+/// <param name="WorkingContextSnapshots">Captures current working-context state.</param>
+/// <param name="TimeProvider">Supplies testable time.</param>
+/// <param name="Paths">Supplies process-wide configuration paths.</param>
+/// <param name="StorageResolver">Resolves the immutable storage layout for this session.</param>
 public sealed record SessionServices(
     IChatClientProvider ClientProvider,
     ISystemPromptProvider PromptProvider,

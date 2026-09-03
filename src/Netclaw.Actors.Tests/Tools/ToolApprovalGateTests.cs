@@ -1049,7 +1049,9 @@ public sealed class ToolApprovalGateTests
         public FakeShellTrustZonePolicy(IReadOnlyList<string> roots) => _roots = roots;
 
         public bool IsShellWritePathAuthorized(string fullPath, ToolInvocationContext context)
-            => PathUtility.IsWithinAnyRoot(fullPath, _roots);
+            => PathUtility.IsWithinAnyRoot(
+                fullPath,
+                _roots.Concat(context.SessionStorage?.CurrentSessionRoots ?? []).ToArray());
     }
 
     // ── v2 candidate-verb extraction (replaces v1 directory-root extraction) ──
@@ -1154,9 +1156,10 @@ public sealed class ToolApprovalGateTests
         // verb family (`git push *`), making them safer by construction.
         Assert.Equal(["git push origin main"], decision.ApprovalContext!.CandidateVerbs);
         var sessionOption = decision.ApprovalContext.Options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveSession);
-        var alwaysOption = decision.ApprovalContext.Options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveAlways);
         Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, sessionOption.Label);
-        Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, alwaysOption.Label);
+        Assert.DoesNotContain(
+            decision.ApprovalContext.Options,
+            option => option.Key.Value == ApprovalOptionKeys.ApproveAlways);
     }
 
     // Regression pin for issue #931 — long directory paths must not produce

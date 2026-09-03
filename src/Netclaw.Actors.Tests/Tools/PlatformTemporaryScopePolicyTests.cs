@@ -38,7 +38,7 @@ public sealed class PlatformTemporaryScopePolicyTests
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
         var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
         Assert.Equal(Path.Combine(PosixSession, "tmp", "parent"), correction.ManagedTemporaryDirectory);
-        Assert.Equal(PosixTemp, correction.TemporaryRoot);
+        Assert.Equal(PosixTemp, correction.PlatformTemporaryRoot);
         Assert.Null(context.SuggestedProjectDirectory);
     }
 
@@ -56,7 +56,7 @@ public sealed class PlatformTemporaryScopePolicyTests
 
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
         var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
-        Assert.Equal("/private/tmp", correction.TemporaryRoot);
+        Assert.Equal("/private/tmp", correction.PlatformTemporaryRoot);
     }
 
     [SlopwatchSuppress("SW001", "This theory requires a POSIX storage path and Bash temporary path semantics.")]
@@ -100,7 +100,7 @@ public sealed class PlatformTemporaryScopePolicyTests
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
         var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(
             context.AgentCorrection);
-        Assert.Equal("/private/tmp", correction.TemporaryRoot);
+        Assert.Equal("/private/tmp", correction.PlatformTemporaryRoot);
     }
 
     [Fact]
@@ -401,7 +401,7 @@ public sealed class PlatformTemporaryScopePolicyTests
 
             var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
             var correction = Assert.IsType<ToolAgentCorrection.ManagedTemporaryDirectorySuggested>(context.AgentCorrection);
-            Assert.Equal(realTemp, correction.TemporaryRoot);
+            Assert.Equal(realTemp, correction.PlatformTemporaryRoot);
         }
         finally
         {

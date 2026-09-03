@@ -8,8 +8,14 @@ using Netclaw.Security;
 
 namespace Netclaw.Actors.Tools;
 
+/// <summary>Prepares a child process to use one session-owned temporary directory.</summary>
 internal static class ManagedTemporaryEnvironment
 {
+    /// <summary>
+    /// Validates and creates the directory, checks filesystem links before and after creation,
+    /// and sets the standard temporary environment variables on the child process only.
+    /// </summary>
+    /// <returns><c>null</c> on success; otherwise, a stable error that prevents process launch.</returns>
     internal static string? Prepare(
         ProcessStartInfo startInfo,
         string temporaryDirectory,

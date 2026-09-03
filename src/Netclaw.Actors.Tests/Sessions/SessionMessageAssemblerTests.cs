@@ -378,7 +378,7 @@ public sealed class SessionMessageAssemblerTests
         var expectedStorage = input.Storage;
 
         Assert.Contains($"session_dir: {expectedStorage.SessionDirectory}", text);
-        Assert.Contains($"temp_dir: {expectedStorage.TemporaryDirectory}", text);
+        Assert.Contains($"temp_dir: {expectedStorage.ManagedTemporary.Directory}", text);
         Assert.Contains($"artifact_dir: {expectedStorage.ArtifactDirectory}", text);
         Assert.Contains($"worktree_dir: {expectedStorage.WorktreeDirectory}", text);
         Assert.Contains($"log_path: {expectedStorage.LogPath}", text);

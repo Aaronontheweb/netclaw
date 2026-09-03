@@ -10,38 +10,6 @@ using ShellSyntaxTree;
 
 namespace Netclaw.Actors.Tools;
 
-internal abstract record ToolAgentCorrection
-{
-    private ToolAgentCorrection()
-    {
-    }
-
-    internal sealed record ManagedTemporaryDirectorySuggested(
-        string ManagedTemporaryDirectory,
-        string TemporaryRoot) : ToolAgentCorrection;
-
-    internal sealed record NativeToolSuggested(ToolName ToolName) : ToolAgentCorrection;
-}
-
-internal readonly record struct ManagedTemporaryCallSemantics(
-    string ToolName,
-    ApprovalShell? Shell,
-    string? Command,
-    bool HasExplicitWorkingDirectory,
-    string? ExplicitWorkingDirectory,
-    bool Background,
-    TimeSpan Timeout,
-    string? Path,
-    string? Content,
-    string? OldString,
-    string? NewString,
-    bool? ReplaceAll);
-
-internal readonly record struct ManagedTemporaryCorrectionKey(
-    ManagedTemporaryCallSemantics Call,
-    string TemporaryRoot,
-    string ManagedTemporaryDirectory);
-
 /// <summary>
 /// Identifies advice-only calls that explicitly use the shared platform temp root.
 /// This policy grants no authority and does not change the submitted call.
@@ -102,7 +70,7 @@ internal sealed class PlatformTemporaryScopePolicy
             || context.RunScope.InteractiveApproval is not InteractiveApprovalCapability.Available
             || context.Audience != TrustAudience.Personal
             || !TryNormalizeManagedTemporaryDirectory(
-                context.SessionStorage?.TemporaryDirectory,
+                context.SessionStorage?.ManagedTemporary.Directory,
                 out var managedTemporaryDirectory)
             || !TryGetExplicitTemporaryRoot(analysis, arguments, out var temporaryRoot)
             || !AllScopesStayWithinTemporaryRoot(analysis, candidates, temporaryRoot))
@@ -125,7 +93,7 @@ internal sealed class PlatformTemporaryScopePolicy
             || context.RunScope.InteractiveApproval is not InteractiveApprovalCapability.Available
             || context.Audience != TrustAudience.Personal
             || !TryNormalizeManagedTemporaryDirectory(
-                context.SessionStorage?.TemporaryDirectory,
+                context.SessionStorage?.ManagedTemporary.Directory,
                 out var managedTemporaryDirectory))
         {
             return null;

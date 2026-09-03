@@ -31,9 +31,9 @@ public sealed class SessionLogActorTests : TestKit
         TimeSpan? idleTimeout = null) =>
         sys.ActorOf(GenericChildPerEntityParent.CreateProps(
             new SessionMessageExtractor(),
-            entityId => SessionLogActor.CreateProps(
+            entityId => SessionLogActor.CreatePropsForPath(
                 new SessionId(entityId),
-                basePath,
+                new SessionLogPath(SessionLogFile.GetLogPath(new SessionId(entityId), basePath)),
                 timeProvider,
                 idleTimeout)));
 

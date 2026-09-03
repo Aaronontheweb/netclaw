@@ -43,7 +43,6 @@ public sealed class SlackChannel : IChannel, IEventHandler<MessageEvent>, IEvent
     private readonly IThreadHistoryFetcher _threadHistoryFetcher;
     private readonly ToolAudienceProfiles _audienceProfiles;
     private readonly ModelCapabilities _modelCapabilities;
-    private readonly NetclawPaths _paths;
     private readonly ISessionStorageResolver _storageResolver;
 
     private IActorRef? _gateway;
@@ -79,7 +78,6 @@ public sealed class SlackChannel : IChannel, IEventHandler<MessageEvent>, IEvent
         IThreadHistoryFetcher threadHistoryFetcher,
         ToolConfig toolConfig,
         ModelCapabilities modelCapabilities,
-        NetclawPaths paths,
         ISessionStorageResolver storageResolver)
     {
         _pipeline = pipeline;
@@ -103,7 +101,6 @@ public sealed class SlackChannel : IChannel, IEventHandler<MessageEvent>, IEvent
         _threadHistoryFetcher = threadHistoryFetcher ?? throw new ArgumentNullException(nameof(threadHistoryFetcher));
         _audienceProfiles = toolConfig.AudienceProfiles;
         _modelCapabilities = modelCapabilities;
-        _paths = paths;
         _storageResolver = storageResolver;
     }
 
@@ -256,7 +253,6 @@ public sealed class SlackChannel : IChannel, IEventHandler<MessageEvent>, IEvent
                 ThreadHistoryFetcher: _threadHistoryFetcher,
                 AudienceProfiles: _audienceProfiles,
                 ModelCapabilities: _modelCapabilities,
-                Paths: _paths,
                 StorageResolver: _storageResolver,
                 HttpClient: httpClient,
                 PromptInjectionDetector: _promptInjectionDetector)),

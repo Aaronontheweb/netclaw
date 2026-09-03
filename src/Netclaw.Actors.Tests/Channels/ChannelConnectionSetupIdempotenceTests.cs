@@ -67,7 +67,6 @@ public sealed class ChannelConnectionSetupIdempotenceTests(ITestOutputHelper out
                 AudienceProfiles = TestDiscordGatewayDeps.DefaultAudienceProfiles
             },
             TestDiscordGatewayDeps.DefaultVisionCapableModel,
-            TestDiscordGatewayDeps.NewTestPaths(),
             Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance);
 
         var snapshot = new DiscordGatewaySnapshot(
@@ -112,7 +111,6 @@ public sealed class ChannelConnectionSetupIdempotenceTests(ITestOutputHelper out
                 AudienceProfiles = TestMattermostGatewayDeps.DefaultAudienceProfiles
             },
             TestMattermostGatewayDeps.DefaultVisionCapableModel,
-            TestMattermostGatewayDeps.NewTestPaths(),
             Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance);
 
         var snapshot = new MattermostGatewaySnapshot(

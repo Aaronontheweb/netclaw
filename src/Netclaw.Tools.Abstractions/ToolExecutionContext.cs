@@ -299,27 +299,26 @@ public abstract record ToolSessionScope
 
     public sealed record Bound : ToolSessionScope
     {
-        private Bound(string sessionId, SessionStoragePaths storage)
-            : this(sessionId, storage.SessionDirectory)
-        {
-            Storage = storage;
-        }
-
-        public static Bound WithStorage(string sessionId, SessionStoragePaths storage) =>
-            new(sessionId, storage ?? throw new ArgumentNullException(nameof(storage)));
-
-        public Bound(string sessionId, string? sessionDirectory)
+        /// <summary>Creates a session scope with one complete resolved storage layout.</summary>
+        /// <param name="sessionId">The session identifier.</param>
+        /// <param name="storage">The resolved storage layout.</param>
+        public Bound(string sessionId, SessionStoragePaths storage)
         {
             if (string.IsNullOrWhiteSpace(sessionId))
                 throw new ArgumentException("Session id is required for a bound tool run.", nameof(sessionId));
 
             SessionId = sessionId;
-            SessionDirectory = sessionDirectory;
+            Storage = storage ?? throw new ArgumentNullException(nameof(storage));
         }
 
+        /// <summary>Gets the session identifier.</summary>
         public string SessionId { get; }
-        public string? SessionDirectory { get; }
-        public SessionStoragePaths? Storage { get; }
+
+        /// <summary>Gets the complete resolved storage layout.</summary>
+        public SessionStoragePaths Storage { get; }
+
+        /// <summary>Gets the session workspace from <see cref="Storage"/>.</summary>
+        public string SessionDirectory => Storage.SessionDirectory;
     }
 }
 
@@ -408,6 +407,13 @@ public sealed class ToolExecutionOutputs
         => _subAgentActivitySink is null ? new ToolExecutionOutputs() : new ToolExecutionOutputs(_subAgentActivitySink);
 }
 
+/// <summary>Identifies one corrected retry against an explicitly authored platform temporary root.</summary>
+/// <param name="ManagedTemporaryDirectory">The replacement directory that Netclaw suggested.</param>
+/// <param name="PlatformTemporaryRoot">The original platform temporary root.</param>
+internal readonly record struct ManagedTemporaryRetry(
+    string ManagedTemporaryDirectory,
+    string PlatformTemporaryRoot);
+
 /// <summary>
 /// Mutable authorization state for one invocation attempt. The dispatcher and
 /// policy pipeline own this object; tools receive no setters for approval state.
@@ -430,6 +436,7 @@ public sealed class ToolApprovalAttempt
     public IReadOnlySet<string> OneTimeApprovedPatterns => _oneTimeApprovedPatterns ?? EmptyPatterns;
     public string? AppliedDecision { get; private set; }
     public string? AppliedPattern { get; private set; }
+    internal ManagedTemporaryRetry? ManagedTemporaryRetry { get; private set; }
 
     public void SetCwd(string? cwd) => Cwd = cwd;
 
@@ -456,6 +463,9 @@ public sealed class ToolApprovalAttempt
         AppliedDecision = null;
         AppliedPattern = null;
     }
+
+    internal void MarkManagedTemporaryRetry(ManagedTemporaryRetry retry)
+        => ManagedTemporaryRetry = retry;
 
     internal void RestoreAuthorizationAttemptId(AuthorizationAttemptId authorizationAttemptId)
     {

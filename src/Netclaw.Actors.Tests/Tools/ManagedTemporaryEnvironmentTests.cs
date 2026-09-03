@@ -97,6 +97,22 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
     }
 
     [Fact]
+    public void Directory_outside_authority_root_is_rejected_before_creation()
+    {
+        var root = Path.Combine(_directory.Path, "root");
+        var outside = Path.Combine(_directory.Path, "outside");
+        var startInfo = new ProcessStartInfo();
+
+        var error = ManagedTemporaryEnvironment.Prepare(startInfo, outside, root);
+
+        Assert.Equal("Error: The managed temporary directory is outside its session root.", error);
+        Assert.False(Directory.Exists(outside));
+        Assert.False(startInfo.Environment.ContainsKey("TMPDIR"));
+        Assert.False(startInfo.Environment.ContainsKey("TMP"));
+        Assert.False(startInfo.Environment.ContainsKey("TEMP"));
+    }
+
+    [Fact]
     public void Linked_managed_directory_is_rejected_before_environment_injection()
     {
         var outside = Path.Combine(_directory.Path, "outside");

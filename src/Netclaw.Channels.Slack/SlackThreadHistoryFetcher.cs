@@ -40,7 +40,6 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
     private readonly SlackChannelOptions _options;
     private readonly HttpClient _httpClient;
     private readonly IContentScanner _contentScanner;
-    private readonly NetclawPaths _paths;
     private readonly ISessionStorageResolver _storageResolver;
     private readonly ToolAudienceProfiles _audienceProfiles;
     private readonly ModelCapabilities _modelCapabilities;
@@ -51,7 +50,6 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
         SlackChannelOptions options,
         HttpClient httpClient,
         IContentScanner contentScanner,
-        NetclawPaths paths,
         ToolAudienceProfiles audienceProfiles,
         ModelCapabilities modelCapabilities,
         ILogger<SlackThreadHistoryFetcher> logger,
@@ -61,7 +59,6 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
         _options = options;
         _httpClient = httpClient;
         _contentScanner = contentScanner;
-        _paths = paths;
         _audienceProfiles = audienceProfiles;
         _modelCapabilities = modelCapabilities;
         _logger = logger;
@@ -76,7 +73,6 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
         SlackChannelOptions options,
         HttpClient httpClient,
         IContentScanner contentScanner,
-        NetclawPaths paths,
         ToolAudienceProfiles audienceProfiles,
         ModelCapabilities modelCapabilities,
         ILogger<SlackThreadHistoryFetcher> logger,
@@ -84,7 +80,7 @@ public sealed class SlackThreadHistoryFetcher : IThreadHistoryFetcher
         : this(
             (channelId, threadTs, limit, cursor, ct) =>
                 conversationsApi.Replies(channelId.Value, threadTs.Value, limit: limit, cursor: cursor, cancellationToken: ct),
-            options, httpClient, contentScanner, paths, audienceProfiles, modelCapabilities, logger, storageResolver)
+            options, httpClient, contentScanner, audienceProfiles, modelCapabilities, logger, storageResolver)
     {
     }
 

@@ -30,14 +30,14 @@ internal static class SubAgentTestScope
         };
 
         var childScopeId = new SubAgentScopeId(scopeId);
-        ToolSessionScope sessionScope = new ToolSessionScope.Bound(scopeId, sessionDirectory);
-        if (sessionDirectory is not null && childScopeId.TryGetRunId(out var runId))
+        var parentStorage = SessionStoragePaths.CreateLegacy(
+            sessionDirectory ?? Path.Combine(AppContext.BaseDirectory, "netclaw-test-session-workspace"),
+            Path.Combine(AppContext.BaseDirectory, "netclaw-test-session-logs"),
+            "test-session");
+        ToolSessionScope sessionScope = new ToolSessionScope.Bound(scopeId, parentStorage);
+        if (childScopeId.TryGetRunId(out var runId))
         {
-            var parentStorage = SessionStoragePaths.CreateLegacy(
-                sessionDirectory,
-                Path.Combine(Path.GetTempPath(), "netclaw-test-session-logs"),
-                "test-session");
-            sessionScope = ToolSessionScope.Bound.WithStorage(
+            sessionScope = new ToolSessionScope.Bound(
                 scopeId,
                 parentStorage.ForChild(runId, childScopeId));
         }

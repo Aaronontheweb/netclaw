@@ -285,7 +285,6 @@ public sealed class SlackActorHierarchyTests(ITestOutputHelper output) : TestKit
             ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
             AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
             ModelCapabilities: TestSlackGatewayDeps.DefaultVisionCapableModel,
-            Paths: TestSlackGatewayDeps.NewTestPaths(),
                         StorageResolver: Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance,
             ConversationPropsFactory: conversationPropsFactory,
             ThreadPropsFactory: threadPropsFactory,

@@ -1162,17 +1162,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         var workingContext = snapshot.ToContextBlock();
         var sessionContext = storage is null
             ? string.Empty
-            : $"[session]\nsession_dir: {storage.SessionDirectory}\n"
-              + $"temp_dir: {storage.TemporaryDirectory}\n"
-              + $"artifact_dir: {storage.ArtifactDirectory}\n"
-              + $"worktree_dir: {storage.WorktreeDirectory}\n"
-              + $"log_path: {storage.LogPath}\n"
-              + ToolChoiceGuidance.StructuredWorkspaceSelection + "\n"
-              + ToolChoiceGuidance.DirectorySelectionOrder + "\n"
-              + ToolChoiceGuidance.ShellCompositionOrder + "\n"
-              + "temp_dir is private managed temporary storage for disposable files. "
-              + "session_dir is the default workspace when no project is active. "
-              + "Netclaw does not automatically clean managed temporary storage yet.";
+            : SessionContextFormatter.Format(storage);
 
         return string.Join(
             "\n\n",
@@ -1448,24 +1438,21 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
                 var meta = interpretation.Meta;
                 var cleanedTc = interpretation.Cleaned;
-                var scratchCall = SessionToolExecutionPipeline.BuildManagedTemporaryCallSemantics(
+                var managedTemporaryCall = ManagedTemporaryCorrection.BuildCallSemantics(
                     cleanedTc,
                     meta,
                     toolContext.ExecutionTimeout.Value,
-                    executor is IManagedTemporaryRetryAwareExecutor scratchAwareExecutor
-                        ? scratchAwareExecutor.Shell
+                    executor is IApprovalShellProvider shellProvider
+                        ? shellProvider.Shell
                         : ApprovalShell.Bash);
                 ManagedTemporaryCorrectionKey? consumedManagedTemporaryKey = null;
-                if (scratchCall is { } call
-                    && managedTemporaryCorrections.TryConsume(call, out var correctionKey)
-                    && executor is IManagedTemporaryRetryAwareExecutor retryAwareExecutor)
+                if (managedTemporaryCall is { } call
+                    && managedTemporaryCorrections.TryConsume(call, out var correctionKey))
                 {
                     consumedManagedTemporaryKey = correctionKey;
-                    retryAwareExecutor.MarkManagedTemporaryRetry(
-                        toolContext,
-                        new ToolAgentCorrection.ManagedTemporaryDirectorySuggested(
-                            correctionKey.ManagedTemporaryDirectory,
-                            correctionKey.TemporaryRoot));
+                    toolContext.Approval.MarkManagedTemporaryRetry(new ManagedTemporaryRetry(
+                        correctionKey.ManagedTemporaryDirectory,
+                        correctionKey.PlatformTemporaryRoot));
                 }
                 try
                 {
@@ -1500,16 +1487,16 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     if (approvalBridge is not null
                         && ctx.AgentCorrection is
                         ToolAgentCorrection.ManagedTemporaryDirectorySuggested managedTemporaryCorrection
-                        && scratchCall is { } correctedCall)
+                        && managedTemporaryCall is { } correctedCall)
                     {
                         toolContext.Outputs.TryComplete(new ToolInvocationReceipt(
                             ToolInvocationOutcomeCategory.RecoverableCorrection,
                             remediationCode: ToolRemediationCode.UseManagedTemporaryDirectory));
-                        var correctionText = SessionToolExecutionPipeline.BuildManagedTemporaryCorrection(
+                        var correctionText = ManagedTemporaryCorrection.BuildSuggestion(
                             managedTemporaryCorrection.ManagedTemporaryDirectory);
                         var newCorrectionKey = new ManagedTemporaryCorrectionKey(
                             correctedCall,
-                            managedTemporaryCorrection.TemporaryRoot,
+                            managedTemporaryCorrection.PlatformTemporaryRoot,
                             managedTemporaryCorrection.ManagedTemporaryDirectory);
                         return BuildToolResult(
                             cleanedTc,
@@ -1622,7 +1609,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     if (decision == ParentApprovalDecision.Denied
                         && consumedManagedTemporaryKey is { } deniedManagedTemporaryRetry)
                     {
-                        reason = $"{reason}\n{SessionToolExecutionPipeline.BuildManagedTemporaryDenialHint(deniedManagedTemporaryRetry.ManagedTemporaryDirectory)}";
+                        reason = $"{reason}\n{ManagedTemporaryCorrection.BuildDenialHint(deniedManagedTemporaryRetry.ManagedTemporaryDirectory)}";
                     }
 
                     toolContext.Outputs.TryComplete(

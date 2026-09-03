@@ -95,7 +95,7 @@ public sealed class BackgroundJobExecutionActor : ReceiveActor
     {
         var psi = _environment.CreateProcessStartInfo(_definition.Command);
         if (string.IsNullOrWhiteSpace(_definition.ManagedTemporaryDirectory)
-            || string.IsNullOrWhiteSpace(_definition.ManagedTemporaryRoot))
+            || string.IsNullOrWhiteSpace(_definition.ManagedTemporaryAuthorityRoot))
         {
             ReportCompletion(
                 BackgroundJobStatus.Failed,
@@ -107,7 +107,7 @@ public sealed class BackgroundJobExecutionActor : ReceiveActor
         var temporaryDirectoryError = ManagedTemporaryEnvironment.Prepare(
             psi,
             _definition.ManagedTemporaryDirectory,
-            _definition.ManagedTemporaryRoot);
+            _definition.ManagedTemporaryAuthorityRoot);
         if (temporaryDirectoryError is not null)
         {
             ReportCompletion(BackgroundJobStatus.Failed, -1, temporaryDirectoryError);

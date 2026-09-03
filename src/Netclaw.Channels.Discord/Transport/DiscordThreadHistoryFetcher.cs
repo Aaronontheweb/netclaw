@@ -42,7 +42,6 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
     private readonly IContentScanner _contentScanner;
     private readonly ToolAudienceProfiles _audienceProfiles;
     private readonly ModelCapabilities _modelCapabilities;
-    private readonly NetclawPaths _paths;
     private readonly ISessionStorageResolver _storageResolver;
     private readonly ILogger<DiscordThreadHistoryFetcher> _logger;
 
@@ -53,7 +52,6 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         IContentScanner contentScanner,
         ToolAudienceProfiles audienceProfiles,
         ModelCapabilities modelCapabilities,
-        NetclawPaths paths,
         ILogger<DiscordThreadHistoryFetcher> logger,
         ISessionStorageResolver storageResolver)
         : this(
@@ -63,7 +61,6 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
             contentScanner,
             audienceProfiles,
             modelCapabilities,
-            paths,
             logger,
             storageResolver)
     {
@@ -76,7 +73,6 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         IContentScanner contentScanner,
         ToolAudienceProfiles audienceProfiles,
         ModelCapabilities modelCapabilities,
-        NetclawPaths paths,
         ILogger<DiscordThreadHistoryFetcher> logger,
         ISessionStorageResolver storageResolver)
     {
@@ -86,7 +82,6 @@ public sealed class DiscordThreadHistoryFetcher : IThreadHistoryFetcher
         _contentScanner = contentScanner;
         _audienceProfiles = audienceProfiles;
         _modelCapabilities = modelCapabilities;
-        _paths = paths;
         _logger = logger;
         _storageResolver = storageResolver;
     }

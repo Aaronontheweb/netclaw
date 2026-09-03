@@ -985,9 +985,7 @@ static void ConfigureDaemonServices(
     var promptProvider = new FileSystemPromptProvider(paths);
     services.AddSingleton<ISystemPromptProvider>(promptProvider);
 
-    var sqlitePath = string.IsNullOrWhiteSpace(persistence.Sqlite.Path)
-        ? paths.SqliteDbPath
-        : persistence.Sqlite.Path!;
+    var sqlitePath = persistence.GetSqlitePath(paths);
 
     // Model capability resolution chain:
     // [Ollama →] [OpenAI-compat →] OpenRouter oracle → HuggingFace → text-only default.

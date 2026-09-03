@@ -90,7 +90,7 @@ public class BackgroundJobManagerActorTests : TestKit
         Id = new BackgroundJobId(jobId),
         Command = "echo hello",
         ManagedTemporaryDirectory = Path.Combine(_dir.Path, "managed-temp"),
-        ManagedTemporaryRoot = _dir.Path,
+        ManagedTemporaryAuthorityRoot = _dir.Path,
         SessionId = new SessionId("test/thread"),
         Rationale = "test run",
         Status = status,
@@ -106,7 +106,7 @@ public class BackgroundJobManagerActorTests : TestKit
     {
         Command = command,
         ManagedTemporaryDirectory = Path.Combine(Path.GetTempPath(), "netclaw-tests", "managed-temp"),
-        ManagedTemporaryRoot = Path.Combine(Path.GetTempPath(), "netclaw-tests"),
+        ManagedTemporaryAuthorityRoot = Path.Combine(Path.GetTempPath(), "netclaw-tests"),
         SessionId = new SessionId("test/thread"),
         Rationale = "test run",
         Audience = TrustAudience.Personal,
@@ -291,7 +291,7 @@ public class BackgroundJobManagerActorTests : TestKit
             Id = orphanId,
             Command = "jekyll serve",
             ManagedTemporaryDirectory = Path.Combine(_dir.Path, "managed-temp"),
-            ManagedTemporaryRoot = _dir.Path,
+            ManagedTemporaryAuthorityRoot = _dir.Path,
             SessionId = sessionId,
             Rationale = "dev server",
             Status = BackgroundJobStatus.Running,
@@ -342,7 +342,7 @@ public class BackgroundJobManagerActorTests : TestKit
             Id = new BackgroundJobId("orphan-123"),
             Command = "sleep 999",
             ManagedTemporaryDirectory = Path.Combine(_dir.Path, "managed-temp"),
-            ManagedTemporaryRoot = _dir.Path,
+            ManagedTemporaryAuthorityRoot = _dir.Path,
             SessionId = new Netclaw.Actors.Protocol.SessionId("test/thread"),
             Rationale = "orphaned test",
             Status = BackgroundJobStatus.Running,
@@ -455,7 +455,7 @@ public class BackgroundJobManagerActorTests : TestKit
         Assert.NotNull(reconciled);
         Assert.Equal(BackgroundJobStatus.Lost, reconciled!.Status);
         Assert.Null(reconciled.ManagedTemporaryDirectory);
-        Assert.Null(reconciled.ManagedTemporaryRoot);
+        Assert.Null(reconciled.ManagedTemporaryAuthorityRoot);
 
         var delivery = await gatewayProbe.ExpectMsgAsync<DeliverTrustedSessionTurn>(
             TimeSpan.FromSeconds(10),

@@ -24,7 +24,12 @@ internal static class TestToolExecutionContext
         string? channelType = null,
         ChannelDeliveryTargetInfo? requestedDeliveryTarget = null)
         => Create(
-            new ToolSessionScope.Bound(sessionId, sessionDirectory),
+            new ToolSessionScope.Bound(
+                sessionId,
+                SessionStoragePaths.CreateLegacy(
+                    sessionDirectory ?? Path.Combine(Path.GetTempPath(), "netclaw-test-session-workspace"),
+                    Path.Combine(Path.GetTempPath(), "netclaw-test-session-logs"),
+                    "test-session")),
             audience,
             channelType,
             requestedDeliveryTarget);

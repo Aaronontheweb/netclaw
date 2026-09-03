@@ -12,5 +12,8 @@ namespace Netclaw.Actors.Protocol;
 /// </summary>
 public interface ISessionStorageResolver
 {
+    /// <summary>Gets or atomically creates the immutable storage binding for <paramref name="sessionId"/>.</summary>
+    /// <param name="sessionId">The stable session identity.</param>
+    /// <returns>The complete resolved storage layout.</returns>
     SessionStoragePaths Resolve(SessionId sessionId);
 }

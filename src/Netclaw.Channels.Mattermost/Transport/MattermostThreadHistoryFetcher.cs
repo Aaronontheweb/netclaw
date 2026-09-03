@@ -55,7 +55,6 @@ public sealed class MattermostThreadHistoryFetcher : IThreadHistoryFetcher
     private readonly string? _botUserId;
     private readonly ToolAudienceProfiles _audienceProfiles;
     private readonly ModelCapabilities _modelCapabilities;
-    private readonly NetclawPaths _paths;
     private readonly ISessionStorageResolver _storageResolver;
     private readonly ILogger<MattermostThreadHistoryFetcher> _logger;
 
@@ -67,7 +66,6 @@ public sealed class MattermostThreadHistoryFetcher : IThreadHistoryFetcher
         Func<string?> botUserIdFactory,
         ToolAudienceProfiles audienceProfiles,
         ModelCapabilities modelCapabilities,
-        NetclawPaths paths,
         ILogger<MattermostThreadHistoryFetcher> logger,
         ISessionStorageResolver storageResolver)
         : this(
@@ -79,7 +77,6 @@ public sealed class MattermostThreadHistoryFetcher : IThreadHistoryFetcher
             botUserIdFactory(), // safe: ConnectAsync resolves BotUserId before this constructor runs
             audienceProfiles,
             modelCapabilities,
-            paths,
             logger,
             storageResolver)
     {
@@ -94,7 +91,6 @@ public sealed class MattermostThreadHistoryFetcher : IThreadHistoryFetcher
         string? botUserId,
         ToolAudienceProfiles audienceProfiles,
         ModelCapabilities modelCapabilities,
-        NetclawPaths paths,
         ILogger<MattermostThreadHistoryFetcher> logger,
         ISessionStorageResolver storageResolver)
     {
@@ -106,7 +102,6 @@ public sealed class MattermostThreadHistoryFetcher : IThreadHistoryFetcher
         _botUserId = botUserId;
         _audienceProfiles = audienceProfiles;
         _modelCapabilities = modelCapabilities;
-        _paths = paths;
         _logger = logger;
         _storageResolver = storageResolver;
     }

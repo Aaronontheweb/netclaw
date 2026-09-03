@@ -35,7 +35,6 @@ public sealed class DiscordChannel : IChannel
     private readonly ILogger<DiscordChannel> _logger;
     private readonly ToolAudienceProfiles _audienceProfiles;
     private readonly ModelCapabilities _modelCapabilities;
-    private readonly NetclawPaths _paths;
     private readonly ISessionStorageResolver _storageResolver;
 
     private readonly object _connectionSetupLock = new();
@@ -59,7 +58,6 @@ public sealed class DiscordChannel : IChannel
         ILogger<DiscordChannel> logger,
         ToolConfig toolConfig,
         ModelCapabilities modelCapabilities,
-        NetclawPaths paths,
         ISessionStorageResolver storageResolver)
     {
         _system = system;
@@ -82,7 +80,6 @@ public sealed class DiscordChannel : IChannel
         _logger = logger;
         _audienceProfiles = toolConfig.AudienceProfiles;
         _modelCapabilities = modelCapabilities;
-        _paths = paths;
         _storageResolver = storageResolver;
 
         _gatewayClient.CleanReconnectRequired += HandleCleanReconnectRequiredAsync;
@@ -194,7 +191,6 @@ public sealed class DiscordChannel : IChannel
                 ContentScanner: _contentScanner,
                 AudienceProfiles: _audienceProfiles,
                 ModelCapabilities: _modelCapabilities,
-                Paths: _paths,
                 StorageResolver: _storageResolver,
                 BotUserId: botUserId,
                 PromptInjectionDetector: _promptInjectionDetector,

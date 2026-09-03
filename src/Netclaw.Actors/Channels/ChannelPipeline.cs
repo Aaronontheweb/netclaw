@@ -186,7 +186,6 @@ public sealed class SessionPipeline : ISessionPipeline
     public SessionPipeline(
         ActorSystem system,
         IRequiredActor<SessionManagerActorKey> sessionManagerProvider,
-        NetclawPaths paths,
         ISessionStorageResolver storageResolver,
         ISessionLifecycleObserver? lifecycleObserver = null,
         SessionIngressGate? ingressGate = null)

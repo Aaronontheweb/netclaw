@@ -46,7 +46,6 @@ public sealed class MattermostChannelHealthContractTests(ITestOutputHelper outpu
                 AudienceProfiles = TestMattermostGatewayDeps.DefaultAudienceProfiles
             },
             TestMattermostGatewayDeps.DefaultVisionCapableModel,
-            TestMattermostGatewayDeps.NewTestPaths(),
             Netclaw.Actors.Protocol.TestSessionStorageResolver.Instance);
     }
 

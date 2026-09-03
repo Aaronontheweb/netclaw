@@ -323,8 +323,6 @@ internal sealed class ScopedFileAccessPolicy
         var roots = new List<string>();
         if (context.SessionStorage is { } storage)
             roots.AddRange(storage.CurrentSessionRoots);
-        else if (!string.IsNullOrWhiteSpace(context.SessionDirectory))
-            roots.Add(context.SessionDirectory);
 
         var profile = _profileResolver.ResolveProfile(context);
         roots.AddRange(_profileResolver.ResolveRoots(profile.ReadFiles, context));
@@ -432,8 +430,6 @@ internal sealed class ScopedFileAccessPolicy
 
         if (context.SessionStorage is { } storage)
             roots.AddRange(storage.CurrentSessionRoots);
-        else if (!string.IsNullOrWhiteSpace(context.SessionDirectory))
-            roots.Add(context.SessionDirectory);
 
         if (accessKind == AccessKind.Read && audience != TrustAudience.Public)
         {
@@ -502,8 +498,6 @@ internal sealed class ScopedFileAccessPolicy
 
         if (context.SessionStorage is { } storage)
             roots.AddRange(storage.CurrentSessionRoots);
-        else if (!string.IsNullOrWhiteSpace(context.SessionDirectory))
-            roots.Add(context.SessionDirectory);
 
         if (!string.IsNullOrWhiteSpace(context.ProjectDirectory))
             roots.Add(context.ProjectDirectory);
