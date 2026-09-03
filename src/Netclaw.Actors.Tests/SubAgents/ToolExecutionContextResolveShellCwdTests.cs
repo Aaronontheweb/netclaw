@@ -47,13 +47,14 @@ public class ToolExecutionContextResolveShellCwdTests
     [Fact]
     public void SessionDirectory_wins_over_inherited_cwd()
     {
-        var context = TestToolExecutionContext.CreateBound("sess", "/tmp/sess", new TestToolExecutionContextOptions
+        var sessionDirectory = Path.Combine(Path.GetTempPath(), "netclaw-test-session");
+        var context = TestToolExecutionContext.CreateBound("sess", sessionDirectory, new TestToolExecutionContextOptions
         {
             Audience = TrustAudience.Personal,
             InheritedCwd = "/home/user/repos/inherited",
         });
 
-        Assert.Equal("/tmp/sess", context.ResolveShellCwd(null));
+        Assert.Equal(Path.GetFullPath(sessionDirectory), context.ResolveShellCwd(null));
     }
 
     [Fact]

@@ -204,10 +204,6 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
                 UsedStrictFallback: false),
             shellCommandPolicy: commandPolicy,
             toolPathPolicy: pathPolicy,
-            platformTemporaryScopePolicy: new PlatformTemporaryScopePolicy(
-                environment,
-                Path.GetTempPath(),
-                NoPlatformTemporaryPathInspector.Instance),
             shellTrustZonePolicy: new ShellTrustZonePolicy(
                 config,
                 new NetclawPaths(rootDirectory, Path.Combine(rootDirectory, "workspaces"))),
@@ -384,25 +380,6 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
             ApprovalDirectoryShape.External => externalDirectory,
             _ => throw new ArgumentOutOfRangeException(nameof(directory), directory, "Unknown approval directory shape.")
         };
-
-    private sealed class NoPlatformTemporaryPathInspector : IPlatformTemporaryPathInspector
-    {
-        internal static NoPlatformTemporaryPathInspector Instance { get; } = new();
-
-        private NoPlatformTemporaryPathInspector()
-        {
-        }
-
-        public bool TryResolveRoot(string path, ShellPathStyle pathStyle, out string resolvedRoot)
-        {
-            resolvedRoot = string.Empty;
-            return false;
-        }
-
-        public bool IsSafeDescendant(string root, string path, ShellPathStyle pathStyle) => false;
-
-        public bool ContainsInvalidPathState(string path, ShellPathStyle pathStyle) => false;
-    }
 
     private sealed class StubRequiredActor(IActorRef actor) : IRequiredActor<ToolApprovalActorKey>
     {

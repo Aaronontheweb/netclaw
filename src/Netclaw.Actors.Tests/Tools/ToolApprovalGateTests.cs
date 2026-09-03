@@ -18,6 +18,11 @@ public sealed class ToolApprovalGateTests
 {
     public static bool IsPosix => !OperatingSystem.IsWindows();
 
+    private static string ApprovalTestRoot { get; } = Path.Combine(
+        Path.GetPathRoot(Path.GetFullPath(AppContext.BaseDirectory))
+        ?? throw new InvalidOperationException("The test process has no filesystem root."),
+        "netclaw-approval-test");
+
     private static ToolAccessPolicy CreatePolicy(ToolApprovalMode shellApprovalMode)
     {
         var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
@@ -859,8 +864,11 @@ public sealed class ToolApprovalGateTests
         var tool = ShellTool();
         var ctx = PersonalContext(supportsApproval: false);
 
+        var command = OperatingSystem.IsWindows()
+            ? $"pwsh -NoProfile -Command \"Get-Content '{outsidePath}'\""
+            : $"bash -c \"cat '{outsidePath}'\"";
         var decision = policy.AuthorizeInvocation(tool, ctx,
-            new Dictionary<string, object?> { ["command"] = $"bash -c \"cat {outsidePath}\"" });
+            new Dictionary<string, object?> { ["command"] = command });
 
         Assert.False(decision.Allowed);
         Assert.Equal("shell_path_outside_trust_zone", decision.DenyReason);
@@ -1060,7 +1068,8 @@ public sealed class ToolApprovalGateTests
     public void Shell_path_command_extracts_path_aware_verb_chain_with_no_directory_roots()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
-        var args = ToolInput.Create("Command", "cat /home/user/.netclaw/logs/crash.log");
+        var logPath = Path.Combine(ApprovalTestRoot, "logs", "crash.log");
+        var args = ToolInput.Create("Command", $"cat \"{logPath}\"");
 
         var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
 
@@ -1075,16 +1084,15 @@ public sealed class ToolApprovalGateTests
         var candidate = Assert.Single(decision.ApprovalContext.Candidates!);
         Assert.Equal("cat", candidate.Verb);
         Assert.NotNull(candidate.Directory);
-        Assert.Equal(
-            "/home/user/.netclaw/logs",
-            candidate.Directory!.Replace('\\', '/'));
+        Assert.Equal(Path.GetDirectoryName(logPath), candidate.Directory);
     }
 
     [Fact]
     public void Shell_path_command_uses_fixed_labels()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
-        var args = ToolInput.Create("Command", "grep 'error' /home/user/.netclaw/logs/app.log");
+        var logPath = Path.Combine(ApprovalTestRoot, "logs", "app.log");
+        var args = ToolInput.Create("Command", $"grep 'error' \"{logPath}\"");
 
         var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
 
@@ -1100,9 +1108,11 @@ public sealed class ToolApprovalGateTests
     public void Shell_multi_root_command_uses_fixed_labels()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
+        var inputPath = Path.Combine(ApprovalTestRoot, "logs", "app.log");
+        var outputPath = Path.Combine(ApprovalTestRoot, "output", "report.txt");
         var args = ToolInput.Create(
             "Command",
-            "cat /netclaw-approval-test/logs/app.log > /netclaw-approval-test/output/report.txt");
+            $"cat \"{inputPath}\" > \"{outputPath}\"");
 
         var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
 
@@ -1116,7 +1126,7 @@ public sealed class ToolApprovalGateTests
     public void Shell_relative_path_command_extracts_verb_chain_without_directory_roots()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
-        const string root = "/netclaw-approval-test/workspace";
+        var root = Path.Combine(ApprovalTestRoot, "workspace");
 
         var args = ToolInput.Create(
             "Command", "grep timeout logs/app.log | wc -l",
@@ -1168,10 +1178,19 @@ public sealed class ToolApprovalGateTests
     public void Shell_command_with_long_directory_path_keeps_labels_within_button_caps()
     {
         var policy = CreatePolicy(ToolApprovalMode.Approval);
-        var deepPath = "/home/user/repositories/petabridge/testlab-setup/services/kubernetes/ingress/configs/app.log";
+        var deepPath = Path.Combine(
+            ApprovalTestRoot,
+            "repositories",
+            "example-organization",
+            "test-environment",
+            "services",
+            "kubernetes",
+            "ingress",
+            "configs",
+            "app.log");
         Assert.True(deepPath.Length > ApprovalOptionKeys.MaxLabelLength);
 
-        var args = ToolInput.Create("Command", $"grep error {deepPath}");
+        var args = ToolInput.Create("Command", $"grep error \"{deepPath}\"");
 
         var decision = policy.AuthorizeInvocation(ShellTool(), PersonalContext(), args);
 

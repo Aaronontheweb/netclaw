@@ -21,6 +21,8 @@ public sealed class ShellPolicyEvidenceFixtureTests(ShellApprovalMatrixFixture f
     private const string PolicyFixturesFile = "netclaw-policy-fixtures.json";
     private const string FreshSessionPolicyFixturesFile = "fresh-session-policy-fixtures.json";
 
+    public static bool IsPosix => !OperatingSystem.IsWindows();
+
     [Fact]
     public async Task Policy_fixtures_execute_through_the_coordinator()
     {
@@ -121,7 +123,10 @@ public sealed class ShellPolicyEvidenceFixtureTests(ShellApprovalMatrixFixture f
         await AssertPolicyCaseAsync(catalog, timeProvider, liveCase.PolicyCase);
     }
 
-    [Theory]
+    [SlopwatchSuppress(
+        "SW001",
+        "The corpus declares Linux session paths that cannot represent native Windows storage roots.")]
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "The corpus declares Linux session paths")]
     [MemberData(nameof(FreshSessionRegressionCaseIds))]
     public async Task Fresh_session_regression_fixtures_pin_current_policy_outcomes(string caseId)
     {
