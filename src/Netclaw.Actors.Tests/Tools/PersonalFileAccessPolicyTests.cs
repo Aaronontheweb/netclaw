@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="InteractivePersonalReadReachTests.cs" company="Petabridge, LLC">
+// <copyright file="PersonalFileAccessPolicyTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
@@ -14,20 +14,17 @@ using Xunit;
 namespace Netclaw.Actors.Tests.Tools;
 
 /// <summary>
-/// Interactive Personal-audience sessions get shell-equivalent read/attach
-/// reach: out-of-root paths resolve instead of hard-failing, matching the
-/// approval-gated shell surface. Autonomous sessions, Team, and Public keep
-/// their roots-scoped or fail-closed behavior. Regression guard for
-/// netclaw-dev/netclaw#1724.
+/// Verifies that file profiles, rather than shell or approval capability,
+/// decide Personal, Team, and Public read and attach reach.
 /// </summary>
-public sealed class InteractivePersonalReadReachTests : IDisposable
+public sealed class PersonalFileAccessPolicyTests : IDisposable
 {
     private readonly DisposableTempDir _dir = new();
     private readonly string _sessionDir;
     private readonly string _outsideDir;
     private readonly NetclawPaths _paths;
 
-    public InteractivePersonalReadReachTests()
+    public PersonalFileAccessPolicyTests()
     {
         _sessionDir = Path.Combine(_dir.Path, "sessions", "s1");
         _outsideDir = Path.Combine(_dir.Path, "outside");
@@ -51,10 +48,15 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
                 ChannelType = autonomous ? "reminder" : "signalr"
             }).Invocation;
 
-    private static ToolConfig BuildPersonalReadRootsConfig(string root)
+    private static ToolConfig BuildPersonalRootsConfig(string root)
     {
         var toolConfig = new ToolConfig();
         toolConfig.AudienceProfiles.Personal.ReadFiles = new ToolFilesystemAccessProfile
+        {
+            Mode = ToolFilesystemMode.Roots,
+            Roots = [root]
+        };
+        toolConfig.AudienceProfiles.Personal.AttachFiles = new ToolFilesystemAccessProfile
         {
             Mode = ToolFilesystemMode.Roots,
             Roots = [root]
@@ -70,9 +72,9 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
         { TrustAudience.Personal, true, true, false, true },
         { TrustAudience.Personal, false, false, false, true },
         { TrustAudience.Personal, false, true, false, false },
-        // Hardened Personal (ReadFiles = Roots = session dir): the #1724 trigger.
+        // Explicit Personal roots remain authoritative in every run scope.
         { TrustAudience.Personal, true, false, true, true },
-        { TrustAudience.Personal, true, true, true, true },   // NEW: shell-equivalent reach
+        { TrustAudience.Personal, true, true, true, false },
         { TrustAudience.Personal, false, false, true, true },
         { TrustAudience.Personal, false, true, true, false },
         // Team (Roots): roots-scoped everywhere.
@@ -97,7 +99,7 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
         bool expectedAllow)
     {
         var config = hardenedPersonalRoots
-            ? BuildPersonalReadRootsConfig(_sessionDir)
+            ? BuildPersonalRootsConfig(_sessionDir)
             : new ToolConfig();
         var policy = new PathAccessPolicy(config, _paths, new ToolPathPolicy([]));
         var ctx = Ctx(audience, autonomous: !interactive);
@@ -126,7 +128,7 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
         bool expectedAllow)
     {
         var config = hardenedPersonalRoots
-            ? BuildPersonalReadRootsConfig(_sessionDir)
+            ? BuildPersonalRootsConfig(_sessionDir)
             : new ToolConfig();
         var policy = new PathAccessPolicy(config, _paths, new ToolPathPolicy([]));
         var ctx = Ctx(audience, autonomous: !interactive);
@@ -222,22 +224,17 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
     }
 
     [Fact]
-    public void Set_working_directory_stays_roots_scoped_for_interactive_personal()
+    public void Explicit_personal_read_roots_apply_to_reads_and_project_declarations()
     {
-        // Regression (#1724): set_working_directory must NOT inherit
-        // shell-equivalent reach — its declaration widens the safe-verb
-        // auto-approve zone and feeds project identity files into the prompt.
-        var config = BuildPersonalReadRootsConfig(_sessionDir);
+        var config = BuildPersonalRootsConfig(_sessionDir);
         var policy = new PathAccessPolicy(config, _paths, new ToolPathPolicy([]));
         var ctx = Ctx(TrustAudience.Personal, autonomous: false);
 
         var outside = Path.Combine(_outsideDir, "notes.txt");
 
-        // Reads resolve (shell-equivalent reach)...
-        AssertAllowed(
+        AssertDenied(
             policy.Evaluate(outside, ctx, PathAccessPolicy.FileOperation.Read),
-            outside);
-        // ...but the working-directory declaration stays roots-scoped.
+            Path.GetFullPath(outside));
         AssertDenied(
             policy.Evaluate(outside, ctx, PathAccessPolicy.FileOperation.DeclareProjectScope),
             Path.GetFullPath(outside));
@@ -255,7 +252,7 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
 
         var outside = Path.Combine(_outsideDir, "notes.txt");
 
-        // Reads resolve under Mode.All interactive...
+        // Mode.All grants file reads independently of shell policy.
         AssertAllowed(
             policy.Evaluate(outside, ctx, PathAccessPolicy.FileOperation.Read),
             outside);
@@ -268,7 +265,7 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
     public static TheoryData<bool, bool> AttachRootsModeCases => new()
     {
         // interactive, expectedAllow
-        { true, true },
+        { true, false },
         { false, false },
     };
 
@@ -276,9 +273,6 @@ public sealed class InteractivePersonalReadReachTests : IDisposable
     [MemberData(nameof(AttachRootsModeCases))]
     public void Attach_reach_roots_mode_matches_expected(bool interactive, bool expectedAllow)
     {
-        // Regression (#1724): the new Roots-mode attach branch must actually be
-        // exercised — the main matrix hardens only ReadFiles, so its attach rows
-        // hit the Mode.All branch. This pins the FileOperation.Attach clause.
         var config = new ToolConfig();
         config.AudienceProfiles.Personal.ReadFiles = new ToolFilesystemAccessProfile
         {

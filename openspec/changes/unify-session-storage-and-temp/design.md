@@ -100,13 +100,27 @@ The current implementation uses competing terms and policy helpers for the
 same filesystem questions. The final implementation will use one vocabulary
 and one shared path decision contract.
 
-The contract separates three responsibilities:
+The contract separates these ordered responsibilities:
 
 | Responsibility | Input | Output |
 |---|---|---|
+| Tool capability | Tool name, audience, and grant profile | Whether the invocation can enter its tool-family policy |
+| Tool-family safety | Shell mode and parsed command facts, or the structured tool contract | Whether family-specific terminal policy admits the invocation |
 | Path facts | A raw path | Its canonical path, link state, and relationship to a trusted root |
-| Path access decision | Path facts, operation, audience, and trusted roots | A typed allow or deny decision with a reason |
+| File protection | Path facts, operation, audience, and trusted roots | A typed allow or deny path access decision with a reason |
+| Approval | An invocation that passed all terminal policy layers | Stored, one-time, or requested user authority |
 | Remediation | A request that passed terminal authorization checks and would otherwise require approval, plus trusted runtime guidance | Optional advice that grants no authority |
+
+These layers compose as nested gates. Tool capability runs before shell command
+policy. Shell command policy runs before shell file protection. File protection
+runs before approval. A terminal denial stops the pipeline and cannot be widened
+by a later layer.
+
+Structured tools provide their exact file operation to file protection. Shell
+commands conservatively request `Write` for every known referenced path because
+Netclaw does not infer whether arbitrary shell syntax will read or mutate it.
+File authority has a one-way dependency: it can deny an otherwise eligible
+shell call, but it cannot grant shell capability or bypass shell policy.
 
 Each capability has one policy owner:
 
@@ -121,11 +135,11 @@ Other specifications SHALL reference the owning requirement. They SHALL NOT
 repeat its policy with different terms or another decision path.
 
 The source of a path does not create another safety model. Structured file
-arguments, project-directory declarations, unattended shell path facts, and
-reviewed-safe shell candidates use the same path facts and path access decision
-contract. Interactive Personal shell calls may instead reach the user approval
-gate for paths outside trusted roots; that approval is an explicit authority
-boundary, not a second automatic path policy.
+arguments, project-directory declarations, shell path facts, and reviewed-safe
+shell candidates use the same path facts and path access decision contract.
+Interactive approval does not widen an explicit `Roots` or `None` file profile.
+An unresolved interactive shell path can still use the existing one-shot
+approval path, but it cannot receive reviewed-safe or persistent coverage.
 
 The target glossary uses these terms:
 
@@ -152,11 +166,12 @@ one session analyze another session's logs, which supports diagnosis on a
 heavily used Netclaw agent.
 
 ```text
-structured file argument, project declaration, or unattended shell path fact
-  -> canonical path and trusted-root relationship
-  -> audience plus operation decision
+tool exposure and audience capability
+  -> tool-family safety
+  -> canonical path and trusted-root relationship, when applicable
+  -> exact file operation for structured tools, conservative Write for shell
   -> deny terminally
-  -> or pass terminal checks, then optional remediation before an approval prompt
+  -> or pass terminal checks, then approval or execution
 ```
 
 **Counterexample:** Session identity does not create a separate access-control
@@ -168,6 +183,10 @@ access decision. After terminal path and shell-policy checks pass, it may use
 path and syntax facts to propose `temp_dir` before the call would otherwise
 prompt for approval. The replacement call is authorized from the beginning. A
 denied call receives no remediation that could be mistaken for authority.
+
+**Counterexample:** A correction or approval cannot turn denied file access into
+an allowed shell call. It can only act after capability, shell policy, and file
+protection have admitted the request.
 
 ### Bind one physical session storage envelope
 

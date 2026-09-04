@@ -10,6 +10,19 @@ execution. Tool invocations SHALL be logged with audit records including tool
 name, invoking session, timestamp, authorization result, and approval decision
 details when applicable.
 
+Authorization SHALL compose these layers in order:
+
+1. tool exposure and audience capability;
+2. tool-family safety, including shell mode and shell command policy;
+3. file protection when the invocation addresses filesystem paths;
+4. stored or one-time approval authority;
+5. user approval when still required; and
+6. execution.
+
+A terminal denial SHALL stop evaluation. A later layer SHALL NOT widen an
+earlier denial. File authority MAY deny an otherwise eligible shell invocation,
+but it SHALL NOT grant shell capability or bypass shell command policy.
+
 `ToolAuthorizationDecision` SHALL represent one of four outcomes:
 
 - `Allowed`, with the rule that grants execution;
@@ -98,6 +111,190 @@ batch.
 - **THEN** audit records show tool name, invoking session, timestamp, and
   authorization result for each invocation
 
+#### Scenario: Counterexample - shell denial stops before file protection
+
+- **GIVEN** the audience has file write authority for a path
+- **AND** shell execution is disabled
+- **WHEN** the agent requests a shell command that names that path
+- **THEN** shell policy denies the invocation
+- **AND** file authority does not enable shell execution
+- **AND** no approval is requested
+
+#### Scenario: Example - Team file write does not require shell
+
+- **GIVEN** a Team audience has `file_write` capability and `Write` authority
+  for a path
+- **AND** shell execution is disabled
+- **WHEN** the agent calls `file_write` for that path
+- **THEN** the structured tool uses its `Write` path access decision
+- **AND** shell policy is not consulted
+- **AND** the tool can proceed under its own approval policy
+
+### Requirement: Directory enumeration tool
+
+The system SHALL provide a `file_list` first-party tool that returns a
+single-level listing of a directory's entries, each entry identified by name
+and type. It SHALL be read-only and SHALL NOT create, modify, or remove a
+filesystem entry.
+
+`file_list` SHALL be gated by the audience profile `AllowedTools` allowlist.
+It SHALL authorize its target through the shared `Read` path access decision.
+An explicit `Roots` or `None` read profile SHALL remain authoritative in every
+interaction mode. User approval SHALL NOT widen that file profile.
+
+#### Scenario: Team session lists a directory within its read roots
+
+- **GIVEN** a session resolved to the `Team` audience with `file_list` granted
+- **WHEN** the agent invokes `file_list` on its session directory
+- **THEN** the tool returns the directory's entries with name and type
+- **AND** no filesystem entry is created, modified, or removed
+
+#### Scenario: Public session cannot list outside its session directory
+
+- **GIVEN** a session resolved to the `Public` audience
+- **WHEN** the agent invokes `file_list` outside its permitted read roots
+- **THEN** the invocation is denied
+- **AND** the denial message does not disclose configured root paths
+
+#### Scenario: Counterexample - approval cannot widen explicit read roots
+
+- **GIVEN** an interactive Personal profile explicitly limits reads to one root
+- **WHEN** the agent invokes `file_list` outside that root
+- **THEN** file protection denies the invocation
+- **AND** the invocation does not reach user approval
+
+#### Scenario: file_list denied when not granted to the audience
+
+- **GIVEN** an audience profile whose `AllowedTools` omits `file_list`
+- **WHEN** the agent invokes `file_list`
+- **THEN** the invocation is denied with reason
+  `tool_not_allowed_for_audience_profile`
+
+### Requirement: File read tool
+
+The system SHALL provide a `file_read` first-party tool that authorizes the
+requested path through the shared `Read` path access decision before inspecting
+or reading bytes. An explicit `Roots` or `None` read profile SHALL remain
+authoritative in every interaction mode. The default interactive Personal
+`All` profile MAY read outside configured roots because the file profile itself
+grants that authority, not because shell or approval policy widens it.
+
+Text-like files SHALL preserve the existing encoding, pagination, and output
+limits. Non-text files SHALL return structured metadata and guidance rather
+than raw binary content. Images MAY use the existing model-visible media handoff
+when the model supports images. PDF extraction, OCR, audio transcription, and
+video keyframe extraction SHALL NOT be built into `file_read`.
+
+#### Scenario: Text file read preserves existing behavior
+
+- **GIVEN** a readable text file using UTF-8, UTF-16/UTF-32 Unicode, or Windows-1252
+- **WHEN** the agent invokes `file_read` with optional offset and limit values
+- **THEN** the tool returns text content with the existing line pagination and
+  truncation behavior
+
+#### Scenario: Counterexample - approval cannot widen explicit read policy
+
+- **GIVEN** an interactive Personal profile explicitly denies or limits reads
+- **WHEN** the agent invokes `file_read` for a path outside that authority
+- **THEN** file protection denies the invocation
+- **AND** no shell setting or approval mode widens the read policy
+
+#### Scenario: Image read on image-capable model becomes model-visible
+
+- **GIVEN** a readable PNG file
+- **AND** the active model supports image input
+- **WHEN** the agent invokes `file_read`
+- **THEN** the tool returns metadata indicating the image was loaded for visual
+  inspection
+- **AND** the next LLM call includes the image through a session media reference
+
+#### Scenario: Sub-agent image read can become model-visible
+
+- **GIVEN** a sub-agent uses `file_read` on a readable PNG file
+- **AND** the sub-agent's selected model supports image input
+- **WHEN** the tool result is returned to the sub-agent loop
+- **THEN** the next sub-agent LLM call includes the image through a session media
+  reference
+
+#### Scenario: Image read on text-only model returns modality guidance
+
+- **GIVEN** a readable PNG file
+- **AND** the active model does not support image input
+- **WHEN** the agent invokes `file_read`
+- **THEN** the tool returns metadata and the canonical image modality-gap note
+- **AND** no media reference is added to the next LLM call
+
+#### Scenario: PDF read does not extract text
+
+- **GIVEN** a readable PDF file
+- **WHEN** the agent invokes `file_read`
+- **THEN** the tool returns metadata identifying the file as a PDF
+- **AND** the result says native PDF extraction is not built into `file_read`
+- **AND** no raw PDF bytes are returned
+
+#### Scenario: Unsupported binary read returns explicit guidance
+
+- **GIVEN** a readable archive, audio file, video file, binary document, or
+  unknown binary file
+- **WHEN** the agent invokes `file_read`
+- **THEN** the tool returns metadata and explicit unsupported-format guidance
+- **AND** no raw bytes are returned
+
+### Requirement: Attachment tool reach
+
+The system SHALL provide an `attach_file` first-party tool that sends a file to
+the user. It SHALL authorize the source with the shared `Attach` path access
+decision. An explicit `Roots` or `None` attach profile SHALL remain authoritative
+in every interaction mode. The default interactive Personal `All` profile MAY
+attach an external file after the protected-path checks pass. The tool SHALL
+copy an admitted file into the current session's attachments directory before
+delivery.
+
+#### Scenario: Interactive Personal session attaches an external file
+
+- **GIVEN** the default interactive Personal attach profile permits an external
+  file
+- **WHEN** the agent invokes `attach_file` for that file
+- **THEN** the tool copies the file into the current session attachments directory
+- **AND** the tool sends the copied file to the user
+
+#### Scenario: Counterexample - explicit attach roots remain authoritative
+
+- **GIVEN** an interactive Personal profile explicitly limits attachments to
+  one root
+- **WHEN** the agent invokes `attach_file` outside that root
+- **THEN** file protection denies the invocation
+- **AND** user approval does not widen the attach profile
+
+#### Scenario: Protected control-plane file cannot be attached
+
+- **GIVEN** an interactive Personal session requests a protected control-plane
+  file
+- **WHEN** the agent invokes `attach_file`
+- **THEN** the tool denies the request
+- **AND** broad Personal file authority does not bypass the denial
+
+### Requirement: Working directory declaration stays scoped
+
+The system SHALL provide a `set_working_directory` first-party tool that sets
+the session's project root. It SHALL use the shared `DeclareProjectScope` path
+operation, which maps to read authority but remains limited to the session
+directory, current project directory, and configured read roots. The default
+interactive Personal `All` file profile and user approval SHALL NOT widen
+project declaration authority.
+
+A successful declaration adds the project directory to reviewed-safe trusted
+roots and loads project identity files. The tool is a project declaration, not
+a shell `cd` operation.
+
+#### Scenario: Interactive Personal session cannot widen the working directory
+
+- **GIVEN** an interactive Personal session requests a directory outside the
+  roots permitted for project declaration
+- **WHEN** the agent invokes `set_working_directory`
+- **THEN** the project directory remains unchanged
+- **AND** the tool reports that the directory is outside the trusted roots
+
 ## ADDED Requirements
 
 ### Requirement: Spawned child references are machine-actionable
@@ -161,11 +358,11 @@ artifact_dir: "/srv/netclaw/sessions/s-42/subagents/run-7/artifacts"
 - **THEN** the returned log path identifies an existing file
 - **AND** an authorized `file_read` can open it immediately
 
-### Requirement: One path access decision owns filesystem authorization
+### Requirement: File protection is an inner tool-policy layer
 
-`netclaw-tools` SHALL own one path access decision for structured file tools,
-project-directory declarations, unattended shell path facts, and shell calls
-considered for reviewed-safe automatic authorization. The decision SHALL use:
+`netclaw-tools` SHALL own one file-protection layer and one path access decision
+for structured file tools, project-directory declarations, and known shell path
+facts. The decision SHALL use:
 
 - the canonical path;
 - its relationship to a trusted root;
@@ -177,13 +374,28 @@ The decision SHALL return an allowed or denied result. A denied result SHALL
 carry one failure category and human-readable detail. A caller SHALL NOT repeat
 root assembly, containment, or filesystem-link policy.
 
+A structured tool SHALL provide its exact operation. Every known path referenced
+by a shell invocation SHALL use the conservative `Write` operation. Netclaw
+SHALL NOT infer whether arbitrary shell syntax reads or writes a path.
+
+Tool capability and tool-family safety SHALL run before file protection. Shell
+mode and shell command policy SHALL therefore deny an ineligible shell call
+before path access is evaluated. File authority SHALL NOT enable shell. When an
+eligible shell call has a known path, a `Write` denial SHALL stop the call before
+approval.
+
+An explicit `Roots` or `None` file profile SHALL remain authoritative in every
+interaction mode. User approval SHALL NOT widen it. The default interactive
+Personal `All` profile remains broad because that file profile grants broad
+authority.
+
+An unresolved interactive shell path MAY reach one-shot user approval. It SHALL
+NOT receive reviewed-safe or persistent coverage. For a known shell path,
+approval SHALL NOT widen an explicit `Roots` or `None` file profile.
+
 The existing `file_read`, `file_search`, `file_list`, `file_write`,
 `file_edit`, and `attach_file` tools SHALL use this decision. They SHALL keep
 their existing output, pagination, query, and approval contracts.
-
-An interactive Personal shell call MAY reach explicit user approval for a path
-outside trusted roots. That approval boundary is not reviewed-safe automatic
-authorization and SHALL NOT create a second automatic path policy.
 
 The Netclaw sessions root SHALL be a trusted root for parent and child runs.
 A path in another session SHALL use the same decision as any other path below
@@ -221,6 +433,37 @@ active log writer on POSIX and Windows.
 - **WHEN** it requests both operations for one path below a trusted root
 - **THEN** the shared decision allows the read
 - **AND** it denies the write
+
+#### Scenario: Example - structured tools use their exact operation
+
+- **GIVEN** a path is readable but not writable under the audience file profile
+- **WHEN** `file_read` and `file_write` target that path
+- **THEN** `file_read` supplies `Read` and is admitted
+- **AND** `file_write` supplies `Write` and is denied
+
+#### Scenario: Counterexample - every known shell path requires write authority
+
+- **GIVEN** an eligible shell invocation names a known path
+- **AND** the audience can read but cannot write that path
+- **WHEN** authorization evaluates the shell invocation
+- **THEN** file protection evaluates the path as `Write`
+- **AND** the shell invocation is denied before approval
+
+#### Scenario: Counterexample - read authority cannot admit shell
+
+- **GIVEN** a structured read would be allowed for a path
+- **AND** shell execution is disabled or the command is denied
+- **WHEN** a shell invocation names that path
+- **THEN** shell policy denies the invocation before file protection
+- **AND** the allowed read decision does not enable shell
+
+#### Scenario: Counterexample - approval cannot widen explicit file authority
+
+- **GIVEN** an interactive profile explicitly limits writes to one root
+- **AND** an eligible shell invocation names a known path outside that root
+- **WHEN** authorization evaluates the invocation
+- **THEN** file protection denies the path as `Write`
+- **AND** the invocation does not reach user approval
 
 #### Scenario: Counterexample - a filesystem link cannot escape
 

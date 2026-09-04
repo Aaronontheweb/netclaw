@@ -11,25 +11,40 @@ using ShellSyntaxTree;
 namespace Netclaw.Actors.Tools;
 
 /// <summary>
-/// Owns canonical path resolution and path access decisions for structured tools and reviewed shell diagnostics.
+/// Owns canonical path resolution and file-protection decisions.
 /// </summary>
 internal sealed class PathAccessPolicy
 {
+    /// <summary>Classifies why a path access decision failed.</summary>
     internal enum PathAccessFailure
     {
+        /// <summary>The caller did not supply a valid path.</summary>
         InvalidInput,
+
+        /// <summary>The path or operation is outside the caller's authority.</summary>
         AccessDenied,
+
+        /// <summary>A relative path has no valid project or session base.</summary>
         MissingBase
     }
 
+    /// <summary>Identifies the filesystem operation that needs authority.</summary>
     internal enum FileOperation
     {
+        /// <summary>Reads, lists, or searches filesystem content.</summary>
         Read,
+
+        /// <summary>Creates or changes filesystem content.</summary>
         Write,
+
+        /// <summary>Returns an existing file through a channel.</summary>
         Attach,
+
+        /// <summary>Validates a proposed project root without granting broader filesystem reach.</summary>
         DeclareProjectScope
     }
 
+    /// <summary>Returns the canonical path and the typed result of one access check.</summary>
     internal sealed record PathAccessDecision
     {
         private PathAccessDecision(
@@ -44,17 +59,23 @@ internal sealed class PathAccessPolicy
             Failure = failure;
         }
 
+        /// <summary>Gets whether the policy allowed the operation.</summary>
         public bool Allowed { get; }
 
+        /// <summary>Gets the canonical path when path resolution succeeded.</summary>
         public string CanonicalPath { get; }
 
+        /// <summary>Gets the operator-readable error for a denied operation.</summary>
         public string Error { get; }
 
+        /// <summary>Gets the failure category for a denied operation.</summary>
         public PathAccessFailure? Failure { get; }
 
+        /// <summary>Creates an allowed decision for a canonical path.</summary>
         public static PathAccessDecision Allow(string canonicalPath)
             => new(true, canonicalPath, string.Empty, null);
 
+        /// <summary>Creates a denied decision with a failure category and optional canonical path.</summary>
         public static PathAccessDecision Deny(
             string error,
             PathAccessFailure failure,
@@ -81,6 +102,10 @@ internal sealed class PathAccessPolicy
     {
         _profileResolver = new ToolAudienceProfileResolver(toolConfig, paths);
         _protectedPaths = protectedPaths;
+
+        // SessionsDirectory contains version-2 envelopes and legacy workspaces.
+        // SessionLogsDirectory contains only legacy raw logs. Both roots remain
+        // readable so one session can inspect another session's authorized data.
         _sessionRoots = new[]
             {
                 paths.SessionsDirectory,
@@ -101,23 +126,19 @@ internal sealed class PathAccessPolicy
         });
     }
 
+    /// <summary>Resolves one path and applies its audience and operation policy.</summary>
     public PathAccessDecision Evaluate(
         string rawPath,
         ToolInvocationContext context,
         FileOperation operation)
     {
-        var profileOperation = operation == FileOperation.DeclareProjectScope
-            ? FileOperation.Read
-            : operation;
-        var allowInteractivePersonalReach = operation != FileOperation.DeclareProjectScope;
         if (!TryResolvePath(
                 rawPath,
                 context,
-                profileOperation,
+                operation,
                 out var canonicalPath,
                 out var error,
-                out var failure,
-                allowInteractivePersonalReach))
+                out var failure))
         {
             return PathAccessDecision.Deny(
                 error,
@@ -125,31 +146,56 @@ internal sealed class PathAccessPolicy
                 canonicalPath);
         }
 
-        return AllowIfUnprotected(canonicalPath, profileOperation);
+        return AllowIfUnprotected(canonicalPath, ToProtectionOperation(operation));
+    }
+
+    /// <summary>Applies file protection to one parser-canonical shell path.</summary>
+    public PathAccessDecision EvaluateShellPath(
+        CanonicalShellPath path,
+        ToolInvocationContext context)
+    {
+        if (ShellPathRules.UsesHostPathStyle(path.PathStyle))
+            return Evaluate(path.Value, context, FileOperation.Write);
+
+        // Cross-platform parser tests can supply paths from another host style.
+        // Only an explicit interactive All profile has enough authority without
+        // a host filesystem relationship check. Bounded profiles fail closed.
+        return HasUnrestrictedInteractiveFileAccess(context, FileOperation.Write)
+            ? PathAccessDecision.Allow(path.Value)
+            : PathAccessDecision.Deny(
+                "Error: Path relationship could not be verified on this host.",
+                PathAccessFailure.AccessDenied,
+                path.Value);
     }
 
     /// <summary>
-    /// Evaluates one parser-resolved input to a reviewed diagnostic command.
-    /// Reviewed diagnostics are read-only and receive only the session and
-    /// declared-project trusted roots; they do not inherit broader global read
-    /// roots or the interactive Personal filesystem reach.
+    /// Evaluates whether one parser-resolved shell path is inside the bounded
+    /// roots eligible for reviewed-safe approval coverage.
     /// </summary>
-    public PathAccessDecision EvaluateReviewedDiagnosticRead(
+    /// <remarks>
+    /// The caller first checks shell capability, shell command policy, and the
+    /// conservative <see cref="FileOperation.Write"/> file-protection decision.
+    /// This method adds only the narrower reviewed-safe root requirement. It
+    /// grants neither shell nor file authority.
+    /// </remarks>
+    /// <param name="canonicalPath">The parser-resolved path to evaluate.</param>
+    /// <param name="context">The invocation that supplies session and project roots.</param>
+    /// <param name="pathStyle">The path syntax reported by the shell parser.</param>
+    /// <param name="proposedProjectRoot">
+    /// A project root that passed declaration policy but is not active yet.
+    /// </param>
+    /// <param name="includeRootInLinkCheck">
+    /// Whether a link at the trusted root itself makes the relationship unsafe.
+    /// </param>
+    public PathAccessDecision EvaluateReviewedShellPath(
         string canonicalPath,
         ToolInvocationContext context,
         ShellPathStyle pathStyle,
         string? proposedProjectRoot = null,
         bool includeRootInLinkCheck = true)
     {
-        var profile = _profileResolver.ResolveProfile(context);
-        if (profile.WriteFiles.Mode == ToolFilesystemMode.None)
-        {
-            return PathAccessDecision.Deny(
-                "Error: Shell access is not allowed by this audience profile.",
-                PathAccessFailure.AccessDenied,
-                canonicalPath);
-        }
-
+        // A reviewed diagnostic can read only session roots and an admitted
+        // project root. It cannot inherit the broader global read-root catalog.
         var roots = new List<string>();
         AddSessionRoots(roots, context);
         if (context.Audience != TrustAudience.Public)
@@ -164,6 +210,8 @@ internal sealed class PathAccessPolicy
         {
             try
             {
+                // First, compare paths with the parser-declared shell style.
+                // This supports Windows syntax on a non-Windows review host.
                 var normalizedPath = string.Empty;
                 var normalizedRoot = string.Empty;
                 var usesShellPathStyle = ShellPathRules.TryNormalize(canonicalPath, pathStyle, out normalizedPath)
@@ -174,8 +222,11 @@ internal sealed class PathAccessPolicy
                     continue;
                 }
 
+                // A valid foreign-style path can use lexical containment only.
                 if (!usesShellPathStyle)
                 {
+                    // Host-style paths use the platform path API. Both inputs
+                    // must be absolute before the policy compares them.
                     if (!Path.IsPathFullyQualified(canonicalPath)
                         || !Path.IsPathFullyQualified(root))
                     {
@@ -188,6 +239,8 @@ internal sealed class PathAccessPolicy
                         continue;
                 }
 
+                // The host can inspect links only for its own path style.
+                // Foreign-style paths stay lexical and fail closed elsewhere.
                 if ((!usesShellPathStyle || ShellPathRules.UsesHostPathStyle(pathStyle))
                     && PathUtility.ContainsSymlinkSegment(
                         normalizedRoot,
@@ -200,7 +253,8 @@ internal sealed class PathAccessPolicy
                         normalizedPath);
                 }
 
-                return AllowIfUnprotected(normalizedPath, FileOperation.Read);
+                // Shell protected-path policy ran before this bounded-root check.
+                return PathAccessDecision.Allow(normalizedPath);
             }
             catch (Exception ex) when (ex is ArgumentException
                                            or IOException
@@ -221,17 +275,7 @@ internal sealed class PathAccessPolicy
             canonicalPath);
     }
 
-    /// <summary>
-    /// True when an interactive Personal-audience session gets shell-equivalent
-    /// file reach: read and attach tools resolve outside the configured roots,
-    /// matching the approval-gated shell surface. Unattended sessions, Team,
-    /// and Public audiences are never granted this — their access remains
-    /// bounded by trusted roots or fails closed.
-    /// </summary>
-    internal static bool HasInteractivePersonalReach(ToolInvocationContext context)
-        => context.Audience == TrustAudience.Personal
-           && context.RunScope.InteractiveApproval is InteractiveApprovalCapability.Available;
-
+    /// <summary>Gets the effective trusted roots for one operation and invocation.</summary>
     public IReadOnlyList<string> GetTrustedRoots(ToolInvocationContext context, FileOperation accessKind)
     {
         var profile = _profileResolver.ResolveProfile(context);
@@ -251,8 +295,7 @@ internal sealed class PathAccessPolicy
         FileOperation accessKind,
         out string fullPath,
         out string error,
-        out PathAccessFailure? failure,
-        bool allowInteractivePersonalReach = true)
+        out PathAccessFailure? failure)
     {
         try
         {
@@ -277,7 +320,10 @@ internal sealed class PathAccessPolicy
             }
             else
             {
-                var baseResult = TryGetRelativePathBase(context, accessKind, out var baseDirectory);
+                var baseResult = TryGetRelativePathBase(
+                    context,
+                    accessKind,
+                    out var baseDirectory);
                 if (baseResult == PathBaseStatus.Resolved)
                 {
                     fullPath = Path.GetFullPath(rawPath, baseDirectory);
@@ -324,7 +370,7 @@ internal sealed class PathAccessPolicy
             // They stay confined to trusted roots even for default
             // Mode.All profiles: its declaration supplies the project directory
             // to reviewed-safe policy and feeds project identity files into the prompt.
-            if (!allowInteractivePersonalReach
+            if (accessKind == FileOperation.DeclareProjectScope
                 || context.RunScope.InteractiveApproval is InteractiveApprovalCapability.Unavailable)
             {
                 var allowed = TryResolveWithinTrustedRoots(fullPath, context, accessKind, out error);
@@ -344,24 +390,6 @@ internal sealed class PathAccessPolicy
             error = $"Error: {label} trust context does not allow {accessKind.ToString().ToLowerInvariant()} access to local files.";
             failure = PathAccessFailure.AccessDenied;
             return false;
-        }
-
-        // Interactive Personal-audience reads are shell-equivalent: shell reaches
-        // any path in an interactive session (approval gate + ToolPathPolicy hard
-        // deny), so read/attach tools do too. This kills the shell-workaround
-        // (cat, cp-into-session) for legitimate out-of-roots files. The hard deny
-        // surface still applies inside the tools via ToolPathPolicy.IsReadDenied
-        // (file_read, file_list, attach_file), and autonomous sessions never reach
-        // this branch — InteractiveApproval is Unavailable there, so path access
-        // stays within trusted roots or fails closed below. Project-scope
-        // declarations opt out because their result feeds reviewed-safe policy.
-        if (allowInteractivePersonalReach
-            && accessKind is (FileOperation.Read or FileOperation.Attach)
-            && HasInteractivePersonalReach(context))
-        {
-            error = string.Empty;
-            failure = null;
-            return true;
         }
 
         var roots = ResolveAndMergeRoots(access, context, audience, accessKind);
@@ -416,7 +444,7 @@ internal sealed class PathAccessPolicy
             var relationship = GetPathRelationship(baseDirectory, context, accessKind);
             if (relationship == PathRelationship.WithinTrustedRoot
                 || (relationship == PathRelationship.OutsideTrustedRoots
-                    && HasInteractivePersonalReach(context)))
+                    && HasUnrestrictedInteractiveFileAccess(context, accessKind)))
             {
                 return PathBaseStatus.Resolved;
             }
@@ -431,19 +459,32 @@ internal sealed class PathAccessPolicy
         return TryNormalizeAbsoluteBase(context.SessionDirectory, requireExistingDirectory: false, out baseDirectory);
     }
 
+    private bool HasUnrestrictedInteractiveFileAccess(
+        ToolInvocationContext context,
+        FileOperation operation)
+        => operation != FileOperation.DeclareProjectScope
+           && context.RunScope.InteractiveApproval is InteractiveApprovalCapability.Available
+           && GetAccessProfile(_profileResolver.ResolveProfile(context), operation).Mode
+           == ToolFilesystemMode.All;
+
     private PathRelationship GetPathRelationship(
         string projectDirectory,
         ToolInvocationContext context,
         FileOperation accessKind)
     {
+        // A project base must derive from authority that existed before the
+        // declaration. Do not treat the project path as its own trusted root.
         var roots = new List<string>();
         AddSessionRoots(roots, context);
 
         var profile = _profileResolver.ResolveProfile(context);
         roots.AddRange(_profileResolver.ResolveRoots(profile.ReadFiles, context));
         roots.AddRange(_cachedGlobalReadRoots.Value);
-        if (accessKind is not FileOperation.Read && _cachedWorkspacesRoot.Value is { } workspacesRoot)
+        if (ToProtectionOperation(accessKind) != FileOperation.Read
+            && _cachedWorkspacesRoot.Value is { } workspacesRoot)
+        {
             roots.Add(workspacesRoot);
+        }
 
         return GetHostPathRelationship(projectDirectory, roots);
     }
@@ -483,18 +524,32 @@ internal sealed class PathAccessPolicy
         }
     }
 
+    /// <summary>Describes whether a relative-path base is usable.</summary>
     private enum PathBaseStatus
     {
+        /// <summary>No project or session base is available.</summary>
         Unavailable,
+
+        /// <summary>The policy resolved a usable absolute base.</summary>
         Resolved,
+
+        /// <summary>A candidate base exists but fails a safety check.</summary>
         Denied
     }
 
+    /// <summary>Describes one canonical path's relationship to trusted roots.</summary>
     private enum PathRelationship
     {
+        /// <summary>The path is not inside a trusted root.</summary>
         OutsideTrustedRoots,
+
+        /// <summary>The path is inside a trusted root without a link escape.</summary>
         WithinTrustedRoot,
+
+        /// <summary>The path uses a filesystem link inside a trusted root.</summary>
         CrossesLinkBoundary,
+
+        /// <summary>The policy cannot prove the path relationship.</summary>
         Unverifiable
     }
 
@@ -526,7 +581,8 @@ internal sealed class PathAccessPolicy
 
         AddSessionRoots(roots, context);
 
-        if (accessKind == FileOperation.Read && audience != TrustAudience.Public)
+        if (ToProtectionOperation(accessKind) == FileOperation.Read
+            && audience != TrustAudience.Public)
         {
             foreach (var globalRoot in _cachedGlobalReadRoots.Value)
                 roots.Add(globalRoot);
@@ -629,7 +685,7 @@ internal sealed class PathAccessPolicy
         if (!string.IsNullOrWhiteSpace(context.ProjectDirectory))
             roots.Add(context.ProjectDirectory);
 
-        if (accessKind == FileOperation.Read)
+        if (ToProtectionOperation(accessKind) == FileOperation.Read)
             roots.AddRange(_cachedGlobalReadRoots.Value);
         else if (_cachedWorkspacesRoot.Value is { } workspacesRoot)
             roots.Add(workspacesRoot);
@@ -657,6 +713,11 @@ internal sealed class PathAccessPolicy
         => operation == FileOperation.Write
             ? _protectedPaths.IsDenied(path)
             : _protectedPaths.IsReadDenied(path);
+
+    private static FileOperation ToProtectionOperation(FileOperation operation)
+        => operation == FileOperation.DeclareProjectScope
+            ? FileOperation.Read
+            : operation;
 
     private PathAccessDecision AllowIfUnprotected(string canonicalPath, FileOperation operation)
     {

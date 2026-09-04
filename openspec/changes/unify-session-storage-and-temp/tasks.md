@@ -45,6 +45,7 @@
 - [x] 5.5 Validate every trusted root and canonical path against symbolic-link, junction, and reparse-point escape through the common path access decision
 - [x] 5.6 Inventory every filesystem path term, OpenSpec requirement, policy type, decision method, and call site; map each item to one owner and identify whether it survives, merges, or is removed
 - [x] 5.7 Condense the four affected delta specs around one owning requirement, then replace competing root terms and Boolean path decisions with one shared contract; remove duplicate helpers, call sites, and tests
+- [x] 5.8 Compose tool authorization as ordered capability, tool-family, file-protection, and approval layers; verify shell stops before file checks when disabled, file tools never require shell, and every admitted shell path uses conservative `Write` authority before approval
 
 ## 6. Compose Git Worktrees from Existing Tools
 

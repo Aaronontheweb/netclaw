@@ -60,9 +60,8 @@ public class AttachFileToolTests : IDisposable
     [Fact]
     public async Task Path_traversal_attempt_is_rejected()
     {
-        // Autonomous Personal: the out-of-session boundary holds for
-        // non-interactive sessions (#1724). Interactive Personal gets
-        // shell-equivalent reach instead.
+        // Default Personal file policy is unrestricted only for interactive
+        // sessions. Unattended runs remain confined to trusted roots.
         var outsidePath = Path.Combine(Path.GetTempPath(), $"netclaw-outside-{Guid.NewGuid():N}.txt");
         await File.WriteAllTextAsync(outsidePath, "sensitive data", TestContext.Current.CancellationToken);
 
@@ -221,8 +220,7 @@ public class AttachFileToolTests : IDisposable
     public async Task Symlink_to_outside_file_is_rejected()
     {
         // Unattended Personal: a link in the session directory that resolves
-        // outside is denied by path access policy (#1724). Interactive Personal
-        // gets shell-equivalent reach instead.
+        // outside is denied by path access policy (#1724).
         var outsideFile = Path.Combine(Path.GetTempPath(), $"netclaw-outside-{Guid.NewGuid():N}.txt");
         var symlinkPath = Path.Combine(_dir.Path, "linked.txt");
 

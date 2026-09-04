@@ -108,6 +108,78 @@ runtime prompts and tool schemas SHALL NOT call either path â€œsession scratch.â
 - **THEN** the guidance points to `temp_dir`
 - **AND** it does not tell the model to use `session_dir` as scratch
 
+### Requirement: set_working_directory tool
+
+The system SHALL provide a `set_working_directory` tool that declares the
+session's project directory. The tool SHALL validate that the target is a real
+directory, resolve its canonical path, and request the shared
+`DeclareProjectScope` path access decision. That operation SHALL use read-file
+authority while remaining distinct from an ordinary read.
+
+The audience profile `AllowedTools` SHALL control whether the tool is exposed.
+Every audience and mode SHALL limit project declarations to the session
+directory, current project directory, and configured read roots. User approval
+and the default interactive Personal `All` file profile SHALL NOT widen those
+declaration roots.
+
+A successful declaration SHALL update project scope, add the directory to the
+trusted roots used by reviewed-safe shell policy, and load project identity
+files into the system prompt. The model-visible description SHALL present the
+tool as project declaration, not as a shell `cd` command.
+
+#### Scenario: set_working_directory updates project directory
+
+- **GIVEN** a session with no project directory set
+- **AND** the audience trust profile allows declarations under `/home/user`
+- **WHEN** the agent invokes `set_working_directory` with
+  path `/home/user/workspaces/akadonic`
+- **THEN** the session project directory is set to
+  `/home/user/workspaces/akadonic`
+- **AND** the project's identity file is loaded on the next LLM call
+- **AND** subsequent shell calls inside that directory may receive reviewed-safe
+  coverage
+
+#### Scenario: set_working_directory rejected outside trusted roots
+
+- **GIVEN** a session whose project declarations are limited to `/home/user`
+- **WHEN** the agent invokes `set_working_directory` with path `/etc/nginx`
+- **THEN** the project directory remains unchanged
+- **AND** the tool reports that the path is outside trusted roots
+
+#### Scenario: set_working_directory rejected for nonexistent directory
+
+- **GIVEN** a session with read authority under `/home/user`
+- **WHEN** the agent invokes `set_working_directory` with
+  path `/home/user/nonexistent`
+- **THEN** the project directory remains unchanged
+- **AND** the tool reports that the directory does not exist
+
+#### Scenario: Personal audience limits project declaration to trusted roots
+
+- **GIVEN** a default Personal file profile with broad interactive read access
+- **AND** a valid target outside the session, current project, and configured
+  read roots
+- **WHEN** the agent invokes `set_working_directory` with that target
+- **THEN** the project directory is not updated
+- **AND** the declaration is denied even though an ordinary interactive
+  Personal read of the same path may be allowed
+
+#### Scenario: set_working_directory not exposed to public audience
+
+- **GIVEN** a Public session
+- **WHEN** the tool exposure list is computed
+- **THEN** `set_working_directory` is not included
+
+#### Scenario: Switching projects replaces context
+
+- **GIVEN** a session with project directory `/home/user/workspaces/akadonic`
+- **WHEN** the agent invokes `set_working_directory` with
+  path `/home/user/workspaces/other-project`
+- **THEN** the project directory changes to `/home/user/workspaces/other-project`
+- **AND** the next LLM call loads identity files from the new project
+- **AND** the old project's identity files are no longer injected
+- **AND** the reviewed-safe trusted root switches to the new project directory
+
 ### Requirement: Managed temporary directory is the private temporary location
 
 The system SHALL provide a separate managed temporary directory for each

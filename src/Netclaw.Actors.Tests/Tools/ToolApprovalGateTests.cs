@@ -164,7 +164,7 @@ public sealed class ToolApprovalGateTests
 
     [Theory]
     [InlineData(ToolApprovalMode.Auto, "shell_path_outside_trust_zone")]
-    [InlineData(ToolApprovalMode.Deny, "tool_denied_by_approval_policy")]
+    [InlineData(ToolApprovalMode.Deny, "shell_path_outside_trust_zone")]
     public void Shell_approval_mode_preserves_unattended_path_authorization(
         ToolApprovalMode mode,
         string expectedDenyReason)
@@ -336,11 +336,12 @@ public sealed class ToolApprovalGateTests
     }
 
     [Fact]
-    public void Structured_explicit_deny_precedes_path_denial()
+    public void Structured_file_protection_precedes_approval_mode()
     {
         using var directory = new DisposableTempDir();
         var paths = new NetclawPaths(directory.Path);
         var config = new ToolConfig();
+        config.AudienceProfiles.Personal.ReadFiles.Mode = ToolFilesystemMode.None;
         config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
         {
             ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
@@ -362,8 +363,8 @@ public sealed class ToolApprovalGateTests
             ToolInput.Create("Path", paths.NetclawConfigPath));
 
         Assert.False(decision.Allowed);
-        Assert.Equal("tool_denied_by_approval_policy", decision.DenyReason);
-        Assert.Null(decision.DenyMessage);
+        Assert.Equal("path_access_denied", decision.DenyReason);
+        Assert.NotNull(decision.DenyMessage);
         Assert.Null(decision.ApprovalContext);
     }
 
@@ -910,7 +911,7 @@ public sealed class ToolApprovalGateTests
     }
 
     [Fact]
-    public void Interactive_shell_reaches_approval_for_path_outside_trusted_roots()
+    public void Interactive_shell_with_unrestricted_write_profile_reaches_approval_for_external_path()
     {
         using var dir = new DisposableTempDir();
         var trustedRoot = CreateTrustedRoot(dir.Path);
@@ -919,11 +920,106 @@ public sealed class ToolApprovalGateTests
         var tool = ShellTool();
         var ctx = PersonalContext(supportsApproval: true);
 
-        // The live approval gate remains the backstop for interactive Personal sessions.
+        // The default Personal WriteFiles=All profile admits the path. The
+        // approval layer still decides whether the shell call can execute.
         var decision = policy.AuthorizeInvocation(tool, ctx,
             new Dictionary<string, object?> { ["command"] = "cat /etc/passwd" });
 
         Assert.True(decision.NeedsApproval);
+    }
+
+    [Fact]
+    public void Disabled_shell_stops_before_file_protection()
+    {
+        using var dir = new DisposableTempDir();
+        var trustedRoot = CreateTrustedRoot(dir.Path);
+        var policy = CreatePolicyWithTrustedRoot(
+            trustedRoot,
+            ShellExecutionMode.Off,
+            ToolFilesystemMode.None);
+
+        var decision = policy.AuthorizeInvocation(
+            ShellTool(),
+            PersonalContext(),
+            new Dictionary<string, object?>
+            {
+                ["command"] = $"cat \"{Path.Combine(trustedRoot, "project", "README.md")}\""
+            });
+
+        Assert.False(decision.Allowed);
+        Assert.Equal("shell_disabled", decision.DenyReason);
+    }
+
+    [Fact]
+    public void Shell_invocation_requires_write_file_authority_before_approval()
+    {
+        using var dir = new DisposableTempDir();
+        var trustedRoot = CreateTrustedRoot(dir.Path);
+        var workingDirectory = Path.Combine(trustedRoot, "project");
+        var outsidePath = Path.Combine(dir.Path, "outside", "README.md");
+        var policy = CreatePolicyWithTrustedRoot(
+            trustedRoot,
+            ShellExecutionMode.HostAllowed,
+            ToolFilesystemMode.Roots);
+
+        var decision = policy.AuthorizeInvocation(
+            ShellTool(),
+            PersonalContext(),
+            new Dictionary<string, object?>
+            {
+                ["command"] = $"cat \"{outsidePath}\"",
+                ["WorkingDirectory"] = workingDirectory
+            });
+
+        Assert.False(decision.Allowed);
+        Assert.False(decision.NeedsApproval);
+        Assert.Equal("shell_path_outside_trust_zone", decision.DenyReason);
+    }
+
+    [SlopwatchSuppress("SW001", "This regression requires POSIX symbolic-link semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "Directory symlink creation is privilege-gated on Windows.")]
+    public void Shell_file_protection_checks_exact_path_for_link_escape()
+    {
+        using var dir = new DisposableTempDir();
+        var trustedRoot = CreateTrustedRoot(dir.Path);
+        var workingDirectory = Path.Combine(trustedRoot, "project");
+        var outsideDirectory = Path.Combine(dir.Path, "outside");
+        var outsideFile = Path.Combine(outsideDirectory, "README.md");
+        var linkedFile = Path.Combine(workingDirectory, "linked.md");
+        Directory.CreateDirectory(outsideDirectory);
+        File.WriteAllText(outsideFile, "outside");
+        File.CreateSymbolicLink(linkedFile, outsideFile);
+        var policy = CreatePolicyWithTrustedRoot(
+            trustedRoot,
+            ShellExecutionMode.HostAllowed,
+            ToolFilesystemMode.Roots);
+
+        var decision = policy.AuthorizeInvocation(
+            ShellTool(),
+            PersonalContext(),
+            new Dictionary<string, object?>
+            {
+                ["command"] = $"cat \"{linkedFile}\"",
+                ["WorkingDirectory"] = workingDirectory
+            });
+
+        Assert.False(decision.Allowed);
+        Assert.False(decision.NeedsApproval);
+        Assert.Equal("shell_path_outside_trust_zone", decision.DenyReason);
+    }
+
+    [Fact]
+    public void Unresolved_interactive_shell_path_retains_one_shot_approval()
+    {
+        var policy = CreatePolicy(ToolApprovalMode.Approval);
+
+        var decision = policy.AuthorizeInvocation(
+            ShellTool(),
+            PersonalContext(),
+            ToolInput.Create("Command", "custom-command \"$TARGET_FILE\""));
+
+        Assert.True(decision.NeedsApproval);
+        Assert.Null(decision.DenyReason);
     }
 
     [Fact]
@@ -1075,10 +1171,18 @@ public sealed class ToolApprovalGateTests
         return root;
     }
 
-    private static ToolAccessPolicy CreatePolicyWithTrustedRoot(string trustedRoot)
+    private static ToolAccessPolicy CreatePolicyWithTrustedRoot(
+        string trustedRoot,
+        ShellExecutionMode shellMode = ShellExecutionMode.HostAllowed,
+        ToolFilesystemMode writeFilesMode = ToolFilesystemMode.All)
     {
         var environment = TestShellEnvironment.Current;
-        var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
+        var config = new ToolConfig { ShellMode = shellMode };
+        config.AudienceProfiles.Personal.WriteFiles = new ToolFilesystemAccessProfile
+        {
+            Mode = writeFilesMode,
+            Roots = [trustedRoot]
+        };
         config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
         {
             ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)

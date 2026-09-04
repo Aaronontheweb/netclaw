@@ -71,7 +71,7 @@ internal sealed class ReviewedSafeShellPolicy
         var pathStyle = candidates[0].Shell == ApprovalShell.PowerShell
             ? ShellPathStyle.Windows
             : ShellPathStyle.Posix;
-        if (_pathAccessPolicy.EvaluateReviewedDiagnosticRead(fullCwd, context, pathStyle).Allowed)
+        if (_pathAccessPolicy.EvaluateReviewedShellPath(fullCwd, context, pathStyle).Allowed)
         {
             return false;
         }
@@ -113,7 +113,7 @@ internal sealed class ReviewedSafeShellPolicy
                 return false;
             }
 
-            if (!_pathAccessPolicy.EvaluateReviewedDiagnosticRead(
+            if (!_pathAccessPolicy.EvaluateReviewedShellPath(
                     fullDirectory,
                     context,
                     pathStyle,
@@ -216,7 +216,7 @@ internal sealed class ReviewedSafeShellPolicy
         var pathStyle = candidate.Shell == ApprovalShell.Bash
             ? ShellPathStyle.Posix
             : ShellPathStyle.Windows;
-        return _pathAccessPolicy.EvaluateReviewedDiagnosticRead(
+        return _pathAccessPolicy.EvaluateReviewedShellPath(
             realPath.Value,
             context,
             pathStyle).Allowed;
@@ -289,7 +289,7 @@ internal sealed class ReviewedSafeShellPolicy
                 || fact.State != ShellPolicyPathResolutionState.Known
                 || fact.Paths.Count == 0
                 || fact.Paths.Any(path =>
-                    !_pathAccessPolicy.EvaluateReviewedDiagnosticRead(
+                    !_pathAccessPolicy.EvaluateReviewedShellPath(
                         path.Value,
                         context,
                         path.PathStyle,

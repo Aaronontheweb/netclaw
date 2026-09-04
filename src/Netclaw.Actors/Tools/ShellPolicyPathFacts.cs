@@ -60,6 +60,21 @@ internal sealed record ShellPolicyCandidatePathFacts(
 internal static class ShellPolicyPathFacts
 {
     internal static IReadOnlyList<ShellPolicyCandidatePathFacts> Create(
+        IReadOnlyList<ApprovalCandidate> candidates,
+        ShellPathStyle pathStyle)
+    {
+        ArgumentNullException.ThrowIfNull(candidates);
+
+        var projected = candidates
+            .Select((candidate, index) => new ShellPolicyCandidate(
+                new ShellPolicyCandidateId(index),
+                candidate,
+                candidate.SourceOccurrence))
+            .ToArray();
+        return Create(Array.AsReadOnly(projected), pathStyle);
+    }
+
+    internal static IReadOnlyList<ShellPolicyCandidatePathFacts> Create(
         IReadOnlyList<ShellPolicyCandidate> candidates,
         ShellPathStyle pathStyle)
     {

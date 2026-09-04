@@ -583,11 +583,18 @@ applies these inputs:
 - the audience policy;
 - link and protected-path facts.
 
-Structured file tools, project-directory declarations, unattended shell path
-facts, and reviewed-safe shell candidates use this decision directly. An
-interactive Personal shell call may instead reach explicit user approval for a
-path outside trusted roots; that is an authority boundary, not a second
-automatic path policy.
+Structured file tools and project-directory declarations provide their exact
+file operation to this decision. A shell call first passes tool capability and
+shell command policy. Every known shell path then uses the conservative `Write`
+operation because Netclaw does not infer whether arbitrary shell syntax reads or
+mutates a path.
+
+This dependency is one-way. File protection can deny an otherwise eligible
+shell call, but file authority cannot grant shell capability or bypass shell
+policy. A denial is terminal. Approval does not widen an explicit `Roots` or
+`None` file profile. An unresolved interactive shell path may still reach the
+existing one-shot approval flow, but it cannot receive reviewed-safe or
+persistent coverage.
 
 Temporary-path correction does not consume, make, or override a path access
 decision. After terminal authorization checks pass, it may use path and syntax
