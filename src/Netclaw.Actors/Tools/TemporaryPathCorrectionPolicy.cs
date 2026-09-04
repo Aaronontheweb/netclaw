@@ -65,6 +65,11 @@ internal sealed class TemporaryPathCorrectionPolicy
         IDictionary<string, object?>? arguments,
         ToolInvocationContext context)
     {
+        // Suggest a different directory only when the parser proves that the
+        // complete shell operation is static and every affected scope stays
+        // below one explicit platform temporary root. If any proof is missing,
+        // preserve the ordinary approval path: a correction could otherwise
+        // change the command's meaning or hide an additional path operation.
         if (!analysis.IsResolved
             || analysis.HasDynamicSyntax
             || !TryGetManagedTemporaryDirectoryForCorrection(context, out var managedTemporaryDirectory)
@@ -81,9 +86,23 @@ internal sealed class TemporaryPathCorrectionPolicy
     }
 
     /// <summary>
-    /// Returns advice for an interactive Personal file change below a platform temporary root.
-    /// The method rejects protected paths and grants no file authority.
+    /// Suggests the session's managed temporary directory when an interactive
+    /// Personal <c>file_write</c> or <c>file_edit</c> call targets an absolute,
+    /// unprotected path below a platform temporary root.
     /// </summary>
+    /// <remarks>
+    /// The tool access policy calls this method after structured path
+    /// authorization while it builds an approval-required result. The returned
+    /// correction is advice only: it does not rewrite the submitted path or grant
+    /// access to either the submitted path or the suggested directory.
+    /// </remarks>
+    /// <example>
+    /// An interactive Personal call such as
+    /// <c>file_write(Path: "/tmp/report.md")</c> returns a correction that points
+    /// to the run's managed temporary directory. A <c>file_read</c> call, a
+    /// relative path such as <c>report.md</c>, a protected path, or the same call
+    /// from a Team or Public context returns <see langword="null"/>.
+    /// </example>
     internal ToolCorrection.ManagedTemporaryDirectorySuggested? EvaluateStructuredFileChange(
         ToolName toolName,
         IDictionary<string, object?>? arguments,
