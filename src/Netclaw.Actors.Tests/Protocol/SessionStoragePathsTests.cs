@@ -57,25 +57,13 @@ public sealed class SessionStoragePathsTests
     }
 
     [Fact]
-    public void Named_storage_locations_reject_relative_paths()
-    {
-        Assert.Throws<ArgumentException>(() => new SessionWorkspaceDirectory("workspace"));
-        Assert.Throws<ArgumentException>(() => new AttachmentStagingDirectory("attachment-staging"));
-        Assert.Throws<ArgumentException>(() => new ArtifactDirectory("artifacts"));
-        Assert.Throws<ArgumentException>(() => new ManagedTemporaryDirectory("tmp"));
-        Assert.Throws<ArgumentException>(() => new ManagedTemporaryStorageRoot("session"));
-        Assert.Throws<ArgumentException>(() => new WorktreeDirectory("worktrees"));
-        Assert.Throws<ArgumentException>(() => new SessionLogPath("logs/session.log"));
-    }
-
-    [Fact]
     public void Managed_temporary_location_rejects_a_directory_outside_its_storage_root()
     {
         var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "netclaw-storage", "root"));
         var outside = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "netclaw-storage", "outside"));
 
-        Assert.Throws<ArgumentException>(() => new ManagedTemporaryLocation(outside, root));
-        Assert.Throws<ArgumentException>(() => new ManagedTemporaryLocation(root, root));
+        Assert.Throws<ArgumentException>(() => ManagedTemporaryLocation.FromPersistedPaths(outside, root));
+        Assert.Throws<ArgumentException>(() => ManagedTemporaryLocation.FromPersistedPaths(root, root));
     }
 
     [Fact]

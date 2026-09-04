@@ -81,13 +81,24 @@ public sealed record SessionStorageBinding(
 /// </summary>
 public readonly record struct ManagedTemporaryLocation
 {
-    /// <summary>Creates a managed temporary location below its storage root.</summary>
-    /// <param name="directory">The absolute temporary directory.</param>
-    /// <param name="storageRoot">The absolute storage root that contains the directory.</param>
-    public ManagedTemporaryLocation(string directory, string storageRoot)
+    /// <summary>Creates the parent temporary location below a versioned session envelope.</summary>
+    /// <param name="parent">The parent session envelope.</param>
+    public ManagedTemporaryLocation(SessionStorageEnvelopeRoot parent)
+        : this(new ManagedTemporaryDirectory(parent), new ManagedTemporaryStorageRoot(parent))
     {
-        Directory = new ManagedTemporaryDirectory(directory);
-        StorageRoot = new ManagedTemporaryStorageRoot(storageRoot);
+    }
+
+    internal ManagedTemporaryLocation(SubAgentRunStorageRoot parent)
+        : this(new ManagedTemporaryDirectory(parent), new ManagedTemporaryStorageRoot(parent.EnvelopeRoot))
+    {
+    }
+
+    private ManagedTemporaryLocation(
+        ManagedTemporaryDirectory directory,
+        ManagedTemporaryStorageRoot storageRoot)
+    {
+        Directory = directory;
+        StorageRoot = storageRoot;
 
         var relative = Path.GetRelativePath(StorageRoot.Value, Directory.Value);
         if (relative == "."
@@ -100,6 +111,11 @@ public readonly record struct ManagedTemporaryLocation
                 nameof(directory));
         }
     }
+
+    internal static ManagedTemporaryLocation FromPersistedPaths(string directory, string storageRoot) =>
+        new(
+            ManagedTemporaryDirectory.FromPersistedPath(directory),
+            ManagedTemporaryStorageRoot.FromPersistedPath(storageRoot));
 
     /// <summary>Gets the process-specific temporary directory.</summary>
     public ManagedTemporaryDirectory Directory { get; }
@@ -155,15 +171,14 @@ public sealed record SessionStoragePaths
     /// <returns>The resolved parent paths.</returns>
     public static SessionStoragePaths CreateVersion2(SessionStorageEnvelopeRoot envelopeRoot)
     {
-        var root = envelopeRoot.Value;
         return new SessionStoragePaths(
             new SessionStorageBinding(SessionStorageLayoutVersion.Version2, envelopeRoot),
-            new SessionWorkspaceDirectory(Path.Combine(root, "workspace")),
-            new AttachmentStagingDirectory(Path.Combine(root, "attachment-staging")),
-            new ArtifactDirectory(Path.Combine(root, "artifacts")),
-            new ManagedTemporaryLocation(Path.Combine(root, "tmp", "parent"), root),
-            new WorktreeDirectory(Path.Combine(root, "worktrees")),
-            new SessionLogPath(Path.Combine(root, "logs", "session.log")),
+            new SessionWorkspaceDirectory(envelopeRoot),
+            new AttachmentStagingDirectory(envelopeRoot),
+            new ArtifactDirectory(envelopeRoot),
+            new ManagedTemporaryLocation(envelopeRoot),
+            new WorktreeDirectory(envelopeRoot),
+            new SessionLogPath(envelopeRoot),
             null);
     }
 
@@ -178,22 +193,22 @@ public sealed record SessionStoragePaths
         string sanitizedSessionId)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sanitizedSessionId);
-        var normalizedSessionDirectory = new SessionWorkspaceDirectory(sessionDirectory);
+        var normalizedSessionDirectory = SessionWorkspaceDirectory.FromLegacyPath(sessionDirectory);
         var normalizedLogsBase = new LegacySessionLogsDirectory(sessionLogsBasePath);
         return new SessionStoragePaths(
             null,
             normalizedSessionDirectory,
-            new AttachmentStagingDirectory(Path.Combine(
+            AttachmentStagingDirectory.FromLegacyPath(Path.Combine(
                 Directory.GetParent(normalizedSessionDirectory.Value)?.FullName
                 ?? throw new ArgumentException("The legacy session directory needs a parent.", nameof(sessionDirectory)),
                 ".attachment-staging",
                 sanitizedSessionId)),
-            new ArtifactDirectory(Path.Combine(normalizedSessionDirectory.Value, "artifacts")),
-            new ManagedTemporaryLocation(
+            ArtifactDirectory.FromLegacyPath(Path.Combine(normalizedSessionDirectory.Value, "artifacts")),
+            ManagedTemporaryLocation.FromPersistedPaths(
                 Path.Combine(normalizedSessionDirectory.Value, "tmp", "parent"),
                 normalizedSessionDirectory.Value),
-            new WorktreeDirectory(Path.Combine(normalizedSessionDirectory.Value, "worktrees")),
-            new SessionLogPath(Path.Combine(normalizedLogsBase.Value, sanitizedSessionId, "session.log")),
+            WorktreeDirectory.FromLegacyPath(Path.Combine(normalizedSessionDirectory.Value, "worktrees")),
+            SessionLogPath.FromLegacyPath(Path.Combine(normalizedLogsBase.Value, sanitizedSessionId, "session.log")),
             normalizedLogsBase);
     }
 
@@ -208,15 +223,15 @@ public sealed record SessionStoragePaths
 
         if (Binding is { } binding)
         {
-            var childRoot = Path.Combine(binding.EnvelopeRoot.Value, "subagents", runId.Value);
+            var childRoot = new SubAgentRunStorageRoot(binding.EnvelopeRoot, runId);
             return new SessionStoragePaths(
                 binding,
                 SessionDirectory,
                 AttachmentStagingDirectory,
-                new ArtifactDirectory(Path.Combine(childRoot, "artifacts")),
-                new ManagedTemporaryLocation(Path.Combine(childRoot, "tmp"), binding.EnvelopeRoot.Value),
+                new ArtifactDirectory(childRoot),
+                new ManagedTemporaryLocation(childRoot),
                 WorktreeDirectory,
-                new SessionLogPath(Path.Combine(childRoot, "logs", "session.log")),
+                new SessionLogPath(childRoot),
                 null);
         }
 
@@ -226,10 +241,12 @@ public sealed record SessionStoragePaths
             null,
             SessionDirectory,
             AttachmentStagingDirectory,
-            new ArtifactDirectory(Path.Combine(childRootLegacy, "artifacts")),
-            new ManagedTemporaryLocation(Path.Combine(childRootLegacy, "tmp"), SessionDirectory.Value),
+            ArtifactDirectory.FromLegacyPath(Path.Combine(childRootLegacy, "artifacts")),
+            ManagedTemporaryLocation.FromPersistedPaths(
+                Path.Combine(childRootLegacy, "tmp"),
+                SessionDirectory.Value),
             WorktreeDirectory,
-            new SessionLogPath(Path.Combine(
+            SessionLogPath.FromLegacyPath(Path.Combine(
                 LegacyLogsBasePath?.Value
                 ?? throw new InvalidOperationException("Legacy storage is missing its log base."),
                 sanitizedScopeId,

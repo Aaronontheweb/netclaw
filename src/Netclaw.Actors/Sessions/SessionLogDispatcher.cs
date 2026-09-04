@@ -18,8 +18,8 @@ public sealed class SessionLogDispatcher : ReceiveActor
 {
     private readonly ISessionStorageResolver _storageResolver;
     private readonly TimeProvider _timeProvider;
-    private readonly Dictionary<string, IActorRef> _writers = new(StringComparer.Ordinal);
-    private readonly Dictionary<IActorRef, string> _paths = [];
+    private readonly Dictionary<SessionLogPath, IActorRef> _writers = [];
+    private readonly Dictionary<IActorRef, SessionLogPath> _paths = [];
 
     /// <summary>Creates a dispatcher that resolves each session before it creates a writer.</summary>
     /// <param name="storageResolver">Resolves the immutable parent and child log paths.</param>
@@ -32,15 +32,15 @@ public sealed class SessionLogDispatcher : ReceiveActor
         _timeProvider = timeProvider;
 
         Receive<SessionLogDiagnostic>(diagnostic => Route(diagnostic, ResolvePath(diagnostic)));
-        Receive<IWithSessionId>(message => Route(message, _storageResolver.Resolve(message.SessionId).LogPath.Value));
+        Receive<IWithSessionId>(message => Route(message, _storageResolver.Resolve(message.SessionId).LogPath));
         Receive<Terminated>(terminated => RemoveWriter(terminated.ActorRef));
     }
 
-    private string ResolvePath(SessionLogDiagnostic diagnostic)
+    private SessionLogPath ResolvePath(SessionLogDiagnostic diagnostic)
     {
         var parent = _storageResolver.Resolve(diagnostic.SessionId);
         if (diagnostic.SubSessionId is not { } scopeId)
-            return parent.LogPath.Value;
+            return parent.LogPath;
 
         if (!scopeId.TryGetRunId(out var runId))
         {
@@ -49,10 +49,10 @@ public sealed class SessionLogDispatcher : ReceiveActor
                 nameof(diagnostic));
         }
 
-        return parent.ForChild(runId, scopeId).LogPath.Value;
+        return parent.ForChild(runId, scopeId).LogPath;
     }
 
-    private void Route(object message, string logPath)
+    private void Route(object message, SessionLogPath logPath)
     {
         if (!_writers.TryGetValue(logPath, out var writer))
         {
@@ -62,7 +62,7 @@ public sealed class SessionLogDispatcher : ReceiveActor
             writer = Context.ActorOf(
                 SessionLogActor.CreatePropsForPath(
                     sessionId,
-                    new SessionLogPath(logPath),
+                    logPath,
                     _timeProvider),
                 WriterName(logPath));
             Context.Watch(writer);
@@ -81,9 +81,9 @@ public sealed class SessionLogDispatcher : ReceiveActor
         _writers.Remove(path);
     }
 
-    private static string WriterName(string path)
+    private static string WriterName(SessionLogPath path)
     {
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(path));
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(path.Value));
         return $"log-{Convert.ToHexStringLower(hash)}";
     }
 }

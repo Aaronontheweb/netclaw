@@ -21,12 +21,19 @@ internal static class SessionStoragePathValue
 /// <summary>A canonical absolute session workspace directory.</summary>
 public readonly record struct SessionWorkspaceDirectory
 {
-    /// <summary>Creates a session workspace directory.</summary>
-    /// <param name="value">The absolute directory path.</param>
-    public SessionWorkspaceDirectory(string value)
+    /// <summary>Creates the workspace below a versioned session envelope.</summary>
+    /// <param name="parent">The parent session envelope.</param>
+    public SessionWorkspaceDirectory(SessionStorageEnvelopeRoot parent)
+        : this(Path.Combine(parent.Value, "workspace"))
+    {
+    }
+
+    private SessionWorkspaceDirectory(string value)
     {
         Value = SessionStoragePathValue.NormalizeAbsolute(value, nameof(value));
     }
+
+    internal static SessionWorkspaceDirectory FromLegacyPath(string value) => new(value);
 
     /// <summary>Gets the canonical absolute directory path.</summary>
     public string Value { get; }
@@ -38,12 +45,19 @@ public readonly record struct SessionWorkspaceDirectory
 /// <summary>A canonical absolute directory for untrusted attachment staging.</summary>
 public readonly record struct AttachmentStagingDirectory
 {
-    /// <summary>Creates an attachment staging directory.</summary>
-    /// <param name="value">The absolute directory path.</param>
-    public AttachmentStagingDirectory(string value)
+    /// <summary>Creates the attachment staging directory below a versioned session envelope.</summary>
+    /// <param name="parent">The parent session envelope.</param>
+    public AttachmentStagingDirectory(SessionStorageEnvelopeRoot parent)
+        : this(Path.Combine(parent.Value, "attachment-staging"))
+    {
+    }
+
+    private AttachmentStagingDirectory(string value)
     {
         Value = SessionStoragePathValue.NormalizeAbsolute(value, nameof(value));
     }
+
+    internal static AttachmentStagingDirectory FromLegacyPath(string value) => new(value);
 
     /// <summary>Gets the canonical absolute directory path.</summary>
     public string Value { get; }
@@ -55,12 +69,24 @@ public readonly record struct AttachmentStagingDirectory
 /// <summary>A canonical absolute directory for retained run artifacts.</summary>
 public readonly record struct ArtifactDirectory
 {
-    /// <summary>Creates an artifact directory.</summary>
-    /// <param name="value">The absolute directory path.</param>
-    public ArtifactDirectory(string value)
+    /// <summary>Creates the parent artifact directory below a versioned session envelope.</summary>
+    /// <param name="parent">The parent session envelope.</param>
+    public ArtifactDirectory(SessionStorageEnvelopeRoot parent)
+        : this(Path.Combine(parent.Value, "artifacts"))
+    {
+    }
+
+    internal ArtifactDirectory(SubAgentRunStorageRoot parent)
+        : this(Path.Combine(parent.Value, "artifacts"))
+    {
+    }
+
+    private ArtifactDirectory(string value)
     {
         Value = SessionStoragePathValue.NormalizeAbsolute(value, nameof(value));
     }
+
+    internal static ArtifactDirectory FromLegacyPath(string value) => new(value);
 
     /// <summary>Gets the canonical absolute directory path.</summary>
     public string Value { get; }
@@ -72,12 +98,24 @@ public readonly record struct ArtifactDirectory
 /// <summary>A canonical absolute directory for disposable run files.</summary>
 public readonly record struct ManagedTemporaryDirectory
 {
-    /// <summary>Creates a managed temporary directory.</summary>
-    /// <param name="value">The absolute directory path.</param>
-    public ManagedTemporaryDirectory(string value)
+    /// <summary>Creates the parent temporary directory below a versioned session envelope.</summary>
+    /// <param name="parent">The parent session envelope.</param>
+    public ManagedTemporaryDirectory(SessionStorageEnvelopeRoot parent)
+        : this(Path.Combine(parent.Value, "tmp", "parent"))
+    {
+    }
+
+    internal ManagedTemporaryDirectory(SubAgentRunStorageRoot parent)
+        : this(Path.Combine(parent.Value, "tmp"))
+    {
+    }
+
+    private ManagedTemporaryDirectory(string value)
     {
         Value = SessionStoragePathValue.NormalizeAbsolute(value, nameof(value));
     }
+
+    internal static ManagedTemporaryDirectory FromPersistedPath(string value) => new(value);
 
     /// <summary>Gets the canonical absolute directory path.</summary>
     public string Value { get; }
@@ -89,12 +127,19 @@ public readonly record struct ManagedTemporaryDirectory
 /// <summary>A canonical absolute root which contains one managed temporary directory.</summary>
 public readonly record struct ManagedTemporaryStorageRoot
 {
-    /// <summary>Creates a managed temporary storage root.</summary>
-    /// <param name="value">The absolute directory path.</param>
-    public ManagedTemporaryStorageRoot(string value)
+    /// <summary>Creates the temporary storage root from a versioned session envelope.</summary>
+    /// <param name="parent">The parent session envelope.</param>
+    public ManagedTemporaryStorageRoot(SessionStorageEnvelopeRoot parent)
+        : this(parent.Value)
+    {
+    }
+
+    private ManagedTemporaryStorageRoot(string value)
     {
         Value = SessionStoragePathValue.NormalizeAbsolute(value, nameof(value));
     }
+
+    internal static ManagedTemporaryStorageRoot FromPersistedPath(string value) => new(value);
 
     /// <summary>Gets the canonical absolute directory path.</summary>
     public string Value { get; }
@@ -106,12 +151,19 @@ public readonly record struct ManagedTemporaryStorageRoot
 /// <summary>A canonical absolute directory for session Git worktrees.</summary>
 public readonly record struct WorktreeDirectory
 {
-    /// <summary>Creates a worktree directory.</summary>
-    /// <param name="value">The absolute directory path.</param>
-    public WorktreeDirectory(string value)
+    /// <summary>Creates the worktree directory below a versioned session envelope.</summary>
+    /// <param name="parent">The parent session envelope.</param>
+    public WorktreeDirectory(SessionStorageEnvelopeRoot parent)
+        : this(Path.Combine(parent.Value, "worktrees"))
+    {
+    }
+
+    private WorktreeDirectory(string value)
     {
         Value = SessionStoragePathValue.NormalizeAbsolute(value, nameof(value));
     }
+
+    internal static WorktreeDirectory FromLegacyPath(string value) => new(value);
 
     /// <summary>Gets the canonical absolute directory path.</summary>
     public string Value { get; }
@@ -123,12 +175,24 @@ public readonly record struct WorktreeDirectory
 /// <summary>A canonical absolute path for one raw session log.</summary>
 public readonly record struct SessionLogPath
 {
-    /// <summary>Creates a raw session log path.</summary>
-    /// <param name="value">The absolute file path.</param>
-    public SessionLogPath(string value)
+    /// <summary>Creates the parent log path below a versioned session envelope.</summary>
+    /// <param name="parent">The parent session envelope.</param>
+    public SessionLogPath(SessionStorageEnvelopeRoot parent)
+        : this(Path.Combine(parent.Value, "logs", "session.log"))
+    {
+    }
+
+    internal SessionLogPath(SubAgentRunStorageRoot parent)
+        : this(Path.Combine(parent.Value, "logs", "session.log"))
+    {
+    }
+
+    private SessionLogPath(string value)
     {
         Value = SessionStoragePathValue.NormalizeAbsolute(value, nameof(value));
     }
+
+    internal static SessionLogPath FromLegacyPath(string value) => new(value);
 
     /// <summary>Gets the canonical absolute file path.</summary>
     public string Value { get; }
@@ -148,5 +212,25 @@ internal readonly record struct LegacySessionLogsDirectory
     }
 
     /// <summary>Gets the canonical absolute directory path.</summary>
+    public string Value { get; }
+}
+
+/// <summary>Identifies one child-run directory below a versioned session envelope.</summary>
+internal readonly record struct SubAgentRunStorageRoot
+{
+    /// <summary>Creates the child-run root from its session envelope and run identifier.</summary>
+    /// <param name="envelopeRoot">The parent session envelope.</param>
+    /// <param name="runId">The child-run identifier.</param>
+    public SubAgentRunStorageRoot(SessionStorageEnvelopeRoot envelopeRoot, SubAgentRunId runId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId.Value);
+        EnvelopeRoot = envelopeRoot;
+        Value = Path.Combine(envelopeRoot.Value, "subagents", runId.Value);
+    }
+
+    /// <summary>Gets the parent session envelope.</summary>
+    public SessionStorageEnvelopeRoot EnvelopeRoot { get; }
+
+    /// <summary>Gets the canonical absolute child-run directory.</summary>
     public string Value { get; }
 }

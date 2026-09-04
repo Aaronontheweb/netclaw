@@ -108,7 +108,7 @@ public sealed class BackgroundJobExecutionActor : ReceiveActor
         ManagedTemporaryLocation temporaryLocation;
         try
         {
-            temporaryLocation = new ManagedTemporaryLocation(
+            temporaryLocation = ManagedTemporaryLocation.FromPersistedPaths(
                 _definition.ManagedTemporaryDirectory,
                 _definition.ManagedTemporaryAuthorityRoot);
         }

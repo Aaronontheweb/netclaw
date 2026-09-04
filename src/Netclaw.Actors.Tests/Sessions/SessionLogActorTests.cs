@@ -33,7 +33,7 @@ public sealed class SessionLogActorTests : TestKit
             new SessionMessageExtractor(),
             entityId => SessionLogActor.CreatePropsForPath(
                 new SessionId(entityId),
-                new SessionLogPath(GetLegacyLogPath(new SessionId(entityId), basePath)),
+                SessionLogPath.FromLegacyPath(GetLegacyLogPath(new SessionId(entityId), basePath)),
                 timeProvider,
                 idleTimeout)));
 

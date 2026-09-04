@@ -43,7 +43,7 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
 
         Assert.Null(ManagedTemporaryEnvironment.Prepare(
             startInfo,
-            new ManagedTemporaryLocation(managed, _directory.Path)));
+            ManagedTemporaryLocation.FromPersistedPaths(managed, _directory.Path)));
         using var process = Process.Start(startInfo)!;
         var output = await process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
         await process.WaitForExitAsync(TestContext.Current.CancellationToken);
@@ -71,7 +71,7 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
 
         Assert.Null(ManagedTemporaryEnvironment.Prepare(
             startInfo,
-            new ManagedTemporaryLocation(managed, _directory.Path)));
+            ManagedTemporaryLocation.FromPersistedPaths(managed, _directory.Path)));
         using var process = Process.Start(startInfo)!;
         var output = await process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
         await process.WaitForExitAsync(TestContext.Current.CancellationToken);
@@ -92,7 +92,7 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
 
         var error = ManagedTemporaryEnvironment.Prepare(
             startInfo,
-            new ManagedTemporaryLocation(managed, _directory.Path));
+            ManagedTemporaryLocation.FromPersistedPaths(managed, _directory.Path));
 
         Assert.StartsWith("Error preparing managed temporary directory:", error, StringComparison.Ordinal);
         Assert.False(startInfo.Environment.ContainsKey("TMPDIR"));
@@ -113,7 +113,7 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
 
         var error = ManagedTemporaryEnvironment.Prepare(
             startInfo,
-            new ManagedTemporaryLocation(linked, root));
+            ManagedTemporaryLocation.FromPersistedPaths(linked, root));
 
         Assert.Equal("Error: The managed temporary directory contains an unsafe filesystem link.", error);
         Assert.False(startInfo.Environment.ContainsKey("TMPDIR"));
@@ -133,7 +133,7 @@ public sealed class ManagedTemporaryEnvironmentTests : IDisposable
 
         var error = ManagedTemporaryEnvironment.Prepare(
             startInfo,
-            new ManagedTemporaryLocation(managed, linkedRoot));
+            ManagedTemporaryLocation.FromPersistedPaths(managed, linkedRoot));
 
         Assert.Equal("Error: The managed temporary directory contains an unsafe filesystem link.", error);
         Assert.False(startInfo.Environment.ContainsKey("TMPDIR"));
