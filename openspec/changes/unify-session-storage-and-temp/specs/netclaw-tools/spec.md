@@ -471,6 +471,17 @@ active log writer on POSIX and Windows.
 - **THEN** file protection still evaluates the known path as `Write`
 - **AND** the invocation is denied before one-shot approval
 
+#### Scenario: Example - parser-resolved shell path keeps file protection
+
+- **GIVEN** PowerShell resolves `FileSystem::C:\outside\data.txt` as the
+  filesystem path `C:\outside\data.txt`
+- **WHEN** shell file protection evaluates the invocation
+- **THEN** it evaluates the parser-resolved path as `Write`
+- **AND** it does not reinterpret the provider syntax with a command-specific
+  Netclaw rule
+- **AND** an outside-root path is denied before reviewed-safe or approval
+  coverage
+
 #### Scenario: Counterexample - causal approval scope cannot widen file authority
 
 - **GIVEN** a causal Bash projection has a known intent or fallback path outside

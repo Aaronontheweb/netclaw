@@ -128,6 +128,12 @@ grant candidates, but it cannot hide known paths from file protection. A later
 causal projection adds intent and fallback views. The coordinator checks those
 views before it checks stored grants or reviewed-safe coverage.
 
+When the canonical parser has already applied shell consumer semantics, file
+protection uses its resolved path fact. For example, PowerShell resolves
+`FileSystem::C:\work\input.txt` to the filesystem path before Netclaw applies
+`Write` protection. Netclaw does not repeat provider parsing or add a rule for
+`Get-Content`.
+
 Each capability has one policy owner:
 
 | Capability | Owner | Excluded responsibility |
