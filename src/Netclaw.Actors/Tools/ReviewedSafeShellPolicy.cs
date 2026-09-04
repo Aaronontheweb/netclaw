@@ -11,17 +11,15 @@ using ShellSyntaxTree;
 namespace Netclaw.Actors.Tools;
 
 /// <summary>
-/// Layer 1.5 of the shell approval pipeline (between the hard-deny list and
-/// the interactive approval gate). The policy covers a reviewed diagnostic
-/// only when all parser-owned source and scope guards pass.
+/// Applies reviewed-safe shell coverage after shell command policy and file protection pass.
+/// The policy covers a reviewed diagnostic only when all parser-owned source and scope guards pass.
 ///
 /// Delegates every filesystem decision to <see cref="PathAccessPolicy"/>.
 /// ShellSyntaxTree supplies syntax and path facts; this type only decides
 /// whether a phrase qualifies for reviewed-diagnostic handling.
 ///
-/// The policy never relaxes the hard-deny list (layer 1) — that runs first
-/// in <see cref="ToolAccessPolicy"/>. It only relaxes the interactive
-/// approval gate (layer 2) for phrases that the bundled catalog reviews.
+/// The policy never relaxes tool capability, shell command policy, or file protection.
+/// It only supplies approval coverage for phrases that the bundled catalog reviews.
 /// </summary>
 internal sealed class ReviewedSafeShellPolicy
 {

@@ -377,6 +377,7 @@ public sealed class ToolAccessPolicy
         {
             var pathAccessDeny = EnforceShellFileProtection(
                 shellApproval!,
+                shellAnalysis!,
                 workingDirectory,
                 context);
             if (pathAccessDeny is not null)
@@ -518,6 +519,7 @@ public sealed class ToolAccessPolicy
     /// </summary>
     private ToolAuthorizationDecision? EnforceShellFileProtection(
         ShellApprovalAnalysis approval,
+        ShellCommandAnalysis analysis,
         string? workingDirectory,
         ToolExecutionContext context)
     {
@@ -531,27 +533,48 @@ public sealed class ToolAccessPolicy
             return ToolAuthorizationDecision.Deny("shell_unresolved_trust_zone_input");
         }
 
-        var pathFacts = ShellPolicyPathFacts.Create(
-            approval.Candidates,
-            ShellEnvironment.PathStyle);
-
         if (!string.IsNullOrWhiteSpace(workingDirectory))
         {
             var expandedWorkingDirectory = PathUtility.ExpandAndNormalize(workingDirectory, workingDirectory: null);
             if (expandedWorkingDirectory is null)
                 return ToolAuthorizationDecision.Deny("shell_invalid_working_directory");
 
-            if (!_pathAccessPolicy!.Evaluate(
+            if (!_pathAccessPolicy.Evaluate(
                     expandedWorkingDirectory,
                     context.Invocation,
                     PathAccessPolicy.FileOperation.Write).Allowed)
                 return ToolAuthorizationDecision.Deny("shell_working_directory_outside_trust_zone");
         }
 
-        foreach (var path in EnumerateKnownShellPaths(pathFacts)
+        return EnforceKnownShellPaths(
+            ShellPolicyPathFacts.CreateExecutionViews(analysis)
+                .SelectMany(EnumerateKnownShellPaths),
+            context.Invocation);
+    }
+
+    /// <summary>
+    /// Applies conservative write protection to all paths in a shell policy projection.
+    /// </summary>
+    /// <remarks>
+    /// Causal Bash analysis can add intent and fallback views after shell preflight.
+    /// The coordinator must call this method before it checks stored grants or reviewed-safe coverage.
+    /// </remarks>
+    internal ToolAuthorizationDecision? EnforceProjectedShellFileProtection(
+        IReadOnlyList<ShellPolicyCandidatePathFacts> pathFacts,
+        ToolInvocationContext context)
+        => EnforceKnownShellPaths(
+            pathFacts.SelectMany(EnumerateKnownShellPaths),
+            context);
+
+    private ToolAuthorizationDecision? EnforceKnownShellPaths(
+        IEnumerable<CanonicalShellPath> paths,
+        ToolInvocationContext context)
+    {
+        foreach (var path in paths
+                     .Where(static path => !IsNullDevice(path))
                      .DistinctBy(static path => (path.PathStyle, path.Value)))
         {
-            if (!_pathAccessPolicy!.EvaluateShellPath(path, context.Invocation).Allowed)
+            if (!_pathAccessPolicy.EvaluateShellPath(path, context).Allowed)
                 return ToolAuthorizationDecision.Deny("shell_path_outside_trust_zone");
         }
 
@@ -559,23 +582,38 @@ public sealed class ToolAccessPolicy
     }
 
     private static IEnumerable<CanonicalShellPath> EnumerateKnownShellPaths(
-        IReadOnlyList<ShellPolicyCandidatePathFacts> pathFacts)
+        ShellPolicyCandidatePathFacts candidate)
     {
-        foreach (var candidate in pathFacts)
+        if (candidate.RealScope.Path is { } realScope)
+            yield return realScope;
+
+        foreach (var path in EnumerateKnownShellPaths(candidate.Real))
+            yield return path;
+
+        if (candidate.Intent is { } intent)
         {
-            if (candidate.RealScope.Path is { } scope)
-                yield return scope;
+            foreach (var path in EnumerateKnownShellPaths(intent))
+                yield return path;
+        }
 
-            if (candidate.Real.ResolutionBase.Path is { } resolutionBase)
-                yield return resolutionBase;
+        foreach (var fallback in candidate.Fallbacks)
+        {
+            foreach (var path in EnumerateKnownShellPaths(fallback))
+                yield return path;
+        }
+    }
 
-            foreach (var path in candidate.Real.Facts
-                         .Where(static fact => fact.State == ShellPolicyPathResolutionState.Known)
-                         .SelectMany(static fact => fact.Paths))
-            {
-                if (!IsNullDevice(path))
-                    yield return path;
-            }
+    private static IEnumerable<CanonicalShellPath> EnumerateKnownShellPaths(
+        ShellPolicyResolvedPathView view)
+    {
+        if (view.ResolutionBase.Path is { } resolutionBase)
+            yield return resolutionBase;
+
+        foreach (var path in view.Facts
+                     .Where(static fact => fact.State == ShellPolicyPathResolutionState.Known)
+                     .SelectMany(static fact => fact.Paths))
+        {
+            yield return path;
         }
     }
 

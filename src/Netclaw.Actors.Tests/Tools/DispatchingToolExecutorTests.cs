@@ -1493,6 +1493,104 @@ public class DispatchingToolExecutorTests
             row => row.ScopeRelation == ShellScopeRelation.UnderIntentRoot);
     }
 
+    [SlopwatchSuppress("SW001", "This regression requires POSIX causal-directory semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only shell directory semantics")]
+    public async Task Causal_intent_cannot_use_a_stored_grant_outside_explicit_write_roots()
+    {
+        using var dir = new DisposableTempDir();
+        var trustedRoot = Path.Combine(dir.Path, "trusted");
+        var outsideRoot = Path.Combine(dir.Path, "outside");
+        Directory.CreateDirectory(trustedRoot);
+        Directory.CreateDirectory(outsideRoot);
+        var config = CreateApprovalGatedShellConfig();
+        config.AudienceProfiles.Personal.WriteFiles = new ToolFilesystemAccessProfile
+        {
+            Mode = ToolFilesystemMode.Roots,
+            Roots = [trustedRoot]
+        };
+        var (registry, policy) = CreateApprovalGatedShellRegistryAndPolicy(
+            ShellExecutionEnvironmentDefaults.Bash,
+            config,
+            SafeVerbList.FromVerbs(ApprovalShell.Bash, ["head"]),
+            paths: new NetclawPaths(dir.Path));
+        var approvalService = GrantEveryShellCandidate();
+        var executor = new DispatchingToolExecutor(registry, policy, approvalService);
+        var call = new FunctionCallContent(
+            "call-causal-intent-write-roots",
+            ShellTool.ToolName,
+            ToolInput.Create(
+                "Command",
+                $"cd {outsideRoot} && inspect; head result.log",
+                "WorkingDirectory",
+                trustedRoot));
+        var context = TestToolExecutionContext.CreateBound(
+            "signalr/causal-intent-write-roots",
+            trustedRoot,
+            new TestToolExecutionContextOptions
+            {
+                Audience = TrustAudience.Personal,
+                Boundary = TrustBoundary.TrustedInstance,
+                InteractiveApproval = TestToolExecutionContext.InteractiveApproval(true)
+            });
+
+        var decision = await executor.EvaluateAuthorizationAsync(
+            call,
+            context,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(ToolAuthorizationOutcome.Denied, decision.Outcome);
+        Assert.Equal("shell_path_outside_trust_zone", decision.DenyReason);
+        Assert.Equal(0, approvalService.RequestCount);
+    }
+
+    [SlopwatchSuppress("SW001", "This regression requires POSIX shell path semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only shell path semantics")]
+    public async Task Mixed_dynamic_shell_input_still_protects_each_known_path()
+    {
+        using var dir = new DisposableTempDir();
+        var trustedRoot = Path.Combine(dir.Path, "trusted");
+        var outsideRoot = Path.Combine(dir.Path, "outside");
+        Directory.CreateDirectory(trustedRoot);
+        Directory.CreateDirectory(outsideRoot);
+        var config = CreateApprovalGatedShellConfig();
+        config.AudienceProfiles.Personal.WriteFiles = new ToolFilesystemAccessProfile
+        {
+            Mode = ToolFilesystemMode.Roots,
+            Roots = [trustedRoot]
+        };
+        var (registry, policy) = CreateApprovalGatedShellRegistryAndPolicy(
+            ShellExecutionEnvironmentDefaults.Bash,
+            config,
+            paths: new NetclawPaths(dir.Path));
+        var approvalService = GrantEveryShellCandidate();
+        var executor = new DispatchingToolExecutor(registry, policy, approvalService);
+        var call = new FunctionCallContent(
+            "call-mixed-dynamic-write-roots",
+            ShellTool.ToolName,
+            ToolInput.Create(
+                "Command",
+                $"cat {Path.Combine(outsideRoot, "data.txt")}; status-report \"$1\"",
+                "WorkingDirectory",
+                trustedRoot));
+        var context = TestToolExecutionContext.CreateBound(
+            "signalr/mixed-dynamic-write-roots",
+            trustedRoot,
+            new TestToolExecutionContextOptions
+            {
+                Audience = TrustAudience.Personal,
+                Boundary = TrustBoundary.TrustedInstance,
+                InteractiveApproval = TestToolExecutionContext.InteractiveApproval(true)
+            });
+        var decision = await executor.EvaluateAuthorizationAsync(
+            call,
+            context,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(ToolAuthorizationOutcome.Denied, decision.Outcome);
+        Assert.Equal("shell_path_outside_trust_zone", decision.DenyReason);
+        Assert.Equal(0, approvalService.RequestCount);
+    }
+
     [Fact]
     public async Task Native_power_shell_directory_change_does_not_create_causal_approval_scope()
     {
@@ -3950,15 +4048,23 @@ public class DispatchingToolExecutorTests
         IEnumerable<string>? deniedPaths = null,
         NetclawPaths? paths = null)
     {
+        var config = CreateApprovalGatedShellConfig();
+        return CreateApprovalGatedShellRegistryAndPolicy(
+            environment,
+            config,
+            safeVerbs,
+            deniedPaths,
+            paths);
+    }
+
+    private static (ToolRegistry Registry, ToolAccessPolicy Policy) CreateApprovalGatedShellRegistryAndPolicy(
+        ShellExecutionEnvironment environment,
+        ToolConfig config,
+        SafeVerbList? safeVerbs = null,
+        IEnumerable<string>? deniedPaths = null,
+        NetclawPaths? paths = null)
+    {
         paths ??= new NetclawPaths();
-        var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
-        config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
-        {
-            ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
-            {
-                ["shell_execute"] = ToolApprovalMode.Approval
-            }
-        };
         var pathPolicy = new ToolPathPolicy(environment, deniedPaths ?? []);
         var commandPolicy = new ShellCommandPolicy(environment);
         var registry = new ToolRegistry();
@@ -3975,6 +4081,19 @@ public class DispatchingToolExecutorTests
             pathPolicy,
             safeVerbs: safeVerbs);
         return (registry, policy);
+    }
+
+    private static ToolConfig CreateApprovalGatedShellConfig()
+    {
+        var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
+        config.AudienceProfiles.Personal.ApprovalPolicy = new ToolApprovalConfig
+        {
+            ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
+            {
+                [ShellTool.ToolName] = ToolApprovalMode.Approval
+            }
+        };
+        return config;
     }
 
     private static FixedShellApprovalService GrantEveryShellCandidate()

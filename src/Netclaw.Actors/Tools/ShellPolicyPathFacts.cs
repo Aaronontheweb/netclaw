@@ -59,6 +59,28 @@ internal sealed record ShellPolicyCandidatePathFacts(
 
 internal static class ShellPolicyPathFacts
 {
+    internal static IReadOnlyList<ShellPolicyResolvedPathView> CreateExecutionViews(
+        ShellCommandAnalysis analysis)
+    {
+        ArgumentNullException.ThrowIfNull(analysis);
+
+        var pathStyle = analysis.Environment.PathStyle;
+        var shell = analysis.Environment.Grammar == ShellGrammar.Bash
+            ? ApprovalShell.Bash
+            : ApprovalShell.PowerShell;
+        var views = analysis.Commands
+            .Select(occurrence =>
+            {
+                var resolutionBase = occurrence.WorkingDirectory is ShellValueDomain.Exact exact
+                    ? exact.Value
+                    : analysis.WorkingDirectory;
+                return ShellPolicyOccurrencePathFacts.Create(occurrence)
+                    .Resolve(resolutionBase, pathStyle, shell);
+            })
+            .ToArray();
+        return Array.AsReadOnly(views);
+    }
+
     internal static IReadOnlyList<ShellPolicyCandidatePathFacts> Create(
         IReadOnlyList<ApprovalCandidate> candidates,
         ShellPathStyle pathStyle)

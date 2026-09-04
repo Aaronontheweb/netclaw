@@ -98,6 +98,16 @@ internal sealed class ShellPolicyCoordinator(
                 null);
         }
 
+        var projectedPathDecision = policy.EnforceProjectedShellFileProtection(
+            projection.PathFacts,
+            context.Invocation);
+        if (projectedPathDecision is not null)
+        {
+            return (
+                CompleteWithTrace(projectedPathDecision, trace),
+                null);
+        }
+
         var decision = await CompleteAsync(
             tool,
             toolCall,

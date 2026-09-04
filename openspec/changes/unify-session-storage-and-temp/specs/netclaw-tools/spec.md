@@ -276,24 +276,19 @@ delivery.
 
 ### Requirement: Working directory declaration stays scoped
 
-The system SHALL provide a `set_working_directory` first-party tool that sets
-the session's project root. It SHALL use the shared `DeclareProjectScope` path
-operation, which maps to read authority but remains limited to the session
-directory, current project directory, and configured read roots. The default
-interactive Personal `All` file profile and user approval SHALL NOT widen
-project declaration authority.
-
-A successful declaration adds the project directory to reviewed-safe trusted
-roots and loads project identity files. The tool is a project declaration, not
-a shell `cd` operation.
+The `session-cwd` capability SHALL own `set_working_directory` behavior and
+session state. This capability SHALL provide the shared `DeclareProjectScope`
+path operation and its position before approval. It SHALL NOT duplicate the
+declaration-root or session-state contract from `session-cwd`.
 
 #### Scenario: Interactive Personal session cannot widen the working directory
 
-- **GIVEN** an interactive Personal session requests a directory outside the
-  roots permitted for project declaration
-- **WHEN** the agent invokes `set_working_directory`
-- **THEN** the project directory remains unchanged
-- **AND** the tool reports that the directory is outside the trusted roots
+- **GIVEN** `set_working_directory` requests a project declaration outside the
+  roots that the `session-cwd` contract permits
+- **WHEN** tool capability admits the invocation
+- **THEN** file protection evaluates the request as `DeclareProjectScope`
+- **AND** the path access decision denies the request before approval
+- **AND** the `session-cwd` capability owns the unchanged session state
 
 ## ADDED Requirements
 
@@ -392,6 +387,9 @@ authority.
 An unresolved interactive shell path MAY reach one-shot user approval. It SHALL
 NOT receive reviewed-safe or persistent coverage. For a known shell path,
 approval SHALL NOT widen an explicit `Roots` or `None` file profile.
+File protection SHALL derive known real paths from shell command analysis,
+independent of reusable approval candidates. It SHALL also check known causal
+intent and fallback paths before stored or reviewed-safe coverage.
 
 The existing `file_read`, `file_search`, `file_list`, `file_write`,
 `file_edit`, and `attach_file` tools SHALL use this decision. They SHALL keep
@@ -464,6 +462,23 @@ active log writer on POSIX and Windows.
 - **WHEN** authorization evaluates the invocation
 - **THEN** file protection denies the path as `Write`
 - **AND** the invocation does not reach user approval
+
+#### Scenario: Counterexample - dynamic syntax cannot hide another known path
+
+- **GIVEN** one shell analysis contains a known path outside the write roots
+- **AND** another command occurrence contains unresolved dynamic syntax
+- **WHEN** the dynamic syntax removes all reusable approval candidates
+- **THEN** file protection still evaluates the known path as `Write`
+- **AND** the invocation is denied before one-shot approval
+
+#### Scenario: Counterexample - causal approval scope cannot widen file authority
+
+- **GIVEN** a causal Bash projection has a known intent or fallback path outside
+  the write roots
+- **AND** a stored grant covers each reusable command candidate
+- **WHEN** the shell coordinator evaluates the projection
+- **THEN** file protection denies the external path as `Write`
+- **AND** the stored grant does not admit the invocation
 
 #### Scenario: Counterexample - a filesystem link cannot escape
 

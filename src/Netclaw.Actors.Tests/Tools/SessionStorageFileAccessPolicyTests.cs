@@ -64,25 +64,6 @@ public sealed class SessionStorageFileAccessPolicyTests : IDisposable
     }
 
     [Fact]
-    public void Team_file_profile_can_write_inside_the_shared_session_root_without_shell_authority()
-    {
-        var context = TestToolExecutionContext.CreateBoundWithStorage(
-            "signalr/team-session",
-            _storage,
-            new TestToolExecutionContextOptions
-            {
-                Audience = TrustAudience.Team,
-                Boundary = TrustBoundary.Team,
-                ChannelType = "signalr"
-            }).Invocation;
-        var target = Path.Combine(_storage.SessionDirectory.Value, "team-output.txt");
-
-        AssertAllowed(
-            _policy.Evaluate(target, context, PathAccessPolicy.FileOperation.Write),
-            target);
-    }
-
-    [Fact]
     public void Unrestricted_interactive_personal_profile_uses_ordinary_foreign_path_access()
     {
         var foreignMain = Path.Combine(

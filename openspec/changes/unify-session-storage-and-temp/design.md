@@ -122,6 +122,12 @@ Netclaw does not infer whether arbitrary shell syntax will read or mutate it.
 File authority has a one-way dependency: it can deny an otherwise eligible
 shell call, but it cannot grant shell capability or bypass shell policy.
 
+Shell file protection derives real path facts from `ShellCommandAnalysis`.
+It does not depend on reusable approval candidates. Dynamic syntax can remove
+grant candidates, but it cannot hide known paths from file protection. A later
+causal projection adds intent and fallback views. The coordinator checks those
+views before it checks stored grants or reviewed-safe coverage.
+
 Each capability has one policy owner:
 
 | Capability | Owner | Excluded responsibility |

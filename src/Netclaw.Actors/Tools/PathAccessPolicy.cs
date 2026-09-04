@@ -357,15 +357,14 @@ internal sealed class PathAccessPolicy
         var profile = _profileResolver.ResolveProfile(context);
         var access = GetAccessProfile(profile, accessKind);
         var audience = context.Audience;
+        var protectionOperation = ToProtectionOperation(accessKind);
 
         if (access.Mode == ToolFilesystemMode.All)
         {
-            // Unattended channels have no human approval backstop, so an
-            // unrestricted audience is confined to trusted roots (session,
-            // project, and operator-configured roots) instead of being
-            // granted blanket filesystem access. Interactive channels keep the
-            // blanket grant — the live approval gate is their backstop. This is the
-            // single seam that covers shell and every structured file tool.
+            // An interactive Mode.All profile grants broad file authority.
+            // Approval is a later gate and does not widen this file profile.
+            // Unattended runs remain confined to trusted roots because they
+            // cannot request new authority from a user.
             // Project-scope declarations opt out of interactive Personal reach.
             // They stay confined to trusted roots even for default
             // Mode.All profiles: its declaration supplies the project directory
@@ -387,7 +386,7 @@ internal sealed class PathAccessPolicy
 
         if (access.Mode == ToolFilesystemMode.None)
         {
-            error = $"Error: {label} trust context does not allow {accessKind.ToString().ToLowerInvariant()} access to local files.";
+            error = $"Error: {label} trust context does not allow {protectionOperation.ToString().ToLowerInvariant()} access to local files.";
             failure = PathAccessFailure.AccessDenied;
             return false;
         }
@@ -396,7 +395,7 @@ internal sealed class PathAccessPolicy
 
         if (roots.Count == 0)
         {
-            error = $"Error: {label} trust context does not have any configured local file roots for {accessKind.ToString().ToLowerInvariant()} access.";
+            error = $"Error: {label} trust context does not have any configured local file roots for {protectionOperation.ToString().ToLowerInvariant()} access.";
             failure = PathAccessFailure.AccessDenied;
             return false;
         }

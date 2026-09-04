@@ -951,6 +951,45 @@ public sealed class ToolApprovalGateTests
     }
 
     [Fact]
+    public void Team_file_write_does_not_require_shell_capability()
+    {
+        using var dir = new DisposableTempDir();
+        var paths = new NetclawPaths(dir.Path);
+        var config = new ToolConfig { ShellMode = ShellExecutionMode.Off };
+        config.AudienceProfiles.Team.ApprovalPolicy = new ToolApprovalConfig
+        {
+            ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
+            {
+                [FileWriteTool.ToolName] = ToolApprovalMode.Auto
+            }
+        };
+        var protectedPaths = new ToolPathPolicy([]);
+        var policy = new ToolAccessPolicy(
+            paths,
+            config,
+            Defaults(),
+            new ShellCommandPolicy(),
+            protectedPaths);
+        var context = TestToolExecutionContext.CreateBound(
+            "signalr/team-file-write",
+            paths.SessionsDirectory,
+            new TestToolExecutionContextOptions
+            {
+                Audience = TrustAudience.Team,
+                Boundary = TrustBoundary.Team
+            });
+        var target = Path.Combine(paths.SessionsDirectory, "result.txt");
+
+        var decision = policy.AuthorizeInvocation(
+            new FileWriteTool(config, paths, protectedPaths),
+            context,
+            ToolInput.Create("Path", target, "Content", "result"));
+
+        Assert.True(decision.Allowed);
+        Assert.Equal(ToolAllowReason.PolicyAuto, decision.AllowReason);
+    }
+
+    [Fact]
     public void Shell_invocation_requires_write_file_authority_before_approval()
     {
         using var dir = new DisposableTempDir();
@@ -974,6 +1013,33 @@ public sealed class ToolApprovalGateTests
         Assert.False(decision.Allowed);
         Assert.False(decision.NeedsApproval);
         Assert.Equal("shell_path_outside_trust_zone", decision.DenyReason);
+    }
+
+    [Theory]
+    [InlineData(ToolApprovalMode.Approval)]
+    [InlineData(ToolApprovalMode.Auto)]
+    public void Shell_write_none_denies_before_approval_mode(ToolApprovalMode approvalMode)
+    {
+        using var dir = new DisposableTempDir();
+        var trustedRoot = CreateTrustedRoot(dir.Path);
+        var policy = CreatePolicyWithTrustedRoot(
+            trustedRoot,
+            ShellExecutionMode.HostAllowed,
+            ToolFilesystemMode.None,
+            approvalMode);
+
+        var decision = policy.AuthorizeInvocation(
+            ShellTool(),
+            PersonalContext(),
+            new Dictionary<string, object?>
+            {
+                ["command"] = "git status",
+                ["WorkingDirectory"] = trustedRoot
+            });
+
+        Assert.False(decision.Allowed);
+        Assert.False(decision.NeedsApproval);
+        Assert.Equal("shell_working_directory_outside_trust_zone", decision.DenyReason);
     }
 
     [SlopwatchSuppress("SW001", "This regression requires POSIX symbolic-link semantics.")]
@@ -1174,7 +1240,8 @@ public sealed class ToolApprovalGateTests
     private static ToolAccessPolicy CreatePolicyWithTrustedRoot(
         string trustedRoot,
         ShellExecutionMode shellMode = ShellExecutionMode.HostAllowed,
-        ToolFilesystemMode writeFilesMode = ToolFilesystemMode.All)
+        ToolFilesystemMode writeFilesMode = ToolFilesystemMode.All,
+        ToolApprovalMode approvalMode = ToolApprovalMode.Approval)
     {
         var environment = TestShellEnvironment.Current;
         var config = new ToolConfig { ShellMode = shellMode };
@@ -1187,7 +1254,7 @@ public sealed class ToolApprovalGateTests
         {
             ToolOverrides = new Dictionary<string, ToolApprovalMode>(StringComparer.Ordinal)
             {
-                ["shell_execute"] = ToolApprovalMode.Approval
+                ["shell_execute"] = approvalMode
             }
         };
 
