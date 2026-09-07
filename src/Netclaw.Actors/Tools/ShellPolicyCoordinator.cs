@@ -24,6 +24,7 @@ internal sealed class ShellPolicyCoordinator(
         FunctionCallContent toolCall,
         ToolExecutionContext context,
         ShellPolicyPreflightResult preflight,
+        ToolCorrection.NativeToolSuggested? nativeCorrection,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(preflight);
@@ -36,6 +37,7 @@ internal sealed class ShellPolicyCoordinator(
                 toolCall,
                 context,
                 preflight,
+                nativeCorrection,
                 trace,
                 cancellationToken);
         }
@@ -58,9 +60,24 @@ internal sealed class ShellPolicyCoordinator(
         FunctionCallContent toolCall,
         ToolExecutionContext context,
         ShellPolicyPreflightResult preflight,
+        ToolCorrection.NativeToolSuggested? nativeCorrection,
         ShellPolicyDecisionTraceBuilder trace,
         CancellationToken cancellationToken)
     {
+        if (nativeCorrection is not null)
+        {
+            var corrections = preflight is ShellPolicyPreflightResult.Continue
+                {
+                    Correction: ToolCorrection.ManagedTemporaryDirectorySuggested temporaryCorrection
+                }
+                ? CollectApplicableCorrections(nativeCorrection, temporaryCorrection)
+                    ?? throw new InvalidOperationException("Compatible corrections must form a collection.")
+                : new ToolCorrectionCollection([nativeCorrection]);
+            return (
+                Complete(ToolAuthorizationDecision.RequireAgentCorrection(corrections), [], trace),
+                null);
+        }
+
         if (preflight is ShellPolicyPreflightResult.Complete complete)
         {
             var preflightDecision = complete.Decision;
@@ -146,7 +163,7 @@ internal sealed class ShellPolicyCoordinator(
     /// <remarks>
     /// Callers determine correction applicability before this method runs.
     /// This method preserves order and enforces collection invariants.
-    /// The current dispatcher still emits one native correction.
+    /// The coordinator selects correction collections for shell requests.
     /// </remarks>
     internal static ToolCorrectionCollection? CollectApplicableCorrections(
         params ToolCorrection?[] corrections)

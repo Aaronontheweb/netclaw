@@ -434,16 +434,13 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
                         _registry,
                         _policy,
                         context.Invocation);
-                shellAuthorization = correction is null
-                    ? await _shellPolicyCoordinator.EvaluateAsync(
-                        tool,
-                        toolCall,
-                        context,
-                        preflight,
-                        ct)
-                    : (
-                        ToolAuthorizationDecision.RequireAgentCorrection(correction),
-                        null);
+                shellAuthorization = await _shellPolicyCoordinator.EvaluateAsync(
+                    tool,
+                    toolCall,
+                    context,
+                    preflight,
+                    correction,
+                    ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -546,7 +543,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
         if (decision.Outcome is ToolAuthorizationOutcome.RequiresAgentCorrection)
         {
             throw new ToolCorrectionRequiredException(
-                decision.AgentCorrection
+                decision.AgentCorrections
                 ?? throw new InvalidOperationException("Agent correction decision missing correction facts."));
         }
 

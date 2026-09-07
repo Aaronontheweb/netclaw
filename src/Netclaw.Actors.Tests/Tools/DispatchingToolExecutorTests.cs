@@ -3505,6 +3505,7 @@ public class DispatchingToolExecutorTests
                 call,
                 context,
                 preflight,
+                nativeCorrection: null,
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(ToolAuthorizationOutcome.Allowed, authorization.Decision.Outcome);
@@ -3998,38 +3999,33 @@ public class DispatchingToolExecutorTests
     }
 
     [Fact]
-    public async Task Candidate_collection_leaves_the_authoritative_native_result_unchanged()
+    public async Task Coordinator_selects_native_and_temporary_corrections_before_approval()
     {
         var (registry, policy) = CreateApprovalGatedShellRegistryAndPolicy(ShellEnvironment);
         var approvalService = new FixedShellApprovalService(_ =>
             throw new InvalidOperationException("Candidate collection must not request approval."));
         var executor = new DispatchingToolExecutor(registry, policy, approvalService);
-        var shellTool = Assert.IsAssignableFrom<INetclawTool>(registry.GetByName(ShellTool.ToolName));
         var arguments = ToolInput.Create(
             "Command", $"file_write --path {Path.Combine(Path.GetTempPath(), "netclaw-p2-output.txt")}",
             "WorkingDirectory", Path.GetTempPath());
-        var candidateContext = CreateInteractivePersonalContext("signalr/native-temporary-candidate");
-        var preflight = Assert.IsType<ShellPolicyPreflightResult.Continue>(
-            policy.AuthorizeShellPreflight(shellTool, candidateContext, arguments));
-        var nativeCorrection = Assert.IsType<ToolCorrection.NativeToolSuggested>(
-            NativeToolShellCorrectionDetector.Detect(
-                preflight.Analysis,
-                registry,
-                policy,
-                candidateContext.Invocation));
-        var candidate = ShellPolicyCoordinator.CollectApplicableCorrections(
-            nativeCorrection,
-            preflight.Correction);
-        Assert.NotNull(candidate);
-
         var authoritativeContext = CreateInteractivePersonalContext("signalr/native-temporary-authoritative");
         var decision = await executor.EvaluateAuthorizationAsync(
             CreateToolCall("call-native-temporary-authoritative", ShellTool.ToolName, arguments),
             authoritativeContext,
             TestContext.Current.CancellationToken);
 
-        Assert.Equal(2, candidate.Items.Count);
-        Assert.IsType<ToolCorrection.NativeToolSuggested>(decision.AgentCorrection);
+        Assert.Equal(ToolAuthorizationOutcome.RequiresAgentCorrection, decision.Outcome);
+        var corrections = Assert.IsType<ToolCorrectionCollection>(decision.AgentCorrections);
+        Assert.Collection(
+            corrections.Items,
+            correction => Assert.IsType<ToolCorrection.NativeToolSuggested>(correction),
+            correction => Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(correction));
+        var exception = await Assert.ThrowsAsync<ToolCorrectionRequiredException>(() =>
+            executor.AuthorizeAsync(
+                CreateToolCall("call-native-temporary-authoritative", ShellTool.ToolName, arguments),
+                authoritativeContext,
+                TestContext.Current.CancellationToken));
+        Assert.Equal(2, exception.Corrections.Items.Count);
         Assert.Equal(0, approvalService.RequestCount);
         Assert.Null(authoritativeContext.Receipt);
     }

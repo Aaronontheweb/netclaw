@@ -154,7 +154,7 @@ public sealed record ToolAuthorizationDecision
         string? denyReason,
         string? denyMessage,
         ToolApprovalContext? approvalContext,
-        ToolCorrection? agentCorrection,
+        ToolCorrectionCollection? agentCorrections,
         IReadOnlyList<ToolApprovalMatch> approvalMatches,
         ShellPolicyDecisionTrace? shellPolicyTrace = null)
     {
@@ -163,7 +163,7 @@ public sealed record ToolAuthorizationDecision
         DenyReason = denyReason;
         DenyMessage = denyMessage;
         ApprovalContext = approvalContext;
-        AgentCorrection = agentCorrection;
+        AgentCorrections = agentCorrections;
         ApprovalMatches = approvalMatches;
         ShellPolicyTrace = shellPolicyTrace ?? ShellPolicyDecisionTrace.Empty;
     }
@@ -205,10 +205,17 @@ public sealed record ToolAuthorizationDecision
     public ToolApprovalContext? ApprovalContext { get; }
 
     /// <summary>
-    /// Gets the typed correction when <see cref="Outcome"/> is
-    /// <see cref="ToolAuthorizationOutcome.RequiresAgentCorrection"/>.
+    /// Gets the correction facts when <see cref="Outcome"/> requires correction.
     /// </summary>
-    internal ToolCorrection? AgentCorrection { get; }
+    internal ToolCorrectionCollection? AgentCorrections { get; }
+
+    /// <summary>Gets one correction for callers that support only scalar advice.</summary>
+    internal ToolCorrection? AgentCorrection => AgentCorrections switch
+    {
+        null => null,
+        { Items.Count: 1 } corrections => corrections.Items[0],
+        _ => throw new InvalidOperationException("A scalar correction consumer received multiple corrections.")
+    };
 
     /// <summary>
     /// Gets the session or persistent grants that matched this attempt.
@@ -280,7 +287,7 @@ public sealed record ToolAuthorizationDecision
             null,
             null,
             context,
-            correction,
+            ToCollection(correction),
             []);
     }
 
@@ -300,7 +307,7 @@ public sealed record ToolAuthorizationDecision
             null,
             null,
             context,
-            correction,
+            ToCollection(correction),
             [.. approvalMatches]);
     }
 
@@ -308,15 +315,21 @@ public sealed record ToolAuthorizationDecision
     /// Creates a typed agent-correction result that grants no execution authority.
     /// </summary>
     internal static ToolAuthorizationDecision RequireAgentCorrection(ToolCorrection correction)
+        => RequireAgentCorrection(new ToolCorrectionCollection([correction]));
+
+    /// <summary>
+    /// Creates a typed agent-correction result that grants no execution authority.
+    /// </summary>
+    internal static ToolAuthorizationDecision RequireAgentCorrection(ToolCorrectionCollection corrections)
     {
-        ArgumentNullException.ThrowIfNull(correction);
+        ArgumentNullException.ThrowIfNull(corrections);
         return new ToolAuthorizationDecision(
             ToolAuthorizationOutcome.RequiresAgentCorrection,
             null,
             null,
             null,
             null,
-            correction,
+            corrections,
             []);
     }
 
@@ -345,6 +358,9 @@ public sealed record ToolAuthorizationDecision
         if (!Enum.IsDefined(reason))
             throw new ArgumentOutOfRangeException(nameof(reason), reason, "Unknown tool allow reason.");
     }
+
+    private static ToolCorrectionCollection? ToCollection(ToolCorrection? correction)
+        => correction is null ? null : new ToolCorrectionCollection([correction]);
 }
 
 internal sealed class ToolCorrectionRequiredException : InvalidOperationException
