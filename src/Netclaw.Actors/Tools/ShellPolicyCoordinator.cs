@@ -139,7 +139,31 @@ internal sealed class ShellPolicyCoordinator(
             CompleteWithTrace(
                 ToolAuthorizationDecision.Deny("internal_policy_failure"),
                 trace),
-            null);
+                null);
+    }
+
+    /// <summary>Collects correction facts that already apply to one shell attempt.</summary>
+    /// <remarks>
+    /// Callers determine correction applicability before this method runs.
+    /// This method preserves order and enforces collection invariants.
+    /// The current dispatcher still emits one native correction.
+    /// </remarks>
+    internal static ToolCorrectionCollection? CollectApplicableCorrections(
+        params ToolCorrection?[] corrections)
+    {
+        ArgumentNullException.ThrowIfNull(corrections);
+
+        var applicable = new List<ToolCorrection>();
+        foreach (var correction in corrections)
+        {
+            if (correction is not null)
+                applicable.Add(correction);
+        }
+
+        if (applicable.Count < 2)
+            return null;
+
+        return new ToolCorrectionCollection(applicable);
     }
 
     private async Task<ToolAuthorizationDecision> CompleteAsync(

@@ -3952,6 +3952,102 @@ public class DispatchingToolExecutorTests
         Assert.IsType<ToolCorrection.NativeToolSuggested>(exception.Correction);
     }
 
+    [Fact]
+    public void Native_file_write_and_temporary_directory_corrections_are_both_applicable()
+    {
+        var config = CreateApprovalGatedShellConfig();
+        config.AudienceProfiles.Personal.ApprovalPolicy!.ToolOverrides[FileWriteTool.ToolName] = ToolApprovalMode.Approval;
+        var (registry, policy) = CreateApprovalGatedShellRegistryAndPolicy(ShellEnvironment, config);
+        var shellTool = Assert.IsAssignableFrom<INetclawTool>(registry.GetByName(ShellTool.ToolName));
+        var fileWriteTool = Assert.IsAssignableFrom<INetclawTool>(registry.GetByName(FileWriteTool.ToolName));
+        var context = CreateInteractivePersonalContext("signalr/native-temporary-pair");
+        var nativePath = Path.Combine(Path.GetTempPath(), "netclaw-p2-output.txt");
+        var arguments = ToolInput.Create(
+            "Command", $"file_write --path {nativePath}",
+            "WorkingDirectory", Path.GetTempPath());
+
+        var preflight = Assert.IsType<ShellPolicyPreflightResult.Continue>(
+            policy.AuthorizeShellPreflight(shellTool, context, arguments));
+
+        var shellTemporary = Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(preflight.Correction);
+        var nativeCorrection = NativeToolShellCorrectionDetector.Detect(
+            preflight.Analysis,
+            registry,
+            policy,
+            context.Invocation);
+        var nativeTool = Assert.IsType<ToolCorrection.NativeToolSuggested>(nativeCorrection);
+        Assert.Equal(FileWriteTool.ToolName, nativeTool.ToolName.Value);
+
+        var correctedNativeDecision = policy.AuthorizeInvocation(
+            fileWriteTool,
+            context,
+            ToolInput.Create("Path", nativePath, "Content", "P2 output"));
+        Assert.True(correctedNativeDecision.NeedsApproval);
+        var nativeTemporary = Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(
+            correctedNativeDecision.AgentCorrection);
+        Assert.Equal(shellTemporary.Target, nativeTemporary.Target);
+
+        var collection = ShellPolicyCoordinator.CollectApplicableCorrections(
+            nativeTool,
+            nativeTemporary);
+        Assert.NotNull(collection);
+        Assert.Collection(
+            collection.Items,
+            correction => Assert.IsType<ToolCorrection.NativeToolSuggested>(correction),
+            correction => Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(correction));
+    }
+
+    [Fact]
+    public async Task Candidate_collection_leaves_the_authoritative_native_result_unchanged()
+    {
+        var (registry, policy) = CreateApprovalGatedShellRegistryAndPolicy(ShellEnvironment);
+        var approvalService = new FixedShellApprovalService(_ =>
+            throw new InvalidOperationException("Candidate collection must not request approval."));
+        var executor = new DispatchingToolExecutor(registry, policy, approvalService);
+        var shellTool = Assert.IsAssignableFrom<INetclawTool>(registry.GetByName(ShellTool.ToolName));
+        var arguments = ToolInput.Create(
+            "Command", $"file_write --path {Path.Combine(Path.GetTempPath(), "netclaw-p2-output.txt")}",
+            "WorkingDirectory", Path.GetTempPath());
+        var candidateContext = CreateInteractivePersonalContext("signalr/native-temporary-candidate");
+        var preflight = Assert.IsType<ShellPolicyPreflightResult.Continue>(
+            policy.AuthorizeShellPreflight(shellTool, candidateContext, arguments));
+        var nativeCorrection = Assert.IsType<ToolCorrection.NativeToolSuggested>(
+            NativeToolShellCorrectionDetector.Detect(
+                preflight.Analysis,
+                registry,
+                policy,
+                candidateContext.Invocation));
+        var candidate = ShellPolicyCoordinator.CollectApplicableCorrections(
+            nativeCorrection,
+            preflight.Correction);
+        Assert.NotNull(candidate);
+
+        var authoritativeContext = CreateInteractivePersonalContext("signalr/native-temporary-authoritative");
+        var decision = await executor.EvaluateAuthorizationAsync(
+            CreateToolCall("call-native-temporary-authoritative", ShellTool.ToolName, arguments),
+            authoritativeContext,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, candidate.Items.Count);
+        Assert.IsType<ToolCorrection.NativeToolSuggested>(decision.AgentCorrection);
+        Assert.Equal(0, approvalService.RequestCount);
+        Assert.Null(authoritativeContext.Receipt);
+    }
+
+    [Fact]
+    public void Scalar_correction_accessor_rejects_multiple_corrections()
+    {
+        var exception = new ToolCorrectionRequiredException(
+            new ToolCorrectionCollection(
+                [
+                    new ToolCorrection.NativeToolSuggested(new ToolName(FileWriteTool.ToolName)),
+                    new ToolCorrection.ManagedTemporaryDirectorySuggested(
+                        new ManagedTemporaryCorrectionTarget("/session/tmp", "/tmp"))
+                ]));
+
+        Assert.Throws<InvalidOperationException>(() => _ = exception.Correction);
+    }
+
     [Theory]
     [InlineData(ShellGrammar.Bash, "printf marker; file_read --path report.txt")]
     [InlineData(ShellGrammar.PowerShell, "Write-Output marker; file_read -Path report.txt")]
