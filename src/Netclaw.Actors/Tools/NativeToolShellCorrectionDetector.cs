@@ -10,7 +10,7 @@ namespace Netclaw.Actors.Tools;
 
 internal static class NativeToolShellCorrectionDetector
 {
-    internal static ToolCorrection.NativeToolSuggested? Detect(
+    internal static NativeToolShellCorrection? Detect(
         ShellCommandAnalysis analysis,
         ToolRegistry registry,
         ToolAccessPolicy policy,
@@ -45,9 +45,16 @@ internal static class NativeToolShellCorrectionDetector
                 continue;
             }
 
-            return new ToolCorrection.NativeToolSuggested(new ToolName(registration.Tool.Name));
+            return new NativeToolShellCorrection(
+                new ToolCorrection.NativeToolSuggested(new ToolName(registration.Tool.Name)),
+                registration.Tool is IManagedTemporaryDirectoryCorrectionTool);
         }
 
         return null;
     }
 }
+
+/// <summary>Describes a native-tool correction and its compatible advice categories.</summary>
+internal sealed record NativeToolShellCorrection(
+    ToolCorrection.NativeToolSuggested Correction,
+    bool SupportsManagedTemporaryDirectory);

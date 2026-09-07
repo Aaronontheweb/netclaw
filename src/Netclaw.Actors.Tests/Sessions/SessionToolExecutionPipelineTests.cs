@@ -404,6 +404,45 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
     }
 
     [Fact]
+    public async Task Native_file_read_response_excludes_temporary_directory_advice()
+    {
+        var executor = CreateApprovalGatedShellExecutor();
+        var probe = CreateTestProbe("native-read-without-temporary");
+        var call = new FunctionCallContent(
+            "call-native-read-without-temporary",
+            ShellTool.ToolName,
+            new Dictionary<string, object?>
+            {
+                ["Command"] = $"file_read --path {Path.Combine(Path.GetTempPath(), "existing-report.txt")}",
+                ["WorkingDirectory"] = Path.GetTempPath(),
+                ["_rationale"] = "Read the requested diagnostic report with the native tool."
+            });
+
+        var pipelineTask = new SessionToolPipelineTestFixture(
+                executor,
+                [call],
+                new SessionId("D1/native-read-without-temporary"),
+                probe.Ref)
+            .WithTurnContext(InteractiveTurnContext(new SessionId("D1/native-read-without-temporary")))
+            .WithApprovals(new ApprovalChannel(), _ => throw new InvalidOperationException("The correction must not prompt."), Timeout.InfiniteTimeSpan)
+            .ExecuteAsync(TestContext.Current.CancellationToken);
+
+        var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
+            TimeSpan.FromSeconds(3),
+            cancellationToken: TestContext.Current.CancellationToken);
+        await pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+
+        var result = Assert.Single(completed.ToolResults);
+        Assert.Equal(
+            "Shell execution stopped because 'file_read' is a native Netclaw tool.\n" +
+            "Next action: call the native Netclaw tool named in this result directly instead of shell_execute.",
+            result.Content);
+        Assert.DoesNotContain("Managed temporary directory", result.Content, StringComparison.Ordinal);
+        Assert.Equal(ToolRemediationCode.UseNativeTool, completed.ToolReceipts["call-native-read-without-temporary"].RemediationCode);
+        Assert.Equal("file_read", Assert.Single(completed.ToolExposureRequests).Value.ToolName.Value);
+    }
+
+    [Fact]
     public async Task Streaming_result_is_presented_before_delivery()
     {
         var executor = new CorrectiveReceiptExecutor();

@@ -11,6 +11,15 @@ using ShellSyntaxTree;
 namespace Netclaw.Actors.Tools;
 
 /// <summary>
+/// Marks a native tool for which managed temporary-directory advice is valid.
+/// </summary>
+/// <remarks>
+/// The marker describes the native operation. It does not interpret shell
+/// command syntax or rewrite a tool call.
+/// </remarks>
+internal interface IManagedTemporaryDirectoryCorrectionTool;
+
+/// <summary>
 /// Identifies advice-only calls that explicitly use the shared platform temp root.
 /// This policy grants no authority and does not change the submitted call.
 /// </summary>

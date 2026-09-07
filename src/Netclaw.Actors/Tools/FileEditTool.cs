@@ -23,7 +23,7 @@ namespace Netclaw.Actors.Tools;
     "For full writes, creates the file and parent directories if needed. " +
     "A successful result confirms the change; do not verify it with shell unless requested.",
     Grant = "file")]
-public sealed partial class FileEditTool : NetclawTool<FileEditTool.Params>
+public sealed partial class FileEditTool : NetclawTool<FileEditTool.Params>, IManagedTemporaryDirectoryCorrectionTool
 {
     public const string ToolName = "file_edit";
 

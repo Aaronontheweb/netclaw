@@ -3761,7 +3761,8 @@ public class DispatchingToolExecutorTests
             context.Invocation);
 
         Assert.NotNull(correction);
-        Assert.Equal("file_read", correction.ToolName.Value);
+        Assert.Equal("file_read", correction.Correction.ToolName.Value);
+        Assert.False(correction.SupportsManagedTemporaryDirectory);
     }
 
     [Theory]
@@ -3786,7 +3787,8 @@ public class DispatchingToolExecutorTests
             context.Invocation);
 
         Assert.NotNull(correction);
-        Assert.Equal("file_read", correction.ToolName.Value);
+        Assert.Equal("file_read", correction.Correction.ToolName.Value);
+        Assert.False(correction.SupportsManagedTemporaryDirectory);
     }
 
     [Fact]
@@ -3806,7 +3808,8 @@ public class DispatchingToolExecutorTests
             context.Invocation);
 
         Assert.NotNull(correction);
-        Assert.Equal("file_write", correction.ToolName.Value);
+        Assert.Equal("file_write", correction.Correction.ToolName.Value);
+        Assert.True(correction.SupportsManagedTemporaryDirectory);
     }
 
     [Fact]
@@ -3826,7 +3829,8 @@ public class DispatchingToolExecutorTests
             context.Invocation);
 
         Assert.NotNull(correction);
-        Assert.Equal("file_read", correction.ToolName.Value);
+        Assert.Equal("file_read", correction.Correction.ToolName.Value);
+        Assert.False(correction.SupportsManagedTemporaryDirectory);
     }
 
     [Theory]
@@ -3976,8 +3980,9 @@ public class DispatchingToolExecutorTests
             registry,
             policy,
             context.Invocation);
-        var nativeTool = Assert.IsType<ToolCorrection.NativeToolSuggested>(nativeCorrection);
-        Assert.Equal(FileWriteTool.ToolName, nativeTool.ToolName.Value);
+        var nativeTool = Assert.IsType<NativeToolShellCorrection>(nativeCorrection);
+        Assert.True(nativeTool.SupportsManagedTemporaryDirectory);
+        Assert.Equal(FileWriteTool.ToolName, nativeTool.Correction.ToolName.Value);
 
         var correctedNativeDecision = policy.AuthorizeInvocation(
             fileWriteTool,
@@ -3989,7 +3994,7 @@ public class DispatchingToolExecutorTests
         Assert.Equal(shellTemporary.Target, nativeTemporary.Target);
 
         var collection = ShellPolicyCoordinator.CollectApplicableCorrections(
-            nativeTool,
+            nativeTool.Correction,
             nativeTemporary);
         Assert.NotNull(collection);
         Assert.Collection(
@@ -4028,6 +4033,30 @@ public class DispatchingToolExecutorTests
         Assert.Equal(2, exception.Corrections.Items.Count);
         Assert.Equal(0, approvalService.RequestCount);
         Assert.Null(authoritativeContext.Receipt);
+    }
+
+    [Fact]
+    public async Task Coordinator_excludes_temporary_correction_for_native_file_read()
+    {
+        var (registry, policy) = CreateApprovalGatedShellRegistryAndPolicy(ShellEnvironment);
+        var approvalService = new FixedShellApprovalService(_ =>
+            throw new InvalidOperationException("Native correction must not request approval."));
+        var executor = new DispatchingToolExecutor(registry, policy, approvalService);
+        var arguments = ToolInput.Create(
+            "Command", $"file_read --path {Path.Combine(Path.GetTempPath(), "existing-report.txt")}",
+            "WorkingDirectory", Path.GetTempPath());
+        var context = CreateInteractivePersonalContext("signalr/native-read-without-temporary");
+
+        var decision = await executor.EvaluateAuthorizationAsync(
+            CreateToolCall("call-native-read-without-temporary", ShellTool.ToolName, arguments),
+            context,
+            TestContext.Current.CancellationToken);
+
+        var corrections = Assert.IsType<ToolCorrectionCollection>(decision.AgentCorrections);
+        var correction = Assert.Single(corrections.Items);
+        Assert.Equal("file_read", Assert.IsType<ToolCorrection.NativeToolSuggested>(correction).ToolName.Value);
+        Assert.Equal(0, approvalService.RequestCount);
+        Assert.Null(context.Receipt);
     }
 
     [Fact]
@@ -4357,7 +4386,7 @@ public class DispatchingToolExecutorTests
                 InteractiveApproval = TestToolExecutionContext.InteractiveApproval(true)
             });
 
-    private static ToolCorrection.NativeToolSuggested? DetectNativeToolForConfig(
+    private static NativeToolShellCorrection? DetectNativeToolForConfig(
         ToolConfig config,
         TrustAudience audience)
     {

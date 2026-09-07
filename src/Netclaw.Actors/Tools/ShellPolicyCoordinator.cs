@@ -24,7 +24,7 @@ internal sealed class ShellPolicyCoordinator(
         FunctionCallContent toolCall,
         ToolExecutionContext context,
         ShellPolicyPreflightResult preflight,
-        ToolCorrection.NativeToolSuggested? nativeCorrection,
+        NativeToolShellCorrection? nativeCorrection,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(preflight);
@@ -60,19 +60,20 @@ internal sealed class ShellPolicyCoordinator(
         FunctionCallContent toolCall,
         ToolExecutionContext context,
         ShellPolicyPreflightResult preflight,
-        ToolCorrection.NativeToolSuggested? nativeCorrection,
+        NativeToolShellCorrection? nativeCorrection,
         ShellPolicyDecisionTraceBuilder trace,
         CancellationToken cancellationToken)
     {
         if (nativeCorrection is not null)
         {
-            var corrections = preflight is ShellPolicyPreflightResult.Continue
+            var corrections = nativeCorrection.SupportsManagedTemporaryDirectory
+                && preflight is ShellPolicyPreflightResult.Continue
                 {
                     Correction: ToolCorrection.ManagedTemporaryDirectorySuggested temporaryCorrection
                 }
-                ? CollectApplicableCorrections(nativeCorrection, temporaryCorrection)
+                ? CollectApplicableCorrections(nativeCorrection.Correction, temporaryCorrection)
                     ?? throw new InvalidOperationException("Compatible corrections must form a collection.")
-                : new ToolCorrectionCollection([nativeCorrection]);
+                : new ToolCorrectionCollection([nativeCorrection.Correction]);
             return (
                 Complete(ToolAuthorizationDecision.RequireAgentCorrection(corrections), [], trace),
                 null);
