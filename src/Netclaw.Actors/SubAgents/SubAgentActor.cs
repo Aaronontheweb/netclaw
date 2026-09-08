@@ -1466,6 +1466,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 }
                 catch (ToolCorrectionRequiredException correctionEx)
                 {
+                    // The coordinator selects all compatible correction facts.
+                    // The child presents them and requests the named native tool for the next model turn.
                     var presentation = ToolCorrectionPresentation.Build(correctionEx.Corrections);
                     toolContext.Outputs.TryComplete(new ToolInvocationReceipt(
                         ToolInvocationOutcomeCategory.RecoverableCorrection,

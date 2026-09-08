@@ -62,6 +62,7 @@ internal sealed class ShellPolicyCoordinator(
         ShellPolicyDecisionTraceBuilder trace,
         CancellationToken cancellationToken)
     {
+        // Preflight owns hard denials. The coordinator checks corrections before it accepts an Auto allow or requests approval.
         var analysis = preflight switch
         {
             ShellPolicyPreflightResult.Complete preflightComplete => preflightComplete.AuthorizedAnalysis,
@@ -78,6 +79,7 @@ internal sealed class ShellPolicyCoordinator(
 
         if (nativeCorrection is not null)
         {
+            // Managed temporary advice applies only when the suggested native operation can use the same target.
             var corrections = nativeCorrection.SupportsManagedTemporaryDirectory
                 && preflight is ShellPolicyPreflightResult.Continue
                 {
@@ -91,6 +93,7 @@ internal sealed class ShellPolicyCoordinator(
                 null);
         }
 
+        // A terminal preflight result needs no policy projection or approval-store request.
         if (preflight is ShellPolicyPreflightResult.Complete complete)
         {
             var preflightDecision = complete.Decision;
@@ -110,6 +113,7 @@ internal sealed class ShellPolicyCoordinator(
                 complete.AuthorizedAnalysis);
         }
 
+        // The remaining request needs projected path checks and one approval-evidence evaluation.
         if (preflight is not ShellPolicyPreflightResult.Continue continuation
             || !ShellPolicyProjection.TryCreate(
                 continuation.Environment,

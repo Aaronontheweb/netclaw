@@ -404,8 +404,10 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
     }
 
     [Fact]
-    public async Task Native_file_read_response_excludes_temporary_directory_advice()
+    public async Task Native_file_read_response_keeps_the_existing_path_without_temporary_advice()
     {
+        // The native reader must keep the requested source path.
+        // Managed temporary advice would redirect the read to a different file.
         var executor = CreateApprovalGatedShellExecutor();
         var probe = CreateTestProbe("native-read-without-temporary");
         var call = new FunctionCallContent(
