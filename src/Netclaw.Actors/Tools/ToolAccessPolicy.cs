@@ -201,6 +201,7 @@ public sealed class ToolAccessPolicy
             deferReviewedSafeCoverage: false,
             out _);
 
+    /// <summary>Builds canonical shell analysis and applies synchronous access rules before approval evidence.</summary>
     internal ShellPolicyPreflightResult AuthorizeShellPreflight(
         INetclawTool tool,
         ToolExecutionContext context,

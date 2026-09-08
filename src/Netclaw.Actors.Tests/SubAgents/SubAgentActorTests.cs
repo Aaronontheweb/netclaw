@@ -710,6 +710,51 @@ public class SubAgentActorTests : TestKit
             GetLastToolResult(fakeClient, "call-managed-temporary-correction"));
     }
 
+    [Fact]
+    public async Task Subagent_delivers_native_and_temporary_corrections_without_execution_or_approval()
+    {
+        var sessionDirectory = TestPath("sessions", "native-temporary-correction");
+        var environment = TestShellEnvironment.Current;
+        var shell = new FakeNetclawTool(ShellTool.ToolName, "should not run");
+        var fileWrite = new FileWriteTool(
+            new ToolConfig(),
+            new NetclawPaths(),
+            new ToolPathPolicy(environment, []));
+        var fakeClient = new FakeChatClient
+        {
+            ToolCallsOnFirstCall =
+            [
+                NativeTemporaryFileWriteCall("call-native-temporary-correction")
+            ]
+        };
+        var approvalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.ApprovedOnce);
+        var agent = Sys.ActorOf(SubAgentActor.CreateProps(
+            CreateDefinition([shell, fileWrite]),
+            fakeClient,
+            CreateManagedTemporaryCorrectionPolicy()));
+
+        var result = await agent.Ask<SubAgentResult>(
+            new RunSubAgent
+            {
+                Scope = SubAgentTestScope.Create(
+                    sessionDirectory: sessionDirectory,
+                    approvalBridge: approvalBridge),
+                Task = "Write a disposable diagnostic artifact.",
+                Timeout = TimeSpan.FromSeconds(5)
+            },
+            ApprovalAskTimeout,
+            TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success, result.Output);
+        Assert.False(shell.WasCalled);
+        Assert.Equal(0, approvalBridge.RequestCount);
+        Assert.Equal(
+            "Shell execution stopped because 'file_write' is a native Netclaw tool.\n" +
+            $"Managed temporary directory: '{Path.Combine(sessionDirectory, "subagents", "run", "tmp")}'.\n" +
+            "Next action: call the native Netclaw tool named in this result directly instead of shell_execute.",
+            GetLastToolResult(fakeClient, "call-native-temporary-correction"));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -1497,6 +1542,16 @@ public class SubAgentActorTests : TestKit
                 : "Get-Content result.log",
             ["WorkingDirectory"] = Path.GetFullPath(Path.GetTempPath()),
             ["_rationale"] = "Inspect a disposable diagnostic artifact."
+        });
+
+    private static FunctionCallContent NativeTemporaryFileWriteCall(string callId)
+        => new(callId, ShellTool.ToolName, new Dictionary<string, object?>
+        {
+            ["Command"] = TestShellEnvironment.Current.Grammar == ShellGrammar.Bash
+                ? $"file_write --path {Path.Combine(Path.GetTempPath(), "subagent-output.txt")}"
+                : $"file_write -Path {Path.Combine(Path.GetTempPath(), "subagent-output.txt")}",
+            ["WorkingDirectory"] = Path.GetFullPath(Path.GetTempPath()),
+            ["_rationale"] = "Write a disposable diagnostic artifact."
         });
 
     private static FunctionCallContent ProjectScopeCall(string callId, string workingDirectory)

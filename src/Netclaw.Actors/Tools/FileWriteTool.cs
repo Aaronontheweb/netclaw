@@ -22,7 +22,7 @@ namespace Netclaw.Actors.Tools;
     "Write content and create parent directories when needed. " +
     "A successful result confirms the write; do not verify it with shell unless requested.",
     Grant = "file")]
-public sealed partial class FileWriteTool : NetclawTool<FileWriteTool.Params>
+public sealed partial class FileWriteTool : NetclawTool<FileWriteTool.Params>, IManagedTemporaryDirectoryCorrectionTool
 {
     public const string ToolName = "file_write";
 

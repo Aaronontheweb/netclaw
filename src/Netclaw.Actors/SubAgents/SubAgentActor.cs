@@ -1466,20 +1466,18 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 }
                 catch (ToolCorrectionRequiredException correctionEx)
                 {
-                    if (correctionEx.Correction is ToolCorrection.NativeToolSuggested nativeTool)
-                    {
-                        toolContext.Outputs.TryComplete(new ToolInvocationReceipt(
-                            ToolInvocationOutcomeCategory.RecoverableCorrection,
-                            remediationCode: ToolRemediationCode.UseNativeTool));
-                        return BuildToolResult(
-                            cleanedTc,
-                            SessionToolExecutionPipeline.BuildNativeToolCorrection(nativeTool.ToolName),
-                            toolContext,
-                            modelInputBudget,
-                            exposureRequest: new ToolExposureRequest(nativeTool.ToolName));
-                    }
-
-                    throw new InvalidOperationException("The correction does not name a native tool.");
+                    // The coordinator selects all compatible correction facts.
+                    // The child presents them and requests the named native tool for the next model turn.
+                    var presentation = ToolCorrectionPresentation.Build(correctionEx.Corrections);
+                    toolContext.Outputs.TryComplete(new ToolInvocationReceipt(
+                        ToolInvocationOutcomeCategory.RecoverableCorrection,
+                        remediationCode: ToolRemediationCode.UseNativeTool));
+                    return BuildToolResult(
+                        cleanedTc,
+                        presentation.Content,
+                        toolContext,
+                        modelInputBudget,
+                        exposureRequest: new ToolExposureRequest(presentation.NativeTool));
                 }
                 catch (ToolApprovalRequiredException approvalEx)
                 {

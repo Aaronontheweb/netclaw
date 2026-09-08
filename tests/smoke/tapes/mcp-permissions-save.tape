@@ -29,7 +29,7 @@ Wait+Screen@30s /record-tasks/
 Wait+Screen@10s /Server default:/
 Down
 Space
-Wait+Screen@5s /unsaved/
+Wait+Screen@5s /\[✓\] Server enabled for personal/
 Enter
 Wait+Screen@5s /Enter\/Y.*Save/
 Enter

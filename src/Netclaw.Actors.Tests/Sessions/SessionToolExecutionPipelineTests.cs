@@ -366,16 +366,17 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
     [Fact]
     public async Task Native_and_temporary_collection_returns_one_model_response()
     {
-        var candidate = CreatePolicyProducedNativeAndTemporaryCollection();
-        var executor = new NativeAndTemporaryCorrectionExecutor(candidate.Corrections);
+        var executor = CreateApprovalGatedShellExecutor();
         var probe = CreateTestProbe("native-temporary-collection");
+        var nativePath = Path.Combine(Path.GetTempPath(), "netclaw-p3-output.txt");
         var call = new FunctionCallContent(
             "call-native-temporary-collection",
             "shell_execute",
             new Dictionary<string, object?>
             {
-                ["command"] = candidate.Command,
-                ["WorkingDirectory"] = Path.GetTempPath()
+                ["Command"] = $"file_write --path {nativePath}",
+                ["WorkingDirectory"] = Path.GetTempPath(),
+                ["_rationale"] = "Write disposable output with the native tool."
             });
 
         var pipelineTask = new SessionToolPipelineTestFixture(
@@ -383,6 +384,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
                 [call],
                 new SessionId("D1/native-temporary-collection"),
                 probe.Ref)
+            .WithTurnContext(InteractiveTurnContext(new SessionId("D1/native-temporary-collection")))
             .WithApprovals(new ApprovalChannel(), _ => throw new InvalidOperationException("The collection must not prompt."), Timeout.InfiniteTimeSpan)
             .ExecuteAsync(TestContext.Current.CancellationToken);
 
@@ -394,12 +396,52 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
         var result = Assert.Single(completed.ToolResults);
         Assert.Equal(
             "Shell execution stopped because 'file_write' is a native Netclaw tool.\n" +
-            $"Managed temporary directory: '{TestManagedTemporaryDirectory}'.\n" +
+            $"Managed temporary directory: '{Path.Combine(Path.GetTempPath(), "tmp", "parent")}'.\n" +
             "Next action: call the native Netclaw tool named in this result directly instead of shell_execute.",
             result.Content);
         Assert.Equal(ToolRemediationCode.UseNativeTool, completed.ToolReceipts["call-native-temporary-collection"].RemediationCode);
         Assert.Equal("file_write", Assert.Single(completed.ToolExposureRequests).Value.ToolName.Value);
-        Assert.Equal(1, executor.Attempts);
+    }
+
+    [Fact]
+    public async Task Native_file_read_response_keeps_the_existing_path_without_temporary_advice()
+    {
+        // The native reader must keep the requested source path.
+        // Managed temporary advice would redirect the read to a different file.
+        var executor = CreateApprovalGatedShellExecutor();
+        var probe = CreateTestProbe("native-read-without-temporary");
+        var call = new FunctionCallContent(
+            "call-native-read-without-temporary",
+            ShellTool.ToolName,
+            new Dictionary<string, object?>
+            {
+                ["Command"] = $"file_read --path {Path.Combine(Path.GetTempPath(), "existing-report.txt")}",
+                ["WorkingDirectory"] = Path.GetTempPath(),
+                ["_rationale"] = "Read the requested diagnostic report with the native tool."
+            });
+
+        var pipelineTask = new SessionToolPipelineTestFixture(
+                executor,
+                [call],
+                new SessionId("D1/native-read-without-temporary"),
+                probe.Ref)
+            .WithTurnContext(InteractiveTurnContext(new SessionId("D1/native-read-without-temporary")))
+            .WithApprovals(new ApprovalChannel(), _ => throw new InvalidOperationException("The correction must not prompt."), Timeout.InfiniteTimeSpan)
+            .ExecuteAsync(TestContext.Current.CancellationToken);
+
+        var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
+            TimeSpan.FromSeconds(3),
+            cancellationToken: TestContext.Current.CancellationToken);
+        await pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+
+        var result = Assert.Single(completed.ToolResults);
+        Assert.Equal(
+            "Shell execution stopped because 'file_read' is a native Netclaw tool.\n" +
+            "Next action: call the native Netclaw tool named in this result directly instead of shell_execute.",
+            result.Content);
+        Assert.DoesNotContain("Managed temporary directory", result.Content, StringComparison.Ordinal);
+        Assert.Equal(ToolRemediationCode.UseNativeTool, completed.ToolReceipts["call-native-read-without-temporary"].RemediationCode);
+        Assert.Equal("file_read", Assert.Single(completed.ToolExposureRequests).Value.ToolName.Value);
     }
 
     [Fact]
@@ -1351,7 +1393,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
             => new(new ToolCorrection.NativeToolSuggested(new ToolName("file_read")));
     }
 
-    private static PolicyProducedCorrectionCollection CreatePolicyProducedNativeAndTemporaryCollection()
+    private static DispatchingToolExecutor CreateApprovalGatedShellExecutor()
     {
         var environment = TestShellEnvironment.Current;
         var config = new ToolConfig { ShellMode = ShellExecutionMode.HostAllowed };
@@ -1377,63 +1419,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
                 UsedStrictFallback: false),
             commandPolicy,
             pathPolicy);
-        var storage = SessionStoragePaths.CreateVersion2(
-            new SessionStorageEnvelopeRoot(ManagedTemporarySessionDirectory));
-        var context = TestToolExecutionContext.CreateBoundWithStorage(
-            "signalr/native-temporary-collection",
-            storage,
-            new TestToolExecutionContextOptions
-            {
-                Audience = TrustAudience.Personal,
-                InteractiveApproval = TestToolExecutionContext.InteractiveApproval(true)
-            });
-        var nativePath = Path.Combine(Path.GetTempPath(), "netclaw-p2-output.txt");
-        var command = $"file_write --path {nativePath}";
-        var shellTool = Assert.IsAssignableFrom<INetclawTool>(registry.GetByName(ShellTool.ToolName));
-        var fileWriteTool = Assert.IsAssignableFrom<INetclawTool>(registry.GetByName(FileWriteTool.ToolName));
-        var preflight = Assert.IsType<ShellPolicyPreflightResult.Continue>(
-            policy.AuthorizeShellPreflight(
-                shellTool,
-                context,
-                ToolInput.Create("Command", command, "WorkingDirectory", Path.GetTempPath())));
-        var shellTemporary = Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(preflight.Correction);
-        var native = Assert.IsType<ToolCorrection.NativeToolSuggested>(
-            NativeToolShellCorrectionDetector.Detect(preflight.Analysis, registry, policy, context.Invocation));
-        var structured = policy.AuthorizeInvocation(
-            fileWriteTool,
-            context,
-            ToolInput.Create("Path", nativePath, "Content", "P2 output"));
-        Assert.True(structured.NeedsApproval);
-        var nativeTemporary = Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(structured.AgentCorrection);
-        Assert.Equal(shellTemporary.Target, nativeTemporary.Target);
-
-        var corrections = ShellPolicyCoordinator.CollectApplicableCorrections(native, nativeTemporary)
-            ?? throw new InvalidOperationException("The policy-produced corrections must form a collection.");
-        return new PolicyProducedCorrectionCollection(command, corrections);
-    }
-
-    private sealed record PolicyProducedCorrectionCollection(
-        string Command,
-        ToolCorrectionCollection Corrections);
-
-    private sealed class NativeAndTemporaryCorrectionExecutor(ToolCorrectionCollection corrections) : IToolExecutor
-    {
-        public int Attempts { get; private set; }
-
-        public Task AuthorizeAsync(
-            FunctionCallContent toolCall,
-            ToolExecutionContext? context = null,
-            CancellationToken ct = default)
-            => ExecuteAsync(toolCall, context, ct);
-
-        public Task<string> ExecuteAsync(
-            FunctionCallContent toolCall,
-            ToolExecutionContext? context = null,
-            CancellationToken ct = default)
-        {
-            Attempts++;
-            throw new ToolCorrectionRequiredException(corrections);
-        }
+        return new DispatchingToolExecutor(registry, policy, approvalService: null);
     }
 
     private sealed class ManagedTemporaryCorrectionRequiredExecutor : IToolExecutor

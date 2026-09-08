@@ -7,6 +7,12 @@ using Netclaw.Security;
 
 namespace Netclaw.Actors.Tools;
 
+/// <summary>
+/// Represents the synchronous shell access phase before the coordinator checks approval evidence.
+/// </summary>
+/// <remarks>
+/// A complete result ends evaluation. A continuation carries canonical facts into correction and approval selection.
+/// </remarks>
 internal abstract record ShellPolicyPreflightResult
 {
     private ShellPolicyPreflightResult()

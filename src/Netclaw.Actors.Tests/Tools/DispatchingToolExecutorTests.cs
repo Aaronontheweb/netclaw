@@ -3449,7 +3449,7 @@ public class DispatchingToolExecutorTests
     }
 
     [Fact]
-    public async Task Shell_completion_returns_the_exact_preflight_analysis()
+    public async Task Shell_completion_returns_the_authorized_analysis()
     {
         var root = Path.Combine(Path.GetTempPath(), $"shell-preflight-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -3496,19 +3496,19 @@ public class DispatchingToolExecutorTests
                 "call-exact-preflight-analysis",
                 ShellTool.ToolName,
                 ToolInput.Create("Command", phrase, "WorkingDirectory", root));
-            var preflight = policy.AuthorizeShellPreflight(tool, context, call.Arguments);
-            var continuation = Assert.IsType<ShellPolicyPreflightResult.Continue>(preflight);
-            var coordinator = new ShellPolicyCoordinator(policy, approvalService: null);
+            var registry = new ToolRegistry();
+            var coordinator = new ShellPolicyCoordinator(registry, policy, approvalService: null);
 
             var authorization = await coordinator.EvaluateAsync(
                 tool,
                 call,
                 context,
-                preflight,
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(ToolAuthorizationOutcome.Allowed, authorization.Decision.Outcome);
-            Assert.Same(continuation.Analysis, authorization.AuthorizedAnalysis);
+            var analysis = Assert.IsType<ShellCommandAnalysis>(authorization.AuthorizedAnalysis);
+            Assert.Equal(phrase, analysis.Source);
+            Assert.Equal(root, analysis.WorkingDirectory);
         }
         finally
         {
@@ -3760,7 +3760,8 @@ public class DispatchingToolExecutorTests
             context.Invocation);
 
         Assert.NotNull(correction);
-        Assert.Equal("file_read", correction.ToolName.Value);
+        Assert.Equal("file_read", correction.Correction.ToolName.Value);
+        Assert.False(correction.SupportsManagedTemporaryDirectory);
     }
 
     [Theory]
@@ -3785,7 +3786,8 @@ public class DispatchingToolExecutorTests
             context.Invocation);
 
         Assert.NotNull(correction);
-        Assert.Equal("file_read", correction.ToolName.Value);
+        Assert.Equal("file_read", correction.Correction.ToolName.Value);
+        Assert.False(correction.SupportsManagedTemporaryDirectory);
     }
 
     [Fact]
@@ -3805,7 +3807,8 @@ public class DispatchingToolExecutorTests
             context.Invocation);
 
         Assert.NotNull(correction);
-        Assert.Equal("file_write", correction.ToolName.Value);
+        Assert.Equal("file_write", correction.Correction.ToolName.Value);
+        Assert.True(correction.SupportsManagedTemporaryDirectory);
     }
 
     [Fact]
@@ -3825,7 +3828,8 @@ public class DispatchingToolExecutorTests
             context.Invocation);
 
         Assert.NotNull(correction);
-        Assert.Equal("file_read", correction.ToolName.Value);
+        Assert.Equal("file_read", correction.Correction.ToolName.Value);
+        Assert.False(correction.SupportsManagedTemporaryDirectory);
     }
 
     [Theory]
@@ -3975,8 +3979,9 @@ public class DispatchingToolExecutorTests
             registry,
             policy,
             context.Invocation);
-        var nativeTool = Assert.IsType<ToolCorrection.NativeToolSuggested>(nativeCorrection);
-        Assert.Equal(FileWriteTool.ToolName, nativeTool.ToolName.Value);
+        var nativeTool = Assert.IsType<NativeToolShellCorrection>(nativeCorrection);
+        Assert.True(nativeTool.SupportsManagedTemporaryDirectory);
+        Assert.Equal(FileWriteTool.ToolName, nativeTool.Correction.ToolName.Value);
 
         var correctedNativeDecision = policy.AuthorizeInvocation(
             fileWriteTool,
@@ -3988,7 +3993,7 @@ public class DispatchingToolExecutorTests
         Assert.Equal(shellTemporary.Target, nativeTemporary.Target);
 
         var collection = ShellPolicyCoordinator.CollectApplicableCorrections(
-            nativeTool,
+            nativeTool.Correction,
             nativeTemporary);
         Assert.NotNull(collection);
         Assert.Collection(
@@ -3998,40 +4003,59 @@ public class DispatchingToolExecutorTests
     }
 
     [Fact]
-    public async Task Candidate_collection_leaves_the_authoritative_native_result_unchanged()
+    public async Task Coordinator_selects_native_and_temporary_corrections_before_approval()
     {
         var (registry, policy) = CreateApprovalGatedShellRegistryAndPolicy(ShellEnvironment);
         var approvalService = new FixedShellApprovalService(_ =>
             throw new InvalidOperationException("Candidate collection must not request approval."));
-        var executor = new DispatchingToolExecutor(registry, policy, approvalService);
         var shellTool = Assert.IsAssignableFrom<INetclawTool>(registry.GetByName(ShellTool.ToolName));
         var arguments = ToolInput.Create(
             "Command", $"file_write --path {Path.Combine(Path.GetTempPath(), "netclaw-p2-output.txt")}",
             "WorkingDirectory", Path.GetTempPath());
-        var candidateContext = CreateInteractivePersonalContext("signalr/native-temporary-candidate");
-        var preflight = Assert.IsType<ShellPolicyPreflightResult.Continue>(
-            policy.AuthorizeShellPreflight(shellTool, candidateContext, arguments));
-        var nativeCorrection = Assert.IsType<ToolCorrection.NativeToolSuggested>(
-            NativeToolShellCorrectionDetector.Detect(
-                preflight.Analysis,
-                registry,
-                policy,
-                candidateContext.Invocation));
-        var candidate = ShellPolicyCoordinator.CollectApplicableCorrections(
-            nativeCorrection,
-            preflight.Correction);
-        Assert.NotNull(candidate);
-
         var authoritativeContext = CreateInteractivePersonalContext("signalr/native-temporary-authoritative");
-        var decision = await executor.EvaluateAuthorizationAsync(
-            CreateToolCall("call-native-temporary-authoritative", ShellTool.ToolName, arguments),
+        var call = CreateToolCall("call-native-temporary-authoritative", ShellTool.ToolName, arguments);
+        var coordinator = new ShellPolicyCoordinator(registry, policy, approvalService);
+
+        var authorization = await coordinator.EvaluateAsync(
+            shellTool,
+            call,
             authoritativeContext,
             TestContext.Current.CancellationToken);
 
-        Assert.Equal(2, candidate.Items.Count);
-        Assert.IsType<ToolCorrection.NativeToolSuggested>(decision.AgentCorrection);
+        var decision = authorization.Decision;
+        Assert.Equal(ToolAuthorizationOutcome.RequiresAgentCorrection, decision.Outcome);
+        var corrections = Assert.IsType<ToolCorrectionCollection>(decision.AgentCorrections);
+        Assert.Collection(
+            corrections.Items,
+            correction => Assert.IsType<ToolCorrection.NativeToolSuggested>(correction),
+            correction => Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(correction));
+        Assert.Null(authorization.AuthorizedAnalysis);
         Assert.Equal(0, approvalService.RequestCount);
         Assert.Null(authoritativeContext.Receipt);
+    }
+
+    [Fact]
+    public async Task Coordinator_excludes_temporary_correction_for_native_file_read()
+    {
+        var (registry, policy) = CreateApprovalGatedShellRegistryAndPolicy(ShellEnvironment);
+        var approvalService = new FixedShellApprovalService(_ =>
+            throw new InvalidOperationException("Native correction must not request approval."));
+        var executor = new DispatchingToolExecutor(registry, policy, approvalService);
+        var arguments = ToolInput.Create(
+            "Command", $"file_read --path {Path.Combine(Path.GetTempPath(), "existing-report.txt")}",
+            "WorkingDirectory", Path.GetTempPath());
+        var context = CreateInteractivePersonalContext("signalr/native-read-without-temporary");
+
+        var decision = await executor.EvaluateAuthorizationAsync(
+            CreateToolCall("call-native-read-without-temporary", ShellTool.ToolName, arguments),
+            context,
+            TestContext.Current.CancellationToken);
+
+        var corrections = Assert.IsType<ToolCorrectionCollection>(decision.AgentCorrections);
+        var correction = Assert.Single(corrections.Items);
+        Assert.Equal("file_read", Assert.IsType<ToolCorrection.NativeToolSuggested>(correction).ToolName.Value);
+        Assert.Equal(0, approvalService.RequestCount);
+        Assert.Null(context.Receipt);
     }
 
     [Fact]
@@ -4361,7 +4385,7 @@ public class DispatchingToolExecutorTests
                 InteractiveApproval = TestToolExecutionContext.InteractiveApproval(true)
             });
 
-    private static ToolCorrection.NativeToolSuggested? DetectNativeToolForConfig(
+    private static NativeToolShellCorrection? DetectNativeToolForConfig(
         ToolConfig config,
         TrustAudience audience)
     {

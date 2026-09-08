@@ -42,7 +42,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
         _registry = registry;
         _policy = policy;
         _approvalService = approvalService;
-        _shellPolicyCoordinator = new ShellPolicyCoordinator(policy, approvalService);
+        _shellPolicyCoordinator = new ShellPolicyCoordinator(registry, policy, approvalService);
         _logger = logger;
     }
 
@@ -414,45 +414,11 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
 
         if (string.Equals(tool.Name, ShellTool.ToolName, StringComparison.Ordinal))
         {
-            (ToolAuthorizationDecision Decision, ShellCommandAnalysis? AuthorizedAnalysis) shellAuthorization;
-            try
-            {
-                var preflight = _policy.AuthorizeShellPreflight(
-                    tool,
-                    context,
-                    toolCall.Arguments);
-                var analysis = preflight switch
-                {
-                    ShellPolicyPreflightResult.Complete complete => complete.AuthorizedAnalysis,
-                    ShellPolicyPreflightResult.Continue next => next.Analysis,
-                    _ => null,
-                };
-                var correction = analysis is null
-                    ? null
-                    : NativeToolShellCorrectionDetector.Detect(
-                        analysis,
-                        _registry,
-                        _policy,
-                        context.Invocation);
-                shellAuthorization = correction is null
-                    ? await _shellPolicyCoordinator.EvaluateAsync(
-                        tool,
-                        toolCall,
-                        context,
-                        preflight,
-                        ct)
-                    : (
-                        ToolAuthorizationDecision.RequireAgentCorrection(correction),
-                        null);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception)
-            {
-                shellAuthorization = ShellPolicyCoordinator.CompleteInternalFailure();
-            }
+            var shellAuthorization = await _shellPolicyCoordinator.EvaluateAsync(
+                tool,
+                toolCall,
+                context,
+                ct);
 
             LogAuthorizationDecision(toolCall, context, shellAuthorization.Decision);
             return (shellAuthorization.Decision, shellAuthorization.AuthorizedAnalysis);
@@ -546,7 +512,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
         if (decision.Outcome is ToolAuthorizationOutcome.RequiresAgentCorrection)
         {
             throw new ToolCorrectionRequiredException(
-                decision.AgentCorrection
+                decision.AgentCorrections
                 ?? throw new InvalidOperationException("Agent correction decision missing correction facts."));
         }
 

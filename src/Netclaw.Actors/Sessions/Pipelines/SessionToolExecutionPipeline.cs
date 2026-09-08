@@ -924,9 +924,6 @@ internal sealed class SessionToolExecutionPipeline
                 : null);
     }
 
-    internal static string BuildNativeToolCorrection(ToolName toolName)
-        => $"Shell execution stopped because '{toolName.Value}' is a native Netclaw tool.";
-
     private static async Task<string> ExecuteToolAttemptAsync(
         IToolExecutor executor,
         FunctionCallContent toolCall,

@@ -11,26 +11,34 @@ using Netclaw.Tools;
 namespace Netclaw.Actors.Tools;
 
 /// <summary>
-/// Coordinates shell preflight, one approval-store check, and final policy.
+/// Coordinates shell preflight, correction selection, one approval-store check, and final policy.
 /// </summary>
 internal sealed class ShellPolicyCoordinator(
+    ToolRegistry registry,
     ToolAccessPolicy policy,
     IToolApprovalService? approvalService)
 {
     private readonly ShellApprovalEvidenceAdapter _approvalEvidence = new(approvalService);
 
+    /// <summary>Evaluates one shell request from access checks through its final authorization result.</summary>
+    /// <remarks>
+    /// The access policy creates one canonical command analysis and applies hard denials first.
+    /// The coordinator then collects corrections before it accepts automatic policy approval or checks stored approval evidence.
+    /// It returns the analysis only when the caller can start the authorized command.
+    /// </remarks>
     internal async Task<(ToolAuthorizationDecision Decision, ShellCommandAnalysis? AuthorizedAnalysis)> EvaluateAsync(
         INetclawTool tool,
         FunctionCallContent toolCall,
         ToolExecutionContext context,
-        ShellPolicyPreflightResult preflight,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(preflight);
-
         var trace = new ShellPolicyDecisionTraceBuilder();
         try
         {
+            var preflight = policy.AuthorizeShellPreflight(
+                tool,
+                context,
+                toolCall.Arguments);
             return await EvaluateCoreAsync(
                 tool,
                 toolCall,
@@ -61,6 +69,36 @@ internal sealed class ShellPolicyCoordinator(
         ShellPolicyDecisionTraceBuilder trace,
         CancellationToken cancellationToken)
     {
+        var analysis = preflight switch
+        {
+            ShellPolicyPreflightResult.Complete preflightComplete => preflightComplete.AuthorizedAnalysis,
+            ShellPolicyPreflightResult.Continue preflightContinuation => preflightContinuation.Analysis,
+            _ => throw new InvalidOperationException("Unsupported shell policy preflight result."),
+        };
+        var nativeCorrection = analysis is null
+            ? null
+            : NativeToolShellCorrectionDetector.Detect(
+                analysis,
+                registry,
+                policy,
+                context.Invocation);
+
+        if (nativeCorrection is not null)
+        {
+            // Temporary relocation is valid only when the suggested native operation can use the same target.
+            var corrections = nativeCorrection.SupportsManagedTemporaryDirectory
+                && preflight is ShellPolicyPreflightResult.Continue
+                {
+                    Correction: ToolCorrection.ManagedTemporaryDirectorySuggested temporaryCorrection
+                }
+                ? CollectApplicableCorrections(nativeCorrection.Correction, temporaryCorrection)
+                    ?? throw new InvalidOperationException("Compatible corrections must form a collection.")
+                : new ToolCorrectionCollection([nativeCorrection.Correction]);
+            return (
+                Complete(ToolAuthorizationDecision.RequireAgentCorrection(corrections), [], trace),
+                null);
+        }
+
         if (preflight is ShellPolicyPreflightResult.Complete complete)
         {
             var preflightDecision = complete.Decision;
@@ -131,22 +169,11 @@ internal sealed class ShellPolicyCoordinator(
                 : null);
     }
 
-    internal static (ToolAuthorizationDecision Decision, ShellCommandAnalysis? AuthorizedAnalysis)
-        CompleteInternalFailure()
-    {
-        var trace = new ShellPolicyDecisionTraceBuilder();
-        return (
-            CompleteWithTrace(
-                ToolAuthorizationDecision.Deny("internal_policy_failure"),
-                trace),
-                null);
-    }
-
     /// <summary>Collects correction facts that already apply to one shell attempt.</summary>
     /// <remarks>
-    /// Callers determine correction applicability before this method runs.
+    /// Each correction policy determines applicability before this method runs.
     /// This method preserves order and enforces collection invariants.
-    /// The current dispatcher still emits one native correction.
+    /// The coordinator selects correction collections for shell requests.
     /// </remarks>
     internal static ToolCorrectionCollection? CollectApplicableCorrections(
         params ToolCorrection?[] corrections)

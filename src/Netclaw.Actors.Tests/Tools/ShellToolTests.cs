@@ -196,6 +196,7 @@ public class ShellToolTests
     }
 
     [SlopwatchSuppress("SW001", "This native fallback test requires Windows PowerShell 5.1.")]
+    [Trait("Category", "NativeShell")]
     [Fact(SkipUnless = nameof(IsWindows), Skip = "Native Windows PowerShell 5.1 execution requires Windows.")]
     public async Task Windows_power_shell_51_executes_through_the_selected_host()
     {
