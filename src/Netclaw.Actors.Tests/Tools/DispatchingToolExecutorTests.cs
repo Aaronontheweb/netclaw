@@ -3498,14 +3498,14 @@ public class DispatchingToolExecutorTests
                 ToolInput.Create("Command", phrase, "WorkingDirectory", root));
             var preflight = policy.AuthorizeShellPreflight(tool, context, call.Arguments);
             var continuation = Assert.IsType<ShellPolicyPreflightResult.Continue>(preflight);
-            var coordinator = new ShellPolicyCoordinator(policy, approvalService: null);
+            var registry = new ToolRegistry();
+            var coordinator = new ShellPolicyCoordinator(registry, policy, approvalService: null);
 
             var authorization = await coordinator.EvaluateAsync(
                 tool,
                 call,
                 context,
                 preflight,
-                nativeCorrection: null,
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(ToolAuthorizationOutcome.Allowed, authorization.Decision.Outcome);
@@ -4009,28 +4009,30 @@ public class DispatchingToolExecutorTests
         var (registry, policy) = CreateApprovalGatedShellRegistryAndPolicy(ShellEnvironment);
         var approvalService = new FixedShellApprovalService(_ =>
             throw new InvalidOperationException("Candidate collection must not request approval."));
-        var executor = new DispatchingToolExecutor(registry, policy, approvalService);
+        var shellTool = Assert.IsAssignableFrom<INetclawTool>(registry.GetByName(ShellTool.ToolName));
         var arguments = ToolInput.Create(
             "Command", $"file_write --path {Path.Combine(Path.GetTempPath(), "netclaw-p2-output.txt")}",
             "WorkingDirectory", Path.GetTempPath());
         var authoritativeContext = CreateInteractivePersonalContext("signalr/native-temporary-authoritative");
-        var decision = await executor.EvaluateAuthorizationAsync(
-            CreateToolCall("call-native-temporary-authoritative", ShellTool.ToolName, arguments),
+        var call = CreateToolCall("call-native-temporary-authoritative", ShellTool.ToolName, arguments);
+        var preflight = policy.AuthorizeShellPreflight(shellTool, authoritativeContext, arguments);
+        var coordinator = new ShellPolicyCoordinator(registry, policy, approvalService);
+
+        var authorization = await coordinator.EvaluateAsync(
+            shellTool,
+            call,
             authoritativeContext,
+            preflight,
             TestContext.Current.CancellationToken);
 
+        var decision = authorization.Decision;
         Assert.Equal(ToolAuthorizationOutcome.RequiresAgentCorrection, decision.Outcome);
         var corrections = Assert.IsType<ToolCorrectionCollection>(decision.AgentCorrections);
         Assert.Collection(
             corrections.Items,
             correction => Assert.IsType<ToolCorrection.NativeToolSuggested>(correction),
             correction => Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(correction));
-        var exception = await Assert.ThrowsAsync<ToolCorrectionRequiredException>(() =>
-            executor.AuthorizeAsync(
-                CreateToolCall("call-native-temporary-authoritative", ShellTool.ToolName, arguments),
-                authoritativeContext,
-                TestContext.Current.CancellationToken));
-        Assert.Equal(2, exception.Corrections.Items.Count);
+        Assert.Null(authorization.AuthorizedAnalysis);
         Assert.Equal(0, approvalService.RequestCount);
         Assert.Null(authoritativeContext.Receipt);
     }

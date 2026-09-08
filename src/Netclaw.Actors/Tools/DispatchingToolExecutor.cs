@@ -42,7 +42,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
         _registry = registry;
         _policy = policy;
         _approvalService = approvalService;
-        _shellPolicyCoordinator = new ShellPolicyCoordinator(policy, approvalService);
+        _shellPolicyCoordinator = new ShellPolicyCoordinator(registry, policy, approvalService);
         _logger = logger;
     }
 
@@ -421,25 +421,11 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
                     tool,
                     context,
                     toolCall.Arguments);
-                var analysis = preflight switch
-                {
-                    ShellPolicyPreflightResult.Complete complete => complete.AuthorizedAnalysis,
-                    ShellPolicyPreflightResult.Continue next => next.Analysis,
-                    _ => null,
-                };
-                var correction = analysis is null
-                    ? null
-                    : NativeToolShellCorrectionDetector.Detect(
-                        analysis,
-                        _registry,
-                        _policy,
-                        context.Invocation);
                 shellAuthorization = await _shellPolicyCoordinator.EvaluateAsync(
                     tool,
                     toolCall,
                     context,
                     preflight,
-                    correction,
                     ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)

@@ -11,9 +11,10 @@ using Netclaw.Tools;
 namespace Netclaw.Actors.Tools;
 
 /// <summary>
-/// Coordinates shell preflight, one approval-store check, and final policy.
+/// Coordinates shell preflight, correction selection, one approval-store check, and final policy.
 /// </summary>
 internal sealed class ShellPolicyCoordinator(
+    ToolRegistry registry,
     ToolAccessPolicy policy,
     IToolApprovalService? approvalService)
 {
@@ -24,7 +25,6 @@ internal sealed class ShellPolicyCoordinator(
         FunctionCallContent toolCall,
         ToolExecutionContext context,
         ShellPolicyPreflightResult preflight,
-        NativeToolShellCorrection? nativeCorrection,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(preflight);
@@ -37,7 +37,6 @@ internal sealed class ShellPolicyCoordinator(
                 toolCall,
                 context,
                 preflight,
-                nativeCorrection,
                 trace,
                 cancellationToken);
         }
@@ -60,10 +59,23 @@ internal sealed class ShellPolicyCoordinator(
         FunctionCallContent toolCall,
         ToolExecutionContext context,
         ShellPolicyPreflightResult preflight,
-        NativeToolShellCorrection? nativeCorrection,
         ShellPolicyDecisionTraceBuilder trace,
         CancellationToken cancellationToken)
     {
+        var analysis = preflight switch
+        {
+            ShellPolicyPreflightResult.Complete preflightComplete => preflightComplete.AuthorizedAnalysis,
+            ShellPolicyPreflightResult.Continue preflightContinuation => preflightContinuation.Analysis,
+            _ => throw new InvalidOperationException("Unsupported shell policy preflight result."),
+        };
+        var nativeCorrection = analysis is null
+            ? null
+            : NativeToolShellCorrectionDetector.Detect(
+                analysis,
+                registry,
+                policy,
+                context.Invocation);
+
         if (nativeCorrection is not null)
         {
             var corrections = nativeCorrection.SupportsManagedTemporaryDirectory
@@ -162,7 +174,7 @@ internal sealed class ShellPolicyCoordinator(
 
     /// <summary>Collects correction facts that already apply to one shell attempt.</summary>
     /// <remarks>
-    /// Callers determine correction applicability before this method runs.
+    /// Each correction policy determines applicability before this method runs.
     /// This method preserves order and enforces collection invariants.
     /// The coordinator selects correction collections for shell requests.
     /// </remarks>
