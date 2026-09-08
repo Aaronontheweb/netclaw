@@ -20,18 +20,25 @@ internal sealed class ShellPolicyCoordinator(
 {
     private readonly ShellApprovalEvidenceAdapter _approvalEvidence = new(approvalService);
 
+    /// <summary>Evaluates one shell request from access checks through its final authorization result.</summary>
+    /// <remarks>
+    /// The access policy creates one canonical command analysis and applies hard denials first.
+    /// The coordinator then collects corrections before it accepts automatic policy approval or checks stored approval evidence.
+    /// It returns the analysis only when the caller can start the authorized command.
+    /// </remarks>
     internal async Task<(ToolAuthorizationDecision Decision, ShellCommandAnalysis? AuthorizedAnalysis)> EvaluateAsync(
         INetclawTool tool,
         FunctionCallContent toolCall,
         ToolExecutionContext context,
-        ShellPolicyPreflightResult preflight,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(preflight);
-
         var trace = new ShellPolicyDecisionTraceBuilder();
         try
         {
+            var preflight = policy.AuthorizeShellPreflight(
+                tool,
+                context,
+                toolCall.Arguments);
             return await EvaluateCoreAsync(
                 tool,
                 toolCall,
@@ -62,7 +69,6 @@ internal sealed class ShellPolicyCoordinator(
         ShellPolicyDecisionTraceBuilder trace,
         CancellationToken cancellationToken)
     {
-        // Preflight owns hard denials. The coordinator checks corrections before it accepts an Auto allow or requests approval.
         var analysis = preflight switch
         {
             ShellPolicyPreflightResult.Complete preflightComplete => preflightComplete.AuthorizedAnalysis,
@@ -79,7 +85,7 @@ internal sealed class ShellPolicyCoordinator(
 
         if (nativeCorrection is not null)
         {
-            // Managed temporary advice applies only when the suggested native operation can use the same target.
+            // Temporary relocation is valid only when the suggested native operation can use the same target.
             var corrections = nativeCorrection.SupportsManagedTemporaryDirectory
                 && preflight is ShellPolicyPreflightResult.Continue
                 {
@@ -93,7 +99,6 @@ internal sealed class ShellPolicyCoordinator(
                 null);
         }
 
-        // A terminal preflight result needs no policy projection or approval-store request.
         if (preflight is ShellPolicyPreflightResult.Complete complete)
         {
             var preflightDecision = complete.Decision;
@@ -113,7 +118,6 @@ internal sealed class ShellPolicyCoordinator(
                 complete.AuthorizedAnalysis);
         }
 
-        // The remaining request needs projected path checks and one approval-evidence evaluation.
         if (preflight is not ShellPolicyPreflightResult.Continue continuation
             || !ShellPolicyProjection.TryCreate(
                 continuation.Environment,
@@ -163,17 +167,6 @@ internal sealed class ShellPolicyCoordinator(
             decision.Outcome == ToolAuthorizationOutcome.Allowed
                 ? continuation.Analysis
                 : null);
-    }
-
-    internal static (ToolAuthorizationDecision Decision, ShellCommandAnalysis? AuthorizedAnalysis)
-        CompleteInternalFailure()
-    {
-        var trace = new ShellPolicyDecisionTraceBuilder();
-        return (
-            CompleteWithTrace(
-                ToolAuthorizationDecision.Deny("internal_policy_failure"),
-                trace),
-                null);
     }
 
     /// <summary>Collects correction facts that already apply to one shell attempt.</summary>

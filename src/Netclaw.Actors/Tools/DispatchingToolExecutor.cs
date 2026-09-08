@@ -414,28 +414,11 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
 
         if (string.Equals(tool.Name, ShellTool.ToolName, StringComparison.Ordinal))
         {
-            (ToolAuthorizationDecision Decision, ShellCommandAnalysis? AuthorizedAnalysis) shellAuthorization;
-            try
-            {
-                var preflight = _policy.AuthorizeShellPreflight(
-                    tool,
-                    context,
-                    toolCall.Arguments);
-                shellAuthorization = await _shellPolicyCoordinator.EvaluateAsync(
-                    tool,
-                    toolCall,
-                    context,
-                    preflight,
-                    ct);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception)
-            {
-                shellAuthorization = ShellPolicyCoordinator.CompleteInternalFailure();
-            }
+            var shellAuthorization = await _shellPolicyCoordinator.EvaluateAsync(
+                tool,
+                toolCall,
+                context,
+                ct);
 
             LogAuthorizationDecision(toolCall, context, shellAuthorization.Decision);
             return (shellAuthorization.Decision, shellAuthorization.AuthorizedAnalysis);

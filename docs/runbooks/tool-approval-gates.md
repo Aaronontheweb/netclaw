@@ -23,11 +23,12 @@ The current source checks shell requests in this order:
 The approval gate does not execute a call or grant authority by itself. A shell
 call can return a result, a denial, or a recoverable correction to the model.
 
-`ShellPolicyCoordinator` detects an exposed native tool after shell preflight
-and before it checks the approval store. That correction stops the shell call.
-The temporary-path policy adds managed temporary-directory advice to an
-`Approval` result. `Auto` returns before that policy runs, so it does not return
-managed temporary-directory advice.
+`ShellPolicyCoordinator` asks `ToolAccessPolicy` to analyze the request and
+apply synchronous access checks. It then detects an exposed native tool before
+it checks the approval store. That correction stops the shell call. The
+temporary-path policy adds managed temporary-directory advice to an `Approval`
+result. `Auto` returns before that policy runs, so it does not return managed
+temporary-directory advice.
 
 ## Approval Modes
 

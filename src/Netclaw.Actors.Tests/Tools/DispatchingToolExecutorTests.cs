@@ -3449,7 +3449,7 @@ public class DispatchingToolExecutorTests
     }
 
     [Fact]
-    public async Task Shell_completion_returns_the_exact_preflight_analysis()
+    public async Task Shell_completion_returns_the_authorized_analysis()
     {
         var root = Path.Combine(Path.GetTempPath(), $"shell-preflight-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -3496,8 +3496,6 @@ public class DispatchingToolExecutorTests
                 "call-exact-preflight-analysis",
                 ShellTool.ToolName,
                 ToolInput.Create("Command", phrase, "WorkingDirectory", root));
-            var preflight = policy.AuthorizeShellPreflight(tool, context, call.Arguments);
-            var continuation = Assert.IsType<ShellPolicyPreflightResult.Continue>(preflight);
             var registry = new ToolRegistry();
             var coordinator = new ShellPolicyCoordinator(registry, policy, approvalService: null);
 
@@ -3505,11 +3503,12 @@ public class DispatchingToolExecutorTests
                 tool,
                 call,
                 context,
-                preflight,
                 TestContext.Current.CancellationToken);
 
             Assert.Equal(ToolAuthorizationOutcome.Allowed, authorization.Decision.Outcome);
-            Assert.Same(continuation.Analysis, authorization.AuthorizedAnalysis);
+            var analysis = Assert.IsType<ShellCommandAnalysis>(authorization.AuthorizedAnalysis);
+            Assert.Equal(phrase, analysis.Source);
+            Assert.Equal(root, analysis.WorkingDirectory);
         }
         finally
         {
@@ -4015,14 +4014,12 @@ public class DispatchingToolExecutorTests
             "WorkingDirectory", Path.GetTempPath());
         var authoritativeContext = CreateInteractivePersonalContext("signalr/native-temporary-authoritative");
         var call = CreateToolCall("call-native-temporary-authoritative", ShellTool.ToolName, arguments);
-        var preflight = policy.AuthorizeShellPreflight(shellTool, authoritativeContext, arguments);
         var coordinator = new ShellPolicyCoordinator(registry, policy, approvalService);
 
         var authorization = await coordinator.EvaluateAsync(
             shellTool,
             call,
             authoritativeContext,
-            preflight,
             TestContext.Current.CancellationToken);
 
         var decision = authorization.Decision;
