@@ -222,6 +222,18 @@ jobs:
         shell: powershell
         run: ./scripts/smoke/install-smoke.ps1
 
+  eval-oracles:
+    name: Eval Oracle Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check background eval assertions and fixture protocol
+        run: |
+          bash -n evals/run-evals.sh
+          bash -n evals/run-background-evals.sh
+          python3 -m unittest discover -s evals -p test_background_evals.py -v
+
   semver-conformance:
     name: SemVer Conformance
     runs-on: ubuntu-latest
