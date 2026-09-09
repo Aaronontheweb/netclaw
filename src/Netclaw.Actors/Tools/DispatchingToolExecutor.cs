@@ -204,7 +204,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
                 ? await shellTool.ExecuteAuthorizedAsync(
                     toolCall.Arguments,
                     context.Invocation,
-                    shellAnalysis,
+                    CreateShellLaunch(shellTool, toolCall.CallId, context, shellAnalysis),
                     ct)
                 : await tool.ExecuteAsync(toolCall.Arguments, context.Invocation, ct);
 
@@ -325,7 +325,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
             ? shellTool.ExecuteAuthorizedStreamAsync(
                 toolCall.Arguments,
                 context.Invocation,
-                shellAnalysis,
+                CreateShellLaunch(shellTool, toolCall.CallId, context, shellAnalysis),
                 ct)
             : tool.ExecuteStreamAsync(toolCall.Arguments, context.Invocation, ct);
         var sw = Stopwatch.StartNew();
@@ -499,6 +499,55 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
         var authorizationDecision = CompleteAuthorizationDecision(accessDecision, approvalMatches);
         LogAuthorizationDecision(toolCall, context, authorizationDecision);
         return (authorizationDecision, null);
+    }
+
+    public async Task<ShellProcessLaunch> PrepareShellLaunchAsync(
+        FunctionCallContent toolCall,
+        ToolExecutionContext context,
+        CancellationToken ct)
+    {
+        if (context.RunScope.Session is not ToolSessionScope.Bound || context.Boundary is null)
+            throw new InvalidOperationException("A background launch requires a bound session and a trust boundary.");
+
+        var authorized = await GetAuthorizedToolAsync(toolCall, context, ct);
+        if (authorized.Tool is not ShellTool shellTool || authorized.AuthorizedAnalysis is not { } analysis)
+            throw new InvalidOperationException("Background execution requires an authorized shell tool.");
+
+        return CreateShellLaunch(shellTool, toolCall.CallId, context, analysis);
+    }
+
+    private ShellProcessLaunch CreateShellLaunch(
+        ShellTool tool,
+        string callId,
+        ToolExecutionContext context,
+        ShellCommandAnalysis analysis)
+    {
+        if (!ReferenceEquals(tool.ShellEnvironment, _policy.ShellEnvironment))
+            throw new InvalidOperationException("Shell execution and authorization must use the same environment.");
+
+        var workingDirectory = analysis.WorkingDirectory
+            ?? throw new InvalidOperationException("Authorized shell execution requires a working directory.");
+        var launchContext = new ToolExecutionContext(context.RunScope, context.ExecutionTimeout);
+        launchContext.Approval.RestoreAuthorizationAttemptId(context.Approval.AuthorizationAttemptId);
+        if (context.Approval.OneTimeApprovedToolName is { } approvedTool)
+            launchContext.Approval.SeedOneTimeApproval(approvedTool, context.Approval.OneTimeApprovedPatterns);
+        if (context.Approval.ManagedTemporaryRetry is { } retry)
+            launchContext.Approval.MarkManagedTemporaryRetry(retry);
+
+        // Use the authorized source, not the caller's mutable argument dictionary.
+        var exactCall = new FunctionCallContent(callId, ShellTool.ToolName, new Dictionary<string, object?>
+        {
+            ["Command"] = analysis.Source,
+            ["WorkingDirectory"] = workingDirectory
+        });
+        return tool.CreateLaunch(
+            analysis.Source,
+            workingDirectory,
+            launchContext.Invocation,
+            async cancellationToken =>
+            {
+                await GetAuthorizedToolAsync(exactCall, launchContext, cancellationToken);
+            });
     }
 
     ApprovalShell IApprovalShellProvider.Shell => _policy.Shell;
