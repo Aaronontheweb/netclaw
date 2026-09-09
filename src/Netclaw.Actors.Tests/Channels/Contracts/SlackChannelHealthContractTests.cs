@@ -144,26 +144,26 @@ public sealed class SlackChannelHealthContractTests(ITestOutputHelper output)
     {
         var ct = TestContext.Current.CancellationToken;
         var channel = CreateChannel(enabled: true);
-        // Without a captured test context, Advance completes each poll inline with these synchronous transport fakes.
+        // Start and advance on workers so every timer wait stays off the test context.
         await Task.Run(() => channel.StartAsync(ct), ct);
         _socketModeClient!.FailNextConnections(2);
         _socketModeClient.DropConnection();
 
-        _timeProvider!.Advance(SlackChannel.ConnectionCheckInterval);
+        await Task.Run(() => _timeProvider!.Advance(SlackChannel.ConnectionCheckInterval), ct);
         await ExpectMsgAsync(SlackChannel.ComputeReconnectDelay(1), cancellationToken: ct);
         Assert.Equal(2, _socketModeClient.ConnectCount);
         Assert.Equal(ChannelHealthStatus.Disconnected, (await channel.GetHealthAsync(ct)).Status);
 
-        _timeProvider.Advance(SlackChannel.ConnectionCheckInterval);
+        await Task.Run(() => _timeProvider!.Advance(SlackChannel.ConnectionCheckInterval), ct);
         await ExpectMsgAsync(SlackChannel.ComputeReconnectDelay(2), cancellationToken: ct);
         Assert.Equal(3, _socketModeClient.ConnectCount);
 
         // The second failure requires ten seconds. The intervening five-second poll must not connect.
-        _timeProvider.Advance(SlackChannel.ConnectionCheckInterval);
+        await Task.Run(() => _timeProvider!.Advance(SlackChannel.ConnectionCheckInterval), ct);
         Assert.Equal(3, _socketModeClient.ConnectCount);
         Assert.Equal(ChannelHealthStatus.Disconnected, (await channel.GetHealthAsync(ct)).Status);
 
-        _timeProvider.Advance(SlackChannel.ConnectionCheckInterval);
+        await Task.Run(() => _timeProvider!.Advance(SlackChannel.ConnectionCheckInterval), ct);
         await _notificationSink!.WaitForReconnectAsync(RemainingOrDefault, ct);
         Assert.Equal(4, _socketModeClient.ConnectCount);
         Assert.Equal(ChannelHealthStatus.Healthy, (await channel.GetHealthAsync(ct)).Status);
