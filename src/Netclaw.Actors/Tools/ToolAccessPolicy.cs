@@ -198,7 +198,7 @@ public sealed class ToolAccessPolicy
             tool,
             context,
             arguments,
-            deferReviewedSafeCoverage: false,
+            deferShellCompletion: false,
             out _);
 
     /// <summary>Builds canonical shell analysis and applies synchronous access rules before approval evidence.</summary>
@@ -211,7 +211,7 @@ public sealed class ToolAccessPolicy
             tool,
             context,
             arguments,
-            deferReviewedSafeCoverage: true,
+            deferShellCompletion: true,
             out var analysis);
 
         if (!decision.NeedsApproval)
@@ -232,8 +232,7 @@ public sealed class ToolAccessPolicy
             ? new ShellPolicyPreflightResult.Continue(
                 analysis,
                 approvalContext,
-                ShellEnvironment,
-                decision.AgentCorrection)
+                ShellEnvironment)
             : new ShellPolicyPreflightResult.Complete(
                 ToolAuthorizationDecision.Deny("internal_policy_failure"),
                 authorizedAnalysis: null);
@@ -243,7 +242,7 @@ public sealed class ToolAccessPolicy
         INetclawTool tool,
         ToolExecutionContext context,
         IDictionary<string, object?>? arguments,
-        bool deferReviewedSafeCoverage,
+        bool deferShellCompletion,
         out ShellCommandAnalysis? authorizedAnalysis)
     {
         authorizedAnalysis = null;
@@ -261,7 +260,7 @@ public sealed class ToolAccessPolicy
                 toolName,
                 context,
                 arguments,
-                deferReviewedSafeCoverage,
+                deferShellCompletion,
                 out authorizedAnalysis)
             : AuthorizeStructuredInvocation(tool, toolName, context, arguments);
     }
@@ -323,7 +322,7 @@ public sealed class ToolAccessPolicy
         ToolName toolName,
         ToolExecutionContext context,
         IDictionary<string, object?>? arguments,
-        bool deferReviewedSafeCoverage,
+        bool deferShellCompletion,
         out ShellCommandAnalysis? authorizedAnalysis)
     {
         authorizedAnalysis = null;
@@ -403,7 +402,7 @@ public sealed class ToolAccessPolicy
             mode,
             shellApproval,
             shellAnalysis,
-            deferReviewedSafeCoverage);
+            deferShellCompletion);
     }
 
     internal bool IsReviewedSafeCandidate(
@@ -683,7 +682,7 @@ public sealed class ToolAccessPolicy
         return ToolArgumentHelper.GetString(arguments, "WorkingDirectory");
     }
 
-    private static IDictionary<string, object?>? WithResolvedShellWorkingDirectory(
+    internal static IDictionary<string, object?>? WithResolvedShellWorkingDirectory(
         IDictionary<string, object?>? arguments,
         string? resolvedWorkingDirectory)
     {
@@ -712,7 +711,7 @@ public sealed class ToolAccessPolicy
         ToolApprovalMode mode,
         ShellApprovalAnalysis? shellApproval = null,
         ShellCommandAnalysis? shellAnalysis = null,
-        bool deferReviewedSafeCoverage = false)
+        bool deferShellCompletion = false)
     {
         var approvalModeDecision = GetApprovalModeDecision(mode);
         if (approvalModeDecision is not null)
@@ -761,13 +760,19 @@ public sealed class ToolAccessPolicy
         IReadOnlyList<ApprovalCandidate> approvalCandidates = candidates;
         ToolCorrection? agentCorrection = null;
 
-        if (isShell && shellAnalysis is not null)
+        // The public synchronous API completes shell policy here. Live dispatch leaves those decisions to the coordinator.
+        if (isShell && !deferShellCompletion)
         {
-            agentCorrection = _temporaryPathCorrectionPolicy.Evaluate(
+            (approvalCandidates, agentCorrection) = EvaluateSynchronousShellPolicy(
                 shellAnalysis,
-                approvalCandidates,
+                candidates,
+                isMessy,
                 arguments,
-                context.Invocation);
+                context);
+
+            // An empty original candidate set proves nothing. Only removal of covered candidates permits this early allow.
+            if (candidates.Count > 0 && approvalCandidates.Count == 0)
+                return ToolAuthorizationDecision.Allow(ToolAllowReason.ReviewedSafePolicy);
         }
         else if (!isShell)
         {
@@ -776,39 +781,6 @@ public sealed class ToolAccessPolicy
                 arguments,
                 context.Invocation,
                 _toolPathPolicy);
-        }
-
-        // A clean shell command can combine reviewed-safe candidates with candidates
-        // that need a stored grant. Remove only candidates that independently
-        // satisfy both the safe-verb and reviewed diagnostic path rules. The approval store
-        // must still cover every remaining candidate.
-        if (_safeVerbPolicy is not null
-            && isShell
-            && !isMessy
-            && approvalCandidates.Count > 0)
-        {
-            if (agentCorrection is null
-                && !_temporaryPathCorrectionPolicy.IsPlatformTemporaryRoot(context.Approval.Cwd)
-                && _safeVerbPolicy.CanShortCircuitAfterProjectDeclaration(
-                    approvalCandidates,
-                    context.Approval.Cwd,
-                    context.Invocation))
-            {
-                agentCorrection = new ToolCorrection.ProjectDirectorySuggested(context.Approval.Cwd!);
-            }
-
-            if (!deferReviewedSafeCoverage)
-            {
-                approvalCandidates = approvalCandidates
-                    .Where(candidate => !_safeVerbPolicy.ShortCircuits(
-                        candidate,
-                        context.Approval.Cwd,
-                        context.Invocation))
-                    .ToList();
-
-                if (approvalCandidates.Count == 0)
-                    return ToolAuthorizationDecision.Allow(ToolAllowReason.ReviewedSafePolicy);
-            }
         }
 
         var candidateVerbs = approvalCandidates
@@ -825,16 +797,22 @@ public sealed class ToolAccessPolicy
         }
         else
         {
-            options = BuildApprovalOptions(GetApprovalOptionProfile(
-                toolName,
-                isMessy,
-                !isShell || approvalCandidates.All(HasReusableShellPhrase),
-                matcher is ShellApprovalMatcher
-                && IsShellDirectoryApprovalAvailable(
+            var hasReusablePhrase = !isShell || approvalCandidates.All(HasReusableShellPhrase);
+            var directoryApprovalAvailable = false;
+            if (matcher is ShellApprovalMatcher)
+            {
+                directoryApprovalAvailable = IsShellDirectoryApprovalAvailable(
                     approvalCandidates,
                     context.Approval.Cwd,
                     GetSessionOwnedApprovalDirectories(context),
-                    ShellEnvironment.PathStyle)));
+                    ShellEnvironment.PathStyle);
+            }
+
+            options = BuildApprovalOptions(GetApprovalOptionProfile(
+                toolName,
+                isMessy,
+                hasReusablePhrase,
+                directoryApprovalAvailable));
         }
 
         var approvalContext = new ToolApprovalContext(
@@ -855,6 +833,73 @@ public sealed class ToolAccessPolicy
         return ToolAuthorizationDecision.RequiresApproval(
             approvalContext,
             isManagedTemporaryRetry ? null : agentCorrection);
+    }
+
+    private (IReadOnlyList<ApprovalCandidate> UncoveredCandidates, ToolCorrection? Correction) EvaluateSynchronousShellPolicy(
+        ShellCommandAnalysis? analysis,
+        IReadOnlyList<ApprovalCandidate> candidates,
+        bool isMessy,
+        IDictionary<string, object?>? arguments,
+        ToolExecutionContext context)
+    {
+        ToolCorrection? correction = null;
+        if (analysis is not null)
+            correction = EvaluateShellTemporaryCorrection(analysis, candidates, arguments, context.Invocation);
+
+        if (_safeVerbPolicy is null)
+            return (candidates, correction);
+
+        if (isMessy)
+            return (candidates, correction);
+
+        if (candidates.Count == 0)
+            return (candidates, correction);
+
+        if (correction is null)
+            correction = EvaluateShellProjectCorrection(candidates, context.Approval.Cwd, context.Invocation);
+
+        // Each removed candidate must satisfy both the reviewed verb and path rules. The approval store covers the remainder.
+        var uncovered = candidates
+            .Where(candidate => !_safeVerbPolicy.ShortCircuits(candidate, context.Approval.Cwd, context.Invocation))
+            .ToList();
+        return (uncovered, correction);
+    }
+
+    internal ToolCorrection? EvaluateShellTemporaryCorrection(
+        ShellCommandAnalysis analysis,
+        IReadOnlyList<ApprovalCandidate> candidates,
+        IDictionary<string, object?>? arguments,
+        ToolInvocationContext invocation)
+    {
+        var correction = _temporaryPathCorrectionPolicy.Evaluate(analysis, candidates, arguments, invocation);
+        if (correction is null)
+            return null;
+
+        if (_safeVerbPolicy is null)
+            return correction;
+
+        // Diagnostic classification suppresses relocation advice only. Normal authorization still owns execution and path access.
+        if (_safeVerbPolicy.IsReviewedDiagnosticInvocation(candidates, analysis.Environment.PathStyle))
+            return null;
+
+        return correction;
+    }
+
+    internal ToolCorrection.ProjectDirectorySuggested? EvaluateShellProjectCorrection(
+        IReadOnlyList<ApprovalCandidate> candidates,
+        string? cwd,
+        ToolInvocationContext invocation)
+    {
+        if (_temporaryPathCorrectionPolicy.IsPlatformTemporaryRoot(cwd))
+            return null;
+
+        if (_safeVerbPolicy is null)
+            return null;
+
+        if (!_safeVerbPolicy.CanShortCircuitAfterProjectDeclaration(candidates, cwd, invocation))
+            return null;
+
+        return new ToolCorrection.ProjectDirectorySuggested(cwd!);
     }
 
     private ToolApprovalMode GetApprovalMode(
@@ -1267,20 +1312,10 @@ public sealed class ToolAccessDeniedException : InvalidOperationException
 public sealed class ToolApprovalRequiredException : InvalidOperationException
 {
     public ToolApprovalRequiredException(ToolApprovalContext context)
-        : this(context, correction: null)
-    {
-    }
-
-    internal ToolApprovalRequiredException(
-        ToolApprovalContext context,
-        ToolCorrection? correction)
         : base($"Tool '{context.ToolName}' requires approval")
     {
         ApprovalContext = context;
-        Correction = correction;
     }
 
     public ToolApprovalContext ApprovalContext { get; }
-
-    internal ToolCorrection? Correction { get; }
 }
