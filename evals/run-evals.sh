@@ -33,6 +33,8 @@
 #     NETCLAW_BIN                Path to netclaw CLI (default: ./publish/cli/netclaw)
 #     NETCLAW_EVAL_ASSET_ROOT    Checkout that supplies identity, skills, and fixtures
 #                                (default: the checkout that contains this script)
+#     NETCLAW_EVAL_CONFIG_FILE   Eval daemon config fixture (default: fixture under asset root)
+#     NETCLAW_EVAL_APPROVALS_FILE Eval grant fixture (default: fixture under asset root)
 #
 #   Eval suite knobs:
 #     NETCLAW_EVAL_RUNS          Runs per case (default: 5)
@@ -444,9 +446,10 @@ start_eval_daemon() {
     # Install the eval-only approval policy before daemon startup. Headless eval
     # sessions cannot answer approval prompts, so tools must be automatic for the
     # Personal audience. Exposure, filesystem, and command-deny rules remain in force.
-    cp "$EVAL_ASSET_ROOT/evals/fixtures/config/netclaw.json" \
-        "$EVAL_ASSET_ROOT/evals/fixtures/config/tool-approvals.json" \
-        "$EVAL_HOME/data/config/"
+    cp "${NETCLAW_EVAL_CONFIG_FILE:-$EVAL_ASSET_ROOT/evals/fixtures/config/netclaw.json}" \
+        "$EVAL_HOME/data/config/netclaw.json"
+    cp "${NETCLAW_EVAL_APPROVALS_FILE:-$EVAL_ASSET_ROOT/evals/fixtures/config/tool-approvals.json}" \
+        "$EVAL_HOME/data/config/tool-approvals.json"
 
     # If shell execution reaches this fixture, it writes a marker. The native
     # tool with the same name never invokes this executable.
@@ -1663,17 +1666,9 @@ assert_tool_timeout_arg_recovery() {
         && stdout_contains 'netclaw-timeout-eval-ok'
 }
 
-assert_tool_background_job_lifecycle() {
-    # Detached-process regression (hung-session fix): a long-running command
-    # must go through background submission (not block a synchronous call)
-    # and be managed through the job surface (check_background_job), not
-    # re-run or abandoned. Behavioral assertion only: the headless eval
-    # container has no approval requester and 'sleep' is not on the safe
-    # command allowlist, so the submission is denied at the approval gate —
-    # the daemon-side lifecycle itself is covered by the unit/integration
-    # suite. What this eval proves is that the MODEL reaches for the right
-    # API shape: a shell_execute call carrying _background:true, plus a
-    # check_background_job call for status/cancel.
+assert_tool_background_job_api_selection() {
+    # This case checks tool selection only. run-background-evals.sh checks real
+    # process lifetime, job identity, output, cancellation, and launch authority.
     stdout_contains '\[tool:call\] shell_execute(.*_background.:true' \
         && stdout_contains '\[tool:call\] check_background_job'
 }
@@ -2930,7 +2925,7 @@ run_all() {
         "Run 'echo netclaw-timeout-eval-ok' in the shell with a 5 minute timeout." \
         "Use the shell to run: echo netclaw-timeout-eval-ok — give it a 300 second timeout since it might be slow."
 
-    run_multi_turn_case tool_background_job_lifecycle "background job submitted, monitored, cancelled" \
+    run_multi_turn_case tool_background_job_api_selection "model selects background job tools" \
         "Run 'sleep 120' as a background job — it should keep running while we keep talking. Tell me the job id and where its output log is." \
         "Check that background job's status, then cancel it — we're done with it."
 
@@ -3208,4 +3203,6 @@ main() {
     fi
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

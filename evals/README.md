@@ -193,6 +193,60 @@ For a baseline and treatment comparison, use the same harness commit. Point
 that checkout's CLI. The archived run metadata records the image identity,
 harness commit, asset commit, and dirty state.
 
+## Background launch comparison
+
+`run-background-evals.sh` checks actual job state and process lifetime. It uses an isolated daemon and harmless process fixtures.
+The loopback fixture drives queue setup through the normal model tool protocol. It sends later model turns to the selected provider.
+It does not change the daemon or submit jobs through a test API.
+
+| Case | Required evidence |
+|------|-------------------|
+| `queued_grant_valid` | Five live blockers, one Pending target, a valid grant, a process marker, and successful completion |
+| `queued_grant_revoked` | Verified grant removal, an actual approval denial for the same foreground command, a Pending target before release, then Failed/-1 without a marker |
+| `queued_grant_report` | The real model queries the target in its original session and reports its observed state without a shell retry |
+| `tool_background_job_lifecycle` | The real model starts one job, queries its output on another turn, and cancels that job; its process must exit |
+
+The older grep-based case now uses the name `tool_background_job_api_selection`. It proves tool selection only.
+The new lifecycle case belongs to the dedicated entrypoint because it needs process controls and strict shell grants.
+Headless sessions receive no background completion notification. The harness observes persisted state through inotify and reads actual tool results.
+The revoked case proves that execution did not occur under revoked authority. It does not identify the background actor's internal failure cause.
+
+For a comparison, merge the eval PR first. Keep that harness checkout unchanged for both runs.
+Build the baseline and candidate in separate worktrees. Give each image a distinct tag and retain each CLI binary.
+Use the same model, provider configuration, assets, prompts, run count, and timeout for both runs.
+Do not rebuild a mutable image tag between runs. Record both source revisions with the results.
+
+```bash
+export NETCLAW_EVAL_PROVIDER_TYPE=openai-compatible
+export NETCLAW_EVAL_PROVIDER_ENDPOINT="$EVAL_API_BASE"  # API base must end in /v1.
+export NETCLAW_EVAL_MODEL_ID="$EVAL_MODEL"
+export NETCLAW_EVAL_RUNS=5
+export NETCLAW_EVAL_TIMEOUT=180
+export NETCLAW_EVAL_ASSET_ROOT="$EVAL_HARNESS_CHECKOUT"
+
+NETCLAW_EVAL_NO_BUILD=1 NETCLAW_IMAGE="$BASELINE_IMAGE" NETCLAW_BIN="$BASELINE_CLI" \
+  "$EVAL_HARNESS_CHECKOUT/evals/run-background-evals.sh"
+NETCLAW_EVAL_NO_BUILD=1 NETCLAW_IMAGE="$CANDIDATE_IMAGE" NETCLAW_BIN="$CANDIDATE_CLI" \
+  "$EVAL_HARNESS_CHECKOUT/evals/run-background-evals.sh"
+```
+
+The relay supports the OpenAI Chat Completions protocol. Set `NETCLAW_EVAL_PROVIDER_API_KEY` if the upstream requires a plain API key.
+The relay does not support encrypted keys, OAuth, or other provider protocols. Keep secrets and private endpoints out of commits and public reports.
+Linux, Docker host networking, Python 3, and Linux pidfds are required.
+
+For local harness checks without an external model, use `./evals/run-background-evals.sh --runtime-only`.
+This mode executes only the two queue cases. It does not provide model behavior evidence.
+Set `NETCLAW_EVAL_CASE=tool_background_job_lifecycle` or `NETCLAW_EVAL_CASE=queued_grant_revoked` to execute the two evals separately.
+The queued eval always includes the valid-grant control. A harness error stops the run because its state can invalidate later cases.
+An unsafe baseline returns a failure when the revoked target starts. Do not adjust the oracle to make that baseline pass.
+
+Each run archives `stdout/stdout_background-results.txt` below `evals/runs/<run-id>/`.
+The JSON separates runtime verdicts, model verdicts, and harness errors. It includes queue records, grant snapshots, process evidence, and the CLI hash.
+An upstream endpoint hash permits comparison without disclosure of the private URL.
+The existing archive also records the image ID, harness revision, asset revision, and dirty checkout flags.
+Any runtime failure, model failure, or harness error fails the run. The ordinary suite percentage threshold does not apply.
+Local fixture tests run with `python3 -m unittest discover -s evals -p test_background_evals.py -v` and also run in CI.
+
 ## Results Database
 
 Results are accumulated in `$EVAL_HOME/evals/results.db` during execution.
