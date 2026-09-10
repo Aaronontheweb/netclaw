@@ -4,7 +4,8 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Collections.Concurrent;
-using Microsoft.Extensions.Logging.Abstractions;
+using Akka.Actor;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Tests.Channels.TestHelpers;
@@ -57,7 +58,7 @@ public sealed class SlackChannelHealthContractTests(ITestOutputHelper output)
                 DefaultChannelId = "C-1",
                 AllowedChannelIds = ["C-1"]
             },
-            NullLogger<SlackChannel>.Instance,
+            new ReconnectFailureLogger(TestActor),
             EmptyThreadHistoryFetcher.Instance,
             new ToolConfig
             {
@@ -83,58 +84,89 @@ public sealed class SlackChannelHealthContractTests(ITestOutputHelper output)
         Assert.Equal("Slack socket mode disconnected.", health.Detail);
     }
 
-    [Fact]
-    public async Task Supervisor_reconnects_after_live_transport_drops()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Supervisor_reconnects_after_live_transport_drops(bool deliverBeforeWait)
     {
+        var ct = TestContext.Current.CancellationToken;
         var channel = CreateChannel(enabled: true);
-        await channel.StartAsync(TestContext.Current.CancellationToken);
+        using var releaseDelivery = new ManualResetEventSlim();
+        var deliveryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _notificationSink!.BeforeReconnectEmit = () =>
+        {
+            deliveryEntered.TrySetResult();
+            releaseDelivery.Wait(ct);
+        };
+
+        // Keep the supervisor off the test context so a held sink cannot block the test continuation.
+        await Task.Run(() => channel.StartAsync(ct), ct);
         _socketModeClient!.DropConnection();
+        var tick = Task.Run(() => _timeProvider!.Advance(SlackChannel.ConnectionCheckInterval), ct);
 
-        _timeProvider!.Advance(SlackChannel.ConnectionCheckInterval);
-        await _socketModeClient.WaitForConnectCountAsync(
-            expectedCount: 2,
-            TestContext.Current.CancellationToken);
+        try
+        {
+            await deliveryEntered.Task.WaitAsync(RemainingOrDefault, ct);
+            Assert.Equal(ChannelHealthStatus.Healthy, (await channel.GetHealthAsync(ct)).Status);
+            Assert.Contains(_notificationSink.Alerts, alert => alert.Category == AlertType.ChannelDisconnected);
+            // This is the CI race: connection success does not imply notification delivery.
+            Assert.DoesNotContain(_notificationSink.Alerts, alert => alert.Category == AlertType.ChannelReconnected);
 
-        var health = await channel.GetHealthAsync(TestContext.Current.CancellationToken);
-        Assert.Equal(ChannelHealthStatus.Healthy, health.Status);
-        Assert.Contains(
-            _notificationSink!.Alerts,
-            alert => alert.Category == AlertType.ChannelDisconnected);
-        Assert.Contains(
-            _notificationSink.Alerts,
-            alert => alert.Category == AlertType.ChannelReconnected
-                     && alert.Type == "channel.reconnected");
+            Task<OperationalAlert> delivery;
+            if (deliverBeforeWait)
+            {
+                releaseDelivery.Set();
+                await tick;
+                delivery = _notificationSink.WaitForReconnectAsync(RemainingOrDefault, ct);
+                Assert.True(delivery.IsCompletedSuccessfully);
+            }
+            else
+            {
+                delivery = _notificationSink.WaitForReconnectAsync(RemainingOrDefault, ct);
+                Assert.False(delivery.IsCompleted);
+                releaseDelivery.Set();
+            }
+
+            var alert = await delivery;
+            Assert.Equal(AlertType.ChannelReconnected, alert.Category);
+            Assert.Equal("channel.reconnected", alert.Type);
+            Assert.Contains(alert, _notificationSink.Alerts);
+        }
+        finally
+        {
+            releaseDelivery.Set();
+            await tick;
+        }
     }
 
     [Fact]
     public async Task Supervisor_backs_off_then_recovers_after_reconnect_failure()
     {
+        var ct = TestContext.Current.CancellationToken;
         var channel = CreateChannel(enabled: true);
-        await channel.StartAsync(TestContext.Current.CancellationToken);
-        _socketModeClient!.FailNextConnections(1);
+        // Start and advance on workers so every timer wait stays off the test context.
+        await Task.Run(() => channel.StartAsync(ct), ct);
+        _socketModeClient!.FailNextConnections(2);
         _socketModeClient.DropConnection();
 
-        _timeProvider!.Advance(SlackChannel.ConnectionCheckInterval);
-        await _socketModeClient.WaitForConnectCountAsync(
-            expectedCount: 2,
-            TestContext.Current.CancellationToken);
+        await Task.Run(() => _timeProvider!.Advance(SlackChannel.ConnectionCheckInterval), ct);
+        await ExpectMsgAsync(SlackChannel.ComputeReconnectDelay(1), cancellationToken: ct);
         Assert.Equal(2, _socketModeClient.ConnectCount);
-        Assert.Equal(
-            ChannelHealthStatus.Disconnected,
-            (await channel.GetHealthAsync(TestContext.Current.CancellationToken)).Status);
+        Assert.Equal(ChannelHealthStatus.Disconnected, (await channel.GetHealthAsync(ct)).Status);
 
-        _timeProvider.Advance(SlackChannel.ComputeReconnectDelay(1) - TimeSpan.FromSeconds(1));
-        Assert.Equal(2, _socketModeClient.ConnectCount);
-
-        _timeProvider.Advance(TimeSpan.FromSeconds(1));
-        await _socketModeClient.WaitForConnectCountAsync(
-            expectedCount: 3,
-            TestContext.Current.CancellationToken);
-
+        await Task.Run(() => _timeProvider!.Advance(SlackChannel.ConnectionCheckInterval), ct);
+        await ExpectMsgAsync(SlackChannel.ComputeReconnectDelay(2), cancellationToken: ct);
         Assert.Equal(3, _socketModeClient.ConnectCount);
-        Assert.Equal(
-            ChannelHealthStatus.Healthy,
-            (await channel.GetHealthAsync(TestContext.Current.CancellationToken)).Status);
+
+        // The second failure requires ten seconds. The intervening five-second poll must not connect.
+        await Task.Run(() => _timeProvider!.Advance(SlackChannel.ConnectionCheckInterval), ct);
+        Assert.Equal(3, _socketModeClient.ConnectCount);
+        Assert.Equal(ChannelHealthStatus.Disconnected, (await channel.GetHealthAsync(ct)).Status);
+
+        await Task.Run(() => _timeProvider!.Advance(SlackChannel.ConnectionCheckInterval), ct);
+        await _notificationSink!.WaitForReconnectAsync(RemainingOrDefault, ct);
+        Assert.Equal(4, _socketModeClient.ConnectCount);
+        Assert.Equal(ChannelHealthStatus.Healthy, (await channel.GetHealthAsync(ct)).Status);
     }
 
     [Theory]
@@ -193,7 +225,6 @@ public sealed class SlackChannelHealthContractTests(ITestOutputHelper output)
     private sealed class FakeSlackSocketModeClient : ISlackSocketModeClient
     {
         private readonly Lock _sync = new();
-        private TaskCompletionSource _connectChanged = NewSignal();
         private int _connectCount;
         private int _failNextConnections;
         private volatile bool _connected;
@@ -206,7 +237,6 @@ public sealed class SlackChannelHealthContractTests(ITestOutputHelper output)
             SocketModeConnectionOptions? connectionOptions = null,
             CancellationToken cancellationToken = default)
         {
-            TaskCompletionSource signal;
             bool mustFail;
             lock (_sync)
             {
@@ -217,11 +247,8 @@ public sealed class SlackChannelHealthContractTests(ITestOutputHelper output)
                 else
                     _connected = true;
 
-                signal = _connectChanged;
-                _connectChanged = NewSignal();
             }
 
-            signal.TrySetResult();
             if (mustFail)
                 throw new HttpRequestException("Test Socket Mode connection failed.");
 
@@ -238,26 +265,6 @@ public sealed class SlackChannelHealthContractTests(ITestOutputHelper output)
                 _failNextConnections = count;
         }
 
-        public async Task WaitForConnectCountAsync(int expectedCount, CancellationToken cancellationToken)
-        {
-            while (ConnectCount < expectedCount)
-            {
-                Task signal;
-                lock (_sync)
-                {
-                    if (ConnectCount >= expectedCount)
-                        return;
-
-                    signal = _connectChanged.Task;
-                }
-
-                await signal.WaitAsync(cancellationToken);
-            }
-        }
-
-        private static TaskCompletionSource NewSignal() =>
-            new(TaskCreationOptions.RunContinuationsAsynchronously);
-
         public void Dispose()
         {
         }
@@ -266,9 +273,44 @@ public sealed class SlackChannelHealthContractTests(ITestOutputHelper output)
     private sealed class RecordingNotificationSink : IOperationalNotificationSink
     {
         private readonly ConcurrentQueue<OperationalAlert> _alerts = new();
+        private readonly TaskCompletionSource<OperationalAlert> _reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public IReadOnlyCollection<OperationalAlert> Alerts => _alerts.ToArray();
 
-        public void Emit(OperationalAlert alert) => _alerts.Enqueue(alert);
+        public Action? BeforeReconnectEmit { get; set; }
+
+        public Task<OperationalAlert> WaitForReconnectAsync(TimeSpan timeout, CancellationToken ct) => _reconnected.Task.WaitAsync(timeout, ct);
+
+        public void Emit(OperationalAlert alert)
+        {
+            if (alert.Category == AlertType.ChannelReconnected)
+                BeforeReconnectEmit?.Invoke();
+
+            _alerts.Enqueue(alert);
+            if (alert.Category == AlertType.ChannelReconnected)
+                _reconnected.TrySetResult(alert);
+        }
     }
+
+    private sealed class ReconnectFailureLogger(IActorRef observer) : ILogger<SlackChannel>
+    {
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => logLevel == LogLevel.Warning;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            // The supervisor logs RetryDelay only after it commits the next attempt deadline.
+            if (logLevel != LogLevel.Warning || state is not IEnumerable<KeyValuePair<string, object?>> fields)
+                return;
+
+            foreach (var (key, value) in fields)
+            {
+                if (key == "RetryDelay" && value is TimeSpan delay)
+                    observer.Tell(delay);
+            }
+        }
+    }
+
 }
