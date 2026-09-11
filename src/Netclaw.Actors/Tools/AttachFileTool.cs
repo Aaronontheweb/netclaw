@@ -71,12 +71,19 @@ public sealed partial class AttachFileTool : NetclawTool<AttachFileTool.Params>
         resolvedPath = resolvedAccess.GetAllowedPath();
         var resolvedInCurrentSession = PathUtility.IsWithinRoot(resolvedPath, sessionDir);
 
-        var attachPath = resolvedInCurrentSession
-            ? resolvedPath
-            : CopyIntoCurrentSession(resolvedPath, sessionDir);
+        var attachPath = resolvedPath;
+        if (!resolvedInCurrentSession)
+        {
+            var destination = ResolveCopyDestination(resolvedPath, sessionDir);
+            if (destination is PathAccessDecision.Denied destinationDenied)
+                return Task.FromResult(context.PathAccessFailure(destinationDenied.Error, destinationDenied.Failure));
 
-        if (!PathUtility.IsWithinRoot(attachPath, sessionDir))
-            return Task.FromResult(context.AccessDenied($"Error: Attach path escaped the session directory ({sessionDir})."));
+            attachPath = destination.GetAllowedPath();
+
+            // Another process can still replace a directory after the check. These checks are not an OS sandbox.
+            Directory.CreateDirectory(Path.GetDirectoryName(attachPath)!);
+            File.Copy(resolvedPath, attachPath);
+        }
 
         var rawFilename = args.DisplayName ?? Path.GetFileName(attachPath);
         var sanitizedFilename = FilenameSanitizer.Sanitize(rawFilename);
@@ -100,10 +107,13 @@ public sealed partial class AttachFileTool : NetclawTool<AttachFileTool.Params>
         return target is null ? fileInfo.FullName : target.FullName;
     }
 
-    private static string CopyIntoCurrentSession(string sourcePath, string sessionDir)
+    private PathAccessDecision ResolveCopyDestination(
+        string sourcePath, string sessionDir)
     {
         var attachmentsDir = Path.Combine(sessionDir, "attachments");
-        Directory.CreateDirectory(attachmentsDir);
+        var directoryAccess = _pathAccessPolicy.EvaluateGeneratedDestination(attachmentsDir, sessionDir);
+        if (directoryAccess is PathAccessDecision.Denied)
+            return directoryAccess;
 
         var baseName = Path.GetFileNameWithoutExtension(sourcePath);
         var extension = Path.GetExtension(sourcePath);
@@ -112,15 +122,16 @@ public sealed partial class AttachFileTool : NetclawTool<AttachFileTool.Params>
         var destination = Path.Combine(attachmentsDir, fileName);
         var suffix = 1;
 
-        while (File.Exists(destination))
+        while (true)
         {
+            var access = _pathAccessPolicy.EvaluateGeneratedDestination(destination, sessionDir);
+            if (access is PathAccessDecision.Denied || !File.Exists(destination))
+                return access;
+
             fileName = $"{sanitizedBase}-{suffix}{extension}";
             destination = Path.Combine(attachmentsDir, fileName);
             suffix++;
         }
-
-        File.Copy(sourcePath, destination);
-        return destination;
     }
 
 }

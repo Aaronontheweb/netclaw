@@ -158,6 +158,38 @@ internal sealed class PathAccessPolicy
         return AllowIfUnprotected(canonicalPath, ToProtectionOperation(operation));
     }
 
+    /// <summary>Checks a file that a tool creates as part of an already permitted operation.</summary>
+    /// <remarks>
+    /// The caller supplies the session workspace, or its configured output directory when no session exists.
+    /// This check does not require general file-write permission. It still rejects protected paths and filesystem links.
+    /// </remarks>
+    internal PathAccessDecision EvaluateGeneratedDestination(string path, string outputDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(outputDirectory))
+            return PathAccessDecision.Deny("Error: invalid_context: No output directory available.", PathAccessFailure.InvalidInput);
+
+        string canonicalPath;
+        string directory;
+        try
+        {
+            canonicalPath = PathUtility.Normalize(path);
+            directory = PathUtility.Normalize(outputDirectory);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return PathAccessDecision.Deny("Error: Invalid destination path.", PathAccessFailure.InvalidInput);
+        }
+
+        if (GetHostPathRelationship(canonicalPath, [directory]) != PathRelationship.WithinTrustedRoot)
+        {
+            return PathAccessDecision.Deny(
+                "Error: File destination must stay inside its output directory without links.",
+                PathAccessFailure.AccessDenied, canonicalPath);
+        }
+
+        return AllowIfUnprotected(canonicalPath, FileOperation.Write);
+    }
+
     /// <summary>Applies file protection to one parser-canonical shell path.</summary>
     public PathAccessDecision EvaluateShellPath(
         CanonicalShellPath path,
