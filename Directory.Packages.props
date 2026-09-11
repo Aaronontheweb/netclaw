@@ -16,7 +16,7 @@
          once the AI packages move to a patch release. -->
     <MicrosoftExtensionsTimeProviderTestingVersion>10.9.0</MicrosoftExtensionsTimeProviderTestingVersion>
     <OpenAIVersion>2.12.0</OpenAIVersion>
-    <MicrosoftAspNetCoreVersion>10.0.11</MicrosoftAspNetCoreVersion>
+    <MicrosoftAspNetCoreVersion>10.0.12</MicrosoftAspNetCoreVersion>
     <SkiaSharpVersion>4.151.1</SkiaSharpVersion>
     <!-- Aspire pins are exercised only by samples/Netclaw.Demo.AppHost and its
          integration tests. The 13.x line is the .NET 10 generation of Aspire;
@@ -43,8 +43,12 @@
          Microsoft.OpenApi 2.0.0, which trips NU1903 (CVE-2026-49451 /
          GHSA-v5pm-xwqc-g5wc, circular schema references can terminate OpenAPI
          parsing). Keep this on the patched 2.x line until ASP.NET Core ships a
-         non-vulnerable transitive dependency. -->
-    <PackageVersion Include="Microsoft.OpenApi" Version="2.7.5" />
+         non-vulnerable transitive dependency.
+         Microsoft.AspNetCore.OpenApi 10.0.12 requires Microsoft.OpenApi
+         >= 2.12.0 && < 3.0.0. Central transitive pinning turns a lower pin
+         into an NU1109 downgrade error, so keep this version at or above the
+         floor that MicrosoftAspNetCoreVersion demands. -->
+    <PackageVersion Include="Microsoft.OpenApi" Version="2.12.2" />
     <PackageVersion Include="Microsoft.Extensions.AI" Version="$(MicrosoftExtensionsAIVersion)" />
     <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="$(MicrosoftExtensionsAIVersion)" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="$(MicrosoftAspNetCoreVersion)" />
