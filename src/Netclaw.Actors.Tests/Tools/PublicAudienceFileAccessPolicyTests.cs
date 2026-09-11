@@ -101,12 +101,13 @@ public sealed class PublicAudienceFileAccessPolicyTests : IDisposable
         AssertDenied(decision, Path.GetFullPath(outsidePath));
         // Error must mention "Public" audience but should contain only session-scoped
         // roots (the session dir), not global infrastructure paths
-        Assert.Contains("Public", decision.Error);
-        Assert.DoesNotContain(_sessionDir, decision.Error);
-        Assert.DoesNotContain("configured roots", decision.Error, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain(_paths.SkillsDirectory, decision.Error);
-        Assert.DoesNotContain(_paths.IdentityDirectory, decision.Error);
-        Assert.DoesNotContain(_paths.WorkspacesDirectory, decision.Error);
+        var denied = Assert.IsType<PathAccessPolicy.PathAccessDecision.Denied>(decision);
+        Assert.Contains("Public", denied.Error);
+        Assert.DoesNotContain(_sessionDir, denied.Error);
+        Assert.DoesNotContain("configured roots", denied.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(_paths.SkillsDirectory, denied.Error);
+        Assert.DoesNotContain(_paths.IdentityDirectory, denied.Error);
+        Assert.DoesNotContain(_paths.WorkspacesDirectory, denied.Error);
     }
 
     [Fact]
@@ -131,10 +132,10 @@ public sealed class PublicAudienceFileAccessPolicyTests : IDisposable
             PathAccessPolicy.FileOperation.Write);
 
         AssertDenied(decision, Path.GetFullPath(path));
-        Assert.Contains("Public", decision.Error);
-        Assert.Contains("does not allow", decision.Error);
+        Assert.Contains("Public", Assert.IsType<PathAccessPolicy.PathAccessDecision.Denied>(decision).Error);
+        Assert.Contains("does not allow", Assert.IsType<PathAccessPolicy.PathAccessDecision.Denied>(decision).Error);
         // Ensure no internal paths leak
-        Assert.DoesNotContain(_paths.BasePath, decision.Error);
+        Assert.DoesNotContain(_paths.BasePath, Assert.IsType<PathAccessPolicy.PathAccessDecision.Denied>(decision).Error);
     }
 
     private ToolInvocationContext CreateContext(TrustAudience audience)

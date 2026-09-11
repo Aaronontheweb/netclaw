@@ -137,7 +137,7 @@ public sealed class UnattendedPathAccessTests : IDisposable
             PathAccessPolicy.FileOperation.Write);
 
         AssertDenied(decision, Path.GetFullPath(outside));
-        Assert.Contains("unattended session", decision.Error);
+        Assert.Contains("unattended session", Assert.IsType<PathAccessPolicy.PathAccessDecision.Denied>(decision).Error);
     }
 
     [Fact]
@@ -285,9 +285,9 @@ public sealed class UnattendedPathAccessTests : IDisposable
             context.Invocation,
             PathAccessPolicy.FileOperation.Read);
 
-        AssertDenied(decision, string.Empty, PathAccessPolicy.PathAccessFailure.MissingBase);
-        Assert.Contains("invalid_context", decision.Error, StringComparison.Ordinal);
-        Assert.DoesNotContain("set_working_directory", decision.Error, StringComparison.Ordinal);
+        AssertDenied(decision, null, PathAccessPolicy.PathAccessFailure.MissingBase);
+        Assert.Contains("invalid_context", Assert.IsType<PathAccessPolicy.PathAccessDecision.Denied>(decision).Error, StringComparison.Ordinal);
+        Assert.DoesNotContain("set_working_directory", Assert.IsType<PathAccessPolicy.PathAccessDecision.Denied>(decision).Error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -362,7 +362,7 @@ public sealed class UnattendedPathAccessTests : IDisposable
             PathAccessPolicy.FileOperation.Read);
         AssertDenied(
             driveRelativeDecision,
-            string.Empty,
+            null,
             PathAccessPolicy.PathAccessFailure.InvalidInput);
 
         var rootRelativeDecision = policy.Evaluate(
@@ -371,7 +371,7 @@ public sealed class UnattendedPathAccessTests : IDisposable
             PathAccessPolicy.FileOperation.Read);
         AssertDenied(
             rootRelativeDecision,
-            string.Empty,
+            null,
             PathAccessPolicy.PathAccessFailure.InvalidInput);
     }
 
@@ -390,7 +390,7 @@ public sealed class UnattendedPathAccessTests : IDisposable
             context,
             PathAccessPolicy.FileOperation.Read);
 
-        AssertDenied(decision, string.Empty);
+        AssertDenied(decision, null);
     }
 
     [Fact(SkipUnless = nameof(IsPosix), Skip = "This case uses native POSIX link semantics.")]
@@ -414,7 +414,7 @@ public sealed class UnattendedPathAccessTests : IDisposable
             context.Invocation,
             PathAccessPolicy.FileOperation.Read);
 
-        AssertDenied(decision, string.Empty);
+        AssertDenied(decision, null);
     }
 
     [Fact(SkipUnless = nameof(IsPosix), Skip = "This case uses native POSIX link semantics.")]
@@ -468,6 +468,6 @@ public sealed class UnattendedPathAccessTests : IDisposable
             context.Invocation,
             PathAccessPolicy.FileOperation.Read);
 
-        AssertDenied(decision, string.Empty);
+        AssertDenied(decision, null);
     }
 }

@@ -14,20 +14,18 @@ internal static class PathAccessDecisionAssertions
         PathAccessPolicy.PathAccessDecision decision,
         string expectedCanonicalPath)
     {
-        Assert.True(decision.Allowed, decision.Error);
-        Assert.Equal(Path.GetFullPath(expectedCanonicalPath), decision.CanonicalPath);
-        Assert.Empty(decision.Error);
-        Assert.Null(decision.Failure);
+        var allowed = Assert.IsType<PathAccessPolicy.PathAccessDecision.Allowed>(decision);
+        Assert.Equal(Path.GetFullPath(expectedCanonicalPath), allowed.CanonicalPath);
     }
 
     public static void AssertDenied(
         PathAccessPolicy.PathAccessDecision decision,
-        string expectedCanonicalPath,
+        string? expectedDiagnosticPath,
         PathAccessPolicy.PathAccessFailure expectedFailure = PathAccessPolicy.PathAccessFailure.AccessDenied)
     {
-        Assert.False(decision.Allowed);
-        Assert.Equal(expectedCanonicalPath, decision.CanonicalPath);
-        Assert.NotEmpty(decision.Error);
-        Assert.Equal(expectedFailure, decision.Failure);
+        var denied = Assert.IsType<PathAccessPolicy.PathAccessDecision.Denied>(decision);
+        Assert.Equal(expectedDiagnosticPath, denied.DiagnosticPath);
+        Assert.NotEmpty(denied.Error);
+        Assert.Equal(expectedFailure, denied.Failure);
     }
 }

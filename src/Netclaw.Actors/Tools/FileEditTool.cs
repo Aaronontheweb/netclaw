@@ -9,6 +9,8 @@ using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
 
+using PathAccessDecision = Netclaw.Actors.Tools.PathAccessPolicy.PathAccessDecision;
+
 namespace Netclaw.Actors.Tools;
 
 /// <summary>
@@ -78,10 +80,10 @@ public sealed partial class FileEditTool : NetclawTool<FileEditTool.Params>, IMa
     internal async Task<string> WriteFileAsync(string path, string content, ToolInvocationContext context, CancellationToken ct)
     {
         var access = _pathAccessPolicy.Evaluate(path, context, PathAccessPolicy.FileOperation.Write);
-        if (!access.Allowed)
-            return context.PathAccessFailure(access.Error, access.Failure ?? PathAccessPolicy.PathAccessFailure.AccessDenied);
+        if (access is PathAccessDecision.Denied denied)
+            return context.PathAccessFailure(denied.Error, denied.Failure);
 
-        var authorizedPath = access.CanonicalPath;
+        var authorizedPath = access.GetAllowedPath();
 
         try
         {
@@ -117,10 +119,10 @@ public sealed partial class FileEditTool : NetclawTool<FileEditTool.Params>, IMa
     private async Task<string> EditFileAsync(string path, string oldString, string newString, bool replaceAll, ToolInvocationContext context, CancellationToken ct)
     {
         var access = _pathAccessPolicy.Evaluate(path, context, PathAccessPolicy.FileOperation.Write);
-        if (!access.Allowed)
-            return context.PathAccessFailure(access.Error, access.Failure ?? PathAccessPolicy.PathAccessFailure.AccessDenied);
+        if (access is PathAccessDecision.Denied denied)
+            return context.PathAccessFailure(denied.Error, denied.Failure);
 
-        var authorizedPath = access.CanonicalPath;
+        var authorizedPath = access.GetAllowedPath();
 
         if (!File.Exists(authorizedPath))
             return context.NotFound($"Error: File not found: {authorizedPath}");

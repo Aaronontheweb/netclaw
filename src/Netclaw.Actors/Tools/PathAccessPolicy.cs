@@ -49,43 +49,47 @@ internal sealed class PathAccessPolicy
         DeclareProjectScope
     }
 
-    /// <summary>Returns the canonical path and the typed result of one access check.</summary>
-    internal sealed record PathAccessDecision
+    /// <summary>Returns either permission to use a resolved path or the reason for denial.</summary>
+    internal abstract class PathAccessDecision
     {
-        private PathAccessDecision(
-            bool allowed,
-            string canonicalPath,
-            string error,
-            PathAccessFailure? failure)
+        private PathAccessDecision() { }
+
+        /// <summary>Returns the canonical path after the caller handles a denied decision.</summary>
+        internal string GetAllowedPath() =>
+            this switch
+            {
+                Allowed allowed => allowed.CanonicalPath,
+                Denied => throw new InvalidOperationException("A denied path decision has no authorized path."),
+                _ => throw new InvalidOperationException("Unexpected path decision.")
+            };
+
+        /// <summary>Permits the requested operation on this resolved path.</summary>
+        internal sealed class Allowed(string canonicalPath) : PathAccessDecision
         {
-            Allowed = allowed;
-            CanonicalPath = canonicalPath;
-            Error = error;
-            Failure = failure;
+            public string CanonicalPath { get; } = canonicalPath;
         }
 
-        /// <summary>Gets whether the policy allowed the operation.</summary>
-        public bool Allowed { get; }
+        /// <summary>Rejects the operation. Its path, if present, is diagnostic data only.</summary>
+        internal sealed class Denied(
+            string error,
+            PathAccessFailure failure,
+            string? diagnosticPath) : PathAccessDecision
+        {
+            public string Error { get; } = error;
+            public PathAccessFailure Failure { get; } = failure;
+            /// <summary>The rejected path, or null if resolution failed. It is not safe for unrestricted display.</summary>
+            public string? DiagnosticPath { get; } = diagnosticPath;
+        }
 
-        /// <summary>Gets the canonical path when path resolution succeeded.</summary>
-        public string CanonicalPath { get; }
+        /// <summary>Records permission after the caller completes the required policy checks.</summary>
+        public static PathAccessDecision Allow(string canonicalPath) => new Allowed(canonicalPath);
 
-        /// <summary>Gets the operator-readable error for a denied operation.</summary>
-        public string Error { get; }
-
-        /// <summary>Gets the failure category for a denied operation.</summary>
-        public PathAccessFailure? Failure { get; }
-
-        /// <summary>Creates an allowed decision for a canonical path.</summary>
-        public static PathAccessDecision Allow(string canonicalPath)
-            => new(true, canonicalPath, string.Empty, null);
-
-        /// <summary>Creates a denied decision with a failure category and optional canonical path.</summary>
+        /// <summary>Records the failure without granting access to the diagnostic path.</summary>
         public static PathAccessDecision Deny(
             string error,
             PathAccessFailure failure,
-            string canonicalPath = "")
-            => new(false, canonicalPath, error, failure);
+            string diagnosticPath = "")
+            => new Denied(error, failure, string.IsNullOrEmpty(diagnosticPath) ? null : diagnosticPath);
     }
 
     private readonly ToolAudienceProfileResolver _profileResolver;
