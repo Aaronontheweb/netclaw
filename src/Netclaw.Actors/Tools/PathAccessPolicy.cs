@@ -11,8 +11,13 @@ using ShellSyntaxTree;
 namespace Netclaw.Actors.Tools;
 
 /// <summary>
-/// Owns canonical path resolution and file-protection decisions.
+/// Resolves file paths, checks the caller's file permissions, and applies protected-file rules.
 /// </summary>
+/// <remarks>
+/// Permission to use a directory does not permit access to protected files inside it.
+/// A path returned by a child agent must pass the same checks as any other path.
+/// Shell callers must also check shell permissions separately.
+/// </remarks>
 internal sealed class PathAccessPolicy
 {
     /// <summary>Classifies why a path access decision failed.</summary>
@@ -105,7 +110,7 @@ internal sealed class PathAccessPolicy
 
         // SessionsDirectory contains version-2 envelopes and legacy workspaces.
         // SessionLogsDirectory contains only legacy raw logs. Both roots remain
-        // readable so one session can inspect another session's authorized data.
+        // available to Personal; restricted audiences receive only their own paths.
         _sessionRoots = new[]
             {
                 paths.SessionsDirectory,
@@ -400,7 +405,7 @@ internal sealed class PathAccessPolicy
             return false;
         }
 
-        var relationship = GetHostPathRelationship(fullPath, roots);
+        var relationship = GetFilePathRelationship(fullPath, roots, context, accessKind);
         if (relationship == PathRelationship.WithinTrustedRoot)
         {
             error = string.Empty;
@@ -566,7 +571,7 @@ internal sealed class PathAccessPolicy
     /// Single source of truth for root resolution — used by both
     /// <see cref="GetTrustedRoots"/> and <see cref="TryResolvePath"/>.
     /// Public audience is excluded from global read roots (skills, identity,
-    /// workspaces) — it may only access the shared session trusted roots.
+    /// workspaces). Its implicit roots cover only the current session.
     /// </summary>
     private IReadOnlyList<string> ResolveAndMergeRoots(
         ToolFilesystemAccessProfile access,
@@ -608,7 +613,7 @@ internal sealed class PathAccessPolicy
             return false;
         }
 
-        var relationship = GetHostPathRelationship(fullPath, roots);
+        var relationship = GetFilePathRelationship(fullPath, roots, context, accessKind);
         if (relationship == PathRelationship.WithinTrustedRoot)
         {
             error = string.Empty;
@@ -631,7 +636,29 @@ internal sealed class PathAccessPolicy
         return false;
     }
 
-    private static PathRelationship GetHostPathRelationship(
+    private PathRelationship GetFilePathRelationship(
+        string fullPath,
+        IEnumerable<string> roots,
+        ToolInvocationContext context,
+        FileOperation operation)
+    {
+        var relationship = GetHostPathRelationship(fullPath, roots);
+        // Older sessions keep their logs together outside their individual session directories.
+        // Allow this session's log without exposing the other logs beside it.
+        // This must not bypass a failed link check or permit access to a whole project directory.
+        if (relationship != PathRelationship.OutsideTrustedRoots
+            || operation == FileOperation.DeclareProjectScope
+            || context.SessionStorage is not { Binding: null } storage
+            || !PathComparer.Equals(fullPath, storage.LogPath.Value))
+        {
+            return relationship;
+        }
+
+        // Apply the same link checks to this one file.
+        return GetHostPathRelationship(fullPath, [fullPath]);
+    }
+
+    private PathRelationship GetHostPathRelationship(
         string fullPath,
         IEnumerable<string> roots)
     {
@@ -643,7 +670,11 @@ internal sealed class PathAccessPolicy
                 if (!PathUtility.IsWithinRoot(fullPath, root))
                     continue;
 
-                return PathUtility.ContainsSymlinkSegment(root, fullPath, includeRoot: true)
+                // A session path can pass through a symlink in a parent directory.
+                // Check those parents too, without allowing access to their other files.
+                var linkRoot = _sessionRoots.FirstOrDefault(storageRoot =>
+                    PathUtility.IsWithinRoot(root, storageRoot)) ?? root;
+                return PathUtility.ContainsSymlinkSegment(linkRoot, fullPath, includeRoot: true)
                     ? PathRelationship.CrossesLinkBoundary
                     : PathRelationship.WithinTrustedRoot;
             }
@@ -662,18 +693,9 @@ internal sealed class PathAccessPolicy
     }
 
     /// <summary>
-    /// Resolves trusted roots for an unattended invocation from the shared
-    /// Netclaw session roots and current project
-    /// directory, available for both reads and writes. Read access
-    /// additionally includes the non-sensitive global read roots (skills,
-    /// identity, workspaces). Write/attach access additionally includes the
-    /// configured <em>workspaces</em> directory only — the operator's designated
-    /// writable working area — but NOT skills/identity, which are system-managed
-    /// (an unattended session must never rewrite its own identity or skills).
-    /// Plain file writes are not gated by the interactive approval system, so
-    /// confining them to only the current session and project blocked legitimate cross-run state in
-    /// the workspace without a security benefit. No additional plumbing — the
-    /// cached read roots and workspaces root already exist on this policy.
+    /// Lists the directories a caller can use without a new user approval.
+    /// Reads include shared resources such as skills and identity files.
+    /// Writes and attachments include the configured workspaces directory instead.
     /// </summary>
     private IReadOnlyList<string> ResolveUnattendedTrustedRoots(ToolInvocationContext context, FileOperation accessKind)
     {
@@ -697,8 +719,12 @@ internal sealed class PathAccessPolicy
 
     private void AddSessionRoots(List<string> roots, ToolInvocationContext context)
     {
-        roots.AddRange(_sessionRoots);
+        // These shared directories expose other sessions' files. Only Personal gets that access by default.
+        if (context.Audience == TrustAudience.Personal)
+            roots.AddRange(_sessionRoots);
 
+        // The newer layout puts a session and its child runs in one directory.
+        // Allow that whole directory so the parent and children can access each other's files.
         if (context.SessionStorage?.Binding is { } binding)
             roots.Add(binding.EnvelopeRoot.Value);
 
