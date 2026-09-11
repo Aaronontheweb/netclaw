@@ -360,6 +360,13 @@ For Team and Personal turns whose `WorkingContext.ProjectDirectory` is declared 
 - **WHEN** Git working context is rendered
 - **THEN** no remote credentials or complete remote URL appears in model-visible context or logs
 
+#### Scenario: Contradictory Git head metadata is unavailable
+
+- **GIVEN** Git reports a detached head with upstream metadata, a detached unborn head, or divergence without an upstream
+- **WHEN** the inspector parses that status
+- **THEN** the inspector returns the existing unavailable outcome with a bounded reason
+- **AND** the model receives no contradictory branch or tracking state
+
 ### Requirement: Project-directory declarations reject control characters
 
 The `set_working_directory` tool SHALL reject a path that contains NUL, CR, or
@@ -373,6 +380,14 @@ echoing the authored path.
 - **THEN** the tool returns an error without the authored path
 - **AND** the project scope remains unchanged
 - **AND** project instructions are not loaded from that path
+
+#### Scenario: Invalid public Git snapshot does not interrupt a turn
+
+- **GIVEN** a caller constructs or deserializes a Git snapshot with contradictory head fields
+- **WHEN** the context renderer processes the snapshot
+- **THEN** it emits the existing unavailable status with a reason
+- **AND** it emits no branch or commit details and does not modify the snapshot
+- **AND** the session can continue its turn
 
 ### Requirement: Existing session context announces managed paths
 
