@@ -27,6 +27,25 @@
 | `scripts/Add-FileHeaders.ps1 -Verify` | CI: check all files have headers (exit 1 if missing) |
 | `scripts/Add-FileHeaders.ps1 -WhatIf` | Preview which files need headers |
 
+## Path Access Mutation Tests
+
+The path-access mutation job runs on each pull request, merge group, and `dev` push.
+The Linux job runs in parallel with the normal test matrix.
+
+Run the same check locally:
+
+```bash
+./scripts/run-path-access-mutations.sh
+```
+
+The script tests two mutants in the shared session-root boundary.
+The job fails unless both mutants die.
+The local prototype took 1 minute 28 seconds after package restore.
+A cold CI runner should take two to four minutes.
+
+The harness uses xUnit 2 because Stryker's VSTest adapter does not support xUnit 3 correctly.
+The script requires `perl` and `jq`, which the Linux CI image supplies.
+
 ## Interactive CLI Smoke Tests (Tape Harness)
 
 The native smoke harness exercises the interactive Termina TUI surface
