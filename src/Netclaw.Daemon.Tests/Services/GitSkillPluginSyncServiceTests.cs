@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Netclaw.Actors.Skills;
@@ -70,6 +71,63 @@ public sealed class GitSkillPluginSyncServiceTests : IDisposable
         Assert.Contains("old text", await File.ReadAllTextAsync(oldPath, TestContext.Current.CancellationToken));
         Assert.Contains("new text", await File.ReadAllTextAsync(
             registry.GetByName("plugin-skill")!.FilePath, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Interleaved_refresh_keeps_the_prior_snapshot_until_receipt_publication()
+    {
+        var source = Source();
+        var registry = new SkillRegistry();
+        var refresher = CreateRefresher(registry, static () => { });
+        var first = new FakeAcquirer(_paths, source, FirstCommit, "1.0.0", "plugin-skill", "old text");
+        await (await CreateServiceAsync(source, refresher, first, new RecordingSink()))
+            .SyncAsync(TestContext.Current.CancellationToken);
+        var oldPath = registry.GetByName("plugin-skill")!.FilePath;
+        string? pathDuringInterleave = null;
+        string? contentDuringInterleave = null;
+
+        var second = new FakeAcquirer(_paths, source, SecondCommit, "2.0.0", "plugin-skill", "new text")
+        {
+            BeforeReturn = () =>
+            {
+                refresher.Refresh();
+                pathDuringInterleave = registry.GetByName("plugin-skill")!.FilePath;
+                contentDuringInterleave = File.ReadAllText(pathDuringInterleave);
+            },
+        };
+
+        await (await CreateServiceAsync(source, refresher, second, new RecordingSink()))
+            .SyncAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(oldPath, pathDuringInterleave);
+        Assert.Contains("old text", contentDuringInterleave);
+        Assert.Contains("new text", await File.ReadAllTextAsync(
+            registry.GetByName("plugin-skill")!.FilePath, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Receipt_persistence_failure_keeps_the_prior_receipt_and_registry()
+    {
+        var source = Source();
+        var registry = new SkillRegistry();
+        var refresher = CreateRefresher(registry, static () => { });
+        var first = new FakeAcquirer(_paths, source, FirstCommit, "1.0.0", "plugin-skill", "old text");
+        await (await CreateServiceAsync(source, refresher, first, new RecordingSink()))
+            .SyncAsync(TestContext.Current.CancellationToken);
+        var oldPath = registry.GetByName("plugin-skill")!.FilePath;
+
+        await AddReceiptFailureTriggerAsync();
+        var second = new FakeAcquirer(_paths, source, SecondCommit, "2.0.0", "plugin-skill", "new text");
+        var result = await (await CreateServiceAsync(source, refresher, second, new RecordingSink()))
+            .SyncAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, Assert.Single(result.Sources).FailedCount);
+        var receipt = await new GitSkillPluginStateStore(_paths, _time).GetReceiptAsync(
+            source.Name, TestContext.Current.CancellationToken);
+        Assert.NotNull(receipt);
+        Assert.Equal(FirstCommit, receipt.InstalledCommit);
+        Assert.Equal(oldPath, registry.GetByName("plugin-skill")!.FilePath);
+        Assert.Contains("old text", await File.ReadAllTextAsync(oldPath, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -371,6 +429,22 @@ public sealed class GitSkillPluginSyncServiceTests : IDisposable
         return new GitSkillPluginStateStore(_paths, _time);
     }
 
+    private async Task AddReceiptFailureTriggerAsync()
+    {
+        await using var connection = new SqliteConnection($"Data Source={_paths.SqliteDbPath}");
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            CREATE TRIGGER reject_git_skill_plugin_receipt_update
+            BEFORE UPDATE ON git_skill_plugin_receipts
+            BEGIN
+                SELECT RAISE(ABORT, 'receipt persistence failed');
+            END;
+            """;
+        await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
+    }
+
     private async Task<ServerFeedSkillSyncService> CreateServiceAsync(
         GitSkillPluginSource source,
         SkillInventoryRefresher refresher,
@@ -422,6 +496,7 @@ public sealed class GitSkillPluginSyncServiceTests : IDisposable
         public bool FailOnResolve { get; init; }
         public GitSkillPluginRejectedException? Rejection { get; init; }
         public Exception? Failure { get; init; }
+        public Action? BeforeReturn { get; init; }
         public int ResolveCount { get; private set; }
         public int AcquireCount { get; private set; }
 
@@ -467,6 +542,7 @@ public sealed class GitSkillPluginSyncServiceTests : IDisposable
 
                 # {{skillName}}
                 """);
+            BeforeReturn?.Invoke();
             return Task.FromResult(new GitSkillPluginCandidate(
                 resolvedCommit,
                 version,
