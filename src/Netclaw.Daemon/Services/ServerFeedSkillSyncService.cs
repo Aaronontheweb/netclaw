@@ -399,31 +399,65 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
         if (!Directory.Exists(root))
             return;
 
-        foreach (var sourceDirectory in Directory.EnumerateDirectories(root))
+        try
         {
-            var stagingDirectory = Path.Combine(sourceDirectory, ".staging");
-            GitSkillPluginAcquirer.DeleteDirectory(stagingDirectory);
-
-            foreach (var fingerprintDirectory in Directory.EnumerateDirectories(sourceDirectory))
+            foreach (var sourceDirectory in Directory.EnumerateDirectories(root))
             {
-                if (string.Equals(
-                        Path.GetFileName(fingerprintDirectory),
-                        ".staging",
-                        StringComparison.Ordinal))
+                try
                 {
-                    continue;
+                    CleanupManagedGitPluginSourceDirectory(sourceDirectory, selectedDirectories);
                 }
-
-                var commitsDirectory = Path.Combine(fingerprintDirectory, "commits");
-                if (!Directory.Exists(commitsDirectory))
-                    continue;
-
-                foreach (var commitDirectory in Directory.EnumerateDirectories(commitsDirectory))
+                catch (Exception ex)
                 {
-                    if (!selectedDirectories.Contains(Path.GetFullPath(commitDirectory)))
-                        GitSkillPluginAcquirer.DeleteDirectory(commitDirectory);
+                    _logger.LogWarning(ex,
+                        "Managed Git plugin cleanup failed for source directory {Directory}",
+                        sourceDirectory);
                 }
             }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Managed Git plugin cleanup could not enumerate {Directory}", root);
+        }
+    }
+
+    private void CleanupManagedGitPluginSourceDirectory(
+        string sourceDirectory,
+        HashSet<string> selectedDirectories)
+    {
+        DeleteManagedGitPluginDirectory(Path.Combine(sourceDirectory, ".staging"));
+
+        foreach (var fingerprintDirectory in Directory.EnumerateDirectories(sourceDirectory))
+        {
+            if (string.Equals(
+                    Path.GetFileName(fingerprintDirectory),
+                    ".staging",
+                    StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var commitsDirectory = Path.Combine(fingerprintDirectory, "commits");
+            if (!Directory.Exists(commitsDirectory))
+                continue;
+
+            foreach (var commitDirectory in Directory.EnumerateDirectories(commitsDirectory))
+            {
+                if (!selectedDirectories.Contains(Path.GetFullPath(commitDirectory)))
+                    DeleteManagedGitPluginDirectory(commitDirectory);
+            }
+        }
+    }
+
+    private void DeleteManagedGitPluginDirectory(string directory)
+    {
+        try
+        {
+            GitSkillPluginAcquirer.DeleteDirectory(directory);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Managed Git plugin cleanup failed for directory {Directory}", directory);
         }
     }
 
