@@ -10,6 +10,7 @@ using Akka.Hosting;
 using Akka.Persistence.Hosting;
 using Akka.Persistence.Sql.Hosting;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Configuration;
@@ -52,7 +53,6 @@ using Netclaw.Embeddings;
 using Netclaw.Search;
 using Netclaw.Tools;
 using Netclaw.Security;
-using static Microsoft.Extensions.Logging.LogLevel;
 
 // Handled first, before any directory creation, lock-file acquisition, or host startup:
 // `netclawd --version`/`-v` must print the version and exit rather than booting a real
@@ -184,7 +184,8 @@ static async Task RunDaemonAsync(
     builder.Services.AddSingleton<DeviceRegistry>();
     builder.Services.AddSingleton<BootstrapStateStore>();
     builder.Services.AddSingleton<BootstrapDeviceSeeder>();
-    builder.Services.AddSingleton<PairingCodeService>();
+    builder.Services.AddSingleton<LocalControlPairingProofProtector>();
+    builder.Services.AddSingleton<LocalControlPairingProofValidator>();
     builder.Services.AddSingleton<PairingExchangeGuard>();
     builder.Services.AddSingleton<IRemoteAuthSchemeRegistration, DevicePairingSchemeRegistration>();
     builder.Services.AddNetclawAuthSchemes(daemonConfig);
@@ -193,8 +194,8 @@ static async Task RunDaemonAsync(
     // Add OpenAPI
     builder.Services.AddOpenApi();
 
-    // Rate limiting for the unauthenticated pairing exchange endpoint.
-    // 5 attempts per minute per IP — brute-force defense for the 8-char code space.
+    // Rate limits bound both unauthenticated pairing endpoints.
+    // The exchange uses a long brute-force window. Local control uses a short load-shed window.
     builder.Services.AddRateLimiter(options =>
     {
         options.AddPolicy("pairing-exchange", context =>
@@ -207,6 +208,7 @@ static async Task RunDaemonAsync(
                     QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                     QueueLimit = 0,
                 }));
+        PairingEndpointRouteBuilderExtensions.AddLocalControlRateLimitPolicy(options);
         options.RejectionStatusCode = 429;
     });
     builder.Services.AddMattermostActionEndpointRateLimiting();
@@ -387,7 +389,9 @@ static NetclawPaths ConfigureConfigServices(
     // Initialize Data Protection for secrets encryption/decryption.
     // Must happen before config binding so SensitiveStringTypeConverter
     // can transparently decrypt ENC: values.
-    var protector = SecretsProtection.CreateProtector(bootstrapPaths);
+    var dataProtectionProvider = SecretsProtection.CreateDataProtectionProvider(bootstrapPaths);
+    services.AddSingleton<IDataProtectionProvider>(dataProtectionProvider);
+    var protector = new DataProtectionSecretsProtector(dataProtectionProvider);
     services.AddSingleton<ISecretsProtector>(protector);
     SensitiveStringTypeConverter.Protector = protector;
 
@@ -1067,12 +1071,7 @@ static void ConfigureDaemonServices(
             DaemonShutdownConfiguration.BuildCoordinatedShutdownHocon(DaemonConfig.GracefulShutdownBudget),
             HoconAddMode.Prepend);
 
-        akkaBuilder = akkaBuilder.ConfigureLoggers(setup =>
-        {
-            setup.ClearLoggers();
-            setup.AddLoggerFactory();
-            setup.LogLevel = ToAkkaLogLevel(daemonLogLevel);
-        });
+        akkaBuilder = akkaBuilder.WithNetclawActorLogging(daemonLogLevel);
 
         var connectionString = $"Data Source={sqlitePath}";
         akkaBuilder = akkaBuilder.WithSqlPersistence(
@@ -1088,6 +1087,7 @@ static void ConfigureDaemonServices(
 
         akkaBuilder.WithNetclawSerialization();
         akkaBuilder.WithNetclawActors(shellEnvironment, reminderStorage);
+        akkaBuilder.WithPairingActor();
         akkaBuilder.WithWebhookRouteActor();
         akkaBuilder.WithSessionLogDispatcher();
         akkaBuilder.WithSignalRGateway();
@@ -1225,18 +1225,6 @@ static ISearchBackend? CreateSearchBackend(SearchConfig config)
             throw new ArgumentOutOfRangeException(nameof(config.Backend), config.Backend,
                 $"Unknown search backend: {config.Backend}");
     }
-}
-
-static Akka.Event.LogLevel ToAkkaLogLevel(LogLevel logLevel)
-{
-    return logLevel switch
-    {
-        Trace or Debug => Akka.Event.LogLevel.DebugLevel,
-        Information => Akka.Event.LogLevel.InfoLevel,
-        Warning => Akka.Event.LogLevel.WarningLevel,
-        Error or Critical or None => Akka.Event.LogLevel.ErrorLevel,
-        _ => Akka.Event.LogLevel.WarningLevel
-    };
 }
 
 public partial class Program;
