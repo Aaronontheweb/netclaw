@@ -28,7 +28,11 @@ public sealed class GitSkillPluginSyncServiceTests : IDisposable
         _paths.EnsureDirectoriesExist();
     }
 
-    public void Dispose() => _temp.Dispose();
+    public void Dispose()
+    {
+        SqliteTestPools.Clear(_paths);
+        _temp.Dispose();
+    }
 
     [Fact]
     public async Task First_install_publishes_all_skills_in_one_inventory_snapshot()

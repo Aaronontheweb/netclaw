@@ -7,6 +7,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Netclaw.Actors.Skills;
 using Netclaw.Configuration;
+using Netclaw.Security;
 
 namespace Netclaw.Daemon.Services;
 
@@ -186,21 +187,13 @@ public sealed class SkillDirectoryWatcherService : BackgroundService
 
     private bool ShouldIgnore(string fullPath)
     {
-        if (IsWithin(fullPath, _paths.ManagedGitSkillsDirectory))
+        if (PathUtility.IsWithinRoot(fullPath, _paths.ManagedGitSkillsDirectory))
             return true;
 
         // Ignore staging directories and temp files used by atomic write operations
         return fullPath.Contains($"{Path.DirectorySeparatorChar}.staging{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
             || fullPath.Contains($"{Path.AltDirectorySeparatorChar}.staging{Path.AltDirectorySeparatorChar}", StringComparison.Ordinal)
             || fullPath.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static bool IsWithin(string path, string root)
-    {
-        var normalizedPath = Path.GetFullPath(path);
-        var normalizedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root))
-            + Path.DirectorySeparatorChar;
-        return normalizedPath.StartsWith(normalizedRoot, StringComparison.Ordinal);
     }
 
     public override void Dispose()
