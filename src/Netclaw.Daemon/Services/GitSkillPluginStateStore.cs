@@ -113,14 +113,31 @@ internal sealed class GitSkillPluginStateStore
             DateTimeOffset.FromUnixTimeMilliseconds(reader.GetInt64(9)));
     }
 
-    public async Task SaveReceiptAsync(
+    public Task SaveReceiptAsync(
         GitSkillPluginSource source,
         string commit,
         string? version,
         CancellationToken cancellationToken)
+        => SaveReceiptCoreAsync(source, commit, version, clearRejection: false, cancellationToken);
+
+    public Task SaveReceiptAfterRetryAsync(
+        GitSkillPluginSource source,
+        string commit,
+        string? version,
+        CancellationToken cancellationToken)
+        => SaveReceiptCoreAsync(source, commit, version, clearRejection: true, cancellationToken);
+
+    private async Task SaveReceiptCoreAsync(
+        GitSkillPluginSource source,
+        string commit,
+        string? version,
+        bool clearRejection,
+        CancellationToken cancellationToken)
     {
         await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText =
             """
             INSERT INTO git_skill_plugin_receipts (
@@ -147,20 +164,46 @@ internal sealed class GitSkillPluginStateStore
         command.Parameters.AddWithValue("$subdirectory", (object?)source.Subdirectory ?? DBNull.Value);
         command.Parameters.AddWithValue("$referenceKind", source.ReferenceKind.ToString());
         command.Parameters.AddWithValue("$reference", source.Reference);
-        command.Parameters.AddWithValue("$fingerprint", GitSkillPluginSourceValidator.Fingerprint(source));
+        var fingerprint = GitSkillPluginSourceValidator.Fingerprint(source);
+        command.Parameters.AddWithValue("$fingerprint", fingerprint);
         command.Parameters.AddWithValue("$commit", commit);
         command.Parameters.AddWithValue("$version", (object?)version ?? DBNull.Value);
         command.Parameters.AddWithValue("$installedAt", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
         await command.ExecuteNonQueryAsync(cancellationToken);
+        if (clearRejection)
+        {
+            await DeleteRejectionAsync(
+                connection, transaction, source.Name, fingerprint, commit, cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
     }
 
-    public async Task<bool> UpdateLastObservedCommitAsync(
+    public Task<bool> UpdateLastObservedCommitAsync(
         string sourceName,
         string commit,
         CancellationToken cancellationToken)
+        => UpdateLastObservedCommitCoreAsync(
+            sourceName, sourceFingerprint: null, commit, clearRejection: false, cancellationToken);
+
+    public Task<bool> UpdateLastObservedCommitAfterRetryAsync(
+        string sourceName,
+        string sourceFingerprint,
+        string commit,
+        CancellationToken cancellationToken)
+        => UpdateLastObservedCommitCoreAsync(
+            sourceName, sourceFingerprint, commit, clearRejection: true, cancellationToken);
+
+    private async Task<bool> UpdateLastObservedCommitCoreAsync(
+        string sourceName,
+        string? sourceFingerprint,
+        string commit,
+        bool clearRejection,
+        CancellationToken cancellationToken)
     {
         await using var connection = await OpenAsync(cancellationToken);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
         command.CommandText =
             """
             UPDATE git_skill_plugin_receipts
@@ -169,7 +212,14 @@ internal sealed class GitSkillPluginStateStore
             """;
         command.Parameters.AddWithValue("$source", sourceName);
         command.Parameters.AddWithValue("$commit", commit);
-        return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+        var updated = await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+        if (updated && clearRejection)
+        {
+            await DeleteRejectionAsync(
+                connection, transaction, sourceName, sourceFingerprint!, commit, cancellationToken);
+        }
+        await transaction.CommitAsync(cancellationToken);
+        return updated;
     }
 
     public async Task<GitSkillPluginRejection?> GetRejectionAsync(
@@ -234,6 +284,28 @@ internal sealed class GitSkillPluginStateStore
         command.Parameters.AddWithValue("$security", securityRejection ? 1 : 0);
         command.Parameters.AddWithValue("$rejectedAt", _timeProvider.GetUtcNow().ToUnixTimeMilliseconds());
         return await command.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    private static async Task DeleteRejectionAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string sourceName,
+        string sourceFingerprint,
+        string commit,
+        CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            DELETE FROM git_skill_plugin_rejections
+            WHERE source_name = $source AND source_fingerprint = $fingerprint
+              AND commit_identity = $commit;
+            """;
+        command.Parameters.AddWithValue("$source", sourceName);
+        command.Parameters.AddWithValue("$fingerprint", sourceFingerprint);
+        command.Parameters.AddWithValue("$commit", commit);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task<bool> TryClaimSecurityAlertAsync(

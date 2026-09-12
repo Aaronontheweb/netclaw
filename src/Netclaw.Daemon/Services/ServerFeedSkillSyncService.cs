@@ -17,7 +17,9 @@ namespace Netclaw.Daemon.Services;
 
 internal interface IServerFeedSkillSyncRunner
 {
-    Task<SkillSyncResult.Response> SyncAsync(CancellationToken cancellationToken);
+    Task<SkillSyncResult.Response> SyncAsync(
+        bool retryRejected,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -125,7 +127,12 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
     /// <summary>
     /// Runs one complete synchronization pass.
     /// </summary>
-    public async Task<SkillSyncResult.Response> SyncAsync(CancellationToken cancellationToken)
+    public Task<SkillSyncResult.Response> SyncAsync(CancellationToken cancellationToken)
+        => SyncAsync(retryRejected: false, cancellationToken);
+
+    public async Task<SkillSyncResult.Response> SyncAsync(
+        bool retryRejected,
+        CancellationToken cancellationToken)
     {
         var passId = Guid.NewGuid().ToString("N");
         _logger.LogInformation("External skill sync pass started. {PassId}", passId);
@@ -158,7 +165,10 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
                 }
             }
 
-            var managedPluginSources = await SyncManagedGitPluginsAsync(sources, cancellationToken);
+            var managedPluginSources = await SyncManagedGitPluginsAsync(
+                sources,
+                retryRejected,
+                cancellationToken);
 
             try
             {
@@ -212,6 +222,7 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
 
     private async Task<IReadOnlyList<ResolvedExternalSource>> SyncManagedGitPluginsAsync(
         List<SkillSyncResult.SourceRow> rows,
+        bool retryRejected,
         CancellationToken cancellationToken)
     {
         var configuredSources = _feedsConfig.Plugins;
@@ -236,7 +247,10 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
         {
             try
             {
-                rows.Add(await SyncManagedGitPluginAsync(source, cancellationToken));
+                rows.Add(await SyncManagedGitPluginAsync(
+                    source,
+                    retryRejected,
+                    cancellationToken));
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -257,6 +271,7 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
 
     private async Task<SkillSyncResult.SourceRow> SyncManagedGitPluginAsync(
         GitSkillPluginSource source,
+        bool retryRejected,
         CancellationToken cancellationToken)
     {
         using var timeout = new CancellationTokenSource(
@@ -285,7 +300,7 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
 
         var rejection = await _pluginStateStore.GetRejectionAsync(
             source.Name, sourceFingerprint, commit, sourceToken);
-        if (rejection is not null)
+        if (rejection is not null && !retryRejected)
         {
             if (rejection.SecurityRejection
                 && !rejection.AlertEmitted
@@ -313,14 +328,30 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
                 && candidate.Version is not null
                 && string.Equals(candidate.Version, receipt.InstalledVersion, StringComparison.Ordinal))
             {
-                await _pluginStateStore.UpdateLastObservedCommitAsync(
-                    source.Name, candidate.Commit, sourceToken);
+                if (rejection is null)
+                {
+                    await _pluginStateStore.UpdateLastObservedCommitAsync(
+                        source.Name, candidate.Commit, sourceToken);
+                }
+                else
+                {
+                    await _pluginStateStore.UpdateLastObservedCommitAfterRetryAsync(
+                        source.Name, sourceFingerprint, candidate.Commit, sourceToken);
+                }
                 DeleteUnpublishedCandidate(candidate.Directory, installedDirectory);
                 return PluginUnchanged(source.Name, receipt.InstalledCommit, receipt.InstalledVersion);
             }
 
-            await _pluginStateStore.SaveReceiptAsync(
-                source, candidate.Commit, candidate.Version, sourceToken);
+            if (rejection is null)
+            {
+                await _pluginStateStore.SaveReceiptAsync(
+                    source, candidate.Commit, candidate.Version, sourceToken);
+            }
+            else
+            {
+                await _pluginStateStore.SaveReceiptAfterRetryAsync(
+                    source, candidate.Commit, candidate.Version, sourceToken);
+            }
             return new SkillSyncResult.SourceRow
             {
                 Name = source.Name,

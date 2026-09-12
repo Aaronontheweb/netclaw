@@ -22,6 +22,8 @@ internal interface IGitSkillPluginAcquirer
 
     Task<string> ResolveCommitAsync(GitSkillPluginSource source, CancellationToken cancellationToken);
 
+    Task<string> ResolveDefaultBranchAsync(string repository, CancellationToken cancellationToken);
+
     Task<GitSkillPluginCandidate> AcquireAsync(
         GitSkillPluginSource source,
         string commit,
@@ -310,9 +312,50 @@ internal sealed class GitSkillPluginAcquirer : IGitSkillPluginAcquirer
             throw new InvalidDataException("GitHub returned no commit identity.");
         }
         var commit = shaElement.GetString()!;
-        if (commit.Length != 40 || !commit.All(char.IsAsciiHexDigit))
+        if (commit.Length is not (40 or 64) || !commit.All(char.IsAsciiHexDigit))
             throw new InvalidDataException("GitHub returned an invalid commit identity.");
         return commit.ToLowerInvariant();
+    }
+
+    public async Task<string> ResolveDefaultBranchAsync(
+        string repository,
+        CancellationToken cancellationToken)
+    {
+        if (!GitSkillPluginSourceValidator.TryNormalizeRepository(repository, out var normalized, out var error)
+            || !string.Equals(repository, normalized, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(error.Length > 0
+                ? error
+                : "The repository is not canonical owner/repository form.");
+        }
+
+        using var request = CreateGitHubRequest(
+            HttpMethod.Get,
+            $"https://api.github.com/repos/{repository}");
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new HttpRequestException("GitHub could not resolve the default branch.", null, response.StatusCode);
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var limited = new LimitedReadStream(stream, _limits.MaximumManifestBytes, null,
+            "The GitHub repository response exceeds the JSON-size limit.");
+        using var document = await JsonDocument.ParseAsync(limited, cancellationToken: cancellationToken);
+        if (!document.RootElement.TryGetProperty("default_branch", out var branchElement)
+            || branchElement.ValueKind != JsonValueKind.String)
+        {
+            throw new InvalidDataException("GitHub returned no default branch.");
+        }
+
+        var branch = branchElement.GetString()!;
+        if (!GitSkillPluginSourceValidator.TryValidateReference(
+                GitSkillPluginReferenceKind.Branch,
+                branch,
+                out _))
+        {
+            throw new InvalidDataException("GitHub returned an invalid default branch.");
+        }
+
+        return branch;
     }
 
     private async Task<SecuritySkillScanResult> ScanContentAsync(

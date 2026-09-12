@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
+using Microsoft.Data.Sqlite;
 using Netclaw.Configuration;
 using Netclaw.Daemon.Services;
 using Netclaw.Tests.Utilities;
@@ -174,6 +175,73 @@ public sealed class GitSkillPluginStateStoreTests : IDisposable
             source.Name, fingerprint, Commit, TestContext.Current.CancellationToken);
         Assert.NotNull(rejection);
         Assert.True(rejection.AlertEmitted);
+    }
+
+    [Fact]
+    public async Task Retry_receipt_and_rejection_delete_use_one_transaction()
+    {
+        await MigrateAsync();
+        var store = new GitSkillPluginStateStore(_paths, TimeProvider.System);
+        var source = Source();
+        var fingerprint = GitSkillPluginSourceValidator.Fingerprint(source);
+        await store.SaveRejectionAsync(
+            source.Name, fingerprint, Commit, "security rejection", true,
+            TestContext.Current.CancellationToken);
+        await CreateRejectDeleteTriggerAsync();
+
+        await Assert.ThrowsAsync<SqliteException>(() => store.SaveReceiptAfterRetryAsync(
+            source, Commit, "1.0.0", TestContext.Current.CancellationToken));
+
+        Assert.Null(await store.GetReceiptAsync(source.Name, TestContext.Current.CancellationToken));
+        Assert.NotNull(await store.GetRejectionAsync(
+            source.Name, fingerprint, Commit, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Retry_observed_commit_and_rejection_delete_use_one_transaction()
+    {
+        await MigrateAsync();
+        var store = new GitSkillPluginStateStore(_paths, TimeProvider.System);
+        var source = Source();
+        var fingerprint = GitSkillPluginSourceValidator.Fingerprint(source);
+        await store.SaveReceiptAsync(source, Commit, "1.0.0", TestContext.Current.CancellationToken);
+        await store.SaveRejectionAsync(
+            source.Name, fingerprint, LaterCommit, "security rejection", true,
+            TestContext.Current.CancellationToken);
+        await CreateRejectDeleteTriggerAsync();
+
+        await Assert.ThrowsAsync<SqliteException>(() => store.UpdateLastObservedCommitAfterRetryAsync(
+            source.Name, fingerprint, LaterCommit, TestContext.Current.CancellationToken));
+
+        var receipt = await store.GetReceiptAsync(source.Name, TestContext.Current.CancellationToken);
+        Assert.NotNull(receipt);
+        Assert.Equal(Commit, receipt.LastObservedCommit);
+        Assert.NotNull(await store.GetRejectionAsync(
+            source.Name, fingerprint, LaterCommit, TestContext.Current.CancellationToken));
+    }
+
+    private async Task MigrateAsync()
+        => await new SchemaMigrator(_paths, NullLogger<SchemaMigrator>.Instance)
+            .MigrateAsync(_paths.SqliteDbPath, TestContext.Current.CancellationToken);
+
+    private async Task CreateRejectDeleteTriggerAsync()
+    {
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = _paths.SqliteDbPath,
+            Mode = SqliteOpenMode.ReadWriteCreate,
+        }.ToString());
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            CREATE TRIGGER reject_plugin_rejection_delete
+            BEFORE DELETE ON git_skill_plugin_rejections
+            BEGIN
+                SELECT RAISE(ABORT, 'delete blocked');
+            END;
+            """;
+        await command.ExecuteNonQueryAsync(TestContext.Current.CancellationToken);
     }
 
     private static GitSkillPluginSource Source() => new()

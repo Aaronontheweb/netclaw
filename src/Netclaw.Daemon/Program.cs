@@ -951,6 +951,8 @@ static void ConfigureDaemonServices(
         paths,
         sp.GetRequiredService<TimeProvider>(),
         sp.GetRequiredService<ISkillContentScanner>()));
+    services.AddSingleton<GitSkillPluginConfigStore>();
+    services.AddSingleton<GitSkillPluginManagementService>();
     services.AddSingleton<ServerFeedSkillSyncService>();
     services.AddSingleton<IServerFeedSkillSyncRunner>(
         sp => sp.GetRequiredService<ServerFeedSkillSyncService>());

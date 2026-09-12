@@ -37,7 +37,11 @@ public sealed class SkillEndpointRouteBuilderExtensionsTests : IDisposable
 
     private readonly DisposableTempDir _dir = new();
 
-    public void Dispose() => _dir.Dispose();
+    public void Dispose()
+    {
+        SqliteTestPools.Clear(new NetclawPaths(_dir.Path));
+        _dir.Dispose();
+    }
 
     private async Task<WebApplication> CreateAppAsync(
         bool spoofLoopback,
@@ -46,6 +50,11 @@ public sealed class SkillEndpointRouteBuilderExtensionsTests : IDisposable
         ServerFeedSkillSyncService? syncService = null,
         ILogger<ServerFeedSkillSyncActor>? actorLogger = null)
     {
+        paths.EnsureDirectoriesExist();
+        await new SchemaMigrator(
+                paths,
+                Microsoft.Extensions.Logging.Abstractions.NullLogger<SchemaMigrator>.Instance)
+            .MigrateAsync(paths.SqliteDbPath, TestContext.Current.CancellationToken);
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
 
@@ -54,7 +63,14 @@ public sealed class SkillEndpointRouteBuilderExtensionsTests : IDisposable
         builder.Services.AddLogging();
         builder.Services.AddSingleton(registry);
         builder.Services.AddSingleton(paths);
-        builder.Services.AddSingleton(new SkillFeedsConfig { SyncIntervalMinutes = 0 });
+        var feeds = new SkillFeedsConfig { SyncIntervalMinutes = 0 };
+        builder.Services.AddSingleton(feeds);
+        builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<IGitSkillPluginAcquirer, UnusedPluginAcquirer>();
+        builder.Services.AddSingleton<GitSkillPluginStateStore>();
+        builder.Services.AddSingleton<GitSkillPluginConfigStore>();
+        builder.Services.AddSingleton<GitSkillPluginManagementService>();
+        builder.Services.AddSingleton<DaemonRestartSignal>();
         var runner = syncService ?? CreateSyncService(registry, paths);
         builder.Services.AddSingleton(runner);
         builder.Services.AddSingleton<IServerFeedSkillSyncRunner>(runner);
@@ -104,6 +120,57 @@ public sealed class SkillEndpointRouteBuilderExtensionsTests : IDisposable
         var response = await app.GetTestClient().PostAsync("/api/skills/sync", null, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("GET", "/api/skills/plugins")]
+    [InlineData("POST", "/api/skills/plugins")]
+    [InlineData("PATCH", "/api/skills/plugins/fixture")]
+    [InlineData("DELETE", "/api/skills/plugins/fixture")]
+    public async Task Plugin_routes_require_authorization(string method, string path)
+    {
+        var paths = new NetclawPaths(_dir.Path);
+        await using var app = await CreateAppAsync(spoofLoopback: false, new SkillRegistry(), paths);
+        using var request = new HttpRequestMessage(new HttpMethod(method), path)
+        {
+            Content = JsonContent.Create(new { }),
+        };
+
+        var response = await app.GetTestClient().SendAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Plugin_install_route_persists_a_valid_commit_source_before_sync()
+    {
+        var paths = new NetclawPaths(_dir.Path);
+        await using var app = await CreateAppAsync(spoofLoopback: true, new SkillRegistry(), paths);
+        var request = new GitSkillPluginApi.InstallRequest
+        {
+            Repository = "owner/repository",
+            Name = "fixture",
+            ReferenceKind = GitSkillPluginApi.InstallReferenceKind.Commit,
+            Reference = "13e26d39ed01d97ea592235d041304d289f4ba07",
+        };
+
+        var response = await app.GetTestClient().PostAsJsonAsync(
+            "/api/skills/plugins",
+            request,
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<GitSkillPluginApi.InstallResponse>(
+            ReadOptions,
+            TestContext.Current.CancellationToken);
+        Assert.NotNull(result);
+        Assert.Equal(GitSkillPluginApi.PluginStatus.NotInstalled, result.Plugin.Status);
+        using var config = JsonDocument.Parse(await File.ReadAllTextAsync(
+            paths.NetclawConfigPath,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(
+            "fixture",
+            config.RootElement.GetProperty("SkillFeeds").GetProperty("Plugins")[0].GetProperty("Name").GetString());
     }
 
     [Fact]
@@ -199,7 +266,30 @@ public sealed class SkillEndpointRouteBuilderExtensionsTests : IDisposable
             skillFilePath,
             "---\nname: demo-file\ndescription: A file-backed skill.\n---\n\nDemo guidance.\n",
             ct);
-        registry.ReplaceAll([fileSkill]);
+
+        var pluginDirectory = Path.Combine(
+            paths.ManagedGitSkillsDirectory,
+            "demo-plugin",
+            "fingerprint",
+            "commits",
+            "commit",
+            "demo-external");
+        var pluginSkill = new SkillEntry(
+            "demo-external",
+            "Demo External",
+            "An external file skill.",
+            new FileSkillSource(Path.Combine(pluginDirectory, "SKILL.md"), pluginDirectory),
+            Category: null);
+        Directory.CreateDirectory(pluginDirectory);
+        await File.WriteAllTextAsync(
+            Path.Combine(pluginDirectory, "SKILL.md"),
+            "---\nname: demo-external\ndescription: An external file skill.\n---\n\nExternal guidance.\n",
+            ct);
+        registry.ReplaceAll([fileSkill, pluginSkill]);
+        var classified = SkillInventory.From(registry.GetAll(), paths);
+        Assert.Equal(
+            "external",
+            Assert.Single(classified.Skills, skill => skill.Name == "demo-external").Source);
 
         // A dynamic MCP prompt skill — exists only in memory, never on disk.
         var mcpSkill = new SkillEntry(
@@ -247,6 +337,7 @@ public sealed class SkillEndpointRouteBuilderExtensionsTests : IDisposable
         var file = Assert.Single(inventory.Skills, s => s.Name == "demo-file");
         Assert.Equal("native", file.Source);
         Assert.Null(file.ServerName);
+
     }
 
     private static ServerFeedSkillSyncService CreateSyncService(SkillRegistry registry, NetclawPaths paths)
@@ -371,5 +462,25 @@ public sealed class SkillEndpointRouteBuilderExtensionsTests : IDisposable
                     BothJoined.TrySetResult();
             }
         }
+    }
+
+    private sealed class UnusedPluginAcquirer : IGitSkillPluginAcquirer
+    {
+        public Task<string> ResolveDefaultBranchAsync(string repository, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task<string> ResolveCommitAsync(GitSkillPluginSource source, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task<GitSkillPluginCandidate> AcquireAsync(
+            GitSkillPluginSource source,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public Task<GitSkillPluginCandidate> AcquireAsync(
+            GitSkillPluginSource source,
+            string commit,
+            CancellationToken cancellationToken)
+            => throw new NotSupportedException();
     }
 }

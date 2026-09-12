@@ -390,8 +390,10 @@ public sealed class GitSkillPluginAcquirerTests : IDisposable
         Assert.All(handler.UserAgents, userAgent => Assert.Equal(NetclawUserAgent.Value, userAgent));
     }
 
-    [Fact]
-    public async Task Acquire_uses_a_fixed_commit_without_a_GitHub_commit_lookup()
+    [Theory]
+    [InlineData(Commit)]
+    [InlineData("13e26d39ed01d97ea592235d041304d289f4ba0713e26d39ed01d97ea592235d")]
+    public async Task Acquire_uses_a_fixed_commit_without_a_GitHub_commit_lookup(string commit)
     {
         var archive = CreateArchive(
             ("repo/.codex-plugin/plugin.json", Manifest("1.0.0"), TarEntryType.RegularFile),
@@ -399,11 +401,11 @@ public sealed class GitSkillPluginAcquirerTests : IDisposable
         var handler = new GitHubHandler(archive);
         var source = Source();
         source.ReferenceKind = GitSkillPluginReferenceKind.Commit;
-        source.Reference = Commit;
+        source.Reference = commit;
 
         var candidate = await CreateAcquirer(handler).AcquireAsync(source, TestContext.Current.CancellationToken);
 
-        Assert.Equal(Commit, candidate.Commit);
+        Assert.Equal(commit, candidate.Commit);
         Assert.Equal(0, handler.CommitRequestCount);
         Assert.Single(handler.UserAgents);
     }
