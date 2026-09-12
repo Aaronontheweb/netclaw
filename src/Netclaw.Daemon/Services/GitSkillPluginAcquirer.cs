@@ -152,7 +152,9 @@ internal sealed class GitSkillPluginAcquirer : IGitSkillPluginAcquirer
     {
         if (!GitSkillPluginSourceValidator.TryValidateSource(source, out var sourceError))
             throw new InvalidOperationException(sourceError);
-        if (string.IsNullOrWhiteSpace(commit) || commit.Length != 40 || !commit.All(char.IsAsciiHexDigit))
+        if (string.IsNullOrWhiteSpace(commit)
+            || commit.Length is not (40 or 64)
+            || !commit.All(char.IsAsciiHexDigit))
             throw new InvalidDataException("The resolved commit identity is invalid.");
 
         commit = commit.ToLowerInvariant();

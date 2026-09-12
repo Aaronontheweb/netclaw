@@ -259,11 +259,16 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
         GitSkillPluginSource source,
         CancellationToken cancellationToken)
     {
+        using var timeout = new CancellationTokenSource(
+            TimeSpan.FromSeconds(source.TimeoutSeconds), _timeProvider);
+        using var sourceOperation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken, timeout.Token);
+        var sourceToken = sourceOperation.Token;
         var sourceFingerprint = GitSkillPluginSourceValidator.Fingerprint(source);
-        var receipt = await _pluginStateStore.GetReceiptAsync(source.Name, cancellationToken);
+        var receipt = await _pluginStateStore.GetReceiptAsync(source.Name, sourceToken);
         var commit = source.ReferenceKind == GitSkillPluginReferenceKind.Commit
             ? source.Reference.ToLowerInvariant()
-            : await _pluginAcquirer.ResolveCommitAsync(source, cancellationToken);
+            : await _pluginAcquirer.ResolveCommitAsync(source, sourceToken);
         var installedDirectory = receipt is null
             ? null
             : _paths.ManagedGitSkillCommitDirectory(
@@ -279,9 +284,17 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
         }
 
         var rejection = await _pluginStateStore.GetRejectionAsync(
-            source.Name, sourceFingerprint, commit, cancellationToken);
+            source.Name, sourceFingerprint, commit, sourceToken);
         if (rejection is not null)
         {
+            if (rejection.SecurityRejection
+                && !rejection.AlertEmitted
+                && await _pluginStateStore.TryClaimSecurityAlertAsync(
+                    source.Name, sourceFingerprint, commit, sourceToken))
+            {
+                EmitSecurityRejectionAlert(sourceFingerprint, commit);
+            }
+
             _logger.LogInformation(
                 "Managed Git plugin '{PluginName}' commit {Commit} remains rejected",
                 source.Name, commit);
@@ -290,7 +303,7 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
 
         try
         {
-            var candidate = await _pluginAcquirer.AcquireAsync(source, commit, cancellationToken);
+            var candidate = await _pluginAcquirer.AcquireAsync(source, commit, sourceToken);
             if (!Directory.Exists(candidate.Directory))
                 throw new IOException("The immutable managed Git plugin candidate is missing.");
 
@@ -301,13 +314,13 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
                 && string.Equals(candidate.Version, receipt.InstalledVersion, StringComparison.Ordinal))
             {
                 await _pluginStateStore.UpdateLastObservedCommitAsync(
-                    source.Name, candidate.Commit, cancellationToken);
+                    source.Name, candidate.Commit, sourceToken);
                 DeleteUnpublishedCandidate(candidate.Directory, installedDirectory);
                 return PluginUnchanged(source.Name, receipt.InstalledCommit, receipt.InstalledVersion);
             }
 
             await _pluginStateStore.SaveReceiptAsync(
-                source, candidate.Commit, candidate.Version, cancellationToken);
+                source, candidate.Commit, candidate.Version, sourceToken);
             return new SkillSyncResult.SourceRow
             {
                 Name = source.Name,
@@ -325,24 +338,13 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
                 rejectionException.Commit,
                 rejectionException.Message,
                 rejectionException.SecurityRejection,
-                cancellationToken);
+                sourceToken);
 
             if (rejectionException.SecurityRejection
                 && await _pluginStateStore.TryClaimSecurityAlertAsync(
-                    source.Name, sourceFingerprint, rejectionException.Commit, cancellationToken))
+                    source.Name, sourceFingerprint, rejectionException.Commit, sourceToken))
             {
-                _notificationSink.Emit(OperationalAlert.Create(
-                    _timeProvider,
-                    "skill.plugin.security_rejected",
-                    AlertType.SkillPluginSecurityRejected,
-                    "A managed Git skill plugin failed a security check.",
-                    AlertSeverity.Warning,
-                    $"{sourceFingerprint}:{rejectionException.Commit}",
-                    new Dictionary<string, string>
-                    {
-                        ["source_fingerprint"] = sourceFingerprint,
-                        ["commit"] = rejectionException.Commit,
-                    }));
+                EmitSecurityRejectionAlert(sourceFingerprint, rejectionException.Commit);
             }
 
             _logger.LogWarning(
@@ -356,11 +358,7 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
         IReadOnlyList<GitSkillPluginReceipt> receipts)
         => receipts
             .Where(receipt => _feedsConfig.Plugins.Any(source => source.Enabled
-                && string.Equals(source.Name, receipt.SourceName, StringComparison.Ordinal)
-                && string.Equals(
-                    GitSkillPluginSourceValidator.Fingerprint(source),
-                    receipt.SourceFingerprint,
-                    StringComparison.Ordinal)))
+                && string.Equals(source.Name, receipt.SourceName, StringComparison.Ordinal)))
             .Select(receipt => new
             {
                 Receipt = receipt,
@@ -375,6 +373,22 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
                 AllowSymlinks: false))
             .ToArray();
 
+    private void EmitSecurityRejectionAlert(string sourceFingerprint, string commit)
+    {
+        _notificationSink.Emit(OperationalAlert.Create(
+            _timeProvider,
+            "skill.plugin.security_rejected",
+            AlertType.SkillPluginSecurityRejected,
+            "A managed Git skill plugin failed a security check.",
+            AlertSeverity.Warning,
+            $"{sourceFingerprint}:{commit}",
+            new Dictionary<string, string>
+            {
+                ["source_fingerprint"] = sourceFingerprint,
+                ["commit"] = commit,
+            }));
+    }
+
     private void CleanupManagedGitPluginDirectories(IReadOnlyList<GitSkillPluginReceipt> receipts)
     {
         var selectedDirectories = receipts
@@ -385,15 +399,30 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
         if (!Directory.Exists(root))
             return;
 
-        foreach (var stagingDirectory in Directory.EnumerateDirectories(root, ".staging", SearchOption.AllDirectories))
+        foreach (var sourceDirectory in Directory.EnumerateDirectories(root))
+        {
+            var stagingDirectory = Path.Combine(sourceDirectory, ".staging");
             GitSkillPluginAcquirer.DeleteDirectory(stagingDirectory);
 
-        foreach (var commitsDirectory in Directory.EnumerateDirectories(root, "commits", SearchOption.AllDirectories))
-        {
-            foreach (var commitDirectory in Directory.EnumerateDirectories(commitsDirectory))
+            foreach (var fingerprintDirectory in Directory.EnumerateDirectories(sourceDirectory))
             {
-                if (!selectedDirectories.Contains(Path.GetFullPath(commitDirectory)))
-                    GitSkillPluginAcquirer.DeleteDirectory(commitDirectory);
+                if (string.Equals(
+                        Path.GetFileName(fingerprintDirectory),
+                        ".staging",
+                        StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var commitsDirectory = Path.Combine(fingerprintDirectory, "commits");
+                if (!Directory.Exists(commitsDirectory))
+                    continue;
+
+                foreach (var commitDirectory in Directory.EnumerateDirectories(commitsDirectory))
+                {
+                    if (!selectedDirectories.Contains(Path.GetFullPath(commitDirectory)))
+                        GitSkillPluginAcquirer.DeleteDirectory(commitDirectory);
+                }
             }
         }
     }

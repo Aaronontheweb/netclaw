@@ -154,6 +154,46 @@ public sealed class GitSkillPluginSyncServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Restart_claims_and_emits_a_persisted_security_rejection_alert()
+    {
+        var source = Source();
+        var store = await CreateStoreAsync();
+        var fingerprint = GitSkillPluginSourceValidator.Fingerprint(source);
+        await store.SaveRejectionAsync(
+            source.Name, fingerprint, FirstCommit, "scanner result", true, TestContext.Current.CancellationToken);
+        var acquirer = new FakeAcquirer(_paths, source, FirstCommit, "1.0.0", "plugin-skill");
+        var alerts = new RecordingSink();
+        var service = new ServerFeedSkillSyncService(
+            new SkillFeedsConfig { Plugins = [source] }, _paths, CreateRefresher(new SkillRegistry(), static () => { }), _time,
+            new NoOpSkillContentScanner(), NullLogger<ServerFeedSkillSyncService>.Instance, store, acquirer, alerts);
+
+        await service.SyncAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, acquirer.AcquireCount);
+        Assert.Equal("skill.plugin.security_rejected", Assert.Single(alerts.Alerts).Type);
+        Assert.True((await store.GetRejectionAsync(
+            source.Name, fingerprint, FirstCommit, TestContext.Current.CancellationToken))!.AlertEmitted);
+    }
+
+    [Fact]
+    public async Task Source_timeout_covers_branch_resolution_before_archive_acquisition()
+    {
+        var source = Source();
+        source.TimeoutSeconds = 1;
+        var acquirer = new BlockingResolveAcquirer();
+        var service = await CreateServiceAsync(
+            source, CreateRefresher(new SkillRegistry(), static () => { }), acquirer, new RecordingSink());
+
+        var sync = service.SyncAsync(TestContext.Current.CancellationToken);
+        await acquirer.ResolutionStarted.Task.WaitAsync(TestContext.Current.CancellationToken);
+        _time.Advance(TimeSpan.FromSeconds(1));
+        var result = await sync;
+
+        Assert.Equal(1, Assert.Single(result.Sources).FailedCount);
+        Assert.Equal(0, acquirer.AcquireCount);
+    }
+
+    [Fact]
     public async Task Startup_cleanup_removes_staging_and_orphan_commits_but_keeps_receipt_directory()
     {
         var source = Source();
@@ -163,9 +203,15 @@ public sealed class GitSkillPluginSyncServiceTests : IDisposable
         var selected = _paths.ManagedGitSkillCommitDirectory(source.Name, fingerprint, FirstCommit);
         var orphan = _paths.ManagedGitSkillCommitDirectory(source.Name, fingerprint, SecondCommit);
         var staging = Path.Combine(_paths.ManagedGitSkillDirectory(source.Name), ".staging", "candidate");
+        var publishedStagingResource = Path.Combine(selected, "plugin-skill", "resources", ".staging", "guide.md");
+        var publishedCommitsResource = Path.Combine(selected, "plugin-skill", "resources", "commits", "guide.md");
         Directory.CreateDirectory(selected);
         Directory.CreateDirectory(orphan);
         Directory.CreateDirectory(staging);
+        Directory.CreateDirectory(Path.GetDirectoryName(publishedStagingResource)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(publishedCommitsResource)!);
+        File.WriteAllText(publishedStagingResource, "published staging resource");
+        File.WriteAllText(publishedCommitsResource, "published commits resource");
         var registry = new SkillRegistry();
         var service = new ServerFeedSkillSyncService(
             new SkillFeedsConfig { Plugins = [source] },
@@ -183,6 +229,8 @@ public sealed class GitSkillPluginSyncServiceTests : IDisposable
         Assert.True(Directory.Exists(selected));
         Assert.False(Directory.Exists(orphan));
         Assert.False(Directory.Exists(staging));
+        Assert.True(File.Exists(publishedStagingResource));
+        Assert.True(File.Exists(publishedCommitsResource));
     }
 
     [Fact]
@@ -218,15 +266,18 @@ public sealed class GitSkillPluginSyncServiceTests : IDisposable
         await store.SaveReceiptAsync(original, FirstCommit, "1.0.0", TestContext.Current.CancellationToken);
         var oldDirectory = _paths.ManagedGitSkillCommitDirectory(
             original.Name, GitSkillPluginSourceValidator.Fingerprint(original), FirstCommit);
-        Directory.CreateDirectory(oldDirectory);
+        var oldSkillPath = Path.Combine(oldDirectory, "plugin-skill", "SKILL.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(oldSkillPath)!);
+        File.WriteAllText(oldSkillPath, SkillMarkdown("plugin-skill", "prior package"));
         var changed = Source();
         changed.Reference = "release";
         var acquirer = new FakeAcquirer(_paths, changed, SecondCommit, "2.0.0", "plugin-skill")
         {
             Failure = new IOException("network unavailable"),
         };
+        var registry = new SkillRegistry();
         var service = new ServerFeedSkillSyncService(
-            new SkillFeedsConfig { Plugins = [changed] }, _paths, CreateRefresher(new SkillRegistry(), static () => { }), _time,
+            new SkillFeedsConfig { Plugins = [changed] }, _paths, CreateRefresher(registry, static () => { }), _time,
             new NoOpSkillContentScanner(), NullLogger<ServerFeedSkillSyncService>.Instance, store, acquirer,
             new RecordingSink());
 
@@ -235,6 +286,8 @@ public sealed class GitSkillPluginSyncServiceTests : IDisposable
         Assert.Equal(1, Assert.Single(result.Sources).FailedCount);
         Assert.Equal(FirstCommit, (await store.GetReceiptAsync(original.Name, TestContext.Current.CancellationToken))!.InstalledCommit);
         Assert.True(Directory.Exists(oldDirectory));
+        Assert.Contains("prior package", await File.ReadAllTextAsync(
+            registry.GetByName("plugin-skill")!.FilePath, TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -317,7 +370,7 @@ public sealed class GitSkillPluginSyncServiceTests : IDisposable
     private async Task<ServerFeedSkillSyncService> CreateServiceAsync(
         GitSkillPluginSource source,
         SkillInventoryRefresher refresher,
-        FakeAcquirer acquirer,
+        IGitSkillPluginAcquirer acquirer,
         RecordingSink sink)
     {
         var store = await CreateStoreAsync();
@@ -449,6 +502,32 @@ public sealed class GitSkillPluginSyncServiceTests : IDisposable
             File.WriteAllText(Path.Combine(skillDirectory, "SKILL.md"), SkillMarkdown("healthy-skill", "healthy"));
             return Task.FromResult(new GitSkillPluginCandidate(
                 commit, null, directory, SkillScanner.Scan(directory).AcceptedSkills, []));
+        }
+    }
+
+    private sealed class BlockingResolveAcquirer : IGitSkillPluginAcquirer
+    {
+        private readonly TaskCompletionSource _never = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ResolutionStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public int AcquireCount { get; private set; }
+
+        public Task<GitSkillPluginCandidate> AcquireAsync(GitSkillPluginSource source, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public async Task<string> ResolveCommitAsync(GitSkillPluginSource source, CancellationToken cancellationToken)
+        {
+            ResolutionStarted.TrySetResult();
+            await _never.Task.WaitAsync(cancellationToken);
+            return "";
+        }
+
+        public Task<GitSkillPluginCandidate> AcquireAsync(
+            GitSkillPluginSource source,
+            string commit,
+            CancellationToken cancellationToken)
+        {
+            AcquireCount++;
+            throw new NotSupportedException();
         }
     }
 

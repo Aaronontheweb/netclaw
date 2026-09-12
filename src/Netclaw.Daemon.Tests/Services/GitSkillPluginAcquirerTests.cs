@@ -408,6 +408,25 @@ public sealed class GitSkillPluginAcquirerTests : IDisposable
         Assert.Single(handler.UserAgents);
     }
 
+    [Fact]
+    public async Task Acquire_accepts_a_64_character_fixed_commit()
+    {
+        var archive = CreateArchive(
+            ("repo/.codex-plugin/plugin.json", Manifest("1.0.0"), TarEntryType.RegularFile),
+            ("repo/skills/alpha/SKILL.md", Skill("alpha"), TarEntryType.RegularFile));
+        var handler = new GitHubHandler(archive);
+        var commit = new string('a', 64);
+        var source = Source();
+        source.ReferenceKind = GitSkillPluginReferenceKind.Commit;
+        source.Reference = commit;
+
+        var candidate = await CreateAcquirer(handler).AcquireAsync(
+            source, commit, TestContext.Current.CancellationToken);
+
+        Assert.Equal(commit, candidate.Commit);
+        Assert.Equal(0, handler.CommitRequestCount);
+    }
+
     [Theory]
     [MemberData(nameof(CorruptArchives))]
     public async Task Acquire_rejects_malformed_archive_content(byte[] archive)
