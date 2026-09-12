@@ -940,11 +940,10 @@ static void ConfigureDaemonServices(
         sp.GetServices<IContextLayerProvider>().ToList());
     services.AddHostedService<ToolIndexUpdater>();
 
-    // Server feed sync — syncs skills from private skill-server instances at startup.
-    if (skillFeedsConfig.Feeds.Any(f => f.Enabled))
-    {
-        services.AddHostedService<ServerFeedSkillSyncService>();
-    }
+    // The runner owns one pass. The actor owns startup, timers, and shared requests.
+    services.AddSingleton<ServerFeedSkillSyncService>();
+    services.AddSingleton<IServerFeedSkillSyncRunner>(
+        sp => sp.GetRequiredService<ServerFeedSkillSyncService>());
 
     // Skill directory watcher — auto-rescan when skill files change on disk.
     // Covers native skills directory, server feeds, and all external sources.
@@ -1093,6 +1092,7 @@ static void ConfigureDaemonServices(
         akkaBuilder.WithSessionLogDispatcher();
         akkaBuilder.WithSignalRGateway();
         akkaBuilder.WithDailyStatsActor();
+        akkaBuilder.WithServerFeedSkillSyncActor();
 
         // Register reminder tools after actors start (needs ReminderManagerActor ref)
         akkaBuilder.StartActors((system, registry, _) =>
