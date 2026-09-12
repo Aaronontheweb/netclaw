@@ -66,49 +66,6 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
     {
     }
 
-    public ServerFeedSkillSyncService(
-        SkillFeedsConfig feedsConfig,
-        NetclawPaths paths,
-        SkillInventoryRefresher inventoryRefresher,
-        TimeProvider timeProvider,
-        ISkillContentScanner scanner,
-        ILogger<ServerFeedSkillSyncService> logger)
-        : this(
-            feedsConfig,
-            paths,
-            inventoryRefresher,
-            timeProvider,
-            scanner,
-            logger,
-            CreateSkillServerClient,
-            new GitSkillPluginStateStore(paths, timeProvider),
-            new GitSkillPluginAcquirer(new HttpClient(), paths, timeProvider, scanner),
-            NullNotificationSink.Instance)
-    {
-    }
-
-    internal ServerFeedSkillSyncService(
-        SkillFeedsConfig feedsConfig,
-        NetclawPaths paths,
-        SkillRegistry skillRegistry,
-        SkillIndexPublisher skillIndexPublisher,
-        TimeProvider timeProvider,
-        ISkillContentScanner scanner,
-        ILogger<ServerFeedSkillSyncService> logger,
-        IReadOnlyList<ResolvedExternalSource> externalSources)
-        : this(
-            feedsConfig,
-            paths,
-            skillRegistry,
-            skillIndexPublisher,
-            timeProvider,
-            scanner,
-            logger,
-            externalSources,
-            CreateSkillServerClient)
-    {
-    }
-
     internal ServerFeedSkillSyncService(
         SkillFeedsConfig feedsConfig,
         NetclawPaths paths,
@@ -118,7 +75,10 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
         ISkillContentScanner scanner,
         ILogger<ServerFeedSkillSyncService> logger,
         IReadOnlyList<ResolvedExternalSource> externalSources,
-        Func<SkillFeedSource, SkillServerClient> clientFactory)
+        Func<SkillFeedSource, SkillServerClient> clientFactory,
+        GitSkillPluginStateStore pluginStateStore,
+        IGitSkillPluginAcquirer pluginAcquirer,
+        IOperationalNotificationSink notificationSink)
         : this(
             feedsConfig,
             paths,
@@ -132,9 +92,9 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
             scanner,
             logger,
             clientFactory,
-            new GitSkillPluginStateStore(paths, timeProvider),
-            new GitSkillPluginAcquirer(new HttpClient(), paths, timeProvider, scanner),
-            NullNotificationSink.Instance)
+            pluginStateStore,
+            pluginAcquirer,
+            notificationSink)
     {
     }
 
@@ -395,6 +355,12 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
     private IReadOnlyList<ResolvedExternalSource> ResolveManagedGitPluginSources(
         IReadOnlyList<GitSkillPluginReceipt> receipts)
         => receipts
+            .Where(receipt => _feedsConfig.Plugins.Any(source => source.Enabled
+                && string.Equals(source.Name, receipt.SourceName, StringComparison.Ordinal)
+                && string.Equals(
+                    GitSkillPluginSourceValidator.Fingerprint(source),
+                    receipt.SourceFingerprint,
+                    StringComparison.Ordinal)))
             .Select(receipt => new
             {
                 Receipt = receipt,
@@ -420,14 +386,14 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
             return;
 
         foreach (var stagingDirectory in Directory.EnumerateDirectories(root, ".staging", SearchOption.AllDirectories))
-            Directory.Delete(stagingDirectory, recursive: true);
+            GitSkillPluginAcquirer.DeleteDirectory(stagingDirectory);
 
         foreach (var commitsDirectory in Directory.EnumerateDirectories(root, "commits", SearchOption.AllDirectories))
         {
             foreach (var commitDirectory in Directory.EnumerateDirectories(commitsDirectory))
             {
                 if (!selectedDirectories.Contains(Path.GetFullPath(commitDirectory)))
-                    Directory.Delete(commitDirectory, recursive: true);
+                    GitSkillPluginAcquirer.DeleteDirectory(commitDirectory);
             }
         }
     }
@@ -437,7 +403,7 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
         if (!string.Equals(Path.GetFullPath(candidateDirectory), Path.GetFullPath(installedDirectory), StringComparison.Ordinal)
             && Directory.Exists(candidateDirectory))
         {
-            Directory.Delete(candidateDirectory, recursive: true);
+            GitSkillPluginAcquirer.DeleteDirectory(candidateDirectory);
         }
     }
 

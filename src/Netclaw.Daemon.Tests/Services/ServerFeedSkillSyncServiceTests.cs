@@ -32,6 +32,8 @@ public sealed class ServerFeedSkillSyncServiceTests : IDisposable
     private readonly SkillRegistry _skillRegistry = new();
     private readonly SkillIndexContextLayer _skillIndexLayer = new();
     private readonly SkillIndexPublisher _skillIndexPublisher;
+    private readonly GitSkillPluginStateStore _pluginStateStore;
+    private readonly IGitSkillPluginAcquirer _pluginAcquirer;
 
     public ServerFeedSkillSyncServiceTests()
     {
@@ -41,6 +43,11 @@ public sealed class ServerFeedSkillSyncServiceTests : IDisposable
             _skillRegistry,
             _skillIndexLayer,
             static (_, _) => true);
+        new SchemaMigrator(_paths, NullLogger<SchemaMigrator>.Instance)
+            .MigrateAsync(_paths.SqliteDbPath, CancellationToken.None).GetAwaiter().GetResult();
+        _pluginStateStore = new GitSkillPluginStateStore(_paths, TimeProvider.System);
+        _pluginAcquirer = new GitSkillPluginAcquirer(
+            new HttpClient(new HttpClientHandler()), _paths, TimeProvider.System, new NoOpSkillContentScanner());
     }
 
     public void Dispose() => _dir.Dispose();
@@ -409,7 +416,11 @@ public sealed class ServerFeedSkillSyncServiceTests : IDisposable
             TimeProvider.System,
             scanner ?? new NoOpSkillContentScanner(),
             NullLogger<ServerFeedSkillSyncService>.Instance,
-            []);
+            [],
+            _ => new SkillServerClient(new HttpClient(new HttpClientHandler())),
+            _pluginStateStore,
+            _pluginAcquirer,
+            NullNotificationSink.Instance);
 
     private static Task RunSyncAsync(ServerFeedSkillSyncService service)
         => service.SyncAsync(TestContext.Current.CancellationToken);
@@ -440,7 +451,10 @@ public sealed class ServerFeedSkillSyncServiceTests : IDisposable
                 if (feed.ApiKey is { Value: { Length: > 0 } apiKey })
                     client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
                 return new SkillServerClient(client);
-            });
+            },
+            _pluginStateStore,
+            _pluginAcquirer,
+            NullNotificationSink.Instance);
     }
 
     private ServerFeedSkillSyncService CreateControlledService(
@@ -467,7 +481,10 @@ public sealed class ServerFeedSkillSyncServiceTests : IDisposable
             feed => new SkillServerClient(new HttpClient(handler)
             {
                 BaseAddress = new Uri(feed.Url),
-            }));
+            }),
+            _pluginStateStore,
+            _pluginAcquirer,
+            NullNotificationSink.Instance);
     }
 
     private ServerFeedSkillSyncService CreateService(
@@ -486,7 +503,10 @@ public sealed class ServerFeedSkillSyncServiceTests : IDisposable
             feed => new SkillServerClient(new HttpClient(handler)
             {
                 BaseAddress = new Uri(feed.Url),
-            }));
+            }),
+            _pluginStateStore,
+            _pluginAcquirer,
+            NullNotificationSink.Instance);
 
     private SkillSyncState ReadAgentSyncState()
     {

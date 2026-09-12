@@ -95,7 +95,18 @@ public sealed class ServerFeedSkillSyncToolIntegrationTests : IDisposable
             feed => new SkillServerClient(new HttpClient(handler, disposeHandler: false)
             {
                 BaseAddress = new Uri(feed.Url),
-            }));
+            }),
+            CreatePluginStateStore(),
+            new GitSkillPluginAcquirer(
+                new HttpClient(new HttpClientHandler()), _paths, TimeProvider.System, new NoOpSkillContentScanner()),
+            NullNotificationSink.Instance);
+    }
+
+    private GitSkillPluginStateStore CreatePluginStateStore()
+    {
+        new SchemaMigrator(_paths, NullLogger<SchemaMigrator>.Instance)
+            .MigrateAsync(_paths.SqliteDbPath, CancellationToken.None).GetAwaiter().GetResult();
+        return new GitSkillPluginStateStore(_paths, TimeProvider.System);
     }
 
     private sealed class RevisionFeedHandler : HttpMessageHandler

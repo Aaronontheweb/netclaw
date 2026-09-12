@@ -261,7 +261,10 @@ public sealed class SkillEndpointRouteBuilderExtensionsTests : IDisposable
             new SkillInventoryRefresher(paths, new SkillFeedsConfig(), [], registry, publisher),
             TimeProvider.System,
             new NoOpSkillContentScanner(),
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<ServerFeedSkillSyncService>.Instance);
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<ServerFeedSkillSyncService>.Instance,
+            CreatePluginStateStore(paths),
+            CreatePluginAcquirer(paths),
+            NullNotificationSink.Instance);
     }
 
     private static ServerFeedSkillSyncService CreateBlockingSyncService(
@@ -287,8 +290,25 @@ public sealed class SkillEndpointRouteBuilderExtensionsTests : IDisposable
             feed => new Netclaw.SkillClient.SkillServerClient(new HttpClient(handler)
             {
                 BaseAddress = new Uri(feed.Url),
-            }));
+            }),
+            CreatePluginStateStore(paths),
+            CreatePluginAcquirer(paths),
+            NullNotificationSink.Instance);
     }
+
+    private static GitSkillPluginStateStore CreatePluginStateStore(NetclawPaths paths)
+    {
+        new SchemaMigrator(paths, Microsoft.Extensions.Logging.Abstractions.NullLogger<SchemaMigrator>.Instance)
+            .MigrateAsync(paths.SqliteDbPath, CancellationToken.None).GetAwaiter().GetResult();
+        return new GitSkillPluginStateStore(paths, TimeProvider.System);
+    }
+
+    private static IGitSkillPluginAcquirer CreatePluginAcquirer(NetclawPaths paths)
+        => new GitSkillPluginAcquirer(
+            new HttpClient(new HttpClientHandler()),
+            paths,
+            TimeProvider.System,
+            new NoOpSkillContentScanner());
 
     private sealed class BlockingFeedHandler : HttpMessageHandler
     {
