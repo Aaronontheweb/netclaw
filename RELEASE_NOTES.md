@@ -5,6 +5,7 @@
 ### MCP reliability
 
 - **OAuth token exchanges request JSON responses.** This keeps GitHub-compatible token endpoints aligned with the MCP SDK decoder ([#2141](https://github.com/netclaw-dev/netclaw/issues/2141)).
+- **MCP OAuth supports confidential clients.** `netclaw mcp add` stores an optional client secret in encrypted configuration. Token exchange and refresh use the configured identity ([#2141](https://github.com/netclaw-dev/netclaw/issues/2141)).
 
 ## 0.27.0-beta.3 (2026-09-12)
 
