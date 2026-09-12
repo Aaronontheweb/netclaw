@@ -3,59 +3,257 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Diagnostics;
+using System.Runtime.Versioning;
+using System.Text.Json;
+using Netclaw.Actors.Skills;
+using Netclaw.Configuration;
+using Netclaw.Configuration.Feeds;
+using Netclaw.Daemon.Services;
 using Netclaw.Tests.Utilities;
 using Xunit;
 
 namespace Netclaw.Daemon.Tests;
 
-/// <summary>
-/// Validates that built-in skill files are present in the build output and can
-/// be seeded to a skills directory correctly. Skills are sourced from
-/// <c>feeds/skills/.system/files/</c> via the csproj Content items.
-/// </summary>
 public sealed class BuiltInSkillSeedingTests : IDisposable
 {
-    private readonly DisposableTempDir _dir = new();
+    private readonly DisposableTempDir _directory = new();
 
-    public void Dispose() => _dir.Dispose();
-
-    [Fact]
-    public void BuiltInSkills_directory_exists_in_build_output()
-    {
-        var builtInDir = Path.Combine(AppContext.BaseDirectory, "BuiltInSkills");
-        Assert.True(Directory.Exists(builtInDir), $"BuiltInSkills directory not found at {builtInDir}");
-    }
-
-    [Theory]
-    [InlineData("netclaw-operations")]
-    [InlineData("netclaw-memory")]
-    [InlineData("search-citation")]
-    [InlineData("skill-authoring")]
-    [InlineData("subagent-authoring")]
-    public void BuiltInSkills_contains_SKILL_md_for_each_system_skill(string skillName)
-    {
-        var skillPath = Path.Combine(AppContext.BaseDirectory, "BuiltInSkills", skillName, "SKILL.md");
-        Assert.True(File.Exists(skillPath), $"Missing built-in skill: {skillPath}");
-
-        var content = File.ReadAllText(skillPath);
-        Assert.StartsWith("---", content, StringComparison.Ordinal); // YAML frontmatter
-        Assert.Contains($"name: {skillName}", content, StringComparison.Ordinal);
-    }
+    public void Dispose() => _directory.Dispose();
 
     [Fact]
-    public void BuiltInSkills_includes_companion_files_for_search_citation()
+    public void Restore_writes_the_complete_embedded_tree()
     {
-        var refsDir = Path.Combine(AppContext.BaseDirectory, "BuiltInSkills", "search-citation", "references");
-        Assert.True(Directory.Exists(refsDir), $"search-citation/references/ directory missing at {refsDir}");
+        var paths = CreatePaths();
 
-        var refFiles = Directory.GetFiles(refsDir, "*.md");
-        Assert.True(refFiles.Length >= 3, $"Expected at least 3 reference files, found {refFiles.Length}");
+        EmbeddedSystemSkillRestorer.Restore(paths);
+
+        var sourceDirectory = FindSourceDirectory();
+        var sourceFiles = Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.AllDirectories)
+            .Select(path => Path.GetRelativePath(sourceDirectory, path)
+                .Replace(Path.DirectorySeparatorChar, '/'))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        var embeddedFiles = typeof(EmbeddedSystemSkillRestorer).Assembly
+            .GetManifestResourceNames()
+            .Where(EmbeddedSystemSkillRestorer.IsSystemSkillResource)
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+        var restoredFiles = Directory.EnumerateFiles(paths.SystemSkillsDirectory, "*", SearchOption.AllDirectories)
+            .Select(path => Path.GetRelativePath(paths.SystemSkillsDirectory, path)
+                .Replace(Path.DirectorySeparatorChar, '/'))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.NotEmpty(embeddedFiles);
+        Assert.Equal(sourceFiles, restoredFiles);
+        Assert.Equal(
+            embeddedFiles.Select(EmbeddedSystemSkillRestorer.GetResourceRelativePath),
+            restoredFiles);
+
+        foreach (var relativePath in sourceFiles)
+        {
+            var targetPath = Path.Combine(paths.SystemSkillsDirectory, relativePath.Replace('/', Path.DirectorySeparatorChar));
+            var sourcePath = Path.Combine(sourceDirectory, relativePath.Replace('/', Path.DirectorySeparatorChar));
+            Assert.Equal(File.ReadAllBytes(sourcePath), File.ReadAllBytes(targetPath));
+
+            if (!OperatingSystem.IsWindows())
+            {
+                var executableBits = UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
+                Assert.Equal(
+                    File.GetUnixFileMode(sourcePath) & executableBits,
+                    File.GetUnixFileMode(targetPath) & executableBits);
+            }
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            var sourceExecutablePaths = new List<string>();
+            foreach (var sourceFile in sourceFiles)
+            {
+                var sourcePath = Path.Combine(sourceDirectory, sourceFile.Replace('/', Path.DirectorySeparatorChar));
+                if (File.GetUnixFileMode(sourcePath).HasFlag(UnixFileMode.UserExecute))
+                    sourceExecutablePaths.Add(sourceFile);
+            }
+            using var manifestStream = typeof(EmbeddedSystemSkillRestorer).Assembly
+                .GetManifestResourceStream("Netclaw.SystemSkillExecutablePaths");
+            Assert.NotNull(manifestStream);
+            var manifestExecutablePaths = JsonSerializer.Deserialize<string[]>(manifestStream)!;
+
+            Assert.Equal(sourceExecutablePaths.Order(StringComparer.Ordinal), manifestExecutablePaths.Order(StringComparer.Ordinal));
+        }
+    }
+
+    [Fact]
+    public void Restore_replaces_the_managed_tree_and_preserves_user_skills()
+    {
+        var paths = CreatePaths();
+        var managedSkill = Path.Combine(paths.SystemSkillsDirectory, "netclaw-memory", "SKILL.md");
+        var staleFile = Path.Combine(paths.SystemSkillsDirectory, "stale", "reference.md");
+        var userSkill = Path.Combine(paths.SkillsDirectory, "user-skill", "SKILL.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(managedSkill)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(staleFile)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(userSkill)!);
+        File.WriteAllText(managedSkill, "modified system content");
+        File.WriteAllText(staleFile, "stale system content");
+        File.WriteAllText(userSkill, "user content");
+
+        EmbeddedSystemSkillRestorer.Restore(paths);
+
+        Assert.DoesNotContain("modified system content", File.ReadAllText(managedSkill), StringComparison.Ordinal);
+        Assert.False(File.Exists(staleFile));
+        Assert.Equal("user content", File.ReadAllText(userSkill));
+    }
+
+    [Fact]
+    public void Restore_removes_only_abandoned_swap_directories()
+    {
+        var paths = CreatePaths();
+        var abandonedStaging = Path.Combine(paths.SkillsDirectory, $".system.staging-{Guid.NewGuid():N}");
+        var abandonedBackup = Path.Combine(paths.SkillsDirectory, $".system.backup-{Guid.NewGuid():N}");
+        var similarDirectory = Path.Combine(paths.SkillsDirectory, ".system.backup-operator-data");
+        Directory.CreateDirectory(abandonedStaging);
+        Directory.CreateDirectory(abandonedBackup);
+        Directory.CreateDirectory(similarDirectory);
+        File.WriteAllText(Path.Combine(abandonedStaging, "partial.md"), "partial staging content");
+        File.WriteAllText(Path.Combine(abandonedBackup, "SKILL.md"), "old backup content");
+        File.WriteAllText(Path.Combine(similarDirectory, "operator.md"), "operator content");
+
+        EmbeddedSystemSkillRestorer.Restore(paths);
+
+        Assert.False(Directory.Exists(abandonedStaging));
+        Assert.False(Directory.Exists(abandonedBackup));
+        Assert.True(Directory.Exists(similarDirectory));
+    }
+
+    [Fact(SkipType = typeof(TestPlatform), SkipUnless = nameof(TestPlatform.IsPosix),
+        Skip = "Symbolic link fixture requires POSIX filesystem support")]
+    public void Restore_rejects_an_abandoned_swap_symbolic_link()
+    {
+        var paths = CreatePaths();
+        var externalDirectory = Path.Combine(_directory.Path, "external-swap-target");
+        var sentinel = Path.Combine(externalDirectory, "sentinel.md");
+        Directory.CreateDirectory(externalDirectory);
+        File.WriteAllText(sentinel, "must remain outside the managed tree");
+        var abandonedLink = Path.Combine(paths.SkillsDirectory, $".system.staging-{Guid.NewGuid():N}");
+        Directory.CreateSymbolicLink(abandonedLink, externalDirectory);
+
+        var exception = Assert.Throws<InvalidOperationException>(() => EmbeddedSystemSkillRestorer.Restore(paths));
+
+        Assert.Contains("reparse point", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(Directory.Exists(abandonedLink));
+        Assert.Equal("must remain outside the managed tree", File.ReadAllText(sentinel));
+    }
+
+    [Fact]
+    public void Restore_populates_the_registry_search_index()
+    {
+        var paths = CreatePaths();
+        EmbeddedSystemSkillRestorer.Restore(paths);
+        var registry = new SkillRegistry();
+        var indexLayer = new SkillIndexContextLayer();
+        var refresher = new SkillInventoryRefresher(
+            paths,
+            new SkillFeedsConfig(),
+            [],
+            registry,
+            new SkillIndexPublisher(registry, indexLayer, static (_, _) => true));
+
+        refresher.Refresh();
+
+        Assert.Contains(registry.Search("diagnostics"), skill => skill.Name == "netclaw-operations");
+    }
+
+    [Fact(SkipType = typeof(TestPlatform), SkipUnless = nameof(TestPlatform.IsPosix),
+        Skip = "Symbolic link fixture requires POSIX filesystem support")]
+    public void Restore_rejects_a_symbolic_link_for_the_managed_tree()
+    {
+        var paths = CreatePaths();
+        var externalDirectory = Path.Combine(_directory.Path, "external-system-skills");
+        Directory.CreateDirectory(externalDirectory);
+        var sentinel = Path.Combine(externalDirectory, "sentinel.md");
+        File.WriteAllText(sentinel, "must remain outside the managed tree");
+        Directory.Delete(paths.SystemSkillsDirectory);
+        Directory.CreateSymbolicLink(paths.SystemSkillsDirectory, externalDirectory);
+
+        var exception = Assert.Throws<InvalidOperationException>(() => EmbeddedSystemSkillRestorer.Restore(paths));
+
+        Assert.Contains("symbolic link", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("must remain outside the managed tree", File.ReadAllText(sentinel));
+    }
+
+    [Fact(SkipType = typeof(TestPlatform), SkipUnless = nameof(TestPlatform.IsWindows),
+        Skip = "This case uses native Windows junction semantics.")]
+    public async Task Restore_rejects_a_windows_junction_for_the_managed_tree()
+    {
+        var paths = CreatePaths();
+        var externalDirectory = Path.Combine(_directory.Path, "external-system-skills");
+        var sentinel = Path.Combine(externalDirectory, "sentinel.md");
+        Directory.CreateDirectory(externalDirectory);
+        File.WriteAllText(sentinel, "must remain outside the managed tree");
+        Directory.Delete(paths.SystemSkillsDirectory);
+        await CreateWindowsJunctionAsync(paths.SystemSkillsDirectory, externalDirectory);
+
+        var exception = Assert.Throws<InvalidOperationException>(() => EmbeddedSystemSkillRestorer.Restore(paths));
+
+        Assert.Contains("reparse point", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("must remain outside the managed tree", File.ReadAllText(sentinel));
+    }
+
+    [Fact]
+    public void Restore_keeps_an_unmanaged_file_when_the_tree_swap_fails()
+    {
+        var paths = CreatePaths();
+        var abandonedBackup = Path.Combine(paths.SkillsDirectory, $".system.backup-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(abandonedBackup);
+        Directory.Delete(paths.SystemSkillsDirectory);
+        File.WriteAllText(paths.SystemSkillsDirectory, "unmanaged file");
+
+        var exception = Assert.Throws<InvalidOperationException>(() => EmbeddedSystemSkillRestorer.Restore(paths));
+
+        Assert.IsType<IOException>(exception.InnerException);
+        Assert.Contains(paths.SystemSkillsDirectory, exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Confirm that", exception.Message, StringComparison.Ordinal);
+        Assert.Equal("unmanaged file", File.ReadAllText(paths.SystemSkillsDirectory));
+        Assert.True(Directory.Exists(abandonedBackup));
+    }
+
+    [Fact(SkipType = typeof(TestPlatform), SkipUnless = nameof(TestPlatform.IsLinux),
+        Skip = "Cleanup failure requires Linux directory permission semantics")]
+    [SupportedOSPlatform("linux")]
+    public void Restore_keeps_the_committed_tree_when_backup_cleanup_fails()
+    {
+        var paths = CreatePaths();
+        var oldSkill = Path.Combine(paths.SystemSkillsDirectory, "old-skill", "SKILL.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(oldSkill)!);
+        File.WriteAllText(oldSkill, "old system content");
+        File.SetUnixFileMode(paths.SystemSkillsDirectory, UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+        try
+        {
+            var exception = Record.Exception(() => EmbeddedSystemSkillRestorer.Restore(paths));
+
+            var restoreException = Assert.IsType<InvalidOperationException>(exception);
+            Assert.IsType<UnauthorizedAccessException>(restoreException.InnerException);
+            Assert.True(File.Exists(Path.Combine(paths.SystemSkillsDirectory, "netclaw-memory", "SKILL.md")));
+            Assert.False(File.Exists(Path.Combine(paths.SystemSkillsDirectory, "old-skill", "SKILL.md")));
+        }
+        finally
+        {
+            foreach (var backupDirectory in Directory.GetDirectories(paths.SkillsDirectory, ".system.backup-*"))
+            {
+                File.SetUnixFileMode(backupDirectory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                Directory.Delete(backupDirectory, recursive: true);
+            }
+        }
     }
 
     [Fact]
     public void Operations_skill_and_project_reference_share_tool_and_directory_order()
     {
-        var skillDirectory = Path.Combine(AppContext.BaseDirectory, "BuiltInSkills", "netclaw-operations");
+        var paths = CreatePaths();
+        EmbeddedSystemSkillRestorer.Restore(paths);
+        var skillDirectory = Path.Combine(paths.SystemSkillsDirectory, "netclaw-operations");
         var skill = File.ReadAllText(Path.Combine(skillDirectory, "SKILL.md"));
         var projects = File.ReadAllText(Path.Combine(skillDirectory, "references", "projects.md"));
 
@@ -108,73 +306,47 @@ public sealed class BuiltInSkillSeedingTests : IDisposable
         }
     }
 
-    [Fact]
-    public void CopyBuiltInSkills_seeds_to_empty_directory()
+    private NetclawPaths CreatePaths()
     {
-        var skillsDir = Path.Combine(_dir.Path, "skills");
-        Directory.CreateDirectory(skillsDir);
-
-        // Invoke the seeding method
-        CopyBuiltInSkillsHelper(skillsDir);
-
-        // Verify all 3 skills were seeded
-        var seededSkills = Directory.GetDirectories(skillsDir)
-            .Select(Path.GetFileName)
-            .OrderBy(n => n)
-            .ToList();
-
-        Assert.Contains("netclaw-operations", seededSkills);
-        Assert.Contains("netclaw-memory", seededSkills);
-        Assert.Contains("search-citation", seededSkills);
-        Assert.Contains("skill-authoring", seededSkills);
-        Assert.Contains("subagent-authoring", seededSkills);
-
-        // Verify SKILL.md exists in each
-        foreach (var skillDir in Directory.GetDirectories(skillsDir))
-        {
-            Assert.True(File.Exists(Path.Combine(skillDir, "SKILL.md")),
-                $"Missing SKILL.md in {Path.GetFileName(skillDir)}");
-        }
-
-        // Verify companion files were copied
-        Assert.True(File.Exists(Path.Combine(skillsDir, "search-citation", "references", "local-search.md")));
+        var paths = new NetclawPaths(Path.Combine(_directory.Path, Guid.NewGuid().ToString("N")));
+        paths.EnsureDirectoriesExist();
+        return paths;
     }
 
-    [Fact]
-    public void CopyBuiltInSkills_does_not_overwrite_existing_files()
+    private static async Task CreateWindowsJunctionAsync(string link, string target)
     {
-        var skillsDir = Path.Combine(_dir.Path, "skills");
-        var skillDir = Path.Combine(skillsDir, "netclaw-memory");
-        var targetPath = Path.Combine(skillDir, "SKILL.md");
+        var startInfo = new ProcessStartInfo("cmd.exe")
+        {
+            RedirectStandardError = true,
+            RedirectStandardOutput = true,
+            UseShellExecute = false
+        };
+        startInfo.ArgumentList.Add("/d");
+        startInfo.ArgumentList.Add("/c");
+        startInfo.ArgumentList.Add("mklink");
+        startInfo.ArgumentList.Add("/J");
+        startInfo.ArgumentList.Add(link);
+        startInfo.ArgumentList.Add(target);
 
-        Directory.CreateDirectory(skillDir);
-        File.WriteAllText(targetPath, "custom content from feed sync");
-
-        // Run seeding — should NOT overwrite
-        CopyBuiltInSkillsHelper(skillsDir);
-
-        Assert.Equal("custom content from feed sync", File.ReadAllText(targetPath));
+        using var process = Process.Start(startInfo);
+        Assert.NotNull(process);
+        await process.WaitForExitAsync(TestContext.Current.CancellationToken);
+        var standardOutput = await process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
+        var standardError = await process.StandardError.ReadToEndAsync(TestContext.Current.CancellationToken);
+        Assert.True(process.ExitCode == 0, $"mklink failed: {standardOutput}{standardError}");
     }
 
-    /// <summary>
-    /// Mirrors the <c>CopyBuiltInSkills</c> logic from Program.cs for testing.
-    /// </summary>
-    private static void CopyBuiltInSkillsHelper(string skillsDirectory)
+    private static string FindSourceDirectory()
     {
-        var builtInDir = Path.Combine(AppContext.BaseDirectory, "BuiltInSkills");
-        if (!Directory.Exists(builtInDir))
-            return;
-
-        foreach (var sourceFile in Directory.EnumerateFiles(builtInDir, "*", SearchOption.AllDirectories))
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
+             directory is not null;
+             directory = directory.Parent)
         {
-            var relativePath = Path.GetRelativePath(builtInDir, sourceFile);
-            var targetPath = Path.Combine(skillsDirectory, relativePath);
-
-            if (File.Exists(targetPath))
-                continue;
-
-            Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
-            File.Copy(sourceFile, targetPath);
+            var candidate = Path.Combine(directory.FullName, "feeds", "skills", ".system", "files");
+            if (Directory.Exists(candidate))
+                return candidate;
         }
+
+        throw new DirectoryNotFoundException("The system skill source tree is unavailable to the test.");
     }
 }
