@@ -52,10 +52,21 @@ public sealed class SkillCommandTests : IDisposable
     }
 
     private Task<int> RunListAsync(DaemonApi? daemonApi)
-        => SkillCommand.RunAsync(["skill", "list"], _paths, daemonApi, output: _output);
+        => SkillCommand.RunAsync(
+            ["skill", "list"], _paths, TimeProvider.System, TextReader.Null, daemonApi, output: _output);
 
     private Task<int> RunSyncAsync(DaemonApi? daemonApi)
-        => SkillCommand.RunAsync(["skill", "sync"], _paths, daemonApi, output: _output);
+        => SkillCommand.RunAsync(
+            ["skill", "sync"], _paths, TimeProvider.System, TextReader.Null, daemonApi, output: _output);
+
+    private Task<int> RunRetrySyncAsync(DaemonApi? daemonApi)
+        => SkillCommand.RunAsync(
+            ["skill", "sync", "--retry-rejected"],
+            _paths,
+            TimeProvider.System,
+            TextReader.Null,
+            daemonApi,
+            output: _output);
 
     // ── Success paths ─────────────────────────────────────────────────
 
@@ -147,6 +158,175 @@ public sealed class SkillCommandTests : IDisposable
         Assert.Equal(0, exit);
         Assert.Contains("pass-1", _output.ToString());
         Assert.Contains("team: ok", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Sync_retry_requests_an_explicit_rejected_commit_retry()
+    {
+        var daemonApi = CreateDaemonApi(request =>
+        {
+            Assert.Equal("?retryRejected=true", request.RequestUri!.Query);
+            return FakeHttpMessageHandler.JsonResponse(new
+            {
+                passId = "pass-retry",
+                sources = Array.Empty<object>(),
+                inventory = new { succeeded = true, acceptedCount = 0, rejectedCount = 0 },
+            });
+        });
+
+        var exit = await RunRetrySyncAsync(daemonApi);
+
+        Assert.Equal(0, exit);
+        Assert.Contains("pass-retry", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Plugin_install_waits_for_restart_and_immediate_sync()
+    {
+        var requests = new List<string>();
+        var daemonApi = CreateDaemonApi(request =>
+        {
+            requests.Add($"{request.Method} {request.RequestUri!.PathAndQuery}");
+            if (request.RequestUri.AbsolutePath == "/api/skills/plugins"
+                && request.Method == HttpMethod.Post)
+            {
+                return FakeHttpMessageHandler.JsonResponse(new
+                {
+                    restartGeneration = 4,
+                    plugin = Plugin(GitSkillPluginApi.PluginStatus.NotInstalled, installedCommit: null),
+                });
+            }
+            if (request.RequestUri.AbsolutePath == "/api/health/ready")
+            {
+                var ready = new HttpResponseMessage(HttpStatusCode.OK);
+                ready.Headers.Add("X-Netclaw-Generation", "5");
+                return ready;
+            }
+            if (request.RequestUri.AbsolutePath == "/api/skills/sync")
+            {
+                return FakeHttpMessageHandler.JsonResponse(new
+                {
+                    passId = "install-pass",
+                    sources = new[]
+                    {
+                        new { name = "fixture", changedCount = 1, unchangedCount = 0, rejectedCount = 0, failedCount = 0, sidecar = "not-applicable" },
+                    },
+                    inventory = new { succeeded = true, acceptedCount = 1, rejectedCount = 0 },
+                });
+            }
+            return FakeHttpMessageHandler.JsonResponse(new
+            {
+                plugins = new[]
+                {
+                    Plugin(GitSkillPluginApi.PluginStatus.Installed, "13e26d39ed01d97ea592235d041304d289f4ba07"),
+                },
+            });
+        });
+
+        var exit = await SkillCommand.RunAsync(
+            [
+                "skill", "plugin", "install", "owner/repository", "--name", "fixture",
+                "--commit", "13e26d39ed01d97ea592235d041304d289f4ba07",
+                "--yes",
+            ],
+            _paths,
+            TimeProvider.System,
+            TextReader.Null,
+            daemonApi,
+            output: _output);
+
+        Assert.True(exit == 0, _output.ToString());
+        Assert.Equal(
+            [
+                "POST /api/skills/plugins",
+                "GET /api/health/ready",
+                "POST /api/skills/sync",
+                "GET /api/skills/plugins",
+            ],
+            requests);
+        Assert.Contains("Installed plugin 'fixture'", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Plugin_remove_requires_confirmation_before_the_daemon_request()
+    {
+        var requested = false;
+        var daemonApi = CreateDaemonApi(_ =>
+        {
+            requested = true;
+            return FakeHttpMessageHandler.JsonResponse(new { });
+        });
+
+        var exit = await SkillCommand.RunAsync(
+            ["skill", "plugin", "remove", "fixture"],
+            _paths,
+            TimeProvider.System,
+            new StringReader("no\n"),
+            daemonApi,
+            output: _output);
+
+        Assert.Equal(0, exit);
+        Assert.False(requested);
+        Assert.Contains("Cancelled.", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Plugin_enable_syncs_an_enabled_source_that_is_not_installed()
+    {
+        var requests = new List<string>();
+        var listCount = 0;
+        var daemonApi = CreateDaemonApi(request =>
+        {
+            requests.Add($"{request.Method} {request.RequestUri!.PathAndQuery}");
+            if (request.Method == HttpMethod.Patch)
+            {
+                return FakeHttpMessageHandler.JsonResponse(new
+                {
+                    restartGeneration = 4,
+                    name = "fixture",
+                    changed = false,
+                });
+            }
+            if (request.RequestUri.AbsolutePath == "/api/skills/plugins")
+            {
+                var status = listCount++ == 0
+                    ? GitSkillPluginApi.PluginStatus.NotInstalled
+                    : GitSkillPluginApi.PluginStatus.Installed;
+                return FakeHttpMessageHandler.JsonResponse(new
+                {
+                    plugins = new[] { Plugin(status, status == GitSkillPluginApi.PluginStatus.Installed
+                        ? "13e26d39ed01d97ea592235d041304d289f4ba07"
+                        : null) },
+                });
+            }
+            return FakeHttpMessageHandler.JsonResponse(new
+            {
+                passId = "enable-pass",
+                sources = new[]
+                {
+                    new { name = "fixture", changedCount = 1, unchangedCount = 0, rejectedCount = 0, failedCount = 0, sidecar = "not-applicable" },
+                },
+                inventory = new { succeeded = true, acceptedCount = 1, rejectedCount = 0 },
+            });
+        });
+
+        var exit = await SkillCommand.RunAsync(
+            ["skill", "plugin", "enable", "fixture", "--yes"],
+            _paths,
+            TimeProvider.System,
+            TextReader.Null,
+            daemonApi,
+            output: _output);
+
+        Assert.True(exit == 0, _output.ToString());
+        Assert.Equal(
+            [
+                "PATCH /api/skills/plugins/fixture",
+                "GET /api/skills/plugins",
+                "POST /api/skills/sync",
+                "GET /api/skills/plugins",
+            ],
+            requests);
     }
 
     [Fact]
@@ -334,9 +514,30 @@ public sealed class SkillCommandTests : IDisposable
     [Fact]
     public async Task List_reports_daemon_unavailable_when_no_daemon_api_is_supplied()
     {
-        var exit = await SkillCommand.RunAsync(["skill", "list"], _paths, daemonApi: null, output: _output);
+        var exit = await SkillCommand.RunAsync(
+            ["skill", "list"],
+            _paths,
+            TimeProvider.System,
+            TextReader.Null,
+            daemonApi: null,
+            output: _output);
 
         Assert.Equal(1, exit);
         Assert.Contains(UnavailableMarker, _output.ToString());
     }
+
+    private static object Plugin(GitSkillPluginApi.PluginStatus status, string? installedCommit) => new
+    {
+        name = "fixture",
+        repository = "owner/repository",
+        format = "codex",
+        subdirectory = (string?)null,
+        referenceKind = GitSkillPluginReferenceKind.Commit,
+        reference = "13e26d39ed01d97ea592235d041304d289f4ba07",
+        enabled = true,
+        status,
+        installedCommit,
+        lastObservedCommit = installedCommit,
+        installedVersion = "1.0.0",
+    };
 }

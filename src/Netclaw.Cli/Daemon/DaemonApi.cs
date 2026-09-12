@@ -164,15 +164,94 @@ public sealed class DaemonApi
     /// A source pass can exceed normal status request limits. The caller controls
     /// only its wait through <paramref name="ct"/>.
     /// </summary>
-    public async Task<SkillSyncResult.Response?> SyncSkillsAsync(CancellationToken ct = default)
+    public async Task<SkillSyncResult.Response?> SyncSkillsAsync(
+        CancellationToken ct = default,
+        bool retryRejected = false)
     {
         var client = CreateHttpClient();
         client.Timeout = Timeout.InfiniteTimeSpan;
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_endpoint}/api/skills/sync");
+        var suffix = retryRejected ? "?retryRejected=true" : string.Empty;
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"{_endpoint}/api/skills/sync{suffix}");
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         response.EnsureSuccessStatusCode();
         var stream = await response.Content.ReadAsStreamAsync(ct);
         return await JsonSerializer.DeserializeAsync<SkillSyncResult.Response>(stream, JsonDefaults.Api, ct);
+    }
+
+    public async Task<GitSkillPluginApi.ListResponse?> ListGitSkillPluginsAsync(
+        CancellationToken ct = default)
+    {
+        using var cts = CreateTimeoutCts(DefaultTimeout, ct);
+        var client = CreateHttpClient();
+        using var response = await client.GetAsync($"{_endpoint}/api/skills/plugins", cts.Token);
+        response.EnsureSuccessStatusCode();
+        var stream = await response.Content.ReadAsStreamAsync(cts.Token);
+        return await JsonSerializer.DeserializeAsync<GitSkillPluginApi.ListResponse>(
+            stream,
+            JsonDefaults.Api,
+            cts.Token);
+    }
+
+    public async Task<GitSkillPluginApi.InstallResponse?> InstallGitSkillPluginAsync(
+        GitSkillPluginApi.InstallRequest request,
+        CancellationToken ct = default)
+    {
+        var client = CreateHttpClient();
+        client.Timeout = Timeout.InfiniteTimeSpan;
+        using var response = await client.PostAsJsonAsync(
+            $"{_endpoint}/api/skills/plugins",
+            request,
+            JsonDefaults.Api,
+            ct);
+        response.EnsureSuccessStatusCode();
+        var stream = await response.Content.ReadAsStreamAsync(ct);
+        return await JsonSerializer.DeserializeAsync<GitSkillPluginApi.InstallResponse>(
+            stream,
+            JsonDefaults.Api,
+            ct);
+    }
+
+    public async Task<GitSkillPluginApi.MutationResponse?> SetGitSkillPluginEnabledAsync(
+        string name,
+        bool enabled,
+        CancellationToken ct = default)
+    {
+        using var cts = CreateTimeoutCts(LongTimeout, ct);
+        var client = CreateHttpClient();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Patch,
+            $"{_endpoint}/api/skills/plugins/{Uri.EscapeDataString(name)}")
+        {
+            Content = JsonContent.Create(
+                new GitSkillPluginApi.SetEnabledRequest { Enabled = enabled },
+                options: JsonDefaults.Api),
+        };
+        using var response = await client.SendAsync(request, cts.Token);
+        response.EnsureSuccessStatusCode();
+        var stream = await response.Content.ReadAsStreamAsync(cts.Token);
+        return await JsonSerializer.DeserializeAsync<GitSkillPluginApi.MutationResponse>(
+            stream,
+            JsonDefaults.Api,
+            cts.Token);
+    }
+
+    public async Task<GitSkillPluginApi.MutationResponse?> RemoveGitSkillPluginAsync(
+        string name,
+        CancellationToken ct = default)
+    {
+        using var cts = CreateTimeoutCts(LongTimeout, ct);
+        var client = CreateHttpClient();
+        using var response = await client.DeleteAsync(
+            $"{_endpoint}/api/skills/plugins/{Uri.EscapeDataString(name)}",
+            cts.Token);
+        response.EnsureSuccessStatusCode();
+        var stream = await response.Content.ReadAsStreamAsync(cts.Token);
+        return await JsonSerializer.DeserializeAsync<GitSkillPluginApi.MutationResponse>(
+            stream,
+            JsonDefaults.Api,
+            cts.Token);
     }
 
     // ── Reminders ─────────────────────────────────────────────────────

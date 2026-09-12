@@ -157,6 +157,67 @@ For example, a healthy feed can update while another feed returns HTTP 500. The 
 A rejected skill retains its prior bytes and receipt. Other accepted skills from that feed can still update.
 Download failures do not create security alerts. This change does not alter the existing scanner or alert policy.
 
+### 8) Managed Git Skill Plugins
+
+The CLI manages public GitHub skill plugins through the paired daemon.
+The daemon owns source validation, reference resolution, configuration writes, and installed state.
+The CLI never writes plugin configuration on the client host.
+
+| Command | Behavior |
+|---|---|
+| `netclaw skill plugin install <owner/repository> [options]` | Configure a source, restart the daemon, run a sync, and verify installation |
+| `netclaw skill plugin list` | List configured sources and installed state |
+| `netclaw skill plugin enable <name>` | Enable a source and verify its installation |
+| `netclaw skill plugin disable <name>` | Disable a source and remove it from the live inventory |
+| `netclaw skill plugin remove <name>` | Remove a source and its durable sync state |
+| `netclaw skill sync --retry-rejected` | Retry rejected commits during the requested sync pass |
+
+The install command accepts `--branch`, `--tag`, or `--commit`.
+The operator can select only one reference option.
+Each plugin mutation requires confirmation unless the operator supplies `--yes`.
+The daemon resolves an omitted reference to the repository's default branch.
+The daemon stores the resolved branch name.
+The daemon resolves a tag once and stores its exact commit.
+The durable source format supports only `Branch` and `Commit`.
+
+The daemon applies this ordered flow:
+
+```text
+CLI -> authenticated daemon route
+  validate the repository, name, format, path, reference, and timeout
+  resolve the default branch or tag when required
+  write the canonical source to SkillFeeds.Plugins
+  return the current restart generation
+CLI -> wait for a later healthy daemon generation
+CLI -> request one immediate skill sync
+daemon -> download, inspect, scan, and publish the candidate
+CLI -> read the plugin state and report success or failure
+```
+
+The configuration file is durable state.
+The SQLite receipt and rejection tables are durable state.
+The sync actor owns active and queued pass state.
+The CLI owns its request and restart wait state.
+
+A valid source remains configured when a download or candidate check fails.
+The plugin then has the `NotInstalled` state when no prior receipt exists.
+A failed source change keeps the prior installed content active.
+An invalid source or unresolved tag fails before configuration persistence.
+All configuration writes preserve unrelated JSON and existing `SkillFeeds` data.
+The configuration TUI must preserve `SkillFeeds.Plugins` during each load and save cycle.
+
+An ordinary pass skips a known rejected commit.
+An explicit retry pass tests that commit again.
+A retry request waits behind an active ordinary pass.
+An ordinary request can join either active pass.
+A successful retry removes the matching durable rejection.
+
+For example, `--tag v1.2.0` can resolve to commit `13e26d39...`.
+The daemon stores that commit before its restart and acquires the content after restart.
+
+For a negative example, an unknown tag returns an error before the daemon changes the configuration.
+A scanner rejection keeps the source configured and records the rejected commit.
+
 ## Output and Exit Codes
 
 - default output: human readable text

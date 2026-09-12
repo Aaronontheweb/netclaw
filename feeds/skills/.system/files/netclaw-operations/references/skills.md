@@ -1,6 +1,3 @@
-# Skill Management
-
-
 ## Skill Management
 
 
@@ -17,7 +14,7 @@ commands below only for explicit operator inspection and diagnostics.
 | Command | What it does |
 |---------|--------------|
 | `netclaw skill list` | List all discovered skills with source, version, status |
-| `netclaw skill sync` | Run one external source sync pass and report each source result |
+| `netclaw skill sync [--retry-rejected]` | Run one external source sync pass and report each source result |
 | `netclaw skill show <name>` | Show skill metadata and full content |
 | `netclaw skill validate <path>` | Validate a SKILL.md file's frontmatter format |
 | `netclaw skill remove <name>` | Remove a native skill (refuses system/external) |
@@ -36,6 +33,31 @@ Register additional skill directories (e.g. `~/.claude/skills/`):
 | `netclaw skill source remove <name>` | Remove a source |
 | `netclaw skill source enable <name>` | Enable a disabled source |
 | `netclaw skill source disable <name>` | Disable without removing |
+
+### Managed Git plugins
+
+The daemon can install skill folders from a public GitHub repository.
+It ignores plugin hooks, MCP servers, sub-agents, scripts, and other executable components.
+
+| Command | What it does |
+|---------|--------------|
+| `netclaw skill plugin install owner/repository` | Install from the repository's default branch |
+| `netclaw skill plugin install owner/repository --branch main` | Track a named branch |
+| `netclaw skill plugin install owner/repository --tag v1.2.0` | Resolve a tag once and pin its commit |
+| `netclaw skill plugin install owner/repository --commit <sha>` | Pin an exact commit |
+| `netclaw skill plugin list` | Show configured, installed, disabled, and stale sources |
+| `netclaw skill plugin enable <name>` | Enable and sync a source |
+| `netclaw skill plugin disable <name>` | Disable a source |
+| `netclaw skill plugin remove <name>` | Remove a source |
+
+Use `--name` to set the local source name.
+Use `--subdirectory` when the plugin root is below the repository root.
+Plugin mutations require confirmation unless the operator supplies `--yes`.
+The install command waits for the daemon restart and its immediate sync.
+A download failure leaves the valid source configured for a later sync.
+A scanner rejection records the commit and keeps prior installed content active.
+Use `netclaw skill sync --retry-rejected` to test known rejected commits again.
+The daemon removes the rejection record after a successful explicit retry.
 
 The daemon restores its system skills from its binary before its first scan.
 If this restore fails, confirm that Netclaw owns the skills directory and can

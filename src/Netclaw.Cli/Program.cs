@@ -840,7 +840,7 @@ static async Task RunAsync(string[] args)
     if (mode is "skill")
     {
         var skillSubcommand = args.Length > 1 ? args[1] : "list";
-        if (skillSubcommand is "list" or "sync")
+        if (skillSubcommand is "list" or "sync" or "plugin")
         {
             // `skill list` is served by the daemon's live registry — the only view
             // that includes dynamic MCP prompt skills. It requires the daemon; when
@@ -856,7 +856,12 @@ static async Task RunAsync(string[] args)
                 var skillPaths = skillHost.Services.GetRequiredService<NetclawPaths>();
                 skillPaths.EnsureDirectoriesExist();
                 var skillDaemonApi = skillHost.Services.GetRequiredService<DaemonApi>();
-                Environment.ExitCode = await SkillCommand.RunAsync(args, skillPaths, skillDaemonApi);
+                Environment.ExitCode = await SkillCommand.RunAsync(
+                    args,
+                    skillPaths,
+                    skillHost.Services.GetRequiredService<TimeProvider>(),
+                    Console.In,
+                    skillDaemonApi);
             }
             catch (Exception ex) when (ex is InvalidDataException or InvalidOperationException or FormatException)
             {
@@ -871,7 +876,7 @@ static async Task RunAsync(string[] args)
         // All other skill subcommands are offline filesystem operations — no daemon needed.
         var paths = new NetclawPaths();
         paths.EnsureDirectoriesExist();
-        Environment.ExitCode = await SkillCommand.RunAsync(args, paths);
+        Environment.ExitCode = await SkillCommand.RunAsync(args, paths, TimeProvider.System, Console.In);
         return;
     }
 

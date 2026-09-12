@@ -24,7 +24,12 @@ namespace Netclaw.Cli.Skills;
 internal static class SkillCommand
 {
     public static Task<int> RunAsync(
-        string[] args, NetclawPaths paths, DaemonApi? daemonApi = null, TextWriter? output = null)
+        string[] args,
+        NetclawPaths paths,
+        TimeProvider timeProvider,
+        TextReader input,
+        DaemonApi? daemonApi = null,
+        TextWriter? output = null)
     {
         var subcommand = args.Length > 1 ? args[1] : "list";
 
@@ -56,7 +61,15 @@ internal static class SkillCommand
             return RunListAsync(daemonApi, output ?? Console.Out);
 
         if (subcommand is "sync")
-            return RunSyncAsync(daemonApi, output ?? Console.Out);
+            return RunSyncAsync(args, daemonApi, output ?? Console.Out);
+
+        if (subcommand is "plugin")
+            return GitSkillPluginCommand.RunAsync(
+                args,
+                daemonApi,
+                timeProvider,
+                input,
+                output ?? Console.Out);
 
         return Task.FromResult(subcommand switch
         {
@@ -165,8 +178,17 @@ internal static class SkillCommand
         return 0;
     }
 
-    private static async Task<int> RunSyncAsync(DaemonApi? daemonApi, TextWriter output)
+    private static async Task<int> RunSyncAsync(
+        string[] args,
+        DaemonApi? daemonApi,
+        TextWriter output)
     {
+        var retryRejected = args.Length == 3 && args[2] == "--retry-rejected";
+        if (args.Length > 2 && !retryRejected)
+        {
+            output.WriteLine("Usage: netclaw skill sync [--retry-rejected]");
+            return 1;
+        }
         if (daemonApi is null)
         {
             output.WriteLine("Daemon unavailable: the daemon API is not configured.");
@@ -186,7 +208,9 @@ internal static class SkillCommand
             try
             {
                 output.WriteLine("Waiting for the daemon's skill sync pass. Press Ctrl+C to stop this wait.");
-                result = await daemonApi.SyncSkillsAsync(cancellation.Token);
+                result = await daemonApi.SyncSkillsAsync(
+                    cancellation.Token,
+                    retryRejected);
             }
             finally
             {
@@ -733,6 +757,8 @@ internal static class SkillCommand
         Console.WriteLine("Subcommands:");
         Console.WriteLine("  list                                          List all discovered skills (default)");
         Console.WriteLine("  sync                                          Sync configured external skill sources");
+        Console.WriteLine("  sync --retry-rejected                         Retry known rejected plugin commits");
+        Console.WriteLine("  plugin <action>                               Manage Git skill plugins");
         Console.WriteLine("  show <name>                                   Show skill details and content");
         Console.WriteLine("  validate <path>                               Validate a SKILL.md file's frontmatter");
         Console.WriteLine("  remove <name>                                 Remove a native skill");
