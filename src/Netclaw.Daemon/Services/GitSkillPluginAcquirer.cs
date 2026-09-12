@@ -19,6 +19,13 @@ namespace Netclaw.Daemon.Services;
 internal interface IGitSkillPluginAcquirer
 {
     Task<GitSkillPluginCandidate> AcquireAsync(GitSkillPluginSource source, CancellationToken cancellationToken);
+
+    Task<string> ResolveCommitAsync(GitSkillPluginSource source, CancellationToken cancellationToken);
+
+    Task<GitSkillPluginCandidate> AcquireAsync(
+        GitSkillPluginSource source,
+        string commit,
+        CancellationToken cancellationToken);
 }
 
 internal sealed record GitSkillPluginCandidate(
@@ -134,13 +141,27 @@ internal sealed class GitSkillPluginAcquirer : IGitSkillPluginAcquirer
         if (!GitSkillPluginSourceValidator.TryValidateSource(source, out var sourceError))
             throw new InvalidOperationException(sourceError);
 
+        var commit = await ResolveCommitAsync(source, cancellationToken);
+        return await AcquireAsync(source, commit, cancellationToken);
+    }
+
+    public async Task<GitSkillPluginCandidate> AcquireAsync(
+        GitSkillPluginSource source,
+        string commit,
+        CancellationToken cancellationToken)
+    {
+        if (!GitSkillPluginSourceValidator.TryValidateSource(source, out var sourceError))
+            throw new InvalidOperationException(sourceError);
+        if (string.IsNullOrWhiteSpace(commit) || commit.Length != 40 || !commit.All(char.IsAsciiHexDigit))
+            throw new InvalidDataException("The resolved commit identity is invalid.");
+
+        commit = commit.ToLowerInvariant();
         using var timeout = new CancellationTokenSource(
             TimeSpan.FromSeconds(source.TimeoutSeconds), _timeProvider);
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
         var token = linked.Token;
         try
         {
-            var commit = await ResolveCommitAsync(source, token);
             var archivePath = Path.Combine(_paths.CacheDirectory, "git-skill-archives", $"{Guid.NewGuid():N}.tar.gz");
             Directory.CreateDirectory(Path.GetDirectoryName(archivePath)!);
             try
@@ -263,7 +284,7 @@ internal sealed class GitSkillPluginAcquirer : IGitSkillPluginAcquirer
         }
     }
 
-    internal async Task<string> ResolveCommitAsync(
+    public async Task<string> ResolveCommitAsync(
         GitSkillPluginSource source,
         CancellationToken cancellationToken)
     {

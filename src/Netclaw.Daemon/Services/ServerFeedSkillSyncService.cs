@@ -37,6 +37,34 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
     private readonly ISkillContentScanner _scanner;
     private readonly ILogger<ServerFeedSkillSyncService> _logger;
     private readonly Func<SkillFeedSource, SkillServerClient> _clientFactory;
+    private readonly GitSkillPluginStateStore _pluginStateStore;
+    private readonly IGitSkillPluginAcquirer _pluginAcquirer;
+    private readonly IOperationalNotificationSink _notificationSink;
+    private bool _startupPluginCleanupComplete;
+
+    public ServerFeedSkillSyncService(
+        SkillFeedsConfig feedsConfig,
+        NetclawPaths paths,
+        SkillInventoryRefresher inventoryRefresher,
+        TimeProvider timeProvider,
+        ISkillContentScanner scanner,
+        ILogger<ServerFeedSkillSyncService> logger,
+        GitSkillPluginStateStore pluginStateStore,
+        IGitSkillPluginAcquirer pluginAcquirer,
+        IOperationalNotificationSink notificationSink)
+        : this(
+            feedsConfig,
+            paths,
+            inventoryRefresher,
+            timeProvider,
+            scanner,
+            logger,
+            CreateSkillServerClient,
+            pluginStateStore,
+            pluginAcquirer,
+            notificationSink)
+    {
+    }
 
     public ServerFeedSkillSyncService(
         SkillFeedsConfig feedsConfig,
@@ -52,7 +80,10 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
             timeProvider,
             scanner,
             logger,
-            CreateSkillServerClient)
+            CreateSkillServerClient,
+            new GitSkillPluginStateStore(paths, timeProvider),
+            new GitSkillPluginAcquirer(new HttpClient(), paths, timeProvider, scanner),
+            NullNotificationSink.Instance)
     {
     }
 
@@ -100,7 +131,10 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
             timeProvider,
             scanner,
             logger,
-            clientFactory)
+            clientFactory,
+            new GitSkillPluginStateStore(paths, timeProvider),
+            new GitSkillPluginAcquirer(new HttpClient(), paths, timeProvider, scanner),
+            NullNotificationSink.Instance)
     {
     }
 
@@ -111,7 +145,10 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
         TimeProvider timeProvider,
         ISkillContentScanner scanner,
         ILogger<ServerFeedSkillSyncService> logger,
-        Func<SkillFeedSource, SkillServerClient> clientFactory)
+        Func<SkillFeedSource, SkillServerClient> clientFactory,
+        GitSkillPluginStateStore pluginStateStore,
+        IGitSkillPluginAcquirer pluginAcquirer,
+        IOperationalNotificationSink notificationSink)
     {
         _feedsConfig = feedsConfig;
         _paths = paths;
@@ -120,6 +157,9 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
         _scanner = scanner;
         _logger = logger;
         _clientFactory = clientFactory;
+        _pluginStateStore = pluginStateStore;
+        _pluginAcquirer = pluginAcquirer;
+        _notificationSink = notificationSink;
     }
 
     /// <summary>
@@ -158,9 +198,11 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
                 }
             }
 
+            var managedPluginSources = await SyncManagedGitPluginsAsync(sources, cancellationToken);
+
             try
             {
-                var scan = RescanAndUpdateIndex();
+                var scan = RescanAndUpdateIndex(managedPluginSources);
                 var result = new SkillSyncResult.Response
                 {
                     PassId = passId,
@@ -207,6 +249,223 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
             _logger.LogInformation("External skill sync pass {Outcome}. {PassId}", outcome, passId);
         }
     }
+
+    private async Task<IReadOnlyList<ResolvedExternalSource>> SyncManagedGitPluginsAsync(
+        List<SkillSyncResult.SourceRow> rows,
+        CancellationToken cancellationToken)
+    {
+        var configuredSources = _feedsConfig.Plugins;
+        if (!GitSkillPluginSourceValidator.TryValidateSources(configuredSources, out var validationError))
+        {
+            _logger.LogWarning("Managed Git plugin configuration is invalid: {Error}", validationError);
+            return ResolveManagedGitPluginSources(
+                await _pluginStateStore.LoadReceiptsAsync(cancellationToken));
+        }
+
+        await _pluginStateStore.RemoveSourcesExceptAsync(
+            configuredSources.Select(static source => source.Name).ToArray(), cancellationToken);
+        var receipts = await _pluginStateStore.LoadReceiptsAsync(cancellationToken);
+
+        if (!_startupPluginCleanupComplete)
+        {
+            CleanupManagedGitPluginDirectories(receipts);
+            _startupPluginCleanupComplete = true;
+        }
+
+        foreach (var source in configuredSources.Where(static source => source.Enabled))
+        {
+            try
+            {
+                rows.Add(await SyncManagedGitPluginAsync(source, cancellationToken));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex,
+                    "Managed Git plugin sync failed for '{PluginName}' — keeping the prior publication",
+                    source.Name);
+                rows.Add(PluginFailure(source.Name));
+            }
+        }
+
+        receipts = await _pluginStateStore.LoadReceiptsAsync(cancellationToken);
+        return ResolveManagedGitPluginSources(receipts);
+    }
+
+    private async Task<SkillSyncResult.SourceRow> SyncManagedGitPluginAsync(
+        GitSkillPluginSource source,
+        CancellationToken cancellationToken)
+    {
+        var sourceFingerprint = GitSkillPluginSourceValidator.Fingerprint(source);
+        var receipt = await _pluginStateStore.GetReceiptAsync(source.Name, cancellationToken);
+        var commit = source.ReferenceKind == GitSkillPluginReferenceKind.Commit
+            ? source.Reference.ToLowerInvariant()
+            : await _pluginAcquirer.ResolveCommitAsync(source, cancellationToken);
+        var installedDirectory = receipt is null
+            ? null
+            : _paths.ManagedGitSkillCommitDirectory(
+                receipt.SourceName, receipt.SourceFingerprint, receipt.InstalledCommit);
+
+        if (receipt is not null
+            && string.Equals(receipt.SourceFingerprint, sourceFingerprint, StringComparison.Ordinal)
+            && Directory.Exists(installedDirectory)
+            && (string.Equals(receipt.InstalledCommit, commit, StringComparison.Ordinal)
+                || string.Equals(receipt.LastObservedCommit, commit, StringComparison.Ordinal)))
+        {
+            return PluginUnchanged(source.Name, receipt.InstalledCommit, receipt.InstalledVersion);
+        }
+
+        var rejection = await _pluginStateStore.GetRejectionAsync(
+            source.Name, sourceFingerprint, commit, cancellationToken);
+        if (rejection is not null)
+        {
+            _logger.LogInformation(
+                "Managed Git plugin '{PluginName}' commit {Commit} remains rejected",
+                source.Name, commit);
+            return PluginRejected(source.Name, commit);
+        }
+
+        try
+        {
+            var candidate = await _pluginAcquirer.AcquireAsync(source, commit, cancellationToken);
+            if (!Directory.Exists(candidate.Directory))
+                throw new IOException("The immutable managed Git plugin candidate is missing.");
+
+            if (receipt is not null
+                && string.Equals(receipt.SourceFingerprint, sourceFingerprint, StringComparison.Ordinal)
+                && Directory.Exists(installedDirectory)
+                && candidate.Version is not null
+                && string.Equals(candidate.Version, receipt.InstalledVersion, StringComparison.Ordinal))
+            {
+                await _pluginStateStore.UpdateLastObservedCommitAsync(
+                    source.Name, candidate.Commit, cancellationToken);
+                DeleteUnpublishedCandidate(candidate.Directory, installedDirectory);
+                return PluginUnchanged(source.Name, receipt.InstalledCommit, receipt.InstalledVersion);
+            }
+
+            await _pluginStateStore.SaveReceiptAsync(
+                source, candidate.Commit, candidate.Version, cancellationToken);
+            return new SkillSyncResult.SourceRow
+            {
+                Name = source.Name,
+                ChangedCount = 1,
+                Sidecar = "not-applicable",
+                Commit = candidate.Commit,
+                Version = candidate.Version,
+            };
+        }
+        catch (GitSkillPluginRejectedException rejectionException)
+        {
+            await _pluginStateStore.SaveRejectionAsync(
+                source.Name,
+                sourceFingerprint,
+                rejectionException.Commit,
+                rejectionException.Message,
+                rejectionException.SecurityRejection,
+                cancellationToken);
+
+            if (rejectionException.SecurityRejection
+                && await _pluginStateStore.TryClaimSecurityAlertAsync(
+                    source.Name, sourceFingerprint, rejectionException.Commit, cancellationToken))
+            {
+                _notificationSink.Emit(OperationalAlert.Create(
+                    _timeProvider,
+                    "skill.plugin.security_rejected",
+                    AlertType.SkillPluginSecurityRejected,
+                    "A managed Git skill plugin failed a security check.",
+                    AlertSeverity.Warning,
+                    $"{sourceFingerprint}:{rejectionException.Commit}",
+                    new Dictionary<string, string>
+                    {
+                        ["source_fingerprint"] = sourceFingerprint,
+                        ["commit"] = rejectionException.Commit,
+                    }));
+            }
+
+            _logger.LogWarning(
+                "Managed Git plugin '{PluginName}' commit {Commit} was rejected",
+                source.Name, rejectionException.Commit);
+            return PluginRejected(source.Name, rejectionException.Commit);
+        }
+    }
+
+    private IReadOnlyList<ResolvedExternalSource> ResolveManagedGitPluginSources(
+        IReadOnlyList<GitSkillPluginReceipt> receipts)
+        => receipts
+            .Select(receipt => new
+            {
+                Receipt = receipt,
+                Directory = _paths.ManagedGitSkillCommitDirectory(
+                    receipt.SourceName, receipt.SourceFingerprint, receipt.InstalledCommit),
+            })
+            .Where(static candidate => Directory.Exists(candidate.Directory))
+            .OrderBy(static candidate => candidate.Receipt.SourceName, StringComparer.Ordinal)
+            .Select(static candidate => new ResolvedExternalSource(
+                $"managed-git:{candidate.Receipt.SourceName}",
+                [candidate.Directory],
+                AllowSymlinks: false))
+            .ToArray();
+
+    private void CleanupManagedGitPluginDirectories(IReadOnlyList<GitSkillPluginReceipt> receipts)
+    {
+        var selectedDirectories = receipts
+            .Select(receipt => Path.GetFullPath(_paths.ManagedGitSkillCommitDirectory(
+                receipt.SourceName, receipt.SourceFingerprint, receipt.InstalledCommit)))
+            .ToHashSet(StringComparer.Ordinal);
+        var root = _paths.ManagedGitSkillsDirectory;
+        if (!Directory.Exists(root))
+            return;
+
+        foreach (var stagingDirectory in Directory.EnumerateDirectories(root, ".staging", SearchOption.AllDirectories))
+            Directory.Delete(stagingDirectory, recursive: true);
+
+        foreach (var commitsDirectory in Directory.EnumerateDirectories(root, "commits", SearchOption.AllDirectories))
+        {
+            foreach (var commitDirectory in Directory.EnumerateDirectories(commitsDirectory))
+            {
+                if (!selectedDirectories.Contains(Path.GetFullPath(commitDirectory)))
+                    Directory.Delete(commitDirectory, recursive: true);
+            }
+        }
+    }
+
+    private void DeleteUnpublishedCandidate(string candidateDirectory, string installedDirectory)
+    {
+        if (!string.Equals(Path.GetFullPath(candidateDirectory), Path.GetFullPath(installedDirectory), StringComparison.Ordinal)
+            && Directory.Exists(candidateDirectory))
+        {
+            Directory.Delete(candidateDirectory, recursive: true);
+        }
+    }
+
+    private static SkillSyncResult.SourceRow PluginUnchanged(string name, string commit, string? version) => new()
+    {
+        Name = name,
+        UnchangedCount = 1,
+        Sidecar = "not-applicable",
+        Commit = commit,
+        Version = version,
+    };
+
+    private static SkillSyncResult.SourceRow PluginRejected(string name, string commit) => new()
+    {
+        Name = name,
+        RejectedCount = 1,
+        Sidecar = "not-applicable",
+        Commit = commit,
+        Error = "The plugin commit is rejected.",
+    };
+
+    private static SkillSyncResult.SourceRow PluginFailure(string name) => new()
+    {
+        Name = name,
+        FailedCount = 1,
+        Sidecar = "not-applicable",
+        Error = "The source sync failed. Existing files remain in use.",
+    };
 
     private async Task<SkillSyncResult.SourceRow> SyncFeedAsync(SkillFeedSource feed, CancellationToken cancellationToken)
     {
@@ -889,9 +1148,11 @@ internal sealed class ServerFeedSkillSyncService : IServerFeedSkillSyncRunner
         return mode == 0 ? null : mode;
     }
 
-    private MergedSkillScanResult RescanAndUpdateIndex()
+    private MergedSkillScanResult RescanAndUpdateIndex(
+        IReadOnlyList<ResolvedExternalSource> managedGitPluginSources)
     {
-        var mergedResult = _inventoryRefresher.Refresh();
+        var mergedResult = _inventoryRefresher.ReplaceManagedGitPluginSourcesAndRefresh(
+            managedGitPluginSources);
 
         if (mergedResult.Issues.Count > 0)
         {

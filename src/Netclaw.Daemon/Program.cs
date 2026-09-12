@@ -52,6 +52,7 @@ using Netclaw.Embeddings;
 using Netclaw.Search;
 using Netclaw.Tools;
 using Netclaw.Security;
+using Netclaw.Security.Skills;
 using static Microsoft.Extensions.Logging.LogLevel;
 
 // Handled first, before any directory creation, lock-file acquisition, or host startup:
@@ -941,6 +942,15 @@ static void ConfigureDaemonServices(
     services.AddHostedService<ToolIndexUpdater>();
 
     // The runner owns one pass. The actor owns startup, timers, and shared requests.
+    services.AddSingleton<GitSkillPluginStateStore>();
+    services.AddHttpClient("GitSkillPlugin")
+        .ConfigurePrimaryHttpMessageHandler(GitSkillPluginAcquirer.CreateHttpHandler)
+        .AddNetclawHeaders("git-skill-plugin");
+    services.AddSingleton<IGitSkillPluginAcquirer>(sp => new GitSkillPluginAcquirer(
+        sp.GetRequiredService<IHttpClientFactory>().CreateClient("GitSkillPlugin"),
+        paths,
+        sp.GetRequiredService<TimeProvider>(),
+        sp.GetRequiredService<ISkillContentScanner>()));
     services.AddSingleton<ServerFeedSkillSyncService>();
     services.AddSingleton<IServerFeedSkillSyncRunner>(
         sp => sp.GetRequiredService<ServerFeedSkillSyncService>());
