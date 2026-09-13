@@ -374,12 +374,12 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
         input.OnFocused();
         var layout = Layouts.Vertical()
             .WithChild(Header("  Microsoft Teams > Find a Group Chat"))
-            .WithChild(Hint("  Search Group Chat names across this tenant. Larger searches continue in pages."))
+            .WithChild(Hint("  Search all or part of a Group Chat name. The search continues automatically."))
             .WithChild(WizardStepHelpers.BuildTextInputPanel(input, "Group Chat name"))
-            .WithChild(Layouts.Empty().Height(1));
+            .WithChild(Hint($"  {ViewModel.GroupChatSearchProgressText}"));
 
         var chats = ViewModel.FilteredGroupChatSearchResults;
-        var rowCount = ViewModel.GroupChatSearchActionIndex + 2;
+        var rowCount = ViewModel.GroupChatSearchAdvancedIndex + 1;
         // Keep results and continuation actions visible in an 80x24 terminal.
         // These are display bounds only; selection retains its full-page index.
         const int visibleRows = 5;
@@ -396,10 +396,13 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
                     : chat.Topic;
                 label = $"{title} · {ChannelsConfigViewModel.GetGroupChatDisplaySuffix(chat.Id)}";
             }
-            else if (index == chats.Count && ViewModel.HasGroupChatContinuation)
-                label = "Continue search";
             else if (index == ViewModel.GroupChatSearchActionIndex)
-                label = ViewModel.HasSearchedGroupChats ? "Search again" : "Search by name";
+                label = ViewModel.IsGroupChatSearchRunning
+                    ? "Search in progress..."
+                    : ViewModel.HasGroupChatContinuation ? "Resume search"
+                    : ViewModel.HasSearchedGroupChats ? "Search again" : "Search by name";
+            else if (index == ViewModel.GroupChatSearchActionIndex + 1 && ViewModel.IsGroupChatSearchRunning)
+                label = "Stop search (Ctrl+S)";
             else
                 label = "Advanced canonical-ID entry";
 
@@ -675,7 +678,7 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
                     ChannelsConfigScreen.TeamsPrincipalRemovalConfirm => "  Confirm removal. This only removes the selected global grant.",
                     ChannelsConfigScreen.TeamsChannelPrincipalRemovalConfirm => "  Confirm removal. This can change the exact channel sender rule.",
                     ChannelsConfigScreen.TeamsDestinationRemovalConfirm => "  Confirm removal. The destination becomes denied after configuration activation.",
-                    ChannelsConfigScreen.TeamsGroupChatSearch => "  Type a Group Chat name. Enter searches, reviews a chat, or continues the search.",
+                    ChannelsConfigScreen.TeamsGroupChatSearch => "  Enter searches or reviews a chat. Ctrl+S stops the search and keeps its matches.",
                     ChannelsConfigScreen.TeamsChannelAccess => "  Enter edits a principal list. Channel rules only restrict this exact Team and channel.",
                     ChannelsConfigScreen.AllowedUsers => "  Use comma-separated user IDs. Blank means unrestricted users in allowed channels.",
                     ChannelsConfigScreen.AllowedGroups => "  Use comma-separated canonical Entra group IDs. Blank removes group-derived access.",
@@ -723,7 +726,7 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
                     ChannelsConfigScreen.TeamsChannelSearch => " [↑/↓] Select  [Enter] Save channel  [Esc] Teams",
                     ChannelsConfigScreen.TeamsUserSearch => " [Type] Search  [Enter] Search/add  [↑/↓] Select  [Esc] Menu",
                     ChannelsConfigScreen.TeamsGroupSearch => " [Type] Search  [Enter] Search/add  [↑/↓] Select  [Esc] Menu",
-                    ChannelsConfigScreen.TeamsGroupChatSearch => " [Type] Chat name  [↑/↓] Select  [Enter] Search/review  [Esc] Back",
+                    ChannelsConfigScreen.TeamsGroupChatSearch => " [Type] Chat name  [↑/↓] Select  [Enter] Search/review  [Ctrl+S] Stop  [Esc] Back",
                     ChannelsConfigScreen.TeamsChannelAccess => " [↑/↓] Select  [Enter] Edit  [Esc] Channels",
                     ChannelsConfigScreen.AllowedUsers => " [Enter] Apply  [Esc] Menu  [Ctrl+Q] Quit",
                     ChannelsConfigScreen.AllowedGroups => " [Enter] Apply  [Esc] Menu  [Ctrl+Q] Quit",
@@ -1207,6 +1210,12 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
 
     private void HandleTeamsGroupChatSearchKey(ConsoleKeyInfo keyInfo)
     {
+        if (keyInfo.Key == ConsoleKey.S && (keyInfo.Modifiers & ConsoleModifiers.Control) != 0)
+        {
+            ViewModel.StopGroupChatSearch();
+            return;
+        }
+
         if (keyInfo.Key == ConsoleKey.UpArrow)
         {
             ViewModel.MoveDirectoryResult(-1);
@@ -1228,11 +1237,10 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
 
         if (ViewModel.DirectoryResultIndex < ViewModel.FilteredGroupChatSearchResults.Count)
             ViewModel.SelectGroupChatForReview();
-        else if (ViewModel.DirectoryResultIndex == ViewModel.FilteredGroupChatSearchResults.Count
-                 && ViewModel.HasGroupChatContinuation)
-            ViewModel.LoadMoreGroupChats();
         else if (ViewModel.DirectoryResultIndex == ViewModel.GroupChatSearchActionIndex)
             _ = ViewModel.SearchGroupChatsFromInputAsync();
+        else if (ViewModel.DirectoryResultIndex == ViewModel.GroupChatSearchActionIndex + 1 && ViewModel.IsGroupChatSearchRunning)
+            ViewModel.StopGroupChatSearch();
         else
             ViewModel.BeginManualGroupChatEntry();
     }

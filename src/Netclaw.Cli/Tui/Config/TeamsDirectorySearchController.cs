@@ -14,6 +14,7 @@ namespace Netclaw.Cli.Tui.Config;
 internal sealed class TeamsDirectorySearchController : IDisposable
 {
     private static readonly TimeSpan DebounceDelay = TimeSpan.FromMilliseconds(300);
+    private static readonly TimeSpan GroupChatContinuationDelay = TimeSpan.FromSeconds(1);
     private readonly ITeamsDirectory _directory;
     private readonly TimeProvider _timeProvider;
     private CancellationTokenSource? _currentRequest;
@@ -75,7 +76,8 @@ internal sealed class TeamsDirectorySearchController : IDisposable
                 TeamsGraphSearchLimits.MaximumResults,
                 continuation,
                 token),
-            cancellationToken);
+            cancellationToken,
+            continuation is null ? DebounceDelay : GroupChatContinuationDelay);
 
     /// <summary>
     /// Invalidates a result when its input or owning screen changes. A provider
@@ -91,9 +93,15 @@ internal sealed class TeamsDirectorySearchController : IDisposable
 
     public bool IsCurrent(long generation) => generation == _generation;
 
-    private async ValueTask<TeamsDirectorySearchResponse<T>> ExecuteAsync<T>(
+    private ValueTask<TeamsDirectorySearchResponse<T>> ExecuteAsync<T>(
         Func<CancellationToken, ValueTask<TeamsDirectoryOperationResult<T>>> operation,
         CancellationToken cancellationToken)
+        => ExecuteAsync(operation, cancellationToken, DebounceDelay);
+
+    private async ValueTask<TeamsDirectorySearchResponse<T>> ExecuteAsync<T>(
+        Func<CancellationToken, ValueTask<TeamsDirectoryOperationResult<T>>> operation,
+        CancellationToken cancellationToken,
+        TimeSpan debounceDelay)
     {
         _currentRequest?.Cancel();
         _currentRequest?.Dispose();
@@ -103,7 +111,7 @@ internal sealed class TeamsDirectorySearchController : IDisposable
 
         try
         {
-            await Task.Delay(DebounceDelay, _timeProvider, request.Token).ConfigureAwait(false);
+            await Task.Delay(debounceDelay, _timeProvider, request.Token).ConfigureAwait(false);
             var result = await operation(request.Token).ConfigureAwait(false);
             return new TeamsDirectorySearchResponse<T>(generation == _generation, generation, result);
         }
