@@ -321,11 +321,9 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
         var input = EnsureSingleInput(ChannelsConfigScreen.TeamsUserSearch, "teams-user-search", ViewModel.DirectorySearchInput, "Search users by name, UPN, or mail");
         input.OnFocused();
         var layout = Layouts.Vertical()
-            .WithChild(Header(ViewModel.IsGroupChatDiscovery
-                ? "  Microsoft Teams > Find chats containing this user"
-                : ViewModel.EditingChannelAccess is null
-                    ? "  Microsoft Teams > Allowed users"
-                    : "  Microsoft Teams > Channel allowed users"))
+            .WithChild(Header(ViewModel.EditingChannelAccess is null
+                ? "  Microsoft Teams > Allowed users"
+                : "  Microsoft Teams > Channel allowed users"))
             .WithChild(Hint("  Search identity metadata. Netclaw saves only the canonical Entra object ID."))
             .WithChild(WizardStepHelpers.BuildTextInputPanel(input, "User search"));
 
@@ -368,43 +366,51 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
 
     private ILayoutNode BuildTeamsGroupChatSearch()
     {
-        var participant = ViewModel.SelectedGroupChatParticipant;
-        var participantLabel = participant is null ? "selected user" : FormatTeamsUser(participant);
         var input = EnsureSingleInput(
             ChannelsConfigScreen.TeamsGroupChatSearch,
             "group-chat-search",
             ViewModel.GroupChatSearchInput,
-            "Filter loaded chats by topic or participant");
+            "Enter all or part of the Group Chat name");
         input.OnFocused();
         var layout = Layouts.Vertical()
-            .WithChild(Header("  Microsoft Teams > Find Group Chats"))
-            .WithChild(Hint($"  Find chats containing {participantLabel}. This selection does not grant access."))
-            .WithChild(Hint("  Discovery does not prove that the Netclaw app is installed in a chat."))
-            .WithChild(WizardStepHelpers.BuildTextInputPanel(input, "Loaded chat filter"))
+            .WithChild(Header("  Microsoft Teams > Find a Group Chat"))
+            .WithChild(Hint("  Search Group Chat names across this tenant. Larger searches continue in pages."))
+            .WithChild(WizardStepHelpers.BuildTextInputPanel(input, "Group Chat name"))
             .WithChild(Layouts.Empty().Height(1));
 
-        foreach (var (chat, index) in ViewModel.FilteredGroupChatSearchResults.Select((chat, index) => (chat, index)))
+        var chats = ViewModel.FilteredGroupChatSearchResults;
+        var rowCount = ViewModel.GroupChatSearchActionIndex + 2;
+        // Keep results and continuation actions visible in an 80x24 terminal.
+        // These are display bounds only; selection retains its full-page index.
+        const int visibleRows = 5;
+        var firstRow = Math.Clamp(ViewModel.DirectoryResultIndex - visibleRows / 2, 0, Math.Max(0, rowCount - visibleRows));
+        var endRow = Math.Min(firstRow + visibleRows, rowCount);
+        for (var index = firstRow; index < endRow; index++)
         {
-            var label = string.IsNullOrWhiteSpace(chat.Topic)
-                ? chat.ParticipantPreview.Count > 0 ? string.Join(", ", chat.ParticipantPreview) : "Group Chat"
-                : chat.Topic;
-            var suffix = ChannelsConfigViewModel.GetGroupChatDisplaySuffix(chat.Id);
-            layout = layout.WithChild(Row(
-                $"{FocusPrefix(ViewModel.DirectoryResultIndex == index)}{label} · {suffix}",
-                ViewModel.DirectoryResultIndex == index));
+            string label;
+            if (index < chats.Count)
+            {
+                var chat = chats[index];
+                var title = string.IsNullOrWhiteSpace(chat.Topic)
+                    ? chat.ParticipantPreview.Count > 0 ? string.Join(", ", chat.ParticipantPreview) : "Group Chat"
+                    : chat.Topic;
+                label = $"{title} · {ChannelsConfigViewModel.GetGroupChatDisplaySuffix(chat.Id)}";
+            }
+            else if (index == chats.Count && ViewModel.HasGroupChatContinuation)
+                label = "Continue search";
+            else if (index == ViewModel.GroupChatSearchActionIndex)
+                label = ViewModel.HasSearchedGroupChats ? "Search again" : "Search by name";
+            else
+                label = "Advanced canonical-ID entry";
+
+            var focused = ViewModel.DirectoryResultIndex == index;
+            layout = layout.WithChild(Row($"{FocusPrefix(focused)}{label}", focused));
         }
 
-        if (ViewModel.HasGroupChatContinuation)
-        {
-            var focused = ViewModel.DirectoryResultIndex == ViewModel.FilteredGroupChatSearchResults.Count;
-            layout = layout.WithChild(Row($"{FocusPrefix(focused)}Load more", focused));
-        }
+        if (rowCount > visibleRows)
+            layout = layout.WithChild(Hint($"  Rows {firstRow + 1}–{endRow} of {rowCount}. Use ↑/↓ to see more."));
 
-        layout = layout.WithChild(Row(
-            $"{FocusPrefix(ViewModel.IsAdvancedTeamsDirectoryActionSelected())}Advanced canonical-ID entry",
-            ViewModel.IsAdvancedTeamsDirectoryActionSelected()));
-
-        return layout.WithChild(Hint("  Advanced entry does not verify chat type or app installation."));
+        return layout.WithChild(Hint("  Install the Netclaw app in the selected chat before the live test."));
     }
 
     private ILayoutNode BuildTeamsPrincipalAdd()
@@ -669,7 +675,7 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
                     ChannelsConfigScreen.TeamsPrincipalRemovalConfirm => "  Confirm removal. This only removes the selected global grant.",
                     ChannelsConfigScreen.TeamsChannelPrincipalRemovalConfirm => "  Confirm removal. This can change the exact channel sender rule.",
                     ChannelsConfigScreen.TeamsDestinationRemovalConfirm => "  Confirm removal. The destination becomes denied after configuration activation.",
-                    ChannelsConfigScreen.TeamsGroupChatSearch => "  Type to filter loaded chats. Enter selects, loads more, or opens advanced entry.",
+                    ChannelsConfigScreen.TeamsGroupChatSearch => "  Type a Group Chat name. Enter searches, reviews a chat, or continues the search.",
                     ChannelsConfigScreen.TeamsChannelAccess => "  Enter edits a principal list. Channel rules only restrict this exact Team and channel.",
                     ChannelsConfigScreen.AllowedUsers => "  Use comma-separated user IDs. Blank means unrestricted users in allowed channels.",
                     ChannelsConfigScreen.AllowedGroups => "  Use comma-separated canonical Entra group IDs. Blank removes group-derived access.",
@@ -717,7 +723,7 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
                     ChannelsConfigScreen.TeamsChannelSearch => " [↑/↓] Select  [Enter] Save channel  [Esc] Teams",
                     ChannelsConfigScreen.TeamsUserSearch => " [Type] Search  [Enter] Search/add  [↑/↓] Select  [Esc] Menu",
                     ChannelsConfigScreen.TeamsGroupSearch => " [Type] Search  [Enter] Search/add  [↑/↓] Select  [Esc] Menu",
-                    ChannelsConfigScreen.TeamsGroupChatSearch => " [Type] Filter  [↑/↓] Select  [Enter] Review/load more/advanced  [Esc] Back",
+                    ChannelsConfigScreen.TeamsGroupChatSearch => " [Type] Chat name  [↑/↓] Select  [Enter] Search/review  [Esc] Back",
                     ChannelsConfigScreen.TeamsChannelAccess => " [↑/↓] Select  [Enter] Edit  [Esc] Channels",
                     ChannelsConfigScreen.AllowedUsers => " [Enter] Apply  [Esc] Menu  [Ctrl+Q] Quit",
                     ChannelsConfigScreen.AllowedGroups => " [Enter] Apply  [Esc] Menu  [Ctrl+Q] Quit",
@@ -1225,6 +1231,8 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
         else if (ViewModel.DirectoryResultIndex == ViewModel.FilteredGroupChatSearchResults.Count
                  && ViewModel.HasGroupChatContinuation)
             ViewModel.LoadMoreGroupChats();
+        else if (ViewModel.DirectoryResultIndex == ViewModel.GroupChatSearchActionIndex)
+            _ = ViewModel.SearchGroupChatsFromInputAsync();
         else
             ViewModel.BeginManualGroupChatEntry();
     }

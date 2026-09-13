@@ -6,6 +6,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Netclaw.Actors.Channels;
 using Netclaw.Channels.Slack;
+using Netclaw.Channels.Teams;
 using Netclaw.Cli.Config;
 using Netclaw.Cli.Discord;
 using Netclaw.Cli.Tests.Tui;
@@ -14,6 +15,7 @@ using Netclaw.Cli.Tui.Config;
 using Netclaw.Cli.Tui.Wizard.Steps;
 using Netclaw.Configuration;
 using Netclaw.Tests.Utilities;
+using R3;
 using Termina;
 using Termina.Hosting;
 using Termina.Input;
@@ -273,6 +275,129 @@ public sealed class ChannelsConfigNavigationTests : IDisposable
         Assert.Empty(channelsVm.UserSearchResults);
     }
 
+    [Theory]
+    [InlineData("boston", "tech")]
+    [InlineData("BostonTech ", "Operations")]
+    public async Task Channels_Group_Chat_submits_typed_and_pasted_names_to_chat_search(string typed, string pasted)
+    {
+        WriteTeamsChannelFiles();
+        var searched = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var directory = new GroupChatNameSearchDirectory
+        {
+            SearchHandler = (query, _) =>
+            {
+                searched.TrySetResult(query);
+                return ValueTask.FromResult(TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(
+                    new([new("19:boston-operations@thread.v2", "BostonTech Operations", ["Ada", "Grace"])], null, 2, 0)));
+            }
+        };
+        var app = CreateHeadlessApp(out var input, out var dashboardVm, out var getChannelsVm, out var terminal,
+            teamsDirectoryFactory: _ => directory);
+        OpenChannels(dashboardVm);
+        MoveToAdapter(input, ChannelType.Teams);
+        input.EnqueueKey(ConsoleKey.Enter);
+        input.EnqueueKey(ConsoleKey.DownArrow);
+        input.EnqueueKey(ConsoleKey.Enter); // Add a channel or Group Chat.
+        input.EnqueueKey(ConsoleKey.DownArrow);
+        input.EnqueueKey(ConsoleKey.Enter); // Search Group Chats by name.
+        input.EnqueueString(typed);
+        input.EnqueuePaste(pasted);
+        input.EnqueueKey(ConsoleKey.Enter);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var run = app.RunAsync(cts.Token);
+        string submittedQuery;
+        try
+        {
+            submittedQuery = await searched.Task.WaitAsync(cts.Token);
+        }
+        finally
+        {
+            input.EnqueueKey(ConsoleKey.Q, false, false, true);
+            await run;
+        }
+
+        var channelsVm = Assert.IsType<ChannelsConfigViewModel>(getChannelsVm());
+        Assert.Equal(typed + pasted, submittedQuery);
+        Assert.Equal(typed + pasted, channelsVm.GroupChatSearchInput);
+        Assert.Equal(ChannelsConfigScreen.TeamsGroupChatSearch, channelsVm.Screen.Value);
+        Assert.Equal(0, directory.UserSearchCalls);
+        Assert.Contains("Microsoft Teams > Find a Group Chat", terminal.ToString());
+    }
+
+    [Fact]
+    public async Task Channels_Group_Chat_keeps_continuation_visible_and_selectable_in_an_80_by_24_terminal()
+    {
+        WriteTeamsChannelFiles();
+        var firstPage = Enumerable.Range(0, 25)
+            .Select(index => new TeamsDirectoryGroupChat($"19:boston-{index}@thread.v2", $"BostonTech {index}", []))
+            .ToArray();
+        var directory = new GroupChatNameSearchDirectory
+        {
+            SearchHandler = (_, continuation) => ValueTask.FromResult(
+                TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(
+                    continuation is null
+                        ? new(firstPage, "next-page", 5, 0)
+                        : new([new("19:boston-later@thread.v2", "BostonTech Later", [])], null, 10, 0)))
+        };
+        var app = CreateHeadlessApp(out var input, out var dashboardVm, out var getChannelsVm, out var terminal,
+            teamsDirectoryFactory: _ => directory, terminalWidth: 80, terminalHeight: 24);
+        OpenChannels(dashboardVm);
+        MoveToAdapter(input, ChannelType.Teams);
+        input.EnqueueKey(ConsoleKey.Enter);
+        input.EnqueueKey(ConsoleKey.DownArrow);
+        input.EnqueueKey(ConsoleKey.Enter);
+        input.EnqueueKey(ConsoleKey.DownArrow);
+        input.EnqueueKey(ConsoleKey.Enter);
+        input.EnqueueString("BostonTech");
+        input.EnqueueKey(ConsoleKey.Enter);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var run = app.RunAsync(cts.Token);
+        try
+        {
+            await WaitForFrameAsync(app, terminal, frame => frame.Contains("BostonTech 0", StringComparison.Ordinal), cts.Token);
+            for (var index = 0; index < firstPage.Length; index++)
+                input.EnqueueKey(ConsoleKey.DownArrow);
+
+            var frame = await WaitForFrameAsync(
+                app,
+                terminal,
+                snapshot => getChannelsVm()?.DirectoryResultIndex == firstPage.Length
+                            && snapshot.Contains("Continue search", StringComparison.Ordinal)
+                            && snapshot.Contains("Advanced canonical-ID entry", StringComparison.Ordinal)
+                            && snapshot.Contains("[Type] Chat name", StringComparison.Ordinal),
+                cts.Token);
+            Assert.Contains("BostonTech 24", frame);
+            Assert.Contains("Advanced canonical-ID entry", frame);
+            Assert.Contains("[Type] Chat name", frame);
+            Assert.DoesNotContain("BostonTech 0", frame);
+
+            input.EnqueueKey(ConsoleKey.Enter);
+            await WaitForFrameAsync(app, terminal, snapshot => snapshot.Contains("BostonTech Later", StringComparison.Ordinal), cts.Token);
+            input.EnqueueKey(ConsoleKey.Enter);
+            await WaitForFrameAsync(app, terminal, _ => getChannelsVm()?.Screen.Value == ChannelsConfigScreen.GroupChats, cts.Token);
+
+            var channelsVm = Assert.IsType<ChannelsConfigViewModel>(getChannelsVm());
+            Assert.Equal("19:boston-later@thread.v2", channelsVm.AllowedGroupChatsInput);
+            Assert.Equal([("BostonTech", (string?)null), ("BostonTech", "next-page")], directory.SearchCalls);
+        }
+        finally
+        {
+            input.EnqueueKey(ConsoleKey.Q, false, false, true);
+            await run;
+        }
+    }
+
+    private static Task<string> WaitForFrameAsync(
+        TerminaApplication app,
+        VirtualTerminal terminal,
+        Func<string, bool> predicate,
+        CancellationToken cancellationToken)
+        => Observable.EveryUpdate(app.RenderFrameProvider, cancellationToken)
+            .Select(_ => terminal.ToString())
+            .FirstAsync(predicate, cancellationToken);
+
     [Fact]
     public async Task Channels_ChannelPermissions_DoesNotRemoveSelectedChannelWithDoneKey()
     {
@@ -512,6 +637,7 @@ public sealed class ChannelsConfigNavigationTests : IDisposable
             ChannelType.Slack => 0,
             ChannelType.Discord => 1,
             ChannelType.Mattermost => 2,
+            ChannelType.Teams => 3,
             _ => throw new ArgumentOutOfRangeException(nameof(channelType), channelType, null)
         };
 
@@ -718,9 +844,12 @@ public sealed class ChannelsConfigNavigationTests : IDisposable
         out VirtualTerminal terminal,
         FakeSlackProbe? slackProbe = null,
         FakeDiscordProbe? discordProbe = null,
-        FakeMattermostProbe? mattermostProbe = null)
+        FakeMattermostProbe? mattermostProbe = null,
+        Func<TeamsChannelOptions, ITeamsDirectory>? teamsDirectoryFactory = null,
+        int terminalWidth = 120,
+        int terminalHeight = 40)
     {
-        var terminalInstance = new VirtualTerminal(120, 40);
+        var terminalInstance = new VirtualTerminal(terminalWidth, terminalHeight);
         terminal = terminalInstance;
         var virtualInput = new VirtualInputSource();
         input = virtualInput;
@@ -755,7 +884,8 @@ public sealed class ChannelsConfigNavigationTests : IDisposable
                         discordProbe ?? new FakeDiscordProbe(),
                         mattermostProbe ?? new FakeMattermostProbe(),
                         TimeProvider.System,
-                        tuiNavigation);
+                        tuiNavigation,
+                        teamsDirectoryFactory: teamsDirectoryFactory);
                     return capturedChannelsVm;
                 });
         });

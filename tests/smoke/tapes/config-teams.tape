@@ -185,8 +185,8 @@ Enter
 Wait+Screen@10s /Microsoft Teams is configured/
 Wait+Screen@10s /Allowed group settings saved/
 
-# Enable Group Chat ingress and save a canonical chat ID through the focused
-# text input. The display name never becomes an authorization value.
+# Verify the Group Chat name input without a directory request. Then enable
+# ingress and save a canonical chat ID through the advanced input.
 Escape
 Wait+Screen@10s /Which channels would you like to connect/
 Up 3
@@ -199,7 +199,14 @@ Enter
 Wait+Screen@10s /Microsoft Teams > Add a destination/
 Down
 Enter
-Wait+Screen@10s /Microsoft Teams > Find chats containing this user/
+Wait+Screen@10s /Microsoft Teams > Find a Group Chat/
+Wait+Screen@10s /Group Chat name/
+Type "bostontech"
+Wait+Screen@10s /bostontech/
+Backspace 10
+Wait+Screen@10s /Group Chat name/
+Down
+Wait+Screen@10s /Advanced/
 Enter
 Wait+Screen@10s /Microsoft Teams > Group Chats/
 Wait+Screen@10s /Canonical Group Chat IDs/

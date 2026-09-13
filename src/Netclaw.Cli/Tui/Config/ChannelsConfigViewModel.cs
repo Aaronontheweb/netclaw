@@ -67,7 +67,7 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
     private int _channelAccessRowIndex;
     private int _teamsDestinationAddIndex;
     private bool _isGroupChatDiscovery;
-    private TeamsDirectoryUser? _selectedGroupChatParticipant;
+    private bool _hasSearchedGroupChats;
     private IReadOnlyList<TeamsDirectoryGroupChat> _groupChatSearchResults = [];
     private string? _groupChatContinuation;
     private Task? _groupChatSearchTask;
@@ -188,33 +188,26 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
     internal TeamsDirectoryTeam? SelectedTeam => _selectedTeam;
     internal int TeamsDestinationAddIndex => _teamsDestinationAddIndex;
     internal bool IsGroupChatDiscovery => _isGroupChatDiscovery;
-    internal TeamsDirectoryUser? SelectedGroupChatParticipant => _selectedGroupChatParticipant;
     internal IReadOnlyList<TeamsDirectoryGroupChat> GroupChatSearchResults => _groupChatSearchResults;
+    internal bool HasSearchedGroupChats => _hasSearchedGroupChats;
     internal string? GroupChatSearchInput
     {
         get => _groupChatSearchInput;
         set
         {
+            if (string.Equals(_groupChatSearchInput, value, StringComparison.Ordinal))
+                return;
+
             _groupChatSearchInput = value;
+            _teamsDirectorySearch?.Invalidate();
+            _groupChatSearchResults = [];
+            _groupChatContinuation = null;
+            _hasSearchedGroupChats = false;
             _directoryResultIndex = 0;
         }
     }
-    internal IReadOnlyList<TeamsDirectoryGroupChat> FilteredGroupChatSearchResults
-    {
-        get
-        {
-            var query = _groupChatSearchInput?.Trim();
-            if (string.IsNullOrWhiteSpace(query))
-                return _groupChatSearchResults;
-
-            return _groupChatSearchResults.Where(chat =>
-                (!string.IsNullOrWhiteSpace(chat.Topic)
-                    && chat.Topic.Contains(query, StringComparison.OrdinalIgnoreCase))
-                || chat.ParticipantPreview.Any(participant =>
-                    participant.Contains(query, StringComparison.OrdinalIgnoreCase)))
-                .ToArray();
-        }
-    }
+    internal IReadOnlyList<TeamsDirectoryGroupChat> FilteredGroupChatSearchResults => _groupChatSearchResults;
+    internal int GroupChatSearchActionIndex => _groupChatSearchResults.Count + (HasGroupChatContinuation ? 1 : 0);
     internal bool HasGroupChatContinuation => !string.IsNullOrWhiteSpace(_groupChatContinuation);
     internal Task? PendingGroupChatSearch => _groupChatSearchTask;
     internal int TeamsPrincipalManagementIndex => _teamsPrincipalManagementIndex;
@@ -1056,13 +1049,14 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
     internal void BeginGroupChatDiscovery()
     {
         ClearTeamsEditContext();
+        _teamsDirectorySearch?.Invalidate();
         _isGroupChatDiscovery = true;
-        _selectedGroupChatParticipant = null;
         _groupChatSearchResults = [];
         _groupChatContinuation = null;
         _groupChatSearchInput = null;
-        BeginTeamsUserSearch();
-        Status.Value = new ConfigStatusMessage("Find chats containing this user. The user does not gain access from this selection.", ConfigStatusTone.Neutral);
+        _directoryResultIndex = 0;
+        Screen.Value = ChannelsConfigScreen.TeamsGroupChatSearch;
+        Status.Value = new ConfigStatusMessage("Enter all or part of the Group Chat name, then press Enter to search.", ConfigStatusTone.Neutral);
         NotifyContentChanged();
     }
 
@@ -1151,7 +1145,7 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
             ChannelsConfigScreen.TeamsChannelSearch => _channelSearchResults.Count + 1,
             ChannelsConfigScreen.TeamsUserSearch => _userSearchResults.Count + 1,
             ChannelsConfigScreen.TeamsGroupSearch => _groupSearchResults.Count + 1,
-            ChannelsConfigScreen.TeamsGroupChatSearch => FilteredGroupChatSearchResults.Count + (HasGroupChatContinuation ? 2 : 1),
+            ChannelsConfigScreen.TeamsGroupChatSearch => GetGroupChatSearchResultCount(),
             _ => 0
         };
         _directoryResultIndex = Clamp(_directoryResultIndex + delta, count);
@@ -1260,6 +1254,9 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
         "teams_directory_network_unavailable" => "Microsoft Graph is unavailable. Check network access and try again.",
         "teams_directory_request_failed" => "Microsoft Graph could not complete the request. Existing IDs remain unchanged.",
         "teams_directory_query_too_short" => "Enter at least two characters to search the directory.",
+        "teams_directory_invalid_continuation" => "This search has expired. Select Search again to restart.",
+        "teams_directory_search_limit_reached" => "This search reached its result limit. Enter a more specific Group Chat name.",
+        "teams_directory_throttled" => "Microsoft Graph is busy. Retry this search after a short delay.",
         _ => "Microsoft Graph is unavailable. Existing IDs remain unchanged. Use the advanced canonical-ID path if needed."
     };
 
@@ -1822,9 +1819,7 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
         _directoryResultIndex = 0;
         Screen.Value = ChannelsConfigScreen.TeamsUserSearch;
         Status.Value = new ConfigStatusMessage(
-            _isGroupChatDiscovery
-                ? "Search for a participant. This user scopes discovery and does not gain access."
-                : "Search users by name, UPN, or mail. Select the advanced entry action for canonical IDs.",
+            "Search users by name, UPN, or mail. Select the advanced entry action for canonical IDs.",
             ConfigStatusTone.Neutral);
         NotifyContentChanged();
     }
@@ -1850,12 +1845,6 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
 
     internal void BeginAdvancedTeamsUserEntry()
     {
-        if (_isGroupChatDiscovery)
-        {
-            BeginManualGroupChatEntry();
-            return;
-        }
-
         BeginManualTeamsUserEntry();
     }
 
@@ -2038,19 +2027,6 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
 
     internal void AddSelectedTeamsUser()
     {
-        if (_isGroupChatDiscovery)
-        {
-            if (IsAdvancedTeamsDirectoryActionSelected())
-            {
-                Status.Value = new ConfigStatusMessage("Search and select a participant before chat discovery.", ConfigStatusTone.Error);
-                NotifyContentChanged();
-                return;
-            }
-
-            SelectGroupChatParticipant();
-            return;
-        }
-
         if (IsAdvancedTeamsDirectoryActionSelected())
         {
             BeginManualTeamsUserEntry();
@@ -2063,31 +2039,41 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
         AddDiscoveredTeamsUser(_userSearchResults[_directoryResultIndex]);
     }
 
+    internal Task SearchGroupChatsFromInputAsync()
+    {
+        _groupChatSearchResults = [];
+        _groupChatContinuation = null;
+        _hasSearchedGroupChats = false;
+        _directoryResultIndex = 0;
+        _groupChatSearchTask = SearchGroupChatsAsync(null, _lifetimeCts.Token);
+        return _groupChatSearchTask;
+    }
+
     private async Task SearchGroupChatsAsync(string? continuation, CancellationToken cancellationToken)
     {
-        var participant = _selectedGroupChatParticipant;
         var search = TryGetTeamsDirectorySearch();
-        if (participant is null || search is null)
+        if (search is null)
             return;
 
+        var query = _groupChatSearchInput?.Trim() ?? string.Empty;
         Status.Value = new ConfigStatusMessage(
-            string.IsNullOrWhiteSpace(continuation) ? "Finding Group Chats..." : "Loading more Group Chats...",
+            string.IsNullOrWhiteSpace(continuation) ? "Searching Group Chat names..." : "Continuing the Group Chat name search...",
             ConfigStatusTone.Neutral);
         NotifyContentChanged();
-        var response = await search.GetGroupChatsAsync(participant.Id, continuation, cancellationToken).ConfigureAwait(false);
+        var response = await search.SearchGroupChatsAsync(query, continuation, cancellationToken).ConfigureAwait(false);
         if (!response.IsCurrent || cancellationToken.IsCancellationRequested)
             return;
 
-        _ = InvokeAsync(() => ApplyGroupChatSearchResponse(participant.Id, continuation, response), cancellationToken);
+        await InvokeAsync(() => ApplyGroupChatSearchResponse(query, continuation, response), cancellationToken);
     }
 
     private void ApplyGroupChatSearchResponse(
-        string participantId,
+        string query,
         string? continuation,
-        TeamsDirectorySearchResponse<TeamsDirectoryGroupChatPage> response)
+        TeamsDirectorySearchResponse<TeamsDirectoryGroupChatSearchPage> response)
     {
         if (Screen.Value != ChannelsConfigScreen.TeamsGroupChatSearch
-            || !string.Equals(_selectedGroupChatParticipant?.Id, participantId, StringComparison.Ordinal)
+            || !string.Equals(_groupChatSearchInput?.Trim() ?? string.Empty, query, StringComparison.Ordinal)
             || !string.Equals(_groupChatContinuation, continuation, StringComparison.Ordinal)
             || !response.IsCurrent
             || _teamsDirectorySearch?.IsCurrent(response.Generation) != true)
@@ -2107,34 +2093,30 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
                 .Select(static group => group.First())
         ];
         _groupChatContinuation = response.Result.Value.Continuation;
+        _hasSearchedGroupChats = true;
         _directoryResultIndex = 0;
+        var unavailable = response.Result.Value.UnavailableUsers;
+        var coverage = $" Examined chats for {response.Result.Value.UsersExamined} tenant users.";
+        if (unavailable > 0)
+            coverage += $" Chats for {unavailable} users were unavailable; coverage is incomplete.";
+
         Status.Value = new ConfigStatusMessage(
-            _groupChatSearchResults.Count == 0
+            (_groupChatSearchResults.Count == 0
                 ? HasGroupChatContinuation
-                    ? "No Group Chats matched the examined page. Load more to continue."
-                    : "No Group Chats matched the selected user."
-                : "Select a Group Chat to review before you apply it.",
-            ConfigStatusTone.Neutral);
-        NotifyContentChanged();
-    }
-
-    private void SelectGroupChatParticipant()
-    {
-        if (_userSearchResults.Count == 0 || _directoryResultIndex >= _userSearchResults.Count)
-            return;
-
-        _selectedGroupChatParticipant = _userSearchResults[_directoryResultIndex];
-        _groupChatSearchResults = [];
-        _groupChatContinuation = null;
-        _directoryResultIndex = 0;
-        Screen.Value = ChannelsConfigScreen.TeamsGroupChatSearch;
-        _groupChatSearchTask = SearchGroupChatsAsync(null, _lifetimeCts.Token);
+                    ? "No matches yet. Select Continue search to examine more chats."
+                    : unavailable > 0
+                        ? "No matches in the available chats."
+                        : "No Group Chats matched that name."
+                : HasGroupChatContinuation
+                    ? "Select a Group Chat to review, or Continue search for more matches."
+                    : "Select a Group Chat to review before you apply it.") + coverage,
+            unavailable > 0 ? ConfigStatusTone.Warning : ConfigStatusTone.Neutral);
         NotifyContentChanged();
     }
 
     internal void LoadMoreGroupChats()
     {
-        if (_selectedGroupChatParticipant is null || string.IsNullOrWhiteSpace(_groupChatContinuation))
+        if (string.IsNullOrWhiteSpace(_groupChatContinuation))
             return;
 
         _groupChatSearchTask = SearchGroupChatsAsync(_groupChatContinuation, _lifetimeCts.Token);
@@ -3180,11 +3162,8 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
         if (Screen.Value == ChannelsConfigScreen.GroupChats && _isGroupChatDiscovery)
             EndGroupChatDiscovery();
 
-        if (Screen.Value == ChannelsConfigScreen.TeamsUserSearch && _isGroupChatDiscovery)
-        {
-            _teamsPrincipalSearchReturnScreen = ChannelsConfigScreen.TeamsDestinationAdd;
+        if (Screen.Value == ChannelsConfigScreen.TeamsGroupChatSearch)
             EndGroupChatDiscovery();
-        }
 
         if (Screen.Value == ChannelsConfigScreen.TeamsPrincipalRemovalConfirm)
             _pendingPrincipalRemoval = null;
@@ -3220,11 +3199,11 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
             ChannelsConfigScreen.AddChannel => ChannelsConfigScreen.ChannelPermissions,
             ChannelsConfigScreen.TeamsTeamSearch => ChannelsConfigScreen.ChannelPermissions,
             ChannelsConfigScreen.TeamsChannelSearch => ChannelsConfigScreen.TeamsTeamSearch,
-            ChannelsConfigScreen.TeamsUserSearch when _editingChannelAccess is null && _isGroupChatDiscovery == false && _teamsPrincipalSearchReturnScreen is { } returnScreen => ClearTeamsPrincipalSearchReturnScreen(returnScreen),
+            ChannelsConfigScreen.TeamsUserSearch when _editingChannelAccess is null && _teamsPrincipalSearchReturnScreen is { } returnScreen => ClearTeamsPrincipalSearchReturnScreen(returnScreen),
             ChannelsConfigScreen.TeamsGroupSearch when _editingChannelAccess is null && _teamsPrincipalSearchReturnScreen is { } returnScreen => ClearTeamsPrincipalSearchReturnScreen(returnScreen),
             ChannelsConfigScreen.TeamsUserSearch => _editingChannelAccess is null ? ChannelsConfigScreen.AdapterMenu : ChannelsConfigScreen.TeamsChannelAccess,
             ChannelsConfigScreen.TeamsGroupSearch => _editingChannelAccess is null ? ChannelsConfigScreen.AdapterMenu : ChannelsConfigScreen.TeamsChannelAccess,
-            ChannelsConfigScreen.TeamsGroupChatSearch => ChannelsConfigScreen.TeamsUserSearch,
+            ChannelsConfigScreen.TeamsGroupChatSearch => ChannelsConfigScreen.TeamsDestinationAdd,
             ChannelsConfigScreen.TeamsChannelAccess => ChannelsConfigScreen.ChannelPermissions,
             ChannelsConfigScreen.AllowedUsers => _editingChannelAccess is null ? ChannelsConfigScreen.AdapterMenu : ChannelsConfigScreen.TeamsChannelAccess,
             ChannelsConfigScreen.AllowedGroups => _editingChannelAccess is null ? ChannelsConfigScreen.AdapterMenu : ChannelsConfigScreen.TeamsChannelAccess,
@@ -3251,7 +3230,7 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
     private void EndGroupChatDiscovery()
     {
         _isGroupChatDiscovery = false;
-        _selectedGroupChatParticipant = null;
+        _hasSearchedGroupChats = false;
         _groupChatSearchResults = [];
         _groupChatContinuation = null;
         _groupChatSearchInput = null;
@@ -3785,7 +3764,7 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
     }
 
     private int GetGroupChatSearchResultCount()
-        => FilteredGroupChatSearchResults.Count + (HasGroupChatContinuation ? 2 : 1);
+        => GroupChatSearchActionIndex + 2;
 
     internal bool IsAdvancedTeamsDirectoryActionSelected() => Screen.Value switch
     {
@@ -3793,7 +3772,7 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
         ChannelsConfigScreen.TeamsChannelSearch => _directoryResultIndex == _channelSearchResults.Count,
         ChannelsConfigScreen.TeamsUserSearch => _directoryResultIndex == _userSearchResults.Count,
         ChannelsConfigScreen.TeamsGroupSearch => _directoryResultIndex == _groupSearchResults.Count,
-        ChannelsConfigScreen.TeamsGroupChatSearch => _directoryResultIndex == FilteredGroupChatSearchResults.Count + (HasGroupChatContinuation ? 1 : 0),
+        ChannelsConfigScreen.TeamsGroupChatSearch => _directoryResultIndex == GroupChatSearchActionIndex + 1,
         _ => false
     };
 

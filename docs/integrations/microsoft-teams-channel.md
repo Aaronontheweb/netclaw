@@ -218,18 +218,34 @@ Graph **application** permissions:
 - `GroupMember.Read.All` — security/Microsoft 365 group discovery and checked
   group membership.
 - `Chat.ReadBasic.All` — optional Group Chat topic and participant-preview
-  discovery for chats that contain one selected user.
+  discovery.
 
 Do not add `Directory.Read.All` for this feature. The Teams package RSC
 permission described above is separate from these Graph application
 permissions.
 
 `Chat.ReadBasic.All` is optional. It grants tenant-wide application access to
-basic chat metadata and requires administrator consent. The picker limits each
-request to chats that contain one selected user. The selected user does not
-gain access and is not saved. The permission does not prove that the Netclaw
-app is installed in a selected chat. Without this permission, Group Chat
-ingress and local removal still use configured canonical IDs.
+basic chat metadata and requires administrator consent. The permission does
+not prove that the Netclaw app is installed in a selected chat. Without this
+permission, Group Chat ingress and local removal still use configured
+canonical IDs.
+
+To find a named chat, select `Add a channel or Group Chat` > `Group Chat`.
+Enter part or all of its title in `Group Chat name`, then press Enter.
+The search matches Group Chat titles without case sensitivity. It does not
+search user names or require a participant selection.
+
+Microsoft Graph has no tenant-wide chat-title search endpoint for application
+credentials. Netclaw reads tenant user IDs with `User.Read.All`, then reads
+their chat metadata in bounded batches. It matches titles locally and removes
+duplicate chat IDs. This process does not read chat messages or change access
+lists.
+
+Select `Continue search` when more metadata remains. An incomplete scan or
+Graph error is not proof that a chat does not exist. The TUI reports this
+state. Use the advanced canonical-ID path if a chat has no title or discovery
+is unavailable. A selected chat still needs the existing ingress switch and
+principal grants.
 
 Netclaw does not request `Chat.ReadBasic.WhereInstalled`, `Chat.Read.All`, or
 chat message-read permissions for this picker. Group-chat authorization uses

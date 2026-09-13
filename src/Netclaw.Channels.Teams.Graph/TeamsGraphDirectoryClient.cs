@@ -20,7 +20,7 @@ namespace Netclaw.Channels.Teams.Graph;
 /// boundary. It owns no configuration persistence and never exposes Graph
 /// types outside this infrastructure project.
 /// </summary>
-public sealed class TeamsGraphDirectoryClient : ITeamsDirectory, ITeamsDirectoryUserCache, IDisposable
+public sealed partial class TeamsGraphDirectoryClient : ITeamsDirectory, ITeamsDirectoryUserCache, IDisposable
 {
     public const string DefaultScope = "https://graph.microsoft.com/.default";
     public const int MinimumSearchLength = 2;
@@ -499,22 +499,30 @@ public sealed class TeamsGraphDirectoryClient : ITeamsDirectory, ITeamsDirectory
 
     public void Dispose()
     {
+        ClearGroupChatSearchStates();
         if (_ownsGraphClient)
             _graphClient.Dispose();
         if (_ownsCache && _cache is IDisposable disposableCache)
             disposableCache.Dispose();
     }
 
+    private ValueTask<TeamsDirectoryOperationResult<T>> ExecuteAsync<T>(
+        Func<CancellationToken, Task<T>> operation,
+        CancellationToken cancellationToken) => ExecuteAsync(operation, cancellationToken, retry: true);
+
     private async ValueTask<TeamsDirectoryOperationResult<T>> ExecuteAsync<T>(
         Func<CancellationToken, Task<T>> operation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool retry)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(OperationTimeout);
 
         try
         {
-            return TeamsDirectoryOperationResult<T>.Available(await ExecuteWithRetryAsync(operation, deadline.Token).ConfigureAwait(false));
+            return TeamsDirectoryOperationResult<T>.Available(retry
+                ? await ExecuteWithRetryAsync(operation, deadline.Token).ConfigureAwait(false)
+                : await operation(deadline.Token).ConfigureAwait(false));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
