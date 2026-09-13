@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.65.5"
+  version: "2.65.6"
 ---
 
 # Netclaw Operations
@@ -47,6 +47,14 @@ in canonical lowercase `D` format and rejects invalid IDs before it saves.
 
 Use the Group Chat picker only when Graph has `Chat.ReadBasic.All`. This
 permission is optional. Manual Group Chat IDs still work without it.
+
+Use `Add a channel or Group Chat` > `Group Chat` to search by chat title.
+Enter a partial or full title in `Group Chat name`. Do not enter a user name.
+The application reads tenant user IDs and chat metadata in bounded batches.
+It uses `User.Read.All` and `Chat.ReadBasic.All`; it does not read messages.
+Select `Continue search` while more metadata remains. An incomplete scan or
+Graph error does not prove that the chat is absent. Discovery grants no access.
+Use a canonical chat ID if the chat has no title or discovery is unavailable.
 
 When you remove the final global Teams user or group, explain the result.
 Allowed channels without exact grants accept verified senders. Personal and

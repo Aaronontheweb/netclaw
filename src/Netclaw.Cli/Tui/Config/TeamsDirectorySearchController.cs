@@ -65,6 +65,18 @@ internal sealed class TeamsDirectorySearchController : IDisposable
                 token),
             cancellationToken);
 
+    public ValueTask<TeamsDirectorySearchResponse<TeamsDirectoryGroupChatSearchPage>> SearchGroupChatsAsync(
+        string query,
+        string? continuation,
+        CancellationToken cancellationToken = default)
+        => ExecuteAsync(
+            token => _directory.SearchGroupChatsAsync(
+                query,
+                TeamsGraphSearchLimits.MaximumResults,
+                continuation,
+                token),
+            cancellationToken);
+
     /// <summary>
     /// Invalidates a result when its input or owning screen changes. A provider
     /// that ignores cancellation still fails the generation check on return.

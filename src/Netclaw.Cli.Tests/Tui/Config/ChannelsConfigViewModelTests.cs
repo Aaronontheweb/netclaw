@@ -20,6 +20,64 @@ using Xunit;
 
 namespace Netclaw.Cli.Tests.Tui.Config;
 
+internal sealed class GroupChatNameSearchDirectory : ITeamsDirectory
+{
+    public List<(string Query, string? Continuation)> SearchCalls { get; } = [];
+
+    public int UserSearchCalls { get; private set; }
+
+    public required Func<string, string?, ValueTask<TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>>> SearchHandler { get; init; }
+
+    public ValueTask<TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>> SearchGroupChatsAsync(
+        string query,
+        int maximumResults,
+        string? continuation = null,
+        CancellationToken cancellationToken = default)
+    {
+        SearchCalls.Add((query, continuation));
+        return SearchHandler(query, continuation);
+    }
+
+    public ValueTask<TeamsDirectoryOperationResult<IReadOnlyList<TeamsDirectoryUser>>> SearchUsersAsync(
+        string query, int maximumResults, CancellationToken cancellationToken = default)
+    {
+        UserSearchCalls++;
+        return ValueTask.FromResult(TeamsDirectoryOperationResult<IReadOnlyList<TeamsDirectoryUser>>.Available([]));
+    }
+
+    public ValueTask<TeamsDirectoryOperationResult<IReadOnlyList<TeamsDirectoryTeam>>> SearchTeamsAsync(
+        string query, int maximumResults, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(TeamsDirectoryOperationResult<IReadOnlyList<TeamsDirectoryTeam>>.Unavailable("not_used"));
+
+    public ValueTask<TeamsDirectoryOperationResult<TeamsDirectoryTeam>> GetTeamAsync(
+        string teamId, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(TeamsDirectoryOperationResult<TeamsDirectoryTeam>.Unavailable("not_used"));
+
+    public ValueTask<TeamsDirectoryOperationResult<IReadOnlyList<TeamsDirectoryChannel>>> GetChannelsAsync(
+        string teamId, int maximumResults, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(TeamsDirectoryOperationResult<IReadOnlyList<TeamsDirectoryChannel>>.Unavailable("not_used"));
+
+    public ValueTask<TeamsDirectoryOperationResult<TeamsDirectoryChannel>> GetChannelAsync(
+        string teamId, string channelId, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(TeamsDirectoryOperationResult<TeamsDirectoryChannel>.Unavailable("not_used"));
+
+    public ValueTask<TeamsDirectoryOperationResult<IReadOnlyList<TeamsDirectoryGroup>>> SearchGroupsAsync(
+        string query, int maximumResults, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(TeamsDirectoryOperationResult<IReadOnlyList<TeamsDirectoryGroup>>.Unavailable("not_used"));
+
+    public ValueTask<TeamsDirectoryOperationResult<TeamsDirectoryGroup>> GetGroupAsync(
+        string groupId, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(TeamsDirectoryOperationResult<TeamsDirectoryGroup>.Unavailable("not_used"));
+
+    public ValueTask<TeamsDirectoryOperationResult<TeamsDirectoryUser>> GetUserAsync(
+        string userId, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(TeamsDirectoryOperationResult<TeamsDirectoryUser>.Unavailable("not_used"));
+
+    public ValueTask<TeamsDirectoryOperationResult<IReadOnlySet<string>>> CheckUserGroupMembershipAsync(
+        string userId, IReadOnlyCollection<string> groupIds, CancellationToken cancellationToken = default)
+        => ValueTask.FromResult(TeamsDirectoryOperationResult<IReadOnlySet<string>>.Unavailable("not_used"));
+}
+
 public sealed class ChannelsConfigViewModelTests : IDisposable
 {
     private readonly DisposableTempDir _dir = new();
@@ -71,6 +129,172 @@ public sealed class ChannelsConfigViewModelTests : IDisposable
         Assert.Equal(ChannelsConfigScreen.GroupChats, vm.Screen.Value);
         Assert.Equal("Each Group Chat ID must use the canonical 19:…@thread.v2 format.", vm.Status.Value.Text);
         Assert.Null(vm.Step.GetAdapterViewModel<TeamsStepViewModel>(ChannelType.Teams).AllowedGroupChatIdsInput);
+    }
+
+    [Theory]
+    [InlineData("bostontech")]
+    [InlineData("BostonTech Operations")]
+    public async Task Group_chat_name_search_adds_the_selected_chat_without_adding_a_principal(string query)
+    {
+        WriteTeamsConfig(enabled: true, groupChats: []);
+        var chat = new TeamsDirectoryGroupChat("19:boston-operations@thread.v2", "BostonTech Operations", ["Ada Lovelace", "Grace Hopper"]);
+        var directory = new GroupChatNameSearchDirectory
+        {
+            SearchHandler = (_, _) => ValueTask.FromResult(
+                TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(new([chat], null, 2, 0)))
+        };
+        using (var vm = CreateViewModel(teamsDirectoryFactory: _ => directory))
+        {
+            vm.OpenAdapterManagement(ChannelType.Teams);
+            vm.BeginAddChannel();
+            vm.MoveTeamsDestinationAdd(1);
+            vm.ActivateTeamsDestinationAdd();
+
+            Assert.Equal(ChannelsConfigScreen.TeamsGroupChatSearch, vm.Screen.Value);
+            vm.GroupChatSearchInput = query;
+            await vm.SearchGroupChatsFromInputAsync();
+
+            Assert.Equal((query, (string?)null), Assert.Single(directory.SearchCalls));
+            Assert.Equal(0, directory.UserSearchCalls);
+            Assert.Equal(chat, Assert.Single(vm.GroupChatSearchResults));
+            Assert.Equal(chat, Assert.Single(vm.FilteredGroupChatSearchResults));
+
+            vm.GroupChatSearchInput = query;
+            Assert.Equal(chat, Assert.Single(vm.GroupChatSearchResults));
+
+            vm.SelectGroupChatForReview();
+            Assert.Equal(ChannelsConfigScreen.GroupChats, vm.Screen.Value);
+            Assert.Equal(chat.Id, vm.AllowedGroupChatsInput);
+            Assert.Null(vm.Step.GetAdapterViewModel<TeamsStepViewModel>(ChannelType.Teams).AllowedGroupChatIdsInput);
+            vm.ToggleGroupChats();
+            vm.ApplyGroupChats();
+            await vm.PendingConfigWrite;
+        }
+
+        var saved = ConfigFileHelper.LoadJsonDict(_paths.NetclawConfigPath);
+        Assert.True(ConfigFileHelper.TryGetPathValue(saved, "Teams.AllowedGroupChatIds", out var chats));
+        Assert.Equal([chat.Id], ToStringArray(chats));
+        Assert.False(ConfigFileHelper.TryGetPathValue(saved, "Teams.AllowedUserIds", out _));
+        Assert.False(ConfigFileHelper.TryGetPathValue(saved, "Teams.AllowedGroupIds", out _));
+        Assert.DoesNotContain(chat.Topic!, File.ReadAllText(_paths.NetclawConfigPath));
+
+        using var reopened = CreateViewModel();
+        var teams = reopened.Step.GetAdapterViewModel<TeamsStepViewModel>(ChannelType.Teams);
+        Assert.Equal(chat.Id, teams.AllowedGroupChatIdsInput);
+        Assert.True(teams.AllowGroupChats);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(25)]
+    public async Task Group_chat_name_search_continues_to_a_later_page_and_can_select_its_match(int firstPageSize)
+    {
+        WriteTeamsConfig(enabled: true, groupChats: []);
+        var firstPage = Enumerable.Range(0, firstPageSize)
+            .Select(index => new TeamsDirectoryGroupChat($"19:boston-{index}@thread.v2", $"BostonTech {index}", []))
+            .ToArray();
+        var laterChat = new TeamsDirectoryGroupChat("19:boston-later@thread.v2", "BostonTech Later", ["Ada"]);
+        var directory = new GroupChatNameSearchDirectory
+        {
+            SearchHandler = (_, continuation) => ValueTask.FromResult(
+                TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(
+                    continuation is null ? new(firstPage, "opaque-next-page", 5, 0) : new([laterChat], null, 10, 0)))
+        };
+        using var vm = CreateViewModel(teamsDirectoryFactory: _ => directory);
+        vm.OpenAdapterManagement(ChannelType.Teams);
+        vm.BeginGroupChatDiscovery();
+        vm.GroupChatSearchInput = "BostonTech";
+        await vm.SearchGroupChatsFromInputAsync();
+
+        Assert.Equal(firstPageSize, vm.GroupChatSearchResults.Count);
+        Assert.True(vm.HasGroupChatContinuation);
+        if (firstPageSize == 0)
+            Assert.Contains("Continue search", vm.Status.Value.Text, StringComparison.OrdinalIgnoreCase);
+
+        vm.LoadMoreGroupChats();
+        await vm.PendingGroupChatSearch!;
+
+        Assert.Equal([("BostonTech", (string?)null), ("BostonTech", "opaque-next-page")], directory.SearchCalls);
+        Assert.Equal(laterChat, Assert.Single(vm.GroupChatSearchResults));
+        Assert.False(vm.HasGroupChatContinuation);
+        vm.SelectGroupChatForReview();
+        Assert.Equal(laterChat.Id, vm.AllowedGroupChatsInput);
+    }
+
+    [Fact]
+    public async Task Changed_group_chat_query_clears_results_and_cursor_and_rejects_a_late_completion()
+    {
+        WriteTeamsConfig(enabled: true, groupChats: []);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var staleChat = new TeamsDirectoryGroupChat("19:boston-old@thread.v2", "BostonTech Old", ["Ada"]);
+        var directory = new GroupChatNameSearchDirectory
+        {
+            SearchHandler = (query, _) =>
+            {
+                if (query == "BostonTech")
+                    return ValueTask.FromResult(TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(
+                        new([staleChat], "old-cursor", 5, 0)));
+
+                started.TrySetResult();
+                return new ValueTask<TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>>(release.Task);
+            }
+        };
+        using var vm = CreateViewModel(teamsDirectoryFactory: _ => directory);
+        vm.OpenAdapterManagement(ChannelType.Teams);
+        vm.BeginGroupChatDiscovery();
+        vm.GroupChatSearchInput = "BostonTech";
+        await vm.SearchGroupChatsFromInputAsync();
+        Assert.Single(vm.GroupChatSearchResults);
+
+        vm.GroupChatSearchInput = "BostonTech New";
+        Assert.Empty(vm.GroupChatSearchResults);
+        Assert.False(vm.HasGroupChatContinuation);
+        var pending = vm.SearchGroupChatsFromInputAsync();
+        await started.Task.WaitAsync(TestContext.Current.CancellationToken);
+        vm.GroupChatSearchInput = "Unrelated chat";
+        release.SetResult(TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(new([staleChat], "stale", 10, 0)));
+        await pending;
+
+        Assert.Empty(vm.GroupChatSearchResults);
+        Assert.False(vm.HasGroupChatContinuation);
+        vm.SelectGroupChatForReview();
+        Assert.Equal(ChannelsConfigScreen.TeamsGroupChatSearch, vm.Screen.Value);
+        Assert.Null(vm.Step.GetAdapterViewModel<TeamsStepViewModel>(ChannelType.Teams).AllowedGroupChatIdsInput);
+    }
+
+    [Fact]
+    public async Task Leaving_group_chat_search_returns_to_destination_choice_and_rejects_a_late_completion()
+    {
+        WriteTeamsConfig(enabled: true, groupChats: []);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var directory = new GroupChatNameSearchDirectory
+        {
+            SearchHandler = (_, _) =>
+            {
+                started.TrySetResult();
+                return new ValueTask<TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>>(release.Task);
+            }
+        };
+        using var vm = CreateViewModel(teamsDirectoryFactory: _ => directory);
+        vm.OpenAdapterManagement(ChannelType.Teams);
+        vm.BeginGroupChatDiscovery();
+        vm.GroupChatSearchInput = "BostonTech";
+        var pending = vm.SearchGroupChatsFromInputAsync();
+        await started.Task.WaitAsync(TestContext.Current.CancellationToken);
+        vm.GoBack();
+        release.SetResult(TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(
+            new([new("19:boston@thread.v2", "BostonTech", ["Ada"])], "stale-cursor", 5, 0)));
+        await pending;
+
+        Assert.Equal(ChannelsConfigScreen.TeamsDestinationAdd, vm.Screen.Value);
+        Assert.Empty(vm.GroupChatSearchResults);
+        Assert.False(vm.HasGroupChatContinuation);
+        Assert.False(vm.IsGroupChatDiscovery);
+        Assert.Equal(0, directory.UserSearchCalls);
     }
 
     [Fact]
@@ -586,7 +810,7 @@ public sealed class ChannelsConfigViewModelTests : IDisposable
 
         vm.OpenAdapterManagement(ChannelType.Teams);
         vm.BeginGroupChatDiscovery();
-        vm.BeginAdvancedTeamsUserEntry();
+        vm.BeginManualGroupChatEntry();
 
         Assert.Equal(ChannelsConfigScreen.GroupChats, vm.Screen.Value);
         Assert.Null(vm.AllowedUsersInput);

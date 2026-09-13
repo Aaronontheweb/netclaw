@@ -13,6 +13,68 @@ namespace Netclaw.Cli.Tests.Tui.Config;
 public sealed class TeamsDirectorySearchControllerTests
 {
     [Fact]
+    public async Task Group_chat_search_uses_the_name_and_continuation_without_a_user_search()
+    {
+        var time = new FakeTimeProvider();
+        var chat = new TeamsDirectoryGroupChat("19:boston@thread.v2", "BostonTech Operations", ["Ada", "Grace"]);
+        var directory = new GroupChatNameSearchDirectory
+        {
+            SearchHandler = (_, _) => ValueTask.FromResult(
+                TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(new([chat], null, 10, 0)))
+        };
+        using var controller = new TeamsDirectorySearchController(directory, time);
+        var search = controller.SearchGroupChatsAsync("BostonTech Operations", "opaque-cursor", TestContext.Current.CancellationToken).AsTask();
+
+        Assert.Empty(directory.SearchCalls);
+        time.Advance(TimeSpan.FromMilliseconds(300));
+        var response = await search;
+
+        Assert.True(response.IsCurrent);
+        Assert.Equal(("BostonTech Operations", "opaque-cursor"), Assert.Single(directory.SearchCalls));
+        Assert.Equal(0, directory.UserSearchCalls);
+        Assert.Equal(chat, Assert.Single(response.Result.Value!.Chats));
+    }
+
+    [Fact]
+    public async Task Changed_chat_name_rejects_an_old_page_when_the_directory_ignores_cancellation()
+    {
+        var time = new FakeTimeProvider();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var directory = new GroupChatNameSearchDirectory
+        {
+            SearchHandler = (query, _) =>
+            {
+                if (query == "old")
+                {
+                    started.TrySetResult();
+                    return new ValueTask<TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>>(release.Task);
+                }
+
+                return ValueTask.FromResult(TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(new([], null, 1, 0)));
+            }
+        };
+        using var controller = new TeamsDirectorySearchController(directory, time);
+        var oldSearch = controller.SearchGroupChatsAsync("old", "old-page", TestContext.Current.CancellationToken).AsTask();
+        time.Advance(TimeSpan.FromMilliseconds(300));
+        await started.Task.WaitAsync(TestContext.Current.CancellationToken);
+
+        controller.Invalidate();
+        var currentSearch = controller.SearchGroupChatsAsync("new", null, TestContext.Current.CancellationToken).AsTask();
+        time.Advance(TimeSpan.FromMilliseconds(300));
+        release.SetResult(TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(
+            new([new("19:old@thread.v2", "Old chat", ["Ada"])], "stale-page", 5, 0)));
+
+        var oldResponse = await oldSearch;
+        var currentResponse = await currentSearch;
+        Assert.False(oldResponse.IsCurrent);
+        Assert.False(controller.IsCurrent(oldResponse.Generation));
+        Assert.True(currentResponse.IsCurrent);
+        Assert.Empty(currentResponse.Result.Value!.Chats);
+    }
+
+    [Fact]
     public async Task Search_waits_for_the_debounce_before_it_calls_the_directory()
     {
         var time = new FakeTimeProvider();

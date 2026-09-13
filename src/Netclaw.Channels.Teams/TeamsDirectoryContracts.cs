@@ -68,6 +68,16 @@ public sealed record TeamsDirectoryGroupChatPage(
     string? Continuation);
 
 /// <summary>
+/// One bounded name-search page. Counters include all previous pages.
+/// A continuation means the tenant search is not complete.
+/// </summary>
+public sealed record TeamsDirectoryGroupChatSearchPage(
+    IReadOnlyList<TeamsDirectoryGroupChat> Chats,
+    string? Continuation,
+    int UsersExamined,
+    int UnavailableUsers);
+
+/// <summary>
 /// A safe, stable outcome classification for directory operations. Reason codes
 /// are deliberately non-diagnostic and never carry credentials or principal IDs.
 /// </summary>
@@ -146,6 +156,19 @@ public interface ITeamsDirectory
         string userId,
         IReadOnlyCollection<string> groupIds,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Searches Group Chat topics across tenant users. The query never filters
+    /// user identities. Continuations are opaque and bound to this query.
+    /// </summary>
+    ValueTask<TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>> SearchGroupChatsAsync(
+        string query,
+        int maximumResults,
+        string? continuation = null,
+        CancellationToken cancellationToken = default) =>
+        ValueTask.FromResult(
+            TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Unavailable(
+                "teams_directory_group_chat_discovery_unavailable"));
 
     /// <summary>
     /// Gets one selected user's Group Chat metadata page. Implementations must
