@@ -282,9 +282,7 @@ public class ToolExecutionIntegrationTests : LlmSessionTestBase
                 new Dictionary<string, object?> { ["Path"] = "src/Rect.cs" })
         ];
         _fakeToolExecutor.Results["file_read"] = "public readonly record struct Rect { ... }";
-        _fakeToolExecutor.Receipts["file_read"] = new ToolInvocationReceipt(
-            ToolInvocationOutcomeCategory.Success,
-            [new ToolFileActivity(canonicalPath, ToolFileActivityKind.Read)]);
+        _fakeToolExecutor.Receipts["file_read"] = new ToolInvocationReceipt.Succeeded([new ToolFileActivity(canonicalPath, ToolFileActivityKind.Read)], null);
 
         var sessionId = new SessionId("console/working-context-populated");
         var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
@@ -351,7 +349,7 @@ public class ToolExecutionIntegrationTests : LlmSessionTestBase
         ];
         _fakeToolExecutor.Results["set_working_directory"] = deniedPath;
         _fakeToolExecutor.Receipts["set_working_directory"] =
-            new ToolInvocationReceipt(ToolInvocationOutcomeCategory.AccessDenied);
+            new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.AccessDenied);
 
         var nextTurn = await RunToolTurnAndCaptureNextTurnAsync("failed-project-declaration");
 
@@ -371,9 +369,7 @@ public class ToolExecutionIntegrationTests : LlmSessionTestBase
                 new Dictionary<string, object?> { ["Path"] = declaredPath })
         ];
         _fakeToolExecutor.Results["set_working_directory"] = misleadingPath;
-        _fakeToolExecutor.Receipts["set_working_directory"] = new ToolInvocationReceipt(
-            ToolInvocationOutcomeCategory.Success,
-            declaredProjectDirectory: declaredPath);
+        _fakeToolExecutor.Receipts["set_working_directory"] = new ToolInvocationReceipt.Succeeded([], declaredPath);
 
         var nextTurn = await RunToolTurnAndCaptureNextTurnAsync("successful-project-declaration");
 
@@ -393,9 +389,7 @@ public class ToolExecutionIntegrationTests : LlmSessionTestBase
                 new Dictionary<string, object?> { ["Path"] = "README.md" })
         ];
         _fakeToolExecutor.Results["file_read"] = "content";
-        _fakeToolExecutor.Receipts["file_read"] = new ToolInvocationReceipt(
-            ToolInvocationOutcomeCategory.Success,
-            declaredProjectDirectory: declaredPath);
+        _fakeToolExecutor.Receipts["file_read"] = new ToolInvocationReceipt.Succeeded([], declaredPath);
 
         var nextTurn = await RunToolTurnAndCaptureNextTurnAsync("forged-project-declaration");
 
@@ -453,7 +447,7 @@ internal sealed class FakeToolExecutor : IToolExecutor
 
     public Dictionary<string, ToolInvocationReceipt> Receipts { get; } = [];
 
-    public Dictionary<string, ToolAgentCorrection> Corrections { get; } = [];
+    public Dictionary<string, ToolCorrection> Corrections { get; } = [];
 
     public Action? BeforeCorrection { get; set; }
 
@@ -465,7 +459,7 @@ internal sealed class FakeToolExecutor : IToolExecutor
         if (Corrections.TryGetValue(toolCall.Name, out var correction))
         {
             BeforeCorrection?.Invoke();
-            throw new ToolAgentCorrectionRequiredException(correction);
+            throw new ToolCorrectionRequiredException(new ToolCorrectionCollection([correction]));
         }
 
         if (FailForTools.Contains(toolCall.Name))
@@ -481,7 +475,7 @@ internal sealed class FakeToolExecutor : IToolExecutor
         if (Corrections.TryGetValue(toolCall.Name, out var correction))
         {
             BeforeCorrection?.Invoke();
-            throw new ToolAgentCorrectionRequiredException(correction);
+            throw new ToolCorrectionRequiredException(new ToolCorrectionCollection([correction]));
         }
 
         if (FailForTools.Contains(toolCall.Name))

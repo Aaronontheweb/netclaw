@@ -190,12 +190,29 @@ public sealed class ShellCommandPolicy
     private ShellCommandDecision EvaluateStructuralAnalysis(
         ShellCommandAnalysis analysis)
     {
+        var denyOnlyDecision = EvaluateDenyOnlyClauses(analysis.DenyOnlyClauses);
+        if (!denyOnlyDecision.Allowed)
+            return denyOnlyDecision;
+
         if (analysis.Failure == ShellAnalysisFailure.Unresolved || analysis.Commands.Count == 0)
             return EvaluateLegacySegments(analysis.Source);
 
         foreach (var occurrence in analysis.Commands)
         {
             var decision = EvaluateClause(occurrence.Clause);
+            if (!decision.Allowed)
+                return decision;
+        }
+
+        return ShellCommandDecision.Allow();
+    }
+
+    internal ShellCommandDecision EvaluateDenyOnlyClauses(
+        IReadOnlyList<ShellSyntaxTree.Clause> clauses)
+    {
+        foreach (var clause in clauses)
+        {
+            var decision = EvaluateDenyOnlyClause(clause);
             if (!decision.Allowed)
                 return decision;
         }
@@ -230,7 +247,9 @@ public sealed class ShellCommandPolicy
 
     private ShellCommandDecision EvaluateSegment(string segment)
     {
-        var tokens = ShellTokenizer.Tokenize(segment).ToList();
+        var tokens = ShellTokenizer.Tokenize(segment)
+            .Select(static token => DenyToken.Known(token))
+            .ToList();
         if (tokens.Count == 0)
             return ShellCommandDecision.Allow();
 
@@ -245,16 +264,18 @@ public sealed class ShellCommandPolicy
 
     private ShellCommandDecision EvaluateClause(ShellSyntaxTree.Clause clause)
     {
-        var tokens = new List<string>(
+        var tokens = new List<DenyToken>(
             clause.Verb.Tokens.Count + clause.Args.Count + clause.Redirects.Count);
         if (clause.Verb.CanonicalVerb is { Length: > 0 } canonicalVerb)
         {
-            tokens.Add(canonicalVerb);
-            tokens.AddRange(clause.Verb.Tokens.Skip(1));
+            tokens.Add(DenyToken.Known(canonicalVerb));
+            tokens.AddRange(clause.Verb.Tokens.Skip(1)
+                .Select(static token => DenyToken.Known(token)));
         }
         else
         {
-            tokens.AddRange(clause.Verb.Tokens);
+            tokens.AddRange(clause.Verb.Tokens
+                .Select(static token => DenyToken.Known(token)));
         }
         if (Environment.Grammar == ShellGrammar.PowerShell
             && clause.Elements.Count > 0)
@@ -265,20 +286,49 @@ public sealed class ShellCommandPolicy
             // element so they do not reinterpret an explicit false switch.
             tokens.AddRange(clause.Elements
                 .Where(static element => element.Role == ShellSyntaxTree.ClauseElementRole.Argument)
-                .Select(static element => element.Raw));
+                .Select(static element => DenyToken.FromPowerShellElement(element)));
         }
         else
         {
             tokens.AddRange(clause.Args
                 .Where(static arg => !arg.IsCwdAttribution)
-                .Select(static arg => arg.Raw));
+                .Select(static arg => DenyToken.Known(arg.Raw)));
         }
         tokens.AddRange(clause.Redirects
             .Where(static redirect => !string.IsNullOrEmpty(redirect.Target))
-            .Select(static redirect => redirect.Target));
+            .Select(static redirect => DenyToken.Known(redirect.Target)));
 
         if (tokens.Count == 0)
             return ShellCommandDecision.Allow();
+
+        foreach (var pattern in _denyPatterns)
+        {
+            if (pattern.Matches(tokens))
+                return ShellCommandDecision.Deny(pattern.Reason, pattern.Category);
+        }
+
+        return ShellCommandDecision.Allow();
+    }
+
+    private ShellCommandDecision EvaluateDenyOnlyClause(ShellSyntaxTree.Clause clause)
+    {
+        var tokens = new List<DenyToken>(
+            clause.Verb.Tokens.Count + clause.Elements.Count);
+        if (clause.Verb.CanonicalVerb is { Length: > 0 } canonicalVerb)
+        {
+            tokens.Add(DenyToken.Known(canonicalVerb));
+            tokens.AddRange(clause.Verb.Tokens.Skip(1)
+                .Select(static token => DenyToken.Known(token)));
+        }
+        else
+        {
+            tokens.AddRange(clause.Verb.Tokens
+                .Select(static token => DenyToken.Known(token)));
+        }
+        tokens.AddRange(clause.Elements
+            .Where(static element =>
+                element.Role == ShellSyntaxTree.ClauseElementRole.Argument)
+            .Select(static element => DenyToken.FromPowerShellElement(element)));
 
         foreach (var pattern in _denyPatterns)
         {
@@ -295,7 +345,7 @@ public sealed class ShellCommandPolicy
         if (tokens.Count == 0)
             return null;
 
-        return new VerbChainDenyPattern(tokens, raw, DenyCategory.CustomDeny);
+        return new LegacyVerbChainDenyPattern(tokens, raw, DenyCategory.CustomDeny);
     }
 
     // ── Default deny patterns ──
@@ -336,9 +386,67 @@ public sealed class ShellCommandPolicy
 
     // ── Pattern types ──
 
+    internal readonly record struct DenyToken(
+        string Value,
+        string AuthoredValue,
+        bool IsKnown,
+        string? ParameterName = null)
+    {
+        public static DenyToken Known(string value, string? authoredValue = null)
+        {
+            var authored = authoredValue ?? value;
+            var parameterName = TryReadParameter(
+                authored,
+                out var authoredParameterName,
+                out _)
+                && IsStaticParameterName(authoredParameterName)
+                    ? authoredParameterName
+                    : null;
+            return new(value, authored, IsKnown: true, parameterName);
+        }
+
+        public static DenyToken FromPowerShellElement(ShellSyntaxTree.ClauseElement element)
+        {
+            var isKnown = element.Kind is ShellSyntaxTree.ArgKind.Literal
+                or ShellSyntaxTree.ArgKind.Glob
+                or ShellSyntaxTree.ArgKind.Tilde;
+            // PowerShell reports its two Boolean false spellings as EnvVar.
+            // Treat only the exact source-authenticated Boolean as known.
+            // Other environment and dynamic values keep their unknown status.
+            isKnown |= ShellCommandPolicy.IsExactlyAuthoredFalse(element.Value, element.Raw);
+            var parameterName = TryReadParameter(
+                element.Raw,
+                out var authoredParameterName,
+                out _)
+                && IsStaticParameterName(authoredParameterName)
+                    ? authoredParameterName
+                    : null;
+
+            return new DenyToken(
+                element.Value,
+                element.Raw,
+                isKnown,
+                parameterName);
+        }
+
+        private static bool IsStaticParameterName(string parameterName)
+        {
+            if (parameterName.Length == 0)
+                return false;
+
+            foreach (var character in parameterName)
+            {
+                if (!char.IsLetterOrDigit(character) && character != '-')
+                    return false;
+            }
+
+            return true;
+        }
+    }
+
     internal abstract record DenyPattern(string Reason, DenyCategory Category)
     {
-        public abstract bool Matches(IReadOnlyList<string> tokens);
+        public abstract bool Matches(IReadOnlyList<DenyToken> tokens);
     }
 
     /// <summary>
@@ -349,16 +457,51 @@ public sealed class ShellCommandPolicy
         string Reason,
         DenyCategory Category) : DenyPattern(Reason, Category)
     {
-        public override bool Matches(IReadOnlyList<string> tokens)
+        public override bool Matches(IReadOnlyList<DenyToken> tokens)
         {
             if (tokens.Count < VerbChain.Count)
                 return false;
 
             for (var i = 0; i < VerbChain.Count; i++)
             {
-                var tokenVerb = ShellTokenizer.TrimShellPunctuation(tokens[i]);
+                if (!tokens[i].IsKnown)
+                    return false;
+
+                var tokenVerb = ShellTokenizer.TrimShellPunctuation(tokens[i].Value);
                 if (!string.Equals(tokenVerb, VerbChain[i], StringComparison.OrdinalIgnoreCase))
                     return false;
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Matches a legacy configured string pattern against decoded values or
+    /// the exact authored spelling of an unresolved PowerShell value.
+    /// </summary>
+    internal sealed record LegacyVerbChainDenyPattern(
+        IReadOnlyList<string> VerbChain,
+        string Reason,
+        DenyCategory Category) : DenyPattern(Reason, Category)
+    {
+        public override bool Matches(IReadOnlyList<DenyToken> tokens)
+        {
+            if (tokens.Count < VerbChain.Count)
+                return false;
+
+            for (var i = 0; i < VerbChain.Count; i++)
+            {
+                var token = tokens[i];
+                var value = token.IsKnown ? token.Value : token.AuthoredValue;
+                var normalized = ShellTokenizer.TrimShellPunctuation(value);
+                if (!string.Equals(
+                        normalized,
+                        VerbChain[i],
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
             }
 
             return true;
@@ -374,12 +517,12 @@ public sealed class ShellCommandPolicy
         string Reason,
         DenyCategory Category) : DenyPattern(Reason, Category)
     {
-        public override bool Matches(IReadOnlyList<string> tokens)
+        public override bool Matches(IReadOnlyList<DenyToken> tokens)
         {
-            if (tokens.Count == 0)
+            if (tokens.Count == 0 || !tokens[0].IsKnown)
                 return false;
 
-            var verb = ShellTokenizer.TrimShellPunctuation(tokens[0]);
+            var verb = ShellTokenizer.TrimShellPunctuation(tokens[0].Value);
             return verb.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase);
         }
     }
@@ -396,12 +539,12 @@ public sealed class ShellCommandPolicy
             "kill", "killall", "pkill", "Stop-Process"
         };
 
-        public override bool Matches(IReadOnlyList<string> tokens)
+        public override bool Matches(IReadOnlyList<DenyToken> tokens)
         {
-            if (tokens.Count == 0)
+            if (tokens.Count == 0 || !tokens[0].IsKnown)
                 return false;
 
-            var verb = ShellTokenizer.TrimShellPunctuation(tokens[0]);
+            var verb = ShellTokenizer.TrimShellPunctuation(tokens[0].Value);
             return KillVerbs.Contains(verb);
         }
     }
@@ -419,12 +562,12 @@ public sealed class ShellCommandPolicy
             "sudo", "su", "doas"
         };
 
-        public override bool Matches(IReadOnlyList<string> tokens)
+        public override bool Matches(IReadOnlyList<DenyToken> tokens)
         {
-            if (tokens.Count == 0)
+            if (tokens.Count == 0 || !tokens[0].IsKnown)
                 return false;
 
-            var verb = ShellTokenizer.TrimShellPunctuation(tokens[0]);
+            var verb = ShellTokenizer.TrimShellPunctuation(tokens[0].Value);
             if (EscalationVerbs.Contains(verb))
                 return true;
 
@@ -433,7 +576,10 @@ public sealed class ShellCommandPolicy
 
             for (var i = 1; i < tokens.Count; i++)
             {
-                var token = ShellTokenizer.TrimShellPunctuation(tokens[i]);
+                if (!tokens[i].IsKnown)
+                    continue;
+
+                var token = ShellTokenizer.TrimShellPunctuation(tokens[i].Value);
                 if (!TryReadParameter(token, out var parameterName, out var inlineValue)
                     || !IsParameterAbbreviation(parameterName, "Verb"))
                 {
@@ -445,7 +591,8 @@ public sealed class ShellCommandPolicy
 
                 if (inlineValue is null
                     && i + 1 < tokens.Count
-                    && IsRunAsValue(tokens[i + 1]))
+                    && tokens[i + 1].IsKnown
+                    && IsRunAsValue(tokens[i + 1].Value))
                 {
                     return true;
                 }
@@ -467,12 +614,12 @@ public sealed class ShellCommandPolicy
     internal sealed record RmRfRootDenyPattern(string Reason, DenyCategory Category)
         : DenyPattern(Reason, Category)
     {
-        public override bool Matches(IReadOnlyList<string> tokens)
+        public override bool Matches(IReadOnlyList<DenyToken> tokens)
         {
-            if (tokens.Count < 2)
+            if (tokens.Count < 2 || !tokens[0].IsKnown)
                 return false;
 
-            var verb = ShellTokenizer.TrimShellPunctuation(tokens[0]);
+            var verb = ShellTokenizer.TrimShellPunctuation(tokens[0].Value);
             var isBashRemove = string.Equals(verb, "rm", StringComparison.OrdinalIgnoreCase);
             var isPowerShellRemove = string.Equals(
                 verb,
@@ -487,25 +634,26 @@ public sealed class ShellCommandPolicy
 
             for (var i = 1; i < tokens.Count; i++)
             {
-                var token = tokens[i];
+                var fact = tokens[i];
+                var token = fact.Value;
 
-                if (isPowerShellRemove)
+                if (isPowerShellRemove && fact.ParameterName is { } parameterName)
                 {
-                    if (TryReadParameter(token, out var parameterName, out var inlineValue)
-                        && IsParameterAbbreviation(parameterName, "Recurse")
-                        && !IsExplicitFalse(inlineValue))
+                    if (IsParameterAbbreviation(parameterName, "Recurse")
+                        && !IsExplicitFalse(fact))
                     {
                         hasRecursive = true;
                     }
 
-                    if (TryReadParameter(token, out parameterName, out inlineValue)
-                        && IsParameterAbbreviation(parameterName, "Force")
-                        && !IsExplicitFalse(inlineValue))
+                    if (IsParameterAbbreviation(parameterName, "Force")
+                        && !IsExplicitFalse(fact))
                     {
                         hasForce = true;
                     }
                 }
-                else if (token.StartsWith('-') && !token.StartsWith("--", StringComparison.Ordinal))
+                else if (fact.IsKnown
+                         && token.StartsWith('-')
+                         && !token.StartsWith("--", StringComparison.Ordinal))
                 {
                     if (token.Contains('r', StringComparison.Ordinal)
                         || token.Contains('R', StringComparison.Ordinal))
@@ -516,17 +664,20 @@ public sealed class ShellCommandPolicy
                     if (token.Contains('f', StringComparison.Ordinal))
                         hasForce = true;
                 }
-                else if (token.Equals("--recursive", StringComparison.Ordinal))
+                else if (fact.IsKnown && token.Equals("--recursive", StringComparison.Ordinal))
                 {
                     hasRecursive = true;
                 }
-                else if (token.Equals("--force", StringComparison.Ordinal))
+                else if (fact.IsKnown && token.Equals("--force", StringComparison.Ordinal))
                 {
                     hasForce = true;
                 }
 
                 // Check for dangerous targets
-                if (IsDangerousRemoveTarget(token))
+                if ((fact.IsKnown && IsDangerousRemoveTarget(token))
+                    || (!fact.IsKnown
+                        && IsAuthoredHomeVariable(fact.AuthoredValue)
+                        && IsDangerousRemoveTarget(fact.AuthoredValue)))
                     hasDangerousTarget = true;
             }
 
@@ -566,14 +717,20 @@ public sealed class ShellCommandPolicy
                     StringComparison.OrdinalIgnoreCase);
         }
 
-        private static bool IsExplicitFalse(string? value)
+        private static bool IsAuthoredHomeVariable(string token)
         {
-            if (value is null)
-                return false;
+            var trimmed = TrimStaticQuotes(ShellTokenizer.TrimShellPunctuation(token))
+                .TrimEnd('/', '\\');
+            return trimmed is "$HOME" or "${HOME}"
+                or "$env:USERPROFILE" or "${env:USERPROFILE}";
+        }
 
-            var normalized = TrimStaticQuotes(value);
-            return normalized.Equals("$false", StringComparison.OrdinalIgnoreCase)
-                   || normalized.Equals("${false}", StringComparison.OrdinalIgnoreCase);
+        private static bool IsExplicitFalse(DenyToken fact)
+        {
+            return fact.IsKnown
+                   && ShellCommandPolicy.IsExactlyAuthoredFalse(
+                       fact.Value,
+                       fact.AuthoredValue);
         }
 
         private static bool IsWindowsDriveRoot(string token)
@@ -631,6 +788,30 @@ public sealed class ShellCommandPolicy
         => candidate.Length > 0
            && parameterName.StartsWith(candidate, StringComparison.OrdinalIgnoreCase);
 
+    private static bool IsExactlyAuthoredFalse(string value, string authoredValue)
+    {
+        if (!TryReadParameter(
+                ShellTokenizer.TrimShellPunctuation(value),
+                out _,
+                out var decodedValue)
+            || !IsBooleanFalse(decodedValue)
+            || !TryReadParameter(
+                ShellTokenizer.TrimShellPunctuation(authoredValue),
+                out _,
+                out var rawValue))
+        {
+            return false;
+        }
+
+        return string.Equals(rawValue, "$false", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(rawValue, "${false}", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsBooleanFalse(string? value)
+        => value is not null
+           && (TrimStaticQuotes(value).Equals("$false", StringComparison.OrdinalIgnoreCase)
+               || TrimStaticQuotes(value).Equals("${false}", StringComparison.OrdinalIgnoreCase));
+
     private static string TrimStaticQuotes(string token)
     {
         var trimmed = token.Trim();
@@ -656,14 +837,17 @@ public sealed class ShellCommandPolicy
         string Reason,
         DenyCategory Category) : DenyPattern(Reason, Category)
     {
-        public override bool Matches(IReadOnlyList<string> tokens)
+        public override bool Matches(IReadOnlyList<DenyToken> tokens)
         {
             if (tokens.Count < VerbChain.Count)
                 return false;
 
             for (var i = 0; i < VerbChain.Count; i++)
             {
-                var tokenVerb = ShellTokenizer.TrimShellPunctuation(tokens[i]);
+                if (!tokens[i].IsKnown)
+                    return false;
+
+                var tokenVerb = ShellTokenizer.TrimShellPunctuation(tokens[i].Value);
                 if (!string.Equals(tokenVerb, VerbChain[i], StringComparison.OrdinalIgnoreCase))
                     return false;
             }
@@ -677,7 +861,7 @@ public sealed class ShellCommandPolicy
             return true;
         }
 
-        private static bool AnyFlagPresent(IReadOnlyList<string> tokens, IReadOnlyList<string> requiredFlags)
+        private static bool AnyFlagPresent(IReadOnlyList<DenyToken> tokens, IReadOnlyList<string> requiredFlags)
         {
             // The flag is "present" if it appears as a standalone token OR if a
             // short combined flag token contains all requested short flag chars
@@ -691,11 +875,14 @@ public sealed class ShellCommandPolicy
             return false;
         }
 
-        private static bool TokensContainFlag(IReadOnlyList<string> tokens, string required)
+        private static bool TokensContainFlag(IReadOnlyList<DenyToken> tokens, string required)
         {
             for (var i = 0; i < tokens.Count; i++)
             {
-                var token = tokens[i];
+                if (!tokens[i].IsKnown)
+                    continue;
+
+                var token = tokens[i].Value;
                 if (string.Equals(token, required, StringComparison.OrdinalIgnoreCase))
                     return true;
 
@@ -725,7 +912,7 @@ public sealed class ShellCommandPolicy
         }
 
         private static bool FirstNonFlagMatchesConstraint(
-            IReadOnlyList<string> tokens,
+            IReadOnlyList<DenyToken> tokens,
             int verbChainCount,
             PathConstraint constraint)
         {
@@ -741,7 +928,10 @@ public sealed class ShellCommandPolicy
             // silently miss firstPath deny rules.
             for (var i = verbChainCount; i < tokens.Count; i++)
             {
-                var token = tokens[i];
+                if (!tokens[i].IsKnown)
+                    return false;
+
+                var token = tokens[i].Value;
                 if (token.StartsWith('-'))
                     continue;
 

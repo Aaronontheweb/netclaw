@@ -6,8 +6,8 @@ binary swap. One read-only review session produced eight prompts.
 
 The strongest failure crossed two existing instructions. A child declared a
 project, then passed `session_dir` as `WorkingDirectory` for project commands.
-The child also added an inline directory change. Its session block says to
-always use session scratch for disposable shell work. That statement can
+The child also added an inline directory change. Its session block used the
+legacy `session scratch` term for disposable shell work. That statement could
 override the later project context.
 
 The sample also contains required prompts. Remote mutation, process creation,
@@ -26,7 +26,7 @@ receives only identity-free commands and aggregate counts.
 - Preserve shell grammar, path relationships, redirects, and argument order.
 - Separate expected approvals, guidance debt, parser gaps, and policy defects.
 - Make project scope take precedence for project work after declaration.
-- Reserve session scratch for disposable work outside a project.
+- Use the managed temporary directory for disposable work outside a project.
 - Prefer first-party file and web tools when they satisfy the exact task.
 - Execute Netclaw cases through the real coordinator.
 - Pin parser facts in ShellSyntaxTree with identity-free commands.
@@ -54,7 +54,7 @@ The committed evidence will use neutral values:
 
 - `/work/project` for a project root;
 - `/work/project-child` for a child worktree;
-- `/home/user/.netclaw/sessions/example` for session scratch;
+- `/home/user/.netclaw/sessions/example/tmp/parent` for managed temporary work;
 - `/external/cache` for an external local root;
 - `example/project` for a remote repository; and
 - `service.example.invalid` for a remote host.
@@ -94,18 +94,18 @@ The sample will include these result classes:
 The classification never grants coverage. An `AgentAlignmentDebt` case remains
 promptable if the model still authors it.
 
-### Define one project-versus-scratch decision order
+### Define one directory-selection order
 
 Parent and child guidance will use this order:
 
 1. Use `project_dir` for work that belongs to the declared project.
 2. Use typed `WorkingDirectory` for one call in a named child directory.
-3. Use `session_dir` for disposable writable work outside a project.
+3. Use `temp_dir` for disposable writable work outside a project.
 4. Keep an inline directory change only when that change is the task.
 
 A successful `set_working_directory` call already updates child project scope
 and reloads project instructions. The change will use that existing state. It
-will not add a second project or scratch field.
+will not add another project or temporary-path field.
 
 The shell tool schema, parent session context, child session context, bundled
 operations skill, and always-loaded rules will express the same order. Tests
@@ -135,10 +135,11 @@ The same surfaces will state one shell-composition order:
    them with shell separators or presentation labels.
 3. Add a pipeline only when the requested result requires it.
 4. Do not use shell only to verify a successful structured tool result.
-5. Do not retry or substitute shell variants after an approval-required result.
-6. Treat a `Tool access denied:` result as terminal. Do not change scope, retry,
-   or substitute another tool.
-7. Apply one `Tool execution deferred:` correction unchanged. Otherwise use an
+5. If approval is unavailable, do not retry or substitute the call during that turn.
+6. After an access denial, do not retry that call during the same user turn.
+7. Do not change its scope or substitute another tool to evade the denial.
+8. A later explicit user request can start a new call under normal approval policy.
+9. Apply one `Tool execution deferred:` correction unchanged. Otherwise use an
    available structured tool or report the blocked operation once.
 
 A successful `file_write` or `file_edit` result is the confirmation for that
@@ -242,7 +243,7 @@ context. A failed declaration leaves the prior project unchanged.
 
 ## Failure Modes and Recovery
 
-- **The model still selects scratch for project work.** → Normal policy remains
+- **The model selects managed temporary storage for project work.** → Normal policy remains
   strict, and the eval records the failure.
 - **The model still selects shell for a known file.** → Normal approval remains
   active, and the case stays in the guidance corpus.
@@ -250,6 +251,8 @@ context. A failed declaration leaves the prior project unchanged.
   remains active, and the follow-up eval records the redundant attempt.
 - **The model retries after a policy denial.** → Normal approval remains active,
   and the no-retry assertion records the additional call.
+- **The model retries when no interactive requester exists.** → Guidance ends
+  the current attempt, and normal policy remains active.
 - **A tool is unavailable.** → Guidance does not invent it. The model uses an
   available tool under normal policy.
 - **A parser fact is incomplete.** → The command remains promptable. No fallback

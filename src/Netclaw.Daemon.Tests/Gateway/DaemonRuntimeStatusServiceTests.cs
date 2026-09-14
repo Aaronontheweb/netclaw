@@ -5,7 +5,6 @@
 // -----------------------------------------------------------------------
 using System.Net;
 using Microsoft.Extensions.AI;
-using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging.Abstractions;
 using Netclaw.Actors.Channels;
@@ -47,7 +46,6 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
 
     private DaemonRuntimeStatusService CreateService(
         IChannelRegistry? channelRegistry = null,
-        DaemonPersistenceOptions? persistenceOptions = null,
         IOptions<TelemetryOptions>? telemetryOptions = null,
         ModelCapabilities? modelCapabilities = null,
         ModelSelection? modelSelection = null,
@@ -64,7 +62,6 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
             new DaemonStartClock(TimeProvider.System),
             TimeProvider.System,
             channelRegistry ?? CreateRegistry([]),
-            persistenceOptions ?? new DaemonPersistenceOptions(),
             telemetryOptions ?? Options.Create(new TelemetryOptions()),
             modelCapabilities ?? DefaultModelCapabilities,
             modelSelection ?? DefaultModelSelection,
@@ -117,14 +114,7 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
         if (!Directory.Exists(path))
             return;
 
-        // Clear only the connection pool for THIS test's database, not all pools.
-        // Using ClearAllPools() would interfere with other parallel tests.
-        var dbPath = Path.Combine(path, "netclaw.db");
-        if (File.Exists(dbPath))
-        {
-            var connectionString = new SqliteConnectionStringBuilder { DataSource = dbPath }.ToString();
-            SqliteConnection.ClearPool(new SqliteConnection(connectionString));
-        }
+        SqliteTestPools.Clear(new NetclawPaths(path));
 
         for (var i = 0; i < 8; i++)
         {
@@ -372,7 +362,7 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
         var paths = CreatePaths();
         paths.EnsureDirectoriesExist();
 
-        var sqliteStore = new SQLiteMemoryStore(paths.MemorySqliteDbPath, TimeProvider.System);
+        var sqliteStore = new SQLiteMemoryStore(paths.SqliteDbPath, TimeProvider.System);
         await sqliteStore.InitializeAsync(TestContext.Current.CancellationToken);
 
         var service = CreateService(paths: paths, sqliteMemoryStore: sqliteStore);
@@ -382,7 +372,7 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
         Assert.NotNull(status.Memory);
         Assert.Equal("sqlite", status.Memory.Provider);
         Assert.Equal("healthy", status.Memory.Status);
-        Assert.Equal(paths.MemorySqliteDbPath, status.Memory.DatabasePath);
+        Assert.Equal(paths.SqliteDbPath, status.Memory.DatabasePath);
         Assert.Equal(0, status.Memory.PendingCheckpoints);
     }
 
@@ -391,7 +381,7 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
     {
         var paths = CreatePaths();
         paths.EnsureDirectoriesExist();
-        var sqliteStore = new SQLiteMemoryStore(paths.MemorySqliteDbPath, TimeProvider.System);
+        var sqliteStore = new SQLiteMemoryStore(paths.SqliteDbPath, TimeProvider.System);
         await sqliteStore.InitializeAsync(TestContext.Current.CancellationToken);
 
         var service = CreateService(
@@ -409,7 +399,7 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
     {
         var paths = CreatePaths();
         paths.EnsureDirectoriesExist();
-        var sqliteStore = new SQLiteMemoryStore(paths.MemorySqliteDbPath, TimeProvider.System);
+        var sqliteStore = new SQLiteMemoryStore(paths.SqliteDbPath, TimeProvider.System);
         await sqliteStore.InitializeAsync(TestContext.Current.CancellationToken);
 
         var holder = new MemoryEmbedderHolder(new FakeAvailableEmbedder("tiny-fixture"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);
@@ -430,7 +420,7 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
     {
         var paths = CreatePaths();
         paths.EnsureDirectoriesExist();
-        var sqliteStore = new SQLiteMemoryStore(paths.MemorySqliteDbPath, TimeProvider.System);
+        var sqliteStore = new SQLiteMemoryStore(paths.SqliteDbPath, TimeProvider.System);
         await sqliteStore.InitializeAsync(TestContext.Current.CancellationToken);
 
         var holder = new MemoryEmbedderHolder(new UnavailableMemoryEmbedder("tiny-fixture", "model missing"), initialQueryPrefix: "", initialCalibratedMinCosineSimilarity: null);

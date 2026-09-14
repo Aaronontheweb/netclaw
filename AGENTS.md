@@ -190,6 +190,19 @@ persistence. Legacy/new config paradigm changes must have load/round-trip tests
 from the old shape to the runtime-consumed shape. Human manual testing is a
 last-mile confidence check, not a substitute for these gates.
 
+## Focused Mutation Test Rule
+
+Use focused Stryker tests for critical security and authority boundaries.
+Review the mutation scope after each security fix or authority policy change.
+Also review the mutation scope at each minor release.
+Add one small target when deterministic tests reject a specific unsafe mutation.
+Keep each target narrow. Keep the total CI cost within the documented budget.
+CI must fail if an expected mutant survives or does not run.
+Do not use a broad mutation score as a coverage target.
+
+See [TOOLING.md](TOOLING.md#focused-mutation-tests) for the current targets,
+procedure, cost limits, and expansion criteria.
+
 ## Configuration Schema Sync Rule
 
 When adding or changing properties on any `*Config` type in `Netclaw.Configuration`,
@@ -350,7 +363,7 @@ Run the behavioral eval suite (`./evals/run-evals.sh`) when changing:
 - Identity file templates (`SOUL.md`, `AGENTS.md`, `TOOLING.md` in init wizard)
 - System prompt assembly (`SystemPromptAssembler`, `FileSystemPromptProvider`)
 - Skill content (any `SKILL.md` under `feeds/skills/.system/files/`)
-- Skill matching logic (`SkillRegistry`, `SystemSkillSyncService` keyword handling)
+- Skill matching logic (`SkillRegistry` keyword handling)
 - Memory pipeline (`SQLiteMemoryRecallCoordinator`, `MemoryProposalGate`,
   checkpoint triggers)
 - Compaction logic (`ObservationPromptBuilder`, `ExtractiveSessionReducer`,
@@ -398,12 +411,12 @@ feature area, the corresponding skill **must** be updated in the same PR.
 **Workflow:**
 1. Edit the skill at `feeds/skills/.system/files/{name}/SKILL.md`
 2. Bump `metadata.version` in the YAML frontmatter
-3. Do NOT run `generate-skill-manifest.sh` locally — CI generates the manifest
-   and publishes to R2 on release tags or manual `workflow_dispatch`
+3. Do NOT run `generate-skill-manifest.sh` locally — the maintenance workflow
+   generates the legacy manifest on manual `workflow_dispatch`
 
 **Publishing:**
-- Skills publish automatically as part of the binary release workflow (on git tags)
-- For hot-patches without a daemon release: `gh workflow run publish_skills.yml`
+- The binary release does not publish system skills.
+- Use `gh workflow run publish_skills.yml` for legacy feed maintenance.
 - Normal dev pushes do NOT publish to the live feed
 
 If a new feature area needs agent guidance, create a new skill file and add a

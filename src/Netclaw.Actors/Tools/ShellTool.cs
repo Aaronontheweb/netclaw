@@ -22,12 +22,14 @@ namespace Netclaw.Actors.Tools;
 [NetclawTool(ToolName,
     "Execute local search, VCS, builds, tests, processes, or other operations requiring shell semantics. " +
     "For declared-project work, omit WorkingDirectory. Use it for one call in a named child directory. " +
-    "Use session_dir for disposable writable work outside a project; do not substitute platform temporary storage. " +
+    "Standard temporary APIs use temp_dir. Preserve an explicit host temporary path only when the task requires it. " +
     "Keep inline directory changes only when requested. " +
     "Start with the smallest operation that answers the request. Use one operation per call. " +
     "Keep independent searches and diagnostics separate; do not join them with separators or labels. " +
     "Add a pipeline only when the requested result requires it. Do not use shell only to verify successful structured results. " +
-    "After approval-required results, do not retry or substitute variants. Treat 'Tool access denied:' as terminal; do not change scope. " +
+    "If approval is required but no interactive requester is available, do not retry or substitute the call during that turn. " +
+    "After an access denial, do not retry that call during the same user turn. Do not change its scope or substitute another tool to evade the denial. " +
+    "A later explicit user request can start a new call under normal approval policy. " +
     "Apply one 'Tool execution deferred:' correction unchanged. " +
     "Do not use shell for known file reads, listings, edits, or disposable text unless shell behavior is requested.",
     Grant = "shell")]
@@ -47,14 +49,14 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
     private readonly ToolConfig _config;
     private readonly ToolPathPolicy _pathPolicy;
     private readonly ShellCommandPolicy _commandPolicy;
-    private readonly ShellExecutionEnvironment _environment;
+    internal ShellExecutionEnvironment ShellEnvironment => _commandPolicy.Environment;
 
     public record Params(
         [param: Description(
-            "The smallest shell operation that answers the request. Use one operation per call. Keep independent searches and diagnostics separate; do not join them with separators or labels. Add a pipeline only when the requested result requires it. Omit WorkingDirectory for declared-project work. Do not use shell for disposable text unless shell behavior is requested. Do not verify successful structured results with shell. Do not retry approval-required variants. Treat 'Tool access denied:' as terminal; do not change scope. Apply one 'Tool execution deferred:' correction unchanged.")]
+            "The smallest shell operation that answers the request. Use one operation per call. Keep independent searches and diagnostics separate; do not join them with separators or labels. Add a pipeline only when the requested result requires it. Omit WorkingDirectory for declared-project work. Do not use shell for disposable text unless shell behavior is requested. Do not verify successful structured results with shell. If approval is required but no interactive requester is available, do not retry or substitute the call during that turn. After an access denial, do not retry that call during the same user turn. Do not change its scope or substitute another tool to evade the denial. A later explicit user request can start a new call under normal approval policy. Apply one 'Tool execution deferred:' correction unchanged.")]
         string Command,
         [param: Description(
-            "Set only for one call in a named child directory or worktree. Omit for declared-project work. Use session_dir for disposable writable work outside a project; do not substitute platform temporary storage.")]
+            "Set only for one call in a named child directory or worktree. Omit for declared-project work. Standard temporary APIs use temp_dir.")]
         string? WorkingDirectory = null);
 
     public ShellTool(ToolConfig config, ToolPathPolicy pathPolicy, ShellCommandPolicy commandPolicy)
@@ -69,79 +71,48 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
                 nameof(commandPolicy));
         }
 
-        _environment = commandPolicy.Environment;
     }
 
     protected override Task<string> ExecuteAsync(
         Params args,
         ToolInvocationContext context,
         CancellationToken ct)
-        => ExecuteCoreAsync(args, context, authorizedAnalysis: null, ct);
+        => ExecuteCoreAsync(args, context, authorizedLaunch: null, ct);
 
     internal async Task<string> ExecuteAuthorizedAsync(
         IDictionary<string, object?>? arguments,
         ToolInvocationContext context,
-        ShellCommandAnalysis analysis,
+        ShellProcessLaunch launch,
         CancellationToken ct)
     {
         if (!TryParse(arguments, out var error, out var args))
             return error;
 
-        return await ExecuteCoreAsync(args, context, analysis, ct);
+        return await ExecuteCoreAsync(args, context, launch, ct);
     }
 
     private async Task<string> ExecuteCoreAsync(
         Params args,
         ToolInvocationContext context,
-        ShellCommandAnalysis? authorizedAnalysis,
+        ShellProcessLaunch? authorizedLaunch,
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(args.Command))
             return "Error: 'command' parameter is required.";
 
-        // Resolve once before parsing or execution. The same cwd and parse
-        // facts feed both security policies and the launched process.
-        var resolvedCwd = context.ResolveShellCwd(args.WorkingDirectory);
-        var analysis = ResolveAnalysis(args.Command, resolvedCwd, authorizedAnalysis);
-        var commandDecision = _commandPolicy.Evaluate(analysis);
-        if (!commandDecision.Allowed)
-            return $"Error: Command blocked by hard deny policy: {commandDecision.DenyReason}";
-
-        if (_pathPolicy.CommandReferencesDeniedPath(analysis))
-            return "Error: Command references a protected file path. Access denied by security policy.";
-
-        var psi = _environment.CreateProcessStartInfo(args.Command);
-
-        // Resolve working directory in priority order: explicit arg →
-        // WorkingContext.ProjectDirectory (declared via set_working_directory)
-        // → SessionDirectory (per-session scratch). Never falls through to
-        // ProcessStartInfo's default of inheriting the daemon process's cwd —
-        // that location is wherever the daemon happened to be launched and is
-        // unrelated to what the agent is "working on," which makes it
-        // impossible for the approval policy to reason about safe-space
-        // membership. The matcher reads context.Cwd against the same
-        // resolution chain so the gate evaluates folder-scoped ApprovalEntry
-        // records against the directory the spawned process will run in.
-        var workingDirectoryError = PrepareWorkingDirectory(
-            psi,
-            resolvedCwd,
-            context.SessionDirectory);
-        if (workingDirectoryError is not null)
-            return workingDirectoryError;
-
+        var launch = authorizedLaunch ?? CreateDirectLaunch(args.Command, args.WorkingDirectory, context);
         var effectiveTimeout = context.ExecutionTimeout.Value;
-
         using var timeoutCts = new CancellationTokenSource();
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
 
         Process process;
         try
         {
-            process = Process.Start(psi)!;
+            process = await launch.StartAsync(ct);
         }
-        catch (Exception ex)
+        catch (ShellProcessStartException ex)
         {
-            return FormatStartError(ex);
+            return ex.Message;
         }
 
         // Start the timeout countdown only after the shell process exists, so
@@ -260,23 +231,23 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
         IDictionary<string, object?>? arguments,
         ToolInvocationContext context,
         CancellationToken ct = default)
-        => ExecuteStreamWithAnalysisAsync(
+        => ExecuteStreamWithLaunchAsync(
             arguments,
             context,
-            authorizedAnalysis: null,
+            authorizedLaunch: null,
             ct);
 
     internal IAsyncEnumerable<ToolCallUpdate> ExecuteAuthorizedStreamAsync(
         IDictionary<string, object?>? arguments,
         ToolInvocationContext context,
-        ShellCommandAnalysis analysis,
+        ShellProcessLaunch launch,
         CancellationToken ct)
-        => ExecuteStreamWithAnalysisAsync(arguments, context, analysis, ct);
+        => ExecuteStreamWithLaunchAsync(arguments, context, launch, ct);
 
-    private async IAsyncEnumerable<ToolCallUpdate> ExecuteStreamWithAnalysisAsync(
+    private async IAsyncEnumerable<ToolCallUpdate> ExecuteStreamWithLaunchAsync(
         IDictionary<string, object?>? arguments,
         ToolInvocationContext context,
-        ShellCommandAnalysis? authorizedAnalysis,
+        ShellProcessLaunch? authorizedLaunch,
         [EnumeratorCancellation] CancellationToken ct)
     {
         // All items (activities + completion) are produced by the non-iterator
@@ -289,7 +260,7 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
         _ = ExecuteStreamCoreAsync(
             arguments,
             context,
-            authorizedAnalysis,
+            authorizedLaunch,
             channel.Writer,
             ct);
 
@@ -300,7 +271,7 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
     private async Task ExecuteStreamCoreAsync(
         IDictionary<string, object?>? arguments,
         ToolInvocationContext context,
-        ShellCommandAnalysis? authorizedAnalysis,
+        ShellProcessLaunch? authorizedLaunch,
         ChannelWriter<ToolCallUpdate> output,
         CancellationToken ct)
     {
@@ -318,42 +289,15 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
                 return;
             }
 
-            var resolvedCwd = context.ResolveShellCwd(args.WorkingDirectory);
-            var analysis = ResolveAnalysis(args.Command, resolvedCwd, authorizedAnalysis);
-            var commandDecision = _commandPolicy.Evaluate(analysis);
-            if (!commandDecision.Allowed)
-            {
-                output.TryWrite(new ToolCompletedUpdate(
-                    $"Error: Command blocked by hard deny policy: {commandDecision.DenyReason}"));
-                return;
-            }
-
-            if (_pathPolicy.CommandReferencesDeniedPath(analysis))
-            {
-                output.TryWrite(new ToolCompletedUpdate(
-                    "Error: Command references a protected file path. Access denied by security policy."));
-                return;
-            }
-
-            var psi = _environment.CreateProcessStartInfo(args.Command);
-            var workingDirectoryError = PrepareWorkingDirectory(
-                psi,
-                resolvedCwd,
-                context.SessionDirectory);
-            if (workingDirectoryError is not null)
-            {
-                output.TryWrite(new ToolCompletedUpdate(workingDirectoryError));
-                return;
-            }
-
+            var launch = authorizedLaunch ?? CreateDirectLaunch(args.Command, args.WorkingDirectory, context);
             Process process;
             try
             {
-                process = Process.Start(psi)!;
+                process = await launch.StartAsync(ct);
             }
-            catch (Exception ex)
+            catch (ShellProcessStartException ex)
             {
-                output.TryWrite(new ToolCompletedUpdate(FormatStartError(ex)));
+                output.TryWrite(new ToolCompletedUpdate(ex.Message));
                 return;
             }
 
@@ -462,6 +406,10 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
                     $"Exit code: {process.ExitCode}{Environment.NewLine}{captured}"));
             }
         }
+        catch (Exception ex) when (ex is ToolApprovalRequiredException or ToolCorrectionRequiredException or ToolAccessDeniedException)
+        {
+            output.TryComplete(ex);
+        }
         catch (Exception ex)
         {
             // Catch-all so an unexpected exception (e.g. from Window() or
@@ -476,25 +424,19 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
         }
     }
 
-    private ShellCommandAnalysis ResolveAnalysis(
+    internal ShellProcessLaunch CreateLaunch(
         string command,
-        string? resolvedCwd,
-        ShellCommandAnalysis? authorizedAnalysis)
+        string workingDirectory,
+        ToolInvocationContext context,
+        Func<CancellationToken, Task> authorize)
+        => new(command, workingDirectory, context, _commandPolicy, _pathPolicy, authorize);
+
+    // Direct host callers retain the public tool's hard-policy contract. Routed calls require the coordinator.
+    private ShellProcessLaunch CreateDirectLaunch(string command, string? workingDirectory, ToolInvocationContext context)
     {
-        if (authorizedAnalysis is null)
-            return _commandPolicy.Analyze(command, resolvedCwd);
-
-        if (!string.Equals(authorizedAnalysis.Source, command, StringComparison.Ordinal)
-            || !string.Equals(
-                authorizedAnalysis.WorkingDirectory,
-                resolvedCwd,
-                StringComparison.Ordinal))
-        {
-            throw new InvalidOperationException(
-                "The authorized shell analysis does not match the executed command.");
-        }
-
-        return authorizedAnalysis;
+        var resolvedDirectory = context.ResolveShellCwd(workingDirectory)
+            ?? throw new InvalidOperationException("Shell execution requires a working directory.");
+        return CreateLaunch(command, resolvedDirectory, context, static _ => Task.CompletedTask);
     }
 
     private static readonly TimeSpan CoalesceInterval = TimeSpan.FromMilliseconds(500);
@@ -609,51 +551,6 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
         }
     }
 
-    private string? PrepareWorkingDirectory(
-        ProcessStartInfo startInfo,
-        string? resolvedCwd,
-        string? sessionDirectory)
-    {
-        if (string.IsNullOrWhiteSpace(resolvedCwd))
-            return null;
-
-        if (IsResolvedSessionDirectory(resolvedCwd, sessionDirectory))
-        {
-            try
-            {
-                Directory.CreateDirectory(resolvedCwd);
-            }
-            catch (Exception ex) when (ex is ArgumentException
-                                       or IOException
-                                       or NotSupportedException
-                                       or UnauthorizedAccessException
-                                       or System.Security.SecurityException)
-            {
-                return $"Error preparing session working directory: {ex.Message}";
-            }
-        }
-        else if (!Directory.Exists(resolvedCwd))
-        {
-            if (File.Exists(resolvedCwd))
-                return $"Error: Working directory '{resolvedCwd}' is a file, not a directory.";
-
-            return $"Error: Working directory '{resolvedCwd}' does not exist. "
-                   + $"Create it first, e.g.: {CreateDirectoryHint(resolvedCwd)}";
-        }
-
-        startInfo.WorkingDirectory = resolvedCwd;
-        return null;
-    }
-
-    private string CreateDirectoryHint(string path)
-        => _environment.PathStyle == ShellPathStyle.Windows
-            ? $"New-Item -ItemType Directory -Force -Path '{path.Replace("'", "''", StringComparison.Ordinal)}'"
-            : $"mkdir -p -- '{path.Replace("'", "'\\''", StringComparison.Ordinal)}'";
-
-    private string FormatStartError(Exception exception)
-        => $"Error starting shell '{_environment.ExecutableName}' "
-           + $"at '{_environment.ExecutablePath}': {exception.Message}";
-
     // Retained for compatibility with tests/benchmark that call it directly; the
     // main execution path no longer uses this — output is bounded at read time by
     // BoundedOutputReader.
@@ -665,7 +562,4 @@ public sealed partial class ShellTool : NetclawTool<ShellTool.Params>
         return string.Concat(output.AsSpan(0, maxChars), $"{Environment.NewLine}... [output truncated]");
     }
 
-    private static bool IsResolvedSessionDirectory(string resolvedCwd, string? sessionDirectory)
-        => !string.IsNullOrWhiteSpace(sessionDirectory)
-           && PathUtility.AreEquivalentPaths(resolvedCwd, sessionDirectory);
 }

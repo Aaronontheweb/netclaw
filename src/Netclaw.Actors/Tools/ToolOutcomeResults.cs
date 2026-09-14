@@ -10,15 +10,15 @@ namespace Netclaw.Actors.Tools;
 internal static class ToolOutcomeResults
 {
     public static string Success(this ToolInvocationContext context, string result)
-        => Complete(context, result, ToolInvocationOutcomeCategory.Success);
+        => Complete(context, result, new ToolInvocationReceipt.Succeeded([], null));
 
     public static string SuccessFile(
         this ToolInvocationContext context,
         string result,
         string canonicalPath,
         ToolFileActivityKind kind)
-        => Complete(context, result, ToolInvocationOutcomeCategory.Success,
-            [new ToolFileActivity(canonicalPath, kind)]);
+        => Complete(context, result, new ToolInvocationReceipt.Succeeded(
+            [new ToolFileActivity(canonicalPath, kind)], null));
 
     public static string SuccessFiles(
         this ToolInvocationContext context,
@@ -28,8 +28,8 @@ internal static class ToolOutcomeResults
         => Complete(
             context,
             result,
-            ToolInvocationOutcomeCategory.Success,
-            [.. canonicalPaths.Select(path => new ToolFileActivity(path, kind))]);
+            new ToolInvocationReceipt.Succeeded(
+                [.. canonicalPaths.Select(path => new ToolFileActivity(path, kind))], null));
 
     public static string SuccessProject(
         this ToolInvocationContext context,
@@ -38,20 +38,30 @@ internal static class ToolOutcomeResults
         => Complete(
             context,
             result,
-            ToolInvocationOutcomeCategory.Success,
-            declaredProjectDirectory: canonicalProjectDirectory);
+            new ToolInvocationReceipt.Succeeded([], canonicalProjectDirectory));
+
+    public static string SuccessProjectChange(
+        this ToolInvocationContext context,
+        string result,
+        string canonicalChangedPath,
+        string canonicalProjectDirectory)
+        => Complete(
+            context,
+            result,
+            new ToolInvocationReceipt.Succeeded(
+                [new ToolFileActivity(canonicalChangedPath, ToolFileActivityKind.Changed)], canonicalProjectDirectory));
 
     public static string InvalidInput(this ToolInvocationContext context, string result)
-        => Complete(context, result, ToolInvocationOutcomeCategory.InvalidInput);
+        => Complete(context, result, new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.InvalidInput));
 
     public static string AccessDenied(this ToolInvocationContext context, string result)
-        => Complete(context, result, ToolInvocationOutcomeCategory.AccessDenied);
+        => Complete(context, result, new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.AccessDenied));
 
     public static string NotFound(this ToolInvocationContext context, string result)
-        => Complete(context, result, ToolInvocationOutcomeCategory.NotFound);
+        => Complete(context, result, new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.NotFound));
 
     public static string TransientFailure(this ToolInvocationContext context, string result)
-        => Complete(context, result, ToolInvocationOutcomeCategory.TransientFailure);
+        => Complete(context, result, new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.TransientFailure));
 
     public static string RecoverableCorrection(
         this ToolInvocationContext context,
@@ -60,36 +70,28 @@ internal static class ToolOutcomeResults
         => Complete(
             context,
             result,
-            ToolInvocationOutcomeCategory.RecoverableCorrection,
-            remediationCode: remediationCode);
+            new ToolInvocationReceipt.Correction(remediationCode));
 
-    public static string PathResolutionFailure(
+    public static string PathAccessFailure(
         this ToolInvocationContext context,
         string result,
-        ScopedFileAccessPolicy.PathResolutionFailure failure)
+        PathAccessPolicy.PathAccessFailure failure)
         => failure switch
         {
-            ScopedFileAccessPolicy.PathResolutionFailure.MissingBase =>
+            PathAccessPolicy.PathAccessFailure.MissingBase =>
                 context.RecoverableCorrection(
                     result,
                     ToolRemediationCode.SetWorkingDirectory),
-            ScopedFileAccessPolicy.PathResolutionFailure.InvalidInput => context.InvalidInput(result),
+            PathAccessPolicy.PathAccessFailure.InvalidInput => context.InvalidInput(result),
             _ => context.AccessDenied(result)
         };
 
     private static string Complete(
         ToolInvocationContext context,
         string result,
-        ToolInvocationOutcomeCategory category,
-        IReadOnlyList<ToolFileActivity>? fileActivity = null,
-        ToolRemediationCode? remediationCode = null,
-        string? declaredProjectDirectory = null)
+        ToolInvocationReceipt receipt)
     {
-        context.TryComplete(new ToolInvocationReceipt(
-            category,
-            fileActivity,
-            remediationCode,
-            declaredProjectDirectory));
+        context.TryComplete(receipt);
         return result;
     }
 }

@@ -41,9 +41,11 @@ Keep shell approval friction bounded:
 2. Use one operation per call. Keep independent searches and diagnostics separate; do not join them with separators or labels.
 3. Add a pipeline only when the requested result requires it.
 4. Do not use shell only to verify a successful structured tool result.
-5. After an approval-required result, do not retry or substitute shell variants.
-6. A `Tool access denied:` result is terminal; do not change scope, retry, or substitute another tool.
-7. Apply one `Tool execution deferred:` correction unchanged; otherwise use a structured tool or report the block once.
+5. If approval is required but no interactive requester is available, do not retry or substitute the call during that turn.
+6. After an access denial, do not retry that call during the same user turn.
+7. Do not change its scope or substitute another tool to evade the denial.
+8. A later explicit user request can start a new call. Apply the normal approval policy to that call.
+9. Apply one `Tool execution deferred:` correction unchanged; otherwise use a structured tool or report the block once.
 
 ## Tool Call Contract
 
@@ -55,15 +57,18 @@ Keep shell approval friction bounded:
 ## Declaring Project Scope (load-bearing for approvals)
 
 Path arguments give the approval gate an exact candidate scope. They do not
-add a safe-space root or make an uncovered command safe. A stored folder
+add a trusted root or make an uncovered command safe. A stored folder
 grant can cover deeper paths beneath its approved root.
 
 Choose directories in this order:
 
 1. For declared-project work, omit `WorkingDirectory`; the shell uses `project_dir`.
 2. For one call in a named child directory, set typed `WorkingDirectory`.
-3. Use `session_dir` for disposable writable work outside a project; do not substitute platform temporary storage.
+3. Use `temp_dir` for disposable files. Standard temporary APIs already use this directory.
 4. Use an inline directory change only when the task requests that behavior.
+
+For a Git worktree, choose a destination below `worktree_dir`. Use
+`shell_execute` to run Git. Use `set_working_directory` only after Git succeeds.
 
 Call `set_working_directory <path>` before the first project tool call when all
 of these conditions apply:
@@ -76,7 +81,8 @@ of these conditions apply:
 This rule also applies to subagents with that tool. It applies before file tools
 and commands with absolute path operands. Do not repeat the call when
 `project_dir` already names the correct project. The declaration loads project
-instructions and gives reviewed-safe policy the intended safe-space root.
+instructions and makes the project directory available to the shared path
+access policy and reviewed-safe shell policy.
 Do not probe a named project path first. Declare it; if rejected, declare the
 user-provided fallback before other tools.
 Use the task's first project path exactly. Do not substitute its parent before
@@ -101,7 +107,7 @@ Inline directory changes alter control flow and remain subject to ordinary appro
 **Recovery from deferred shell execution.**
 
 - Only `Tool execution deferred:` permits one scope correction and unchanged shell retry.
-- Never call `set_working_directory` after `Tool access denied:`.
+- Do not call `set_working_directory` to evade an access denial during the same user turn.
 - If a proactive project declaration fails, correct an evident path error once.
 - Otherwise, preserve the current scope and report the block.
 - Never use inline `cd` as a workaround.
@@ -270,11 +276,11 @@ a whole new agent file. Do not duplicate the agent's built-in instructions.
 
 **Live reload and grounding:** File-defined subagents under `~/.netclaw/agents`
 reload automatically on the next turn or subagent lookup. Invalid edits fail
-closed — the broken agent disappears until fixed. Spawned subagents inherit the
-parent session's `session_dir` and current `project_dir` as read-only grounding.
-Use `session_dir` as private scratch for disposable artifacts. Preserve an
-explicit platform temporary path when the task requires that path. Netclaw does
-not automatically clean session scratch yet.
+closed — the broken agent disappears until fixed. Spawned subagents receive
+`session_dir`, `temp_dir`, `artifact_dir`, `worktree_dir`, and `log_path` as read-only grounding.
+The `session_dir` is the workspace fallback. Use `temp_dir` for disposable
+files. Preserve an explicit platform temporary path when the task requires it.
+Netclaw does not automatically clean the managed temporary directory yet.
 
 **Parallelization tip:** When researching multiple independent topics, spawn
 separate subagents for each — they run concurrently and reduce total wait time.

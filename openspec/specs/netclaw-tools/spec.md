@@ -528,51 +528,85 @@ be built into `file_read`.
 
 ### Requirement: Attachment tool reach
 
-The system SHALL provide an `attach_file` first-party tool that sends a file to
-the user. Non-interactive, Team, and Public sessions SHALL only attach files
-inside the current session directory or a sibling Netclaw session directory.
-Interactive Personal-audience sessions get shell-equivalent reach: any path that
-resolves through the read-access policy SHALL be attachable, and the file SHALL
-be copied into the current session's attachments directory before delivery.
+All audiences SHALL apply the `ToolPathPolicy` read-deny check to attachment sources.
 
-All audiences SHALL apply the `ToolPathPolicy` read-deny surface to attached
-files: a path that `IsReadDenied` (credentials, keys, secrets, control-plane
-state, or the shell indicator list) SHALL NOT be attachable, even when the
-proximity restriction is lifted.
+The system SHALL provide an `attach_file` first-party tool that sends a file to
+the user. It SHALL authorize the source with the shared `Attach` path access
+decision. An explicit `Roots` or `None` attach profile SHALL remain authoritative
+in every interaction mode. The default interactive Personal `All` profile MAY
+attach an external file after the protected-path checks pass. The tool SHALL
+copy an admitted file into the current session's attachments directory before
+delivery.
 
 #### Scenario: Interactive Personal session attaches an external file
 
-- **GIVEN** an interactive Personal session can read a file outside its session
-  directory
+- **GIVEN** the default interactive Personal attach profile permits an external
+  file
 - **WHEN** the agent invokes `attach_file` for that file
 - **THEN** the tool copies the file into the current session attachments directory
 - **AND** the tool sends the copied file to the user
 
+#### Scenario: Counterexample - explicit attach roots remain authoritative
+
+- **GIVEN** an interactive Personal profile explicitly limits attachments to
+  one root
+- **WHEN** the agent invokes `attach_file` outside that root
+- **THEN** file protection denies the invocation
+- **AND** user approval does not widen the attach profile
+
 #### Scenario: Protected control-plane file cannot be attached
 
-- **GIVEN** an interactive Personal session requests a file that
-  `ToolPathPolicy.IsReadDenied` protects
+- **GIVEN** an interactive Personal session requests a protected control-plane
+  file
 - **WHEN** the agent invokes `attach_file`
 - **THEN** the tool denies the request
-- **AND** the shell-equivalent read reach does not bypass the denial
+- **AND** broad Personal file authority does not bypass the denial
+
+`PathAccessPolicy` SHALL validate each tool-managed destination before directory creation or file copy.
+The destination SHALL remain inside the current session workspace without links across the workspace or its known storage ancestors.
+The destination SHALL pass the protected-path write check, including collision-suffix candidates.
+Source attach permission authorizes this bounded copy; the copy SHALL NOT require general `WriteFiles` permission.
+These checks are call-local. They do not form an operating-system sandbox against concurrent filesystem changes.
+
+#### Scenario: Counterexample - attachment destination redirects a copy
+
+- **GIVEN** an admitted source outside the current workspace
+- **AND** the attachments directory or its session ancestor is a link to another directory
+- **WHEN** the agent invokes `attach_file`
+- **THEN** the tool returns `AccessDenied` before directory creation or file copy
+- **AND** the other directory remains unchanged and the tool emits no attachment
+
+#### Scenario: Counterexample - attachment destination is write protected
+
+- **GIVEN** an admitted source and a write-protected destination
+- **WHEN** the agent invokes `attach_file`
+- **THEN** the tool returns `AccessDenied` without a destination file or new directory
+
+#### Scenario: Attach-only profile preserves the bounded copy
+
+- **GIVEN** an attach profile admits a source and the write profile is `None`
+- **AND** the current workspace destination passes containment, link, and protected-path checks
+- **WHEN** the agent invokes `attach_file`
+- **THEN** the tool copies the source and emits the attachment
+- **AND** an existing destination file retains its bytes through the existing suffix rule
 
 ### Requirement: Working directory declaration stays scoped
 
 The system SHALL provide a `set_working_directory` first-party tool that sets
-the session's project root. Its target SHALL be resolved through the read-access
-policy WITHOUT interactive Personal shell-equivalent reach: the working
-directory widens the shell safe-verb auto-approve zone and loads project
-identity files into the system prompt, so it SHALL be clamped to the autonomous
-zone (session directory, project directory, and global read roots) in every
-audience and mode.
+the session's project root. The path access decision SHALL use the read file
+operation without interactive Personal shell-equivalent reach. A successful
+declaration adds the project directory to the trusted roots that reviewed
+safe policy uses. It also loads project identity files into the system
+prompt. Thus, every audience and mode SHALL limit declarations to the session
+directory, project directory, and configured global read roots.
 
 #### Scenario: Interactive Personal session cannot widen the working directory
 
 - **GIVEN** an interactive Personal session requests a directory outside the
-  autonomous zone
+  trusted roots permitted for project declaration
 - **WHEN** the agent invokes `set_working_directory`
 - **THEN** the project directory remains unchanged
-- **AND** the tool reports that the directory is outside the allowed roots
+- **AND** the tool reports that the directory is outside the trusted roots
 
 ### Requirement: File read tool bounds its read for memory safety
 
@@ -642,7 +676,7 @@ A tool-enabled session SHALL have authorization, approval, logging, and dispatch
 #### Scenario: Interactive approval cannot disagree with its bridge
 
 - **GIVEN** a tool invocation has no admitted interactive approval bridge
-- **WHEN** path and shell policies evaluate autonomous trust-zone restrictions
+- **WHEN** path and shell policies evaluate path access for an unattended run
 - **THEN** the invocation is represented as non-interactive
 - **AND** no nullable support flag can bypass those restrictions
 
@@ -693,3 +727,91 @@ process-start builder. The tool schema SHALL remain unchanged.
 - **THEN** both use the same absolute executable path
 - **AND** both use the same fixed arguments in the same order
 - **AND** both append the submitted command as one argument
+
+### Requirement: Session file authority
+
+`PathAccessPolicy` SHALL derive session authority from the invocation audience
+and the current session storage. Personal MAY use the shared sessions and
+legacy logs roots. Public and Team SHALL NOT receive these shared roots as
+implicit authority. Explicit configured roots SHALL retain their authority.
+
+The current envelope and workspace SHALL remain roots for parent and child
+runs. A child SHALL inherit its parent's audience and workspace restrictions.
+Each legacy run MAY access its exact raw log through its operation profile.
+This exact-file grant SHALL NOT authorize the log's parent directory, adjacent
+files, or project declarations. Legacy cross-run logs SHALL receive no implicit
+grant. Child summaries and workspace artifacts SHALL remain available.
+
+The path decision SHALL retain profile, link, and protected-path checks.
+A storage ancestor used to inspect links SHALL NOT grant directory authority.
+Public and Team shell capability SHALL remain denied. Storage paths, audience
+derivation on resumption, and memory policy SHALL remain unchanged.
+
+The system SHALL NOT add a log-specific tool, ownership registry, projection,
+or query language. `file_read` SHALL support an exact legacy log. Directory
+search SHALL require directory authority. Reads SHALL remain compatible with
+an active log writer on POSIX and Windows.
+
+#### Scenario: Restricted session reads its own log
+
+- **GIVEN** a Public or Team session with the default file profiles
+- **WHEN** it requests its exact versioned or legacy raw log through `file_read`
+- **THEN** the path decision allows the read and applies normal output bounds
+- **AND** a `None` profile or protected path still denies access
+
+#### Scenario: Restricted session cannot inspect a sibling session
+
+- **GIVEN** a Public or Team session without an explicit root for a sibling
+- **WHEN** it reads, lists, searches, or attaches the sibling's files
+- **THEN** the path decision denies access before content or filenames escape
+- **AND** a Team write cannot change or create a sibling file
+
+#### Scenario: Personal session retains cross-session access
+
+- **GIVEN** a Personal session whose operation profile admits shared roots
+- **WHEN** it requests another session's ordinary raw log
+- **THEN** the same path decision permits the read
+- **AND** link and protected-path checks still apply
+
+#### Scenario: Parent and child share versioned session authority
+
+- **GIVEN** a Team parent and child with the same versioned envelope
+- **WHEN** either reads the other's log or shared workspace artifact
+- **THEN** its inherited roots permit the operation
+- **AND** neither can read an unrelated session without explicit authority
+
+#### Scenario: Legacy child keeps only its own raw log grant
+
+- **GIVEN** a Team parent and child with separate legacy raw log paths
+- **WHEN** either reads its own exact log
+- **THEN** the operation succeeds
+- **WHEN** either reads the other's log or enumerates the shared log parent
+- **THEN** access is denied without explicit authority
+- **AND** the parent can still read the child's shared-workspace artifacts
+
+### Requirement: Generated fetch destinations
+
+`PathAccessPolicy` SHALL check generated fetch paths before directory creation or file writes.
+A bound session SHALL use its current workspace. A sessionless fetch SHALL use its configured fetch directory.
+The check SHALL reject paths outside that directory, filesystem links, and protected write destinations.
+A permitted fetch SHALL NOT require general file-write permission to save its response.
+The tool SHALL return an explicit denial for an invalid destination and SHALL NOT create files or directories there.
+These checks do not prevent another process from replacing a directory after validation.
+
+#### Scenario: Fetch saves a response in an ordinary directory
+
+- **GIVEN** a permitted fetch and an output directory without links or write protection
+- **WHEN** the tool receives text or binary content
+- **THEN** it creates the output directory if needed and saves the response there
+
+#### Scenario: Fetch cannot write through a linked directory
+
+- **GIVEN** a session workspace or sessionless fetch directory that is a link
+- **WHEN** the tool receives a response
+- **THEN** it returns `AccessDenied` without writing through that link
+
+#### Scenario: Fetch cannot write protected output
+
+- **GIVEN** an output directory that the protected-path policy denies for writes
+- **WHEN** the tool receives a response
+- **THEN** it returns `AccessDenied` without creating that directory or an output file

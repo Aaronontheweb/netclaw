@@ -19,8 +19,8 @@ public class ToolRemediationPresenterTests
             "Next action: call set_working_directory with an allowed project directory for this task, then retry the failed tool call."
         },
         {
-            nameof(ToolRemediationCode.UseSessionScratch),
-            "Next action: use the session scratch directory from this result for disposable files, or retry unchanged for exact platform paths."
+            nameof(ToolRemediationCode.UseManagedTemporaryDirectory),
+            "Next action: use the managed temporary directory from this result for disposable files, or retry unchanged for exact platform paths."
         },
         {
             nameof(ToolRemediationCode.ProvideUniqueOldString),
@@ -39,9 +39,7 @@ public class ToolRemediationPresenterTests
         string expectedAction)
     {
         var code = Enum.Parse<ToolRemediationCode>(codeName);
-        var receipt = new ToolInvocationReceipt(
-            ToolInvocationOutcomeCategory.RecoverableCorrection,
-            remediationCode: code);
+        var receipt = new ToolInvocationReceipt.Correction(code);
 
         var result = ToolRemediationPresenter.Present(
             Message("bounded failure"),
@@ -55,9 +53,7 @@ public class ToolRemediationPresenterTests
     [Fact]
     public void Presenter_suppresses_hidden_working_directory_tool()
     {
-        var receipt = new ToolInvocationReceipt(
-            ToolInvocationOutcomeCategory.RecoverableCorrection,
-            remediationCode: ToolRemediationCode.SetWorkingDirectory);
+        var receipt = new ToolInvocationReceipt.Correction(ToolRemediationCode.SetWorkingDirectory);
 
         var result = ToolRemediationPresenter.Present(
             Message("bounded failure"),
@@ -72,7 +68,7 @@ public class ToolRemediationPresenterTests
     public void Presenter_leaves_non_corrective_result_unchanged()
     {
         var message = Message("denied");
-        var receipt = new ToolInvocationReceipt(ToolInvocationOutcomeCategory.AccessDenied);
+        var receipt = new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.AccessDenied);
 
         Assert.Same(message, ToolRemediationPresenter.Present(message, receipt, true));
         Assert.Same(message, ToolRemediationPresenter.Present(message, null, true));
