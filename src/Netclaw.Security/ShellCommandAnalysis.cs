@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Collections.Immutable;
 using ShellSyntaxTree;
 
 namespace Netclaw.Security;
@@ -25,12 +26,19 @@ internal sealed class ShellCommandAnalyzer
     public ShellCommandAnalysis Analyze(string command, string? workingDirectory = null)
     {
         var commands = new List<CommandOccurrence>();
-        var failure = Analyze(command, workingDirectory, depth: 0, commands);
+        var denyOnlyClauses = new List<Clause>();
+        var failure = Analyze(
+            command,
+            workingDirectory,
+            depth: 0,
+            commands,
+            denyOnlyClauses);
         return new ShellCommandAnalysis(
             _environment,
             command,
             workingDirectory,
             commands,
+            denyOnlyClauses,
             failure);
     }
 
@@ -38,7 +46,8 @@ internal sealed class ShellCommandAnalyzer
         string command,
         string? workingDirectory,
         int depth,
-        List<CommandOccurrence> commands)
+        List<CommandOccurrence> commands,
+        List<Clause> denyOnlyClauses)
     {
         if (depth > MaxWrapperDepth)
             return ShellAnalysisFailure.Unresolved;
@@ -62,7 +71,20 @@ internal sealed class ShellCommandAnalyzer
             return ShellAnalysisFailure.Unresolved;
         }
 
-        if (parsed.IsUnparseable || parsed.Commands.Count == 0)
+        if (parsed.IsUnparseable)
+        {
+            if (_environment.Grammar == ShellGrammar.PowerShell)
+            {
+                ShellCommandAnalysis.CollectSourceAuthenticDenyOnlyClauses(
+                    parsed.Syntax,
+                    command,
+                    denyOnlyClauses);
+            }
+
+            return ShellAnalysisFailure.Unresolved;
+        }
+
+        if (parsed.Commands.Count == 0)
             return ShellAnalysisFailure.Unresolved;
 
         if (_environment.Grammar == ShellGrammar.PowerShell)
@@ -121,7 +143,8 @@ internal sealed class ShellCommandAnalyzer
                 innerCommands[innerIndex++],
                 innerWorkingDirectory,
                 depth + 1,
-                commands);
+                commands,
+                denyOnlyClauses);
             if (failure != ShellAnalysisFailure.None)
                 return failure;
         }
@@ -306,12 +329,14 @@ public sealed record ShellCommandAnalysis
         string source,
         string? workingDirectory,
         IReadOnlyList<CommandOccurrence> commands,
+        IReadOnlyList<Clause> denyOnlyClauses,
         ShellAnalysisFailure failure)
     {
         Environment = environment;
         Source = source;
         WorkingDirectory = workingDirectory;
-        Commands = commands;
+        Commands = commands.ToImmutableArray();
+        DenyOnlyClauses = denyOnlyClauses.ToImmutableArray();
         Failure = failure;
     }
 
@@ -320,6 +345,8 @@ public sealed record ShellCommandAnalysis
     public string? WorkingDirectory { get; }
 
     public IReadOnlyList<CommandOccurrence> Commands { get; }
+
+    internal IReadOnlyList<Clause> DenyOnlyClauses { get; }
 
     public bool IsResolved => Failure == ShellAnalysisFailure.None && Commands.Count > 0;
 
@@ -336,6 +363,171 @@ public sealed record ShellCommandAnalysis
     internal ShellExecutionEnvironment Environment { get; }
 
     internal ShellAnalysisFailure Failure { get; }
+
+    internal static void CollectSourceAuthenticDenyOnlyClauses(
+        ShellSyntaxNode node,
+        string source,
+        ICollection<Clause> clauses)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(clauses);
+
+        var seen = new HashSet<Clause>(ReferenceEqualityComparer.Instance);
+        CollectSourceAuthenticDenyOnlyClauses(node, source, clauses, seen);
+    }
+
+    private static void CollectSourceAuthenticDenyOnlyClauses(
+        ShellSyntaxNode node,
+        string source,
+        ICollection<Clause> clauses,
+        ISet<Clause> seen)
+    {
+        switch (node)
+        {
+            case ShellBlockSyntax block:
+                foreach (var statement in block.Statements)
+                    CollectSourceAuthenticDenyOnlyClauses(statement, source, clauses, seen);
+                break;
+            case SimpleCommandSyntax command:
+                if (seen.Add(command.Clause)
+                    && IsSourceAuthenticDenyOnlyClause(command, source))
+                {
+                    clauses.Add(command.Clause);
+                }
+
+                foreach (var region in command.ExecutionRegions)
+                    CollectSourceAuthenticDenyOnlyClauses(region, source, clauses, seen);
+                foreach (var substitution in command.Substitutions)
+                    CollectSourceAuthenticDenyOnlyClauses(substitution, source, clauses, seen);
+                break;
+            case PipelineSyntax pipeline:
+                foreach (var stage in pipeline.Stages)
+                    CollectSourceAuthenticDenyOnlyClauses(stage, source, clauses, seen);
+                break;
+            case CommandListSyntax list:
+                foreach (var item in list.Items)
+                    CollectSourceAuthenticDenyOnlyClauses(item.Command, source, clauses, seen);
+                break;
+            case GroupSyntax group:
+                CollectSourceAuthenticDenyOnlyClauses(group.Body, source, clauses, seen);
+                break;
+            case ForEachSyntax loop:
+                CollectSourceAuthenticDenyOnlyClauses(loop.IteratorCommands, source, clauses, seen);
+                CollectSourceAuthenticDenyOnlyClauses(loop.Body, source, clauses, seen);
+                break;
+            case CommandSubstitutionSyntax substitution:
+                CollectSourceAuthenticDenyOnlyClauses(substitution.Body, source, clauses, seen);
+                break;
+            case ExecutionRegionSyntax region:
+                CollectSourceAuthenticDenyOnlyClauses(region.Body, source, clauses, seen);
+                break;
+        }
+    }
+
+    private static bool IsSourceAuthenticDenyOnlyClause(
+        SimpleCommandSyntax command,
+        string source)
+    {
+        var clause = command.Clause;
+        if (clause.Verb.IsDynamic
+            || clause.Verb.Tokens.Count == 0
+            || clause.Elements.Count == 0
+            || !HasValidSourceProvenance(command, source.Length))
+        {
+            return false;
+        }
+
+        var verbIndex = 0;
+        foreach (var element in clause.Elements)
+        {
+            if (!Enum.IsDefined(element.Role)
+                || !Enum.IsDefined(element.Kind)
+                || !HasExactSourceIdentity(
+                    element,
+                    command,
+                    source,
+                    clause.IsCommandStringWrapped))
+            {
+                return false;
+            }
+
+            if (element.Role == ClauseElementRole.Verb)
+            {
+                if (element.Kind != ArgKind.Literal
+                    || verbIndex >= clause.Verb.Tokens.Count
+                    || element.PrecedingVerbElementCount != verbIndex
+                    || !string.Equals(
+                        element.Value,
+                        clause.Verb.Tokens[verbIndex],
+                        StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                verbIndex++;
+            }
+        }
+
+        return verbIndex == clause.Verb.Tokens.Count;
+    }
+
+    private static bool HasValidSourceProvenance(
+        ShellSyntaxNode node,
+        int sourceLength)
+    {
+        if (node is SimpleCommandSyntax
+            {
+                Clause.IsCommandStringWrapped: true,
+                SourceStart: null,
+                SourceLength: null
+            })
+        {
+            return true;
+        }
+
+        if (node.SourceStart is not int start
+            || node.SourceLength is not int length
+            || start < 0
+            || length < 0)
+        {
+            return false;
+        }
+
+        return length <= sourceLength && start <= sourceLength - length;
+    }
+
+    private static bool HasExactSourceIdentity(
+        ClauseElement element,
+        ShellSyntaxNode owner,
+        string source,
+        bool isCommandStringWrapped)
+    {
+        if (isCommandStringWrapped
+            && owner.SourceStart is null
+            && owner.SourceLength is null)
+        {
+            return element.SourceStart is null && element.SourceLength is null;
+        }
+
+        if (element.SourceStart is not int start
+            || element.SourceLength is not int length
+            || owner.SourceStart is not int ownerStart
+            || owner.SourceLength is not int ownerLength
+            || start < 0
+            || length < 0
+            || length != element.Raw.Length
+            || start < ownerStart
+            || length > source.Length
+            || start > source.Length - length
+            || start + length > ownerStart + ownerLength)
+        {
+            return false;
+        }
+
+        return source.AsSpan(start, length)
+            .SequenceEqual(element.Raw.AsSpan());
+    }
 
     private bool CommandHasDynamicSyntax(
         CommandOccurrence command,

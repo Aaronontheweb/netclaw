@@ -157,11 +157,37 @@ public sealed class ShellCommandPolicyTests
         Assert.Equal(DenyCategory.SelfDestructive, decision.DenyCategory);
     }
 
+    [Fact]
+    public void Native_power_shell_unknown_command_argument_region_keeps_child_hard_deny_command()
+    {
+        var decision = PowerShellPolicy().Evaluate(
+            "Invoke-Custom { netclaw daemon stop }",
+            @"C:\work");
+
+        Assert.False(decision.Allowed);
+        Assert.Equal(DenyCategory.SelfDestructive, decision.DenyCategory);
+    }
+
+    [Theory]
+    [InlineData("Get-ChildItem | ForEach-Object { netclaw daemon stop; $item++ }")]
+    [InlineData("Invoke-Custom { netclaw daemon stop; $item++ }")]
+    public void Native_power_shell_mutation_region_keeps_child_hard_deny_command(
+        string command)
+    {
+        var decision = PowerShellPolicy().Evaluate(command, @"C:\work");
+
+        Assert.False(decision.Allowed);
+        Assert.Equal(DenyCategory.SelfDestructive, decision.DenyCategory);
+    }
+
     [Theory]
     [InlineData("Start-Process pwsh -Verb RunAs")]
     [InlineData("Start-Process pwsh -Ve RunAs")]
     [InlineData("Start-Process pwsh -V 'RunAs'")]
     [InlineData("Start-Process pwsh -Verb:\"RunAs\"")]
+    [InlineData("Start-Process pwsh -Verb R`unAs")]
+    [InlineData("Start-Process pwsh -Verb:R`unAs")]
+    [InlineData("powershell.exe -Command 'Start-Process pwsh -Verb R`unAs'")]
     [InlineData("saps pwsh -Verb RunAs")]
     public void Native_power_shell_denies_elevation_parameter_forms(string command)
     {
@@ -181,6 +207,18 @@ public sealed class ShellCommandPolicyTests
             @"C:\work");
 
         Assert.True(decision.Allowed);
+    }
+
+    [Theory]
+    [InlineData(@"Remove-Item C:\ -Recurse:'$false' -Force")]
+    [InlineData(@"Remove-Item C:\ -Recurse:`$false -Force")]
+    public void Native_power_shell_only_trusts_an_authored_boolean_false_switch(
+        string command)
+    {
+        var decision = PowerShellPolicy().Evaluate(command, @"C:\work");
+
+        Assert.False(decision.Allowed);
+        Assert.Equal(DenyCategory.SystemDestructive, decision.DenyCategory);
     }
 
     [Theory]
