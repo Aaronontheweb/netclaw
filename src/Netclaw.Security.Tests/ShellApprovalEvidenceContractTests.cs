@@ -1452,6 +1452,7 @@ public sealed partial class ShellApprovalEvidenceContractTests
             source: string.Empty,
             analysis.WorkingDirectory,
             analysis.Commands,
+            denyOnlyClauses: [],
             ShellAnalysisFailure.None);
 
     private static ApprovalEvidenceMatrix DeserializeMatrix(byte[] bytes)
