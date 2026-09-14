@@ -345,7 +345,7 @@ public sealed class ShellCommandPolicy
         if (tokens.Count == 0)
             return null;
 
-        return new VerbChainDenyPattern(tokens, raw, DenyCategory.CustomDeny);
+        return new LegacyVerbChainDenyPattern(tokens, raw, DenyCategory.CustomDeny);
     }
 
     // ── Default deny patterns ──
@@ -470,6 +470,38 @@ public sealed class ShellCommandPolicy
                 var tokenVerb = ShellTokenizer.TrimShellPunctuation(tokens[i].Value);
                 if (!string.Equals(tokenVerb, VerbChain[i], StringComparison.OrdinalIgnoreCase))
                     return false;
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Matches a legacy configured string pattern against decoded values or
+    /// the exact authored spelling of an unresolved PowerShell value.
+    /// </summary>
+    internal sealed record LegacyVerbChainDenyPattern(
+        IReadOnlyList<string> VerbChain,
+        string Reason,
+        DenyCategory Category) : DenyPattern(Reason, Category)
+    {
+        public override bool Matches(IReadOnlyList<DenyToken> tokens)
+        {
+            if (tokens.Count < VerbChain.Count)
+                return false;
+
+            for (var i = 0; i < VerbChain.Count; i++)
+            {
+                var token = tokens[i];
+                var value = token.IsKnown ? token.Value : token.AuthoredValue;
+                var normalized = ShellTokenizer.TrimShellPunctuation(value);
+                if (!string.Equals(
+                        normalized,
+                        VerbChain[i],
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
             }
 
             return true;

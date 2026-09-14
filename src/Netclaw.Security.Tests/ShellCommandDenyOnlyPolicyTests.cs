@@ -141,17 +141,24 @@ public sealed class ShellCommandDenyOnlyPolicyTests
         Assert.True(denyOnlyDecision.Allowed);
     }
 
-    [Fact]
-    public void Custom_pattern_does_not_consume_an_authored_dynamic_spelling()
+    [Theory]
+    [InlineData("$operation", false)]
+    [InlineData("$otherOperation", true)]
+    public void Legacy_custom_pattern_matches_only_the_exact_authored_dynamic_spelling(
+        string operand,
+        bool expectedAllowed)
     {
         var policy = new ShellCommandPolicy(
             PowerShellEnvironment,
             additionalDenyPatterns: ["custom-tool $operation"]);
 
-        var decision = policy.EvaluateDenyOnlyClauses(
-            Collect("custom-tool $operation"));
+        var decision = policy.Evaluate(
+            $"custom-tool {operand}; $item++",
+            @"C:\work");
 
-        Assert.True(decision.Allowed);
+        Assert.Equal(expectedAllowed, decision.Allowed);
+        if (!expectedAllowed)
+            Assert.Equal(DenyCategory.CustomDeny, decision.DenyCategory);
     }
 
     [Fact]
