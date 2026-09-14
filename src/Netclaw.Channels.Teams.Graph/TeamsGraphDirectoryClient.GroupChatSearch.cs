@@ -15,7 +15,7 @@ public sealed partial class TeamsGraphDirectoryClient
     internal const int GroupChatSearchRequestBudget = 10;
     private const int GroupChatSearchPageSize = 50;
     private const int GroupChatSearchMaximumResponseSize = 1_000;
-    private const int GroupChatSearchMaximumMatches = 10_000;
+    private const int GroupChatSearchMaximumTrackedItems = 10_000;
     private const int GroupChatSearchMaximumCursors = 8;
     private readonly object _groupChatSearchStateLock = new();
     private readonly LinkedList<(string Handle, GroupChatSearchState State)> _groupChatSearchStates = new();
@@ -48,13 +48,20 @@ public sealed partial class TeamsGraphDirectoryClient
             if (result.Count == maximum || state.IsComplete || requests == GroupChatSearchRequestBudget)
                 break;
 
+            if (state.RequestsMade == GroupChatSearchMaximumTrackedItems)
+                return TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Unavailable("teams_directory_search_limit_reached");
             requests++;
-            var step = state.CurrentUser is not null || state.PendingUsers.Count > 0
-                ? await ReadSearchChatPageAsync(state, cancellationToken).ConfigureAwait(false)
-                : await ReadSearchUserPageAsync(state, cancellationToken).ConfigureAwait(false);
+            state.RequestsMade++;
+            var page = state.PendingPages.Dequeue();
+            var step = page.UserId is null
+                ? await ReadSearchUserPageAsync(state, page, cancellationToken).ConfigureAwait(false)
+                : await ReadSearchChatPageAsync(state, page, cancellationToken).ConfigureAwait(false);
             if (!step.IsAvailable)
                 return TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Unavailable(step.ReasonCode!);
-            if (state.MatchedIds.Count > GroupChatSearchMaximumMatches)
+            if (!step.Value)
+                return TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Unavailable("teams_directory_pagination_stalled");
+            if (state.MatchedIds.Count > GroupChatSearchMaximumTrackedItems
+                || state.UserIds.Count > GroupChatSearchMaximumTrackedItems)
                 return TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Unavailable("teams_directory_search_limit_reached");
         }
 
@@ -63,67 +70,70 @@ public sealed partial class TeamsGraphDirectoryClient
             "group-chat", static chat => chat.Id, DirectoryRecordTtl);
         var next = state.IsComplete ? null : StoreGroupChatSearchState(state);
         return TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(
-            new TeamsDirectoryGroupChatSearchPage(result, next, state.UsersExamined, state.UnavailableUsers));
+            new TeamsDirectoryGroupChatSearchPage(result, next, state.UsersExamined, state.UnavailableUsers,
+                state.RequestsMade, state.ChatsExamined));
     }
 
     private ValueTask<TeamsDirectoryOperationResult<bool>> ReadSearchUserPageAsync(
-        GroupChatSearchState state, CancellationToken cancellationToken) =>
+        GroupChatSearchState state, GroupChatSearchRequest page, CancellationToken cancellationToken) =>
         ExecuteAsync(async token =>
         {
-            var response = !state.UsersStarted
+            var response = page.NextLink is null
                 ? await _graphClient.Users.GetAsync(request =>
                 {
                     request.Options.Add(new RetryHandlerOption { MaxRetry = 0 });
                     request.QueryParameters.Select = ["id"];
                     request.QueryParameters.Top = GroupChatSearchPageSize;
                 }, token).ConfigureAwait(false)
-                : await _graphClient.Users.WithUrl(state.UsersNextLink!).GetAsync(
+                : await _graphClient.Users.WithUrl(page.NextLink).GetAsync(
                     request => request.Options.Add(new RetryHandlerOption { MaxRetry = 0 }), token).ConfigureAwait(false);
             if (response?.Value is null || response.Value.Count > GroupChatSearchMaximumResponseSize)
                 throw new InvalidDataException("The user page has no bounded value collection.");
             ValidateSearchNextLink(response.OdataNextLink, "/users");
+            if (!RegisterSearchNextLink(state, response.OdataNextLink))
+                return false;
             foreach (var user in response.Value)
             {
                 if (!TryNormalizeIdentifier(user.Id, out var id))
                     throw new InvalidDataException("The user page has no canonical ID.");
-                state.PendingUsers.Enqueue(id);
+                if (state.UserIds.Add(id))
+                    state.PendingPages.Enqueue(new GroupChatSearchRequest(id, null));
             }
 
-            state.UsersStarted = true;
-            state.UsersNextLink = NullIfEmpty(response.OdataNextLink);
+            if (NullIfEmpty(response.OdataNextLink) is { } nextLink)
+                state.PendingPages.Enqueue(new GroupChatSearchRequest(null, nextLink));
             return true;
         }, cancellationToken, retry: false);
 
     private ValueTask<TeamsDirectoryOperationResult<bool>> ReadSearchChatPageAsync(
-        GroupChatSearchState state, CancellationToken cancellationToken) =>
+        GroupChatSearchState state, GroupChatSearchRequest page, CancellationToken cancellationToken) =>
         ExecuteAsync(async token =>
         {
-            state.CurrentUser ??= state.PendingUsers.Dequeue();
             ChatCollectionResponse? response;
             try
             {
-                response = state.ChatsNextLink is null
-                    ? await _graphClient.Users[state.CurrentUser].Chats.GetAsync(request =>
+                response = page.NextLink is null
+                    ? await _graphClient.Users[page.UserId!].Chats.GetAsync(request =>
                     {
                         request.Options.Add(new RetryHandlerOption { MaxRetry = 0 });
                         request.QueryParameters.Top = GroupChatSearchPageSize;
-                        request.QueryParameters.Expand = ["members"];
                     }, token).ConfigureAwait(false)
-                    : await _graphClient.Users[state.CurrentUser].Chats.WithUrl(state.ChatsNextLink)
+                    : await _graphClient.Users[page.UserId!].Chats.WithUrl(page.NextLink)
                         .GetAsync(request => request.Options.Add(new RetryHandlerOption { MaxRetry = 0 }), token).ConfigureAwait(false);
             }
             catch (ApiException exception) when (exception.ResponseStatusCode == 404)
             {
                 state.UsersExamined++;
                 state.UnavailableUsers++;
-                state.CurrentUser = null;
-                state.ChatsNextLink = null;
                 return true;
             }
 
             if (response?.Value is null || response.Value.Count > GroupChatSearchMaximumResponseSize)
                 throw new InvalidDataException("The chat page has no bounded value collection.");
-            ValidateSearchNextLink(response.OdataNextLink, $"/users/{state.CurrentUser}/chats");
+            ValidateSearchNextLink(response.OdataNextLink, $"/users/{page.UserId}/chats");
+            if (!RegisterSearchNextLink(state, response.OdataNextLink))
+                return false;
+            state.ChatsExamined += response.Value.Count;
             foreach (var chat in response.Value)
             {
                 if (chat.ChatType is null || string.IsNullOrWhiteSpace(chat.Id))
@@ -139,14 +149,16 @@ public sealed partial class TeamsGraphDirectoryClient
                 }
             }
 
-            state.ChatsNextLink = NullIfEmpty(response.OdataNextLink);
-            if (state.ChatsNextLink is null)
-            {
-                state.CurrentUser = null;
+            // Queue the next page after other sources. One user's chat history must not block later users.
+            if (NullIfEmpty(response.OdataNextLink) is { } nextLink)
+                state.PendingPages.Enqueue(new GroupChatSearchRequest(page.UserId, nextLink));
+            else
                 state.UsersExamined++;
-            }
             return true;
         }, cancellationToken, retry: false);
+
+    private static bool RegisterSearchNextLink(GroupChatSearchState state, string? nextLink) =>
+        string.IsNullOrWhiteSpace(nextLink) || state.VisitedNextLinks.Add(new Uri(nextLink).AbsoluteUri);
 
     private void ValidateSearchNextLink(string? nextLink, string collectionPath)
     {
@@ -212,34 +224,35 @@ public sealed partial class TeamsGraphDirectoryClient
 
     private static string? NullIfEmpty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
+    private sealed record GroupChatSearchRequest(string? UserId, string? NextLink);
+
     private sealed class GroupChatSearchState(string query, int maximum)
     {
         public string Query { get; } = query;
         public int Maximum { get; } = maximum;
-        public Queue<string> PendingUsers { get; private init; } = new();
+        public Queue<GroupChatSearchRequest> PendingPages { get; private init; } = new([new(null, null)]);
         public Queue<TeamsDirectoryGroupChat> PendingMatches { get; private init; } = new();
         public HashSet<string> MatchedIds { get; private init; } = new(StringComparer.Ordinal);
-        public bool UsersStarted { get; set; }
-        public string? UsersNextLink { get; set; }
-        public string? CurrentUser { get; set; }
-        public string? ChatsNextLink { get; set; }
+        public HashSet<string> UserIds { get; private init; } = new(StringComparer.OrdinalIgnoreCase);
+        public HashSet<string> VisitedNextLinks { get; private init; } = new(StringComparer.Ordinal);
         public int UsersExamined { get; set; }
         public int UnavailableUsers { get; set; }
+        public int RequestsMade { get; set; }
+        public int ChatsExamined { get; set; }
         public DateTimeOffset ExpiresAt { get; set; }
-        public bool IsComplete => UsersStarted && UsersNextLink is null && PendingUsers.Count == 0
-                                  && CurrentUser is null && PendingMatches.Count == 0;
+        public bool IsComplete => PendingPages.Count == 0 && PendingMatches.Count == 0;
 
         public GroupChatSearchState Copy() => new(Query, Maximum)
         {
-            PendingUsers = new Queue<string>(PendingUsers),
+            PendingPages = new Queue<GroupChatSearchRequest>(PendingPages),
             PendingMatches = new Queue<TeamsDirectoryGroupChat>(PendingMatches),
             MatchedIds = new HashSet<string>(MatchedIds, StringComparer.Ordinal),
-            UsersStarted = UsersStarted,
-            UsersNextLink = UsersNextLink,
-            CurrentUser = CurrentUser,
-            ChatsNextLink = ChatsNextLink,
+            UserIds = new HashSet<string>(UserIds, StringComparer.OrdinalIgnoreCase),
+            VisitedNextLinks = new HashSet<string>(VisitedNextLinks, StringComparer.Ordinal),
             UsersExamined = UsersExamined,
             UnavailableUsers = UnavailableUsers,
+            RequestsMade = RequestsMade,
+            ChatsExamined = ChatsExamined,
             ExpiresAt = ExpiresAt
         };
     }

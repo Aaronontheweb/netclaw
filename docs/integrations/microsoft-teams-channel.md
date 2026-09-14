@@ -217,8 +217,7 @@ Graph **application** permissions:
 - `User.Read.All` — user display name, UPN, and mail metadata.
 - `GroupMember.Read.All` — security/Microsoft 365 group discovery and checked
   group membership.
-- `Chat.ReadBasic.All` — optional Group Chat topic and participant-preview
-  discovery.
+- `Chat.ReadBasic.All` — optional Group Chat metadata discovery.
 
 Do not add `Directory.Read.All` for this feature. The Teams package RSC
 permission described above is separate from these Graph application
@@ -241,11 +240,25 @@ their chat metadata in bounded batches. It matches titles locally and removes
 duplicate chat IDs. This process does not read chat messages or change access
 lists.
 
-Select `Continue search` when more metadata remains. An incomplete scan or
-Graph error is not proof that a chat does not exist. The TUI reports this
-state. Use the advanced canonical-ID path if a chat has no title or discovery
-is unavailable. A selected chat still needs the existing ingress switch and
-principal grants.
+The search continues automatically and retains matches as new batches arrive.
+Netclaw paces consecutive batches to reduce Graph throttles.
+It visits other users before it exhausts one user's chat pages. Title search
+does not request participant expansion. The status shows cumulative user,
+chat-record, request, and match counts. The user count advances when that
+user's chat pages finish; other counts can advance before it changes.
+Chat records can include duplicates shared by several users. The match list
+contains each canonical Group Chat ID once.
+
+Select a match to review it, or use `Stop search` / `Ctrl+S` to pause.
+The run pauses at twenty batches or two minutes if metadata remains.
+Select `Resume search` to use the last successful checkpoint. A stopped or
+failed batch can repeat when resumed. Checkpoints expire after five minutes;
+an expired checkpoint requires a fresh search.
+
+An incomplete scan or Graph error is not proof that a chat does not exist.
+The TUI reports failures and unavailable sources explicitly. Use the advanced
+canonical-ID path if a chat has no title or discovery is unavailable. A
+selected chat still needs the existing ingress switch and principal grants.
 
 Netclaw does not request `Chat.ReadBasic.WhereInstalled`, `Chat.Read.All`, or
 chat message-read permissions for this picker. Group-chat authorization uses

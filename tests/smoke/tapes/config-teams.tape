@@ -201,6 +201,7 @@ Down
 Enter
 Wait+Screen@10s /Microsoft Teams > Find a Group Chat/
 Wait+Screen@10s /Group Chat name/
+Wait+Screen@10s /search continues automatically/
 Type "bostontech"
 Wait+Screen@10s /bostontech/
 Backspace 10

@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.65.6"
+  version: "2.65.7"
 ---
 
 # Netclaw Operations
@@ -52,8 +52,13 @@ Use `Add a channel or Group Chat` > `Group Chat` to search by chat title.
 Enter a partial or full title in `Group Chat name`. Do not enter a user name.
 The application reads tenant user IDs and chat metadata in bounded batches.
 It uses `User.Read.All` and `Chat.ReadBasic.All`; it does not read messages.
-Select `Continue search` while more metadata remains. An incomplete scan or
-Graph error does not prove that the chat is absent. Discovery grants no access.
+One search action advances across batches and retains matches. The status
+shows cumulative users, chat records, requests, and matches. A user's count
+advances only when its chat pages finish. Chat records can include duplicates.
+Use `Stop search` or `Ctrl+S` to pause. Select `Resume search` after a stop or
+automatic run limit. Resume preserves matches and the last successful
+checkpoint. An incomplete scan or Graph error does not prove that the chat
+is absent. Discovery grants no access.
 Use a canonical chat ID if the chat has no title or discovery is unavailable.
 
 When you remove the final global Teams user or group, explain the result.

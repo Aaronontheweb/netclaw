@@ -288,7 +288,7 @@ public sealed class ChannelsConfigNavigationTests : IDisposable
             {
                 searched.TrySetResult(query);
                 return ValueTask.FromResult(TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(
-                    new([new("19:boston-operations@thread.v2", "BostonTech Operations", ["Ada", "Grace"])], null, 2, 0)));
+                    new([new("19:boston-operations@thread.v2", "BostonTech Operations", ["Ada", "Grace"])], null, 2, 0, 3, 4)));
             }
         };
         var app = CreateHeadlessApp(out var input, out var dashboardVm, out var getChannelsVm, out var terminal,
@@ -325,20 +325,33 @@ public sealed class ChannelsConfigNavigationTests : IDisposable
         Assert.Contains("Microsoft Teams > Find a Group Chat", terminal.ToString());
     }
 
-    [Fact]
-    public async Task Channels_Group_Chat_keeps_continuation_visible_and_selectable_in_an_80_by_24_terminal()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Channels_Group_Chat_can_stop_resume_and_select_later_results_in_an_80_by_24_terminal(bool stopWithShortcut)
     {
         WriteTeamsChannelFiles();
         var firstPage = Enumerable.Range(0, 25)
             .Select(index => new TeamsDirectoryGroupChat($"19:boston-{index}@thread.v2", $"BostonTech {index}", []))
             .ToArray();
+        var heldPage = new TaskCompletionSource<TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var nextStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var nextAttempts = 0;
+        var laterPage = TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(
+            new([new("19:boston-later@thread.v2", "BostonTech Later", [])], null, 10, 0, 20, 40));
         var directory = new GroupChatNameSearchDirectory
         {
-            SearchHandler = (_, continuation) => ValueTask.FromResult(
-                TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(
-                    continuation is null
-                        ? new(firstPage, "next-page", 5, 0)
-                        : new([new("19:boston-later@thread.v2", "BostonTech Later", [])], null, 10, 0)))
+            SearchHandler = (_, continuation) =>
+            {
+                if (continuation is null)
+                    return ValueTask.FromResult(TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(
+                        new(firstPage, "next-page", 5, 0, 10, 25)));
+                if (++nextAttempts > 1)
+                    return ValueTask.FromResult(laterPage);
+                nextStarted.TrySetResult();
+                return new(heldPage.Task);
+            }
         };
         var app = CreateHeadlessApp(out var input, out var dashboardVm, out var getChannelsVm, out var terminal,
             teamsDirectoryFactory: _ => directory, terminalWidth: 80, terminalHeight: 24);
@@ -357,6 +370,7 @@ public sealed class ChannelsConfigNavigationTests : IDisposable
         try
         {
             await WaitForFrameAsync(app, terminal, frame => frame.Contains("BostonTech 0", StringComparison.Ordinal), cts.Token);
+            await nextStarted.Task.WaitAsync(cts.Token);
             for (var index = 0; index < firstPage.Length; index++)
                 input.EnqueueKey(ConsoleKey.DownArrow);
 
@@ -364,26 +378,42 @@ public sealed class ChannelsConfigNavigationTests : IDisposable
                 app,
                 terminal,
                 snapshot => getChannelsVm()?.DirectoryResultIndex == firstPage.Length
-                            && snapshot.Contains("Continue search", StringComparison.Ordinal)
+                            && snapshot.Contains("Stop search (Ctrl+S)", StringComparison.Ordinal)
                             && snapshot.Contains("Advanced canonical-ID entry", StringComparison.Ordinal)
                             && snapshot.Contains("[Type] Chat name", StringComparison.Ordinal),
                 cts.Token);
             Assert.Contains("BostonTech 24", frame);
-            Assert.Contains("Advanced canonical-ID entry", frame);
-            Assert.Contains("[Type] Chat name", frame);
             Assert.DoesNotContain("BostonTech 0", frame);
+            input.EnqueueKey(ConsoleKey.Enter); // A second Enter must not restart an active search.
+            if (stopWithShortcut)
+                input.EnqueueKey(ConsoleKey.S, false, false, true);
+            else
+            {
+                input.EnqueueKey(ConsoleKey.DownArrow);
+                input.EnqueueKey(ConsoleKey.Enter);
+            }
 
+            await WaitForFrameAsync(app, terminal, snapshot => snapshot.Contains("Resume search", StringComparison.Ordinal), cts.Token);
+            Assert.Equal(2, directory.SearchCalls.Count);
+            var stoppedTask = getChannelsVm()!.PendingGroupChatSearch!;
+            heldPage.TrySetResult(laterPage);
+            await stoppedTask.WaitAsync(cts.Token);
+            Assert.Equal(firstPage.Length, getChannelsVm()!.GroupChatSearchResults.Count);
             input.EnqueueKey(ConsoleKey.Enter);
-            await WaitForFrameAsync(app, terminal, snapshot => snapshot.Contains("BostonTech Later", StringComparison.Ordinal), cts.Token);
+            await WaitForFrameAsync(app, terminal,
+                snapshot => getChannelsVm()?.IsGroupChatSearchRunning == false
+                            && snapshot.Contains("BostonTech Later", StringComparison.Ordinal), cts.Token);
+            input.EnqueueKey(ConsoleKey.UpArrow);
             input.EnqueueKey(ConsoleKey.Enter);
             await WaitForFrameAsync(app, terminal, _ => getChannelsVm()?.Screen.Value == ChannelsConfigScreen.GroupChats, cts.Token);
 
             var channelsVm = Assert.IsType<ChannelsConfigViewModel>(getChannelsVm());
             Assert.Equal("19:boston-later@thread.v2", channelsVm.AllowedGroupChatsInput);
-            Assert.Equal([("BostonTech", (string?)null), ("BostonTech", "next-page")], directory.SearchCalls);
+            Assert.Equal([("BostonTech", (string?)null), ("BostonTech", "next-page"), ("BostonTech", "next-page")], directory.SearchCalls);
         }
         finally
         {
+            heldPage.TrySetResult(laterPage);
             input.EnqueueKey(ConsoleKey.Q, false, false, true);
             await run;
         }

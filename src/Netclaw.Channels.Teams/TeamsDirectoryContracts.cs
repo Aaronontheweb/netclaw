@@ -75,7 +75,9 @@ public sealed record TeamsDirectoryGroupChatSearchPage(
     IReadOnlyList<TeamsDirectoryGroupChat> Chats,
     string? Continuation,
     int UsersExamined,
-    int UnavailableUsers);
+    int UnavailableUsers,
+    int RequestsMade,
+    int ChatsExamined);
 
 /// <summary>
 /// A safe, stable outcome classification for directory operations. Reason codes

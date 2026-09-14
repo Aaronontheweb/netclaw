@@ -71,6 +71,13 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
     private IReadOnlyList<TeamsDirectoryGroupChat> _groupChatSearchResults = [];
     private string? _groupChatContinuation;
     private Task? _groupChatSearchTask;
+    private CancellationTokenSource? _groupChatSearchCts;
+    private long _groupChatSearchGeneration;
+    private bool _isGroupChatSearchRunning;
+    private TeamsDirectoryGroupChatSearchPage? _groupChatSearchProgress;
+    internal const int MaximumGroupChatSearchBatches = 20;
+    internal const int MaximumRetainedGroupChatMatches = 1000;
+    private static readonly TimeSpan GroupChatSearchRunLimit = TimeSpan.FromMinutes(2);
     private string? _groupChatSearchInput;
     private string? _groupChatDetailsId;
     private int _teamsPrincipalManagementIndex;
@@ -199,15 +206,23 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
                 return;
 
             _groupChatSearchInput = value;
-            _teamsDirectorySearch?.Invalidate();
+            CancelGroupChatSearch();
             _groupChatSearchResults = [];
             _groupChatContinuation = null;
+            _groupChatSearchProgress = null;
             _hasSearchedGroupChats = false;
             _directoryResultIndex = 0;
+            Status.Value = new ConfigStatusMessage("Press Enter to search this Group Chat name.", ConfigStatusTone.Neutral);
         }
     }
     internal IReadOnlyList<TeamsDirectoryGroupChat> FilteredGroupChatSearchResults => _groupChatSearchResults;
-    internal int GroupChatSearchActionIndex => _groupChatSearchResults.Count + (HasGroupChatContinuation ? 1 : 0);
+    internal int GroupChatSearchActionIndex => _groupChatSearchResults.Count;
+    internal int GroupChatSearchAdvancedIndex => GroupChatSearchActionIndex + (_isGroupChatSearchRunning ? 2 : 1);
+    internal bool IsGroupChatSearchRunning => _isGroupChatSearchRunning;
+    internal string GroupChatSearchProgressText => _groupChatSearchProgress is { } progress
+        ? $"{progress.UsersExamined} users; {progress.ChatsExamined} chats; {progress.RequestsMade} requests; {_groupChatSearchResults.Count} matches"
+          + (progress.UnavailableUsers > 0 ? $"; {progress.UnavailableUsers} unavailable" : string.Empty)
+        : string.Empty;
     internal bool HasGroupChatContinuation => !string.IsNullOrWhiteSpace(_groupChatContinuation);
     internal Task? PendingGroupChatSearch => _groupChatSearchTask;
     internal int TeamsPrincipalManagementIndex => _teamsPrincipalManagementIndex;
@@ -1256,6 +1271,7 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
         "teams_directory_query_too_short" => "Enter at least two characters to search the directory.",
         "teams_directory_invalid_continuation" => "This search has expired. Select Search again to restart.",
         "teams_directory_search_limit_reached" => "This search reached its result limit. Enter a more specific Group Chat name.",
+        "teams_directory_pagination_stalled" => "Microsoft Graph repeated a page. The search stopped. Retry the search or use a canonical chat ID.",
         "teams_directory_throttled" => "Microsoft Graph is busy. Retry this search after a short delay.",
         _ => "Microsoft Graph is unavailable. Existing IDs remain unchanged. Use the advanced canonical-ID path if needed."
     };
@@ -2041,33 +2057,110 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
 
     internal Task SearchGroupChatsFromInputAsync()
     {
-        _groupChatSearchResults = [];
-        _groupChatContinuation = null;
-        _hasSearchedGroupChats = false;
-        _directoryResultIndex = 0;
-        _groupChatSearchTask = SearchGroupChatsAsync(null, _lifetimeCts.Token);
+        if (_isGroupChatSearchRunning)
+            return _groupChatSearchTask ?? Task.CompletedTask;
+
+        var search = TryGetTeamsDirectorySearch();
+        if (search is null)
+            return Task.CompletedTask;
+
+        CancelGroupChatSearch();
+        if (!HasGroupChatContinuation)
+        {
+            _groupChatSearchResults = [];
+            _groupChatSearchProgress = null;
+            _hasSearchedGroupChats = false;
+            _directoryResultIndex = 0;
+        }
+
+        _groupChatSearchCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+        _isGroupChatSearchRunning = true;
+        Status.Value = new ConfigStatusMessage("Searching Group Chat names... Press Ctrl+S to stop.", ConfigStatusTone.Neutral);
+        NotifyContentChanged();
+        _groupChatSearchTask = SearchGroupChatsAsync(
+            search, _groupChatSearchInput?.Trim() ?? string.Empty, _groupChatContinuation,
+            _groupChatSearchGeneration, _groupChatSearchCts.Token);
         return _groupChatSearchTask;
     }
 
-    private async Task SearchGroupChatsAsync(string? continuation, CancellationToken cancellationToken)
+    private async Task SearchGroupChatsAsync(
+        TeamsDirectorySearchController search,
+        string query,
+        string? continuation,
+        long generation,
+        CancellationToken cancellationToken)
     {
-        var search = TryGetTeamsDirectorySearch();
-        if (search is null)
-            return;
+        using var timeout = new CancellationTokenSource(GroupChatSearchRunLimit, _timeProvider);
+        using var run = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+        var visitedContinuations = new HashSet<string>(StringComparer.Ordinal);
+        if (continuation is not null)
+            visitedContinuations.Add(continuation);
 
-        var query = _groupChatSearchInput?.Trim() ?? string.Empty;
-        Status.Value = new ConfigStatusMessage(
-            string.IsNullOrWhiteSpace(continuation) ? "Searching Group Chat names..." : "Continuing the Group Chat name search...",
-            ConfigStatusTone.Neutral);
-        NotifyContentChanged();
-        var response = await search.SearchGroupChatsAsync(query, continuation, cancellationToken).ConfigureAwait(false);
-        if (!response.IsCurrent || cancellationToken.IsCancellationRequested)
-            return;
+        try
+        {
+            for (var batch = 0; batch < MaximumGroupChatSearchBatches; batch++)
+            {
+                // Start each request on the loop. The controller shares its generation with other directory screens.
+                ValueTask<TeamsDirectorySearchResponse<TeamsDirectoryGroupChatSearchPage>> request = default;
+                await InvokeAsync(() =>
+                {
+                    if (IsCurrentGroupChatSearch(query, generation))
+                        request = search.SearchGroupChatsAsync(query, continuation, run.Token);
+                }, run.Token);
+                run.Token.ThrowIfCancellationRequested();
+                var response = await request.ConfigureAwait(false);
+                run.Token.ThrowIfCancellationRequested();
+                var next = continuation;
+                var keepSearching = false;
+                await InvokeAsync(() =>
+                {
+                    if (!IsCurrentGroupChatSearch(query, generation))
+                        return;
 
-        await InvokeAsync(() => ApplyGroupChatSearchResponse(query, continuation, response), cancellationToken);
+                    keepSearching = ApplyGroupChatSearchResponse(query, continuation, response);
+                    next = _groupChatContinuation;
+                    if (keepSearching && !visitedContinuations.Add(next!))
+                    {
+                        FinishGroupChatSearchRun();
+                        _groupChatContinuation = null;
+                        Status.Value = new ConfigStatusMessage(
+                            "The search repeated its continuation. Retry the search or use a canonical chat ID.", ConfigStatusTone.Error);
+                        keepSearching = false;
+                        NotifyContentChanged();
+                    }
+                }, run.Token);
+                if (!keepSearching)
+                    return;
+
+                continuation = next;
+            }
+
+            await InvokeAsync(() => PauseGroupChatSearch(query, generation, "Search paused at its work limit."), cancellationToken);
+        }
+        catch (OperationCanceledException) when (run.IsCancellationRequested)
+        {
+            if (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    await InvokeAsync(() => PauseGroupChatSearch(query, generation, "Search paused after two minutes."), cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // The input or screen changed while the timeout update waited for the loop.
+                    return;
+                }
+            }
+        }
     }
 
-    private void ApplyGroupChatSearchResponse(
+    private bool IsCurrentGroupChatSearch(string query, long generation)
+        => generation == _groupChatSearchGeneration
+           && _isGroupChatSearchRunning
+           && Screen.Value == ChannelsConfigScreen.TeamsGroupChatSearch
+           && string.Equals(_groupChatSearchInput?.Trim() ?? string.Empty, query, StringComparison.Ordinal);
+
+    private bool ApplyGroupChatSearchResponse(
         string query,
         string? continuation,
         TeamsDirectorySearchResponse<TeamsDirectoryGroupChatSearchPage> response)
@@ -2077,53 +2170,135 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
             || !string.Equals(_groupChatContinuation, continuation, StringComparison.Ordinal)
             || !response.IsCurrent
             || _teamsDirectorySearch?.IsCurrent(response.Generation) != true)
-            return;
+            return false;
 
         if (!response.Result.IsAvailable || response.Result.Value is null)
         {
-            Status.Value = new ConfigStatusMessage(DirectoryFailureMessage(response.Result.ReasonCode), ConfigStatusTone.Error);
+            FinishGroupChatSearchRun();
+            if (response.Result.ReasonCode is "teams_directory_invalid_continuation"
+                or "teams_directory_pagination_stalled" or "teams_directory_search_limit_reached")
+                _groupChatContinuation = null;
+            Status.Value = new ConfigStatusMessage(
+                DirectoryFailureMessage(response.Result.ReasonCode) + GroupChatSearchCoverage(), ConfigStatusTone.Error);
             NotifyContentChanged();
-            return;
+            return false;
         }
 
-        _groupChatSearchResults =
-        [
-            .. response.Result.Value.Chats
-                .GroupBy(static chat => chat.Id, StringComparer.Ordinal)
-                .Select(static group => group.First())
-        ];
-        _groupChatContinuation = response.Result.Value.Continuation;
-        _hasSearchedGroupChats = true;
-        _directoryResultIndex = 0;
-        var unavailable = response.Result.Value.UnavailableUsers;
-        var coverage = $" Examined chats for {response.Result.Value.UsersExamined} tenant users.";
-        if (unavailable > 0)
-            coverage += $" Chats for {unavailable} users were unavailable; coverage is incomplete.";
+        var previousCount = _groupChatSearchResults.Count;
+        var selectedStopAction = _directoryResultIndex == previousCount + 1;
+        var selectedAdvancedAction = _directoryResultIndex == GroupChatSearchAdvancedIndex;
+        var selectedSearchAction = previousCount > 0 && _directoryResultIndex == previousCount;
+        var matches = _groupChatSearchResults.Concat(response.Result.Value.Chats)
+            .DistinctBy(static chat => chat.Id, StringComparer.Ordinal).ToArray();
+        if (_groupChatSearchProgress is { RequestsMade: > 0 } previous
+            && response.Result.Value.Continuation is not null
+            && response.Result.Value.RequestsMade <= previous.RequestsMade
+            && response.Result.Value.ChatsExamined <= previous.ChatsExamined
+            && response.Result.Value.UsersExamined <= previous.UsersExamined
+            && matches.Length == previousCount)
+        {
+            FinishGroupChatSearchRun();
+            _groupChatContinuation = null;
+            Status.Value = new ConfigStatusMessage(
+                "The search made no progress. Retry the search or use a canonical chat ID.", ConfigStatusTone.Error);
+            NotifyContentChanged();
+            return false;
+        }
+        if (matches.Length > MaximumRetainedGroupChatMatches)
+        {
+            FinishGroupChatSearchRun();
+            _groupChatContinuation = null;
+            Status.Value = new ConfigStatusMessage(
+                "The search reached 1,000 matches. Enter a more specific Group Chat name.", ConfigStatusTone.Warning);
+            NotifyContentChanged();
+            return false;
+        }
 
-        Status.Value = new ConfigStatusMessage(
-            (_groupChatSearchResults.Count == 0
-                ? HasGroupChatContinuation
-                    ? "No matches yet. Select Continue search to examine more chats."
-                    : unavailable > 0
-                        ? "No matches in the available chats."
-                        : "No Group Chats matched that name."
-                : HasGroupChatContinuation
-                    ? "Select a Group Chat to review, or Continue search for more matches."
-                    : "Select a Group Chat to review before you apply it.") + coverage,
+        _groupChatSearchResults = matches;
+        _groupChatContinuation = response.Result.Value.Continuation;
+        _groupChatSearchProgress = response.Result.Value;
+        _hasSearchedGroupChats = true;
+        _isGroupChatSearchRunning = HasGroupChatContinuation;
+        if (selectedAdvancedAction)
+            _directoryResultIndex = GroupChatSearchAdvancedIndex;
+        else if (selectedStopAction)
+            _directoryResultIndex = GroupChatSearchActionIndex + (_isGroupChatSearchRunning ? 1 : 0);
+        else if (selectedSearchAction)
+            _directoryResultIndex = GroupChatSearchActionIndex;
+
+        var unavailable = response.Result.Value.UnavailableUsers;
+        var state = _isGroupChatSearchRunning
+            ? "Search continues automatically. Select a match or press Ctrl+S to stop."
+            : matches.Length > 0
+                ? "Search complete. Select a Group Chat to review."
+                : unavailable > 0
+                    ? "No matches in the available chats."
+                    : "Search complete. No Group Chats matched that name.";
+        Status.Value = new ConfigStatusMessage(state + GroupChatSearchCoverage(),
             unavailable > 0 ? ConfigStatusTone.Warning : ConfigStatusTone.Neutral);
+        NotifyContentChanged();
+        return _isGroupChatSearchRunning;
+    }
+
+    private string GroupChatSearchCoverage()
+    {
+        var progress = _groupChatSearchProgress;
+        if (progress is null)
+            return string.Empty;
+
+        var coverage = $" {GroupChatSearchProgressText}.";
+        if (progress.UnavailableUsers > 0)
+            coverage += $" Chats for {progress.UnavailableUsers} users were unavailable; coverage is incomplete.";
+        return coverage;
+    }
+
+    private void PauseGroupChatSearch(string query, long generation, string message)
+    {
+        if (!IsCurrentGroupChatSearch(query, generation))
+            return;
+
+        FinishGroupChatSearchRun();
+        Status.Value = new ConfigStatusMessage(
+            message + (HasGroupChatContinuation ? " Select Resume search to continue." : " Press Enter to retry.")
+            + GroupChatSearchCoverage(), ConfigStatusTone.Neutral);
         NotifyContentChanged();
     }
 
-    internal void LoadMoreGroupChats()
+    internal void StopGroupChatSearch()
     {
-        if (string.IsNullOrWhiteSpace(_groupChatContinuation))
+        if (!_isGroupChatSearchRunning)
             return;
 
-        _groupChatSearchTask = SearchGroupChatsAsync(_groupChatContinuation, _lifetimeCts.Token);
+        FinishGroupChatSearchRun();
+        CancelGroupChatSearch();
+        Status.Value = new ConfigStatusMessage(
+            "Search stopped." + (HasGroupChatContinuation ? " Select Resume search to continue." : " Press Enter to retry.")
+            + GroupChatSearchCoverage(), ConfigStatusTone.Neutral);
+        NotifyContentChanged();
+    }
+
+    private void FinishGroupChatSearchRun()
+    {
+        var selectedAdvancedAction = _directoryResultIndex == GroupChatSearchAdvancedIndex;
+        _isGroupChatSearchRunning = false;
+        _directoryResultIndex = selectedAdvancedAction
+            ? GroupChatSearchAdvancedIndex
+            : Math.Min(_directoryResultIndex, GroupChatSearchActionIndex);
+    }
+
+    private void CancelGroupChatSearch()
+    {
+        _groupChatSearchCts?.Cancel();
+        _groupChatSearchCts?.Dispose();
+        _groupChatSearchCts = null;
+        _groupChatSearchGeneration++;
+        _isGroupChatSearchRunning = false;
+        _teamsDirectorySearch?.Invalidate();
     }
 
     internal void BeginManualGroupChatEntry()
     {
+        CancelGroupChatSearch();
         var teams = Step.GetAdapterViewModel<TeamsStepViewModel>(ChannelType.Teams);
         GroupChatsEnabled = teams.AllowGroupChats;
         AllowedGroupChatsInput = teams.AllowedGroupChatIdsInput;
@@ -2142,6 +2317,7 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
             return;
 
         var chat = chats[_directoryResultIndex];
+        CancelGroupChatSearch();
         var teams = Step.GetAdapterViewModel<TeamsStepViewModel>(ChannelType.Teams);
         var existing = ChannelCsv.ParseCsv(teams.AllowedGroupChatIdsInput, trimHash: false);
         if (!existing.Contains(chat.Id, StringComparer.Ordinal))
@@ -3130,6 +3306,7 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
         // the bounded Wait is a last-resort backstop so Dispose can never block the loop indefinitely on
         // a wedged probe (it returns false on timeout rather than throwing or hanging).
         _lifetimeCts.Cancel();
+        CancelGroupChatSearch();
         _labelResolutionCts?.Cancel();
         try
         {
@@ -3229,6 +3406,8 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
 
     private void EndGroupChatDiscovery()
     {
+        CancelGroupChatSearch();
+        _groupChatSearchProgress = null;
         _isGroupChatDiscovery = false;
         _hasSearchedGroupChats = false;
         _groupChatSearchResults = [];
@@ -3764,7 +3943,7 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
     }
 
     private int GetGroupChatSearchResultCount()
-        => GroupChatSearchActionIndex + 2;
+        => GroupChatSearchAdvancedIndex + 1;
 
     internal bool IsAdvancedTeamsDirectoryActionSelected() => Screen.Value switch
     {
@@ -3772,7 +3951,7 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
         ChannelsConfigScreen.TeamsChannelSearch => _directoryResultIndex == _channelSearchResults.Count,
         ChannelsConfigScreen.TeamsUserSearch => _directoryResultIndex == _userSearchResults.Count,
         ChannelsConfigScreen.TeamsGroupSearch => _directoryResultIndex == _groupSearchResults.Count,
-        ChannelsConfigScreen.TeamsGroupChatSearch => _directoryResultIndex == GroupChatSearchActionIndex + 1,
+        ChannelsConfigScreen.TeamsGroupChatSearch => _directoryResultIndex == GroupChatSearchAdvancedIndex,
         _ => false
     };
 

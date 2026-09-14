@@ -20,14 +20,16 @@ public sealed class TeamsDirectorySearchControllerTests
         var directory = new GroupChatNameSearchDirectory
         {
             SearchHandler = (_, _) => ValueTask.FromResult(
-                TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(new([chat], null, 10, 0)))
+                TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(new([chat], null, 10, 0, 11, 20)))
         };
         using var controller = new TeamsDirectorySearchController(directory, time);
         var search = controller.SearchGroupChatsAsync("BostonTech Operations", "opaque-cursor", TestContext.Current.CancellationToken).AsTask();
 
-        Assert.Empty(directory.SearchCalls);
         time.Advance(TimeSpan.FromMilliseconds(300));
+        Assert.Empty(directory.SearchCalls);
+        time.Advance(TimeSpan.FromMilliseconds(700));
         var response = await search;
+        Assert.Single(directory.SearchCalls);
 
         Assert.True(response.IsCurrent);
         Assert.Equal(("BostonTech Operations", "opaque-cursor"), Assert.Single(directory.SearchCalls));
@@ -52,19 +54,19 @@ public sealed class TeamsDirectorySearchControllerTests
                     return new ValueTask<TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>>(release.Task);
                 }
 
-                return ValueTask.FromResult(TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(new([], null, 1, 0)));
+                return ValueTask.FromResult(TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(new([], null, 1, 0, 2, 0)));
             }
         };
         using var controller = new TeamsDirectorySearchController(directory, time);
         var oldSearch = controller.SearchGroupChatsAsync("old", "old-page", TestContext.Current.CancellationToken).AsTask();
-        time.Advance(TimeSpan.FromMilliseconds(300));
+        time.Advance(TimeSpan.FromSeconds(1));
         await started.Task.WaitAsync(TestContext.Current.CancellationToken);
 
         controller.Invalidate();
         var currentSearch = controller.SearchGroupChatsAsync("new", null, TestContext.Current.CancellationToken).AsTask();
         time.Advance(TimeSpan.FromMilliseconds(300));
         release.SetResult(TeamsDirectoryOperationResult<TeamsDirectoryGroupChatSearchPage>.Available(
-            new([new("19:old@thread.v2", "Old chat", ["Ada"])], "stale-page", 5, 0)));
+            new([new("19:old@thread.v2", "Old chat", ["Ada"])], "stale-page", 5, 0, 10, 20)));
 
         var oldResponse = await oldSearch;
         var currentResponse = await currentSearch;
