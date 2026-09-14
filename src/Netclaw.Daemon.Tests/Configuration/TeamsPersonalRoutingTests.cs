@@ -1499,6 +1499,7 @@ public sealed class TeamsPersonalRoutingTests(ITestOutputHelper output) : Persis
         services.AddSingleton(new ToolConfig { AudienceProfiles = ToolAudienceProfileDefaults.CreateProfiles() });
         services.AddSingleton(ImageModelCapabilities);
         services.AddSingleton(paths);
+        services.AddSingleton<ISessionStorageResolver>(new TestSessionStorageResolver(paths));
         services.AddSingleton<ITeamsConversationIngressSink, TeamsActorConversationIngressSink>();
         using var provider = services.BuildServiceProvider();
         var host = new TeamsIngressActorHost(provider);
@@ -1585,7 +1586,10 @@ public sealed class TeamsPersonalRoutingTests(ITestOutputHelper output) : Persis
         var observer = Sys.ActorOf(Props.Create(() => new TeamsRouteObservationActor(TestActor)));
         var registry = ActorRegistry.For(Sys);
         registry.Register<SessionManagerActorKey>(observer);
-        var pipeline = new SessionPipeline(Sys, new RequiredActor<SessionManagerActorKey>(registry), paths);
+        var pipeline = new SessionPipeline(
+            Sys,
+            new RequiredActor<SessionManagerActorKey>(registry),
+            new TestSessionStorageResolver(paths));
         var dependencies = (channel
             ? CreatePublicVerifiedAttachmentDependencies(pipeline, paths, PngBytes, replies)
             : CreateVerifiedAttachmentDependencies(pipeline, paths, PngBytes, replies)) with
@@ -4229,10 +4233,11 @@ public sealed class TeamsPersonalRoutingTests(ITestOutputHelper output) : Persis
     {
         var registry = ActorRegistry.For(Sys);
         registry.Register<SessionManagerActorKey>(sessionManager);
+        var paths = new NetclawPaths(Path.Combine(Path.GetTempPath(), $"teams-routing-{Guid.NewGuid():N}"));
         return new SessionPipeline(
             Sys,
             new RequiredActor<SessionManagerActorKey>(registry),
-            new NetclawPaths(Path.Combine(Path.GetTempPath(), $"teams-routing-{Guid.NewGuid():N}")));
+            new TestSessionStorageResolver(paths));
     }
 
     private async Task<WebApplication> BuildRequestIndependenceHostAsync(
@@ -4528,7 +4533,7 @@ public sealed class TeamsPersonalRoutingTests(ITestOutputHelper output) : Persis
         ContentScanner = contentScanner,
         AudienceProfiles = audienceProfiles,
         ModelCapabilities = modelCapabilities,
-        Paths = paths
+        StorageResolver = paths is null ? null : new TestSessionStorageResolver(paths)
     };
 
     private static TeamsConversationDependencies CreateAttachmentDependencies(
@@ -4582,7 +4587,7 @@ public sealed class TeamsPersonalRoutingTests(ITestOutputHelper output) : Persis
         ContentScanner = new MagicByteContentScanner(new ContentPolicy()),
         AudienceProfiles = ToolAudienceProfileDefaults.CreateProfiles(),
         ModelCapabilities = ImageModelCapabilities,
-        Paths = paths
+        StorageResolver = new TestSessionStorageResolver(paths)
     };
 
     private static ModelCapabilities ImageModelCapabilities { get; } = new()
