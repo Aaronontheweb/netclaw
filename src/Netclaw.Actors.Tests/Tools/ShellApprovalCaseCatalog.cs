@@ -847,6 +847,35 @@ public static class ShellApprovalCases
                 ["ForEach-Object"],
                 approvalMatches: ["persistent:Remove-Item"])),
         Case(
+            "powershell7-expression-region-without-grant-prompts-for-host",
+            PowerShell7("Get-ChildItem | ForEach-Object { $_.FullName }"),
+            Approvals.None,
+            ExpectedApproval.Require(["ForEach-Object"])),
+        Case(
+            "powershell7-expression-region-reuses-host-grant",
+            PowerShell7("Get-ChildItem | ForEach-Object { $_.FullName }"),
+            Approvals.PersistentHere(
+                ApprovalDirectoryShape.Project,
+                "ForEach-Object"),
+            ExpectedApproval.Allow(
+                ToolAllowReason.StoredApproval,
+                1,
+                "persistent:ForEach-Object")),
+        Case(
+            "powershell7-expression-region-rejects-wrong-scope-grant",
+            PowerShell7("Get-ChildItem | ForEach-Object { $_.FullName }"),
+            Approvals.PersistentHere(
+                ApprovalDirectoryShape.External,
+                "ForEach-Object"),
+            ExpectedApproval.Require(["ForEach-Object"])),
+        Case(
+            "powershell7-method-expression-with-host-grant-stays-strict",
+            PowerShell7("Get-ChildItem | ForEach-Object { $_.Delete() }"),
+            Approvals.PersistentHere(
+                ApprovalDirectoryShape.Project,
+                "ForEach-Object"),
+            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+        Case(
             "powershell7-unknown-region-grants-do-not-cover-incomplete-receiver",
             PowerShell7(@"Invoke-Custom { Remove-Item .\victim.txt }"),
             Approvals.PersistentHere(
