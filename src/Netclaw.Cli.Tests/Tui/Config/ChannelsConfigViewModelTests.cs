@@ -122,17 +122,139 @@ public sealed class ChannelsConfigViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Group_chat_editor_rejects_a_display_name_in_place_of_a_canonical_id()
+    public void Group_chat_editor_rejects_a_display_name_before_it_enables_ingress()
     {
+        WriteTeamsConfig(enabled: true, groupChats: ["19:boston@thread.v2"]);
+        var configBefore = File.ReadAllText(_paths.NetclawConfigPath);
+        var secretsBefore = File.ReadAllText(_paths.SecretsPath);
         using var vm = CreateViewModel();
-
-        vm.BeginGroupChats();
+        vm.OpenAdapterManagement(ChannelType.Teams);
+        MoveToManagementAction(vm, ChannelsManagementAction.ManageGroupChats);
+        vm.ActivateManagementMenuItem();
         vm.AllowedGroupChatsInput = "Operations chat";
+        vm.ToggleGroupChats();
         vm.ApplyGroupChats();
 
         Assert.Equal(ChannelsConfigScreen.GroupChats, vm.Screen.Value);
         Assert.Equal("Each Group Chat ID must use the canonical 19:…@thread.v2 format.", vm.Status.Value.Text);
-        Assert.Null(vm.Step.GetAdapterViewModel<TeamsStepViewModel>(ChannelType.Teams).AllowedGroupChatIdsInput);
+        var teams = vm.Step.GetAdapterViewModel<TeamsStepViewModel>(ChannelType.Teams);
+        Assert.False(teams.AllowGroupChats);
+        Assert.Equal("19:boston@thread.v2", teams.AllowedGroupChatIdsInput);
+        Assert.Equal(configBefore, File.ReadAllText(_paths.NetclawConfigPath));
+        Assert.Equal(secretsBefore, File.ReadAllText(_paths.SecretsPath));
+    }
+
+    [Fact]
+    public void Group_chat_ingress_menu_discards_an_unsaved_toggle_on_escape()
+    {
+        WriteTeamsConfig(enabled: true, groupChats: ["19:boston@thread.v2"]);
+        var configBefore = File.ReadAllText(_paths.NetclawConfigPath);
+        var secretsBefore = File.ReadAllText(_paths.SecretsPath);
+        using var vm = CreateViewModel();
+        vm.OpenAdapterManagement(ChannelType.Teams);
+        MoveToManagementAction(vm, ChannelsManagementAction.ManageGroupChats);
+        vm.ActivateManagementMenuItem();
+
+        vm.ToggleGroupChats();
+        vm.GoBack();
+
+        Assert.Equal(ChannelsConfigScreen.AdapterMenu, vm.Screen.Value);
+        Assert.Contains(vm.GetManagementMenuItems(), item => item.Label == "Group Chat ingress: OFF");
+        vm.ActivateManagementMenuItem();
+        Assert.False(vm.GroupChatsEnabled);
+        Assert.Equal("19:boston@thread.v2", vm.AllowedGroupChatsInput);
+        Assert.Equal(configBefore, File.ReadAllText(_paths.NetclawConfigPath));
+        Assert.Equal(secretsBefore, File.ReadAllText(_paths.SecretsPath));
+    }
+
+    [Fact]
+    public async Task Group_chat_ingress_save_failure_preserves_persisted_state_and_allows_retry()
+    {
+        WriteTeamsConfig(enabled: true, groupChats: ["19:boston@thread.v2"]);
+        var configBefore = File.ReadAllText(_paths.NetclawConfigPath);
+        var secretsBefore = File.ReadAllText(_paths.SecretsPath);
+        using var vm = CreateViewModel();
+        vm.OpenAdapterManagement(ChannelType.Teams);
+        MoveToManagementAction(vm, ChannelsManagementAction.ManageGroupChats);
+        vm.ActivateManagementMenuItem();
+        vm.ToggleGroupChats();
+
+        // AtomicFile cannot replace a directory with the config file.
+        File.Delete(_paths.NetclawConfigPath);
+        Directory.CreateDirectory(_paths.NetclawConfigPath);
+        vm.ApplyGroupChats();
+        await vm.PendingConfigWrite;
+
+        Assert.Equal(ChannelsConfigScreen.GroupChats, vm.Screen.Value);
+        Assert.Equal(ConfigStatusTone.Error, vm.Status.Value.Tone);
+        Assert.False(vm.IsSaved.Value);
+        var teams = vm.Step.GetAdapterViewModel<TeamsStepViewModel>(ChannelType.Teams);
+        Assert.False(teams.AllowGroupChats);
+        Assert.Equal("19:boston@thread.v2", teams.AllowedGroupChatIdsInput);
+        Assert.True(vm.GroupChatsEnabled);
+        Assert.Contains(vm.GetManagementMenuItems(), item => item.Label == "Group Chat ingress: OFF");
+        Assert.Equal(secretsBefore, File.ReadAllText(_paths.SecretsPath));
+
+        Directory.Delete(_paths.NetclawConfigPath);
+        File.WriteAllText(_paths.NetclawConfigPath, configBefore);
+        vm.ApplyGroupChats();
+        await vm.PendingConfigWrite;
+
+        Assert.Equal(ChannelsConfigScreen.AdapterMenu, vm.Screen.Value);
+        Assert.True(teams.AllowGroupChats);
+        using var saved = JsonDocument.Parse(File.ReadAllText(_paths.NetclawConfigPath));
+        Assert.True(saved.RootElement.GetProperty("Teams").GetProperty("AllowGroupChats").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Group_chat_ingress_draft_waits_for_a_prior_config_write_before_it_updates_runtime_state()
+    {
+        WriteAllChannelConfig();
+        WriteAllChannelSecrets();
+        var config = ConfigFileHelper.LoadJsonDict(_paths.NetclawConfigPath);
+        ConfigFileHelper.SetPathValue(config, "Teams.AllowedGroupChatIds", new[] { "19:boston@thread.v2" });
+        ConfigFileHelper.WriteConfigFile(_paths.NetclawConfigPath, config);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var slackProbe = new FakeSlackProbe
+        {
+            ReleaseResolve = release.Task,
+            NextResolutionResult = new SlackChannelResolutionResult(
+                true, null, [new ResolvedSlackChannel("general", "C01"), new ResolvedSlackChannel("operations", "C09")], [])
+        };
+        using var vm = CreateViewModel(slackProbe: slackProbe);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        vm.OpenAdapterManagement(ChannelType.Slack);
+        vm.BeginAddChannel();
+        vm.AddChannelInput = "C09";
+        var priorWrite = vm.AddChannelFromInputAsync();
+        try
+        {
+            await slackProbe.ResolveEntered.WaitAsync(cts.Token);
+            Assert.False(priorWrite.IsCompleted);
+            vm.OpenAdapterManagement(ChannelType.Teams);
+            MoveToManagementAction(vm, ChannelsManagementAction.ManageGroupChats);
+            vm.ActivateManagementMenuItem();
+            vm.ToggleGroupChats();
+            vm.ApplyGroupChats();
+
+            Assert.True(vm.IsGroupChatSaveInProgress);
+            Assert.False(vm.Step.GetAdapterViewModel<TeamsStepViewModel>(ChannelType.Teams).AllowGroupChats);
+            release.SetResult();
+            await vm.PendingConfigWrite.WaitAsync(cts.Token);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await priorWrite.WaitAsync(cts.Token);
+        }
+
+        Assert.False(vm.IsGroupChatSaveInProgress);
+        Assert.Equal(ChannelsConfigScreen.AdapterMenu, vm.Screen.Value);
+        using var saved = JsonDocument.Parse(File.ReadAllText(_paths.NetclawConfigPath));
+        Assert.True(saved.RootElement.GetProperty("Teams").GetProperty("AllowGroupChats").GetBoolean());
+        Assert.Equal("19:boston@thread.v2",
+            saved.RootElement.GetProperty("Teams").GetProperty("AllowedGroupChatIds")[0].GetString());
+        Assert.Contains("C09", PersistedChannels(ChannelType.Slack));
     }
 
     [Theory]

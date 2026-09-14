@@ -36,6 +36,7 @@ assert_field '(.Teams.AllowedUserIds | index("77777777-7777-7777-7777-7777777777
 assert_field '(.Teams.AllowedGroupIds | index("88888888-8888-8888-8888-888888888888") != null)' 'true' "$config_json" || :
 assert_field '(.Teams.AllowedGroupIds | index("99999999-9999-9999-9999-999999999999") != null)' 'true' "$config_json" || :
 assert_field '.Teams.AllowGroupChats' 'true' "$config_json" || :
+assert_field '(.Teams.AllowedGroupChatIds | length)' '1' "$config_json" || :
 assert_field '(.Teams.AllowedGroupChatIds | index("19:smoke-group-chat@thread.v2") != null)' 'true' "$config_json" || :
 assert_field '.Teams.AllowAttachments' 'true' "$config_json" || :
 assert_field '(.Teams | has("ClientSecret"))' 'false' "$config_json" || :
