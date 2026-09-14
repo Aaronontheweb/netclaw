@@ -150,6 +150,44 @@ public sealed class McpSdkOAuthFlowIntegrationTests
     }
 
     [Fact]
+    public async Task ConfiguredSecretIsPresentInFailedRefreshDiagnostics()
+    {
+        const string clientId = "configured-client";
+        const string originalSecret = "original-configured-secret";
+        const string serverSecret = "server-replacement-secret";
+        const string rejectedSecret = "rejected-configured-secret";
+        var ct = TestContext.Current.CancellationToken;
+        await using var server = await FakeOAuthMcpServer.StartAsync(ct);
+        server.RegisterConfidentialClient(clientId, originalSecret, RedirectUri);
+        using var directory = new DisposableTempDir();
+        string issuedAccessToken;
+
+        await using (var first = CreateManagerHarness(
+                         server,
+                         directory.Path,
+                         oauthClientId: clientId,
+                         oauthClientSecret: originalSecret))
+        {
+            await CompleteManagerAuthorizationAsync(server, first, ct);
+            issuedAccessToken = Assert.Single(server.TokenRequests).IssuedAccessToken;
+        }
+
+        server.RegisterConfidentialClient(clientId, serverSecret, RedirectUri);
+        server.RevokeAccessToken(issuedAccessToken);
+        await using var restarted = CreateManagerHarness(
+            server,
+            directory.Path,
+            oauthClientId: clientId,
+            oauthClientSecret: rejectedSecret);
+
+        await restarted.Manager.StartAsync(ct);
+
+        Assert.Contains(restarted.Logger.Entries, entry =>
+            entry.Contains("configuredClientSecret=True", StringComparison.Ordinal)
+            && entry.Contains("bindingFieldsMissing=[]", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task ExplicitAuthorizationGivesTheOperatorTimeToFinishInTheBrowser()
     {
         var ct = TestContext.Current.CancellationToken;

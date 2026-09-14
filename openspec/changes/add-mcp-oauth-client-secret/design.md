@@ -81,6 +81,10 @@ The test will use the production manager, SDK transport, and credential store.
 The CLI tests will verify encryption, merge behavior, redaction, and pre-write rejection.
 The credential tests will verify identity selection and token-record ownership.
 
+When `mcp add` replaces a profile, it also replaces that profile's secret data.
+An omitted client secret cannot remain after a public-client replacement.
+The replacement keeps secret data for other server profiles.
+
 ## Risks / Trade-offs
 
 - [Risk] A command-line secret can appear in process inspection. → The help text will identify the value as sensitive.
@@ -90,7 +94,7 @@ The credential tests will verify identity selection and token-record ownership.
 
 ## Migration Plan
 
-The schema change is additive.
+The public schema marks the secret-only property as invalid.
 Existing public clients and dynamic registrations require no migration.
 Operators can add a secret by re-running `netclaw mcp add` with both client options.
 Rollback removes confidential-client support but leaves the encrypted secret data intact.

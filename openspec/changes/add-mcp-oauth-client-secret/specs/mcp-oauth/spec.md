@@ -31,6 +31,13 @@ OAuth token records SHALL NOT become a second authority for that configured secr
 - **THEN** the CLI stores the public-client configuration
 - **AND** OAuth can continue without confidential-client authentication
 
+#### Scenario: Public-client replacement removes the prior secret
+
+- **GIVEN** an MCP profile contains a configured confidential client
+- **WHEN** an operator replaces that profile with a client ID and no client secret
+- **THEN** the secrets file no longer contains that profile's prior client secret
+- **AND** secret data for other MCP profiles remains unchanged
+
 ### Requirement: Configured client identity survives OAuth lifecycle changes
 
 The system SHALL supply the configured client ID and client secret to the SDK-owned OAuth flow.

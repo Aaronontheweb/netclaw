@@ -1706,12 +1706,15 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                 return;
             }
 
+            var hasConfiguredClientSecret = _serverEntries.TryGetValue(serverName, out var entry)
+                                            && !string.IsNullOrWhiteSpace(entry.OAuthClientId)
+                                            && !entry.OAuthClientSecret.IsNullOrEmpty();
             var missing = new List<string>();
             if (string.IsNullOrWhiteSpace(record.AuthorizationServer))
                 missing.Add("AuthorizationServer");
             if (string.IsNullOrWhiteSpace(record.ClientId))
                 missing.Add("ClientId");
-            if (record.ClientSecret is null)
+            if (record.ClientSecret is null && !hasConfiguredClientSecret)
                 missing.Add("ClientSecret");
             if (string.IsNullOrWhiteSpace(record.TokenEndpointAuthMethod))
                 missing.Add("TokenEndpointAuthMethod");
@@ -1723,7 +1726,8 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             _logger.LogWarning(
                 "OAuth refresh failure diagnostics for MCP server '{Name}': stored record has refreshToken={HasRefresh}, " +
                 "accessToken={HasAccess}, expiresAt={ExpiresAt:o}, dynamicClientRegistration={Dcr}, " +
-                "bindingFieldsMissing=[{Missing}], authorizationServer={AuthServer}. " +
+                "configuredClientSecret={HasConfiguredClientSecret}, bindingFieldsMissing=[{Missing}], " +
+                "authorizationServer={AuthServer}. " +
                 "The SDK 2.0 refresh gate requires AuthorizationServer, ClientId, ClientSecret, and " +
                 "TokenEndpointAuthMethod to all match the live provider; missing fields mean refresh is " +
                 "never attempted and every expiration falls through to interactive auth (the 'null " +
@@ -1733,6 +1737,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                 hasAccessToken,
                 expiresAt,
                 record.DynamicClientRegistration,
+                hasConfiguredClientSecret,
                 string.Join(", ", missing),
                 record.AuthorizationServer ?? "<null>");
         }

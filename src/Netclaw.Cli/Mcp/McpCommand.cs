@@ -240,25 +240,29 @@ internal static class McpCommand
 
         WriteConfigFile(paths.NetclawConfigPath, config);
 
-        // Write sensitive values to secrets.json
-        if (envVars.Count > 0 || headers.Count > 0 || oauthClientSecret is not null)
+        // Replace this profile's sensitive values in secrets.json.
+        var hasServerSecrets = envVars.Count > 0 || headers.Count > 0 || oauthClientSecret is not null;
+        ConfigFileHelper.UpdateSecretsFile(paths, (secrets, fileExisted) =>
         {
-            UpdateSecretsFile(paths, secrets =>
-            {
-                var secretMcp = GetOrCreateSection(secrets, "McpServers");
-                var serverSecrets = new Dictionary<string, object>();
+            if (!fileExisted && !hasServerSecrets)
+                return false;
 
-                if (envVars.Count > 0)
-                    serverSecrets["EnvironmentVariables"] = envVars;
-                if (headers.Count > 0)
-                    serverSecrets["Headers"] = headers;
-                if (oauthClientSecret is not null)
-                    serverSecrets["OAuthClientSecret"] = oauthClientSecret;
+            var secretMcp = GetOrCreateSection(secrets, "McpServers");
+            if (!hasServerSecrets)
+                return secretMcp.Remove(serverName.Value);
 
-                secretMcp[serverName.Value] = JsonSerializer.SerializeToElement(serverSecrets);
-                return true;
-            });
-        }
+            var serverSecrets = new Dictionary<string, object>();
+
+            if (envVars.Count > 0)
+                serverSecrets["EnvironmentVariables"] = envVars;
+            if (headers.Count > 0)
+                serverSecrets["Headers"] = headers;
+            if (oauthClientSecret is not null)
+                serverSecrets["OAuthClientSecret"] = oauthClientSecret;
+
+            secretMcp[serverName.Value] = JsonSerializer.SerializeToElement(serverSecrets);
+            return true;
+        });
 
         writer.WriteLine($"Added MCP server '{serverName.Value}' ({transport})");
         writer.WriteLine();
@@ -981,9 +985,6 @@ internal static class McpCommand
 
     private static void WriteConfigFile(string path, Dictionary<string, object> data)
         => ConfigFileHelper.WriteConfigFile(path, data);
-
-    private static void UpdateSecretsFile(NetclawPaths paths, Func<Dictionary<string, object>, bool> update)
-        => ConfigFileHelper.UpdateSecretsFile(paths, (secrets, _) => update(secrets));
 
     internal static Dictionary<string, McpServerEntry> LoadMcpServers(NetclawPaths paths)
     {

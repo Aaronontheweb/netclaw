@@ -165,6 +165,60 @@ public sealed class McpCommandTests : IDisposable
         Assert.DoesNotContain("orphan-secret", _output.ToString(), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Add_PublicClientReplacement_RemovesPriorProfileSecrets()
+    {
+        var confidentialExitCode = await McpCommand.RunAsync(
+            [
+                "mcp", "add", "--transport", "http",
+                "--client-id", "confidential-client",
+                "--client-secret", "old-client-secret",
+                "github", "https://old.example/mcp",
+            ],
+            _paths,
+            output: _output);
+        var otherExitCode = await McpCommand.RunAsync(
+            [
+                "mcp", "add", "--transport", "http",
+                "--header", "Authorization: Bearer keep-this",
+                "other", "https://other.example/mcp",
+            ],
+            _paths,
+            output: _output);
+
+        var replacementExitCode = await McpCommand.RunAsync(
+            [
+                "mcp", "add", "--transport", "http",
+                "--client-id", "public-client",
+                "github", "https://new.example/mcp",
+            ],
+            _paths,
+            output: _output);
+        var getExitCode = await McpCommand.RunAsync(
+            ["mcp", "get", "github"],
+            _paths,
+            output: _output);
+
+        Assert.Equal(0, confidentialExitCode);
+        Assert.Equal(0, otherExitCode);
+        Assert.Equal(0, replacementExitCode);
+        Assert.Equal(0, getExitCode);
+
+        var config = ReadConfigFile(_paths.NetclawConfigPath);
+        var configEntry = config.RootElement.GetProperty("McpServers").GetProperty("github");
+        Assert.Equal("public-client", configEntry.GetProperty("OAuthClientId").GetString());
+        Assert.Equal("https://new.example/mcp", configEntry.GetProperty("Url").GetString());
+
+        var secrets = ReadConfigFile(_paths.SecretsPath);
+        var secretServers = secrets.RootElement.GetProperty("McpServers");
+        Assert.False(secretServers.TryGetProperty("github", out _));
+        Assert.True(secretServers.TryGetProperty("other", out _));
+
+        var loaded = McpCommand.LoadMcpServers(_paths);
+        Assert.Null(loaded["github"].OAuthClientSecret);
+        Assert.DoesNotContain("Client secret: configured", _output.ToString(), StringComparison.Ordinal);
+    }
+
     // ── Fail-closed defaults for new MCP servers ──
 
     [Fact]
