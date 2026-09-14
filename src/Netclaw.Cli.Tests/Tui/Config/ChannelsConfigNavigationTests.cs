@@ -365,7 +365,8 @@ public sealed class ChannelsConfigNavigationTests : IDisposable
         Assert.Equal(secretsBefore, File.ReadAllText(_paths.SecretsPath));
         Assert.False(savedTeams.TryGetProperty("ClientSecret", out _));
 
-        using var runtimeConfig = new ConfigurationBuilder().AddJsonFile(_paths.NetclawConfigPath).Build();
+        using var runtimeConfig = new ConfigurationManager();
+        runtimeConfig.AddJsonFile(_paths.NetclawConfigPath);
         var runtimeOptions = runtimeConfig.GetSection("Teams").Get<TeamsChannelOptions>()!;
         var activity = new TeamsInboundActivity(
             new TeamsIngressTrustContext(
