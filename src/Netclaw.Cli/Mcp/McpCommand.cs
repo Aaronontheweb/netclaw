@@ -1539,6 +1539,8 @@ internal static class McpCommand
         writer.WriteLine("  --client-secret  Secret for a pre-registered confidential OAuth client.");
         writer.WriteLine("                   The CLI stores this value in encrypted configuration.");
         writer.WriteLine("                   This option requires --client-id.");
+        writer.WriteLine("                   Caution: shell history and process inspection can expose");
+        writer.WriteLine("                   this value. Use this option only on a trusted host.");
         writer.WriteLine();
         writer.WriteLine("On add, HTTP/SSE servers without an Authorization header print a hint to run");
         writer.WriteLine("`netclaw mcp auth` first. The daemon detects OAuth requirements at auth time.");
@@ -1546,6 +1548,7 @@ internal static class McpCommand
         writer.WriteLine("Examples:");
         writer.WriteLine("  netclaw mcp add --transport stdio memorizer -- npx -y @memorizer/mcp-server");
         writer.WriteLine("  netclaw mcp add --transport http --header \"Authorization: Bearer tok-...\" myapi https://api.example.com/mcp");
+        writer.WriteLine("  netclaw mcp add --transport http --client-id CLIENT_ID --client-secret CLIENT_SECRET confidential https://mcp.example.com");
         writer.WriteLine("  netclaw mcp add --transport http textforge https://textforge.net/mcp");
         writer.WriteLine("  netclaw mcp add --grant-all --transport stdio trusted -- /usr/local/bin/trusted");
         writer.WriteLine("  netclaw mcp auth forge");
