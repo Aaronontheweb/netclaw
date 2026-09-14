@@ -3,8 +3,11 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Netclaw.Actors.Channels;
+using Netclaw.Channels;
 using Netclaw.Channels.Slack;
 using Netclaw.Channels.Teams;
 using Netclaw.Cli.Config;
@@ -260,6 +263,7 @@ public sealed class ChannelsConfigNavigationTests : IDisposable
         input.EnqueueKey(ConsoleKey.Enter); // Microsoft Teams management.
         input.EnqueueKey(ConsoleKey.DownArrow);
         input.EnqueueKey(ConsoleKey.DownArrow);
+        input.EnqueueKey(ConsoleKey.DownArrow);
         input.EnqueueKey(ConsoleKey.Enter); // Add users or groups.
         input.EnqueueKey(ConsoleKey.Enter); // User search.
         input.EnqueueString("Ada");
@@ -273,6 +277,122 @@ public sealed class ChannelsConfigNavigationTests : IDisposable
         Assert.Equal(ChannelsConfigScreen.TeamsUserSearch, channelsVm.Screen.Value);
         Assert.Equal("Ada Lovelace", channelsVm.DirectorySearchInput);
         Assert.Empty(channelsVm.UserSearchResults);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Channels_Group_Chat_ingress_menu_saves_and_reloads_at_80_by_24(bool initiallyEnabled)
+    {
+        File.WriteAllText(_paths.NetclawConfigPath,
+            $$"""
+            {
+              "configVersion": 1,
+              "Teams": {
+                "Enabled": true,
+                "TenantId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "ClientId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                "BotId": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                "AllowGroupChats": {{initiallyEnabled.ToString().ToLowerInvariant()}},
+                "AllowedGroupChatIds": ["19:boston@thread.v2", "19:operations@thread.v2"],
+                "AllowedTeamIds": ["dddddddd-dddd-dddd-dddd-dddddddddddd"],
+                "AllowedChannelIds": ["19:channel@thread.tacv2"],
+                "AllowedUserIds": ["11111111-1111-1111-1111-111111111111"],
+                "AllowedGroupIds": ["22222222-2222-2222-2222-222222222222"],
+                "ChannelAccessOverrides": [{
+                  "TeamId": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+                  "ChannelId": "19:channel@thread.tacv2",
+                  "AllowedUserIds": ["33333333-3333-3333-3333-333333333333"],
+                  "AllowedGroupIds": ["44444444-4444-4444-4444-444444444444"]
+                }],
+                "MentionOnly": true,
+                "AllowDirectMessages": false,
+                "AllowAttachments": true
+              }
+            }
+            """);
+        ConfigFileHelper.WriteSecretsFile(_paths, new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Teams"] = new Dictionary<string, object> { ["ClientSecret"] = "teams-test-secret" }
+        });
+        using var before = JsonDocument.Parse(File.ReadAllText(_paths.NetclawConfigPath));
+        var secretsBefore = File.ReadAllText(_paths.SecretsPath);
+        var app = CreateHeadlessApp(out var input, out var dashboardVm, out var getChannelsVm, out var terminal,
+            terminalWidth: 80, terminalHeight: 24);
+        OpenChannels(dashboardVm);
+        MoveToAdapter(input, ChannelType.Teams);
+        input.EnqueueKey(ConsoleKey.Enter);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var run = app.RunAsync(cts.Token);
+        try
+        {
+            var initialLabel = initiallyEnabled ? "Group Chat ingress: ON" : "Group Chat ingress: OFF";
+            var frame = await WaitForFrameAsync(app, terminal,
+                snapshot => snapshot.Contains(initialLabel, StringComparison.Ordinal), cts.Token);
+            Assert.Contains("Connection & credentials", frame);
+            Assert.Contains("Done", frame);
+
+            input.EnqueueKey(ConsoleKey.DownArrow);
+            input.EnqueueKey(ConsoleKey.DownArrow);
+            input.EnqueueKey(ConsoleKey.Enter);
+            await WaitForFrameAsync(app, terminal,
+                snapshot => snapshot.Contains("Enable Group Chat ingress", StringComparison.Ordinal)
+                            && snapshot.Contains("19:boston@thread.v2", StringComparison.Ordinal), cts.Token);
+            input.EnqueueKey(ConsoleKey.Spacebar);
+            input.EnqueueKey(ConsoleKey.Enter);
+            var savedLabel = initiallyEnabled ? "Group Chat ingress: OFF" : "Group Chat ingress: ON";
+            await WaitForFrameAsync(app, terminal,
+                snapshot => getChannelsVm()?.Screen.Value == ChannelsConfigScreen.AdapterMenu
+                            && snapshot.Contains(savedLabel, StringComparison.Ordinal), cts.Token);
+            await getChannelsVm()!.PendingConfigWrite.WaitAsync(cts.Token);
+        }
+        finally
+        {
+            input.EnqueueKey(ConsoleKey.Q, false, false, true);
+            await run;
+        }
+
+        using var after = JsonDocument.Parse(File.ReadAllText(_paths.NetclawConfigPath));
+        var savedTeams = after.RootElement.GetProperty("Teams");
+        Assert.Equal(!initiallyEnabled, savedTeams.GetProperty("AllowGroupChats").GetBoolean());
+        foreach (var property in before.RootElement.GetProperty("Teams").EnumerateObject())
+        {
+            if (property.Name != "AllowGroupChats")
+                Assert.True(JsonElement.DeepEquals(property.Value, savedTeams.GetProperty(property.Name)), property.Name);
+        }
+        Assert.Equal(secretsBefore, File.ReadAllText(_paths.SecretsPath));
+        Assert.False(savedTeams.TryGetProperty("ClientSecret", out _));
+
+        using var runtimeConfig = new ConfigurationBuilder().AddJsonFile(_paths.NetclawConfigPath).Build();
+        var runtimeOptions = runtimeConfig.GetSection("Teams").Get<TeamsChannelOptions>()!;
+        var activity = new TeamsInboundActivity(
+            new TeamsIngressTrustContext(
+                TrustAudience.Public,
+                PrincipalClassification.UntrustedExternal,
+                TrustBoundary.Public,
+                new SourceProvenance(TransportAuthenticity.Verified, PayloadTaint.Community),
+                "11111111-1111-1111-1111-111111111111",
+                "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "19:boston@thread.v2",
+                TeamsConversationScope.GroupChat,
+                "toggle-check",
+                TimeProvider.System.GetUtcNow()),
+            "hello",
+            isMentioned: true);
+        var decision = TeamsGroupChatAclPolicy.Evaluate(activity, runtimeOptions);
+        Assert.Equal(!initiallyEnabled, decision.IsAllowed);
+        Assert.Equal(initiallyEnabled ? "group_chats_disabled" : null, decision.DenyReason);
+
+        using var reloaded = new ChannelsConfigViewModel(_paths,
+            new FakeSlackProbe(), new FakeDiscordProbe(), new FakeMattermostProbe(), TimeProvider.System);
+        reloaded.OpenAdapterManagement(ChannelType.Teams);
+        reloaded.MoveManagementMenu(2);
+        reloaded.ActivateManagementMenuItem();
+        Assert.Equal(ChannelsConfigScreen.GroupChats, reloaded.Screen.Value);
+        Assert.Equal(!initiallyEnabled, reloaded.GroupChatsEnabled);
+        Assert.Equal("19:boston@thread.v2, 19:operations@thread.v2", reloaded.AllowedGroupChatsInput);
     }
 
     [Theory]

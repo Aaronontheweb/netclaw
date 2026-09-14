@@ -166,6 +166,28 @@ exact canonical group-chat ID. They require a global allowed user or verified
 global allowed-group member. Channel overrides never authorize group chats.
 An empty global principal list rejects group-chat traffic.
 
+To enable Group Chat ingress without a file editor:
+
+1. Open `netclaw config` > `Channels` > `Microsoft Teams`.
+2. Select `Group Chat ingress: OFF` on the main Teams menu.
+3. Press Space to select `Enable Group Chat ingress`.
+4. Press Enter to apply the change.
+
+The control is also available when Teams is disabled. It does not need a Graph
+lookup. Esc discards changes. A failed save keeps the review page open for a
+retry and leaves the persisted setting unchanged.
+
+The menu shows `Group Chat ingress: ON` after the save. Add a chat through
+`Add a channel or Group Chat`, then configure an allowed global user or group.
+The chat picker does not enable ingress. Existing configurations with
+`AllowGroupChats: false` remain disabled until an operator enables them.
+To disable ingress, open the same row, clear the checkbox, and press Enter.
+Netclaw preserves saved chat IDs when you disable ingress.
+
+The daemon watches its configuration file. A valid save triggers an automatic
+coordinated daemon restart. Wait for the daemon to become ready before a new
+test message. A manual container restart is not part of this TUI flow.
+
 With `MentionOnly: true`, every group-chat message needs a structured bot
 mention. A prior group-chat message does not create a broad continuation rule.
 
@@ -258,7 +280,7 @@ an expired checkpoint requires a fresh search.
 An incomplete scan or Graph error is not proof that a chat does not exist.
 The TUI reports failures and unavailable sources explicitly. Use the advanced
 canonical-ID path if a chat has no title or discovery is unavailable. A
-selected chat still needs the existing ingress switch and principal grants.
+selected chat still needs `Group Chat ingress: ON` and principal grants.
 
 Netclaw does not request `Chat.ReadBasic.WhereInstalled`, `Chat.Read.All`, or
 chat message-read permissions for this picker. Group-chat authorization uses

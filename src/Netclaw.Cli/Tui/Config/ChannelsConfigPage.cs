@@ -132,10 +132,15 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
     {
         var layout = Layouts.Vertical()
             .WithChild(Header($"  {ViewModel.ActiveAdapterName} is configured."))
-            .WithChild(Hint($"  {ViewModel.GetActiveAdapterSummary()}"))
-            .WithChild(Layouts.Empty().Height(1))
-            .WithChild(new TextNode("  What would you like to do?").WithForeground(Color.White))
-            .WithChild(Layouts.Empty().Height(1));
+            .WithChild(Hint($"  {ViewModel.GetActiveAdapterSummary()}"));
+
+        if (ViewModel.ActiveAdapterType != ChannelType.Teams)
+        {
+            layout = layout
+                .WithChild(Layouts.Empty().Height(1))
+                .WithChild(new TextNode("  What would you like to do?").WithForeground(Color.White))
+                .WithChild(Layouts.Empty().Height(1));
+        }
 
         var items = ViewModel.GetManagementMenuItems();
         for (var i = 0; i < items.Count; i++)
@@ -154,7 +159,9 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
     {
         var layout = Layouts.Vertical()
             .WithChild(Header($"  {ViewModel.ActiveAdapterName} > Channels & Permissions"))
-            .WithChild(Hint("  Configure allowed channels, their audience, and thread behavior."))
+            .WithChild(Hint(ViewModel.ActiveAdapterType == ChannelType.Teams
+                ? $"  Group Chat ingress: {(ViewModel.IsGroupChatIngressEnabled ? "ON" : "OFF")}. Enter on a Group Chat opens its settings."
+                : "  Configure allowed channels, their audience, and thread behavior."))
             .WithChild(Layouts.Empty().Height(1));
 
         var rows = ViewModel.GetChannelRows();
@@ -217,7 +224,7 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
             return Hint("  Audience controls which tools and data this channel can use.");
 
         if (row.IsGroupChat)
-            return Hint("  Group Chats use Team audience and global principal rules. Delete removes this canonical chat ID.");
+            return Hint("  Group Chats use Team audience and global principal rules. Enter edits ingress. Delete removes this chat.");
 
         var description = Layouts.Vertical()
             .WithChild(Hint($"  {AudienceLabel(row.Audience)} — {AudienceDescription(row.Audience)}"));
@@ -558,7 +565,7 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
 
         return Layouts.Vertical()
             .WithChild(Header("  Microsoft Teams > Group Chats"))
-            .WithChild(Hint("  Save canonical chat IDs. Display names never grant access."))
+            .WithChild(Hint("  The ingress switch applies to all allowed Group Chats."))
             .WithChild(Layouts.Empty().Height(1))
             .WithChild(Row(
                 $"   [{Check(ViewModel.GroupChatsEnabled)}] Enable Group Chat ingress",
@@ -682,7 +689,7 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
                     ChannelsConfigScreen.TeamsChannelAccess => "  Enter edits a principal list. Channel rules only restrict this exact Team and channel.",
                     ChannelsConfigScreen.AllowedUsers => "  Use comma-separated user IDs. Blank means unrestricted users in allowed channels.",
                     ChannelsConfigScreen.AllowedGroups => "  Use comma-separated canonical Entra group IDs. Blank removes group-derived access.",
-                    ChannelsConfigScreen.GroupChats => "  Space toggles Group Chat ingress. Enter saves canonical IDs.",
+                    ChannelsConfigScreen.GroupChats => "  Space toggles ingress for all allowed Group Chats. Enter saves. Esc cancels.",
                     ChannelsConfigScreen.Attachments => "  Space saves supported inbound Teams attachment access.",
                     ChannelsConfigScreen.DirectoryStatus => "  Run netclaw doctor for offline configuration diagnostics. Esc returns to the menu.",
                     ChannelsConfigScreen.DirectMessages => "  Space toggles DMs. Left/right changes the DM audience.",
@@ -757,6 +764,9 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
 
     private bool HandleKeyInfo(ConsoleKeyInfo keyInfo)
     {
+        if (ViewModel.IsGroupChatSaveInProgress)
+            return true;
+
         if (ViewModel.Screen.Value == ChannelsConfigScreen.RotateCredentials
             && ViewModel.IsCredentialSaveInProgress)
         {
@@ -806,6 +816,9 @@ public sealed class ChannelsConfigPage : ReactivePage<ChannelsConfigViewModel>
 
     private void HandlePaste(PasteEvent paste)
     {
+        if (ViewModel.IsGroupChatSaveInProgress)
+            return;
+
         if (ViewModel.Screen.Value is ChannelsConfigScreen.AddChannel or ChannelsConfigScreen.TeamsTeamSearch or ChannelsConfigScreen.TeamsUserSearch or ChannelsConfigScreen.TeamsGroupSearch or ChannelsConfigScreen.TeamsGroupChatSearch or ChannelsConfigScreen.AllowedUsers or ChannelsConfigScreen.AllowedGroups or ChannelsConfigScreen.GroupChats)
         {
             _singleInput?.HandlePaste(paste);

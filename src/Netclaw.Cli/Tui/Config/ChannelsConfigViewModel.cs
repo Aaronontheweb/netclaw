@@ -173,6 +173,8 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
     internal string? AllowedGroupsInput { get; set; }
     internal string? AllowedGroupChatsInput { get; set; }
     internal bool GroupChatsEnabled { get; set; }
+    internal bool IsGroupChatSaveInProgress { get; private set; }
+    internal bool IsGroupChatIngressEnabled => Step.GetAdapterViewModel<TeamsStepViewModel>(ChannelType.Teams).AllowGroupChats;
     internal bool AttachmentsEnabled { get; private set; }
     internal string? DirectorySearchInput { get; set; }
     internal bool DirectMessagesEnabled { get; set; }
@@ -667,6 +669,7 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
             [
                 new ChannelsManagementMenuItem(ChannelsManagementAction.ManageChannels, "Manage channels and permissions", "Edit channels, Group Chats, audiences, and ingress."),
                 new ChannelsManagementMenuItem(ChannelsManagementAction.AddChannel, "Add a channel or Group Chat", "Search and review a Teams destination."),
+                new ChannelsManagementMenuItem(ChannelsManagementAction.ManageGroupChats, $"Group Chat ingress: {(IsGroupChatIngressEnabled ? "ON" : "OFF")}", "Enable or disable saved Group Chats."),
                 new ChannelsManagementMenuItem(ChannelsManagementAction.AddPrincipals, "Add users or groups", "Search a friendly identity and save its Entra ID."),
                 new ChannelsManagementMenuItem(ChannelsManagementAction.ManagePrincipals, "Manage users and groups", "Review and remove global Teams principals."),
                 new ChannelsManagementMenuItem(ChannelsManagementAction.ManageAttachments, "Attachments", "Enable supported inbound Teams attachments."),
@@ -1590,13 +1593,14 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
 
     internal void BeginGroupChats()
     {
+        EndGroupChatDiscovery();
         _groupChatDetailsId = null;
         var teams = Step.GetAdapterViewModel<TeamsStepViewModel>(ChannelType.Teams);
         GroupChatsEnabled = teams.AllowGroupChats;
         AllowedGroupChatsInput = teams.AllowedGroupChatIdsInput;
         Screen.Value = ChannelsConfigScreen.GroupChats;
         Status.Value = new ConfigStatusMessage(
-            "Group Chat names are display-only. Save canonical chat IDs.",
+            "Space changes ingress for all allowed Group Chats. Enter saves. Esc cancels.",
             ConfigStatusTone.Neutral);
         NotifyContentChanged();
     }
@@ -1616,12 +1620,18 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
 
     internal void ToggleGroupChats()
     {
+        if (IsGroupChatSaveInProgress)
+            return;
+
         GroupChatsEnabled = !GroupChatsEnabled;
         NotifyContentChanged();
     }
 
     internal void ApplyGroupChats()
     {
+        if (IsGroupChatSaveInProgress)
+            return;
+
         var groupChatIds = ChannelCsv.ParseCsv(AllowedGroupChatsInput, trimHash: false);
         if (groupChatIds.Any(id => !TeamsSessionIdentifierCodec.IsCanonicalGroupChatConversationId(id)))
         {
@@ -1632,25 +1642,69 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
             return;
         }
 
-        var teams = Step.GetAdapterViewModel<TeamsStepViewModel>(ChannelType.Teams);
-        teams.AllowGroupChats = GroupChatsEnabled;
-        if (_groupChatDetailsId is { } detailsId)
-        {
-            var retained = ChannelCsv.ParseCsv(teams.AllowedGroupChatIdsInput, trimHash: false)
-                .Where(id => !string.Equals(id, detailsId, StringComparison.Ordinal));
-            teams.AllowedGroupChatIdsInput = ChannelCsv.JoinOrNull([.. retained, .. groupChatIds]);
-        }
-        else
-        {
-            teams.AllowedGroupChatIdsInput = ChannelCsv.JoinOrNull(groupChatIds);
-        }
-
-        _groupChatDetailsId = null;
-        EndGroupChatDiscovery();
-        UpdateAdapterPickerSummary(ChannelType.Teams);
-        Screen.Value = ChannelsConfigScreen.AdapterMenu;
-        AutosaveCompletedAction("Microsoft Teams Group Chat settings saved.");
+        var enabled = GroupChatsEnabled;
+        var detailsId = _groupChatDetailsId;
+        IsGroupChatSaveInProgress = true;
+        Status.Value = new ConfigStatusMessage("Saving Microsoft Teams Group Chat settings...", ConfigStatusTone.Neutral);
+        var ct = _lifetimeCts.Token;
+        _ = EnqueueConfigWriteAsync(() => CompleteGroupChatSaveAsync(groupChatIds, enabled, detailsId, ct));
         NotifyContentChanged();
+    }
+
+    private async Task CompleteGroupChatSaveAsync(
+        IReadOnlyList<string> groupChatIds,
+        bool enabled,
+        string? detailsId,
+        CancellationToken ct)
+    {
+        var previousEnabled = false;
+        string? previousIds = null;
+        try
+        {
+            // A preceding write can reload Step. Apply the captured draft only after that write completes.
+            await InvokeAsync(() =>
+            {
+                var teams = Step.GetAdapterViewModel<TeamsStepViewModel>(ChannelType.Teams);
+                previousEnabled = teams.AllowGroupChats;
+                previousIds = teams.AllowedGroupChatIdsInput;
+                teams.AllowGroupChats = enabled;
+                if (detailsId is not null)
+                {
+                    var retained = ChannelCsv.ParseCsv(previousIds, trimHash: false)
+                        .Where(id => !string.Equals(id, detailsId, StringComparison.Ordinal));
+                    teams.AllowedGroupChatIdsInput = ChannelCsv.JoinOrNull([.. retained, .. groupChatIds]);
+                }
+                else
+                {
+                    teams.AllowedGroupChatIdsInput = ChannelCsv.JoinOrNull(groupChatIds);
+                }
+            }, ct);
+
+            ct.ThrowIfCancellationRequested();
+            var saved = await SaveCompletedAsync("Microsoft Teams Group Chat settings saved.", ct);
+            await InvokeAsync(() =>
+            {
+                IsGroupChatSaveInProgress = false;
+                if (!saved)
+                {
+                    var teams = Step.GetAdapterViewModel<TeamsStepViewModel>(ChannelType.Teams);
+                    teams.AllowGroupChats = previousEnabled;
+                    teams.AllowedGroupChatIdsInput = previousIds;
+                    NotifyContentChanged();
+                    return;
+                }
+
+                _groupChatDetailsId = null;
+                EndGroupChatDiscovery();
+                UpdateAdapterPickerSummary(ChannelType.Teams);
+                Screen.Value = ChannelsConfigScreen.AdapterMenu;
+                NotifyContentChanged();
+            }, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            Debug.WriteLine("ChannelsConfig: Group Chat save cancelled during disposal.");
+        }
     }
 
     internal void BeginAttachments()
@@ -3299,6 +3353,7 @@ public sealed class ChannelsConfigViewModel : ReactiveViewModel
 
     public override void Dispose()
     {
+        IsGroupChatSaveInProgress = false;
         // Cancel any in-flight config write / label refresh, then DRAIN them before disposing the
         // reactive state they publish to. A fire-and-forget write resumes on a thread-pool continuation
         // (the loop has no SynchronizationContext), so without this a write could mutate a disposed

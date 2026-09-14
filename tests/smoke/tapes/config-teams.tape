@@ -73,6 +73,7 @@ Escape
 Wait+Screen@10s /Microsoft Teams is configured/
 Wait+Screen@10s /Manage channels and permissions/
 Wait+Screen@10s /Add a channel or Group Chat/
+Wait+Screen@10s /Group Chat ingress: OFF/
 Wait+Screen@10s /Add users or groups/
 Wait+Screen@10s /Manage users and groups/
 Wait+Screen@10s /Attachments/
@@ -82,7 +83,7 @@ Wait+Screen@10s /Connection & credentials/
 # Exercise the configured connection form through the actual Termina input
 # path. Tab must wrap from the secret to tenant, and Shift+Tab must return to
 # the secret. These values replace the first-connect values above.
-Down 7
+Down 8
 Enter
 Wait+Screen@10s /Microsoft Teams > Connection & credentials/
 Wait+Screen@10s /Entra tenant ID/
@@ -112,7 +113,7 @@ Up 3
 Down 3
 Enter
 Wait+Screen@10s /Microsoft Teams is configured/
-Down 7
+Down 8
 Enter
 Wait+Screen@10s /aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/
 Wait+Screen@10s /bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb/
@@ -150,7 +151,7 @@ Wait+Screen@10s /at the Team default and saved/
 Escape
 Wait+Screen@10s /Microsoft Teams is configured/
 Up 20
-Down 2
+Down 3
 Enter
 Wait+Screen@10s /Microsoft Teams > Add users or groups/
 Wait+Screen@10s /User/
@@ -172,7 +173,7 @@ Down 3
 Enter
 Wait+Screen@10s /Microsoft Teams is configured/
 Up 20
-Down 2
+Down 3
 Enter
 Wait+Screen@10s /Microsoft Teams > Add users or groups/
 Down
@@ -185,8 +186,8 @@ Enter
 Wait+Screen@10s /Microsoft Teams is configured/
 Wait+Screen@10s /Allowed group settings saved/
 
-# Verify the Group Chat name input without a directory request. Then enable
-# ingress and save a canonical chat ID through the advanced input.
+# Save a canonical chat ID while ingress stays disabled. This reproduces
+# an existing destination that needs the main-menu ingress control.
 Escape
 Wait+Screen@10s /Which channels would you like to connect/
 Up 3
@@ -212,14 +213,49 @@ Enter
 Wait+Screen@10s /Microsoft Teams > Group Chats/
 Wait+Screen@10s /Canonical Group Chat IDs/
 Type "19:smoke-group-chat@thread.v2"
-Space
 Enter
 Wait+Screen@10s /Microsoft Teams is configured/
 Wait+Screen@10s /Group Chat settings saved/
+Wait+Screen@10s /Group Chat ingress: OFF/
+
+# The main Teams menu must expose ingress without a new search or ID edit.
+Up 20
+Down 2
+Enter
+Wait+Screen@10s /Microsoft Teams > Group Chats/
+Wait+Screen@10s /Enable Group Chat ingress/
+Wait+Screen@10s /19:smoke-group-chat@thread.v2/
+Space
+Wait+Screen@10s /\[✓\] Enable Group Chat ingress/
+Enter
+Wait+Screen@10s /Microsoft Teams is configured/
+Wait+Screen@10s /Group Chat ingress: ON/
+
+# Disable, then enable again through the same visible control.
+Up 20
+Down 2
+Enter
+Wait+Screen@10s /Microsoft Teams > Group Chats/
+Wait+Screen@10s /\[✓\] Enable Group Chat ingress/
+Space
+Wait+Screen@10s /\[ \] Enable Group Chat ingress/
+Enter
+Wait+Screen@10s /Microsoft Teams is configured/
+Wait+Screen@10s /Group Chat ingress: OFF/
+Up 20
+Down 2
+Enter
+Wait+Screen@10s /Microsoft Teams > Group Chats/
+Wait+Screen@10s /19:smoke-group-chat@thread.v2/
+Space
+Wait+Screen@10s /\[✓\] Enable Group Chat ingress/
+Enter
+Wait+Screen@10s /Microsoft Teams is configured/
+Wait+Screen@10s /Group Chat ingress: ON/
 
 # Enable supported Teams attachments through the dedicated management control.
 Up 20
-Down 4
+Down 5
 Enter
 Wait+Screen@10s /Microsoft Teams > Attachments/
 Wait+Screen@10s /Allow supported Teams attachments/
