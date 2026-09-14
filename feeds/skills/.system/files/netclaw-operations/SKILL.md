@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.65.8"
+  version: "2.65.7"
 ---
 
 # Netclaw Operations
@@ -41,21 +41,6 @@ a reference file — load the one matching the user's intent with
 
 Use `netclaw config` to configure Microsoft Teams. The TUI stores canonical
 Teams and Entra IDs. It shows names only as cached presentation labels.
-
-To enable Group Chats, open `Channels` > `Microsoft Teams` >
-`Group Chat ingress: OFF`. Press Space to select `Enable Group Chat ingress`,
-then press Enter to apply. The main menu then shows `Group Chat ingress: ON`.
-Esc discards changes. This control also works when Teams is disabled or Graph
-discovery is unavailable. A failed save keeps the review page open for retry.
-
-The chat picker does not enable ingress. Existing `AllowGroupChats: false`
-settings remain disabled until an operator enables them. Disabling ingress
-preserves saved chat IDs. Each chat also needs its canonical ID and a global
-allowed user or verified allowed-group member.
-
-The daemon watches its configuration file. A valid save triggers an automatic
-coordinated daemon restart. Wait for readiness before a new test message.
-Do not require a manual container restart for this TUI flow.
 
 Use an authenticated source for manual IDs. The TUI accepts Entra object IDs
 in canonical lowercase `D` format and rejects invalid IDs before it saves.
