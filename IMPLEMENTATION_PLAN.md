@@ -342,6 +342,11 @@ Done when:
   Release build, Security tests, Actors tests, Configuration tests, and 79
   focused mutants passed against the official package. The Netclaw beta
   remains unpublished.
+- [x] Adopt ShellSyntaxTree `0.4.0-beta.2` with analyzer and approval-catalog
+  coverage for bounded PowerShell split/index/join projections on PowerShell 7
+  and Windows PowerShell 5.1. Dynamic projection operands stay strict. The
+  public package restore, Release build, full test suite, and all 79 focused
+  shell-policy mutants pass.
 - [x] A prompt excludes a safe stage from the approval candidates that the user
   can persist.
 - [x] A prompt excludes candidates that existing session or persistent grants
