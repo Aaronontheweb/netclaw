@@ -1248,26 +1248,11 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         McpOAuthTokenCache? oauthCache = null;
         if (HasOAuthRuntimeHints(entry))
         {
-            if (entry.OAuthClientSecret is { } configuredClientSecret)
-            {
-                var configuredClientId = entry.OAuthClientId
-                    ?? throw new InvalidOperationException(
-                        $"MCP server '{name.Value}' has an OAuth client secret without a client ID.");
-                oauthCache = _credentialStore.CreateTokenCache(
-                    name,
-                    entry.Url!,
-                    configuredClientId,
-                    configuredClientSecret,
-                    authorizationFlow is not null);
-            }
-            else
-            {
-                oauthCache = _credentialStore.CreateTokenCache(
-                    name,
-                    entry.Url!,
-                    entry.OAuthClientId,
-                    authorizationFlow is not null);
-            }
+            oauthCache = _credentialStore.CreateTokenCache(
+                name,
+                entry.Url!,
+                CreateConfiguredOAuthIdentity(name, entry),
+                authorizationFlow is not null);
         }
 
         try
@@ -1278,7 +1263,7 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             // client records for servers the operator never opted into.
             if (oauthCache is not null
                 && authorizationFlow is not null
-                && _credentialStore.GetIdentity(oauthCache).ClientId is null)
+                && _credentialStore.GetIdentity(oauthCache) is null)
             {
                 var registered = await _registrar.TryRegisterAsync(
                     name,
@@ -1431,8 +1416,8 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         return new ClientOAuthOptions
         {
             RedirectUri = BuildRedirectUri(),
-            ClientId = identity.ClientId,
-            ClientSecret = identity.ClientSecret,
+            ClientId = identity?.ClientId,
+            ClientSecret = identity?.ClientSecret?.Value,
             Scopes = ParseScopes(entry.OAuthScope),
             TokenCache = cache,
 
@@ -1443,6 +1428,27 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
             // register against public-client-only servers (csharp-sdk#1611). A non-null
             // ClientId here short-circuits the SDK's registration path entirely.
         };
+    }
+
+    private static McpOAuthClientIdentity? CreateConfiguredOAuthIdentity(
+        McpServerName serverName,
+        McpServerEntry entry)
+    {
+        if (entry.OAuthClientId is { } clientId)
+        {
+            return new McpOAuthClientIdentity(
+                clientId,
+                entry.OAuthClientSecret,
+                dynamicClientRegistration: false);
+        }
+
+        if (entry.OAuthClientSecret is not null)
+        {
+            throw new InvalidOperationException(
+                $"MCP server '{serverName.Value}' has an OAuth client secret without a client ID.");
+        }
+
+        return null;
     }
 
     /// <summary>

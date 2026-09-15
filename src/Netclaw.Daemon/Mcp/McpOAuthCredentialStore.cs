@@ -18,10 +18,28 @@ namespace Netclaw.Daemon.Mcp;
 
 internal sealed class McpOAuthRetiredCredentialWriterException(string message) : InvalidOperationException(message);
 
-internal sealed record McpOAuthClientIdentity(
-    string? ClientId,
-    string? ClientSecret,
-    bool DynamicClientRegistration);
+internal sealed record McpOAuthClientIdentity
+{
+    public McpOAuthClientIdentity(
+        string clientId,
+        SensitiveString? clientSecret,
+        bool dynamicClientRegistration)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(clientId);
+        if (clientSecret is not null)
+            ArgumentException.ThrowIfNullOrWhiteSpace(clientSecret.Value);
+
+        ClientId = clientId;
+        ClientSecret = clientSecret;
+        DynamicClientRegistration = dynamicClientRegistration;
+    }
+
+    public string ClientId { get; }
+
+    public SensitiveString? ClientSecret { get; }
+
+    public bool DynamicClientRegistration { get; }
+}
 
 /// <summary>
 /// Per-connection SDK token cache. Unpublished candidates keep tokens local;
@@ -35,7 +53,7 @@ internal sealed class McpOAuthTokenCache : ITokenCache
         McpOAuthCredentialStore store,
         McpServerName serverName,
         string canonicalResource,
-        McpOAuthClientIdentity identity,
+        McpOAuthClientIdentity? identity,
         McpOAuthTokenSet? credentials,
         int baseRevision,
         bool profileOwnsClientIdentity,
@@ -55,7 +73,7 @@ internal sealed class McpOAuthTokenCache : ITokenCache
 
     internal string CanonicalResource { get; }
 
-    internal McpOAuthClientIdentity Identity { get; set; }
+    internal McpOAuthClientIdentity? Identity { get; set; }
 
     internal McpOAuthTokenSet? Credentials { get; set; }
 
@@ -128,39 +146,7 @@ internal sealed class McpOAuthCredentialStore
     public McpOAuthTokenCache CreateTokenCache(
         McpServerName serverName,
         string resourceIdentity,
-        string? configuredClientId,
-        bool explicitAuthorization)
-        => CreateTokenCacheCore(
-            serverName,
-            resourceIdentity,
-            configuredClientId,
-            configuredClientSecret: null,
-            explicitAuthorization: explicitAuthorization);
-
-    public McpOAuthTokenCache CreateTokenCache(
-        McpServerName serverName,
-        string resourceIdentity,
-        string configuredClientId,
-        SensitiveString configuredClientSecret,
-        bool explicitAuthorization)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(configuredClientId);
-        ArgumentNullException.ThrowIfNull(configuredClientSecret);
-        ArgumentException.ThrowIfNullOrWhiteSpace(configuredClientSecret.Value);
-
-        return CreateTokenCacheCore(
-            serverName,
-            resourceIdentity,
-            configuredClientId,
-            configuredClientSecret.Value,
-            explicitAuthorization);
-    }
-
-    private McpOAuthTokenCache CreateTokenCacheCore(
-        McpServerName serverName,
-        string resourceIdentity,
-        string? configuredClientId,
-        string? configuredClientSecret,
+        McpOAuthClientIdentity? configuredIdentity,
         bool explicitAuthorization)
     {
         var canonicalResource = CanonicalizeResource(resourceIdentity);
@@ -171,13 +157,9 @@ internal sealed class McpOAuthCredentialStore
                 serverName,
                 state,
                 canonicalResource,
-                configuredClientId);
-            McpOAuthClientIdentity identity;
-            if (!string.IsNullOrWhiteSpace(configuredClientId))
-            {
-                identity = new McpOAuthClientIdentity(configuredClientId, configuredClientSecret, false);
-            }
-            else if (active is { ClientId: not null })
+                configuredIdentity?.ClientId);
+            McpOAuthClientIdentity? identity = configuredIdentity;
+            if (identity is null && active is { ClientId: not null })
             {
                 // Rebuild the provider identity from the persisted record whenever a client
                 // id exists, regardless of the DCR flag. Records written when the SDK ran its
@@ -186,12 +168,8 @@ internal sealed class McpOAuthCredentialStore
                 // entirely ("null authorization result" on every later expiry).
                 identity = new McpOAuthClientIdentity(
                     active.ClientId,
-                    active.ClientSecret?.Value,
-                    active.DynamicClientRegistration);
-            }
-            else
-            {
-                identity = new McpOAuthClientIdentity(null, null, false);
+                    active.ClientSecret,
+                    dynamicClientRegistration: active.DynamicClientRegistration);
             }
 
             return new McpOAuthTokenCache(
@@ -201,7 +179,7 @@ internal sealed class McpOAuthCredentialStore
                 identity,
                 explicitAuthorization ? null : active,
                 state.Revision,
-                !string.IsNullOrWhiteSpace(configuredClientId),
+                configuredIdentity is not null,
                 explicitAuthorization);
         }
     }
@@ -326,7 +304,7 @@ internal sealed class McpOAuthCredentialStore
             return Clone(state.Active);
     }
 
-    internal McpOAuthClientIdentity GetIdentity(McpOAuthTokenCache cache)
+    internal McpOAuthClientIdentity? GetIdentity(McpOAuthTokenCache cache)
     {
         var state = GetState(cache.ServerName);
         lock (state.Sync)
@@ -410,7 +388,7 @@ internal sealed class McpOAuthCredentialStore
     private McpOAuthTokenSet CreateReplacement(
         TokenContainer tokens,
         McpOAuthTokenSet? retainedFrom,
-        McpOAuthClientIdentity identity,
+        McpOAuthClientIdentity? identity,
         string canonicalResource,
         bool profileOwnsClientIdentity)
     {
@@ -424,13 +402,13 @@ internal sealed class McpOAuthCredentialStore
         // a null client identity here made every cold-start refresh fall through to a
         // new interactive authorization (the "null authorization result" loop observed on
         // the Atlassian MCP nightly runs).
-        var clientId = identity.ClientId ?? tokens.ClientId;
+        var clientId = identity?.ClientId ?? tokens.ClientId;
         var clientSecret = profileOwnsClientIdentity
             ? null
-            : identity.ClientSecret ?? tokens.ClientSecret;
+            : identity?.ClientSecret?.Value ?? tokens.ClientSecret;
         var dynamicRegistration = !profileOwnsClientIdentity
-            && (identity.DynamicClientRegistration
-                || identity.ClientId is null && !string.IsNullOrWhiteSpace(tokens.ClientId));
+            && (identity?.DynamicClientRegistration == true
+                || identity is null && !string.IsNullOrWhiteSpace(tokens.ClientId));
 
         var replacement = new McpOAuthTokenSet
         {
@@ -470,7 +448,7 @@ internal sealed class McpOAuthCredentialStore
            && string.Equals(current.AuthorizationServer, replacement.AuthorizationServer, StringComparison.Ordinal)
            && current.DynamicClientRegistration == replacement.DynamicClientRegistration;
 
-    private TokenContainer ToTokenContainer(McpOAuthTokenSet credentials, McpOAuthClientIdentity identity)
+    private TokenContainer ToTokenContainer(McpOAuthTokenSet credentials, McpOAuthClientIdentity? identity)
     {
         // Records written before ObtainedAt existed deserialize it as 0001-01-01. Anchoring
         // the lifetime at "now" keeps ExpiresAt authoritative; measuring from the default
@@ -496,8 +474,8 @@ internal sealed class McpOAuthCredentialStore
             // refresh fall through to interactive authorization. The client id and secret
             // come from the identity the provider was built with, not from disk: a pinned
             // OAuthClientId suppresses the stored secret, and the two must agree.
-            ClientId = identity.ClientId,
-            ClientSecret = identity.ClientSecret,
+            ClientId = identity?.ClientId,
+            ClientSecret = identity?.ClientSecret?.Value,
             AuthorizationServer = credentials.AuthorizationServer,
             TokenEndpointAuthMethod = credentials.TokenEndpointAuthMethod,
         };
