@@ -869,6 +869,40 @@ public static class ShellApprovalCases
                 "ForEach-Object"),
             ExpectedApproval.Require(["ForEach-Object"])),
         Case(
+            "powershell7-split-index-join-region-reuses-host-grant",
+            PowerShell7("Get-ChildItem | ForEach-Object { ($_ -split '/')[0..3] -join '/' }"),
+            Approvals.PersistentHere(
+                ApprovalDirectoryShape.Project,
+                "ForEach-Object"),
+            ExpectedApproval.Allow(
+                ToolAllowReason.StoredApproval,
+                1,
+                "persistent:ForEach-Object")),
+        Case(
+            "powershell7-dynamic-split-index-join-region-stays-strict",
+            PowerShell7("Get-ChildItem | ForEach-Object { ($_ -split $separator)[0] -join '/' }"),
+            Approvals.PersistentHere(
+                ApprovalDirectoryShape.Project,
+                "ForEach-Object"),
+            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+        Case(
+            "powershell51-split-index-join-fallback-reuses-host-grant",
+            WindowsPowerShell51("Get-ChildItem | ForEach-Object { ($_ -split '/')[0..3] -join '/' }"),
+            Approvals.PersistentHere(
+                ApprovalDirectoryShape.Project,
+                "ForEach-Object"),
+            ExpectedApproval.Allow(
+                ToolAllowReason.StoredApproval,
+                1,
+                "persistent:ForEach-Object")),
+        Case(
+            "powershell51-dynamic-split-index-join-fallback-stays-strict",
+            WindowsPowerShell51("Get-ChildItem | ForEach-Object { ($_ -split $separator)[0] -join '/' }"),
+            Approvals.PersistentHere(
+                ApprovalDirectoryShape.Project,
+                "ForEach-Object"),
+            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+        Case(
             "powershell7-method-expression-with-host-grant-stays-strict",
             PowerShell7("Get-ChildItem | ForEach-Object { $_.Delete() }"),
             Approvals.PersistentHere(
