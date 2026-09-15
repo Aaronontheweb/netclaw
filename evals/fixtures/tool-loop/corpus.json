@@ -1,0 +1,775 @@
+{
+  "schema_version": 1,
+  "baseline": {
+    "release": "0.27.0-beta.3",
+    "detector": "exact-action-outcome",
+    "source_path": "src/Netclaw.Actors/Sessions/Handlers/TurnStateTracker.cs",
+    "source_revision": "a29de869ef3a0117f6c30fc8547b2ed2362b2777",
+    "source_sha256": "0e7a3d4b324040ba5aaeb38391090b1cd842a6a8f64856389b428ad52cb22789",
+    "maximum_period": 3,
+    "maximum_history": 6
+  },
+  "sanitization": {
+    "source_boundary": "operator extracts symbolic facts before repository entry; raw session data remains local",
+    "prohibited_fields": [
+      "prompt",
+      "raw_prompt",
+      "response",
+      "raw_response",
+      "args",
+      "arguments",
+      "arguments_json",
+      "path",
+      "paths",
+      "result",
+      "raw_result",
+      "call_id",
+      "session_id",
+      "user_id",
+      "channel_id",
+      "timestamp",
+      "url",
+      "credential",
+      "token"
+    ]
+  },
+  "cases": [
+    {
+      "id": "incident_a",
+      "session_group": "group_a",
+      "split": "train",
+      "label": "harmful",
+      "historical_request_count": 45,
+      "historical_exact_suffix_count": 43,
+      "first_intervention_request_index": 19,
+      "events": [
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "invalid_input",
+              "result_shape": "result_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_b",
+              "outcome_category": "invalid_input",
+              "result_shape": "result_class_b"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_repeat",
+              "outcome_category": "invalid_input",
+              "result_shape": "result_class_repeat"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_repeat",
+              "outcome_category": "invalid_input",
+              "result_shape": "result_class_repeat"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "candidate",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_repeat"
+            }
+          ],
+          "expected_decision": "correct"
+        }
+      ]
+    },
+    {
+      "id": "control_a",
+      "session_group": "group_b",
+      "split": "train",
+      "label": "harmful",
+      "historical_request_count": 2,
+      "historical_exact_suffix_count": 0,
+      "first_intervention_request_index": 3,
+      "events": [
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_same",
+              "outcome_category": "success",
+              "result_shape": "result_class_same"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_same",
+              "outcome_category": "success",
+              "result_shape": "result_class_same"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "candidate",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_same"
+            }
+          ],
+          "expected_decision": "correct"
+        },
+        {
+          "kind": "candidate",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_same"
+            }
+          ],
+          "expected_decision": "stop"
+        }
+      ]
+    },
+    {
+      "id": "control_b",
+      "session_group": "group_c",
+      "split": "holdout",
+      "label": "uncertain",
+      "historical_request_count": 2,
+      "historical_exact_suffix_count": 0,
+      "first_intervention_request_index": 3,
+      "events": [
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_same",
+              "outcome_category": "success",
+              "result_shape": "result_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_same",
+              "outcome_category": "success",
+              "result_shape": "result_class_b"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "candidate",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_same"
+            }
+          ],
+          "expected_decision": "execute"
+        }
+      ]
+    },
+    {
+      "id": "control_c",
+      "session_group": "group_d",
+      "split": "holdout",
+      "label": "uncertain",
+      "historical_request_count": 2,
+      "historical_exact_suffix_count": 0,
+      "first_intervention_request_index": 3,
+      "events": [
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "success",
+              "result_shape": "result_class_same"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_b",
+              "outcome_category": "success",
+              "result_shape": "result_class_same"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "candidate",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_c"
+            }
+          ],
+          "expected_decision": "execute"
+        }
+      ]
+    },
+    {
+      "id": "control_d",
+      "session_group": "group_e",
+      "split": "holdout",
+      "label": "productive",
+      "historical_request_count": 2,
+      "historical_exact_suffix_count": 0,
+      "first_intervention_request_index": 3,
+      "events": [
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "success",
+              "result_shape": "result_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_b",
+              "outcome_category": "success",
+              "result_shape": "result_class_b"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "candidate",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_c"
+            }
+          ],
+          "expected_decision": "execute"
+        }
+      ]
+    },
+    {
+      "id": "control_e",
+      "session_group": "group_f",
+      "split": "holdout",
+      "label": "uncertain",
+      "historical_request_count": 4,
+      "historical_exact_suffix_count": 0,
+      "first_intervention_request_index": 5,
+      "events": [
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "success",
+              "result_shape": "result_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_b",
+              "argument_shape": "argument_class_b",
+              "outcome_category": "success",
+              "result_shape": "result_class_b"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "success",
+              "result_shape": "result_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_b",
+              "argument_shape": "argument_class_b",
+              "outcome_category": "success",
+              "result_shape": "result_class_b"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "candidate",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a"
+            }
+          ],
+          "expected_decision": "correct"
+        }
+      ]
+    },
+    {
+      "id": "control_f",
+      "session_group": "group_g",
+      "split": "holdout",
+      "label": "uncertain",
+      "historical_request_count": 6,
+      "historical_exact_suffix_count": 0,
+      "first_intervention_request_index": 7,
+      "events": [
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "success",
+              "result_shape": "result_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_b",
+              "argument_shape": "argument_class_b",
+              "outcome_category": "success",
+              "result_shape": "result_class_b"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_c",
+              "argument_shape": "argument_class_c",
+              "outcome_category": "success",
+              "result_shape": "result_class_c"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "success",
+              "result_shape": "result_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_b",
+              "argument_shape": "argument_class_b",
+              "outcome_category": "success",
+              "result_shape": "result_class_b"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_c",
+              "argument_shape": "argument_class_c",
+              "outcome_category": "success",
+              "result_shape": "result_class_c"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "candidate",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a"
+            }
+          ],
+          "expected_decision": "correct"
+        }
+      ]
+    },
+    {
+      "id": "control_g",
+      "session_group": "group_h",
+      "split": "holdout",
+      "label": "uncertain",
+      "historical_request_count": 7,
+      "historical_exact_suffix_count": 0,
+      "first_intervention_request_index": 8,
+      "events": [
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "success",
+              "result_shape": "result_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_b",
+              "argument_shape": "argument_class_b",
+              "outcome_category": "success",
+              "result_shape": "result_class_b"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_c",
+              "argument_shape": "argument_class_c",
+              "outcome_category": "success",
+              "result_shape": "result_class_c"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_d",
+              "argument_shape": "argument_class_d",
+              "outcome_category": "success",
+              "result_shape": "result_class_d"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_e",
+              "argument_shape": "argument_class_e",
+              "outcome_category": "success",
+              "result_shape": "result_class_e"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_f",
+              "argument_shape": "argument_class_f",
+              "outcome_category": "success",
+              "result_shape": "result_class_f"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_g",
+              "argument_shape": "argument_class_g",
+              "outcome_category": "success",
+              "result_shape": "result_class_g"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "candidate",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        }
+      ]
+    },
+    {
+      "id": "control_h",
+      "session_group": "group_i",
+      "split": "holdout",
+      "label": "uncertain",
+      "historical_request_count": 2,
+      "historical_exact_suffix_count": 0,
+      "first_intervention_request_index": 3,
+      "events": [
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "success",
+              "result_shape": "result_class_a"
+            },
+            {
+              "tool": "tool_b",
+              "argument_shape": "argument_class_b",
+              "outcome_category": "success",
+              "result_shape": "result_class_b"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_b",
+              "argument_shape": "argument_class_b",
+              "outcome_category": "success",
+              "result_shape": "result_class_b"
+            },
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "success",
+              "result_shape": "result_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "candidate",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a"
+            },
+            {
+              "tool": "tool_b",
+              "argument_shape": "argument_class_b"
+            }
+          ],
+          "expected_decision": "correct"
+        }
+      ]
+    },
+    {
+      "id": "control_i",
+      "session_group": "group_j",
+      "split": "holdout",
+      "label": "uncertain",
+      "historical_request_count": 2,
+      "historical_exact_suffix_count": 0,
+      "first_intervention_request_index": 3,
+      "events": [
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "success",
+              "result_shape": "result_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "success",
+              "result_shape": "result_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "boundary",
+          "boundary": "new_turn",
+          "expected_decision": "none"
+        },
+        {
+          "kind": "candidate",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        }
+      ]
+    },
+    {
+      "id": "control_j",
+      "session_group": "group_k",
+      "split": "holdout",
+      "label": "uncertain",
+      "historical_request_count": 2,
+      "historical_exact_suffix_count": 0,
+      "first_intervention_request_index": 3,
+      "events": [
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "success",
+              "result_shape": "result_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "success",
+              "result_shape": "result_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "boundary",
+          "boundary": "compaction",
+          "expected_decision": "none"
+        },
+        {
+          "kind": "candidate",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a"
+            }
+          ],
+          "expected_decision": "correct"
+        }
+      ]
+    },
+    {
+      "id": "control_k",
+      "session_group": "group_l",
+      "split": "holdout",
+      "label": "uncertain",
+      "historical_request_count": 2,
+      "historical_exact_suffix_count": 0,
+      "first_intervention_request_index": 3,
+      "events": [
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "success",
+              "result_shape": "result_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "completed",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a",
+              "outcome_category": "success",
+              "result_shape": "result_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        },
+        {
+          "kind": "boundary",
+          "boundary": "recovery",
+          "expected_decision": "none"
+        },
+        {
+          "kind": "candidate",
+          "calls": [
+            {
+              "tool": "tool_a",
+              "argument_shape": "argument_class_a"
+            }
+          ],
+          "expected_decision": "execute"
+        }
+      ]
+    }
+  ]
+}

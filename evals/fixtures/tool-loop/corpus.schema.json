@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Netclaw sanitized tool-loop corpus",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "baseline",
+    "sanitization",
+    "cases"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "release",
+        "detector",
+        "source_path",
+        "source_revision",
+        "source_sha256",
+        "maximum_period",
+        "maximum_history"
+      ],
+      "properties": {
+        "release": {
+          "const": "0.27.0-beta.3"
+        },
+        "detector": {
+          "const": "exact-action-outcome"
+        },
+        "source_path": {
+          "const": "src/Netclaw.Actors/Sessions/Handlers/TurnStateTracker.cs"
+        },
+        "source_revision": {
+          "const": "a29de869ef3a0117f6c30fc8547b2ed2362b2777"
+        },
+        "source_sha256": {
+          "const": "0e7a3d4b324040ba5aaeb38391090b1cd842a6a8f64856389b428ad52cb22789"
+        },
+        "maximum_period": {
+          "const": 3
+        },
+        "maximum_history": {
+          "const": 6
+        }
+      }
+    },
+    "sanitization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_boundary",
+        "prohibited_fields"
+      ],
+      "properties": {
+        "source_boundary": {
+          "const": "operator extracts symbolic facts before repository entry; raw session data remains local"
+        },
+        "prohibited_fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "session_group",
+          "split",
+          "label",
+          "historical_request_count",
+          "historical_exact_suffix_count",
+          "first_intervention_request_index",
+          "events"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^(incident|control)_[a-z0-9_]{1,30}$"
+          },
+          "session_group": {
+            "type": "string",
+            "pattern": "^group_[a-z0-9_]{1,26}$"
+          },
+          "split": {
+            "enum": [
+              "train",
+              "holdout"
+            ]
+          },
+          "label": {
+            "enum": [
+              "harmful",
+              "productive",
+              "uncertain"
+            ]
+          },
+          "historical_request_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "historical_exact_suffix_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "first_intervention_request_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "events": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "calls",
+                    "expected_decision"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "completed"
+                    },
+                    "calls": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "tool",
+                          "argument_shape",
+                          "outcome_category",
+                          "result_shape"
+                        ],
+                        "properties": {
+                          "tool": {
+                            "type": "string",
+                            "pattern": "^tool_[a-z0-9_]{1,26}$"
+                          },
+                          "argument_shape": {
+                            "type": "string",
+                            "pattern": "^argument_class_[a-z0-9_]{1,16}$"
+                          },
+                          "outcome_category": {
+                            "enum": [
+                              "success",
+                              "invalid_input",
+                              "access_denied",
+                              "not_found",
+                              "transient_failure",
+                              "recoverable_correction"
+                            ]
+                          },
+                          "result_shape": {
+                            "type": "string",
+                            "pattern": "^result_class_[a-z0-9_]{1,16}$"
+                          }
+                        }
+                      }
+                    },
+                    "expected_decision": {
+                      "const": "execute"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "calls",
+                    "expected_decision"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "candidate"
+                    },
+                    "calls": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "tool",
+                          "argument_shape"
+                        ],
+                        "properties": {
+                          "tool": {
+                            "type": "string",
+                            "pattern": "^tool_[a-z0-9_]{1,26}$"
+                          },
+                          "argument_shape": {
+                            "type": "string",
+                            "pattern": "^argument_class_[a-z0-9_]{1,16}$"
+                          }
+                        }
+                      }
+                    },
+                    "expected_decision": {
+                      "enum": [
+                        "execute",
+                        "correct",
+                        "stop"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "boundary",
+                    "expected_decision"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "boundary"
+                    },
+                    "boundary": {
+                      "enum": [
+                        "new_turn",
+                        "compaction",
+                        "recovery"
+                      ]
+                    },
+                    "expected_decision": {
+                      "const": "none"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}
