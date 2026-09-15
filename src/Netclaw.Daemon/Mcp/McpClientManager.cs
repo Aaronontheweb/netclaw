@@ -1248,12 +1248,26 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
         McpOAuthTokenCache? oauthCache = null;
         if (HasOAuthRuntimeHints(entry))
         {
-            oauthCache = _credentialStore.CreateTokenCache(
-                name,
-                entry.Url!,
-                entry.OAuthClientId,
-                entry.OAuthClientSecret?.Value,
-                authorizationFlow is not null);
+            if (entry.OAuthClientSecret is { } configuredClientSecret)
+            {
+                var configuredClientId = entry.OAuthClientId
+                    ?? throw new InvalidOperationException(
+                        $"MCP server '{name.Value}' has an OAuth client secret without a client ID.");
+                oauthCache = _credentialStore.CreateTokenCache(
+                    name,
+                    entry.Url!,
+                    configuredClientId,
+                    configuredClientSecret,
+                    authorizationFlow is not null);
+            }
+            else
+            {
+                oauthCache = _credentialStore.CreateTokenCache(
+                    name,
+                    entry.Url!,
+                    entry.OAuthClientId,
+                    authorizationFlow is not null);
+            }
         }
 
         try

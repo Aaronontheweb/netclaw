@@ -130,7 +130,7 @@ internal sealed class McpOAuthCredentialStore
         string resourceIdentity,
         string? configuredClientId,
         bool explicitAuthorization)
-        => CreateTokenCache(
+        => CreateTokenCacheCore(
             serverName,
             resourceIdentity,
             configuredClientId,
@@ -140,19 +140,29 @@ internal sealed class McpOAuthCredentialStore
     public McpOAuthTokenCache CreateTokenCache(
         McpServerName serverName,
         string resourceIdentity,
+        string configuredClientId,
+        SensitiveString configuredClientSecret,
+        bool explicitAuthorization)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(configuredClientId);
+        ArgumentNullException.ThrowIfNull(configuredClientSecret);
+        ArgumentException.ThrowIfNullOrWhiteSpace(configuredClientSecret.Value);
+
+        return CreateTokenCacheCore(
+            serverName,
+            resourceIdentity,
+            configuredClientId,
+            configuredClientSecret.Value,
+            explicitAuthorization);
+    }
+
+    private McpOAuthTokenCache CreateTokenCacheCore(
+        McpServerName serverName,
+        string resourceIdentity,
         string? configuredClientId,
         string? configuredClientSecret,
         bool explicitAuthorization)
     {
-        if (configuredClientSecret is not null && string.IsNullOrWhiteSpace(configuredClientSecret))
-            throw new ArgumentException(
-                "An MCP OAuth client secret must have a non-empty value.",
-                nameof(configuredClientSecret));
-        if (configuredClientSecret is not null && string.IsNullOrWhiteSpace(configuredClientId))
-            throw new ArgumentException(
-                "An MCP OAuth client secret requires a configured client ID.",
-                nameof(configuredClientSecret));
-
         var canonicalResource = CanonicalizeResource(resourceIdentity);
         var state = GetState(serverName);
         lock (state.Sync)

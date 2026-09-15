@@ -65,7 +65,7 @@ public sealed class McpOAuthCredentialStoreTests : IDisposable
             ServerName,
             Resource,
             "configured-client",
-            "first-configured-secret",
+            new SensitiveString("first-configured-secret"),
             true);
 
         await candidate.StoreTokensAsync(Tokens("authorized", "refresh-token"), CancellationToken.None);
@@ -80,7 +80,7 @@ public sealed class McpOAuthCredentialStoreTests : IDisposable
             ServerName,
             Resource,
             "configured-client",
-            "replacement-configured-secret",
+            new SensitiveString("replacement-configured-secret"),
             false);
         Assert.Equal(
             "replacement-configured-secret",
@@ -88,21 +88,21 @@ public sealed class McpOAuthCredentialStoreTests : IDisposable
     }
 
     [Fact]
-    public void ConfiguredSecretRequiresAClientIdAndNonEmptyValue()
+    public void ConfidentialClientIdentityRejectsWhitespace()
     {
         var store = CreateStore();
 
         Assert.Throws<ArgumentException>(() => store.CreateTokenCache(
             ServerName,
             Resource,
-            configuredClientId: null,
-            configuredClientSecret: "orphan-secret",
+            configuredClientId: " ",
+            configuredClientSecret: new SensitiveString("orphan-secret"),
             explicitAuthorization: false));
         Assert.Throws<ArgumentException>(() => store.CreateTokenCache(
             ServerName,
             Resource,
             configuredClientId: "configured-client",
-            configuredClientSecret: " ",
+            configuredClientSecret: new SensitiveString(" "),
             explicitAuthorization: false));
     }
 
