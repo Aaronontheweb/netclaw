@@ -59,7 +59,7 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
             "interactive-reviewed-safe-allows",
             invocation,
             Approvals.None,
-            ExpectedApproval.Allow(ToolAllowReason.SafeVerbInTrustedScope)));
+            ExpectedApproval.Allow(ToolAllowReason.ReviewedSafePolicy)));
     }
 
     [Fact]
@@ -151,7 +151,7 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
 
     [SlopwatchSuppress("SW001", "This regression requires a POSIX shell cwd and Bash authorization behavior.")]
     [Fact(SkipUnless = nameof(IsPosix), Skip = "The project-scope correction defines Bash path behavior.")]
-    public async Task Reviewed_safe_external_cwd_exposes_project_scope_correction()
+    public async Task Unavailable_registry_scope_preserves_ordinary_approval()
     {
         var testCase = new ShellApprovalCase(
             "reviewed-safe-external-cwd-suggests-project-scope",
@@ -168,7 +168,9 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
         var decision = await harness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
 
-        Assert.Equal(context.Cwd, context.SuggestedProjectDirectory);
+        Assert.True(decision.NeedsApproval);
+        Assert.Null(decision.AgentCorrection);
+        Assert.NotNull(context.Cwd);
     }
 
     [SlopwatchSuppress("SW001", "This regression requires a POSIX shell cwd and Bash authorization behavior.")]
@@ -190,7 +192,7 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
         var decision = await harness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
         var context = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
 
-        Assert.Null(context.SuggestedProjectDirectory);
+        Assert.Null(decision.AgentCorrection);
     }
 
     [SlopwatchSuppress("SW001", "This regression requires POSIX glob, symlink, and Bash authorization behavior.")]

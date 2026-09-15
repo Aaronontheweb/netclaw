@@ -1,6 +1,6 @@
 # Netclaw Implementation Plan
 
-Last updated: 2026-08-21
+Last updated: 2026-08-28
 
 This is the execution plan for Netclaw. Autonomous agents and RALPH-style loops
 SHALL work from `NOW` by default. `NEXT` and `LATER` work belongs in
@@ -110,6 +110,62 @@ the smallest repeatable manual script plus expected output.
 
 ## NOW
 
+### Priority: Restore Restricted Session File Authority
+
+Source PRDs: PRD-002 and PRD-007. Owner: `PathAccessPolicy`.
+Use the [engineering glossary](docs/spec/GLOSSARY.md) for path and authority terms.
+
+- [x] Deny implicit sibling access for Public and Team; preserve current roots and exact own legacy logs.
+- [x] Verify parent/child authority and the approved legacy cross-run log exception.
+- [x] Keep result conversion and attachment-destination investigation in separate review slices.
+- [x] Complete deterministic boundary tests, system-skill evals, and repository quality gates.
+  Local actor tests: 3,883 passed; six platform-specific skips. Daemon tests: 1,098 passed.
+  Focused child-log and operations evals each passed five runs. Native Windows proof remains pending.
+
+### Priority: Unify Session Storage And Temporary Files
+
+- [x] New sessions bind one durable, versioned
+  [session storage envelope](docs/spec/GLOSSARY.md#session-storage-envelope).
+- [x] Existing sessions keep their established workspace and log paths.
+- [x] Parent and child processes receive separate managed temporary paths.
+- [x] Successful subagent results return exact child log and artifact paths.
+- [x] Use the current session and inherited trusted roots for ordinary file and
+  shell authority; remove special log, child, and foreign-session rules.
+- [x] Remove `worktree_create`; expose `worktree_dir` and compose
+  `shell_execute` with `set_working_directory`.
+- [x] Allow normal structured reads of ordinary `netclaw.json`
+  while keeping secret stores and control-plane state denied.
+- [x] Fix collision-safe session roots, journal-only legacy discovery,
+  root-segment link checks, old background-job JSON, and per-log resolver locks.
+- [x] Replace weak worktree and child-handoff eval assertions and complete the
+  repository gates.
+- [x] Update the operations skill, runbooks, and release notes to the revised
+  path, authority, worktree, and configuration contracts.
+- [ ] Harvest sanitized traffic after the binary swap.
+
+### Priority: Secure Host Pairing and Recovery
+
+**PRDs:** `docs/prd/PRD-002-gateway-security-envelope.md`, `docs/prd/PRD-004-cli-onboarding-and-config.md`
+**Spec:** `openspec/changes/secure-host-pairing-proof/`
+**Surface area:** daemon security, CLI, HTTP, device registry, operations
+**Verification:** L3
+
+The host must generate a pairing code in every exposure mode without granting
+host authority to traffic that a tunnel or proxy forwards through loopback.
+
+Done when:
+
+- [x] A versioned Data Protection proof authorizes the host-only endpoint.
+- [x] The SignalR hub no longer exposes pairing code generation.
+- [x] Valid device records, tokens, and exposure settings survive the upgrade.
+- [x] A duplicate device name or registry failure does not consume a valid code.
+- [x] Tests prove host success and remote denial in every exposure mode.
+- [x] Process smoke proves host recovery without a live tunnel dependency.
+- [x] The operations skill and next `0.27` beta website task describe the new procedure.
+- [x] The public draft PR receives normal CI before the fixed beta.
+- [x] The host command keeps proofs away from remote client endpoints, proxies, redirects, and bearer headers.
+- [x] One pairing actor owns the code and exchange transaction; actor tests prove mailbox order, cancellation, and recovery.
+
 ### Priority: Keep MCP HTTP Protocol Fallback Deterministic
 
 **PRD:** `docs/prd/PRD-006-mcp-tool-integration.md`
@@ -164,6 +220,28 @@ Done when:
 - [x] Approval authority, scratch retry state, durable messages, and public APIs remain unchanged.
 - [ ] The stacked follow-up handles `attach_file` exposure and native-tool shell mistakes separately.
 
+### Priority: Stop Repeated Tool Cycles
+
+**PRDs:** `docs/prd/PRD-001-netclaw-mvp.md`, `docs/prd/PRD-006-mcp-tool-integration.md`
+**Spec:** `openspec/changes/stop-repeated-tool-cycles/`
+**Surface area:** turn state, tool results, compaction, parent and child actors
+**Verification:** standalone deterministic proof, private replay, L2, and observe-only evidence
+
+Active tool loops can produce valid model, tool, and actor activity. The static
+iteration limits stop productive work and stop exact cycles too late.
+
+Done when:
+
+- [ ] Successful normal compaction preserves loaded deferred schemas.
+- [ ] LLM failure and context overflow evict loaded schemas.
+- [ ] A six-entry detector blocks exact periods one through three before execution.
+- [ ] The first block returns paired correction results without a side effect.
+- [ ] A repeated blocked action forces a truthful text-only response.
+- [ ] Parent and child actors produce equal decisions from equal histories.
+- [ ] Replay and observe-only evidence contain no confirmed false execution block.
+- [ ] The parent and child iteration limits are removed only after all gates pass.
+- [ ] Logs contain decisions and counts, but no arguments, results, hashes, or identities.
+
 ### Priority: Prevent Native-Tool Shell Mistakes
 
 **Stack parent:** PR #2046 (`fix/repair-tool-rollout-contracts`).
@@ -211,6 +289,13 @@ Done when:
 - [ ] The policy pipeline replaces the shell branches in `ToolAccessPolicy`
   and `ShellApprovalMatcher`; any retained legacy scan is deny-only and cannot
   authorize, create candidates, or widen scope.
+  - [x] `ToolAccessPolicy` no longer completes shell authorization synchronously.
+    It produces preflight facts only. `ShellPolicyCoordinator` is the sole path
+    that applies corrections, reviewed-safe coverage, grants, and a final shell
+    authorization result.
+  - [ ] Move the remaining parser-to-candidate projection out of the broad
+    `ShellApprovalMatcher` compatibility surface without changing its released
+    approval shapes.
   The preliminary complete-footprint audit after PR #1947 found 1,484 added
   production lines and 52 added control-flow lines. Later slices reduced the
   post-corpus footprint from 10,085 lines and 663 control-flow lines to 9,693
@@ -248,6 +333,15 @@ Done when:
   Each regression locks its evidence source, approval shape, and actor contact.
 - [x] A safe pipeline stage can compose with a stored grant for each stage that
   still requires approval.
+- [x] The paired Windows PowerShell consumer pins official
+  ShellSyntaxTree `0.4.0-beta.1`.
+  Partial diagnostic syntax remains denial-only. Typed tree facts keep Windows
+  PowerShell 5.1 link-following recursion exact-only. Interactive Auto and
+  Approval offer only Once or Deny. Headless Auto denies the call. The exact
+  retry repeats hard-deny and protected-path checks. The explicit restore,
+  Release build, Security tests, Actors tests, Configuration tests, and 79
+  focused mutants passed against the official package. The Netclaw beta
+  remains unpublished.
 - [x] A prompt excludes a safe stage from the approval candidates that the user
   can persist.
 - [x] A prompt excludes candidates that existing session or persistent grants
@@ -259,6 +353,10 @@ Done when:
   each effective directory, across live, sub-agent, and redrive paths.
 - [x] External paths, mismatched grants, dynamic syntax, and hard-deny rules
   keep their strict behavior.
+- [x] PowerShell 7 command-argument regions with no child commands can reuse an
+  explicit host grant when ShellSyntaxTree reports a complete known region.
+  Unknown receivers, unknown syntax nodes, methods, assignments, and executable
+  substitutions remain one-time-only. A body command needs separate authority.
 - [x] Bash causal approval intent composes exact stored grants for an initial
   exact ShellSyntaxTree 0.3.4 directory change with reviewed diagnostic tails.
   Execution facts, folder grants, protected paths, headless authority, and
@@ -298,7 +396,7 @@ Done when:
   one-command typed scope, failed-path recovery, and deliberate inline `cd`.
 - [x] Two naturalistic cases now test a child checkout beneath a declared
   parent project. The prompts do not name a tool, `WorkingDirectory`, or `cd`.
-  Against `deepseek-v4-flash-dspark`, the worktree status baseline passed 1/5.
+  Against the configured evaluation model, the worktree status baseline passed 1/5.
   Three failures used `git -C`, and one failure used inline `cd`. The source
   inspection baseline passed 0/5. Each run read the named file, then tried
   shell search before `file_list`.
@@ -311,13 +409,13 @@ Done when:
   file-search gap.
 - [x] A sanitized subagent eval proves that a different user-named project is
   declared before the child's first multi-command shell inspection. Absolute
-  path operands remain exact scopes, but do not create a safe-space root. The
-  configured `deepseek-v4-flash-dspark` endpoint passed 4/5 runs. The assertion
+  path operands remain exact scopes, but do not create a trusted root. The
+  configured evaluation endpoint passed 4/5 runs. The assertion
   orders declaration before two exact successful shell calls and verifies the
   reported layout and build file. One run used one-shot scope without declaring
   the project and failed as intended.
 - [x] The session-scratch model-guidance eval passed 4/5 against the configured
-  `deepseek-v4-flash-dspark` endpoint. This measures headless path preference;
+  configured evaluation endpoint. This measures headless path preference;
   deterministic actor tests own interactive correction and approval proof.
 - [x] Post-0.26.0 live evidence in
   `openspec/changes/archive/2026-08-15-structure-shell-approval-policy/evidence/post-1952-live-approval-harvest.json`
@@ -332,7 +430,7 @@ Done when:
   all 5/5 runs omitted `WorkingDirectory` and passed through the existing shell
   fallback. After the exact assertion and guidance were corrected, the fresh
   `a1077feb-6bd7-413c-8a90-c651aa5a03df` run passed 4/5 against
-  `deepseek-v4-flash-dspark`. Four children passed the exact bound session
+  the configured evaluation model. Four children passed the exact bound session
   directory on both Git diagnostics; one omitted it and failed as intended.
 - [x] Removing the prescribed answer from the existing parent-only disposable
   output eval produced 3/5 path-aligned runs. All five completed through the

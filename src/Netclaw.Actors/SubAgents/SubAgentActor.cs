@@ -88,6 +88,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private ILoggingAdapter _log;
     private readonly MemoryPolicyEvaluator _policyEvaluator = new();
     private readonly TurnStateTracker _turnState = new();
+    private PreparedToolCycleBatch? _activeCycleBatch;
 
     // Stopwatch tracking the total wall-clock duration of the sub-agent run.
     // Used for the summary log on completion (ProcessingWatchdog is only a
@@ -102,7 +103,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     // Conversation state (not persisted — ephemeral)
     private readonly List<AiChatMessage> _history = [];
-    private readonly SessionScratchCorrectionState _sessionScratchCorrections = new();
+    private readonly ManagedTemporaryCorrectionState _managedTemporaryCorrections = new();
     private long _llmCallId;
     private IActorRef _replyTo = ActorRefs.Nobody;
     private CancellationTokenSource? _executionCts;
@@ -431,7 +432,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     BuildModelContext(
                         msg.Scope.InitialWorkingSnapshot,
                         subAgentAudience,
-                        ToolExecutionContext.SessionDirectory),
+                        ToolExecutionContext.SessionStorage),
                     msg.Task)));
 
             _log.Info("SubAgent [{AgentName}] starting (tools={ToolCount}, prefill={Prefill}, interDelta={InterDelta}, noProgress={NoProgress})",
@@ -568,6 +569,26 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             _toolExecutionWatchdogState = ToolExecutionWatchdogState.None;
             RecordProgress("processing tool results");
 
+            if (_activeCycleBatch is { } cycleBatch)
+            {
+                var cycleResults = msg.ToolResults.ToDictionary(
+                    result => result.ToolCallId is { } callId
+                        ? callId.Value
+                        : throw new InvalidOperationException("A tool cycle result requires a call identity."),
+                    result =>
+                    {
+                        var callId = result.ToolCallId
+                            ?? throw new InvalidOperationException("A tool cycle result requires a call identity.");
+                        msg.ToolReceipts.TryGetValue(callId.Value, out var receipt);
+                        return new ToolCycleResult(
+                            receipt?.Category ?? ToolInvocationOutcomeCategory.Success,
+                            result.Content ?? string.Empty);
+                    },
+                    StringComparer.Ordinal);
+                _turnState.ObserveCompleted(ToolCycleSignatureFactory.Complete(cycleBatch, cycleResults));
+                _activeCycleBatch = null;
+            }
+
             // Append tool results as MEAI messages and log each result.
             foreach (var result in msg.ToolResults)
             {
@@ -588,7 +609,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                             _subSessionId,
                             callId.Value,
                             receipt?.Category.ToString(),
-                            receipt?.RemediationCode?.ToString());
+                            (receipt as ToolInvocationReceipt.Correction)?.RemediationCode.ToString());
                     }
                     if (msg.ToolExposureRequests.TryGetValue(callId.Value, out var exposureRequest))
                         TryActivateDiscoveredTool(exposureRequest.ToolName.Value);
@@ -597,24 +618,12 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     TryActivateDiscoveredTool(result.Content.Trim());
             }
 
-            foreach (var change in msg.ScratchCorrectionChanges)
-                _sessionScratchCorrections.Apply(change);
+            foreach (var change in msg.ManagedTemporaryCorrectionChanges)
+                _managedTemporaryCorrections.Apply(change);
 
             AddModelInputMediaNudge(msg.ModelInputMediaReferences);
 
             var budgetStatus = _turnState.RecordToolCompletion(msg.ToolResults.Count, _maxToolIterations);
-            var dupNudge = _turnState.CheckForDuplicates();
-            if (dupNudge is not null)
-            {
-                _log.Warning(
-                    "SubAgent [{AgentName}] duplicate tool detected tool={ToolName} count={Count} iteration={Iteration}",
-                    _definition.Name,
-                    dupNudge.ToolName,
-                    dupNudge.Count,
-                    _turnState.ToolIterationCount);
-                AddSystemNudge(dupNudge.NudgeText);
-            }
-
             switch (budgetStatus)
             {
                 case ToolBudgetStatus.Exhausted exhausted:
@@ -643,6 +652,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         Receive<ToolExecutionFailed>(msg =>
         {
             _toolExecutionWatchdogState = ToolExecutionWatchdogState.None;
+            _activeCycleBatch = null;
             _log.Error(msg.Cause, "SubAgent [{AgentName}] tool execution failed", _definition.Name);
             Complete(false, $"Tool execution failed: {msg.Cause.Message}", SubAgentRunOutcome.Failed, SubAgentOutcomeReason.ToolExecutionFailed);
         });
@@ -815,23 +825,9 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     {
         _turnState.ResetEmptyResponseGuards();
 
-        // Add assistant message (with tool calls) to history
-        _history.Add(assistantMessage);
-
-        foreach (var toolCall in toolCalls)
-        {
-            var argsJson = toolCall.Arguments is not null
-                ? JsonSerializer.Serialize(toolCall.Arguments)
-                : null;
-            _turnState.TrackToolCall(toolCall.Name, argsJson);
-        }
-
-        var toolNames = string.Join(", ", toolCalls.Select(tc => tc.Name));
-        RecordProgress($"running tools: {toolNames}");
-        _log.Info("SubAgent [{AgentName}] calling tools: [{ToolNames}]",
-            _definition.Name, toolNames);
-
-        var self = Self;
+        // The child keeps the provider alias in transient history.
+        // Internal dispatch and cycle state use the canonical name.
+        _toolRegistry.CanonicalizeToolCalls(toolCalls);
         var executor = _toolExecutorLogger is null
             ? new DispatchingToolExecutor(_toolRegistry, _toolAccessPolicy, _approvalService)
             : DispatchingToolExecutor.CreateWithLogger(
@@ -839,15 +835,46 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 _toolAccessPolicy,
                 _approvalService,
                 _toolExecutorLogger);
+        var preparedCycleBatch = ToolCycleSignatureFactory.Prepare(toolCalls, executor);
+        var cycleDecision = _turnState.EvaluateBeforeDispatch(preparedCycleBatch.Action);
+        if (cycleDecision.Kind != ToolCycleDecisionKind.Execute)
+        {
+            Logging.GetLogger(Context.System, typeof(TurnStateTracker)).Warning(
+                "Subagent tool cycle decision kind={DecisionKind} period={Period} repetitions={Repetitions}",
+                cycleDecision.Kind,
+                cycleDecision.Period,
+                cycleDecision.Repetitions);
+        }
+
+        if (cycleDecision.Kind == ToolCycleDecisionKind.Stop)
+        {
+            _forcedFinalOutcomeReason = SubAgentOutcomeReason.ToolCycleStopped;
+            AddSystemNudge(ToolCycleMessages.Final);
+            FireLlmCall(forceNoTools: true);
+            return;
+        }
+
+        // Add assistant message (with tool calls) to history
+        _history.Add(assistantMessage);
+
+        if (cycleDecision.Kind == ToolCycleDecisionKind.Correct)
+        {
+            EmitToolCycleCorrection(toolCalls);
+            return;
+        }
+
+        _activeCycleBatch = preparedCycleBatch;
+
+        var toolNames = string.Join(", ", toolCalls.Select(tc => tc.Name));
+        RecordProgress($"running tools: {toolNames}");
+        _log.Info("SubAgent [{AgentName}] calling tools: [{ToolNames}]",
+            _definition.Name, toolNames);
+
+        var self = Self;
         var setWorkingDirectoryTool =
             _toolRegistry.GetByName(SetWorkingDirectoryTool.ToolName) as SetWorkingDirectoryTool;
-        Func<string, ToolInvocationContext, bool>? canDeclareWorkingDirectory =
-            setWorkingDirectoryTool is null
-            || !_toolAccessPolicy.IsToolExposed(
-                setWorkingDirectoryTool,
-                ToolExecutionContext.Invocation)
-                ? null
-                : setWorkingDirectoryTool.CanDeclare;
+        var setWorkingDirectoryAvailable = setWorkingDirectoryTool is not null
+            && _toolAccessPolicy.IsToolExposed(setWorkingDirectoryTool, ToolExecutionContext.Invocation);
         _toolExecutionWatchdogState = _approvalBridge is null
             ? ToolExecutionWatchdogState.None
             : ToolExecutionWatchdogState.RunningApprovalCapableTools;
@@ -860,17 +887,48 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             _externalCts?.Token ?? CancellationToken.None,
             self,
             _approvalBridge,
-            _sessionScratchCorrections.Snapshot(),
-            canDeclareWorkingDirectory,
+            _managedTemporaryCorrections.Snapshot(),
+            setWorkingDirectoryAvailable,
             _log,
             _definition.Name,
             _parentSessionId,
             _subSessionId);
     }
 
+    private void EmitToolCycleCorrection(IReadOnlyList<FunctionCallContent> toolCalls)
+    {
+        var receipts = new Dictionary<string, ToolInvocationReceipt>(StringComparer.Ordinal);
+        var authorizationAttemptIds = new Dictionary<string, AuthorizationAttemptId>(StringComparer.Ordinal);
+        var results = new List<SerializableChatMessage>(toolCalls.Count);
+        foreach (var call in toolCalls)
+        {
+            var receipt = new ToolInvocationReceipt.Correction(ToolRemediationCode.BreakToolCycle);
+            receipts.Add(call.CallId, receipt);
+            authorizationAttemptIds.Add(call.CallId, AuthorizationAttemptId.New());
+            results.Add(ToolRemediationPresenter.Present(
+                new SerializableChatMessage
+                {
+                    Role = Protocol.ChatRole.Tool,
+                    Content = ToolCycleMessages.Correction,
+                    ToolCallId = new ToolCallId(call.CallId),
+                    Name = call.Name
+                },
+                receipt,
+                setWorkingDirectoryAvailable: false));
+        }
+
+        Self.Tell(new ToolExecutionCompleted
+        {
+            ToolResults = results,
+            ToolReceipts = receipts,
+            AuthorizationAttemptIds = authorizationAttemptIds
+        });
+    }
+
     private void FireLlmCall(bool forceNoTools = false)
     {
-        _turnState.ForceNoToolsActive = forceNoTools;
+        _turnState.ForceNoToolsActive |= forceNoTools;
+        forceNoTools = _turnState.ForceNoToolsActive;
         // Each LLM call starts fresh on the generous prefill budget; the watchdog
         // promotes to the inter-delta budget on the first substantive delta. The
         // no-progress deadline is armed alongside it and only real tokens reset it.
@@ -973,7 +1031,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         // caller wins; subsequent calls are no-ops.
         if (_completed) return;
         _completed = true;
-        _sessionScratchCorrections.Clear();
+        _managedTemporaryCorrections.Clear();
 
         _toolExecutionWatchdogState = ToolExecutionWatchdogState.None;
         _pendingApprovalWaits = 0;
@@ -1154,19 +1212,15 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private static string BuildModelContext(
         WorkingContextSnapshot snapshot,
         TrustAudience audience,
-        string? sessionDirectory)
+        SessionStoragePaths? storage)
     {
         if (audience == TrustAudience.Public)
             return string.Empty;
 
         var workingContext = snapshot.ToContextBlock();
-        var sessionContext = string.IsNullOrWhiteSpace(sessionDirectory)
-                             || sessionDirectory.Any(char.IsControl)
+        var sessionContext = storage is null
             ? string.Empty
-            : $"[session]\nsession_dir: {sessionDirectory}\n"
-              + ToolChoiceGuidance.StructuredWorkspaceSelection + "\n"
-              + ToolChoiceGuidance.DirectorySelectionOrder + "\n"
-              + ToolChoiceGuidance.ShellCompositionOrder;
+            : SessionContextFormatter.Format(storage);
 
         return string.Join(
             "\n\n",
@@ -1184,10 +1238,9 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     private void TryApplyProjectDirectory(string? toolName, ToolInvocationReceipt? receipt)
     {
-        if (!string.Equals(toolName, SetWorkingDirectoryTool.ToolName, StringComparison.Ordinal)
-            || receipt is not
+        if (toolName is not SetWorkingDirectoryTool.ToolName
+            || receipt is not ToolInvocationReceipt.Succeeded
             {
-                Category: ToolInvocationOutcomeCategory.Success,
                 DeclaredProjectDirectory: { } projectDirectory
             })
         {
@@ -1403,8 +1456,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         CancellationToken externalCt,
         IActorRef self,
         IParentApprovalBridge? approvalBridge,
-        SessionScratchCorrectionDispatch scratchCorrections,
-        Func<string, ToolInvocationContext, bool>? canDeclareWorkingDirectory,
+        ManagedTemporaryCorrectionDispatch managedTemporaryCorrections,
+        bool setWorkingDirectoryAvailable,
         ILoggingAdapter logger,
         AgentName agentName,
         string? parentSessionId,
@@ -1436,31 +1489,25 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 if (interpretation.Rejection is { } rejection)
                 {
                     toolContext.Outputs.TryComplete(
-                        new ToolInvocationReceipt(ToolInvocationOutcomeCategory.InvalidInput));
+                        new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.InvalidInput));
                     return BuildToolResult(tc, rejection.Message, toolContext, modelInputBudget);
                 }
 
                 var meta = interpretation.Meta;
                 var cleanedTc = interpretation.Cleaned;
-                var scratchCall = SessionToolExecutionPipeline.BuildSessionScratchCallSemantics(
+                var managedTemporaryCall = ManagedTemporaryCorrection.BuildCallSemantics(
                     cleanedTc,
                     meta,
                     toolContext.ExecutionTimeout.Value,
-                    executor is ISessionScratchRetryAwareExecutor scratchAwareExecutor
-                        ? scratchAwareExecutor.Shell
+                    executor is IApprovalShellProvider shellProvider
+                        ? shellProvider.Shell
                         : ApprovalShell.Bash);
-                SessionScratchCorrectionKey? consumedScratchKey = null;
-                if (scratchCall is { } call
-                    && scratchCorrections.TryConsume(call, out var correctionKey)
-                    && executor is ISessionScratchRetryAwareExecutor retryAwareExecutor)
+                ManagedTemporaryCorrectionKey? consumedManagedTemporaryKey = null;
+                if (managedTemporaryCall is { } call
+                    && managedTemporaryCorrections.TryConsume(call, out var correctionKey))
                 {
-                    consumedScratchKey = correctionKey;
-                    retryAwareExecutor.MarkSessionScratchRetry(
-                        toolContext,
-                        new ToolAgentCorrection.SessionScratchSuggested(
-                            correctionKey.SessionDirectory,
-                            correctionKey.TemporaryRoot,
-                            correctionKey.Call.Shell));
+                    consumedManagedTemporaryKey = correctionKey;
+                    toolContext.Approval.MarkManagedTemporaryRetry(correctionKey.Target);
                 }
                 try
                 {
@@ -1470,68 +1517,29 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         result,
                         toolContext,
                         modelInputBudget,
-                        consumedScratchKey is { } directConsumed
-                            ? new SessionScratchCorrectionChange.Consume(directConsumed)
+                        consumedManagedTemporaryKey is { } directConsumed
+                            ? new ManagedTemporaryCorrectionChange.Consume(directConsumed)
                             : null);
                 }
-                catch (ToolAgentCorrectionRequiredException correctionEx)
+                catch (ToolCorrectionRequiredException correctionEx)
                 {
-                    if (correctionEx.Correction is not ToolAgentCorrection.NativeToolSuggested nativeTool)
-                        throw;
-
-                    toolContext.Outputs.TryComplete(new ToolInvocationReceipt(
-                        ToolInvocationOutcomeCategory.RecoverableCorrection,
-                        remediationCode: ToolRemediationCode.UseNativeTool));
+                    var delivery = ToolCorrectionDelivery.Create(
+                        correctionEx.Corrections,
+                        managedTemporaryCall);
+                    toolContext.Outputs.TryComplete(delivery.Receipt);
                     return BuildToolResult(
                         cleanedTc,
-                        SessionToolExecutionPipeline.BuildNativeToolCorrection(nativeTool.ToolName),
+                        delivery.Content,
                         toolContext,
                         modelInputBudget,
-                        exposureRequest: new ToolExposureRequest(nativeTool.ToolName));
+                        delivery.ManagedTemporaryStateChange,
+                        delivery.NativeTool is { } nativeTool
+                            ? new ToolExposureRequest(nativeTool)
+                            : null);
                 }
                 catch (ToolApprovalRequiredException approvalEx)
                 {
                     var ctx = approvalEx.ApprovalContext;
-                    if (approvalBridge is not null
-                        && ctx.AgentCorrection is
-                        ToolAgentCorrection.SessionScratchSuggested scratchCorrection
-                        && scratchCall is { } correctedCall)
-                    {
-                        toolContext.Outputs.TryComplete(new ToolInvocationReceipt(
-                            ToolInvocationOutcomeCategory.RecoverableCorrection,
-                            remediationCode: ToolRemediationCode.UseSessionScratch));
-                        var correctionText = SessionToolExecutionPipeline.BuildSessionScratchCorrection(
-                            scratchCorrection.SessionDirectory);
-                        var newCorrectionKey = new SessionScratchCorrectionKey(
-                            correctedCall,
-                            scratchCorrection.TemporaryRoot,
-                            scratchCorrection.SessionDirectory);
-                        return BuildToolResult(
-                            cleanedTc,
-                            correctionText,
-                            toolContext,
-                            modelInputBudget,
-                            new SessionScratchCorrectionChange.Arm(newCorrectionKey));
-                    }
-
-                    var projectScopeCorrection =
-                        SessionToolExecutionPipeline.BuildProjectScopeDeclarationCorrection(
-                            ctx,
-                            canDeclareWorkingDirectory is not null,
-                            toolContext.Invocation,
-                            canDeclareWorkingDirectory);
-                    if (!string.IsNullOrEmpty(projectScopeCorrection))
-                    {
-                        toolContext.Outputs.TryComplete(new ToolInvocationReceipt(
-                            ToolInvocationOutcomeCategory.RecoverableCorrection,
-                            remediationCode: ToolRemediationCode.SetWorkingDirectory));
-                        return BuildToolResult(
-                            cleanedTc,
-                            projectScopeCorrection,
-                            toolContext,
-                            modelInputBudget);
-                    }
-
                     if (approvalBridge is null)
                     {
                         throw new ParentApprovalUnavailableException(
@@ -1606,8 +1614,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                             result,
                             retryContext,
                             modelInputBudget,
-                            consumedScratchKey is { } approvedConsumed
-                                ? new SessionScratchCorrectionChange.Consume(approvedConsumed)
+                            consumedManagedTemporaryKey is { } approvedConsumed
+                                ? new ManagedTemporaryCorrectionChange.Consume(approvedConsumed)
                                 : null);
                     }
 
@@ -1615,21 +1623,21 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         ? "Tool access denied: approval_timed_out"
                         : "Tool access denied: approval_denied_by_user";
                     if (decision == ParentApprovalDecision.Denied
-                        && consumedScratchKey is { } deniedScratchRetry)
+                        && consumedManagedTemporaryKey is { } deniedManagedTemporaryRetry)
                     {
-                        reason = $"{reason}\n{SessionToolExecutionPipeline.BuildSessionScratchDenialHint(deniedScratchRetry.SessionDirectory)}";
+                        reason = $"{reason}\n{ManagedTemporaryCorrection.BuildDenialHint(deniedManagedTemporaryRetry.Target.ManagedTemporaryDirectory)}";
                     }
 
                     toolContext.Outputs.TryComplete(
-                        new ToolInvocationReceipt(ToolInvocationOutcomeCategory.AccessDenied));
+                        new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.AccessDenied));
 
                     return BuildToolResult(
                         tc,
                         reason,
                         toolContext,
                         modelInputBudget,
-                        consumedScratchKey is { } deniedConsumed
-                            ? new SessionScratchCorrectionChange.Consume(deniedConsumed)
+                        consumedManagedTemporaryKey is { } deniedConsumed
+                            ? new ManagedTemporaryCorrectionChange.Consume(deniedConsumed)
                             : null);
                 }
                 catch (ParentApprovalUnavailableException)
@@ -1656,14 +1664,17 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         FileNotFoundException or DirectoryNotFoundException => ToolInvocationOutcomeCategory.NotFound,
                         _ => ToolInvocationOutcomeCategory.TransientFailure
                     };
-                    toolContext.Outputs.TryComplete(new ToolInvocationReceipt(category));
+                    toolContext.Outputs.TryComplete(new ToolInvocationReceipt.OtherOutcome(category));
+                    var error = ex is ToolAccessDeniedException denied
+                        ? denied.ToAgentResult()
+                        : $"Error: {ex.Message}";
                     return BuildToolResult(
                         tc,
-                        $"Error: {ex.Message}",
+                        error,
                         toolContext,
                         modelInputBudget,
-                        consumedScratchKey is { } failedConsumed
-                            ? new SessionScratchCorrectionChange.Consume(failedConsumed)
+                        consumedManagedTemporaryKey is { } failedConsumed
+                            ? new ManagedTemporaryCorrectionChange.Consume(failedConsumed)
                             : null);
                 }
             });
@@ -1677,14 +1688,14 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     Message = ToolRemediationPresenter.Present(
                         result.Message,
                         result.Receipt,
-                        canDeclareWorkingDirectory is not null)
+                        setWorkingDirectoryAvailable)
                 };
             }
             self.Tell(new ToolExecutionCompleted
             {
                 ToolResults = [.. results.Select(r => r.Message)],
                 ModelInputMediaReferences = [.. results.SelectMany(r => r.ModelInputMediaReferences)],
-                ScratchCorrectionChanges = [.. results.Where(r => r.ScratchCorrectionChange is not null).Select(r => r.ScratchCorrectionChange!)],
+                ManagedTemporaryCorrectionChanges = [.. results.Where(r => r.ManagedTemporaryCorrectionUpdate is not null).Select(r => r.ManagedTemporaryCorrectionUpdate!)],
                 ToolReceipts = results
                     .Where(result => result.Receipt is not null)
                     .ToDictionary<SubAgentToolCallResult, string, ToolInvocationReceipt>(
@@ -1732,7 +1743,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         string resultText,
         ToolExecutionContext toolContext,
         ModelInputBatchBudget modelInputBudget,
-        SessionScratchCorrectionChange? scratchCorrectionChange = null,
+        ManagedTemporaryCorrectionChange? managedTemporaryCorrectionUpdate = null,
         ToolExposureRequest? exposureRequest = null)
     {
         var materialization = MaterializeModelInputFiles(toolContext, modelInputBudget);
@@ -1744,7 +1755,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         }
 
         var receipt = toolContext.Receipt
-            ?? new ToolInvocationReceipt(ToolInvocationOutcomeCategory.Success);
+            ?? new ToolInvocationReceipt.Succeeded([], null);
         return new SubAgentToolCallResult(
             new SerializableChatMessage
             {
@@ -1754,7 +1765,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 Name = toolCall.Name
             },
             materialization.MediaReferences,
-            scratchCorrectionChange,
+            managedTemporaryCorrectionUpdate,
             receipt,
             exposureRequest,
             toolContext.Approval.AuthorizationAttemptId);
@@ -1780,7 +1791,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private sealed record SubAgentToolCallResult(
         SerializableChatMessage Message,
         IReadOnlyList<SerializableMediaReference> ModelInputMediaReferences,
-        SessionScratchCorrectionChange? ScratchCorrectionChange,
+        ManagedTemporaryCorrectionChange? ManagedTemporaryCorrectionUpdate,
         ToolInvocationReceipt? Receipt,
         ToolExposureRequest? ExposureRequest,
         AuthorizationAttemptId AuthorizationAttemptId);
@@ -1834,10 +1845,10 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
         public void Apply(ToolInvocationReceipt? receipt)
         {
-            if (receipt?.Category != ToolInvocationOutcomeCategory.Success)
+            if (receipt is not ToolInvocationReceipt.Succeeded success)
                 return;
 
-            foreach (var activity in receipt.FileActivity)
+            foreach (var activity in success.FileActivity)
             {
                 _workingContext = _workingContext.AddRecentFile(activity.CanonicalPath);
                 if (activity.Kind == ToolFileActivityKind.Read)

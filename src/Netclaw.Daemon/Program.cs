@@ -11,6 +11,7 @@ using Akka.Persistence.Hosting;
 using Akka.Persistence.Sql.Hosting;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Configuration;
@@ -23,6 +24,7 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Memory;
+using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Reminders;
 using Netclaw.Actors.Skills;
 using Netclaw.Actors.SubAgents;
@@ -54,7 +56,6 @@ using Netclaw.Embeddings;
 using Netclaw.Search;
 using Netclaw.Tools;
 using Netclaw.Security;
-using static Microsoft.Extensions.Logging.LogLevel;
 
 // Handled first, before any directory creation, lock-file acquisition, or host startup:
 // `netclawd --version`/`-v` must print the version and exit rather than booting a real
@@ -83,9 +84,7 @@ catch (NetclawDirectoryInitializationException ex)
     return;
 }
 
-using var crashMonitor = DaemonCrashMonitor.Register(
-    bootstrapPaths,
-    benignUnobservedFilters: [KnownBenignExceptions.IsSlackNetReconnectingWebSocketDisposeRace]);
+using var crashMonitor = DaemonCrashMonitor.Register(bootstrapPaths);
 
 try
 {
@@ -189,7 +188,8 @@ static async Task RunDaemonAsync(
     builder.Services.AddSingleton<DeviceRegistry>();
     builder.Services.AddSingleton<BootstrapStateStore>();
     builder.Services.AddSingleton<BootstrapDeviceSeeder>();
-    builder.Services.AddSingleton<PairingCodeService>();
+    builder.Services.AddSingleton<LocalControlPairingProofProtector>();
+    builder.Services.AddSingleton<LocalControlPairingProofValidator>();
     builder.Services.AddSingleton<PairingExchangeGuard>();
     builder.Services.AddSingleton<IRemoteAuthSchemeRegistration, DevicePairingSchemeRegistration>();
     builder.Services.AddNetclawAuthSchemes(daemonConfig);
@@ -198,8 +198,8 @@ static async Task RunDaemonAsync(
     // Add OpenAPI
     builder.Services.AddOpenApi();
 
-    // Rate limiting for the unauthenticated pairing exchange endpoint.
-    // 5 attempts per minute per IP — brute-force defense for the 8-char code space.
+    // Rate limits bound both unauthenticated pairing endpoints.
+    // The exchange uses a long brute-force window. Local control uses a short load-shed window.
     builder.Services.AddRateLimiter(options =>
     {
         options.AddPolicy("pairing-exchange", context =>
@@ -212,6 +212,7 @@ static async Task RunDaemonAsync(
                     QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                     QueueLimit = 0,
                 }));
+        PairingEndpointRouteBuilderExtensions.AddLocalControlRateLimitPolicy(options);
         options.RejectionStatusCode = 429;
     });
     builder.Services.AddMattermostActionEndpointRateLimiting();
@@ -228,6 +229,7 @@ static async Task RunDaemonAsync(
     builder.Services.AddSingleton<Netclaw.Actors.Telemetry.ISessionMetrics>(sp => sp.GetRequiredService<DailyStatsPublisher>());
     builder.Services.AddSingleton<DaemonStatsService>();
     builder.Services.AddSingleton<SessionIngressGate>();
+    builder.Services.AddSingleton<ISessionStorageResolver, SqliteSessionStorageResolver>();
     builder.Services.AddSingleton<RestartManifestStore>();
     builder.Services.AddSingleton<DaemonRestartCoordinator>();
     builder.Services.AddSingleton<IDaemonRestartCoordinator>(sp => sp.GetRequiredService<DaemonRestartCoordinator>());
@@ -396,7 +398,9 @@ static NetclawPaths ConfigureConfigServices(
     // Initialize Data Protection for secrets encryption/decryption.
     // Must happen before config binding so SensitiveStringTypeConverter
     // can transparently decrypt ENC: values.
-    var protector = SecretsProtection.CreateProtector(bootstrapPaths);
+    var dataProtectionProvider = SecretsProtection.CreateDataProtectionProvider(bootstrapPaths);
+    services.AddSingleton<IDataProtectionProvider>(dataProtectionProvider);
+    var protector = new DataProtectionSecretsProtector(dataProtectionProvider);
     services.AddSingleton<ISecretsProtector>(protector);
     SensitiveStringTypeConverter.Protector = protector;
 
@@ -455,6 +459,13 @@ static void ConfigureDaemonServices(
     var shellEnvironment = shellResolution.Environment;
     services.AddSingleton(shellEnvironment);
 
+    var persistenceSection = configuration.GetSection("Persistence");
+    if (persistenceSection.Value is not null || persistenceSection.GetChildren().Any())
+    {
+        throw new InvalidOperationException(
+            "Persistence configuration is not supported. Netclaw always uses its single SQLite database.");
+    }
+
     // Daemon bind address and exposure mode (computed once in RunDaemonAsync)
     services.AddSingleton(daemonConfig);
 
@@ -474,14 +485,7 @@ static void ConfigureDaemonServices(
         })
         .ValidateOnStart();
     services.AddSingleton<IValidateOptions<ModelSelection>, ModelSelectionValidator>();
-    services
-        .AddOptions<DaemonPersistenceOptions>()
-        .Bind(configuration.GetSection("Persistence"))
-        .ValidateOnStart();
-    services.AddSingleton<IValidateOptions<DaemonPersistenceOptions>, DaemonPersistenceOptionsValidator>();
-    var persistence = configuration.GetSection("Persistence")
-        .Get<DaemonPersistenceOptions>() ?? new DaemonPersistenceOptions();
-    services.AddSingleton(persistence);
+    var sqlitePath = paths.SqliteDbPath;
 
     services.Configure<HostOptions>(options =>
     {
@@ -680,7 +684,6 @@ static void ConfigureDaemonServices(
         SubAgentsEnabled: subAgentConfig.Enabled,
         SchedulingEnabled: schedulingConfig.Enabled);
     var fileApprovalMatcher = new FilePathApprovalMatcher(paths.ConfigDirectory);
-    var shellTrustZonePolicy = new ShellTrustZonePolicy(toolConfig, paths);
     // Safe-verbs list: bundled per-OS defaults only — embedded resource in
     // Netclaw.Configuration with no on-disk user override. Used by the
     // approval gate's verb-pattern Layer to auto-allow demonstrably
@@ -692,13 +695,13 @@ static void ConfigureDaemonServices(
     services.AddSingleton(safeVerbs);
 
     var toolAccessPolicy = new ToolAccessPolicy(
+        paths,
         toolConfig,
         effectivePolicyDefaults,
         shellCommandPolicy,
         toolPathPolicy,
         fileApprovalMatcher,
         featureGates,
-        shellTrustZonePolicy,
         safeVerbs);
     services.AddSingleton(toolAccessPolicy);
 
@@ -716,11 +719,11 @@ static void ConfigureDaemonServices(
     services.AddSingleton<IToolApprovalService, AkkaToolApprovalService>();
 
     var toolRegistry = new ToolRegistry();
-    toolRegistry.WithFirstPartyTools(toolConfig, paths, toolPathPolicy, shellCommandPolicy, searchBackend, toolAccessPolicy,
+    toolRegistry.WithFirstPartyTools(toolAccessPolicy, searchBackend,
         webhooksConfig.Enabled ? webhookRouteStore : null);
 
-    // Skills system: seed built-in skills to .system/, register sync service
-    CopyBuiltInSkills(paths.SystemSkillsDirectory);
+    // The daemon owns only the .system tree. Restore it before the first scan.
+    EmbeddedSystemSkillRestorer.Restore(paths);
     var skillRegistry = new SkillRegistry();
 
     // External skill sources (Claude Code, Open Code, custom paths)
@@ -743,9 +746,9 @@ static void ConfigureDaemonServices(
     services.AddSingleton<FileSubAgentDefinitionLoader>();
     services.AddSingleton<SubAgentSpawner>();
 
-    // New SQLite-backed memory substrate (uses existing daemon SQLite file by design)
+    // SQLite-backed memory uses the single Netclaw database.
     // Store is always created for schema migration; memory services are gated on MemoryConfig.Enabled.
-    var memoryStore = new SQLiteMemoryStore(paths.MemorySqliteDbPath, TimeProvider.System);
+    var memoryStore = new SQLiteMemoryStore(sqlitePath, TimeProvider.System);
     services.AddSingleton(memoryStore);
 
     // Schema migration hosted service must start before any memory consumer so
@@ -950,24 +953,10 @@ static void ConfigureDaemonServices(
         sp.GetServices<IContextLayerProvider>().ToList());
     services.AddHostedService<ToolIndexUpdater>();
 
-    // System skills feed sync — checks CDN for updated skills at startup.
-    // Runs after initial skill scan; re-scans and updates the index if any skills changed.
-    // Also enriches skills with keyword indexes for deterministic auto-loading.
-    // Never blocks startup on network failures.
-    // Gated on SkillSyncConfig.Enabled — when disabled, no CDN sync occurs.
-    if (skillSyncConfig.Enabled)
-    {
-        services.AddHttpClient<SystemSkillSyncService>(client =>
-            client.Timeout = FeedConstants.FeedHttpTimeout).AddNetclawHeaders("skill-sync");
-        services.AddHostedService<SystemSkillSyncService>();
-    }
-
-    // Server feed sync — syncs skills from private skill-server instances at startup.
-    // Runs after SystemSkillSyncService; each feed syncs independently.
-    if (skillFeedsConfig.Feeds.Any(f => f.Enabled))
-    {
-        services.AddHostedService<ServerFeedSkillSyncService>();
-    }
+    // The runner owns one pass. The actor owns startup, timers, and shared requests.
+    services.AddSingleton<ServerFeedSkillSyncService>();
+    services.AddSingleton<IServerFeedSkillSyncRunner>(
+        sp => sp.GetRequiredService<ServerFeedSkillSyncService>());
 
     // Skill directory watcher — auto-rescan when skill files change on disk.
     // Covers native skills directory, server feeds, and all external sources.
@@ -991,10 +980,6 @@ static void ConfigureDaemonServices(
             + "to do things rather than telling the user how.\n");
     var promptProvider = new FileSystemPromptProvider(paths);
     services.AddSingleton<ISystemPromptProvider>(promptProvider);
-
-    var sqlitePath = string.IsNullOrWhiteSpace(persistence.Sqlite.Path)
-        ? paths.SqliteDbPath
-        : persistence.Sqlite.Path!;
 
     // Model capability resolution chain:
     // [Ollama →] [OpenAI-compat →] OpenRouter oracle → HuggingFace → text-only default.
@@ -1054,7 +1039,8 @@ static void ConfigureDaemonServices(
         sp.GetRequiredService<IReadOnlyList<IContextLayerProvider>>(),
         sp.GetRequiredService<IWorkingContextSnapshotProvider>(),
         sp.GetRequiredService<TimeProvider>(),
-        sp.GetRequiredService<NetclawPaths>()));
+        sp.GetRequiredService<NetclawPaths>(),
+        sp.GetRequiredService<ISessionStorageResolver>()));
 
     services.AddSingleton(sp => new SessionToolServices(
         sp.GetRequiredService<IToolExecutor>(),
@@ -1094,43 +1080,29 @@ static void ConfigureDaemonServices(
             DaemonShutdownConfiguration.BuildCoordinatedShutdownHocon(DaemonConfig.GracefulShutdownBudget),
             HoconAddMode.Prepend);
 
-        akkaBuilder = akkaBuilder.ConfigureLoggers(setup =>
-        {
-            setup.ClearLoggers();
-            setup.AddLoggerFactory();
-            setup.LogLevel = ToAkkaLogLevel(daemonLogLevel);
-        });
+        akkaBuilder = akkaBuilder.WithNetclawActorLogging(daemonLogLevel);
 
-        if (persistence.Provider is PersistenceProvider.Sqlite)
-        {
-            var connectionString = $"Data Source={sqlitePath}";
-            akkaBuilder = akkaBuilder.WithSqlPersistence(
-                connectionString: connectionString,
-                providerName: "SQLite.MS");
-        }
-        else
-        {
-            akkaBuilder = akkaBuilder
-                .WithInMemoryJournal()
-                .WithInMemorySnapshotStore();
-        }
+        var connectionString = $"Data Source={sqlitePath}";
+        akkaBuilder = akkaBuilder.WithSqlPersistence(
+            connectionString: connectionString,
+            providerName: "SQLite.MS");
 
-        var reminderStorage = persistence.Provider is PersistenceProvider.Sqlite
-            ? new NetclawAkkaHostingExtensions.ReminderStorageOptions
-            {
-                SqliteConnectionString = $"Data Source={sqlitePath}",
-                TableName = "netclaw_reminders",
-                AutoInitialize = true
-            }
-            : null;
+        var reminderStorage = new NetclawAkkaHostingExtensions.ReminderStorageOptions
+        {
+            SqliteConnectionString = connectionString,
+            TableName = "netclaw_reminders",
+            AutoInitialize = true
+        };
 
         akkaBuilder.WithNetclawSerialization();
         akkaBuilder.WithTeamsPersistenceSerialization();
         akkaBuilder.WithNetclawActors(shellEnvironment, reminderStorage);
+        akkaBuilder.WithPairingActor();
         akkaBuilder.WithWebhookRouteActor();
-        akkaBuilder.WithSessionLogDispatcher(paths.SessionLogsDirectory, sp.GetRequiredService<TimeProvider>());
+        akkaBuilder.WithSessionLogDispatcher();
         akkaBuilder.WithSignalRGateway();
         akkaBuilder.WithDailyStatsActor();
+        akkaBuilder.WithServerFeedSkillSyncActor();
 
         // Register reminder tools after actors start (needs ReminderManagerActor ref)
         akkaBuilder.StartActors((system, registry, _) =>
@@ -1263,42 +1235,6 @@ static ISearchBackend? CreateSearchBackend(SearchConfig config)
             throw new ArgumentOutOfRangeException(nameof(config.Backend), config.Backend,
                 $"Unknown search backend: {config.Backend}");
     }
-}
-
-/// <summary>
-/// Copies built-in system skills from the daemon's embedded resources into
-/// build output as <c>BuiltInSkills/{skill-name}/SKILL.md</c> (with companion files).
-/// Only writes files that do not already exist (feed updates are preserved).
-/// </summary>
-static void CopyBuiltInSkills(string skillsDirectory)
-{
-    var builtInDir = Path.Combine(AppContext.BaseDirectory, "BuiltInSkills");
-    if (!Directory.Exists(builtInDir))
-        return;
-
-    foreach (var sourceFile in Directory.EnumerateFiles(builtInDir, "*", SearchOption.AllDirectories))
-    {
-        var relativePath = Path.GetRelativePath(builtInDir, sourceFile);
-        var targetPath = Path.Combine(skillsDirectory, relativePath);
-
-        if (File.Exists(targetPath))
-            continue;
-
-        Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
-        File.Copy(sourceFile, targetPath);
-    }
-}
-
-static Akka.Event.LogLevel ToAkkaLogLevel(LogLevel logLevel)
-{
-    return logLevel switch
-    {
-        Trace or Debug => Akka.Event.LogLevel.DebugLevel,
-        Information => Akka.Event.LogLevel.InfoLevel,
-        Warning => Akka.Event.LogLevel.WarningLevel,
-        Error or Critical or None => Akka.Event.LogLevel.ErrorLevel,
-        _ => Akka.Event.LogLevel.WarningLevel
-    };
 }
 
 public partial class Program;

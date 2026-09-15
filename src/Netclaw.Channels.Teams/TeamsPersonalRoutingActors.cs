@@ -57,7 +57,7 @@ public sealed record TeamsConversationDependencies(
 
     public ModelCapabilities? ModelCapabilities { get; init; }
 
-    public NetclawPaths? Paths { get; init; }
+    public ISessionStorageResolver? StorageResolver { get; init; }
 }
 
 internal readonly record struct TeamsApprovalPromptId(string Value);
@@ -381,7 +381,7 @@ public sealed class TeamsActorConversationIngressSink : ITeamsConversationIngres
         ContentScanner = _serviceProvider.GetService<IContentScanner>(),
         AudienceProfiles = _serviceProvider.GetService<ToolConfig>()?.AudienceProfiles,
         ModelCapabilities = _serviceProvider.GetService<ModelCapabilities>(),
-        Paths = _serviceProvider.GetService<NetclawPaths>()
+        StorageResolver = _serviceProvider.GetService<ISessionStorageResolver>()
     };
 
     private Func<string, string?>? CreateCachedOperatorLabelResolver()
@@ -1473,7 +1473,7 @@ public sealed class TeamsSessionBindingActor : ReceivePersistentActor
         if (_dependencies.AttachmentDownloader is null
             || _dependencies.ContentScanner is null
             || _dependencies.AudienceProfiles is null
-            || _dependencies.Paths is null)
+            || _dependencies.StorageResolver is null)
         {
             await SendAttachmentRejectionAsync("Attachments are temporarily unavailable. Please try again later.").ConfigureAwait(false);
             return false;
@@ -1490,8 +1490,9 @@ public sealed class TeamsSessionBindingActor : ReceivePersistentActor
         }
 
         var inlineImages = _dependencies.ModelCapabilities?.InputModalities.HasFlag(ModelModality.Image) == true;
-        var inboxDirectory = SessionDirectoryHelper.GetOrCreateInboxDirectory(_sessionId, _dependencies.Paths.SessionsDirectory);
-        var stagingDirectory = SessionDirectoryHelper.GetOrCreateAttachmentStagingDirectory(_sessionId, _dependencies.Paths.SessionsDirectory);
+        var storage = _dependencies.StorageResolver.Resolve(_sessionId);
+        var inboxDirectory = SessionDirectoryHelper.GetOrCreateInboxDirectory(storage);
+        var stagingDirectory = SessionDirectoryHelper.GetOrCreateAttachmentStagingDirectory(storage);
         var acceptedLines = new List<string>(activity.Attachments.Length);
         var inlineContents = new List<DataContent>();
         var rejections = new List<string>();

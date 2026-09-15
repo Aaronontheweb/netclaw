@@ -6,6 +6,7 @@
 using Netclaw.Cli;
 using Netclaw.Cli.Doctor;
 using Netclaw.Configuration;
+using System.Text.Json;
 using Xunit;
 
 namespace Netclaw.Cli.Tests.Doctor;
@@ -96,6 +97,29 @@ public sealed class ConfigSchemaDoctorCheckTests
         var result = await check.RunAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(DoctorSeverity.Pass, result.Severity);
+    }
+
+    [Fact]
+    public async Task ReturnsError_WhenConfigAttemptsToSelectPersistence()
+    {
+        var basePath = CreateTempBasePath();
+        var paths = new NetclawPaths(basePath);
+        paths.EnsureDirectoriesExist();
+
+        await File.WriteAllTextAsync(paths.NetclawConfigPath,
+            """
+            {
+              "configVersion": 1,
+              "Persistence": {
+                "Provider": "InMemory"
+              }
+            }
+            """, TestContext.Current.CancellationToken);
+
+        var check = new ConfigSchemaDoctorCheck(paths);
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Error, result.Severity);
     }
 
     [Fact]
@@ -419,7 +443,7 @@ public sealed class ConfigSchemaDoctorCheckTests
     }
 
     [Fact]
-    public async Task ReturnsPass_WhenSkillSyncSectionValid()
+    public async Task Fix_removes_retired_system_skill_sync_switch_and_preserves_access_switch()
     {
         var basePath = CreateTempBasePath();
         var paths = new NetclawPaths(basePath);
@@ -430,6 +454,7 @@ public sealed class ConfigSchemaDoctorCheckTests
             {
               "configVersion": 1,
               "SkillSync": {
+                "Enabled": false,
                 "DisableSystemSkillSync": true
               }
             }
@@ -438,6 +463,21 @@ public sealed class ConfigSchemaDoctorCheckTests
         var check = new ConfigSchemaDoctorCheck(paths);
         var result = await check.RunAsync(TestContext.Current.CancellationToken);
 
+        Assert.Equal(DoctorSeverity.Error, result.Severity);
+
+        var fixService = new DoctorFixService(paths);
+        var plan = await fixService.BuildPlanAsync(TestContext.Current.CancellationToken);
+        Assert.Contains(plan.Fixes, fix => fix.FilePath == paths.NetclawConfigPath);
+        await fixService.ApplyAsync(plan, TestContext.Current.CancellationToken);
+
+        using var config = JsonDocument.Parse(await File.ReadAllTextAsync(
+            paths.NetclawConfigPath,
+            TestContext.Current.CancellationToken));
+        var skillSync = config.RootElement.GetProperty("SkillSync");
+        Assert.False(skillSync.TryGetProperty("DisableSystemSkillSync", out _));
+        Assert.False(skillSync.GetProperty("Enabled").GetBoolean());
+
+        result = await check.RunAsync(TestContext.Current.CancellationToken);
         Assert.Equal(DoctorSeverity.Pass, result.Severity);
     }
 

@@ -19,7 +19,7 @@ namespace Netclaw.Actors.Tools;
 /// Routes <see cref="FunctionCallContent"/> to the correct tool by name via the <see cref="ToolRegistry"/>.
 /// Logs every tool execution with name, duration, and result preview.
 /// </summary>
-public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetryAwareExecutor
+public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvider
 {
     private readonly ToolRegistry _registry;
     private readonly ToolAccessPolicy _policy;
@@ -42,7 +42,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
         _registry = registry;
         _policy = policy;
         _approvalService = approvalService;
-        _shellPolicyCoordinator = new ShellPolicyCoordinator(policy, approvalService);
+        _shellPolicyCoordinator = new ShellPolicyCoordinator(registry, policy, approvalService);
         _logger = logger;
     }
 
@@ -170,7 +170,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
                 context.Approval.AuthorizationAttemptId.Value,
                 context.SessionId,
                 toolCall.CallId);
-            context.Outputs.TryComplete(new ToolInvocationReceipt(ToolInvocationOutcomeCategory.NotFound));
+            context.Outputs.TryComplete(new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.NotFound));
             return $"Unknown tool: {toolCall.Name}";
         }
 
@@ -188,7 +188,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
                 context.Approval.AuthorizationAttemptId.Value,
                 context.SessionId,
                 toolCall.CallId);
-            context.Outputs.TryComplete(new ToolInvocationReceipt(ToolInvocationOutcomeCategory.InvalidInput));
+            context.Outputs.TryComplete(new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.InvalidInput));
             return rejection.Message;
         }
 
@@ -204,11 +204,11 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
                 ? await shellTool.ExecuteAuthorizedAsync(
                     toolCall.Arguments,
                     context.Invocation,
-                    shellAnalysis,
+                    CreateShellLaunch(shellTool, toolCall.CallId, context, shellAnalysis),
                     ct)
                 : await tool.ExecuteAsync(toolCall.Arguments, context.Invocation, ct);
 
-            context.Outputs.TryComplete(new ToolInvocationReceipt(ToolInvocationOutcomeCategory.Success));
+            context.Outputs.TryComplete(new ToolInvocationReceipt.Succeeded([], null));
 
             var redacted = SecretOutputRedactor.Redact(result);
 
@@ -283,7 +283,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
                 context.Approval.AuthorizationAttemptId.Value,
                 context.SessionId,
                 toolCall.CallId);
-            context.Outputs.TryComplete(new ToolInvocationReceipt(ToolInvocationOutcomeCategory.NotFound));
+            context.Outputs.TryComplete(new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.NotFound));
             yield return new ToolCompletedUpdate($"Unknown tool: {toolCall.Name}");
             yield break;
         }
@@ -301,7 +301,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
                 context.Approval.AuthorizationAttemptId.Value,
                 context.SessionId,
                 toolCall.CallId);
-            context.Outputs.TryComplete(new ToolInvocationReceipt(ToolInvocationOutcomeCategory.InvalidInput));
+            context.Outputs.TryComplete(new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.InvalidInput));
             yield return new ToolCompletedUpdate(rejection.Message);
             yield break;
         }
@@ -325,7 +325,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
             ? shellTool.ExecuteAuthorizedStreamAsync(
                 toolCall.Arguments,
                 context.Invocation,
-                shellAnalysis,
+                CreateShellLaunch(shellTool, toolCall.CallId, context, shellAnalysis),
                 ct)
             : tool.ExecuteStreamAsync(toolCall.Arguments, context.Invocation, ct);
         var sw = Stopwatch.StartNew();
@@ -335,7 +335,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
             {
                 case ToolCompletedUpdate completed:
                     sw.Stop();
-                    context.Outputs.TryComplete(new ToolInvocationReceipt(ToolInvocationOutcomeCategory.Success));
+                    context.Outputs.TryComplete(new ToolInvocationReceipt.Succeeded([], null));
                     var redacted = SecretOutputRedactor.Redact(completed.Result);
                     var modelResult = tool.SuppressOutputRedaction ? completed.Result : redacted;
                     modelResult = await ToolOutputSpill.BoundAndSpillAsync(
@@ -369,7 +369,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
         if (exception is OperationCanceledException && callerToken.IsCancellationRequested)
             return;
 
-        if (exception is ToolApprovalRequiredException or ToolAgentCorrectionRequiredException)
+        if (exception is ToolApprovalRequiredException or ToolCorrectionRequiredException)
             return;
 
         var category = exception switch
@@ -380,7 +380,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
             IOException or TimeoutException => ToolInvocationOutcomeCategory.TransientFailure,
             _ => ToolInvocationOutcomeCategory.TransientFailure
         };
-        context.Outputs.TryComplete(new ToolInvocationReceipt(category));
+        context.Outputs.TryComplete(new ToolInvocationReceipt.OtherOutcome(category));
     }
 
     /// <summary>
@@ -414,48 +414,23 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
 
         if (string.Equals(tool.Name, ShellTool.ToolName, StringComparison.Ordinal))
         {
-            ShellPolicyAuthorization shellAuthorization;
-            try
-            {
-                var preflight = _policy.AuthorizeShellPreflight(
-                    tool,
-                    context,
-                    toolCall.Arguments);
-                var analysis = preflight switch
-                {
-                    ShellPolicyPreflightResult.Complete complete => complete.AuthorizedAnalysis,
-                    ShellPolicyPreflightResult.Continue next => next.Analysis,
-                    _ => null,
-                };
-                var correction = analysis is null
-                    ? null
-                    : NativeToolShellCorrectionDetector.Detect(
-                        analysis,
-                        _registry,
-                        _policy,
-                        context.Invocation);
-                shellAuthorization = correction is null
-                    ? await _shellPolicyCoordinator.EvaluateAsync(
-                        tool,
-                        toolCall,
-                        context,
-                        preflight,
-                        ct)
-                    : new ShellPolicyAuthorization(
-                        ToolAuthorizationDecision.RequireAgentCorrection(correction),
-                        authorizedAnalysis: null);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (Exception)
-            {
-                shellAuthorization = ShellPolicyCoordinator.CompleteInternalFailure();
-            }
+            var shellAuthorization = await _shellPolicyCoordinator.EvaluateAsync(
+                tool,
+                toolCall,
+                context,
+                ct);
 
             LogAuthorizationDecision(toolCall, context, shellAuthorization.Decision);
-            return (shellAuthorization.Decision, shellAuthorization.AuthorizedAnalysis);
+            return shellAuthorization switch
+            {
+                ShellAuthorizationResult.Authorized authorized =>
+                    (authorized.Decision, authorized.Analysis),
+                ShellAuthorizationResult.ToolValidation toolValidation =>
+                    (toolValidation.Decision, null),
+                ShellAuthorizationResult.Stopped stopped =>
+                    (stopped.Decision, null),
+                _ => throw new InvalidOperationException("Unsupported shell authorization result.")
+            };
         }
 
         var accessDecision = _policy.AuthorizeInvocation(tool, context, toolCall.Arguments);
@@ -493,8 +468,8 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
                 if (storeUnavailableForMiss)
                 {
                     accessDecision = IsOneTimeApprovalSatisfied(context, toolCall, approvalContext)
-                        ? ToolAccessDecision.Allow(ToolAllowReason.OneTimeApproval)
-                        : ToolAccessDecision.Deny("approval_store_unavailable");
+                        ? ToolAuthorizationDecision.Allow(ToolAllowReason.OneTimeApproval)
+                        : ToolAuthorizationDecision.Deny("approval_store_unavailable");
                 }
                 else if (approvalCheck.UnapprovedPatterns.Count == 0
                          && !hasInconsistentCandidateChecks)
@@ -502,11 +477,13 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
                     context.Approval.ApplyDecision(
                         "PreviouslyApproved",
                         FormatApprovalMatches(approvalCheck.ApprovedMatches));
-                    accessDecision = ToolAccessDecision.Allow(ToolAllowReason.StoredApproval);
+                    accessDecision = ToolAuthorizationDecision.Allow(ToolAllowReason.StoredApproval);
                 }
                 else
                 {
-                    accessDecision = ToolAccessDecision.RequiresApproval(approvalContext);
+                    accessDecision = ToolAuthorizationDecision.RequiresApproval(
+                        approvalContext,
+                        accessDecision.AgentCorrection);
                 }
             }
         }
@@ -514,7 +491,18 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
         if (accessDecision.NeedsApproval
             && IsOneTimeApprovalSatisfied(context, toolCall, accessDecision.ApprovalContext))
         {
-            accessDecision = ToolAccessDecision.Allow(ToolAllowReason.OneTimeApproval);
+            accessDecision = ToolAuthorizationDecision.Allow(ToolAllowReason.OneTimeApproval);
+        }
+
+        if (accessDecision is
+            {
+                Outcome: ToolAuthorizationOutcome.RequiresApproval,
+                AgentCorrection: ToolCorrection.ManagedTemporaryDirectorySuggested temporaryCorrection
+            })
+        {
+            accessDecision = ToolAuthorizationDecision.RequireAgentCorrection(
+                temporaryCorrection,
+                approvalMatches);
         }
 
         var authorizationDecision = CompleteAuthorizationDecision(accessDecision, approvalMatches);
@@ -522,12 +510,56 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
         return (authorizationDecision, null);
     }
 
-    void ISessionScratchRetryAwareExecutor.MarkSessionScratchRetry(
+    public async Task<ShellProcessLaunch> PrepareShellLaunchAsync(
+        FunctionCallContent toolCall,
         ToolExecutionContext context,
-        ToolAgentCorrection.SessionScratchSuggested correction)
-        => _policy.MarkSessionScratchRetry(context, correction);
+        CancellationToken ct)
+    {
+        if (context.RunScope.Session is not ToolSessionScope.Bound || context.Boundary is null)
+            throw new InvalidOperationException("A background launch requires a bound session and a trust boundary.");
 
-    ApprovalShell ISessionScratchRetryAwareExecutor.Shell => _policy.Shell;
+        var authorized = await GetAuthorizedToolAsync(toolCall, context, ct);
+        if (authorized.Tool is not ShellTool shellTool || authorized.AuthorizedAnalysis is not { } analysis)
+            throw new InvalidOperationException("Background execution requires an authorized shell tool.");
+
+        return CreateShellLaunch(shellTool, toolCall.CallId, context, analysis);
+    }
+
+    private ShellProcessLaunch CreateShellLaunch(
+        ShellTool tool,
+        string callId,
+        ToolExecutionContext context,
+        ShellCommandAnalysis analysis)
+    {
+        if (!ReferenceEquals(tool.ShellEnvironment, _policy.ShellEnvironment))
+            throw new InvalidOperationException("Shell execution and authorization must use the same environment.");
+
+        var workingDirectory = analysis.WorkingDirectory
+            ?? throw new InvalidOperationException("Authorized shell execution requires a working directory.");
+        var launchContext = new ToolExecutionContext(context.RunScope, context.ExecutionTimeout);
+        launchContext.Approval.RestoreAuthorizationAttemptId(context.Approval.AuthorizationAttemptId);
+        if (context.Approval.OneTimeApprovedToolName is { } approvedTool)
+            launchContext.Approval.SeedOneTimeApproval(approvedTool, context.Approval.OneTimeApprovedPatterns);
+        if (context.Approval.ManagedTemporaryRetry is { } retry)
+            launchContext.Approval.MarkManagedTemporaryRetry(retry);
+
+        // Use the authorized source, not the caller's mutable argument dictionary.
+        var exactCall = new FunctionCallContent(callId, ShellTool.ToolName, new Dictionary<string, object?>
+        {
+            ["Command"] = analysis.Source,
+            ["WorkingDirectory"] = workingDirectory
+        });
+        return tool.CreateLaunch(
+            analysis.Source,
+            workingDirectory,
+            launchContext.Invocation,
+            async cancellationToken =>
+            {
+                await GetAuthorizedToolAsync(exactCall, launchContext, cancellationToken);
+            });
+    }
+
+    ApprovalShell IApprovalShellProvider.Shell => _policy.Shell;
 
     private async Task<(INetclawTool Tool, ShellCommandAnalysis? AuthorizedAnalysis)>
         GetAuthorizedToolAsync(
@@ -547,8 +579,8 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
 
         if (decision.Outcome is ToolAuthorizationOutcome.RequiresAgentCorrection)
         {
-            throw new ToolAgentCorrectionRequiredException(
-                decision.AgentCorrection
+            throw new ToolCorrectionRequiredException(
+                decision.AgentCorrections
                 ?? throw new InvalidOperationException("Agent correction decision missing correction facts."));
         }
 
@@ -556,7 +588,8 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
         {
             throw new ToolAccessDeniedException(
                 decision.DenyReason
-                ?? throw new InvalidOperationException("Denied decision missing a deny reason."));
+                ?? throw new InvalidOperationException("Denied decision missing a deny reason."),
+                decision.DenyMessage);
         }
 
         var tool = _registry.GetByName(toolCall.Name)
@@ -566,9 +599,9 @@ public sealed class DispatchingToolExecutor : IToolExecutor, ISessionScratchRetr
     }
 
     private static ToolAuthorizationDecision CompleteAuthorizationDecision(
-        ToolAccessDecision accessDecision,
+        ToolAuthorizationDecision accessDecision,
         IReadOnlyList<ToolApprovalMatch> approvalMatches)
-        => ToolAuthorizationDecision.From(accessDecision, approvalMatches);
+        => accessDecision.WithApprovalMatches(approvalMatches);
 
     private static bool TryGetExactUnapprovedCandidates(
         ToolApprovalCheckResult result,

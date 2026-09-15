@@ -38,7 +38,6 @@ public sealed class NetclawPaths
     // ── Skills directory (procedural context) ──
     public string SkillsDirectory => Path.Combine(BasePath, "skills");
     public string SystemSkillsDirectory => Path.Combine(SkillsDirectory, ".system");
-    public string SkillSyncStatePath => Path.Combine(SystemSkillsDirectory, ".sync-state.json");
 
     // ── Server feed skills (from private skill-server instances) ──
     public string ServerFeedsDirectory => Path.Combine(SkillsDirectory, ".server-feeds");
@@ -52,9 +51,6 @@ public sealed class NetclawPaths
     // ── Cache directory ──
     public string CacheDirectory => Path.Combine(BasePath, "cache");
     public string RestartManifestPath => Path.Combine(CacheDirectory, "restart-manifest.json");
-
-    // ── Memory ──
-    public string MemorySqliteDbPath => SqliteDbPath;
 
     // ── Binary directory (install location for self-contained binaries) ──
     public string BinDirectory => Path.Combine(BasePath, "bin");
@@ -113,10 +109,9 @@ public sealed class NetclawPaths
     public string LogsDirectory => Path.Combine(BasePath, "logs");
     public string RuntimeDirectory => Path.Combine(BasePath, "runtime");
     /// <summary>
-    /// Per-session log files live at <c>{SessionLogsDirectory}/{sanitized_id}/session.log</c>.
-    /// This tree is deliberately kept outside <see cref="SessionsDirectory"/> so
-    /// the agent's file_read tool (scoped to <c>{session_dir}</c>) cannot observe
-    /// its own audit trail.
+    /// Legacy per-session log files live at
+    /// <c>{SessionLogsDirectory}/{sanitized_id}/session.log</c>. Versioned
+    /// sessions store logs inside their session storage envelope.
     /// </summary>
     public string SessionLogsDirectory => Path.Combine(LogsDirectory, "sessions");
     public string DaemonLogPath => Path.Combine(LogsDirectory, "daemon.log");

@@ -66,7 +66,7 @@ public sealed class WorkspaceToolRelativePathTests : IDisposable
 
         Assert.Contains("App.cs", result, StringComparison.Ordinal);
         Assert.Equal(ToolInvocationOutcomeCategory.Success, context.Receipt?.Category);
-        Assert.Empty(context.Receipt?.FileActivity ?? []);
+        Assert.False(context.Receipt is ToolInvocationReceipt.Succeeded { FileActivity.Count: > 0 });
     }
 
     [Fact]
@@ -122,7 +122,7 @@ public sealed class WorkspaceToolRelativePathTests : IDisposable
 
         Assert.Contains("Access denied", result, StringComparison.Ordinal);
         Assert.Equal(ToolInvocationOutcomeCategory.AccessDenied, context.Receipt?.Category);
-        Assert.Empty(context.Receipt?.FileActivity ?? []);
+        Assert.False(context.Receipt is ToolInvocationReceipt.Succeeded { FileActivity.Count: > 0 });
     }
 
     [Fact]
@@ -138,7 +138,7 @@ public sealed class WorkspaceToolRelativePathTests : IDisposable
 
         Assert.Contains("Invalid path", result, StringComparison.Ordinal);
         Assert.Equal(ToolInvocationOutcomeCategory.InvalidInput, context.Receipt?.Category);
-        Assert.Empty(context.Receipt?.FileActivity ?? []);
+        Assert.False(context.Receipt is ToolInvocationReceipt.Succeeded { FileActivity.Count: > 0 });
     }
 
     [Fact]
@@ -158,15 +158,15 @@ public sealed class WorkspaceToolRelativePathTests : IDisposable
         Assert.Contains("invalid_context", result, StringComparison.Ordinal);
         Assert.DoesNotContain("set_working_directory", result, StringComparison.Ordinal);
         Assert.Equal(ToolInvocationOutcomeCategory.RecoverableCorrection, context.Receipt?.Category);
-        Assert.Equal(ToolRemediationCode.SetWorkingDirectory, context.Receipt?.RemediationCode);
-        Assert.Empty(context.Receipt?.FileActivity ?? []);
+        Assert.Equal(ToolRemediationCode.SetWorkingDirectory, Assert.IsType<ToolInvocationReceipt.Correction>(context.Receipt).RemediationCode);
+        Assert.False(context.Receipt is ToolInvocationReceipt.Succeeded { FileActivity.Count: > 0 });
     }
 
     [Fact]
     public async Task Set_working_directory_rejects_relative_path_without_state_receipt()
     {
         var context = CreateContext();
-        var tool = new SetWorkingDirectoryTool(_config, new NetclawPaths());
+        var tool = new SetWorkingDirectoryTool(_config, new NetclawPaths(), new ToolPathPolicy([]));
 
         var result = await tool.ExecuteAsync(
             ToolInput.Create("Path", "other-project"),
@@ -175,14 +175,14 @@ public sealed class WorkspaceToolRelativePathTests : IDisposable
 
         Assert.Contains("must be absolute", result, StringComparison.Ordinal);
         Assert.Equal(ToolInvocationOutcomeCategory.InvalidInput, context.Receipt?.Category);
-        Assert.Null(context.Receipt?.DeclaredProjectDirectory);
+        Assert.False(context.Receipt is ToolInvocationReceipt.Succeeded { DeclaredProjectDirectory: not null });
     }
 
     [Fact]
     public async Task Set_working_directory_success_reports_validated_project()
     {
         var context = CreateContext();
-        var tool = new SetWorkingDirectoryTool(_config, new NetclawPaths());
+        var tool = new SetWorkingDirectoryTool(_config, new NetclawPaths(), new ToolPathPolicy([]));
 
         var result = await tool.ExecuteAsync(
             ToolInput.Create("Path", _projectDirectory),
@@ -191,7 +191,7 @@ public sealed class WorkspaceToolRelativePathTests : IDisposable
 
         Assert.Equal(_projectDirectory, result);
         Assert.Equal(ToolInvocationOutcomeCategory.Success, context.Receipt?.Category);
-        Assert.Equal(_projectDirectory, context.Receipt?.DeclaredProjectDirectory);
+        Assert.Equal(_projectDirectory, Assert.IsType<ToolInvocationReceipt.Succeeded>(context.Receipt).DeclaredProjectDirectory);
     }
 
     private ToolExecutionContext CreateContext()
@@ -210,7 +210,7 @@ public sealed class WorkspaceToolRelativePathTests : IDisposable
         ToolFileActivityKind expectedKind)
     {
         Assert.Equal(ToolInvocationOutcomeCategory.Success, context.Receipt?.Category);
-        var activity = Assert.Single(context.Receipt?.FileActivity ?? []);
+        var activity = Assert.Single(Assert.IsType<ToolInvocationReceipt.Succeeded>(context.Receipt).FileActivity);
         Assert.Equal(Path.GetFullPath(expectedPath), activity.CanonicalPath);
         Assert.Equal(expectedKind, activity.Kind);
     }

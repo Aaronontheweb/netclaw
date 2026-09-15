@@ -75,7 +75,13 @@ jobs:
         # 30-min job cap) and is diagnosable from the CI log + the uploaded dump instead of a silent
         # timeout. The full dump carries every thread's stack — needed to confirm the suspected
         # macOS/ARM64 weak-memory-ordering hang in the TUI view-models.
-        run: dotnet test -c Release --blame-hang-timeout 300s --blame-hang-dump-type full --results-directory ./TestResults
+        run: dotnet test -c Release --filter "Category!=NativeShell" --blame-hang-timeout 300s --blame-hang-dump-type full --results-directory ./TestResults
+
+      - name: "dotnet test (native shell, serial)"
+        if: runner.os == 'Windows'
+        shell: bash
+        # The native PowerShell test needs an isolated Windows host.
+        run: dotnet test -c Release --no-build --filter "Category=NativeShell" --blame-hang-timeout 300s --blame-hang-dump-type full --results-directory ./TestResults
 
       # Diagnostic: surface the blame Sequence file (names the stuck test) in the CI log so a
       # platform-specific hang can be pinpointed even without downloading the dump artifact.
@@ -128,6 +134,130 @@ jobs:
         run: bash scripts/smoke/cli-smoke.sh
         env:
           NETCLAW_CLI: ./install-test/netclaw
+
+  path-access-mutation:
+    name: Path Access Mutation Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: "Install .NET SDK"
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: "./global.json"
+
+      - name: "Restore .NET tools"
+        run: dotnet tool restore
+
+      - name: "Test path-access mutants"
+        run: ./scripts/run-path-access-mutations.sh
+
+      - name: "Upload mutation report"
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: path-access-mutation-report
+          path: ./artifacts/stryker/path-access-policy
+          if-no-files-found: ignore
+          retention-days: 14
+
+  tool-authorization-mutation:
+    name: Tool Authorization Mutation Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: "Install .NET SDK"
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: "./global.json"
+
+      - name: "Restore .NET tools"
+        run: dotnet tool restore
+
+      - name: "Test tool authorization mutants"
+        run: ./scripts/run-tool-authorization-mutations.sh
+
+      - name: "Upload mutation report"
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tool-authorization-mutation-report
+          path: ./artifacts/stryker/tool-authorization
+          if-no-files-found: ignore
+          retention-days: 14
+
+  shell-analysis-mutation:
+    name: Shell Analysis Mutation Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: "Install .NET SDK"
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: "./global.json"
+
+      - name: "Restore .NET tools"
+        run: dotnet tool restore
+
+      - name: "Test shell-analysis mutants"
+        run: ./scripts/run-shell-command-analysis-mutations.sh
+
+      - name: "Upload shell-analysis mutation report"
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shell-command-analysis-mutation-report
+          path: ./artifacts/stryker/shell-command-analysis
+          if-no-files-found: ignore
+          retention-days: 14
+
+  approval-directory-mutation:
+    name: Approval Directory Mutation Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: "Install .NET SDK"
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: "./global.json"
+
+      - name: "Restore .NET tools"
+        run: dotnet tool restore
+
+      - name: "Test approval directory mutants"
+        run: ./scripts/run-approval-directory-mutations.sh
+
+      - name: "Upload mutation report"
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: approval-directory-mutation-report
+          path: ./artifacts/stryker/approval-directory
+          if-no-files-found: ignore
+          retention-days: 14
 
   copyright-headers:
     name: Copyright Headers
@@ -215,6 +345,22 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: ./scripts/smoke/install-smoke.ps1
+
+  eval-oracles:
+    name: Eval Oracle Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install eval assertion dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq sqlite3
+      - name: Check eval assertions and fixture protocol
+        run: |
+          bash -n evals/run-evals.sh
+          bash -n evals/run-background-evals.sh
+          bash -n evals/cycle_evals.sh
+          python3 -m unittest discover -s evals -p test_background_evals.py -v
+          python3 -m unittest discover -s evals -p test_cycle_evals.py -v
 
   semver-conformance:
     name: SemVer Conformance

@@ -228,7 +228,7 @@ public class ToolRegistryTests
         registry.Register(new McpToolAdapter(
             CreateFakeTool("search"), "memorizer", "search"));
 
-        var policy = new ToolAccessPolicy(
+        var policy = new ToolAccessPolicy(new NetclawPaths(),
             new ToolConfig(),
             new EffectivePolicyDefaults(
                 DeploymentPosture.Public,
@@ -260,7 +260,7 @@ public class ToolRegistryTests
                 ["specialty_tool"] = ToolApprovalMode.Deny
             }
         };
-        var policy = new ToolAccessPolicy(
+        var policy = new ToolAccessPolicy(new NetclawPaths(),
             config,
             new EffectivePolicyDefaults(
                 DeploymentPosture.Personal,
@@ -323,6 +323,24 @@ public class ToolRegistryTests
         Assert.Equal("notion/create-pages", registry.ToCanonicalName("notion/create-pages"));
         // Unknown tool — pass-through, no throw
         Assert.Equal("unregistered__tool", registry.ToCanonicalName("unregistered__tool"));
+    }
+
+    [Fact]
+    public void List_only_canonicalization_preserves_the_provider_history_alias()
+    {
+        var registry = new ToolRegistry();
+        registry.Register(new McpToolAdapter(
+            CreateFakeTool("create-pages"), "notion", "create-pages"));
+        var historyCall = new FunctionCallContent("call-1", "notion__create-pages");
+        var assistantMessage = new ChatMessage(ChatRole.Assistant, [historyCall]);
+        var dispatchCalls = new List<FunctionCallContent> { historyCall };
+
+        registry.CanonicalizeToolCalls(dispatchCalls);
+
+        Assert.Equal("notion/create-pages", dispatchCalls[0].Name);
+        Assert.Equal(
+            "notion__create-pages",
+            Assert.IsType<FunctionCallContent>(assistantMessage.Contents[0]).Name);
     }
 
     [Fact]
@@ -394,12 +412,7 @@ public class ToolRegistryTests
         var pathPolicy = new Netclaw.Security.ToolPathPolicy([]);
         var commandPolicy = new Netclaw.Security.ShellCommandPolicy();
         var registry = new ToolRegistry();
-        registry.WithFirstPartyTools(
-            config,
-            new NetclawPaths(),
-            pathPolicy,
-            commandPolicy,
-            toolAccessPolicy: TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
+        registry.WithFirstPartyTools(TestToolAccessPolicy.Create(config, commandPolicy, pathPolicy));
 
         Assert.Equal("shell_execute", registry.ToCanonicalName("shell_execute"));
         Assert.Equal("shell_execute", registry.ToLlmFacingName("shell_execute"));

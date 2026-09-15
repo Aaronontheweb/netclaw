@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.65.7"
+  version: "2.74.4"
 ---
 
 # Netclaw Operations
@@ -74,6 +74,8 @@ When available, use `file_read` for a known local file read.
 When available, use `file_list` for a known local directory listing.
 Use `file_search` for bounded recursive name or literal text search.
 Use `file_read` for image metadata.
+Use `attach_file` with the authorized source path. The tool copies it into the session when necessary.
+A linked or protected destination causes a denial. Do not use shell to bypass that denial.
 Issue independent `file_read` calls in parallel when several paths are known.
 Use `tool_output_read` to continue a spilled result by call id.
 When available, use `file_write` or `file_edit` for a known local file change.
@@ -82,7 +84,8 @@ When available, use `shell_execute` for local search, VCS, builds, tests, proces
 Do not substitute shell commands when a listed first-party tool satisfies the task.
 Do not delegate a known file operation that an available file tool can complete.
 After a successful file tool result, do not use shell only to verify it unless the user requests shell behavior.
-For disposable text, use `file_write` then `file_read`; do not attempt a shell redirect first.
+For disposable text, use `file_write` in `temp_dir`, then use `file_read`; do not attempt a shell redirect first.
+Standard temporary APIs use `temp_dir` in each shell process.
 Use `load_tool` directly for a known exact tool name.
 Use `search_tools` when the capability is known but its exact tool name is not.
 
@@ -92,9 +95,15 @@ Keep shell approval friction bounded:
 2. Use one operation per call. Keep independent searches and diagnostics separate; do not join them with separators or labels.
 3. Add a pipeline only when the requested result requires it.
 4. Do not use shell only to verify a successful structured tool result.
-5. After an approval-required result, do not retry or substitute shell variants.
-6. A `Tool access denied:` result is terminal; do not change scope, retry, or substitute another tool.
-7. Apply one `Tool execution deferred:` correction unchanged; otherwise use a structured tool or report the block once.
+5. If approval is required but no interactive requester is available, do not retry or substitute the call during that turn.
+6. After an access denial, do not retry that call during the same user turn.
+7. Do not change its scope or substitute another tool to evade the denial.
+8. A later explicit user request can start a new call. Apply the normal approval policy to that call.
+9. Apply all compatible advice in a correction response before the next call.
+10. A shell call can return correction advice under Auto. Auto removes approval prompts; it does not remove corrections.
+11. Advice grants no authority. Every replacement call passes current policy.
+12. If you require the exact platform path, retry unchanged once through normal policy.
+13. Reviewed diagnostics without file output do not receive temporary relocation advice. Normal approval and denial rules still apply.
 
 ## Project Directory
 
@@ -107,7 +116,7 @@ Choose directories in this order:
 
 1. For declared-project work, omit `WorkingDirectory`; the shell uses `project_dir`.
 2. For one call in a named child directory, set typed `WorkingDirectory`.
-3. Use `session_dir` for disposable writable work outside a project; do not substitute platform temporary storage.
+3. Use `temp_dir` for disposable files. Standard temporary APIs already use this directory.
 4. Use an inline directory change only when the task requests that behavior.
 
 Typed `WorkingDirectory` and absolute operands give exact scope but add no safe-space root.
@@ -122,6 +131,33 @@ Do not probe a named project path before declaring it.
 Use the task's first project path exactly; do not substitute its parent first.
 Honor a request to keep the current project unchanged.
 A denied child-directory call does not permit a project change.
+
+## Managed Session Storage
+
+The `[session]` block separates five paths:
+
+- `session_dir` is the workspace and the relative-path fallback.
+- `temp_dir` is run-local storage for disposable files.
+- `artifact_dir` is the run-owned output area.
+- `worktree_dir` is the session area for Git worktrees.
+- `log_path` is the exact raw audit log for the current run.
+
+Use `file_read` to read the exact `log_path` for the current run.
+Public and Team cannot access other sessions without explicit configured roots.
+Versioned parent and child runs share the current session envelope.
+Legacy runs can read their own exact log, but not separate parent or child logs.
+Use a legacy child's summary and shared-workspace artifacts instead.
+Directory list and search require directory authority; an exact log grants none.
+Do not use shell to find session logs.
+Normal audience and operation policy applies to every session path.
+Attachment copies and fetched files must pass destination checks before Netclaw saves them.
+A permitted copy or fetch does not enable general file-write access.
+If a save fails, report the tool error; do not claim that the file exists.
+Netclaw does not automatically remove managed temporary files or worktrees.
+
+Use `shell_execute` to run Git with a destination below `worktree_dir`.
+After Git succeeds, use `set_working_directory` to adopt the created path.
+A failed Git command does not change project scope.
 
 For Team and Personal sessions, `[working-context]` is refreshed at the start
 of each new turn. In a Git project it includes the active worktree, branch,
@@ -172,6 +208,17 @@ fix and re-issue once, do not retry the same shape:
 - **Ambiguous meta spelling** — supplying two keys that map to the same meta
   field (e.g. both `_timeout_seconds` and `TimeoutSeconds`) rejects; send one.
 
+A repeated action-and-outcome correction means that no requested call ran.
+Choose a different action or finish the task from the available evidence.
+Do not repeat the blocked batch.
+Netclaw disables tools for the turn if the same blocked batch appears again.
+Report incomplete work and do not claim that the blocked operation succeeded.
+If validation rejects metadata, repair the reported value before the retry.
+A valid metadata repair is not the same rejected action. A new user message
+starts a fresh cycle window; compaction alone does not.
+If a text-only response contains tool calls, Netclaw rejects those calls and reports a provider failure.
+This failure does not prove that the turn exhausted its tool budget.
+
 ## Large tool output
 
 Tool output is bounded to a small inline budget
@@ -218,6 +265,10 @@ presents the authorization URL, brokers the browser callback, and durably stores
 active credentials. Do not fetch metadata or token endpoints by hand, build PKCE
 requests, or create or repair `mcp-oauth-metadata.json`; legacy metadata files
 are ignored.
+
+Netclaw requests JSON token responses from providers that negotiate the response
+format, including GitHub. This request keeps the response compatible with the
+MCP SDK token decoder.
 
 Netclaw registers rather than letting the SDK do it because the SDK hard-codes
 `token_endpoint_auth_method: "client_secret_post"` and ignores what the
@@ -344,9 +395,9 @@ declares scope implicitly.
 
 The approval gate runs three layers in order:
 
-The directory order reserves `session_dir` for disposable non-project output.
+The directory order reserves `temp_dir` for disposable output.
 Preserve an explicitly required platform temporary path.
-Netclaw does not automatically clean session scratch yet.
+Netclaw does not automatically clean managed temporary storage yet.
 
 1. **Hard-deny list** — system-protected paths. Always blocks.
 2. **Safe-verb ∩ safe-space short-circuit** — when the verb is on the curated
@@ -519,6 +570,11 @@ Add or switch model providers (including OAuth login) and configure search backe
 `skill_read_resource('netclaw-operations', 'references/providers.md')`.
 
 ## Diagnostics, Kill Switches & Self-Maintenance
+
+Headless `COMPACTION` records expose `summarized` and `tool_results_cleared` phase evidence.
+A true summary flag does not prove that the summary retains every task requirement.
+Older daemon or CLI versions can omit these flags from the transport and report false.
+Check the actor log before you conclude that an older run skipped a phase.
 
 When something is broken, start with `netclaw status`, then `netclaw doctor`. Feature
 kill switches and self-update/health are covered in the reference. Memory embeddings

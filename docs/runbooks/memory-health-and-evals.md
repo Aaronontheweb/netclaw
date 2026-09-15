@@ -14,7 +14,7 @@ netclaw status
 2. Confirm memory status section shows:
    - `provider: sqlite`
    - `status: healthy` (or `degraded` when unavailable)
-   - `databasePath: ~/.netclaw/memory/netclaw-memory.db`
+   - `databasePath: <NETCLAW_HOME>/netclaw.db`
    - `pendingCheckpoints: <n>`
 
 3. Run offline diagnostics:
@@ -30,12 +30,12 @@ netclaw doctor
 ## Inspect Pending Checkpoints Directly
 
 ```bash
-sqlite3 "$HOME/.netclaw/memory/netclaw-memory.db" \
+sqlite3 "${NETCLAW_HOME:-$HOME/.netclaw}/netclaw.db" \
   "select status, count(*) from memory_checkpoints group by status;"
 ```
 
 ```bash
-sqlite3 "$HOME/.netclaw/memory/netclaw-memory.db" \
+sqlite3 "${NETCLAW_HOME:-$HOME/.netclaw}/netclaw.db" \
   "select checkpoint_id, trigger_type, priority, retry_count, created_at from memory_checkpoints where status='pending' order by priority desc, created_at asc limit 20;"
 ```
 
@@ -96,22 +96,8 @@ Recommended model profile values in `~/.netclaw/config/netclaw.json`:
 
 Passing a larger hosted model run does not waive a failing local Ollama run.
 
-If feed-published system skills lag behind local source changes, disable startup
-skill feed sync in `~/.netclaw/config/netclaw.json` to force use of local
-built-in skill copies:
-
-```bash
-python3 - <<'PY'
-import json, pathlib
-p = pathlib.Path.home() / '.netclaw' / 'config' / 'netclaw.json'
-obj = json.loads(p.read_text())
-obj.setdefault('SkillSync', {})['DisableSystemSkillSync'] = True
-p.write_text(json.dumps(obj, indent=2) + '\n')
-print(p)
-PY
-```
-
-Then restart the daemon from local binaries before running evals.
+The daemon restores system skills from its own binary before the first scan.
+Run evals against a binary that contains the skill changes under test.
 
 ## Relevance Gate Health
 

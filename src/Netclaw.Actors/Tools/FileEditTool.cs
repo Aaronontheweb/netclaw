@@ -9,6 +9,8 @@ using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
 
+using PathAccessDecision = Netclaw.Actors.Tools.PathAccessPolicy.PathAccessDecision;
+
 namespace Netclaw.Actors.Tools;
 
 /// <summary>
@@ -23,24 +25,27 @@ namespace Netclaw.Actors.Tools;
     "For full writes, creates the file and parent directories if needed. " +
     "A successful result confirms the change; do not verify it with shell unless requested.",
     Grant = "file")]
-public sealed partial class FileEditTool : NetclawTool<FileEditTool.Params>
+public sealed partial class FileEditTool : NetclawTool<FileEditTool.Params>, IManagedTemporaryDirectoryCorrectionTool
 {
     public const string ToolName = "file_edit";
 
-    private readonly ToolPathPolicy _pathPolicy;
-    private readonly ScopedFileAccessPolicy _fileAccessPolicy;
+    private readonly PathAccessPolicy _pathAccessPolicy;
 
     public record Params(
-        [property: Description("File path to edit. Relative paths use the current project, then session scratch.")] string Path,
+        [property: Description("File path to edit. Relative paths use the current project, then session_dir.")] string Path,
         [property: Description("The exact text to find in the file (omit when using Content for a full write)")] string? OldString = null,
         [property: Description("The text to replace OldString with (must differ from OldString; use empty string to delete)")] string? NewString = null,
         [property: Description("Replace all occurrences instead of just the first (default: false)")] bool? ReplaceAll = null,
         [property: Description("Full content to write to the file, creating parent directories if needed. Mutually exclusive with OldString/NewString.")] string? Content = null);
 
     public FileEditTool(ToolConfig config, NetclawPaths paths, ToolPathPolicy pathPolicy)
+        : this(new PathAccessPolicy(config, paths, pathPolicy))
     {
-        _pathPolicy = pathPolicy;
-        _fileAccessPolicy = new ScopedFileAccessPolicy(config, paths);
+    }
+
+    internal FileEditTool(PathAccessPolicy pathAccessPolicy)
+    {
+        _pathAccessPolicy = pathAccessPolicy;
     }
 
     protected override async Task<string> ExecuteAsync(Params args, ToolInvocationContext context, CancellationToken ct)
@@ -74,18 +79,11 @@ public sealed partial class FileEditTool : NetclawTool<FileEditTool.Params>
 
     internal async Task<string> WriteFileAsync(string path, string content, ToolInvocationContext context, CancellationToken ct)
     {
-        if (!_fileAccessPolicy.TryResolveWritePath(
-                path,
-                context,
-                out var authorizedPath,
-                out var accessError,
-                out var resolutionFailure))
-        {
-            return context.PathResolutionFailure(accessError, resolutionFailure);
-        }
+        var access = _pathAccessPolicy.Evaluate(path, context, PathAccessPolicy.FileOperation.Write);
+        if (access is PathAccessDecision.Denied denied)
+            return context.PathAccessFailure(denied.Error, denied.Failure);
 
-        if (_pathPolicy.IsDenied(authorizedPath))
-            return context.AccessDenied(FileToolErrors.ControlPlaneWriteDenied(authorizedPath));
+        var authorizedPath = access.GetAllowedPath();
 
         try
         {
@@ -120,18 +118,11 @@ public sealed partial class FileEditTool : NetclawTool<FileEditTool.Params>
 
     private async Task<string> EditFileAsync(string path, string oldString, string newString, bool replaceAll, ToolInvocationContext context, CancellationToken ct)
     {
-        if (!_fileAccessPolicy.TryResolveWritePath(
-                path,
-                context,
-                out var authorizedPath,
-                out var accessError,
-                out var resolutionFailure))
-        {
-            return context.PathResolutionFailure(accessError, resolutionFailure);
-        }
+        var access = _pathAccessPolicy.Evaluate(path, context, PathAccessPolicy.FileOperation.Write);
+        if (access is PathAccessDecision.Denied denied)
+            return context.PathAccessFailure(denied.Error, denied.Failure);
 
-        if (_pathPolicy.IsDenied(authorizedPath))
-            return context.AccessDenied(FileToolErrors.ControlPlaneWriteDenied(authorizedPath));
+        var authorizedPath = access.GetAllowedPath();
 
         if (!File.Exists(authorizedPath))
             return context.NotFound($"Error: File not found: {authorizedPath}");

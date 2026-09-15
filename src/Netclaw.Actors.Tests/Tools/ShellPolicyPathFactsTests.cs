@@ -44,6 +44,26 @@ public sealed class ShellPolicyPathFactsTests
                     && fact.Paths.Any(path => path.Value == expected));
     }
 
+    [Fact]
+    public void Execution_views_retain_provider_qualified_power_shell_paths()
+    {
+        var environment = ShellExecutionEnvironment.CreatePowerShell(
+            @"C:\Program Files\PowerShell\7\pwsh.exe",
+            PwshDialect.PowerShell7);
+        var analysis = new ShellCommandPolicy(environment)
+            .Analyze(@"Get-Content 'FileSystem::C:\external\file.log'");
+
+        var view = Assert.Single(ShellPolicyPathFacts.CreateExecutionViews(analysis));
+
+        Assert.Contains(
+            view.Facts,
+            fact => fact.State == ShellPolicyPathResolutionState.Known
+                    && fact.Paths.Any(path => ShellPathRules.Equals(
+                        path.Value,
+                        @"C:\external\file.log",
+                        ShellPathStyle.Windows)));
+    }
+
     [Theory]
     [InlineData(@"\external\file.log")]
     [InlineData(@"D:file.log")]
@@ -179,21 +199,74 @@ public sealed class ShellPolicyPathFactsTests
         Assert.Equal("/work/output.txt", Assert.Single(redirect.Paths).Value);
     }
 
+    [Theory]
+    [InlineData(@"Get-ChildItem -Path C:\WORK\PROJECT -Recurse", @"C:\WORK\PROJECT")]
+    [InlineData(@"Get-ChildItem -Path C:\WORK\PROJECT\*.cs", @"C:\WORK\PROJECT")]
+    public void Power_shell_tree_roots_use_the_parser_owned_path_fact(
+        string command,
+        string expectedRoot)
+    {
+        var environment = ShellExecutionEnvironment.CreatePowerShell(
+            @"C:\Program Files\PowerShell\7\pwsh.exe",
+            PwshDialect.PowerShell7);
+        var occurrence = Assert.Single(
+            new ShellCommandPolicy(environment)
+                .Analyze(command, @"C:\WORK\PROJECT")
+                .Commands);
+
+        var facts = ShellPolicyOccurrencePathFacts.Create(occurrence).Resolve(
+            @"C:\WORK\PROJECT",
+            ShellPathStyle.Windows,
+            ApprovalShell.PowerShell);
+        var root = Assert.Single(
+            facts.Facts,
+            static fact => fact.Source.Origin == ShellPolicyPathOrigin.FileSystemTreeRoot);
+
+        Assert.Equal(ShellPolicyPathResolutionState.Known, root.State);
+        Assert.Equal(expectedRoot, Assert.Single(root.Paths).Value);
+    }
+
+    [Fact]
+    public void Dynamic_power_shell_tree_state_stays_unknown()
+    {
+        var environment = ShellExecutionEnvironment.CreatePowerShell(
+            @"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            PwshDialect.WindowsPowerShell51);
+        var occurrence = Assert.Single(
+            new ShellCommandPolicy(environment)
+                .Analyze(
+                    @"Get-ChildItem -Path C:\WORK\PROJECT -Recurse:$flag",
+                    @"C:\WORK\PROJECT")
+                .Commands);
+
+        var facts = ShellPolicyOccurrencePathFacts.Create(occurrence).Resolve(
+            @"C:\WORK\PROJECT",
+            ShellPathStyle.Windows,
+            ApprovalShell.PowerShell);
+        var root = Assert.Single(
+            facts.Facts,
+            static fact => fact.Source.Origin == ShellPolicyPathOrigin.FileSystemTreeRoot);
+
+        Assert.IsType<ShellValueDomain.Unknown>(root.Source.Domain);
+        Assert.Equal(ShellPolicyPathResolutionState.UnknownDynamic, root.State);
+        Assert.Empty(root.Paths);
+    }
+
     [Fact]
     public void Uncovered_context_is_recomputed_for_coverage_and_session_scope()
     {
         var evaluation = CreateEvaluation(
             BashCandidate("git status", "/work/repo"),
             BashCandidate("git push", "/work/repo"));
-        var sessionScratch = evaluation.GetUncoveredApprovalContext("/work/repo");
+        var sessionOwned = evaluation.GetUncoveredApprovalContext(["/work/repo"]);
 
         evaluation.Cover(evaluation.Candidates[0], ShellPolicyCoverageSource.Session);
-        var remaining = evaluation.GetUncoveredApprovalContext("/work/session");
+        var remaining = evaluation.GetUncoveredApprovalContext(["/work/session"]);
 
-        Assert.NotSame(sessionScratch, remaining);
+        Assert.NotSame(sessionOwned, remaining);
         Assert.Equal([evaluation.Candidates[1].Candidate], remaining.Candidates);
         Assert.DoesNotContain(
-            sessionScratch.Options,
+            sessionOwned.Options,
             static option => option.Key == ApprovalOptionKeys.ApproveAlwaysKey);
         Assert.Contains(
             remaining.Options,
