@@ -9,6 +9,7 @@ import json
 import re
 import struct
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -21,7 +22,6 @@ SOURCE_BOUNDARY = "operator extracts symbolic facts before repository entry; raw
 MAXIMUM_PERIOD = 3
 MAXIMUM_HISTORY = MAXIMUM_PERIOD * 2
 _TOKEN = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
-_PRIVATE_VALUE = re.compile(r"(?:private|secret|credential|token|host|user|channel|session|gpu|D[0-9])", re.IGNORECASE)
 _PROHIBITED_NAMES = frozenset(
     {
         "prompt",
@@ -46,7 +46,7 @@ _PROHIBITED_NAMES = frozenset(
     }
 )
 _CALL_FIELDS = frozenset({"tool", "argument_shape", "outcome_category", "result_shape"})
-_CASE_FIELDS = frozenset({"id", "session_group", "split", "label", "historical_request_count", "historical_exact_suffix_count", "first_intervention_request_index", "events"})
+_CASE_FIELDS = frozenset({"id", "session_group", "split", "label", "historical_request_count", "historical_exact_suffix_count", "events"})
 _ROOT_FIELDS = frozenset({"schema_version", "baseline", "sanitization", "cases"})
 _REQUIRED_PROHIBITED_FIELDS = frozenset(
     {"prompt", "raw_prompt", "response", "raw_response", "args", "arguments", "arguments_json", "path", "paths", "result", "raw_result", "call_id", "session_id", "user_id", "channel_id", "timestamp", "url", "credential", "token"}
@@ -76,14 +76,14 @@ def _require_fields(value: Mapping[str, Any], expected: frozenset[str], location
 
 
 def _token(value: Any, location: str) -> str:
-    if not isinstance(value, str) or not _TOKEN.fullmatch(value) or _PRIVATE_VALUE.search(value):
+    if not isinstance(value, str) or not _TOKEN.fullmatch(value):
         raise FixtureError(f"{location} must be a lower-case sanitized token")
     return value
 
 
 def _fact_token(value: Any, prefix: str, location: str) -> str:
     token = _token(value, location)
-    if not token.startswith(prefix):
+    if not re.fullmatch(re.escape(prefix) + r"[0-9]{4}", token):
         raise FixtureError(f"{location} must use the {prefix} symbolic namespace")
     return token
 
@@ -136,18 +136,17 @@ def validate_fixture(value: Any) -> dict[str, Any]:
             raise FixtureError("case split must be train or holdout and label must be harmful, productive, or uncertain")
         request_count = case["historical_request_count"]
         suffix_count = case["historical_exact_suffix_count"]
-        intervention_index = case["first_intervention_request_index"]
-        if not isinstance(request_count, int) or not isinstance(suffix_count, int) or not isinstance(intervention_index, int):
-            raise FixtureError("case request counts and intervention index must be integers")
-        if request_count < 0 or suffix_count < 0 or suffix_count > request_count or not 0 <= intervention_index <= request_count + 1:
-            raise FixtureError("case request counts or intervention index are outside the valid range")
+        if not isinstance(request_count, int) or not isinstance(suffix_count, int):
+            raise FixtureError("case request counts must be integers")
+        if request_count < 0 or suffix_count < 0 or suffix_count > request_count:
+            raise FixtureError("case request counts are outside the valid range")
         events = case["events"]
         if not isinstance(events, list) or not events:
             raise FixtureError(f"fixture.cases[{case_index}].events must be a non-empty list")
         normalized_events: list[dict[str, str]] = []
         for event_index, raw_event in enumerate(events):
             event = _require_object(raw_event, f"fixture.cases[{case_index}].events[{event_index}]")
-            kind = _token(event["kind"], "event.kind")
+            kind = _token(event.get("kind"), "event.kind")
             if kind not in {"completed", "candidate", "boundary"}:
                 raise FixtureError(f"event.kind must be completed, candidate, or boundary, got {kind}")
             fields = frozenset({"kind", "boundary", "expected_decision"}) if kind == "boundary" else frozenset({"kind", "calls", "expected_decision"})
@@ -179,7 +178,11 @@ def validate_fixture(value: Any) -> dict[str, Any]:
             normalized_events.append(normalized)
         if normalized_events[-1]["kind"] != "candidate":
             raise FixtureError(f"case {case_id} must end with a candidate event")
-        normalized_cases.append({"id": case_id, "session_group": session_group, "split": split, "label": label, "historical_request_count": request_count, "historical_exact_suffix_count": suffix_count, "first_intervention_request_index": intervention_index, "events": normalized_events})
+        completed_count = sum(event["kind"] == "completed" for event in normalized_events)
+        expected_prefix_count = request_count - suffix_count + min(suffix_count, 2)
+        if completed_count != expected_prefix_count:
+            raise FixtureError(f"case {case_id} historical counts do not match the replay prefix")
+        normalized_cases.append({"id": case_id, "session_group": session_group, "split": split, "label": label, "historical_request_count": request_count, "historical_exact_suffix_count": suffix_count, "events": normalized_events})
     groups_by_split: dict[str, set[str]] = {"train": set(), "holdout": set()}
     for case in normalized_cases:
         groups_by_split[case["split"]].add(case["session_group"])
@@ -228,7 +231,7 @@ def extract_sanitized_case(
 
     events = [dict(observation) for observation in observations]
     completed_count = sum(event.get("kind") == "completed" for event in events)
-    candidate = {"id": case_id, "session_group": session_group, "split": split, "label": label, "historical_request_count": completed_count, "historical_exact_suffix_count": 0, "first_intervention_request_index": completed_count + 1, "events": events}
+    candidate = {"id": case_id, "session_group": session_group, "split": split, "label": label, "historical_request_count": completed_count, "historical_exact_suffix_count": 0, "events": events}
     fixture = {
         "schema_version": 1,
         "baseline": {"release": BASELINE_RELEASE, "detector": "exact-action-outcome", "source_path": BASELINE_SOURCE_PATH, "source_revision": BASELINE_SOURCE_REVISION, "source_sha256": BASELINE_SOURCE_SHA256, "maximum_period": 3, "maximum_history": 6},
@@ -277,12 +280,76 @@ def _completed_value(event: Mapping[str, str]) -> tuple[str, str]:
     return action, outcome
 
 
-def replay_case(case: Mapping[str, Any]) -> dict[str, Any]:
+def mutated_completed_value_ignoring_result(event: Mapping[str, str]) -> tuple[str, str]:
+    """Known-bad detector mutation for corpus sensitivity tests."""
+
+    return _action(event), _hash_fields(["mutated-outcome"])
+
+
+def mutated_completed_value_ignoring_arguments(event: Mapping[str, str]) -> tuple[str, str]:
+    """Known-bad detector mutation for argument sensitivity tests."""
+
+    normalized = {
+        "calls": [dict(call, argument_shape="argument_class_0000") for call in event["calls"]]
+    }
+    return _completed_value(normalized)
+
+
+def mutated_action_ignoring_arguments(event: Mapping[str, str]) -> str:
+    """Known-bad detector mutation for candidate argument sensitivity tests."""
+
+    normalized = {
+        "calls": [dict(call, argument_shape="argument_class_0000") for call in event["calls"]]
+    }
+    return _action(normalized)
+
+
+class ReplayDetector:
+    """Provide the detector contract that the replay runner invokes."""
+
+    def __init__(
+        self,
+        completed_value: Callable[[Mapping[str, Any]], tuple[str, str]] = _completed_value,
+        action_value: Callable[[Mapping[str, Any]], str] = _action,
+    ) -> None:
+        self._completed_value = completed_value
+        self._action_value = action_value
+
+    def completed_value(self, event: Mapping[str, Any]) -> tuple[str, str]:
+        return self._completed_value(event)
+
+    def action_value(self, event: Mapping[str, Any]) -> str:
+        return self._action_value(event)
+
+    def decide(
+        self,
+        history: list[tuple[str, str]],
+        candidate: str,
+        last_blocked: str | None,
+    ) -> tuple[str, str | None]:
+        if last_blocked == candidate:
+            return "stop", last_blocked
+        for period in range(1, MAXIMUM_PERIOD + 1):
+            required = period * 2
+            if len(history) < required:
+                continue
+            start = len(history) - required
+            if history[start : start + period] == history[start + period : start + required] and candidate == history[start][0]:
+                return "correct", candidate
+        return "execute", last_blocked
+
+
+BASELINE_DETECTOR = ReplayDetector()
+
+
+def replay_case(case: Mapping[str, Any], detector: ReplayDetector = BASELINE_DETECTOR) -> dict[str, Any]:
     history: list[tuple[str, str]] = []
     last_blocked: str | None = None
     decisions: list[str] = []
     candidate_dispatch_count = 0
     completed_event_count = 0
+    request_index = 0
+    first_intervention_request_index = 0
     for event in case["events"]:
         if event["kind"] == "boundary":
             decisions.append("none")
@@ -290,8 +357,9 @@ def replay_case(case: Mapping[str, Any]) -> dict[str, Any]:
                 history.clear()
                 last_blocked = None
             continue
+        request_index += 1
         if event["kind"] == "completed":
-            history.append(_completed_value(event))
+            history.append(detector.completed_value(event))
             if len(history) > MAXIMUM_HISTORY:
                 history.pop(0)
             decisions.append("execute")
@@ -299,21 +367,11 @@ def replay_case(case: Mapping[str, Any]) -> dict[str, Any]:
             if last_blocked is not None and history[-1][0] != last_blocked:
                 last_blocked = None
             continue
-        candidate = _action(event)
-        decision = "execute"
-        if last_blocked == candidate:
-            decision = "stop"
-        else:
-            for period in range(1, MAXIMUM_PERIOD + 1):
-                required = period * 2
-                if len(history) < required:
-                    continue
-                start = len(history) - required
-                if history[start : start + period] == history[start + period : start + required] and candidate == history[start][0]:
-                    decision = "correct"
-                    last_blocked = candidate
-                    break
+        candidate = detector.action_value(event)
+        decision, last_blocked = detector.decide(history, candidate, last_blocked)
         decisions.append(decision)
+        if decision != "execute" and first_intervention_request_index == 0:
+            first_intervention_request_index = request_index
         candidate_dispatch_count += decision == "execute"
         if decision == "correct" and last_blocked is None:
             raise AssertionError("correction must retain the blocked action")
@@ -325,14 +383,14 @@ def replay_case(case: Mapping[str, Any]) -> dict[str, Any]:
         "expected": expected,
         "candidate_dispatch_count": candidate_dispatch_count,
         "completed_event_count": completed_event_count,
-        "first_intervention_request_index": case["first_intervention_request_index"],
+        "first_intervention_request_index": first_intervention_request_index,
         "passed": decisions == expected,
     }
 
 
-def replay_fixture(fixture: Mapping[str, Any]) -> dict[str, Any]:
+def replay_fixture(fixture: Mapping[str, Any], detector: ReplayDetector = BASELINE_DETECTOR) -> dict[str, Any]:
     checked = validate_fixture(fixture)
-    cases = [replay_case(case) for case in checked["cases"]]
+    cases = [replay_case(case, detector=detector) for case in checked["cases"]]
     return {
         "baseline": checked["baseline"],
         "cases": cases,

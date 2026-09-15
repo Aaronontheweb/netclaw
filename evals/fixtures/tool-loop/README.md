@@ -1,6 +1,7 @@
 # Sanitized tool-loop corpus
 
-This corpus records semantic facts from historical tool loops. It contains no
+This corpus records semantic facts from historical tool loops. The Python
+validator defines the fixture contract. It contains no
 raw prompt, tool arguments, path, result text, call identifier, timestamp, or
 private identity.
 
@@ -15,11 +16,11 @@ represents the next batch before dispatch. A boundary event records a new
 turn, compaction, or recovery without payload data. The
 `expected_decision` field records the locked baseline decision. The case label
 records a separate corpus assessment: harmful, productive, or uncertain.
-The first case records 45 historical requests and a 43-request exact suffix.
-The replay prefix keeps two distinct failures and two equal failures. The
-baseline must propose a correction for request 19 before a new result enters
-history.
-An index of zero means that the case has no intervention.
+The first case records aggregate counts of 45 requests and a 43-request exact
+suffix. Its replay prefix keeps two distinct failures and two equal failures.
+The baseline must propose a correction at relative request index 5 before a
+new result enters history. An index of zero means that the case has no
+intervention.
 
 Run the offline replay from the repository root:
 
@@ -27,7 +28,8 @@ Run the offline replay from the repository root:
 python3 evals/tool_loop_replay.py evals/fixtures/tool-loop/corpus.json
 ```
 
-Run the optional source audit with `--verify-source-root .`.
+The explicit source audit appears in `evals/README.md`. Normal replay uses the
+recorded release provenance and does not inspect the current source file.
 
 The command writes deterministic, compact JSON to standard output. Raw logs
 must remain outside the repository. Use `extract_sanitized_case` only with

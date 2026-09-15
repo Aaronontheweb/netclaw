@@ -35,22 +35,21 @@
   },
   "cases": [
     {
-      "id": "incident_a",
-      "session_group": "group_a",
+      "id": "incident_0001",
+      "session_group": "group_0001",
       "split": "train",
       "label": "harmful",
       "historical_request_count": 45,
       "historical_exact_suffix_count": 43,
-      "first_intervention_request_index": 19,
       "events": [
         {
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "invalid_input",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -59,10 +58,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_b",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0002",
               "outcome_category": "invalid_input",
-              "result_shape": "result_class_b"
+              "result_shape": "result_class_0002"
             }
           ],
           "expected_decision": "execute"
@@ -71,10 +70,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_repeat",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0002",
               "outcome_category": "invalid_input",
-              "result_shape": "result_class_repeat"
+              "result_shape": "result_class_0002"
             }
           ],
           "expected_decision": "execute"
@@ -83,10 +82,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_repeat",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0002",
               "outcome_category": "invalid_input",
-              "result_shape": "result_class_repeat"
+              "result_shape": "result_class_0002"
             }
           ],
           "expected_decision": "execute"
@@ -95,8 +94,8 @@
           "kind": "candidate",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_repeat"
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0002"
             }
           ],
           "expected_decision": "correct"
@@ -104,22 +103,21 @@
       ]
     },
     {
-      "id": "control_a",
-      "session_group": "group_b",
+      "id": "control_0002",
+      "session_group": "group_0002",
       "split": "train",
       "label": "harmful",
       "historical_request_count": 2,
       "historical_exact_suffix_count": 0,
-      "first_intervention_request_index": 3,
       "events": [
         {
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_same",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_same"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -128,10 +126,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_same",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_same"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -140,8 +138,8 @@
           "kind": "candidate",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_same"
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001"
             }
           ],
           "expected_decision": "correct"
@@ -150,8 +148,8 @@
           "kind": "candidate",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_same"
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001"
             }
           ],
           "expected_decision": "stop"
@@ -159,22 +157,21 @@
       ]
     },
     {
-      "id": "control_b",
-      "session_group": "group_c",
+      "id": "control_0003",
+      "session_group": "group_0003",
       "split": "holdout",
       "label": "uncertain",
       "historical_request_count": 2,
       "historical_exact_suffix_count": 0,
-      "first_intervention_request_index": 3,
       "events": [
         {
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_same",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -183,10 +180,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_same",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_b"
+              "result_shape": "result_class_0002"
             }
           ],
           "expected_decision": "execute"
@@ -195,8 +192,8 @@
           "kind": "candidate",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_same"
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -204,22 +201,21 @@
       ]
     },
     {
-      "id": "control_c",
-      "session_group": "group_d",
+      "id": "control_0004",
+      "session_group": "group_0004",
       "split": "holdout",
       "label": "uncertain",
       "historical_request_count": 2,
       "historical_exact_suffix_count": 0,
-      "first_intervention_request_index": 3,
       "events": [
         {
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_same"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -228,10 +224,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_b",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0002",
               "outcome_category": "success",
-              "result_shape": "result_class_same"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -240,8 +236,8 @@
           "kind": "candidate",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_c"
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0003"
             }
           ],
           "expected_decision": "execute"
@@ -249,22 +245,21 @@
       ]
     },
     {
-      "id": "control_d",
-      "session_group": "group_e",
+      "id": "control_0005",
+      "session_group": "group_0005",
       "split": "holdout",
       "label": "productive",
       "historical_request_count": 2,
       "historical_exact_suffix_count": 0,
-      "first_intervention_request_index": 3,
       "events": [
         {
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -273,10 +268,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_b",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0002",
               "outcome_category": "success",
-              "result_shape": "result_class_b"
+              "result_shape": "result_class_0002"
             }
           ],
           "expected_decision": "execute"
@@ -285,8 +280,8 @@
           "kind": "candidate",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_c"
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0003"
             }
           ],
           "expected_decision": "execute"
@@ -294,22 +289,21 @@
       ]
     },
     {
-      "id": "control_e",
-      "session_group": "group_f",
+      "id": "control_0006",
+      "session_group": "group_0006",
       "split": "holdout",
       "label": "uncertain",
       "historical_request_count": 4,
       "historical_exact_suffix_count": 0,
-      "first_intervention_request_index": 5,
       "events": [
         {
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -318,10 +312,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_b",
-              "argument_shape": "argument_class_b",
+              "tool": "tool_0002",
+              "argument_shape": "argument_class_0002",
               "outcome_category": "success",
-              "result_shape": "result_class_b"
+              "result_shape": "result_class_0002"
             }
           ],
           "expected_decision": "execute"
@@ -330,10 +324,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -342,10 +336,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_b",
-              "argument_shape": "argument_class_b",
+              "tool": "tool_0002",
+              "argument_shape": "argument_class_0002",
               "outcome_category": "success",
-              "result_shape": "result_class_b"
+              "result_shape": "result_class_0002"
             }
           ],
           "expected_decision": "execute"
@@ -354,8 +348,8 @@
           "kind": "candidate",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a"
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001"
             }
           ],
           "expected_decision": "correct"
@@ -363,22 +357,21 @@
       ]
     },
     {
-      "id": "control_f",
-      "session_group": "group_g",
+      "id": "control_0007",
+      "session_group": "group_0007",
       "split": "holdout",
       "label": "uncertain",
       "historical_request_count": 6,
       "historical_exact_suffix_count": 0,
-      "first_intervention_request_index": 7,
       "events": [
         {
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -387,10 +380,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_b",
-              "argument_shape": "argument_class_b",
+              "tool": "tool_0002",
+              "argument_shape": "argument_class_0002",
               "outcome_category": "success",
-              "result_shape": "result_class_b"
+              "result_shape": "result_class_0002"
             }
           ],
           "expected_decision": "execute"
@@ -399,10 +392,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_c",
-              "argument_shape": "argument_class_c",
+              "tool": "tool_0003",
+              "argument_shape": "argument_class_0003",
               "outcome_category": "success",
-              "result_shape": "result_class_c"
+              "result_shape": "result_class_0003"
             }
           ],
           "expected_decision": "execute"
@@ -411,10 +404,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -423,10 +416,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_b",
-              "argument_shape": "argument_class_b",
+              "tool": "tool_0002",
+              "argument_shape": "argument_class_0002",
               "outcome_category": "success",
-              "result_shape": "result_class_b"
+              "result_shape": "result_class_0002"
             }
           ],
           "expected_decision": "execute"
@@ -435,10 +428,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_c",
-              "argument_shape": "argument_class_c",
+              "tool": "tool_0003",
+              "argument_shape": "argument_class_0003",
               "outcome_category": "success",
-              "result_shape": "result_class_c"
+              "result_shape": "result_class_0003"
             }
           ],
           "expected_decision": "execute"
@@ -447,8 +440,8 @@
           "kind": "candidate",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a"
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001"
             }
           ],
           "expected_decision": "correct"
@@ -456,22 +449,21 @@
       ]
     },
     {
-      "id": "control_g",
-      "session_group": "group_h",
+      "id": "control_0008",
+      "session_group": "group_0008",
       "split": "holdout",
       "label": "uncertain",
       "historical_request_count": 7,
       "historical_exact_suffix_count": 0,
-      "first_intervention_request_index": 8,
       "events": [
         {
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -480,10 +472,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_b",
-              "argument_shape": "argument_class_b",
+              "tool": "tool_0002",
+              "argument_shape": "argument_class_0002",
               "outcome_category": "success",
-              "result_shape": "result_class_b"
+              "result_shape": "result_class_0002"
             }
           ],
           "expected_decision": "execute"
@@ -492,10 +484,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_c",
-              "argument_shape": "argument_class_c",
+              "tool": "tool_0003",
+              "argument_shape": "argument_class_0003",
               "outcome_category": "success",
-              "result_shape": "result_class_c"
+              "result_shape": "result_class_0003"
             }
           ],
           "expected_decision": "execute"
@@ -504,10 +496,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_d",
-              "argument_shape": "argument_class_d",
+              "tool": "tool_0004",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_d"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -516,10 +508,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_e",
-              "argument_shape": "argument_class_e",
+              "tool": "tool_0005",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_e"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -528,10 +520,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_f",
-              "argument_shape": "argument_class_f",
+              "tool": "tool_0006",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_f"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -540,10 +532,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_g",
-              "argument_shape": "argument_class_g",
+              "tool": "tool_0007",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_g"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -552,8 +544,8 @@
           "kind": "candidate",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a"
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -561,28 +553,27 @@
       ]
     },
     {
-      "id": "control_h",
-      "session_group": "group_i",
+      "id": "control_0009",
+      "session_group": "group_0009",
       "split": "holdout",
       "label": "uncertain",
       "historical_request_count": 2,
       "historical_exact_suffix_count": 0,
-      "first_intervention_request_index": 3,
       "events": [
         {
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             },
             {
-              "tool": "tool_b",
-              "argument_shape": "argument_class_b",
+              "tool": "tool_0002",
+              "argument_shape": "argument_class_0002",
               "outcome_category": "success",
-              "result_shape": "result_class_b"
+              "result_shape": "result_class_0002"
             }
           ],
           "expected_decision": "execute"
@@ -591,16 +582,16 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_b",
-              "argument_shape": "argument_class_b",
+              "tool": "tool_0002",
+              "argument_shape": "argument_class_0002",
               "outcome_category": "success",
-              "result_shape": "result_class_b"
+              "result_shape": "result_class_0002"
             },
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -609,12 +600,12 @@
           "kind": "candidate",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a"
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001"
             },
             {
-              "tool": "tool_b",
-              "argument_shape": "argument_class_b"
+              "tool": "tool_0002",
+              "argument_shape": "argument_class_0002"
             }
           ],
           "expected_decision": "correct"
@@ -622,22 +613,21 @@
       ]
     },
     {
-      "id": "control_i",
-      "session_group": "group_j",
+      "id": "control_0010",
+      "session_group": "group_0010",
       "split": "holdout",
       "label": "uncertain",
       "historical_request_count": 2,
       "historical_exact_suffix_count": 0,
-      "first_intervention_request_index": 3,
       "events": [
         {
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -646,10 +636,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -663,8 +653,8 @@
           "kind": "candidate",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a"
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -672,22 +662,21 @@
       ]
     },
     {
-      "id": "control_j",
-      "session_group": "group_k",
+      "id": "control_0011",
+      "session_group": "group_0011",
       "split": "holdout",
       "label": "uncertain",
       "historical_request_count": 2,
       "historical_exact_suffix_count": 0,
-      "first_intervention_request_index": 3,
       "events": [
         {
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -696,10 +685,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -713,8 +702,8 @@
           "kind": "candidate",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a"
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001"
             }
           ],
           "expected_decision": "correct"
@@ -722,22 +711,21 @@
       ]
     },
     {
-      "id": "control_k",
-      "session_group": "group_l",
+      "id": "control_0012",
+      "session_group": "group_0012",
       "split": "holdout",
       "label": "uncertain",
       "historical_request_count": 2,
       "historical_exact_suffix_count": 0,
-      "first_intervention_request_index": 3,
       "events": [
         {
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -746,10 +734,10 @@
           "kind": "completed",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a",
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001",
               "outcome_category": "success",
-              "result_shape": "result_class_a"
+              "result_shape": "result_class_0001"
             }
           ],
           "expected_decision": "execute"
@@ -763,8 +751,8 @@
           "kind": "candidate",
           "calls": [
             {
-              "tool": "tool_a",
-              "argument_shape": "argument_class_a"
+              "tool": "tool_0001",
+              "argument_shape": "argument_class_0001"
             }
           ],
           "expected_decision": "execute"
