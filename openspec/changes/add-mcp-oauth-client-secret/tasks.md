@@ -9,6 +9,7 @@
 - [x] 2.2 Store and reload the encrypted profile secret, and verify public configuration and CLI output contain no secret.
 - [x] 2.3 Update MCP CLI help and verify the focused command tests pass.
 - [x] 2.4 Remove an omitted client secret during profile replacement without changing other server profiles.
+- [x] 2.5 Restore the prior public configuration when a secret write fails, and verify the failure path.
 
 ## 3. OAuth runtime identity
 
@@ -19,7 +20,7 @@
 
 ## 4. Operator contract
 
-- [x] 4.1 Update release notes and the `netclaw-operations` system skill, then verify the skill metadata version changed.
+- [x] 4.1 Update the `netclaw-operations` system skill. Correct external release documentation after beta.4 ships.
 
 ## 5. Validation
 
