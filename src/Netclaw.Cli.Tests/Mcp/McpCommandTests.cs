@@ -219,6 +219,38 @@ public sealed class McpCommandTests : IDisposable
         Assert.DoesNotContain("Client secret: configured", _output.ToString(), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Add_SecretWriteFailure_RestoresPriorPublicConfiguration()
+    {
+        var initialExitCode = await McpCommand.RunAsync(
+            ["mcp", "add", "--transport", "http", "github", "https://old.example/mcp"],
+            _paths,
+            output: _output);
+        Assert.Equal(0, initialExitCode);
+
+        var configBefore = File.ReadAllText(_paths.NetclawConfigPath);
+        const string unreadableSecrets = """
+            {
+              "broken": "ENC:not-valid-ciphertext"
+            }
+            """;
+        File.WriteAllText(_paths.SecretsPath, unreadableSecrets);
+
+        var exception = await Assert.ThrowsAsync<IOException>(() => McpCommand.RunAsync(
+            [
+                "mcp", "add", "--transport", "http",
+                "--client-id", "new-client",
+                "--client-secret", "new-secret",
+                "github", "https://new.example/mcp",
+            ],
+            _paths,
+            output: _output));
+
+        Assert.Contains("restored the prior configuration", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(configBefore, File.ReadAllText(_paths.NetclawConfigPath));
+        Assert.Equal(unreadableSecrets, File.ReadAllText(_paths.SecretsPath));
+    }
+
     // ── Fail-closed defaults for new MCP servers ──
 
     [Fact]

@@ -238,31 +238,58 @@ internal static class McpCommand
 
         ApplySecureDefaultsForNewServer(config, serverName, grantAll);
 
+        var configBefore = File.Exists(paths.NetclawConfigPath)
+            ? File.ReadAllText(paths.NetclawConfigPath)
+            : null;
         WriteConfigFile(paths.NetclawConfigPath, config);
 
-        // Replace this profile's sensitive values in secrets.json.
-        var hasServerSecrets = envVars.Count > 0 || headers.Count > 0 || oauthClientSecret is not null;
-        ConfigFileHelper.UpdateSecretsFile(paths, (secrets, fileExisted) =>
+        try
         {
-            if (!fileExisted && !hasServerSecrets)
-                return false;
+            // Replace this profile's sensitive values in secrets.json.
+            var hasServerSecrets = envVars.Count > 0 || headers.Count > 0 || oauthClientSecret is not null;
+            ConfigFileHelper.UpdateSecretsFile(paths, (secrets, fileExisted) =>
+            {
+                if (!fileExisted && !hasServerSecrets)
+                    return false;
 
-            var secretMcp = GetOrCreateSection(secrets, "McpServers");
-            if (!hasServerSecrets)
-                return secretMcp.Remove(serverName.Value);
+                var secretMcp = GetOrCreateSection(secrets, "McpServers");
+                if (!hasServerSecrets)
+                    return secretMcp.Remove(serverName.Value);
 
-            var serverSecrets = new Dictionary<string, object>();
+                var serverSecrets = new Dictionary<string, object>();
 
-            if (envVars.Count > 0)
-                serverSecrets["EnvironmentVariables"] = envVars;
-            if (headers.Count > 0)
-                serverSecrets["Headers"] = headers;
-            if (oauthClientSecret is not null)
-                serverSecrets["OAuthClientSecret"] = oauthClientSecret;
+                if (envVars.Count > 0)
+                    serverSecrets["EnvironmentVariables"] = envVars;
+                if (headers.Count > 0)
+                    serverSecrets["Headers"] = headers;
+                if (oauthClientSecret is not null)
+                    serverSecrets["OAuthClientSecret"] = oauthClientSecret;
 
-            secretMcp[serverName.Value] = JsonSerializer.SerializeToElement(serverSecrets);
-            return true;
-        });
+                secretMcp[serverName.Value] = JsonSerializer.SerializeToElement(serverSecrets);
+                return true;
+            });
+        }
+        catch (Exception secretError)
+        {
+            try
+            {
+                if (configBefore is null)
+                    File.Delete(paths.NetclawConfigPath);
+                else
+                    AtomicFile.WriteAllText(paths.NetclawConfigPath, configBefore);
+            }
+            catch (Exception rollbackError)
+            {
+                throw new AggregateException(
+                    "The MCP secret update and configuration rollback both failed.",
+                    secretError,
+                    rollbackError);
+            }
+
+            throw new IOException(
+                "The MCP secret update failed. Netclaw restored the prior configuration.",
+                secretError);
+        }
 
         writer.WriteLine($"Added MCP server '{serverName.Value}' ({transport})");
         writer.WriteLine();
