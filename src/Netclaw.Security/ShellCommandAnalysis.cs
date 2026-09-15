@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Collections.Immutable;
 using ShellSyntaxTree;
 
 namespace Netclaw.Security;
@@ -25,20 +26,37 @@ internal sealed class ShellCommandAnalyzer
     public ShellCommandAnalysis Analyze(string command, string? workingDirectory = null)
     {
         var commands = new List<CommandOccurrence>();
-        var failure = Analyze(command, workingDirectory, depth: 0, commands);
+        var denyOnlyClauses = new List<Clause>();
+        var knownRegionArguments = new HashSet<ClauseElement>(
+            ReferenceEqualityComparer.Instance);
+        var syntaxProofComplete = true;
+        var failure = Analyze(
+            command,
+            workingDirectory,
+            depth: 0,
+            commands,
+            denyOnlyClauses,
+            knownRegionArguments,
+            ref syntaxProofComplete);
         return new ShellCommandAnalysis(
             _environment,
             command,
             workingDirectory,
             commands,
-            failure);
+            denyOnlyClauses,
+            failure,
+            knownRegionArguments,
+            syntaxProofComplete);
     }
 
     private ShellAnalysisFailure Analyze(
         string command,
         string? workingDirectory,
         int depth,
-        List<CommandOccurrence> commands)
+        List<CommandOccurrence> commands,
+        List<Clause> denyOnlyClauses,
+        HashSet<ClauseElement> knownRegionArguments,
+        ref bool syntaxProofComplete)
     {
         if (depth > MaxWrapperDepth)
             return ShellAnalysisFailure.Unresolved;
@@ -62,12 +80,28 @@ internal sealed class ShellCommandAnalyzer
             return ShellAnalysisFailure.Unresolved;
         }
 
-        if (parsed.IsUnparseable || parsed.Commands.Count == 0)
+        if (parsed.IsUnparseable)
+        {
+            if (_environment.Grammar == ShellGrammar.PowerShell)
+            {
+                ShellCommandAnalysis.CollectSourceAuthenticDenyOnlyClauses(
+                    parsed.Syntax,
+                    command,
+                    denyOnlyClauses);
+            }
+
+            return ShellAnalysisFailure.Unresolved;
+        }
+
+        if (parsed.Commands.Count == 0)
             return ShellAnalysisFailure.Unresolved;
 
         if (_environment.Grammar == ShellGrammar.PowerShell)
         {
             commands.AddRange(parsed.Commands);
+            syntaxProofComplete &= ShellCommandAnalysis.TryCollectKnownExecutionRegionArguments(
+                parsed.Syntax,
+                knownRegionArguments);
             return ShellAnalysisFailure.None;
         }
 
@@ -121,14 +155,16 @@ internal sealed class ShellCommandAnalyzer
                 innerCommands[innerIndex++],
                 innerWorkingDirectory,
                 depth + 1,
-                commands);
+                commands,
+                denyOnlyClauses,
+                knownRegionArguments,
+                ref syntaxProofComplete);
             if (failure != ShellAnalysisFailure.None)
                 return failure;
         }
 
         return ShellAnalysisFailure.None;
     }
-
     private static bool TryResolveWrapperWorkingDirectory(
         CommandOccurrence occurrence,
         string? inheritedWorkingDirectory,
@@ -301,18 +337,30 @@ internal static class ShellGlobPath
 
 public sealed record ShellCommandAnalysis
 {
+    private const long MaximumReviewedIntegerRangeCardinality = 4096;
+
     internal ShellCommandAnalysis(
         ShellExecutionEnvironment environment,
         string source,
         string? workingDirectory,
         IReadOnlyList<CommandOccurrence> commands,
-        ShellAnalysisFailure failure)
+        IReadOnlyList<Clause> denyOnlyClauses,
+        ShellAnalysisFailure failure,
+        IReadOnlySet<ClauseElement> knownRegionArguments,
+        bool syntaxProofComplete)
     {
         Environment = environment;
         Source = source;
         WorkingDirectory = workingDirectory;
-        Commands = commands;
+        Commands = commands.ToImmutableArray();
+        DenyOnlyClauses = denyOnlyClauses.ToImmutableArray();
         Failure = failure;
+        HasDynamicSyntax = !syntaxProofComplete
+            || Commands.Any(command =>
+                CommandHasDynamicSyntax(command, knownRegionArguments));
+        RequiresExactTreeApproval = ShellFileSystemTreeAccessPolicy.RequiresExactApproval(
+            environment,
+            Commands);
     }
 
     public string Source { get; }
@@ -321,25 +369,190 @@ public sealed record ShellCommandAnalysis
 
     public IReadOnlyList<CommandOccurrence> Commands { get; }
 
+    internal IReadOnlyList<Clause> DenyOnlyClauses { get; }
+
     public bool IsResolved => Failure == ShellAnalysisFailure.None && Commands.Count > 0;
 
-    public bool HasDynamicSyntax
-    {
-        get
-        {
-            var accountedRegionArguments = FindAccountedExecutionRegionArguments();
-            return Commands.Any(command =>
-                CommandHasDynamicSyntax(command, accountedRegionArguments));
-        }
-    }
+    public bool HasDynamicSyntax { get; }
+
+    /// <summary>
+    /// Gets whether a filesystem tree effect requires one exact approval.
+    /// This fact is separate from shell syntax completeness.
+    /// </summary>
+    internal bool RequiresExactTreeApproval { get; }
 
     internal ShellExecutionEnvironment Environment { get; }
 
     internal ShellAnalysisFailure Failure { get; }
 
+    internal static void CollectSourceAuthenticDenyOnlyClauses(
+        ShellSyntaxNode node,
+        string source,
+        ICollection<Clause> clauses)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(clauses);
+
+        var seen = new HashSet<Clause>(ReferenceEqualityComparer.Instance);
+        CollectSourceAuthenticDenyOnlyClauses(node, source, clauses, seen);
+    }
+
+    private static void CollectSourceAuthenticDenyOnlyClauses(
+        ShellSyntaxNode node,
+        string source,
+        ICollection<Clause> clauses,
+        ISet<Clause> seen)
+    {
+        switch (node)
+        {
+            case ShellBlockSyntax block:
+                foreach (var statement in block.Statements)
+                    CollectSourceAuthenticDenyOnlyClauses(statement, source, clauses, seen);
+                break;
+            case SimpleCommandSyntax command:
+                if (seen.Add(command.Clause)
+                    && IsSourceAuthenticDenyOnlyClause(command, source))
+                {
+                    clauses.Add(command.Clause);
+                }
+
+                foreach (var region in command.ExecutionRegions)
+                    CollectSourceAuthenticDenyOnlyClauses(region, source, clauses, seen);
+                foreach (var substitution in command.Substitutions)
+                    CollectSourceAuthenticDenyOnlyClauses(substitution, source, clauses, seen);
+                break;
+            case PipelineSyntax pipeline:
+                foreach (var stage in pipeline.Stages)
+                    CollectSourceAuthenticDenyOnlyClauses(stage, source, clauses, seen);
+                break;
+            case CommandListSyntax list:
+                foreach (var item in list.Items)
+                    CollectSourceAuthenticDenyOnlyClauses(item.Command, source, clauses, seen);
+                break;
+            case GroupSyntax group:
+                CollectSourceAuthenticDenyOnlyClauses(group.Body, source, clauses, seen);
+                break;
+            case ForEachSyntax loop:
+                CollectSourceAuthenticDenyOnlyClauses(loop.IteratorCommands, source, clauses, seen);
+                CollectSourceAuthenticDenyOnlyClauses(loop.Body, source, clauses, seen);
+                break;
+            case CommandSubstitutionSyntax substitution:
+                CollectSourceAuthenticDenyOnlyClauses(substitution.Body, source, clauses, seen);
+                break;
+            case ExecutionRegionSyntax region:
+                CollectSourceAuthenticDenyOnlyClauses(region.Body, source, clauses, seen);
+                break;
+        }
+    }
+
+    private static bool IsSourceAuthenticDenyOnlyClause(
+        SimpleCommandSyntax command,
+        string source)
+    {
+        var clause = command.Clause;
+        if (clause.Verb.IsDynamic
+            || clause.Verb.Tokens.Count == 0
+            || clause.Elements.Count == 0
+            || !HasValidSourceProvenance(command, source.Length))
+        {
+            return false;
+        }
+
+        var verbIndex = 0;
+        foreach (var element in clause.Elements)
+        {
+            if (!Enum.IsDefined(element.Role)
+                || !Enum.IsDefined(element.Kind)
+                || !HasExactSourceIdentity(
+                    element,
+                    command,
+                    source,
+                    clause.IsCommandStringWrapped))
+            {
+                return false;
+            }
+
+            if (element.Role == ClauseElementRole.Verb)
+            {
+                if (element.Kind != ArgKind.Literal
+                    || verbIndex >= clause.Verb.Tokens.Count
+                    || element.PrecedingVerbElementCount != verbIndex
+                    || !string.Equals(
+                        element.Value,
+                        clause.Verb.Tokens[verbIndex],
+                        StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                verbIndex++;
+            }
+        }
+
+        return verbIndex == clause.Verb.Tokens.Count;
+    }
+
+    private static bool HasValidSourceProvenance(
+        ShellSyntaxNode node,
+        int sourceLength)
+    {
+        if (node is SimpleCommandSyntax
+            {
+                Clause.IsCommandStringWrapped: true,
+                SourceStart: null,
+                SourceLength: null
+            })
+        {
+            return true;
+        }
+
+        if (node.SourceStart is not int start
+            || node.SourceLength is not int length
+            || start < 0
+            || length < 0)
+        {
+            return false;
+        }
+
+        return length <= sourceLength && start <= sourceLength - length;
+    }
+
+    private static bool HasExactSourceIdentity(
+        ClauseElement element,
+        ShellSyntaxNode owner,
+        string source,
+        bool isCommandStringWrapped)
+    {
+        if (isCommandStringWrapped
+            && owner.SourceStart is null
+            && owner.SourceLength is null)
+        {
+            return element.SourceStart is null && element.SourceLength is null;
+        }
+
+        if (element.SourceStart is not int start
+            || element.SourceLength is not int length
+            || owner.SourceStart is not int ownerStart
+            || owner.SourceLength is not int ownerLength
+            || start < 0
+            || length < 0
+            || length != element.Raw.Length
+            || start < ownerStart
+            || length > source.Length
+            || start > source.Length - length
+            || start + length > ownerStart + ownerLength)
+        {
+            return false;
+        }
+
+        return source.AsSpan(start, length)
+            .SequenceEqual(element.Raw.AsSpan());
+    }
+
     private bool CommandHasDynamicSyntax(
         CommandOccurrence command,
-        HashSet<ClauseElement> accountedRegionArguments)
+        IReadOnlySet<ClauseElement> accountedRegionArguments)
         => !command.IsComplete
             || !Enum.IsDefined(command.ImmediateRole)
             || command.ImmediateRole == CommandOccurrenceRole.Unknown
@@ -356,7 +569,8 @@ public sealed record ShellCommandAnalysis
                     command,
                     arg,
                     accountedRegionArguments)
-                && !HasBoundedAuthoredFileSystemValue(command, arg))
+                && !HasBoundedAuthoredFileSystemValue(command, arg)
+                && !HasAuditedNonFileSystemValue(command, arg))
             || command.Clause.Args.Any(static arg =>
                 arg.IsPath
                 && arg.Kind != ArgKind.Glob
@@ -372,50 +586,73 @@ public sealed record ShellCommandAnalysis
                 ShellGlobPath.HasUnresolvedDescendantScope(arg, Environment.PathStyle))
             || HasUnresolvedRedirect(command);
 
-    private HashSet<ClauseElement> FindAccountedExecutionRegionArguments()
+    internal static bool TryCollectKnownExecutionRegionArguments(
+        ShellSyntaxNode node,
+        ISet<ClauseElement> arguments)
     {
-        // PowerShell keeps a script-block host argument opaque while projecting
-        // its executable body as command occurrences. Suppress only that exact
-        // host element after a complete descendant proves the region metadata.
-        var arguments = new HashSet<ClauseElement>(ReferenceEqualityComparer.Instance);
-        foreach (var command in Commands)
+        ArgumentNullException.ThrowIfNull(node);
+        ArgumentNullException.ThrowIfNull(arguments);
+
+        return node switch
         {
-            if (!command.IsComplete)
-            {
-                continue;
-            }
-
-            foreach (var frame in command.Ancestry)
-            {
-                if (frame is
-                    {
-                        Region: CommandAncestryRegion.ExecutionRegion,
-                        Ancestor: ExecutionRegionSyntax region
-                    }
-                    && IsKnownCommandArgumentRegion(region))
-                {
-                    arguments.Add(region.HostArgument!);
-                }
-            }
-        }
-
-        return arguments;
+            ShellBlockSyntax block => block.Statements.All(statement =>
+                TryCollectKnownExecutionRegionArguments(statement, arguments)),
+            SimpleCommandSyntax command => command.ExecutionRegions.All(region =>
+                    TryCollectKnownExecutionRegionArguments(region, arguments))
+                && command.Substitutions.All(substitution =>
+                    TryCollectKnownExecutionRegionArguments(substitution, arguments)),
+            PipelineSyntax pipeline => pipeline.Stages.All(stage =>
+                TryCollectKnownExecutionRegionArguments(stage, arguments)),
+            CommandListSyntax list => list.Items.All(item =>
+                TryCollectKnownExecutionRegionArguments(item.Command, arguments)),
+            GroupSyntax group => TryCollectKnownExecutionRegionArguments(
+                group.Body,
+                arguments),
+            ForEachSyntax loop => TryCollectKnownExecutionRegionArguments(
+                    loop.IteratorCommands,
+                    arguments)
+                && TryCollectKnownExecutionRegionArguments(loop.Body, arguments),
+            CommandSubstitutionSyntax substitution => TryCollectKnownExecutionRegionArguments(
+                substitution.Body,
+                arguments),
+            ExecutionRegionSyntax region => TryCollectKnownExecutionRegion(
+                region,
+                arguments),
+            _ => false
+        };
     }
 
-    private static bool IsKnownCommandArgumentRegion(ExecutionRegionSyntax region)
-        => region.Origin == ExecutionRegionOrigin.CommandArgument
-            && region.HostArgument is not null
-            && Enum.IsDefined(region.Phase)
-            && region.Phase != ExecutionRegionPhase.Unknown
-            && Enum.IsDefined(region.Timing)
-            && region.Timing != ExecutionRegionTiming.Unknown
-            && Enum.IsDefined(region.Cardinality)
-            && region.Cardinality != ExecutionRegionCardinality.Unknown;
+    private static bool TryCollectKnownExecutionRegion(
+        ExecutionRegionSyntax region,
+        ISet<ClauseElement> arguments)
+    {
+        if (!Enum.IsDefined(region.Origin)
+            || region.Origin == ExecutionRegionOrigin.Unknown
+            || !Enum.IsDefined(region.Phase)
+            || region.Phase == ExecutionRegionPhase.Unknown
+            || !Enum.IsDefined(region.Timing)
+            || region.Timing == ExecutionRegionTiming.Unknown
+            || !Enum.IsDefined(region.Cardinality)
+            || region.Cardinality == ExecutionRegionCardinality.Unknown
+            || (region.Origin == ExecutionRegionOrigin.CommandArgument
+                && region.HostArgument is null))
+        {
+            return false;
+        }
+
+        if (!TryCollectKnownExecutionRegionArguments(region.Body, arguments))
+            return false;
+
+        if (region.Origin == ExecutionRegionOrigin.CommandArgument)
+            arguments.Add(region.HostArgument!);
+
+        return true;
+    }
 
     private static bool IsAccountedExecutionRegionArgument(
         CommandOccurrence command,
         Arg argument,
-        HashSet<ClauseElement> accountedRegionArguments)
+        IReadOnlySet<ClauseElement> accountedRegionArguments)
         => command.Arguments.Any(analyzed =>
             ReferenceEquals(analyzed.Argument, argument)
             && IsAccountedExecutionRegionArgument(
@@ -424,7 +661,7 @@ public sealed record ShellCommandAnalysis
 
     private static bool IsAccountedExecutionRegionArgument(
         AnalyzedArgument argument,
-        HashSet<ClauseElement> accountedRegionArguments)
+        IReadOnlySet<ClauseElement> accountedRegionArguments)
         => argument.Argument.Kind == ArgKind.DynamicSkip
             && accountedRegionArguments.Contains(argument.Element);
 
@@ -435,6 +672,51 @@ public sealed record ShellCommandAnalysis
             ReferenceEquals(analyzed.Argument, argument)
             && analyzed.AuthoredFileSystemValue is ShellValueDomain.Exact
                 or ShellValueDomain.FiniteSet);
+
+    private static bool HasAuditedNonFileSystemValue(
+        CommandOccurrence command,
+        Arg argument)
+        => command.Arguments.Any(analyzed =>
+            ReferenceEquals(analyzed.Argument, argument)
+            && HasAuditedNonFileSystemValue(analyzed));
+
+    internal static bool HasAuditedNonFileSystemValue(AnalyzedArgument argument)
+    {
+        if (argument.Argument.IsPath
+            || argument.AuthoredFileSystemValue is not ShellValueDomain.Unknown)
+        {
+            return false;
+        }
+
+        return argument.AuthoredNonFileSystemValue switch
+        {
+            ShellValueDomain.Exact => true,
+            ShellValueDomain.FiniteSet finite => IsValidFiniteSet(finite),
+            ShellValueDomain.OrderedList list => IsValidOrderedList(list),
+            ShellValueDomain.Unknown => HasMatchingIntegerRange(argument),
+            _ => false
+        };
+    }
+
+    private static bool HasMatchingIntegerRange(AnalyzedArgument argument)
+        => argument.Value is ShellValueDomain.IntegerRange value
+           && argument.AuthoredValue is ShellValueDomain.IntegerRange authored
+           && value.MinimumInclusive == authored.MinimumInclusive
+           && value.MaximumInclusive == authored.MaximumInclusive
+           && value.MinimumInclusive >= 0
+           && value.MaximumInclusive <= int.MaxValue
+           && value.MaximumInclusive >= value.MinimumInclusive
+           && value.MaximumInclusive - value.MinimumInclusive
+               < MaximumReviewedIntegerRangeCardinality;
+
+    private static bool IsValidFiniteSet(ShellValueDomain.FiniteSet finite)
+        => finite.Values.Count is >= 2 and <= 32
+           && finite.Values.All(static value => value is not null)
+           && finite.Values.Distinct(StringComparer.Ordinal).Count() == finite.Values.Count;
+
+    private static bool IsValidOrderedList(ShellValueDomain.OrderedList list)
+        => list.Values.Count is >= 2 and <= 32
+           && list.Values.All(static value => value is not null);
 
     private static bool IsKnownAncestor(ShellSyntaxNode ancestor)
         => ancestor is ShellBlockSyntax
@@ -463,12 +745,31 @@ public sealed record ShellCommandAnalysis
             return true;
         }
 
+        if (argument.AuthoredNonFileSystemValue is not ShellValueDomain.Unknown
+            and not ShellValueDomain.Exact
+            and not ShellValueDomain.FiniteSet
+            and not ShellValueDomain.OrderedList)
+        {
+            return true;
+        }
+
+        if (argument.AuthoredFileSystemValue is not ShellValueDomain.Unknown
+            && argument.AuthoredNonFileSystemValue is not ShellValueDomain.Unknown)
+        {
+            return true;
+        }
+
         var value = argument.Value;
         if (value is ShellValueDomain.Unknown)
         {
             if (argument.AuthoredFileSystemValue is not ShellValueDomain.Unknown)
             {
                 value = argument.AuthoredFileSystemValue;
+            }
+            else if (!argument.Argument.IsPath
+                     && argument.AuthoredNonFileSystemValue is not ShellValueDomain.Unknown)
+            {
+                value = argument.AuthoredNonFileSystemValue;
             }
             else if (!argument.Argument.IsPath
                      && argument.AuthoredValue is not ShellValueDomain.Unknown)
@@ -486,6 +787,8 @@ public sealed record ShellCommandAnalysis
             ShellValueDomain.FiniteSet finite => finite.Values.Count is < 2 or > 32
                 || finite.Values.Any(static value => value is null)
                 || finite.Values.Distinct(StringComparer.Ordinal).Count() != finite.Values.Count,
+            ShellValueDomain.OrderedList list => list.Values.Count is < 2 or > 32
+                || list.Values.Any(static value => value is null),
             // ShellSyntaxTree proves these domains are bounded. They remain
             // data only and cannot establish path or execution authority.
             ShellValueDomain.IntegerRange => argument.Argument.IsPath,

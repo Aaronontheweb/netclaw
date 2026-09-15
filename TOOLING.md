@@ -29,8 +29,9 @@
 
 ## Focused Mutation Tests
 
-The path-access mutation job runs on each pull request, merge group, and `dev` push.
-The Linux job runs in parallel with the normal test matrix.
+The path-access, tool authorization, approval directory, and shell analysis
+mutation jobs run on each pull request, merge group, and `dev` push.
+Each Linux job runs in parallel with the normal test matrix.
 
 Focused mutation tests prove that deterministic tests reject a specific unsafe
 change at a security or authority boundary. They do not measure general code
@@ -41,8 +42,12 @@ coverage. They do not replace positive and negative behavior tests.
 | Target | Protected claim | Expected mutants | Command |
 |--------|-----------------|------------------|---------|
 | `PathAccessPolicy.AddSessionRoots` | Only a Personal context receives shared session roots | 2 killed | `./scripts/run-path-access-mutations.sh` |
+| `ToolAccessPolicy.AuthorizeMcpInvocation` | Server and tool audience grants precede approval | 2 killed | `./scripts/run-tool-authorization-mutations.sh` |
+| `ToolAccessPolicy.AuthorizeShellInvocation` | A shell hard denial precedes approval | 1 killed | `./scripts/run-tool-authorization-mutations.sh` |
+| Shell analysis, denial-only, tree effects, and reviewed-safe gates | Parser-proved regions and authored diagnostic syntax preserve hard denials; only bounded audited non-path values and consistent non-link-following tree facts can use reusable approval | 79 killed | `./scripts/run-shell-command-analysis-mutations.sh` |
+| `ApprovalPatternMatching.EvaluateApprovalScope` | Folder grants require containment and reject link escape | 4 killed | `./scripts/run-approval-directory-mutations.sh` |
 
-Run the same check locally:
+Run the path-access check locally:
 
 ```bash
 ./scripts/run-path-access-mutations.sh
@@ -56,6 +61,93 @@ A cold CI runner should take two to four minutes.
 The harness uses xUnit 2 because Stryker's VSTest adapter does not support xUnit 3 correctly.
 The script requires `perl` and `jq`, which the Linux CI image supplies.
 
+### Tool Authorization Gate
+
+Run the tool authorization gate:
+
+```bash
+./scripts/run-tool-authorization-mutations.sh
+```
+
+The script selects three conditions in `ToolAccessPolicy`.
+Each mutant removes a logical negation.
+The script requires one killed mutant at each selected source location and exactly three tested mutants overall.
+The gate fails if a target is absent, survives, exceeds its time limit, or cannot compile.
+Stryker can report unrelated compiler errors before it applies the source filter.
+Those errors do not count as tested mutants.
+
+The tests use the real dispatcher, MCP adapter, and shell policy coordinator.
+Local probe tools count calls without an MCP connection or a host process.
+Public and Team cases cover both MCP grant layers under Auto and one-time approval.
+Personal cases cover shell hard denial under both modes.
+Auto cases test forbidden calls before their permitted controls.
+Approval cases first prove that the same approval keys permit the call.
+Each denial must preserve the probe call count.
+
+These tests preserve PRD-002 SEC-003 and PRD-006 MCP-003.
+See [the ACL contract](openspec/specs/netclaw-acl/spec.md) and
+[the approval contract](openspec/specs/tool-approval-gates/spec.md).
+The gate covers authorization before dispatch. It does not prove MCP transport or native shell containment.
+
+The final local run took 88 seconds after package restore.
+The separate CI job retains a 10-minute timeout and uploads `tool-authorization-mutation-report`.
+Its report directory is `artifacts/stryker/tool-authorization`.
+
+### Approval Directory Gate
+
+Run the approval directory gate:
+
+```bash
+./scripts/run-approval-directory-mutations.sh
+```
+
+The script reuses the xUnit 2 harness and selects `Netclaw.Security.csproj` as the mutation target.
+It selects three source locations in `EvaluateApprovalScope`:
+
+| Decision | Expected mutants |
+|----------|------------------|
+| Windows path containment | 1 killed: remove the logical negation |
+| POSIX path containment | 1 killed: remove the logical negation |
+| POSIX link rejection | 2 killed: force either conditional outcome |
+
+The script requires these counts at their exact source locations and four tested mutants overall.
+It fails if a target is absent, survives, exceeds its time limit, or cannot compile.
+The source selector rejects an absent or duplicate boundary before Stryker starts.
+This protects the gate when the authorization code and diagnostic code contain similar conditions.
+
+Fifteen cases exercise the public typed approval matcher with real directories and links.
+They cover the grant root, normal descendants, sibling prefixes, traversal, relative paths, and candidate scope that differs from cwd.
+The link cases prove that the link reaches the sibling directory before they require denial.
+Windows path cases cover case rules, drive boundaries, and traversal on every host.
+The native filesystem cases select Bash on POSIX hosts and PowerShell on Windows.
+The Linux mutation job does not mutate the Windows link branch; the ordinary Windows test job exercises that branch.
+
+The matcher shares `EvaluateApprovalScope` with `ToolApprovalActor` and shell approval evidence validation.
+These tests preserve PRD-002 SEC-003 and
+[the directory-root approval contract](openspec/specs/tool-approval-gates/spec.md#requirement-directory-root-approvals-for-shell_execute).
+They prove folder-grant decisions. They do not prove native process containment or races between authorization and file access.
+
+The final local run took 41 seconds after package restore.
+The separate CI job retains a 10-minute timeout and uploads `approval-directory-mutation-report`.
+Its report directory is `artifacts/stryker/approval-directory`.
+
+### Shell Analysis Gate
+
+Run the shell analysis gate:
+
+```bash
+./scripts/run-shell-command-analysis-mutations.sh
+```
+
+The script tests 79 mutants across execution-region accounting, denial-only
+matching, tree traversal and root correspondence, bounded non-filesystem
+values, candidate extraction, approval mode, path facts, and reviewed-safe
+policy. The job fails unless every mutant dies.
+
+The final local run took about 6 minutes. CI allows 30 minutes for
+hosted-runner variance and report upload. The report directory is
+`artifacts/stryker/shell-command-analysis`.
+
 ### Scope Review
 
 Review the target list after each security fix or authority policy change.
@@ -68,7 +160,7 @@ Add one focused target when all these conditions apply:
 - Deterministic tests reject that mutation.
 - A narrow source span contains the relevant decision.
 - Stryker produces stable, meaningful mutants for that span.
-- The total mutation job stays below its 10-minute CI timeout.
+- The total mutation job stays below its configured CI timeout.
 
 Use this procedure:
 
@@ -85,8 +177,8 @@ long runs, and invalid results from the current xUnit 3 adapter path.
 
 Review these candidate boundaries before lower-risk code:
 
-1. Tool and MCP audience authorization in `ToolAccessPolicy`.
-2. Approval directory containment in `ApprovalPatternMatching`.
+1. Additional native-tool and structured-path decisions in `ToolAccessPolicy`.
+2. Additional approval scope decisions, including the native Windows link branch.
 3. Shell hard-deny decisions in `ShellCommandPolicy`.
 4. Slack, Discord, and Mattermost ACL decisions.
 5. Device bearer token authentication.
