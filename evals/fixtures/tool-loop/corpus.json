@@ -103,7 +103,7 @@
       ]
     },
     {
-      "id": "control_0002",
+      "id": "incident_0002",
       "session_group": "group_0002",
       "split": "train",
       "label": "harmful",

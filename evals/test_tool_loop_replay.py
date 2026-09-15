@@ -45,7 +45,7 @@ class ToolLoopReplayTests(unittest.TestCase):
         self.assertTrue(all(event["calls"][0]["result_shape"] == "result_class_0002" for event in case["events"][2:4]))
 
     def test_exact_loop_uses_correction_then_stop(self) -> None:
-        case = next(item for item in self.fixture["cases"] if item["id"] == "control_0002")
+        case = next(item for item in self.fixture["cases"] if item["id"] == "incident_0002")
         result = replay_fixture({**self.fixture, "cases": [case]})["cases"][0]
         self.assertEqual(["execute", "execute", "correct", "stop"], result["decisions"])
 
