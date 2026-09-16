@@ -352,6 +352,21 @@ names a directory that the session can declare, Netclaw can first return a
 candidates require approval. The bare `echo` side effect does not become a
 reusable prompt choice.
 
+#### Example: one-call directory advice
+
+An eligible Bash call can start with `cd /work/sub && command` while its
+session already declares `/work`. Netclaw can return
+`use_shell_working_directory` before an approval prompt. The correction names
+`/work/sub` for the next call's typed `WorkingDirectory`. The agent must remove
+the leading `cd` when it creates that next call. The original command does not
+run. The new command passes all normal policy checks. Netclaw gives no such
+advice for an unknown target, an external path, or a symbolic link below the
+project root.
+If the task needs the original shell directory behavior, the agent can keep
+the command and set typed `WorkingDirectory` to the current project root.
+That explicit scope stops repeat advice but grants no authority. Normal
+approval policy then applies to the original command.
+
 #### Example: Bash causal directory intent
 
 Input:

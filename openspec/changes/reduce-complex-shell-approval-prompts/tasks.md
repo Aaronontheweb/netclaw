@@ -1,7 +1,7 @@
 ## 1. Netclaw directory correction
 
-- [ ] 1.1 Add a sanitized `cd` plus pipeline case and verify the current prompt through the real coordinator.
-- [ ] 1.2 Add typed one-call directory advice and verify that the original call starts no process.
+- [x] 1.1 Add a sanitized `cd` plus pipeline case and verify the current prompt through the real coordinator.
+- [x] 1.2 Add typed one-call directory advice and verify that the original call starts no process.
 - [ ] 1.3 Update the operations skill and approval runbook. Verify the tool eval suite and focused actor tests.
 - [ ] 1.4 Open the first Netclaw PR. Verify CI, independent review, and the merged head.
 
@@ -25,3 +25,12 @@
 - [ ] 4.2 Run the Netclaw full test suite, focused mutants, eval suite if guidance changes, Slopwatch, and header check.
 - [ ] 4.3 Run an independent adversarial review and native platform CI. Open and merge the fourth PR.
 - [ ] 4.4 Confirm the merged revision, package reference, and live rollout state. Update the canonical plan with final evidence.
+
+## 5. Explicit repository grant scope
+
+- [ ] 5.1 Add a tagged repository grant scope and verify that old folder grants retain their path meaning.
+- [ ] 5.2 Resolve canonical Git identity and registered worktree roots. Verify a forged pointer, moved worktree, and external link fail closed.
+- [ ] 5.3 Offer a distinct repository choice in approval surfaces. Verify list, revoke, persistence, and migration behavior.
+- [ ] 5.4 Verify every verb, path, audience, hard-deny, and retry boundary with the real coordinator and focused mutants.
+- [ ] 5.5 Update the runbook, OpenSpec contract, and operations skill. Run eval, native approval smoke, and full security tests.
+- [ ] 5.6 Open and merge the fifth PR after native CI and independent review.

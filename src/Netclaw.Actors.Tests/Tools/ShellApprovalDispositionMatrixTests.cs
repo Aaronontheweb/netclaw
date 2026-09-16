@@ -81,6 +81,161 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
                 1,
                 "persistent:git status")));
 
+    [SlopwatchSuppress("SW001", "The observed compound uses POSIX Bash directory and pipeline semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case requires POSIX Bash semantics.")]
+    public async Task Declared_project_does_not_resolve_an_inline_directory_pipeline()
+    {
+        var testCase = new ShellApprovalCase(
+            "declared-project-inline-directory-pipeline",
+            new ShellApprovalInvocation(
+                "cd sub && cat result.txt | sed -n '1p'; ls .",
+                ApprovalDirectoryShape.None),
+            Approvals.PersistentAnywhere("cd", "cat", "sed", "ls"),
+            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0));
+        await using var harness = await ShellApprovalHarness.CreateAsync(
+            testCase,
+            fixture.ActorSystem,
+            TestContext.Current.CancellationToken);
+        harness.CreateProjectDirectory("sub");
+
+        var decision = await harness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(ToolAuthorizationOutcome.RequiresApproval, decision.Outcome);
+        Assert.True(decision.ApprovalContext?.IsMessy);
+        Assert.Empty(decision.ApprovalContext!.CandidateVerbs);
+        Assert.Equal(0, harness.ApprovalService.CheckCount);
+    }
+
+    [SlopwatchSuppress("SW001", "The correction requires POSIX Bash directory semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case requires POSIX Bash semantics.")]
+    public async Task Exact_child_directory_advice_stops_the_original_shell_process()
+    {
+        var project = Directory.CreateTempSubdirectory("netclaw-shell-directory-advice-");
+        try
+        {
+            var child = project.CreateSubdirectory("sub");
+            var marker = Path.Combine(child.FullName, "marker.txt");
+            var testCase = new ShellApprovalCase(
+                "exact-child-directory-advice",
+                new ShellApprovalInvocation(
+                    $"cd {child.FullName} && touch {marker}; ls .",
+                    ApprovalDirectoryShape.None),
+                Approvals.None,
+                ExpectedApproval.Require([]));
+            await using var harness = await ShellApprovalHarness.CreateAsync(
+                testCase.Id,
+                testCase.Invocation,
+                testCase.Approvals,
+                fixture.ActorSystem,
+                TestContext.Current.CancellationToken,
+                scope: new ShellApprovalHarnessScope(
+                    project.FullName,
+                    project.FullName,
+                    "signalr/directory-advice",
+                    []));
+
+            var decision = await harness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+            var correction = Assert.IsType<ToolCorrection.ShellWorkingDirectorySuggested>(decision.AgentCorrection);
+            Assert.Equal(child.FullName, correction.Directory);
+            Assert.Equal(ToolAuthorizationOutcome.RequiresAgentCorrection, decision.Outcome);
+
+            await Assert.ThrowsAsync<ToolCorrectionRequiredException>(() =>
+                harness.ExecuteAsync(TestContext.Current.CancellationToken));
+            Assert.False(File.Exists(marker));
+
+            await using var exactHarness = await ShellApprovalHarness.CreateAsync(
+                "intentional-directory-behavior",
+                testCase.Invocation with { WorkingDirectory = ApprovalDirectoryShape.Project },
+                Approvals.None,
+                fixture.ActorSystem,
+                TestContext.Current.CancellationToken,
+                scope: new ShellApprovalHarnessScope(
+                    project.FullName,
+                    project.FullName,
+                    "signalr/directory-advice",
+                    []));
+            var exactDecision = await exactHarness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(ToolAuthorizationOutcome.RequiresApproval, exactDecision.Outcome);
+            Assert.IsNotType<ToolCorrection.ShellWorkingDirectorySuggested>(exactDecision.AgentCorrection);
+        }
+        finally
+        {
+            project.Delete(recursive: true);
+        }
+    }
+
+    [SlopwatchSuppress("SW001", "The invalid target cases require POSIX path and symbolic link semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case requires POSIX path semantics.")]
+    public async Task Unresolved_or_untrusted_directory_targets_receive_no_one_call_advice()
+    {
+        var project = Directory.CreateTempSubdirectory("netclaw-shell-directory-boundary-");
+        var external = Directory.CreateTempSubdirectory("netclaw-shell-directory-external-");
+        try
+        {
+            var linked = Path.Combine(project.FullName, "linked");
+            Directory.CreateSymbolicLink(linked, external.FullName);
+            foreach (var target in new[] { "sub", linked, external.FullName })
+            {
+                var invocation = new ShellApprovalInvocation(
+                    $"cd {target} && cat result.txt",
+                    ApprovalDirectoryShape.None);
+                await using var harness = await ShellApprovalHarness.CreateAsync(
+                    "untrusted-directory-advice",
+                    invocation,
+                    Approvals.None,
+                    fixture.ActorSystem,
+                    TestContext.Current.CancellationToken,
+                    scope: new ShellApprovalHarnessScope(
+                        project.FullName,
+                        project.FullName,
+                        "signalr/directory-boundary",
+                        []));
+
+                var decision = await harness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+
+                Assert.IsNotType<ToolCorrection.ShellWorkingDirectorySuggested>(decision.AgentCorrection);
+            }
+        }
+        finally
+        {
+            project.Delete(recursive: true);
+            external.Delete(recursive: true);
+        }
+    }
+
+    [SlopwatchSuppress("SW001", "The requested directory behavior requires POSIX Bash semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case requires POSIX Bash semantics.")]
+    public async Task Simple_directory_behavior_uses_normal_approval_policy()
+    {
+        var project = Directory.CreateTempSubdirectory("netclaw-shell-directory-behavior-");
+        try
+        {
+            var child = project.CreateSubdirectory("sub");
+            await using var harness = await ShellApprovalHarness.CreateAsync(
+                "requested-directory-behavior",
+                new ShellApprovalInvocation(
+                    $"cd {child.FullName} && pwd",
+                    ApprovalDirectoryShape.None),
+                Approvals.None,
+                fixture.ActorSystem,
+                TestContext.Current.CancellationToken,
+                scope: new ShellApprovalHarnessScope(
+                    project.FullName,
+                    project.FullName,
+                    "signalr/directory-behavior",
+                    []));
+
+            var decision = await harness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+
+            Assert.IsNotType<ToolCorrection.ShellWorkingDirectorySuggested>(decision.AgentCorrection);
+            Assert.NotEqual(ToolAuthorizationOutcome.RequiresAgentCorrection, decision.Outcome);
+        }
+        finally
+        {
+            project.Delete(recursive: true);
+        }
+    }
+
     [SlopwatchSuppress("SW001", "This regression requires POSIX glob, symlink, and Bash authorization behavior.")]
     [Theory(SkipUnless = nameof(IsPosix), Skip = "The project glob regression defines POSIX behavior.")]
     [InlineData("grep -rn \"Mode B\" docs/ *.md 2>/dev/null | head -20", true, "grep")]

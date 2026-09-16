@@ -41,11 +41,12 @@ Netclaw SHALL offer a typed one-call directory correction when an eligible call 
 The correction SHALL identify the intended `WorkingDirectory` and SHALL not rewrite the command, execute a process, or create a grant.
 Netclaw SHALL evaluate a replacement call through the normal shell policy.
 Netclaw SHALL suppress this advice when the target is unsafe or unresolved.
+An explicit `WorkingDirectory` SHALL let the agent retain the original shell directory behavior under normal policy.
 
 #### Scenario: An eligible project read receives one-call advice
 
 - **GIVEN** the session project is `/work` and `/work/sub` is an allowed directory
-- **WHEN** the agent calls `cd /work/sub && cat result.txt` for a file read
+- **WHEN** the agent calls `cd /work/sub && cat result.txt | sed -n '1p'; ls .` for project work
 - **THEN** Netclaw can suggest `WorkingDirectory=/work/sub` for a replacement call
 - **AND** Netclaw does not execute the original command
 
@@ -55,3 +56,43 @@ Netclaw SHALL suppress this advice when the target is unsafe or unresolved.
 - **WHEN** the agent calls `cd /work/sub && pwd`
 - **THEN** Netclaw does not silently replace or execute a different command
 - **AND** the original call retains normal approval policy
+
+#### Scenario: An intentional complex directory call has an approval path
+
+- **GIVEN** an agent received one-call directory advice for a complete Bash command
+- **WHEN** the agent resubmits that command with `WorkingDirectory` set to the current project root
+- **THEN** Netclaw does not repeat the one-call directory advice
+- **AND** Netclaw applies normal approval policy to the original command
+
+### Requirement: Repository grants cover registered Git worktrees only by explicit choice
+
+Netclaw SHALL offer a distinct repository scope when an operator approves a shell verb inside a registered local Git worktree.
+The grant SHALL bind to the canonical repository identity and the approved verb phrase.
+It SHALL cover a sibling worktree only while Git registers that exact worktree under the same repository identity.
+Netclaw SHALL recheck directory, path, audience, hard-deny, and protected-path rules for each call.
+Existing folder grants SHALL remain path-scoped and SHALL not gain repository authority.
+
+#### Scenario: A repository grant covers a sibling worktree
+
+- **GIVEN** a repository grant covers `./scripts/bump-version.sh` in the main checkout
+- **AND** Git registers a sibling worktree under the same canonical repository identity
+- **WHEN** the agent calls that verb from the sibling worktree
+- **THEN** Netclaw can reuse the repository grant after all other policy checks pass
+
+#### Scenario: A folder grant does not cross to a sibling worktree
+
+- **GIVEN** a folder grant covers `./scripts/bump-version.sh` below the main checkout
+- **WHEN** the agent calls the same phrase from a sibling worktree outside that directory
+- **THEN** Netclaw requests approval or denies the call
+
+#### Scenario: An unregistered lookalike cannot use a repository grant
+
+- **GIVEN** a repository grant belongs to one Git repository
+- **WHEN** an unrelated directory presents a `.git` pointer without a matching worktree registration
+- **THEN** Netclaw does not use the repository grant
+
+#### Scenario: Other verbs in one shell call keep their own grants
+
+- **GIVEN** a repository grant covers `./scripts/bump-version.sh`
+- **WHEN** the same shell call also invokes an ungranted executable
+- **THEN** Netclaw requests approval or denies the ungranted occurrence

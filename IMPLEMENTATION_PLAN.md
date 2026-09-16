@@ -275,19 +275,21 @@ scope has proof. A parent folder grant covers descendants after each concrete
 path passes symlink and protected-path checks. A deep glob cannot use that
 rule without proof for every possible match.
 
-**Delivery:** Four reviewable PRs are planned. The first Netclaw PR adds a
+**Delivery:** Five reviewable PRs are planned. The first Netclaw PR adds a
 typed one-call directory correction and sanitized evidence. The second
 Netclaw PR adds conservative coverage for complete static compounds. The
 ShellSyntaxTree PR publishes bounded syntax facts, then tag
-`0.4.0-beta.3` publishes the public package. The final Netclaw PR pins that
+`0.4.0-beta.3` publishes the public package. The fourth PR pins that
 package and consumes only proved facts. The user authorized automatic merge
 after CI and independent security review.
+The fifth PR adds an explicit repository grant for registered Git
+worktrees. Existing folder grants retain their path meaning.
 
 **Gates:** Prove both outcomes of a directory change, every pipeline stage,
 an ungranted verb, each possible path, redirects, hard denials, protected
 paths, symbolic links, audience and session boundaries, and exact retries.
 Run focused mutation tests at the authority boundary. Restore the public
-beta from NuGet before the final Netclaw PR. Keep unknown syntax, runtime
+beta from NuGet before the fourth PR. Keep unknown syntax, runtime
 values, and deep globs under exact approval. Do not add executable-specific
 argument parsers to Netclaw.
 

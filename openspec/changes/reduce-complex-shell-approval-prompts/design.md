@@ -60,7 +60,7 @@ The smaller alternative is a Netclaw parser for `cd` and list operators. That wo
 Netclaw will first ship the correction and corpus without a grant change.
 ShellSyntaxTree will ship the parser facts as `0.4.0-beta.3` after its Linux and Windows gates pass.
 Netclaw will then pin the public beta and enable candidate coverage for proved finite scopes.
-Each release can roll back to its prior package or binary. Stored grants need no migration.
+Each release can roll back to its prior package or binary. Old grants retain their folder scope after schema migration.
 
 ## Delivery
 
@@ -70,5 +70,21 @@ Each release can roll back to its prior package or binary. Stored grants need no
 4. Netclaw PR: Pin the public beta and consume its proved facts. Run the full security and integration gates.
 
 The Netclaw branch for each later PR will start from the merged `dev` head.
-The ShellSyntaxTree release must exist on NuGet before the final Netclaw PR can pass public restore.
+The ShellSyntaxTree release must exist on NuGet before the fourth PR can pass public restore.
 The maintainer authorized automatic merge of these PRs. CI and the independent security review still gate each merge.
+
+### Explicit repository scope
+
+The operator chose a new repository grant type. Existing folder grants keep their path meaning.
+Netclaw will bind a repository grant to a canonical Git common directory and its registered worktree roots.
+The policy will confirm both facts for the current directory before it uses that grant.
+It will reject an unregistered `.git` pointer and a moved or removed worktree.
+It will apply ordinary verb, path, audience, and hard-deny checks after the repository match.
+
+The approval record must use a new tagged scope shape. It must not infer this scope from an old directory field.
+The operator will see the repository scope as a separate approval choice and a distinct list label.
+The repository identity is durable grant data; each worktree check is call-local.
+The approval actor owns the stored record. The shell coordinator owns the current worktree proof.
+
+The fifth PR will add this scope after the compound-command work.
+It will test a registered sibling, an unrelated repository, a forged `.git` pointer, a moved worktree, a symlink escape, and an ungranted second verb.

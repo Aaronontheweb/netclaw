@@ -285,6 +285,19 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
     public Task<ToolAuthorizationDecision> EvaluateDecisionAsync(CancellationToken ct)
         => _executor.EvaluateAuthorizationAsync(_toolCall, _context, ct);
 
+    public Task<string> ExecuteAsync(CancellationToken ct)
+    {
+        var arguments = new Dictionary<string, object?>(
+            _toolCall.Arguments ?? new Dictionary<string, object?>())
+        {
+            ["_rationale"] = "Verify that directory advice stops this shell call."
+        };
+        return _executor.ExecuteAsync(
+            new FunctionCallContent(_toolCall.CallId, _toolCall.Name, arguments),
+            _context,
+            ct);
+    }
+
     internal Task<ShellAuthorizationResult> EvaluateCoordinatorAsync(CancellationToken ct)
         => new ShellPolicyCoordinator(_registry, _policy, ApprovalService).EvaluateAsync(
             _registry.GetByName(_toolCall.Name)
