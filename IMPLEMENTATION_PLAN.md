@@ -260,6 +260,37 @@ Done when:
 **Surface area:** shell authorization, approval matching, security corpus
 **Verification:** L2
 
+#### Active delivery: complete compound scopes
+
+The `0.27.0-beta.4` session declared its project root. Later calls still used
+inline `cd` with a pipeline and later statements. ShellSyntaxTree parsed the
+source, but Netclaw lost reusable candidates after a directory join. The
+source also contains `rm`, `python3`, and `dotnet new install` prompts with no
+matching grant. Those prompts remain subject to approval.
+
+The approved contract is in
+`openspec/changes/reduce-complex-shell-approval-prompts/`. The goal is to
+reuse existing grants only when every reachable verb, directory, and path
+scope has proof. A parent folder grant covers descendants after each concrete
+path passes symlink and protected-path checks. A deep glob cannot use that
+rule without proof for every possible match.
+
+**Delivery:** Four reviewable PRs are planned. The first Netclaw PR adds a
+typed one-call directory correction and sanitized evidence. The second
+Netclaw PR adds conservative coverage for complete static compounds. The
+ShellSyntaxTree PR publishes bounded syntax facts, then tag
+`0.4.0-beta.3` publishes the public package. The final Netclaw PR pins that
+package and consumes only proved facts. The user authorized automatic merge
+after CI and independent security review.
+
+**Gates:** Prove both outcomes of a directory change, every pipeline stage,
+an ungranted verb, each possible path, redirects, hard denials, protected
+paths, symbolic links, audience and session boundaries, and exact retries.
+Run focused mutation tests at the authority boundary. Restore the public
+beta from NuGet before the final Netclaw PR. Keep unknown syntax, runtime
+values, and deep globs under exact approval. Do not add executable-specific
+argument parsers to Netclaw.
+
 The user promoted this work into `NOW`. The work must reduce repeat prompts
 without allowing an incomplete or unknown shell form.
 
