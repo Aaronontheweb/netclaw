@@ -75,16 +75,20 @@ public sealed class RepositoryWorktreeApprovalTests(ShellApprovalMatrixFixture f
             Assert.Equal(ToolAuthorizationOutcome.Allowed, siblingDecision.Outcome);
             Assert.Equal(ToolAllowReason.StoredApproval, siblingDecision.AllowReason);
 
-            await using var otherVerbHarness = await CreateHarnessAsync(
-                "repository-other-verb",
-                sibling,
-                main,
-                session.FullName,
-                "cd . && ./scripts/bump-version.sh; python3 -V",
-                grants);
-            var otherVerbDecision = await otherVerbHarness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
-            Assert.Equal(ToolAuthorizationOutcome.RequiresApproval, otherVerbDecision.Outcome);
-            Assert.Contains("python3", otherVerbDecision.ApprovalContext!.CandidateVerbs);
+            // The Windows harness uses PowerShell. This case tests a Bash compound.
+            if (!OperatingSystem.IsWindows())
+            {
+                await using var otherVerbHarness = await CreateHarnessAsync(
+                    "repository-other-verb",
+                    sibling,
+                    main,
+                    session.FullName,
+                    "cd . && ./scripts/bump-version.sh; python3 -V",
+                    grants);
+                var otherVerbDecision = await otherVerbHarness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+                Assert.Equal(ToolAuthorizationOutcome.RequiresApproval, otherVerbDecision.Outcome);
+                Assert.Contains("python3", otherVerbDecision.ApprovalContext!.CandidateVerbs);
+            }
 
             await using var unrelatedHarness = await CreateHarnessAsync(
                 "repository-unrelated",
@@ -161,8 +165,9 @@ public sealed class RepositoryWorktreeApprovalTests(ShellApprovalMatrixFixture f
             File.WriteAllText(Path.Combine(swappedAdmin.FullName, "commondir"), "../..\n");
             File.WriteAllText(Path.Combine(swappedAdmin.FullName, "gitdir"),
                 Path.Combine(sibling, ".git") + "\n");
-            File.Copy(Path.Combine(unrelated, ".git", "HEAD"),
-                Path.Combine(swappedAdmin.FullName, "HEAD"));
+            File.WriteAllText(Path.Combine(swappedAdmin.FullName, "HEAD"),
+                File.ReadAllText(Path.Combine(unrelated, ".git", "HEAD")));
+            File.SetAttributes(Path.Combine(sibling, ".git"), FileAttributes.Normal);
             File.WriteAllText(Path.Combine(sibling, ".git"),
                 $"gitdir: {swappedAdmin.FullName}\n");
             RunGit(sibling, "rev-parse", "--show-toplevel");

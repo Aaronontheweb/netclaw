@@ -54,7 +54,8 @@ public sealed class GitRepositoryApprovalScopeTests
             Assert.Equal(0, RunGitExitCode(sibling, "rev-parse", "--show-toplevel"));
 
             var forged = Directory.CreateDirectory(Path.Combine(root.FullName, "forged"));
-            File.Copy(Path.Combine(sibling, ".git"), Path.Combine(forged.FullName, ".git"));
+            var forgedPointer = Path.Combine(forged.FullName, ".git");
+            File.WriteAllText(forgedPointer, File.ReadAllText(Path.Combine(sibling, ".git")));
             Assert.False(GitRepositoryApprovalScope.TryResolve(forged.FullName, out _));
 
             var forgedAdmin = Directory.CreateDirectory(
@@ -62,7 +63,7 @@ public sealed class GitRepositoryApprovalScopeTests
             File.WriteAllText(Path.Combine(forgedAdmin.FullName, "commondir"), "../..\n");
             File.WriteAllText(Path.Combine(forgedAdmin.FullName, "gitdir"),
                 Path.Combine(forged.FullName, ".git") + "\n");
-            File.WriteAllText(Path.Combine(forged.FullName, ".git"),
+            File.WriteAllText(forgedPointer,
                 $"gitdir: {forgedAdmin.FullName}\n");
             Assert.False(GitRepositoryApprovalScope.TryResolve(forged.FullName, out _));
             Assert.NotEqual(0, RunGitExitCode(forged.FullName, "rev-parse", "--show-toplevel"));
