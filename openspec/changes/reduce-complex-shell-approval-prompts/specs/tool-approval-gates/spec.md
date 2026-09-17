@@ -6,6 +6,9 @@ For a complete Bash command, Netclaw SHALL retain each possible executable occur
 Netclaw SHALL apply every grant to the directory and path scope where that occurrence can execute.
 If any reachable scope is unknown, Netclaw SHALL require exact approval or deny the call.
 Netclaw SHALL keep hard denials, protected paths, redirects, audience limits, and one-time retry checks independent of grant coverage.
+Netclaw SHALL use this static scope proof only for an exact directory change.
+Netclaw SHALL keep the causal intent policy when it recognizes the command.
+Netclaw SHALL reject reusable static scope grants when a projected directory contains a symbolic link.
 
 #### Scenario: A read pipeline uses grants for every reachable scope
 
@@ -33,6 +36,13 @@ Netclaw SHALL keep hard denials, protected paths, redirects, audience limits, an
 - **GIVEN** a parent folder grant covers `/work`
 - **WHEN** a command refers to `/work/*/result.txt` and a match can cross a symbolic link
 - **THEN** Netclaw does not infer that the grant covers every possible target
+- **AND** Netclaw requires exact approval or denies the call
+
+#### Scenario: A linked directory keeps exact approval
+
+- **GIVEN** `/work/linked` is a symbolic link to another directory
+- **WHEN** the agent calls `cd /work/linked && cat result.txt | sed -n '1p'`
+- **THEN** Netclaw does not use reusable static scope grants for this call
 - **AND** Netclaw requires exact approval or denies the call
 
 ### Requirement: A proved Bash scope remains valid at process launch

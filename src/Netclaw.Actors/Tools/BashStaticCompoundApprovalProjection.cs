@@ -33,6 +33,11 @@ internal sealed record BashStaticCompoundApprovalProjection(
             || !source.IsResolved
             || source.RequiresExactTreeApproval
             || source.Commands.Count < 2
+            || !source.Commands.Any(static command =>
+                command.WorkingDirectoryEffect is ShellWorkingDirectoryEffect.ChangesOnSuccess
+                {
+                    Target: ShellValueDomain.Exact
+                })
             || !ShellPathRules.TryNormalize(
                 source.WorkingDirectory,
                 ShellPathStyle.Posix,

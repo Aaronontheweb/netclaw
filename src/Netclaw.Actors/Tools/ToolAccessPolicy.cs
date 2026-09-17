@@ -349,9 +349,17 @@ public sealed class ToolAccessPolicy
                 analysisArguments,
                 shellAnalysis);
 
-        // A complete scope proof can clear the headless unresolved-input gate. A failed proof keeps that gate.
+        // Keep causal intent rules for lists that they already prove.
+        // A complete scope proof can clear the headless unresolved-input gate.
+        // A failed proof keeps that gate.
         if (shellAnalysis is not null
             && shellApproval is { IsMessy: true, Candidates.Count: 0 }
+            && !BashCausalApprovalIntent.TryProject(
+                ShellEnvironment,
+                shellAnalysis,
+                _shellApprovalMatcher,
+                IsEligiblePlatformTemporaryPath,
+                out _)
             && BashStaticCompoundApprovalProjection.TryCreate(
                 shellAnalysis,
                 _shellCommandPolicy,

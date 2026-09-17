@@ -14,10 +14,10 @@
 
 ## 3. ShellSyntaxTree beta
 
-- [ ] 3.1 Update the ShellSyntaxTree contract for bounded finite directory and path facts. Verify the public API delta against `SPEC.md`.
-- [ ] 3.2 Implement the facts and sanitized corpus cases. Verify failure paths, loops, dynamic values, and overflow.
-- [ ] 3.3 Run Release build, full tests, corpus PII audit, header check, package test, and Linux and Windows CI.
-- [ ] 3.4 Merge the ShellSyntaxTree PR, tag `0.4.0-beta.3`, and verify its package on NuGet.
+- [x] 3.1 Update the ShellSyntaxTree contract for bounded finite directory and path facts. Verify the public API delta against `SPEC.md`.
+- [x] 3.2 Implement the facts and sanitized corpus cases. Verify failure paths, loops, dynamic values, and overflow.
+- [x] 3.3 Run Release build, full tests, corpus PII audit, header check, package test, and Linux and Windows CI.
+- [x] 3.4 Merge the ShellSyntaxTree PR, tag `0.4.0-beta.3`, and verify its package on NuGet.
 
 ## 4. Netclaw beta adoption
 

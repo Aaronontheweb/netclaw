@@ -173,12 +173,12 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
         {
             var child = project.CreateSubdirectory("sub");
             var grants = Approvals.Combine(
-                Approvals.PersistentAnywhere("cd", "cat"),
+                Approvals.PersistentAnywhere("cd", "cat", "sed"),
                 Approvals.PersistentHere(ApprovalDirectoryShape.ProjectChild, "touch"));
             await using var harness = await ShellApprovalHarness.CreateAsync(
                 "static-shell-failed-cd",
                 new ShellApprovalInvocation(
-                    $"cd {child.FullName} && cat result.txt; touch marker.txt",
+                    $"cd {child.FullName} && cat result.txt | sed -n '1p'; touch marker.txt",
                     ApprovalDirectoryShape.None),
                 grants,
                 fixture.ActorSystem,
@@ -285,14 +285,14 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
         {
             var child = project.CreateSubdirectory("sub");
             var invocation = new ShellApprovalInvocation(
-                $"cd {child.FullName} && touch first.txt; touch second.txt",
+                $"cd {child.FullName} && cat result.txt | sed -n '1p'; touch second.txt",
                 ApprovalDirectoryShape.None,
                 Interactive: false);
             var cases = new[]
             {
-                (Name: "current", Grants: Approvals.Session("cd", "touch"), Expected: ToolAuthorizationOutcome.Allowed),
-                (Name: "other", Grants: Approvals.SessionForOtherSession("cd", "touch"), Expected: ToolAuthorizationOutcome.RequiresApproval),
-                (Name: "audience", Grants: Approvals.PersistentForOtherAudience("cd", "touch"), Expected: ToolAuthorizationOutcome.RequiresApproval)
+                (Name: "current", Grants: Approvals.Session("cd", "cat", "sed", "touch"), Expected: ToolAuthorizationOutcome.Allowed),
+                (Name: "other", Grants: Approvals.SessionForOtherSession("cd", "cat", "sed", "touch"), Expected: ToolAuthorizationOutcome.RequiresApproval),
+                (Name: "audience", Grants: Approvals.PersistentForOtherAudience("cd", "cat", "sed", "touch"), Expected: ToolAuthorizationOutcome.RequiresApproval)
             };
             foreach (var testCase in cases)
             {

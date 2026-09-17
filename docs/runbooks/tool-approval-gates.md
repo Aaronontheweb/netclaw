@@ -188,10 +188,12 @@ independently. If any segment is unapproved, all unapproved patterns are
 batched into one prompt.
 
 Netclaw can resolve a complete static Bash list with an exact `cd` target.
+Netclaw keeps the causal intent policy when it recognizes the list.
 It checks both the success and failure directories after each directory change.
 It checks each pipeline stage under the same entry directory.
 Every reachable verb and path needs its own grant or safe policy result.
-Unknown directory effects, dynamic syntax, deep glob paths, and excess scopes retain exact approval.
+Unknown directory effects, dynamic syntax, linked directories, deep glob paths,
+and excess scopes retain exact approval.
 The agent receives directory advice only when this scope proof fails and the advice is safe.
 
 The selected host grammar is also the language boundary. Under Bash,
