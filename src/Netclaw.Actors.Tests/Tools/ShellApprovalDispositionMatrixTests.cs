@@ -202,6 +202,45 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
         }
     }
 
+    [SlopwatchSuppress("SW001", "A sibling Bash directory needs its own folder grant.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case requires POSIX Bash semantics.")]
+    public async Task Initial_grant_does_not_cover_the_sibling_success_scope()
+    {
+        var root = Directory.CreateTempSubdirectory("netclaw-static-shell-sibling-");
+        try
+        {
+            var initial = root.CreateSubdirectory("initial");
+            var sibling = root.CreateSubdirectory("sibling");
+            var grants = Approvals.Combine(
+                Approvals.PersistentAnywhere("cd", "cat", "sed"),
+                Approvals.PersistentHere(ApprovalDirectoryShape.Project, "touch"));
+            await using var harness = await ShellApprovalHarness.CreateAsync(
+                "static-shell-sibling-scope",
+                new ShellApprovalInvocation(
+                    $"cd {sibling.FullName} && cat result.txt | sed -n '1p'; touch marker.txt",
+                    ApprovalDirectoryShape.None),
+                grants,
+                fixture.ActorSystem,
+                TestContext.Current.CancellationToken,
+                scope: new ShellApprovalHarnessScope(
+                    initial.FullName,
+                    root.FullName,
+                    "signalr/static-shell-sibling-scope",
+                    []));
+
+            var decision = await harness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+
+            Assert.Equal(ToolAuthorizationOutcome.RequiresApproval, decision.Outcome);
+            Assert.False(decision.ApprovalContext?.IsMessy);
+            Assert.Equal(["touch"], decision.ApprovalContext?.CandidateVerbs);
+            Assert.Equal(sibling.FullName, Assert.Single(decision.ApprovalContext!.Candidates!).Directory);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
     [SlopwatchSuppress("SW001", "This case requires a POSIX symbolic link below the project root.")]
     [Fact(SkipUnless = nameof(IsPosix), Skip = "This case requires POSIX symbolic link semantics.")]
     public async Task External_link_target_cannot_use_project_folder_grants()
