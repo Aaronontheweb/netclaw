@@ -282,8 +282,9 @@ ShellSyntaxTree PR publishes bounded syntax facts, then tag
 `0.4.0-beta.3` publishes the public package. The fourth PR pins that
 package and consumes only proved facts. The user authorized automatic merge
 after CI and independent security review.
-The fifth PR adds an explicit repository grant for registered Git
-worktrees. Existing folder grants retain their path meaning.
+The fifth PR adds an explicit repository grant for ordinary Git checkouts
+and their registered linked worktrees. Existing folder grants retain their
+path meaning. A main checkout with `--separate-git-dir` keeps folder scope.
 
 **Gates:** Prove both outcomes of a directory change, every pipeline stage,
 an ungranted verb, each possible path, redirects, hard denials, protected

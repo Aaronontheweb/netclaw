@@ -29,7 +29,10 @@ internal sealed record ShellApprovalHarnessScope(
     string ProjectDirectory,
     string SessionDirectory,
     string InvocationSessionId,
-    IReadOnlyList<string> OneTimeApprovalKeys);
+    IReadOnlyList<string> OneTimeApprovalKeys)
+{
+    internal string? RepositoryGrantWorktree { get; init; }
+}
 
 internal sealed class ShellApprovalHarness : IAsyncDisposable
 {
@@ -152,11 +155,16 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
                 audienceGroup.Key,
                 new ToolName(ShellTool.ToolName),
                 audienceGroup
-                    .Select(seed => CreateGrant(seed.Pattern, approvalShell, ResolveDirectory(
-                        seed.Directory,
-                        approvalProjectDirectory,
-                        approvalSessionDirectory,
-                        approvalExternalDirectory)))
+                    .Select(seed => seed.Directory == ApprovalDirectoryShape.Repository
+                        ? CreateRepositoryGrant(
+                            seed.Pattern,
+                            approvalShell,
+                            scope?.RepositoryGrantWorktree ?? approvalProjectDirectory)
+                        : CreateGrant(seed.Pattern, approvalShell, ResolveDirectory(
+                            seed.Directory,
+                            approvalProjectDirectory,
+                            approvalSessionDirectory,
+                            approvalExternalDirectory)))
                     .ToList(),
                 persistent: true,
                 ct);
@@ -264,6 +272,21 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
                 VerbTokens = tokens,
             },
             directory);
+    }
+
+    private static ToolApprovalGrant CreateRepositoryGrant(
+        string pattern,
+        ApprovalShell shell,
+        string worktree)
+    {
+        if (!GitRepositoryApprovalScope.TryResolve(worktree, out var scope))
+            throw new InvalidOperationException("The test repository worktree is not registered.");
+
+        return CreateGrant(pattern, shell, directory: null) with
+        {
+            Repository = scope!.CommonDirectory,
+            RepositoryWorktree = worktree,
+        };
     }
 
     public async Task<ObservedApproval> EvaluateAsync(CancellationToken ct)

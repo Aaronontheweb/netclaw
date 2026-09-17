@@ -31,7 +31,9 @@ internal enum ApprovalDirectoryShape
     Session,
 
     /// <summary>The case uses a directory outside the project and session roots.</summary>
-    External
+    External,
+    /// <summary>The grant uses registered worktrees of one Git repository.</summary>
+    Repository
 }
 
 /// <summary>
@@ -136,6 +138,9 @@ internal static class Approvals
 
     public static ApprovalState PersistentHere(ApprovalDirectoryShape directory, params string[] patterns)
         => CreatePersistent(TrustAudience.Personal, directory, patterns);
+
+    public static ApprovalState PersistentRepository(params string[] patterns)
+        => CreatePersistent(TrustAudience.Personal, ApprovalDirectoryShape.Repository, patterns);
 
     public static ApprovalState PersistentForOtherAudience(params string[] patterns)
         => CreatePersistent(TrustAudience.Team, ApprovalDirectoryShape.None, patterns);

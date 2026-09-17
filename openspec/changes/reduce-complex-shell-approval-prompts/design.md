@@ -77,6 +77,8 @@ The maintainer authorized automatic merge of these PRs. CI and the independent s
 
 The operator chose a new repository grant type. Existing folder grants keep their path meaning.
 Netclaw will bind a repository grant to a canonical Git common directory and its registered worktree roots.
+This scope supports an ordinary `.git` directory and its registered linked worktrees.
+A main checkout with `--separate-git-dir` remains outside this scope.
 The policy will confirm both facts for the current directory before it uses that grant.
 It will reject an unregistered `.git` pointer and a moved or removed worktree.
 It will apply ordinary verb, path, audience, and hard-deny checks after the repository match.

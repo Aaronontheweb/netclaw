@@ -28,9 +28,9 @@
 
 ## 5. Explicit repository grant scope
 
-- [ ] 5.1 Add a tagged repository grant scope and verify that old folder grants retain their path meaning.
-- [ ] 5.2 Resolve canonical Git identity and registered worktree roots. Verify a forged pointer, moved worktree, and external link fail closed.
-- [ ] 5.3 Offer a distinct repository choice in approval surfaces. Verify list, revoke, persistence, and migration behavior.
-- [ ] 5.4 Verify every verb, path, audience, hard-deny, and retry boundary with the real coordinator and focused mutants.
+- [x] 5.1 Add a tagged repository grant scope and verify that old folder grants retain their path meaning.
+- [x] 5.2 Resolve canonical Git identity and registered worktree roots. Verify a forged pointer, moved worktree, and external link fail closed.
+- [x] 5.3 Offer a distinct repository choice in approval surfaces. Verify list, revoke, persistence, and migration behavior.
+- [x] 5.4 Verify every verb, path, audience, hard-deny, and retry boundary with the real coordinator and focused mutants.
 - [ ] 5.5 Update the runbook, OpenSpec contract, and operations skill. Run eval, native approval smoke, and full security tests.
 - [ ] 5.6 Open and merge the fifth PR after native CI and independent review.
