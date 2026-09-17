@@ -17,9 +17,9 @@ Netclaw SHALL keep hard denials, protected paths, redirects, audience limits, an
 
 #### Scenario: A failed directory change retains the original scope
 
-- **GIVEN** a folder grant covers `ls` in `/work/sub` but no grant covers `ls` in `/work`
-- **WHEN** the agent calls `cd /work/sub && cat result.txt; ls .` from `/work`
-- **THEN** Netclaw does not treat the `ls` grant for `/work/sub` as coverage for `/work`
+- **GIVEN** a folder grant covers `touch` in `/work/sub` but no grant covers `touch` in `/work`
+- **WHEN** the agent calls `cd /work/sub && cat result.txt; touch marker.txt` from `/work`
+- **THEN** Netclaw does not treat the `touch` grant for `/work/sub` as coverage for `/work`
 - **AND** Netclaw requests approval or denies the call before execution
 
 #### Scenario: An ungranted verb stays subject to approval
@@ -35,18 +35,39 @@ Netclaw SHALL keep hard denials, protected paths, redirects, audience limits, an
 - **THEN** Netclaw does not infer that the grant covers every possible target
 - **AND** Netclaw requires exact approval or denies the call
 
+### Requirement: A proved Bash scope remains valid at process launch
+
+Netclaw SHALL include each projected directory and path in the launch path snapshot.
+Netclaw SHALL reject a launch when a projected path changes during authorization.
+Netclaw SHALL remove Bash startup hooks and imported functions from the child environment.
+The Bash parser SHALL analyze the same authored command that the child shell receives.
+
+#### Scenario: A projected child path changes before launch
+
+- **GIVEN** `touch nested/marker.txt` can execute under `/work/sub`
+- **WHEN** `nested` changes to an external symbolic link during authorization
+- **THEN** Netclaw rejects the launch before it starts a shell process
+
+#### Scenario: An inherited function cannot replace an exact directory change
+
+- **GIVEN** the daemon environment contains an exported Bash function named `cd`
+- **WHEN** Netclaw starts `cd /work/sub && true`
+- **THEN** the child Bash uses its built-in `cd` command
+- **AND** the function cannot change the approved directory effect
+
 ### Requirement: Directory advice keeps the original command inert
 
 Netclaw SHALL offer a typed one-call directory correction when an eligible call uses an exact leading Bash directory change for ordinary project work.
 The correction SHALL identify the intended `WorkingDirectory` and SHALL not rewrite the command, execute a process, or create a grant.
 Netclaw SHALL evaluate a replacement call through the normal shell policy.
 Netclaw SHALL suppress this advice when the target is unsafe or unresolved.
+Netclaw SHALL use complete scoped candidates before it offers this advice.
 An explicit `WorkingDirectory` SHALL let the agent retain the original shell directory behavior under normal policy.
 
 #### Scenario: An eligible project read receives one-call advice
 
 - **GIVEN** the session project is `/work` and `/work/sub` is an allowed directory
-- **WHEN** the agent calls `cd /work/sub && cat result.txt | sed -n '1p'; ls .` for project work
+- **WHEN** the agent calls `cd /work/sub && touch marker.txt; cat */result.txt` for project work
 - **THEN** Netclaw can suggest `WorkingDirectory=/work/sub` for a replacement call
 - **AND** Netclaw does not execute the original command
 

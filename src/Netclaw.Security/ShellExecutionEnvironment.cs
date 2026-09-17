@@ -222,7 +222,22 @@ public sealed class ShellExecutionEnvironment
         foreach (var argument in CommandArguments)
             startInfo.ArgumentList.Add(argument);
         startInfo.ArgumentList.Add(command);
+        if (Grammar == ShellGrammar.Bash)
+            RemoveBashStartupOverrides(startInfo.Environment);
         return startInfo;
+    }
+
+    internal static void RemoveBashStartupOverrides(IDictionary<string, string?> environment)
+    {
+        // The parser starts from the authored command. A shell startup hook or imported function
+        // can change its verbs and directory effects before that command runs.
+        foreach (var key in environment.Keys.Where(static key =>
+                     key is "BASH_ENV" or "ENV" or "SHELLOPTS" or "BASHOPTS" or "CDPATH"
+                         or "GLOBIGNORE" or "IFS" or "POSIXLY_CORRECT" or "BASH_COMPAT"
+                     || key.StartsWith("BASH_FUNC_", StringComparison.Ordinal)).ToArray())
+        {
+            environment.Remove(key);
+        }
     }
 
     private static bool IsFullyQualified(string path, ShellPathStyle pathStyle) => pathStyle switch

@@ -349,6 +349,44 @@ public sealed class ToolAccessPolicy
                 analysisArguments,
                 shellAnalysis);
 
+        // A complete scope proof can clear the headless unresolved-input gate. A failed proof keeps that gate.
+        if (shellAnalysis is not null
+            && shellApproval is { IsMessy: true, Candidates.Count: 0 }
+            && BashStaticCompoundApprovalProjection.TryCreate(
+                shellAnalysis,
+                _shellCommandPolicy,
+                _shellApprovalMatcher,
+                out var staticProjection)
+            && staticProjection is not null)
+        {
+            foreach (var slice in staticProjection.Slices)
+            {
+                var scopedDeny = _shellCommandPolicy.Evaluate(slice.Analysis);
+                if (!scopedDeny.Allowed)
+                {
+                    return ToolAuthorizationDecision.Deny(
+                        $"hard_deny_{scopedDeny.DenyCategory?.ToWireName() ?? "unknown"}");
+                }
+
+                if (_toolPathPolicy.CommandReferencesDeniedPath(slice.Analysis))
+                    return ToolAuthorizationDecision.Deny("shell_references_protected_path");
+
+                var scopedPathDeny = EnforceShellFileProtection(
+                    slice.Approval,
+                    slice.Analysis,
+                    slice.WorkingDirectory,
+                    context);
+                if (scopedPathDeny is not null)
+                    return scopedPathDeny;
+            }
+
+            shellApproval = shellApproval with
+            {
+                Candidates = staticProjection.Candidates,
+                IsMessy = false
+            };
+        }
+
         // Shell does not classify an executable as a reader or writer. Once
         // shell capability and command policy pass, every known path must pass
         // the conservative Write file-protection layer.

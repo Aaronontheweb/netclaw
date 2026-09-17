@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Tools;
 using Xunit;
 
@@ -106,6 +107,253 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
         Assert.Equal(0, harness.ApprovalService.CheckCount);
     }
 
+    [SlopwatchSuppress("SW001", "This case requires POSIX Bash directory and pipeline semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case requires POSIX Bash semantics.")]
+    public async Task Complete_static_compound_uses_grants_for_each_reachable_scope()
+    {
+        var project = Directory.CreateTempSubdirectory("netclaw-static-shell-scopes-");
+        try
+        {
+            var child = project.CreateSubdirectory("sub");
+            var command = $"cd {child.FullName} && cat result.txt | sed -n '1p'; ls .";
+            await using var harness = await ShellApprovalHarness.CreateAsync(
+                "static-shell-scopes",
+                new ShellApprovalInvocation(
+                    command,
+                    ApprovalDirectoryShape.None),
+                Approvals.PersistentAnywhere("cd", "cat", "sed", "ls"),
+                fixture.ActorSystem,
+                TestContext.Current.CancellationToken,
+                scope: new ShellApprovalHarnessScope(
+                    project.FullName,
+                    project.FullName,
+                    "signalr/static-shell-scopes",
+                    []));
+
+            var decision = await harness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+
+            Assert.Equal(ToolAuthorizationOutcome.Allowed, decision.Outcome);
+            Assert.Equal(ToolAllowReason.StoredApproval, decision.AllowReason);
+
+            await using var missingStage = await ShellApprovalHarness.CreateAsync(
+                "static-shell-missing-stage",
+                new ShellApprovalInvocation(command, ApprovalDirectoryShape.None),
+                Approvals.PersistentAnywhere("cd", "cat", "ls"),
+                fixture.ActorSystem,
+                TestContext.Current.CancellationToken,
+                scope: new ShellApprovalHarnessScope(
+                    project.FullName,
+                    project.FullName,
+                    "signalr/static-shell-missing-stage",
+                    []));
+            var missingDecision = await missingStage.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(ToolAuthorizationOutcome.RequiresApproval, missingDecision.Outcome);
+            Assert.False(missingDecision.ApprovalContext?.IsMessy);
+            Assert.Equal(["sed"], missingDecision.ApprovalContext?.CandidateVerbs);
+            Assert.Contains(
+                missingDecision.ApprovalContext!.Options,
+                option => option.Key.Value == ApprovalOptionKeys.ApproveSession);
+            missingStage.SeedOneTimeApproval(missingDecision.ApprovalContext!);
+            var retryDecision = await missingStage.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(ToolAuthorizationOutcome.Allowed, retryDecision.Outcome);
+            Assert.Equal(ToolAllowReason.OneTimeApproval, retryDecision.AllowReason);
+        }
+        finally
+        {
+            project.Delete(recursive: true);
+        }
+    }
+
+    [SlopwatchSuppress("SW001", "A failed Bash directory change leaves the later command in its initial scope.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case requires POSIX Bash semantics.")]
+    public async Task Child_grant_does_not_cover_the_failed_directory_change_path()
+    {
+        var project = Directory.CreateTempSubdirectory("netclaw-static-shell-failure-");
+        try
+        {
+            var child = project.CreateSubdirectory("sub");
+            var grants = Approvals.Combine(
+                Approvals.PersistentAnywhere("cd", "cat"),
+                Approvals.PersistentHere(ApprovalDirectoryShape.ProjectChild, "touch"));
+            await using var harness = await ShellApprovalHarness.CreateAsync(
+                "static-shell-failed-cd",
+                new ShellApprovalInvocation(
+                    $"cd {child.FullName} && cat result.txt; touch marker.txt",
+                    ApprovalDirectoryShape.None),
+                grants,
+                fixture.ActorSystem,
+                TestContext.Current.CancellationToken,
+                scope: new ShellApprovalHarnessScope(
+                    project.FullName,
+                    project.FullName,
+                    "signalr/static-shell-failed-cd",
+                    []));
+
+            var decision = await harness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+
+            Assert.Equal(ToolAuthorizationOutcome.RequiresApproval, decision.Outcome);
+            Assert.False(decision.ApprovalContext?.IsMessy);
+            Assert.Equal(["touch"], decision.ApprovalContext?.CandidateVerbs);
+            Assert.Equal(project.FullName, Assert.Single(decision.ApprovalContext!.Candidates!).Directory);
+        }
+        finally
+        {
+            project.Delete(recursive: true);
+        }
+    }
+
+    [SlopwatchSuppress("SW001", "This case requires a POSIX symbolic link below the project root.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case requires POSIX symbolic link semantics.")]
+    public async Task External_link_target_cannot_use_project_folder_grants()
+    {
+        var project = Directory.CreateTempSubdirectory("netclaw-static-shell-link-");
+        var external = Directory.CreateTempSubdirectory("netclaw-static-shell-external-");
+        try
+        {
+            var link = Path.Combine(project.FullName, "linked");
+            Directory.CreateSymbolicLink(link, external.FullName);
+            await using var harness = await ShellApprovalHarness.CreateAsync(
+                "static-shell-link-escape",
+                new ShellApprovalInvocation(
+                    $"cd {link} && cat result.txt; touch marker.txt",
+                    ApprovalDirectoryShape.None),
+                Approvals.PersistentHere(ApprovalDirectoryShape.Project, "cd", "cat", "touch"),
+                fixture.ActorSystem,
+                TestContext.Current.CancellationToken,
+                scope: new ShellApprovalHarnessScope(
+                    project.FullName,
+                    project.FullName,
+                    "signalr/static-shell-link-escape",
+                    []));
+
+            var decision = await harness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+
+            Assert.NotEqual(ToolAuthorizationOutcome.Allowed, decision.Outcome);
+        }
+        finally
+        {
+            project.Delete(recursive: true);
+            external.Delete(recursive: true);
+        }
+    }
+
+    [SlopwatchSuppress("SW001", "These cases require POSIX Bash path and hard-deny policy.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "These cases require POSIX Bash semantics.")]
+    public async Task Redirect_and_hard_deny_checks_precede_static_compound_grants()
+    {
+        var project = Directory.CreateTempSubdirectory("netclaw-static-shell-deny-");
+        try
+        {
+            var child = project.CreateSubdirectory("sub");
+            var commands = new[]
+            {
+                $"cd {child.FullName} && cat result.txt > /etc/passwd; ls .",
+                $"cd {child.FullName} && rm -rf /; ls ."
+            };
+            foreach (var command in commands)
+            {
+                await using var harness = await ShellApprovalHarness.CreateAsync(
+                    "static-shell-deny",
+                    new ShellApprovalInvocation(command, ApprovalDirectoryShape.None),
+                    Approvals.PersistentAnywhere("cd", "cat", "rm", "ls"),
+                    fixture.ActorSystem,
+                    TestContext.Current.CancellationToken,
+                    scope: new ShellApprovalHarnessScope(
+                        project.FullName,
+                        project.FullName,
+                        "signalr/static-shell-deny",
+                        []),
+                    deniedPaths: ["/etc/passwd"]);
+
+                var decision = await harness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+
+                Assert.Equal(ToolAuthorizationOutcome.Denied, decision.Outcome);
+            }
+        }
+        finally
+        {
+            project.Delete(recursive: true);
+        }
+    }
+
+    [SlopwatchSuppress("SW001", "These cases require POSIX Bash directory and session semantics.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "These cases require POSIX Bash semantics.")]
+    public async Task Static_compound_keeps_session_and_audience_boundaries()
+    {
+        var project = Directory.CreateTempSubdirectory("netclaw-static-shell-session-");
+        try
+        {
+            var child = project.CreateSubdirectory("sub");
+            var invocation = new ShellApprovalInvocation(
+                $"cd {child.FullName} && touch first.txt; touch second.txt",
+                ApprovalDirectoryShape.None,
+                Interactive: false);
+            var cases = new[]
+            {
+                (Name: "current", Grants: Approvals.Session("cd", "touch"), Expected: ToolAuthorizationOutcome.Allowed),
+                (Name: "other", Grants: Approvals.SessionForOtherSession("cd", "touch"), Expected: ToolAuthorizationOutcome.RequiresApproval),
+                (Name: "audience", Grants: Approvals.PersistentForOtherAudience("cd", "touch"), Expected: ToolAuthorizationOutcome.RequiresApproval)
+            };
+            foreach (var testCase in cases)
+            {
+                await using var harness = await ShellApprovalHarness.CreateAsync(
+                    $"static-shell-{testCase.Name}",
+                    invocation,
+                    testCase.Grants,
+                    fixture.ActorSystem,
+                    TestContext.Current.CancellationToken,
+                    scope: new ShellApprovalHarnessScope(
+                        project.FullName,
+                        project.FullName,
+                        "signalr/static-shell-session",
+                        []));
+
+                var decision = await harness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+
+                Assert.True(
+                    decision.Outcome == testCase.Expected,
+                    $"case={testCase.Name}; outcome={decision.Outcome}; reason={decision.DenyReason}");
+            }
+        }
+        finally
+        {
+            project.Delete(recursive: true);
+        }
+    }
+
+    [SlopwatchSuppress("SW001", "The descendant glob can cross an unproved POSIX path segment.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case requires POSIX Bash glob semantics.")]
+    public async Task Deep_glob_keeps_exact_approval_in_a_static_compound()
+    {
+        var project = Directory.CreateTempSubdirectory("netclaw-static-shell-glob-");
+        try
+        {
+            var child = project.CreateSubdirectory("sub");
+            await using var harness = await ShellApprovalHarness.CreateAsync(
+                "static-shell-deep-glob",
+                new ShellApprovalInvocation(
+                    $"cd {child.FullName} && cat */result.txt; ls .",
+                    ApprovalDirectoryShape.Project),
+                Approvals.PersistentAnywhere("cd", "cat", "ls"),
+                fixture.ActorSystem,
+                TestContext.Current.CancellationToken,
+                scope: new ShellApprovalHarnessScope(
+                    project.FullName,
+                    project.FullName,
+                    "signalr/static-shell-deep-glob",
+                    []));
+
+            var decision = await harness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+
+            Assert.Equal(ToolAuthorizationOutcome.RequiresApproval, decision.Outcome);
+            Assert.True(decision.ApprovalContext?.IsMessy);
+        }
+        finally
+        {
+            project.Delete(recursive: true);
+        }
+    }
+
     [SlopwatchSuppress("SW001", "The correction requires POSIX Bash directory semantics.")]
     [Fact(SkipUnless = nameof(IsPosix), Skip = "This case requires POSIX Bash semantics.")]
     public async Task Exact_child_directory_advice_stops_the_original_shell_process()
@@ -118,7 +366,7 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
             var testCase = new ShellApprovalCase(
                 "exact-child-directory-advice",
                 new ShellApprovalInvocation(
-                    $"cd {child.FullName} && touch {marker}; ls .",
+                    $"cd {child.FullName} && touch {marker}; cat */result.txt",
                     ApprovalDirectoryShape.None),
                 Approvals.None,
                 ExpectedApproval.Require([]));

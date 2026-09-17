@@ -98,13 +98,15 @@ public sealed class ShellProcessLaunch
         };
         if (_context.ProjectDirectory is { } projectDirectory)
             paths.Add(projectDirectory);
-        foreach (var view in ShellPolicyPathFacts.CreateExecutionViews(analysis))
+        AddPaths(analysis);
+        if (BashStaticCompoundApprovalProjection.TryCreate(
+                analysis,
+                _commandPolicy,
+                new ShellApprovalMatcher(Environment),
+                out var projection))
         {
-            if (view.ResolutionBase.Path is { } resolutionBase)
-                paths.Add(resolutionBase.Value);
-            foreach (var fact in view.Facts)
-            foreach (var path in fact.Paths)
-                paths.Add(path.Value);
+            foreach (var slice in projection!.Slices)
+                AddPaths(slice.Analysis);
         }
 
         return paths.Order(StringComparer.Ordinal).Select(static path =>
@@ -112,6 +114,18 @@ public sealed class ShellProcessLaunch
             ToolPathPolicy.TryResolveSymlinksInPath(path, out var target);
             return new LaunchPathState(path, target, Directory.Exists(path));
         }).ToArray();
+
+        void AddPaths(ShellCommandAnalysis source)
+        {
+            foreach (var view in ShellPolicyPathFacts.CreateExecutionViews(source))
+            {
+                if (view.ResolutionBase.Path is { } resolutionBase)
+                    paths.Add(resolutionBase.Value);
+                foreach (var fact in view.Facts)
+                foreach (var path in fact.Paths)
+                    paths.Add(path.Value);
+            }
+        }
     }
 
     private readonly record struct LaunchPathState(string Path, string Target, bool DirectoryExists);

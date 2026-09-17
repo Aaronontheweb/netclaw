@@ -7,9 +7,9 @@
 
 ## 2. Netclaw static compound coverage
 
-- [ ] 2.1 Enumerate reachable scopes for complete static Bash compounds. Verify both `cd` outcomes in focused tests.
-- [ ] 2.2 Match each executable and path candidate against grants. Verify an ungranted verb, protected path, redirect, and symlink remain gated.
-- [ ] 2.3 Verify session, folder, audience, headless, and one-time retry boundaries in the real coordinator.
+- [x] 2.1 Enumerate reachable scopes for complete static Bash compounds. Verify both `cd` outcomes in focused tests.
+- [x] 2.2 Match each executable and path candidate against grants. Verify an ungranted verb, protected path, redirect, and symlink remain gated.
+- [x] 2.3 Verify session, folder, audience, headless, and one-time retry boundaries in the real coordinator.
 - [ ] 2.4 Run focused security mutants and the approval corpus. Open and merge the second Netclaw PR after CI and independent review.
 
 ## 3. ShellSyntaxTree beta

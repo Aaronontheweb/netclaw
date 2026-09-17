@@ -24,6 +24,9 @@ internal enum ApprovalDirectoryShape
     /// <summary>The case uses the active project directory.</summary>
     Project,
 
+    /// <summary>The case uses a child of the active project directory.</summary>
+    ProjectChild,
+
     /// <summary>The case uses the active session directory.</summary>
     Session,
 
@@ -473,7 +476,7 @@ public static class ShellApprovalCases
                 "persistent:gh run view")),
 
         Case(
-            "live-inline-cd-mixed-read-chain-remains-complex",
+            "live-inline-cd-mixed-read-chain-has-scoped-candidates",
             Bash(
                 "cd /work/netclaw-worktrees/fix-probe-timeout "
                 + "&& sed -n '40,80p' src/Netclaw.Daemon/Probe.cs; "
@@ -482,7 +485,7 @@ public static class ShellApprovalCases
                 + "grep -rn \"ProbeTimeout\\|WaitForExitAsync\" "
                 + "src/Netclaw.Daemon.Tests/ProbeTests.cs 2>/dev/null | head"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.Require(["cd", "sed", "ls", "grep", "head"])),
 
         Case(
             "post-334cb4c-independent-read-batch-remains-complex",
@@ -493,13 +496,13 @@ public static class ShellApprovalCases
             ExpectedApproval.Require(["grep"])),
 
         Case(
-            "post-334cb4c-inline-cd-read-batch-remains-complex",
+            "post-334cb4c-inline-cd-read-batch-has-scoped-candidates",
             Bash(
                 "cd /work/project && git log --oneline -5 -- src/Alpha.cs "
                 + "&& grep -n \"Timeout\" src/Alpha.cs tests/AlphaTests.cs 2>/dev/null | head -5; "
                 + "cat Project.csproj"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.Require(["cd", "git log", "grep", "head", "cat"])),
 
         Case(
             "live-typed-cwd-mixed-read-chain-prompts-for-sed-and-pattern",
