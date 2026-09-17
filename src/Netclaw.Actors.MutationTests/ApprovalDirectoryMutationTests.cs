@@ -13,7 +13,8 @@ namespace Netclaw.Actors.MutationTests;
 public sealed class ApprovalDirectoryMutationTests : IDisposable
 {
     private readonly string _basePath = Path.Combine(
-        Path.GetTempPath(), "netclaw-approval-mutations", Guid.NewGuid().ToString("N"));
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        $"netclaw-approval-mutations-{Guid.NewGuid():N}");
     private readonly string _grantRoot;
     private readonly string _outside;
     private readonly ApprovalShell _shell = OperatingSystem.IsWindows() ? ApprovalShell.PowerShell : ApprovalShell.Bash;
@@ -92,9 +93,7 @@ public sealed class ApprovalDirectoryMutationTests : IDisposable
         var sibling = Path.Combine(_basePath, "sibling");
         var unrelated = Path.Combine(_basePath, "unrelated");
         RunGit(_basePath, "init", main);
-        RunGit(main, "-c", "user.name=Netclaw Test", "-c", "user.email=test@example.com",
-            "commit", "--allow-empty", "-m", "seed");
-        RunGit(main, "worktree", "add", "-b", "sibling", sibling);
+        RunGit(main, "worktree", "add", "--orphan", "-b", "sibling", sibling);
         RunGit(_basePath, "init", unrelated);
 
         var grant = ApprovalEntry.CreateRepositoryTokenPrefix(

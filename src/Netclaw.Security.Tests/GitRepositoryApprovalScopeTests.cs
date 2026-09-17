@@ -14,15 +14,13 @@ public sealed class GitRepositoryApprovalScopeTests
     [Fact]
     public void Registered_sibling_uses_the_same_repository_identity()
     {
-        var root = Directory.CreateTempSubdirectory("netclaw-repository-grant-");
+        var root = CreateTestRoot("netclaw-repository-grant-");
         try
         {
             var main = Path.Combine(root.FullName, "main");
             var sibling = Path.Combine(root.FullName, "sibling");
             RunGit(root.FullName, "init", main);
-            RunGit(main, "-c", "user.name=Netclaw Test", "-c", "user.email=test@example.com",
-                "commit", "--allow-empty", "-m", "seed");
-            RunGit(main, "worktree", "add", "-b", "sibling", sibling);
+            RunGit(main, "worktree", "add", "--orphan", "-b", "sibling", sibling);
 
             Assert.True(GitRepositoryApprovalScope.TryResolve(main, out var mainScope));
             Assert.True(GitRepositoryApprovalScope.TryResolve(sibling, out var siblingScope));
@@ -43,6 +41,10 @@ public sealed class GitRepositoryApprovalScopeTests
             };
             Assert.False(ApprovalPatternMatching.MatchesShellApproval(candidate, sibling, [folder]));
             Assert.True(ApprovalPatternMatching.MatchesShellApproval(candidate, sibling, [grant]));
+            var nested = Directory.CreateDirectory(Path.Combine(sibling, "nested")).FullName;
+            Assert.True(GitRepositoryApprovalScope.TryResolve(nested, out var nestedScope));
+            Assert.Equal(mainScope.CommonDirectory, nestedScope!.CommonDirectory);
+            Assert.True(ApprovalPatternMatching.MatchesShellApproval(candidate, nested, [grant]));
 
             File.WriteAllText(
                 Path.Combine(main, ".git", "worktrees", "sibling", "commondir"),
@@ -84,7 +86,7 @@ public sealed class GitRepositoryApprovalScopeTests
         if (OperatingSystem.IsWindows())
             return;
 
-        var root = Directory.CreateTempSubdirectory("netclaw-repository-link-");
+        var root = CreateTestRoot("netclaw-repository-link-");
         try
         {
             var main = Path.Combine(root.FullName, "main");
@@ -111,16 +113,14 @@ public sealed class GitRepositoryApprovalScopeTests
         if (OperatingSystem.IsWindows())
             return;
 
-        var root = Directory.CreateTempSubdirectory("netclaw-repository-pointer-link-");
+        var root = CreateTestRoot("netclaw-repository-pointer-link-");
         try
         {
             var main = Path.Combine(root.FullName, "main");
             var sibling = Path.Combine(root.FullName, "sibling");
             var outside = Directory.CreateDirectory(Path.Combine(root.FullName, "outside"));
             RunGit(root.FullName, "init", main);
-            RunGit(main, "-c", "user.name=Netclaw Test", "-c", "user.email=test@example.com",
-                "commit", "--allow-empty", "-m", "seed");
-            RunGit(main, "worktree", "add", "-b", "sibling", sibling);
+            RunGit(main, "worktree", "add", "--orphan", "-b", "sibling", sibling);
 
             Directory.CreateSymbolicLink(Path.Combine(main, "link"), outside.FullName);
             var deceptivePointer = Path.Combine(
@@ -152,6 +152,11 @@ public sealed class GitRepositoryApprovalScopeTests
 
     private static void RunGit(string directory, params string[] arguments)
         => Assert.Equal(0, RunGitExitCode(directory, arguments));
+
+    private static DirectoryInfo CreateTestRoot(string prefix)
+        => Directory.CreateDirectory(Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            $"{prefix}{Guid.NewGuid():N}"));
 
     private static int RunGitExitCode(string directory, params string[] arguments)
     {

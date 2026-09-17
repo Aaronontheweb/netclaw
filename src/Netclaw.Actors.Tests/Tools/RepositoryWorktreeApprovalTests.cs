@@ -17,7 +17,7 @@ public sealed class RepositoryWorktreeApprovalTests(ShellApprovalMatrixFixture f
     [Fact]
     public async Task Repository_grant_covers_a_registered_sibling_and_keeps_other_verbs_separate()
     {
-        var root = Directory.CreateTempSubdirectory("netclaw-repository-approval-");
+        var root = CreateTestRoot("netclaw-repository-approval-");
         try
         {
             var main = Path.Combine(root.FullName, "main");
@@ -25,9 +25,7 @@ public sealed class RepositoryWorktreeApprovalTests(ShellApprovalMatrixFixture f
             var unrelated = Path.Combine(root.FullName, "unrelated");
             var session = Directory.CreateDirectory(Path.Combine(root.FullName, "session"));
             RunGit(root.FullName, "init", main);
-            RunGit(main, "-c", "user.name=Netclaw Test", "-c", "user.email=test@example.com",
-                "commit", "--allow-empty", "-m", "seed");
-            RunGit(main, "worktree", "add", "-b", "sibling", sibling);
+            RunGit(main, "worktree", "add", "--orphan", "-b", "sibling", sibling);
             RunGit(root.FullName, "init", unrelated);
 
             await using var promptHarness = await CreateHarnessAsync(
@@ -193,7 +191,7 @@ public sealed class RepositoryWorktreeApprovalTests(ShellApprovalMatrixFixture f
     [Fact]
     public async Task Separate_git_directory_does_not_offer_repository_scope()
     {
-        var root = Directory.CreateTempSubdirectory("netclaw-separate-git-directory-");
+        var root = CreateTestRoot("netclaw-separate-git-directory-");
         try
         {
             var checkout = Path.Combine(root.FullName, "checkout");
@@ -257,4 +255,9 @@ public sealed class RepositoryWorktreeApprovalTests(ShellApprovalMatrixFixture f
         Assert.True(process.WaitForExit(10_000), "git timed out");
         Assert.Equal(0, process.ExitCode);
     }
+
+    private static DirectoryInfo CreateTestRoot(string prefix)
+        => Directory.CreateDirectory(Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            $"{prefix}{Guid.NewGuid():N}"));
 }

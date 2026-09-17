@@ -99,7 +99,8 @@ An explicit `WorkingDirectory` SHALL let the agent retain the original shell dir
 
 ### Requirement: Repository grants cover registered Git worktrees only by explicit choice
 
-Netclaw SHALL offer a distinct repository scope when an operator approves a shell verb inside an ordinary checkout or its registered linked worktree.
+Netclaw SHALL offer a distinct repository scope only for a clean reusable shell phrase inside an ordinary checkout or its registered linked worktree.
+Every command candidate SHALL remain inside that worktree before Netclaw offers the choice.
 The grant SHALL bind to the canonical repository identity and the approved verb phrase.
 It SHALL cover a sibling worktree only while Git registers that exact worktree under the same repository identity.
 Netclaw SHALL recheck directory, path, audience, hard-deny, and protected-path rules for each call.
@@ -112,6 +113,12 @@ Netclaw SHALL omit this scope for a main checkout that uses `--separate-git-dir`
 - **AND** Git registers a sibling worktree under the same canonical repository identity
 - **WHEN** the agent calls that verb from the sibling worktree
 - **THEN** Netclaw can reuse the repository grant after all other policy checks pass
+
+#### Scenario: A repository grant covers a nested worktree directory
+
+- **GIVEN** a repository grant covers a registered sibling worktree
+- **WHEN** the agent calls that phrase from a nested directory in the same worktree
+- **THEN** Netclaw can reuse the grant after each candidate path passes the scope checks
 
 #### Scenario: A folder grant does not cross to a sibling worktree
 
