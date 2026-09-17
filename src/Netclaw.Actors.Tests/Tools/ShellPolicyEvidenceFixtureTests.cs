@@ -133,6 +133,10 @@ public sealed class ShellPolicyEvidenceFixtureTests(ShellApprovalMatrixFixture f
     {
         // The archived fixture keeps the prior exact-only result.
         // These rows state the current finite-scope contract.
+        // macOS resolves /tmp through a link, so the redirect paths in L17 stay exact.
+        if (OperatingSystem.IsMacOS() && policyCase.Id == "L17")
+            return policyCase.Expected;
+
         List<string>? candidates = policyCase.Id switch
         {
             "L12" => ["mkdir", "cd", "git clone"],

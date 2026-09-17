@@ -338,6 +338,10 @@ public sealed class ToolAccessPolicy
                 return ToolAuthorizationDecision.Deny("shell_references_protected_path");
         }
 
+        // The OS resolves ".." after a symlink. Lexical policy normalization does not.
+        if (workingDirectory is not null && ShellPathRules.HasParentDirectorySegment(workingDirectory))
+            return ToolAuthorizationDecision.Deny("shell_invalid_working_directory");
+
         // All shell policy checks use the directory that ShellTool executes.
         // The explicit tool argument can be absent while the context supplies
         // an active project, session, or inherited directory.

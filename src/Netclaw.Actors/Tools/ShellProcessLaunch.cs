@@ -40,6 +40,8 @@ public sealed class ShellProcessLaunch
         WorkingDirectory = workingDirectory;
         if (!Path.IsPathFullyQualified(WorkingDirectory))
             throw new ShellProcessStartException("Shell execution requires an absolute working directory.");
+        if (ShellPathRules.HasParentDirectorySegment(WorkingDirectory))
+            throw new ShellProcessStartException("Shell execution requires a working directory without parent traversal segments.");
         _context = context;
         _commandPolicy = commandPolicy;
         _pathPolicy = pathPolicy;
