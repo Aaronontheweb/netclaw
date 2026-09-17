@@ -357,7 +357,9 @@ public sealed class ToolAccessPolicy
                 _shellCommandPolicy,
                 _shellApprovalMatcher,
                 out var staticProjection)
-            && staticProjection is not null)
+            && staticProjection is not null
+            && staticProjection.Slices.All(slice =>
+                IsCausalIntentDirectoryEligible(slice.WorkingDirectory)))
         {
             foreach (var slice in staticProjection.Slices)
             {
