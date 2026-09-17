@@ -118,8 +118,8 @@ When the agent calls a tool in `Approval` mode:
 1. The system extracts a **command pattern** (for example,
    `git push origin main` from that exact call).
 2. It checks the **approval cache** — has this pattern been approved before?
-3. If a clean reusable shell call in an ordinary directory remains uncovered,
-   the channel posts the default five-choice prompt:
+3. If a clean reusable shell call in a registered worktree remains uncovered,
+   the channel can post this prompt:
    ```
    🔒 Tool approval required
    > shell_execute: git push origin main
@@ -129,15 +129,18 @@ When the agent calls a tool in `Approval` mode:
      A) Once
      B) This chat
      C) Always here
-     D) Always anywhere
-     E) Deny
+     D) This repository
+     E) Always anywhere
+     F) Deny
    ```
+   An ordinary directory omits `This repository`.
 4. The tool execution pauses until the user responds. Other tool calls in the
    same batch continue running independently.
 5. Based on the response:
    - **Once** — the exact blocked call retries once; no grant is saved
    - **This chat** — the covered phrase remains valid anywhere in this session
    - **Always here** — a folder-scoped grant is saved to disk
+   - **This repository** — Netclaw saves a grant for registered worktrees
    - **Always anywhere** — a global phrase grant is saved to disk
    - **Deny** — the call returns "Command denied by user" to the LLM
 
@@ -153,6 +156,26 @@ the persistent choices when the shell parser cannot produce a clean reusable
 phrase for every uncovered command occurrence. It also omits `Always here`
 when no safe directory scope can be stored. This rule prevents a one-time
 decision from becoming broader reusable authority.
+
+### Repository grants
+
+`This repository` creates a distinct grant for one Git common directory.
+Netclaw offers it only when Git registers the current worktree.
+Each command candidate must stay inside that worktree.
+Netclaw checks the registration again before it stores or uses the grant.
+An old `Always here` grant remains a folder grant.
+Netclaw supports an ordinary `.git` directory and registered linked worktrees.
+It does not offer this choice for a main checkout that uses `--separate-git-dir`.
+
+For example, approve `./scripts/bump-version.sh` with `This repository` in a
+registered worktree. The same command can then use that grant in a registered
+sibling worktree. A second command, such as `python3`, still needs its own
+authority. An unrelated repository cannot use the grant.
+
+Netclaw rejects a copied `.git` pointer, a moved worktree, and a path through
+an external symbolic link. Hard denies, path checks, and audience rules still
+apply. Use `netclaw approvals list` to copy the exact repository label.
+Use `netclaw approvals revoke '<label>'` to remove that grant.
 
 A command with an exact-tree requirement always offers only `Once` or `Deny`.
 It cannot use reviewed-safe, session, stored, or persistent coverage. This rule

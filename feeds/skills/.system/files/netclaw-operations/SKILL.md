@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.74.6"
+  version: "2.74.7"
 ---
 
 # Netclaw Operations
@@ -349,17 +349,24 @@ label the persistent choice `Always allow this tool` rather than the
 shell-oriented `Always anywhere`. Other non-shell tools also omit `Always here`
 because their approval matchers do not consume directory scope.
 
-Approvals are typed `(verb, directory)` pairs in `tool-approvals.json`:
+Shell approvals store a typed phrase and a scope in `tool-approvals.json`:
 
 - **verb** — the command head plus subcommand chain only (e.g. `git push`,
   `grep`, `freshdesk`). No flags, no path arguments.
-- **directory** — the directory the grant applies to. Sourced two ways:
+- **directory** — the path field for folder and global grants. Netclaw sets it from:
   - **Path argument** in the original command (`find /repo`, `ls /var/log`,
     `cat ~/.bashrc`). The path argument is the directory; for file targets
     the parent directory is used so `cat ~/.bashrc` scopes to `~`.
   - **Cwd** when no path argument is present (`git status`, `freshdesk`).
   - **`null`** for the global wildcard ("approve this verb in any
     directory") — only set by `Always anywhere`.
+
+`This repository` stores a distinct Git repository scope. It applies to
+registered worktrees of one repository. Netclaw checks Git registration for
+each use. A folder grant keeps its path scope. An unapproved verb or a path
+outside the worktree still needs approval.
+The scope supports an ordinary `.git` directory and registered linked worktrees.
+A main checkout with `--separate-git-dir` does not receive this choice.
 
 **Folder-scoped trust compounds.** An entry on `(find, /home/user/repo)`
 auto-allows `find /home/user/repo/.netclaw -name X` because the candidate's
@@ -390,12 +397,14 @@ Netclaw does not automatically clean managed temporary storage yet.
    network-writing verbs (`gh api`, `curl`), and environment/process-inspection
    verbs (`printenv`, `ps`) are never on the list — the safe-space gate
    cannot scope a verb that dumps the environment or the process table.
-3. **Interactive prompt** — everything else. Five buttons:
+3. **Interactive prompt** — everything else. A registered worktree can show six choices:
    - **Once** — run this one time, persist nothing.
    - **This chat** — allow the verbs in this directory for the rest of the
      session.
    - **Always here** — persist `(verb, effective directory)`. The
      "directory" is the command's path argument when present, else cwd.
+   - **This repository** — persist a grant for this Git repository.
+     Registered sibling worktrees can use it for the same phrase.
    - **Always anywhere** — persist `(verb, null)` global wildcard.
      Danger style.
    - **Deny** — refuse this call only.

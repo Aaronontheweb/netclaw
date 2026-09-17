@@ -69,7 +69,8 @@ Each release can roll back to its prior package or binary. Old grants retain the
 3. ShellSyntaxTree PR: Publish finite directory and path facts with parser, corpus, API, and adversarial tests. Merge, tag, and publish `0.4.0-beta.3`.
 4. Netclaw PR: Pin the public beta and consume its proved facts. Run the full security and integration gates.
 
-The Netclaw branch for each later PR will start from the merged `dev` head.
+Each later Netclaw branch started from the preceding implementation branch.
+Merge the PRs in order and preserve that ancestry.
 The ShellSyntaxTree release must exist on NuGet before the fourth PR can pass public restore.
 The maintainer authorized automatic merge of these PRs. CI and the independent security review still gate each merge.
 
@@ -77,6 +78,8 @@ The maintainer authorized automatic merge of these PRs. CI and the independent s
 
 The operator chose a new repository grant type. Existing folder grants keep their path meaning.
 Netclaw will bind a repository grant to a canonical Git common directory and its registered worktree roots.
+This scope supports an ordinary `.git` directory and its registered linked worktrees.
+A main checkout with `--separate-git-dir` remains outside this scope.
 The policy will confirm both facts for the current directory before it uses that grant.
 It will reject an unregistered `.git` pointer and a moved or removed worktree.
 It will apply ordinary verb, path, audience, and hard-deny checks after the repository match.

@@ -103,15 +103,16 @@ Run the approval directory gate:
 ```
 
 The script reuses the xUnit 2 harness and selects `Netclaw.Security.csproj` as the mutation target.
-It selects three source locations in `EvaluateApprovalScope`:
+It selects four source locations in `EvaluateApprovalScope`:
 
 | Decision | Expected mutants |
 |----------|------------------|
 | Windows path containment | 1 killed: remove the logical negation |
 | POSIX path containment | 1 killed: remove the logical negation |
 | POSIX link rejection | 2 killed: force either conditional outcome |
+| Repository identity and worktree path | 4 killed: force a result or relax a scope check |
 
-The script requires these counts at their exact source locations and four tested mutants overall.
+The script requires these counts at their exact source locations and eight tested mutants overall.
 It fails if a target is absent, survives, exceeds its time limit, or cannot compile.
 The source selector rejects an absent or duplicate boundary before Stryker starts.
 This protects the gate when the authorization code and diagnostic code contain similar conditions.
