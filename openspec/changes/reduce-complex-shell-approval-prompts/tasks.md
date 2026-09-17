@@ -7,17 +7,17 @@
 
 ## 2. Netclaw static compound coverage
 
-- [ ] 2.1 Enumerate reachable scopes for complete static Bash compounds. Verify both `cd` outcomes in focused tests.
-- [ ] 2.2 Match each executable and path candidate against grants. Verify an ungranted verb, protected path, redirect, and symlink remain gated.
-- [ ] 2.3 Verify session, folder, audience, headless, and one-time retry boundaries in the real coordinator.
+- [x] 2.1 Enumerate reachable scopes for complete static Bash compounds. Verify both `cd` outcomes in focused tests.
+- [x] 2.2 Match each executable and path candidate against grants. Verify an ungranted verb, protected path, redirect, and symlink remain gated.
+- [x] 2.3 Verify session, folder, audience, headless, and one-time retry boundaries in the real coordinator.
 - [ ] 2.4 Run focused security mutants and the approval corpus. Open and merge the second Netclaw PR after CI and independent review.
 
 ## 3. ShellSyntaxTree beta
 
-- [ ] 3.1 Update the ShellSyntaxTree contract for bounded finite directory and path facts. Verify the public API delta against `SPEC.md`.
-- [ ] 3.2 Implement the facts and sanitized corpus cases. Verify failure paths, loops, dynamic values, and overflow.
-- [ ] 3.3 Run Release build, full tests, corpus PII audit, header check, package test, and Linux and Windows CI.
-- [ ] 3.4 Merge the ShellSyntaxTree PR, tag `0.4.0-beta.3`, and verify its package on NuGet.
+- [x] 3.1 Update the ShellSyntaxTree contract for bounded finite directory and path facts. Verify the public API delta against `SPEC.md`.
+- [x] 3.2 Implement the facts and sanitized corpus cases. Verify failure paths, loops, dynamic values, and overflow.
+- [x] 3.3 Run Release build, full tests, corpus PII audit, header check, package test, and Linux and Windows CI.
+- [x] 3.4 Merge the ShellSyntaxTree PR, tag `0.4.0-beta.3`, and verify its package on NuGet.
 
 ## 4. Netclaw beta adoption
 

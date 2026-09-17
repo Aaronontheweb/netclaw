@@ -408,6 +408,7 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
         {
             ApprovalDirectoryShape.None => null,
             ApprovalDirectoryShape.Project => projectDirectory,
+            ApprovalDirectoryShape.ProjectChild => Path.Combine(projectDirectory, "sub"),
             ApprovalDirectoryShape.Session => sessionDirectory,
             ApprovalDirectoryShape.External => externalDirectory,
             _ => throw new ArgumentOutOfRangeException(nameof(directory), directory, "Unknown approval directory shape.")

@@ -25,6 +25,24 @@ public sealed class ShellCommandAnalysisMutationTests
             PwshDialect.WindowsPowerShell51);
 
     [Fact]
+    public void A_failed_directory_change_keeps_the_original_scope_after_a_sequence()
+    {
+        var environment = ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux);
+        var policy = new ShellCommandPolicy(environment);
+        var matcher = new ShellApprovalMatcher(environment);
+        var analysis = policy.Analyze("cd /work/sub && true; touch marker.txt", "/work");
+
+        Assert.True(BashStaticCompoundApprovalProjection.TryCreate(
+            analysis, policy, matcher, out var projection));
+
+        Assert.Equal(["/work", "/work/sub"], projection!.Candidates
+            .Where(static candidate => candidate.Verb == "touch")
+            .Select(static candidate => candidate.Directory)
+            .Distinct()
+            .Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
     public void Known_and_unknown_execution_regions_keep_distinct_analysis_results()
     {
         var analyzer = new ShellCommandAnalyzer(PowerShellEnvironment);

@@ -338,6 +338,10 @@ public sealed class ToolAccessPolicy
                 return ToolAuthorizationDecision.Deny("shell_references_protected_path");
         }
 
+        // The OS resolves ".." after a symlink. Lexical policy normalization does not.
+        if (workingDirectory is not null && ShellPathRules.HasParentDirectorySegment(workingDirectory))
+            return ToolAuthorizationDecision.Deny("shell_invalid_working_directory");
+
         // All shell policy checks use the directory that ShellTool executes.
         // The explicit tool argument can be absent while the context supplies
         // an active project, session, or inherited directory.
@@ -348,6 +352,54 @@ public sealed class ToolAccessPolicy
                 toolName,
                 analysisArguments,
                 shellAnalysis);
+
+        // Keep causal intent rules for lists that they already prove.
+        // A complete scope proof can clear the headless unresolved-input gate.
+        // A failed proof keeps that gate.
+        if (shellAnalysis is not null
+            && shellApproval is { IsMessy: true, Candidates.Count: 0 }
+            && !BashCausalApprovalIntent.TryProject(
+                ShellEnvironment,
+                shellAnalysis,
+                _shellApprovalMatcher,
+                IsEligiblePlatformTemporaryPath,
+                out _)
+            && BashStaticCompoundApprovalProjection.TryCreate(
+                shellAnalysis,
+                _shellCommandPolicy,
+                _shellApprovalMatcher,
+                out var staticProjection)
+            && staticProjection is not null
+            && staticProjection.Slices.All(slice =>
+                IsCausalIntentDirectoryEligible(slice.WorkingDirectory)))
+        {
+            foreach (var slice in staticProjection.Slices)
+            {
+                var scopedDeny = _shellCommandPolicy.Evaluate(slice.Analysis);
+                if (!scopedDeny.Allowed)
+                {
+                    return ToolAuthorizationDecision.Deny(
+                        $"hard_deny_{scopedDeny.DenyCategory?.ToWireName() ?? "unknown"}");
+                }
+
+                if (_toolPathPolicy.CommandReferencesDeniedPath(slice.Analysis))
+                    return ToolAuthorizationDecision.Deny("shell_references_protected_path");
+
+                var scopedPathDeny = EnforceShellFileProtection(
+                    slice.Approval,
+                    slice.Analysis,
+                    slice.WorkingDirectory,
+                    context);
+                if (scopedPathDeny is not null)
+                    return scopedPathDeny;
+            }
+
+            shellApproval = shellApproval with
+            {
+                Candidates = staticProjection.Candidates,
+                IsMessy = false
+            };
+        }
 
         // Shell does not classify an executable as a reader or writer. Once
         // shell capability and command policy pass, every known path must pass

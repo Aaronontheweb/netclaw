@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.74.5"
+  version: "2.74.6"
 ---
 
 # Netclaw Operations
@@ -366,6 +366,11 @@ auto-allows `find /home/user/repo/.netclaw -name X` because the candidate's
 extracted path is under the entry's directory. You don't have to call
 `set_working_directory` for this — running a command with a path argument
 declares scope implicitly.
+
+For a complete static Bash list with an exact directory change, Netclaw checks
+each command in each reachable exact directory. A failed `cd` can leave a later
+command in the original directory. Each unapproved verb still needs approval.
+Dynamic effects and linked directories retain exact approval.
 
 The approval gate runs three layers in order:
 

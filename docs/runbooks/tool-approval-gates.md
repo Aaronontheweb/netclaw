@@ -187,6 +187,18 @@ For **compound commands** (`&&`, `||`, `;`, `|`), each segment is checked
 independently. If any segment is unapproved, all unapproved patterns are
 batched into one prompt.
 
+Netclaw can resolve a complete static Bash list with an exact `cd` target.
+Netclaw keeps the causal intent policy when it recognizes the list.
+It checks both the success and failure directories after each directory change.
+It checks each pipeline stage under the same entry directory.
+Every reachable verb and path needs its own grant or safe policy result.
+Unknown directory effects, dynamic syntax, linked directories, deep glob paths,
+and excess scopes retain exact approval.
+The agent receives directory advice only when this scope proof fails and the advice is safe.
+A shell working directory with a `..` segment is invalid.
+The OS can resolve that segment after a symbolic link and reach another directory.
+Use an absolute working directory without parent traversal.
+
 The selected host grammar is also the language boundary. Under Bash,
 `pwsh -Command 'Get-Content ./a.txt'` is an ordinary external `pwsh` command;
 the payload is not separately parsed as PowerShell. Under native PowerShell,
@@ -485,6 +497,8 @@ authority for a peer directory.
 The dispatcher keeps the exact authorized command and directory in `ShellProcessLaunch`.
 It copies the approval state for that invocation and retains the child environment.
 The launch requires an absolute directory; its callers select that directory before construction.
+For Bash, the child environment excludes startup hooks and imported functions.
+These inputs can change a verb or a directory effect before the authored command starts.
 
 The launch follows this sequence:
 
@@ -497,6 +511,8 @@ The launch follows this sequence:
 A queued command with a valid grant can start once.
 A queued command whose grant was revoked fails without a process.
 These checks narrow filesystem races; they do not provide an OS sandbox.
+The path snapshot includes every directory and path from a proved Bash scope.
+The launch stops if a symbolic link changes in any such path during authorization.
 
 The foreground caller owns cancellation and process disposal.
 The background start task owns the process until the job actor adopts it.
