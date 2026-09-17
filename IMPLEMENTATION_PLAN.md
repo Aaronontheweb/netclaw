@@ -286,6 +286,20 @@ The fifth PR adds an explicit repository grant for ordinary Git checkouts
 and their registered linked worktrees. Existing folder grants retain their
 path meaning. A main checkout with `--separate-git-dir` keeps folder scope.
 
+**Delivery evidence:** ShellSyntaxTree PR #184 merged. Its `0.4.0-beta.3`
+package passed the publish job and is available on NuGet. Netclaw PRs #2191,
+#2193, and #2194 merged after their CI checks passed. PR #2194 pins the public
+beta. PR #2195 adds the explicit repository grant and has passed local tests,
+focused mutants, native approval smoke, and independent authority review.
+Its final merge depends on CI for the branch after the PR #2194 merge.
+
+The full hosted eval for PR #2195 passed 73 of 91 cases, so that suite remains
+red. The isolated typed-directory case passed five of five runs. Several
+failed worktree cases used successful read-only `git -C` calls, which the
+typed-directory oracle rejects. The worktree creation case denied an
+unapproved `git worktree add`, as required. The live daemon still runs
+`0.27.0-beta.4`; these changes need a later Netclaw rollout.
+
 **Gates:** Prove both outcomes of a directory change, every pipeline stage,
 an ungranted verb, each possible path, redirects, hard denials, protected
 paths, symbolic links, audience and session boundaries, and exact retries.
