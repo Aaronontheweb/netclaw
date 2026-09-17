@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.74.4"
+  version: "2.74.5"
 ---
 
 # Netclaw Operations
@@ -90,6 +90,11 @@ Choose directories in this order:
 
 Typed `WorkingDirectory` and absolute operands give exact scope but add no safe-space root.
 Program-specific directory options do not replace `WorkingDirectory`.
+If shell advice names `use_shell_working_directory`, remove the leading `cd` from a new call.
+Set `WorkingDirectory` to the suggested child directory. The original call did not run.
+The new call passes normal approval policy.
+If the task needs the original shell directory behavior, keep the command and set `WorkingDirectory` to `project_dir`.
+That explicit project scope skips repeated advice. The original command still passes normal approval policy.
 
 When available, call `set_working_directory` before the first tool call for
 another user-named project.
