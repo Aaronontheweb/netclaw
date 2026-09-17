@@ -18,8 +18,6 @@ internal sealed record BashStaticCompoundApprovalProjection(
     IReadOnlyList<ApprovalCandidate> Candidates,
     IReadOnlyList<ScopedShellApprovalSlice> Slices)
 {
-    private const int MaximumDirectories = 32;
-    private const int MaximumSlices = 128;
     private const int MaximumCandidates = 256;
 
     internal static bool TryCreate(
@@ -42,275 +40,77 @@ internal sealed record BashStaticCompoundApprovalProjection(
                 source.WorkingDirectory,
                 ShellPathStyle.Posix,
                 out var initialDirectory)
-            || !TryGetList(source.Commands, out var list))
+            || !source.Environment.TryProjectFiniteBashScopes(
+                source.Source,
+                initialDirectory,
+                out var finite)
+            || finite is null
+            || source.Commands.Count != finite.Parsed.Commands.Count
+            || !source.Commands.Zip(finite.Parsed.Commands).All(static pair =>
+                HasSameAuthoredElements(pair.First.Clause, pair.Second.Clause)))
         {
             return false;
         }
 
-        var sourceOccurrences = source.Commands.ToDictionary<CommandOccurrence, Clause>(
-            static occurrence => occurrence.Clause,
-            ReferenceEqualityComparer.Instance);
-        var visited = new HashSet<Clause>(ReferenceEqualityComparer.Instance);
+        // Reject a parser result that differs from the authored source or Netclaw analysis.
         var candidates = new List<ApprovalCandidate>();
         var slices = new List<ScopedShellApprovalSlice>();
-        var success = new HashSet<string>(StringComparer.Ordinal);
-        var failure = new HashSet<string>(StringComparer.Ordinal);
-
-        for (var itemIndex = 0; itemIndex < list.Items.Count; itemIndex++)
+        foreach (var scoped in finite.Commands)
         {
-            var item = list.Items[itemIndex];
-            if (!TryGetInputDirectories(
-                    item.Operator,
-                    itemIndex,
-                    initialDirectory,
-                    success,
-                    failure,
-                    out var input)
-                || input.Count == 0
-                || input.Count > MaximumDirectories
-                || !TryGetSimpleCommands(item.Command, out var commands)
-                || !ValidateOccurrences(
-                    commands,
-                    item.Command,
-                    list,
-                    itemIndex,
-                    sourceOccurrences,
-                    visited))
+            if (scoped.SourceStart < 0
+                || scoped.SourceStart > source.Source.Length
+                || scoped.Source.Length > source.Source.Length - scoped.SourceStart
+                || !source.Source.AsSpan(scoped.SourceStart, scoped.Source.Length)
+                    .SequenceEqual(scoped.Source.AsSpan())
+                || !ShellPathRules.TryNormalize(
+                    scoped.WorkingDirectory,
+                    ShellPathStyle.Posix,
+                    out var directory)
+                || !string.Equals(directory, scoped.WorkingDirectory, StringComparison.Ordinal)
+                || scoped.ScopedOccurrence.WorkingDirectory is not ShellValueDomain.Exact scopedDirectory
+                || !string.Equals(scopedDirectory.Value, directory, StringComparison.Ordinal))
             {
                 return false;
             }
 
-            var itemSuccess = new HashSet<string>(StringComparer.Ordinal);
-            var itemFailure = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var directory in input)
+            var analysis = commandPolicy.Analyze(scoped.Source, directory);
+            if (!analysis.IsResolved
+                || analysis.HasDynamicSyntax
+                || analysis.RequiresExactTreeApproval
+                || analysis.Commands.Count != 1
+                || !analysis.Commands[0].IsComplete
+                || analysis.Commands[0].WorkingDirectory is not ShellValueDomain.Exact analyzedDirectory
+                || !string.Equals(analyzedDirectory.Value, directory, StringComparison.Ordinal)
+                || !HasSameAuthoredElements(
+                    scoped.ScopedOccurrence.Clause,
+                    analysis.Commands[0].Clause))
             {
-                ShellWorkingDirectoryEffect? effect = null;
-                foreach (var simple in commands)
-                {
-                    if (slices.Count >= MaximumSlices
-                        || !TryAnalyzeSlice(
-                            source,
-                            simple,
-                            directory,
-                            commandPolicy,
-                            matcher,
-                            out var slice))
-                    {
-                        return false;
-                    }
-
-                    slices.Add(slice);
-                    candidates.AddRange(slice.Approval.Candidates);
-                    if (candidates.Count > MaximumCandidates)
-                        return false;
-                    var nextEffect = slice.Analysis.Commands[0].WorkingDirectoryEffect;
-                    if (item.Command is PipelineSyntax
-                        && nextEffect is not ShellWorkingDirectoryEffect.Unchanged)
-                    {
-                        return false;
-                    }
-
-                    effect = nextEffect;
-                }
-
-                if (item.Command is PipelineSyntax
-                    || effect is ShellWorkingDirectoryEffect.Unchanged)
-                {
-                    itemSuccess.Add(directory);
-                    itemFailure.Add(directory);
-                }
-                else if (effect is ShellWorkingDirectoryEffect.ChangesOnSuccess
-                         { Target: ShellValueDomain.Exact exact }
-                         && ShellPathRules.TryNormalize(
-                             exact.Value,
-                             ShellPathStyle.Posix,
-                             out var target))
-                {
-                    itemSuccess.Add(target);
-                    itemFailure.Add(directory);
-                }
-                else
-                {
-                    return false;
-                }
+                return false;
             }
 
-            var nextSuccess = item.Operator == CompoundOperator.OrIf
-                ? Union(success, itemSuccess)
-                : itemSuccess;
-            var nextFailure = item.Operator == CompoundOperator.AndIf
-                ? Union(failure, itemFailure)
-                : itemFailure;
-            if (Union(nextSuccess, nextFailure).Count > MaximumDirectories)
+            var approval = matcher.AnalyzeInvocation(
+                new ToolName(ShellTool.ToolName),
+                new Dictionary<string, object?>
+                {
+                    ["Command"] = scoped.Source,
+                    ["WorkingDirectory"] = directory
+                },
+                analysis);
+            if (approval.IsMessy || approval.Candidates.Count == 0)
                 return false;
 
-            success = nextSuccess;
-            failure = nextFailure;
+            candidates.AddRange(approval.Candidates);
+            if (candidates.Count > MaximumCandidates)
+                return false;
+            slices.Add(new ScopedShellApprovalSlice(analysis, approval, directory));
         }
 
-        if (visited.Count != source.Commands.Count || candidates.Count == 0)
+        if (candidates.Count == 0)
             return false;
 
         projection = new BashStaticCompoundApprovalProjection(
             Array.AsReadOnly(candidates.ToArray()),
             Array.AsReadOnly(slices.ToArray()));
-        return true;
-    }
-
-    private static bool TryGetList(
-        IReadOnlyList<CommandOccurrence> occurrences,
-        out CommandListSyntax list)
-    {
-        list = null!;
-        var first = occurrences[0];
-        if (first.Ancestry.Count < 2
-            || first.Ancestry[0] is not
-                { Ancestor: ShellBlockSyntax, Region: CommandAncestryRegion.Root, ChildIndex: 0 }
-            || first.Ancestry[1] is not
-                { Ancestor: CommandListSyntax topLevel, Region: CommandAncestryRegion.Statement }
-            || topLevel.Items.Count < 2)
-        {
-            return false;
-        }
-
-        list = topLevel;
-        return true;
-    }
-
-    private static bool TryGetInputDirectories(
-        CompoundOperator operation,
-        int itemIndex,
-        string initialDirectory,
-        HashSet<string> success,
-        HashSet<string> failure,
-        out HashSet<string> input)
-    {
-        input = itemIndex == 0
-            ? new HashSet<string>([initialDirectory], StringComparer.Ordinal)
-            : operation switch
-            {
-                CompoundOperator.Sequence => Union(success, failure),
-                CompoundOperator.AndIf => new HashSet<string>(success, StringComparer.Ordinal),
-                CompoundOperator.OrIf => new HashSet<string>(failure, StringComparer.Ordinal),
-                _ => []
-            };
-        return itemIndex == 0
-            ? operation == CompoundOperator.None
-            : operation is CompoundOperator.Sequence or CompoundOperator.AndIf or CompoundOperator.OrIf;
-    }
-
-    private static HashSet<string> Union(
-        IReadOnlySet<string> first,
-        IReadOnlySet<string> second)
-    {
-        var union = new HashSet<string>(first, StringComparer.Ordinal);
-        union.UnionWith(second);
-        return union;
-    }
-
-    private static bool TryGetSimpleCommands(
-        ShellSyntaxNode node,
-        out IReadOnlyList<SimpleCommandSyntax> commands)
-    {
-        commands = node switch
-        {
-            SimpleCommandSyntax simple => [simple],
-            PipelineSyntax pipeline when pipeline.Stages.Count >= 2
-                && pipeline.Stages.All(static stage => stage is SimpleCommandSyntax) =>
-                pipeline.Stages.Cast<SimpleCommandSyntax>().ToArray(),
-            _ => []
-        };
-        return commands.Count > 0
-            && commands.All(static simple =>
-                simple.Substitutions.Count == 0
-                && simple.ExecutionRegions.Count == 0
-                && simple.SourceStart is >= 0
-                && simple.SourceLength is > 0);
-    }
-
-    private static bool ValidateOccurrences(
-        IReadOnlyList<SimpleCommandSyntax> commands,
-        ShellSyntaxNode item,
-        CommandListSyntax list,
-        int itemIndex,
-        IReadOnlyDictionary<Clause, CommandOccurrence> sourceOccurrences,
-        HashSet<Clause> visited)
-    {
-        for (var stageIndex = 0; stageIndex < commands.Count; stageIndex++)
-        {
-            var simple = commands[stageIndex];
-            if (!sourceOccurrences.TryGetValue(simple.Clause, out var occurrence)
-                || !visited.Add(simple.Clause)
-                || !occurrence.IsComplete
-                || occurrence.Ancestry.Count != (item is PipelineSyntax ? 3 : 2)
-                || occurrence.Ancestry[0] is not
-                    { Ancestor: ShellBlockSyntax, Region: CommandAncestryRegion.Root, ChildIndex: 0 }
-                || occurrence.Ancestry[1] is not
-                    { Ancestor: var ancestor, Region: CommandAncestryRegion.Statement, ChildIndex: var childIndex }
-                || !ReferenceEquals(ancestor, list)
-                || childIndex != itemIndex)
-            {
-                return false;
-            }
-
-            if (item is PipelineSyntax pipeline)
-            {
-                if (occurrence.ImmediateRole != CommandOccurrenceRole.PipelineStage
-                    || occurrence.Ancestry[2] is not
-                        { Ancestor: var stageParent, Region: CommandAncestryRegion.PipelineStage, ChildIndex: var childStage }
-                    || !ReferenceEquals(stageParent, pipeline)
-                    || childStage != stageIndex)
-                {
-                    return false;
-                }
-            }
-            else if (occurrence.ImmediateRole != CommandOccurrenceRole.Ordinary)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private static bool TryAnalyzeSlice(
-        ShellCommandAnalysis source,
-        SimpleCommandSyntax simple,
-        string directory,
-        ShellCommandPolicy commandPolicy,
-        ShellApprovalMatcher matcher,
-        out ScopedShellApprovalSlice slice)
-    {
-        slice = null!;
-        var start = simple.SourceStart!.Value;
-        var length = simple.SourceLength!.Value;
-        if (start > source.Source.Length || length > source.Source.Length - start)
-            return false;
-
-        var command = source.Source.Substring(start, length);
-        var analysis = commandPolicy.Analyze(command, directory);
-        if (!analysis.IsResolved
-            || analysis.HasDynamicSyntax
-            || analysis.RequiresExactTreeApproval
-            || analysis.Commands.Count != 1
-            || !analysis.Commands[0].IsComplete
-            || !HasSameAuthoredElements(simple.Clause, analysis.Commands[0].Clause))
-        {
-            return false;
-        }
-
-        var approval = matcher.AnalyzeInvocation(
-            new ToolName(ShellTool.ToolName),
-            new Dictionary<string, object?>
-            {
-                ["Command"] = command,
-                ["WorkingDirectory"] = directory
-            },
-            analysis);
-        if (approval.IsMessy || approval.Candidates.Count == 0)
-            return false;
-
-        slice = new ScopedShellApprovalSlice(analysis, approval, directory);
         return true;
     }
 

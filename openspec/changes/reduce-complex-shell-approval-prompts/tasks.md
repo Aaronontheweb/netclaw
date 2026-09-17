@@ -21,7 +21,7 @@
 
 ## 4. Netclaw beta adoption
 
-- [ ] 4.1 Pin the public ShellSyntaxTree beta and consume only proved finite facts. Verify public restore and the approval corpus.
+- [x] 4.1 Pin the public ShellSyntaxTree beta and consume only proved finite facts. Verify public restore and the approval corpus.
 - [ ] 4.2 Run the Netclaw full test suite, focused mutants, eval suite if guidance changes, Slopwatch, and header check.
 - [ ] 4.3 Run an independent adversarial review and native platform CI. Open and merge the fourth PR.
 - [ ] 4.4 Confirm the merged revision, package reference, and live rollout state. Update the canonical plan with final evidence.
