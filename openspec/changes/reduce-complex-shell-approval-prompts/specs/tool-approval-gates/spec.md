@@ -7,6 +7,8 @@ Netclaw SHALL apply every grant to the directory and path scope where that occur
 If any reachable scope is unknown, Netclaw SHALL require exact approval or deny the call.
 Netclaw SHALL keep hard denials, protected paths, redirects, audience limits, and one-time retry checks independent of grant coverage.
 Netclaw SHALL use this static scope proof only for an exact directory change.
+Netclaw SHALL consume bounded finite scope facts from the public ShellSyntaxTree API.
+Netclaw SHALL reject a result that conflicts with the authored source or its own command analysis.
 Netclaw SHALL keep the causal intent policy when it recognizes the command.
 Netclaw SHALL reject reusable static scope grants when a projected directory contains a symbolic link.
 

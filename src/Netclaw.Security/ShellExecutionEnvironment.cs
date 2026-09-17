@@ -185,12 +185,9 @@ public sealed class ShellExecutionEnvironment
 
         return Grammar switch
         {
-            ShellGrammar.Bash => new BashParser(new BashParserOptions
-            {
-                WorkingDirectory = workingDirectory,
-                InitialStateMode = BashInitialStateMode.Unknown,
-                PublishAuthoredSourceFacts = publishAuthoredSourceFacts
-            }).Parse(source),
+            ShellGrammar.Bash => CreateBashParser(
+                workingDirectory,
+                publishAuthoredSourceFacts).Parse(source),
             ShellGrammar.PowerShell when PowerShellDialect is { } dialect =>
                 new PwshParser(new PwshParserOptions
                 {
@@ -201,6 +198,32 @@ public sealed class ShellExecutionEnvironment
             _ => throw new InvalidOperationException("The shell environment has no supported parser identity.")
         };
     }
+
+    internal bool TryProjectFiniteBashScopes(
+        string source,
+        string? workingDirectory,
+        out BashFiniteScopeProjection? projection)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (Grammar != ShellGrammar.Bash)
+        {
+            projection = null;
+            return false;
+        }
+
+        return CreateBashParser(workingDirectory, publishAuthoredSourceFacts: true)
+            .TryProjectFiniteScopes(source, out projection);
+    }
+
+    private static BashParser CreateBashParser(
+        string? workingDirectory,
+        bool publishAuthoredSourceFacts)
+        => new(new BashParserOptions
+        {
+            WorkingDirectory = workingDirectory,
+            InitialStateMode = BashInitialStateMode.Unknown,
+            PublishAuthoredSourceFacts = publishAuthoredSourceFacts
+        });
 
     /// <summary>
     /// Creates fresh process-start data for one submitted command.

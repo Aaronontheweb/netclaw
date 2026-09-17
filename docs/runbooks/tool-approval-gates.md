@@ -188,6 +188,8 @@ independently. If any segment is unapproved, all unapproved patterns are
 batched into one prompt.
 
 Netclaw can resolve a complete static Bash list with an exact `cd` target.
+ShellSyntaxTree `0.4.0-beta.3` supplies each bounded directory and source slice.
+Netclaw checks each fact against its command policy and grant rules.
 Netclaw keeps the causal intent policy when it recognizes the list.
 It checks both the success and failure directories after each directory change.
 It checks each pipeline stage under the same entry directory.
