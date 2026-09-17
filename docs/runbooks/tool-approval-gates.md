@@ -197,6 +197,9 @@ Every reachable verb and path needs its own grant or safe policy result.
 Unknown directory effects, dynamic syntax, linked directories, deep glob paths,
 and excess scopes retain exact approval.
 The agent receives directory advice only when this scope proof fails and the advice is safe.
+A shell working directory with a `..` segment is invalid.
+The OS can resolve that segment after a symbolic link and reach another directory.
+Use an absolute working directory without parent traversal.
 
 The selected host grammar is also the language boundary. Under Bash,
 `pwsh -Command 'Get-Content ./a.txt'` is an ordinary external `pwsh` command;

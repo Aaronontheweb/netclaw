@@ -164,6 +164,43 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
         }
     }
 
+    [SlopwatchSuppress("SW001", "This test requires native POSIX symbolic-link behavior.")]
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "This case requires POSIX symlink semantics.")]
+    [InlineData("touch marker.txt")]
+    [InlineData("cd absent || touch marker.txt")]
+    public async Task Shell_policy_rejects_a_lexical_directory_after_a_symlink_parent(string command)
+    {
+        var root = Directory.CreateTempSubdirectory("netclaw-static-shell-link-parent-");
+        try
+        {
+            var target = root.CreateSubdirectory("outside").CreateSubdirectory("inner");
+            var project = root.CreateSubdirectory("project");
+            Directory.CreateSymbolicLink(Path.Combine(project.FullName, "alias"), target.FullName);
+            var rawDirectory = Path.Combine(project.FullName, "alias", "..");
+            var grants = Approvals.PersistentAnywhere("cd", "touch");
+            await using var harness = await ShellApprovalHarness.CreateAsync(
+                "static-shell-link-parent",
+                new ShellApprovalInvocation(command, ApprovalDirectoryShape.None),
+                grants,
+                fixture.ActorSystem,
+                TestContext.Current.CancellationToken,
+                scope: new ShellApprovalHarnessScope(
+                    rawDirectory,
+                    project.FullName,
+                    "signalr/static-shell-link-parent",
+                    []));
+
+            var decision = await harness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+
+            Assert.Equal(ToolAuthorizationOutcome.Denied, decision.Outcome);
+            Assert.Equal("shell_invalid_working_directory", decision.DenyReason);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
     [SlopwatchSuppress("SW001", "A failed Bash directory change leaves the later command in its initial scope.")]
     [Fact(SkipUnless = nameof(IsPosix), Skip = "This case requires POSIX Bash semantics.")]
     public async Task Child_grant_does_not_cover_the_failed_directory_change_path()

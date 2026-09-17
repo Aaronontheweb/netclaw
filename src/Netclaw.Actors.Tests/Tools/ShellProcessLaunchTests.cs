@@ -31,6 +31,39 @@ public sealed class ShellProcessLaunchTests
     }
 
     [Fact]
+    public void Launch_rejects_a_parent_directory_segment()
+    {
+        using var temp = new DisposableTempDir();
+        var directory = Path.Combine(temp.Path, "alias", "..");
+        var environment = TestShellEnvironment.Current;
+        var context = TestToolExecutionContext.CreateBound("launch/parent-segment", temp.Path, TrustAudience.Personal);
+
+        var error = Assert.Throws<ShellProcessStartException>(() => new ShellProcessLaunch(
+            "echo unexpected", directory, context.Invocation,
+            new ShellCommandPolicy(environment), new ToolPathPolicy(environment, []),
+            static _ => Task.CompletedTask));
+        Assert.Contains("parent traversal segments", error.Message);
+    }
+
+    [SlopwatchSuppress("SW001", "A POSIX directory name can contain a literal backslash.")]
+    [Fact(SkipType = typeof(TestPlatform), SkipUnless = nameof(TestPlatform.IsPosix),
+        Skip = "POSIX directory name semantics")]
+    public void Launch_accepts_a_literal_backslash_in_a_posix_directory()
+    {
+        using var temp = new DisposableTempDir();
+        var directory = Directory.CreateDirectory(Path.Combine(temp.Path, @"a\..\b"));
+        var environment = TestShellEnvironment.Current;
+        var context = TestToolExecutionContext.CreateBound("launch/literal-backslash", temp.Path, TrustAudience.Personal);
+
+        var launch = new ShellProcessLaunch(
+            "echo expected", directory.FullName, context.Invocation,
+            new ShellCommandPolicy(environment), new ToolPathPolicy(environment, []),
+            static _ => Task.CompletedTask);
+
+        Assert.Equal(directory.FullName, launch.WorkingDirectory);
+    }
+
+    [Fact]
     public async Task Child_environment_remains_the_submission_snapshot()
     {
         using var directory = new DisposableTempDir();
