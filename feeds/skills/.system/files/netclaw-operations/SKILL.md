@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.74.7"
+  version: "2.74.9"
 ---
 
 # Netclaw Operations
@@ -307,6 +307,11 @@ with that provider and set it with `netclaw mcp add --client-id <id> ...`.
 | `AwaitingAuth` | No usable OAuth credential is bound to this resource, or an access token expired without a refresh token. Run `netclaw mcp auth <name>`. Startup and background reconnects never open a browser or block. |
 | `AuthFailed` | The server rejected credentials that were supplied. Reauthorize SDK-managed OAuth, or check the configured `Authorization` header if it owns auth. |
 | `Unreachable` | A non-auth transport, network, timeout, or initialization failure prevented connection. Check the endpoint and daemon logs. |
+
+At startup, the daemon connects enabled MCP servers concurrently. It waits
+for each initial attempt before it reports ready. A failed server has its own
+status; other server tools remain available. Use `netclaw mcp list` to inspect
+each result.
 
 ### Diagnose failures
 
